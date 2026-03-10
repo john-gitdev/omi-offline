@@ -46,7 +46,7 @@ class SharedPreferencesUtil {
 
   static Future<void> init() async {
     _preferences = await SharedPreferences.getInstance();
-    
+
     // Set default values if not present
     if (!_preferences!.containsKey('offlineSilenceThreshold')) {
       _preferences!.setDouble('offlineSilenceThreshold', -45.0);

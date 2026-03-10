@@ -184,10 +184,18 @@ class _ActionItemTileWidgetState extends State<ActionItemTileWidget> {
 
   String _formatDueDate(BuildContext context, DateTime date, {bool showFullDate = false}) {
     final months = [
-      context.l10n.monthJan, context.l10n.monthFeb, context.l10n.monthMar,
-      context.l10n.monthApr, context.l10n.monthMay, context.l10n.monthJun,
-      context.l10n.monthJul, context.l10n.monthAug, context.l10n.monthSep,
-      context.l10n.monthOct, context.l10n.monthNov, context.l10n.monthDec
+      context.l10n.monthJan,
+      context.l10n.monthFeb,
+      context.l10n.monthMar,
+      context.l10n.monthApr,
+      context.l10n.monthMay,
+      context.l10n.monthJun,
+      context.l10n.monthJul,
+      context.l10n.monthAug,
+      context.l10n.monthSep,
+      context.l10n.monthOct,
+      context.l10n.monthNov,
+      context.l10n.monthDec
     ];
 
     if (showFullDate) {
@@ -224,8 +232,12 @@ class _ActionItemTileWidgetState extends State<ActionItemTileWidget> {
       return context.l10n.yesterday;
     } else if (difference > 1 && difference <= 7) {
       final weekdays = [
-        context.l10n.weekdayMon, context.l10n.weekdayTue, context.l10n.weekdayWed,
-        context.l10n.weekdayThu, context.l10n.weekdayFri, context.l10n.weekdaySat,
+        context.l10n.weekdayMon,
+        context.l10n.weekdayTue,
+        context.l10n.weekdayWed,
+        context.l10n.weekdayThu,
+        context.l10n.weekdayFri,
+        context.l10n.weekdaySat,
         context.l10n.weekdaySun
       ];
       return weekdays[date.weekday - 1];
@@ -667,7 +679,9 @@ class _ActionItemTileWidgetState extends State<ActionItemTileWidget> {
             children: [
               Icon(success ? Icons.check_circle : Icons.error, color: Colors.white, size: 20),
               const SizedBox(width: 8),
-              Text(success ? context.l10n.addedToService('Google Tasks') : context.l10n.failedToAddToService('Google Tasks')),
+              Text(success
+                  ? context.l10n.addedToService('Google Tasks')
+                  : context.l10n.failedToAddToService('Google Tasks')),
             ],
           ),
           backgroundColor: success ? Colors.green : Colors.red,
@@ -891,7 +905,9 @@ class _ActionItemTileWidgetState extends State<ActionItemTileWidget> {
             children: [
               Icon(success ? Icons.check_circle : Icons.error, color: Colors.white, size: 20),
               const SizedBox(width: 8),
-              Text(success ? context.l10n.addedToService('Apple Reminders') : context.l10n.failedToAddToService('Reminders')),
+              Text(success
+                  ? context.l10n.addedToService('Apple Reminders')
+                  : context.l10n.failedToAddToService('Reminders')),
             ],
           ),
           backgroundColor: success ? Colors.green : Colors.red,

@@ -241,7 +241,8 @@ class _NotificationsSettingsPageState extends State<NotificationsSettingsPage> {
               onPrimary: Colors.white,
               surface: Color(0xFF1C1C1E),
               onSurface: Colors.white,
-            ), dialogTheme: const DialogThemeData(backgroundColor: Color(0xFF1C1C1E)),
+            ),
+            dialogTheme: const DialogThemeData(backgroundColor: Color(0xFF1C1C1E)),
           ),
           child: child!,
         );

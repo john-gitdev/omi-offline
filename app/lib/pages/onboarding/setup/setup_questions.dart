@@ -100,8 +100,7 @@ class _SetupQuestionsPageState extends State<SetupQuestionsPage> {
                         .pushReplacement(MaterialPageRoute(builder: (c) => const SpeechProfilePage(onbording: true)));
                   } else {
                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                      content: Text(context.l10n.setupAnswerAllQuestions,
-                          style: const TextStyle(color: Colors.white)),
+                      content: Text(context.l10n.setupAnswerAllQuestions, style: const TextStyle(color: Colors.white)),
                       duration: const Duration(seconds: 2),
                     ));
                   }

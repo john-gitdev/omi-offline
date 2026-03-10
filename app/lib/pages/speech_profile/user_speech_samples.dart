@@ -106,7 +106,9 @@ class _UserSpeechSamplesState extends State<UserSpeechSamplesView> {
                             ),
                             onPressed: () => provider.playPause(index),
                           ),
-                          title: Text(index == 0 ? context.l10n.speechProfile : context.l10n.additionalSampleIndex(index.toString())),
+                          title: Text(index == 0
+                              ? context.l10n.speechProfile
+                              : context.l10n.additionalSampleIndex(index.toString())),
                           // _getFileNameFromUrl(samplesUrl[index])
                           subtitle: FutureBuilder<Duration?>(
                             future: AudioPlayer().setUrl(provider.samplesUrl[index]),

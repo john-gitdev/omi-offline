@@ -55,11 +55,7 @@ abstract class Env {
     return 'wss://$host/v1/agent/ws';
   }
 
-
   static String? get googleMapsApiKey => _instance.googleMapsApiKey;
-
-
-
 
   static String? get googleClientId => _instance.googleClientId;
 
@@ -77,11 +73,7 @@ abstract class EnvFields {
 
   String? get apiBaseUrl;
 
-
   String? get googleMapsApiKey;
-
-
-
 
   String? get googleClientId;
 

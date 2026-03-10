@@ -349,8 +349,7 @@ class _AppShellState extends State<AppShell> {
       context.read<HomeProvider>().setupUserPrimaryLanguage();
       context.read<UserProvider>().initialize();
       context.read<PeopleProvider>().initialize();
-      try {
-      } catch (e) {
+      try {} catch (e) {
         Logger.debug('Failed to login to Intercom: $e');
       }
 
@@ -363,8 +362,7 @@ class _AppShellState extends State<AppShell> {
 
       NotificationService.instance.saveNotificationToken();
     } else {
-      if (!PlatformManager.instance.isAnalyticsSupported) {
-      }
+      if (!PlatformManager.instance.isAnalyticsSupported) {}
       if (!mounted) return;
     }
   }

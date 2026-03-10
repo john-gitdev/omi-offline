@@ -1,6 +1,5 @@
 import 'dart:async';
 
-
 import 'package:collection/collection.dart';
 
 import 'package:omi/backend/preferences.dart';

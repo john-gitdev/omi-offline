@@ -11,15 +11,15 @@ class OfflineAudioProcessor {
   static const int sampleRate = 16000;
   static const int channels = 1;
   static const int preSpeechBufferMs = 1000; // 1 second
-  
+
   // Opus frame is typically 20ms
   static const int frameDurationMs = 20;
 
   final SimpleOpusDecoder _decoder;
-  
+
   List<Uint8List> _currentRecordingFrames = [];
   int _consecutiveSilenceFrames = 0;
-  
+
   // For time tracking
   DateTime? _recordingStartTime;
 
@@ -28,11 +28,11 @@ class OfflineAudioProcessor {
   final int _silenceDurationToSplitMs;
   final int _minSpeechMs;
 
-  OfflineAudioProcessor() 
-    : _decoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels),
-      _silenceThresholdDbfs = SharedPreferencesUtil().offlineSilenceThreshold,
-      _silenceDurationToSplitMs = SharedPreferencesUtil().offlineSplitSeconds * 1000,
-      _minSpeechMs = SharedPreferencesUtil().offlineMinSpeechSeconds * 1000;
+  OfflineAudioProcessor()
+      : _decoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels),
+        _silenceThresholdDbfs = SharedPreferencesUtil().offlineSilenceThreshold,
+        _silenceDurationToSplitMs = SharedPreferencesUtil().offlineSplitSeconds * 1000,
+        _minSpeechMs = SharedPreferencesUtil().offlineMinSpeechSeconds * 1000;
 
   void destroy() {
     _decoder.destroy();
@@ -40,12 +40,12 @@ class OfflineAudioProcessor {
 
   double _calculateDecibels(Int16List pcmData) {
     if (pcmData.isEmpty) return -100.0; // Minimum representable dBFS
-    
+
     double sumSquares = 0.0;
     for (int sample in pcmData) {
       sumSquares += sample * sample;
     }
-    
+
     double rms = sqrt(sumSquares / pcmData.length);
     if (rms == 0) return -100.0;
 
@@ -55,15 +55,16 @@ class OfflineAudioProcessor {
     return dbfs;
   }
 
-  /// Processes a list of Opus frames. 
+  /// Processes a list of Opus frames.
   /// Returns a list of saved file paths if any recordings were completed during this chunk.
   Future<List<String>> processFrames(List<Uint8List> opusFrames, DateTime chunkStartTime) async {
     List<String> savedFiles = [];
-    
+
     if (_currentRecordingFrames.isNotEmpty && _recordingStartTime != null) {
-      final expectedStartTime = _recordingStartTime!.add(Duration(milliseconds: _currentRecordingFrames.length * frameDurationMs));
+      final expectedStartTime =
+          _recordingStartTime!.add(Duration(milliseconds: _currentRecordingFrames.length * frameDurationMs));
       final gapMs = chunkStartTime.difference(expectedStartTime).inMilliseconds.abs();
-      
+
       // If there is a gap of more than 10 seconds, force a split (e.g., device was turned off)
       if (gapMs > 10000) {
         final filePath = await flushRemaining();
@@ -81,33 +82,33 @@ class OfflineAudioProcessor {
     for (var frame in opusFrames) {
       final pcmData = _decoder.decode(input: frame);
       final dbfs = _calculateDecibels(pcmData);
-      
+
       if (dbfs < _silenceThresholdDbfs) {
         _consecutiveSilenceFrames++;
       } else {
         _consecutiveSilenceFrames = 0;
       }
-      
+
       _currentRecordingFrames.add(frame);
-      
+
       final silenceDurationMs = _consecutiveSilenceFrames * frameDurationMs;
-      
+
       if (silenceDurationMs >= _silenceDurationToSplitMs) {
         // We hit the silence split mark.
         // We want to discard the final trailing silence (which is _consecutiveSilenceFrames long)
         final framesToKeep = _currentRecordingFrames.length - _consecutiveSilenceFrames;
-        
+
         if (framesToKeep > 0) {
           final recordingFrames = _currentRecordingFrames.sublist(0, framesToKeep);
-          
+
           int maxConsecutiveSpeechFrames = 0;
           int currentConsecutiveSpeechFrames = 0;
-          
+
           final tempDecoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels);
           for (var rFrame in recordingFrames) {
             final rPcmData = tempDecoder.decode(input: rFrame);
             final rDbfs = _calculateDecibels(rPcmData);
-            
+
             if (rDbfs >= _silenceThresholdDbfs) {
               currentConsecutiveSpeechFrames++;
               if (currentConsecutiveSpeechFrames > maxConsecutiveSpeechFrames) {
@@ -127,14 +128,14 @@ class OfflineAudioProcessor {
             savedFiles.add(filePath);
           }
         }
-        
+
         // Start new recording, keeping a small pre-speech buffer of silence (e.g. 1 second)
         const preSpeechFramesCount = preSpeechBufferMs ~/ frameDurationMs;
         final bufferToKeep = min(preSpeechFramesCount, _consecutiveSilenceFrames);
-        
+
         _currentRecordingFrames = _currentRecordingFrames.sublist(_currentRecordingFrames.length - bufferToKeep);
         _consecutiveSilenceFrames = bufferToKeep;
-        
+
         // Calculate the exact time the new buffer starts.
         // It starts exactly (framesToKeep * 20ms) after the original _recordingStartTime,
         // minus the pre-speech buffer we just kept.
@@ -146,27 +147,27 @@ class OfflineAudioProcessor {
         }
       }
     }
-    
+
     return savedFiles;
   }
-  
+
   /// Call this when the connection/sync is completely done to flush the final recording
   Future<String?> flushRemaining() async {
     if (_currentRecordingFrames.isEmpty) return null;
-    
+
     final framesToKeep = max(0, _currentRecordingFrames.length - _consecutiveSilenceFrames);
 
     if (framesToKeep > 0) {
       final recordingFrames = _currentRecordingFrames.sublist(0, framesToKeep);
-      
+
       int maxConsecutiveSpeechFrames = 0;
       int currentConsecutiveSpeechFrames = 0;
-      
+
       final tempDecoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels);
       for (var rFrame in recordingFrames) {
         final rPcmData = tempDecoder.decode(input: rFrame);
         final rDbfs = _calculateDecibels(rPcmData);
-        
+
         if (rDbfs >= _silenceThresholdDbfs) {
           currentConsecutiveSpeechFrames++;
           if (currentConsecutiveSpeechFrames > maxConsecutiveSpeechFrames) {
@@ -188,7 +189,7 @@ class OfflineAudioProcessor {
         return filePath;
       }
     }
-    
+
     _currentRecordingFrames.clear();
     _consecutiveSilenceFrames = 0;
     return null;
@@ -199,10 +200,10 @@ class OfflineAudioProcessor {
     final timestamp = startTime.millisecondsSinceEpoch;
     final wavPath = '${directory.path}/recording_$timestamp.wav';
     final aacPath = '${directory.path}/recording_$timestamp.aac';
-    
+
     // We decode the opus frames to save as WAV
     final pcmData = <int>[];
-    
+
     final tempDecoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels);
     for (var frame in frames) {
       try {
@@ -213,7 +214,7 @@ class OfflineAudioProcessor {
       }
     }
     tempDecoder.destroy();
-    
+
     await _writeWavFile(wavPath, Int16List.fromList(pcmData));
 
     // Convert WAV to AAC using FFmpegKit
@@ -241,64 +242,64 @@ class OfflineAudioProcessor {
     const channels = 1;
     const sampleRate = 16000;
     const byteRate = sampleRate * channels * 2;
-    
+
     final header = ByteData(44);
-    
+
     // "RIFF"
     header.setUint8(0, 0x52);
     header.setUint8(1, 0x49);
     header.setUint8(2, 0x46);
     header.setUint8(3, 0x46);
-    
+
     // File size
     header.setUint32(4, 36 + pcmData.lengthInBytes, Endian.little);
-    
+
     // "WAVE"
     header.setUint8(8, 0x57);
     header.setUint8(9, 0x41);
     header.setUint8(10, 0x56);
     header.setUint8(11, 0x45);
-    
+
     // "fmt "
     header.setUint8(12, 0x66);
     header.setUint8(13, 0x6D);
     header.setUint8(14, 0x74);
     header.setUint8(15, 0x20);
-    
+
     // fmt chunk size
     header.setUint32(16, 16, Endian.little);
-    
+
     // format tag (PCM)
     header.setUint16(20, 1, Endian.little);
-    
+
     // channels
     header.setUint16(22, channels, Endian.little);
-    
+
     // sample rate
     header.setUint32(24, sampleRate, Endian.little);
-    
+
     // byte rate
     header.setUint32(28, byteRate, Endian.little);
-    
+
     // block align
     header.setUint16(32, channels * 2, Endian.little);
-    
+
     // bits per sample
     header.setUint16(34, 16, Endian.little);
-    
+
     // "data"
     header.setUint8(36, 0x64);
     header.setUint8(37, 0x61);
     header.setUint8(38, 0x74);
     header.setUint8(39, 0x61);
-    
+
     // data chunk size
     header.setUint32(40, pcmData.lengthInBytes, Endian.little);
 
     final bytes = BytesBuilder();
     bytes.add(header.buffer.asUint8List());
     bytes.add(pcmData.buffer.asUint8List());
-    
+
     await file.writeAsBytes(bytes.toBytes());
   }
 }

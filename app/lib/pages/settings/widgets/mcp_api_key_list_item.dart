@@ -97,7 +97,8 @@ class McpApiKeyListItem extends StatelessWidget {
               onPressed: () => Navigator.of(dialogContext).pop(),
             ),
             TextButton(
-              child: Text(context.l10n.revoke, style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w600)),
+              child: Text(context.l10n.revoke,
+                  style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w600)),
               onPressed: () {
                 Provider.of<McpProvider>(context, listen: false).deleteKey(apiKey.id);
                 Navigator.of(dialogContext).pop();
