@@ -786,33 +786,31 @@ static uint16_t buffer_offset = 0;
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 static uint8_t storage_temp_data[MAX_WRITE_SIZE];
-bool write_to_storage(void)
-{
-    uint8_t *buffer = tx_buffer + 2;
-    uint8_t packet_size = (uint8_t) (tx_buffer_size + OPUS_PREFIX_LENGTH);
 
-    // buffer_offset = buffer_offset+amount_to_fill;
-    // check if adding the new packet will cause a overflow
+bool write_custom_packet_to_storage(uint8_t marker, uint8_t *data, uint8_t data_size)
+{
+    uint8_t packet_size = data_size + OPUS_PREFIX_LENGTH;
+
     if (buffer_offset + packet_size > MAX_WRITE_SIZE - 1) {
 
-        storage_temp_data[buffer_offset] = tx_buffer_size;
+        storage_temp_data[buffer_offset] = marker;
         uint8_t *write_ptr = storage_temp_data;
         write_to_file(write_ptr, MAX_WRITE_SIZE);
 
         buffer_offset = packet_size;
-        storage_temp_data[0] = tx_buffer_size;
-        memcpy(storage_temp_data + 1, buffer, tx_buffer_size);
+        storage_temp_data[0] = marker;
+        memcpy(storage_temp_data + 1, data, data_size);
 
     } else if (buffer_offset + packet_size == MAX_WRITE_SIZE - 1) {
         // exact frame needed
-        storage_temp_data[buffer_offset] = tx_buffer_size;
-        memcpy(storage_temp_data + buffer_offset + 1, buffer, tx_buffer_size);
+        storage_temp_data[buffer_offset] = marker;
+        memcpy(storage_temp_data + buffer_offset + 1, data, data_size);
         buffer_offset = 0;
         uint8_t *write_ptr = (uint8_t *) storage_temp_data;
         write_to_file(write_ptr, MAX_WRITE_SIZE);
     } else {
-        storage_temp_data[buffer_offset] = tx_buffer_size;
-        memcpy(storage_temp_data + buffer_offset + 1, buffer, tx_buffer_size);
+        storage_temp_data[buffer_offset] = marker;
+        memcpy(storage_temp_data + buffer_offset + 1, data, data_size);
         buffer_offset = buffer_offset + packet_size;
     }
 
@@ -821,6 +819,24 @@ bool write_to_storage(void)
 #endif
     return true;
 }
+
+bool write_to_storage(void)
+{
+    uint8_t *buffer = tx_buffer + 2;
+    return write_custom_packet_to_storage((uint8_t)tx_buffer_size, buffer, (uint8_t)tx_buffer_size);
+}
+
+bool write_timestamp_to_storage(void)
+{
+    uint8_t temp_buffer[8];
+    uint32_t utc_time = get_utc_time();
+    uint32_t uptime_ms = k_uptime_get_32();
+    
+    memcpy(temp_buffer, &utc_time, 4);
+    memcpy(temp_buffer + 4, &uptime_ms, 4);
+    
+    return write_custom_packet_to_storage(255, temp_buffer, 8);
+}
 #endif
 
 static bool use_storage = true;
@@ -828,6 +844,7 @@ static bool use_storage = true;
 #define MAX_AUDIO_FILE_SIZE 300000
 static int recent_file_size_updated = 0;
 static uint8_t heartbeat_count = 0;
+static uint32_t last_timestamp_uptime = 0;
 
 void test_pusher(void)
 {
@@ -871,38 +888,29 @@ void pusher(void)
             continue;
         }
 
-        // Check BT connection and subscription
-        struct bt_conn *conn = current_connection;
-        bool is_subscribed = false;
-        if (conn) {
-            conn = bt_conn_ref(conn);
-            if (current_mtu >= MINIMAL_PACKET_SIZE) {
-                is_subscribed = bt_gatt_is_subscribed(conn, &audio_service.attrs[1], BT_GATT_CCC_NOTIFY);
-            }
-        }
-
-        if (conn && is_subscribed) {
-            // Push to GATT if connected and subscribed
-            push_to_gatt(conn);
-            bt_conn_unref(conn);
-        } else if (!conn) {
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-            // No BT connection, write to storage
-            if (get_file_size() < MAX_STORAGE_BYTES && is_sd_on()) {
-                storage_full_warned = false;
-                write_to_storage();
-            } else {
-                if (!storage_full_warned) {
-                    LOG_WRN("Storage full, stopping offline storage");
-                    storage_full_warned = true;
-                }
+        // Always write to storage for offline-only recording
+        if (get_file_size() < MAX_STORAGE_BYTES && is_sd_on()) {
+            storage_full_warned = false;
+            
+            // Inject timestamp every 60 seconds
+            uint32_t now = k_uptime_get_32();
+            if (now - last_timestamp_uptime > 60000 || last_timestamp_uptime == 0) {
+                write_timestamp_to_storage();
+                last_timestamp_uptime = now;
             }
-#endif
+            
+            write_to_storage();
         } else {
-            // Connected but not subscribed, just sleep (buffer will be retried)
-            if (conn) bt_conn_unref(conn);
-            k_sleep(K_MSEC(10));
+            if (!storage_full_warned) {
+                LOG_WRN("Storage full, stopping offline storage");
+                storage_full_warned = true;
+            }
         }
+#else
+        // Discard if offline storage is somehow disabled
+        k_sleep(K_MSEC(10));
+#endif
     }
 }
 
