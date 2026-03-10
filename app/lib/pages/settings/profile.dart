@@ -14,7 +14,6 @@ import 'package:omi/utils/analytics/mixpanel.dart';
 import 'package:omi/utils/l10n_extensions.dart';
 import 'package:omi/utils/other/temp.dart';
 
-
 import 'package:omi/pages/settings/conversation_display_settings.dart';
 
 import 'delete_account.dart';

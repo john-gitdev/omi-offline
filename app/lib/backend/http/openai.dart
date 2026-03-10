@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-
 import 'package:tuple/tuple.dart';
 
 import 'package:omi/backend/http/shared.dart';

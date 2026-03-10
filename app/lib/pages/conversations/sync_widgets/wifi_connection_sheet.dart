@@ -178,7 +178,9 @@ class _WifiConnectionSheetContentState extends State<_WifiConnectionSheetContent
                 children: [
                   Expanded(
                     child: Text(
-                      isFailed ? context.l10n.wifiConnectionFailedTitle : context.l10n.connectingToDeviceName(widget.deviceName),
+                      isFailed
+                          ? context.l10n.wifiConnectionFailedTitle
+                          : context.l10n.connectingToDeviceName(widget.deviceName),
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 20,

@@ -37,7 +37,8 @@ class _DataProtectionSectionState extends State<DataProtectionSection> {
           children: [
             const Icon(Icons.lock_person_outlined, color: Colors.white),
             const SizedBox(width: 10),
-            Text(context.l10n.maximumSecurityE2ee, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            Text(context.l10n.maximumSecurityE2ee,
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
           ],
         ),
         content: RichText(
@@ -199,7 +200,8 @@ class _DataProtectionSectionState extends State<DataProtectionSection> {
                 style: const TextStyle(color: Colors.grey, fontSize: 12),
               ),
               Text(
-                context.l10n.objectsCount(provider.migrationProcessedCount.toString(), provider.migrationTotalCount.toString()),
+                context.l10n
+                    .objectsCount(provider.migrationProcessedCount.toString(), provider.migrationTotalCount.toString()),
                 style: const TextStyle(color: Colors.grey, fontSize: 12),
               ),
             ],

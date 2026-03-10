@@ -593,7 +593,8 @@ class _Wrapped2025PageState extends State<Wrapped2025Page> {
 
     // Struggle + Win
     final struggle = (_result?['struggle'] as Map<String, dynamic>?)?['title'] ?? context.l10n.wrappedTheHardPart;
-    final biggestWin = (_result?['personal_win'] as Map<String, dynamic>?)?['title'] ?? context.l10n.wrappedPersonalGrowth;
+    final biggestWin =
+        (_result?['personal_win'] as Map<String, dynamic>?)?['title'] ?? context.l10n.wrappedPersonalGrowth;
 
     _shareTemplate(
       templates.FinalCollageShareTemplate(
@@ -4562,7 +4563,8 @@ class _SummaryCollageAnimatedState extends State<_SummaryCollageAnimated> with T
 
     // Struggle + Win
     final struggle = (widget.result['struggle'] as Map<String, dynamic>?)?['title'] ?? context.l10n.wrappedTheHardPart;
-    final biggestWin = (widget.result['personal_win'] as Map<String, dynamic>?)?['title'] ?? context.l10n.wrappedPersonalGrowth;
+    final biggestWin =
+        (widget.result['personal_win'] as Map<String, dynamic>?)?['title'] ?? context.l10n.wrappedPersonalGrowth;
 
     return AnimatedBuilder(
       animation: Listenable.merge([_mainAnimation, _tilesAnimation]),
@@ -4724,7 +4726,8 @@ class _SummaryCollageAnimatedState extends State<_SummaryCollageAnimated> with T
                                 const Text('😤', style: TextStyle(fontSize: 18)),
                                 const SizedBox(width: 6),
                                 Text(context.l10n.wrappedStruggleLabelUpper,
-                                    style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800)),
+                                    style: const TextStyle(
+                                        color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800)),
                               ],
                             ),
                             const SizedBox(height: 8),
@@ -4758,7 +4761,8 @@ class _SummaryCollageAnimatedState extends State<_SummaryCollageAnimated> with T
                                 const Text('🏆', style: TextStyle(fontSize: 18)),
                                 const SizedBox(width: 6),
                                 Text(context.l10n.wrappedWinLabelUpper,
-                                    style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800)),
+                                    style: const TextStyle(
+                                        color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800)),
                               ],
                             ),
                             const SizedBox(height: 8),

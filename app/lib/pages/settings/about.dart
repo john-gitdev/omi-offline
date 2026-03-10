@@ -55,8 +55,7 @@ class _AboutOmiPageState extends State<AboutOmiPage> {
               subtitle: const Text('team@basedhardware.com'),
               contentPadding: const EdgeInsets.fromLTRB(4, 0, 24, 0),
               trailing: const Icon(Icons.help_outline_outlined, color: Colors.white, size: 20),
-              onTap: () async {
-              },
+              onTap: () async {},
             ),
             ListTile(
               contentPadding: const EdgeInsets.fromLTRB(4, 0, 24, 0),

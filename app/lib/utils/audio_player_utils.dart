@@ -284,7 +284,7 @@ class AudioPlayerUtils extends ChangeNotifier {
       final pcmFrame = decoder.decode(input: opusFrame);
       final uint8Frame = Uint8List.fromList(pcmFrame.buffer.asUint8List());
       pcmFrames.add(uint8Frame);
-        }
+    }
 
     if (pcmFrames.isEmpty) return null;
 

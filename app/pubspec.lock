@@ -306,7 +306,7 @@ packages:
     source: hosted
     version: "6.1.5"
   connectivity_plus_platform_interface:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: connectivity_plus_platform_interface
       sha256: "42657c1715d48b167930d5f34d00222ac100475f73d10162ddf43e714932f204"
@@ -1625,7 +1625,7 @@ packages:
     source: hosted
     version: "0.15.0"
   pigeon:
-    dependency: "direct dev"
+    dependency: "direct main"
     description:
       name: pigeon
       sha256: fe36bc5ad43ab7f4d8a9d974850aef1148f6d88a53bd14b3d87475ec403a3cdb

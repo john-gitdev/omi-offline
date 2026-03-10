@@ -125,15 +125,7 @@ dependencies:
   marionette_flutter: ^0.3.0
   ffmpeg_kit_flutter_audio: ^6.0.3
 
-  firebase_auth: any
-  firebase_messaging: any
-  google_sign_in: any
-  sign_in_with_apple: any
-  mixpanel_analytics: any
-  mixpanel_flutter: any
-  firebase_crashlytics: any
   pigeon: any
-  firebase_core: any
 dependency_overrides:
   js: ^0.7.1
   uuid: ^4.4.0
@@ -161,7 +153,6 @@ dev_dependencies:
   flutter_flavorizr: ^2.2.3
   flutter_gen_runner: 5.10.0
 
-  firebase_core: any
   connectivity_plus_platform_interface: any
 flutter_launcher_icons:
   android: true

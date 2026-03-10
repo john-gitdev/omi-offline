@@ -277,7 +277,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   Future<File> _flushToDisk(Wal wal, List<List<int>> chunk, int timerStart) async {
     final directory = await getApplicationDocumentsDirectory();
-    String filePath = '${directory.path}/${wal.getFileNameByTimeStarts(timerStart)}';
+
+    // Create a date-specific folder based on timerStart
+    final date = DateTime.fromMillisecondsSinceEpoch(timerStart);
+    final dateString = '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+    final dateFolder = Directory('${directory.path}/raw_chunks/$dateString');
+
+    if (!await dateFolder.exists()) {
+      await dateFolder.create(recursive: true);
+    }
+
+    // Instead of using wal.getFileNameByTimeStarts which puts it in root,
+    // we put it inside the date folder
+    final fileName = wal.getFileNameByTimeStarts(timerStart);
+    String filePath = '${dateFolder.path}/$fileName';
     List<int> data = [];
 
     // Debug: Log first frame info
@@ -500,32 +513,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   Future<void> _registerSingleChunk(Wal wal, File file, int timerStart) async {
-    if (_localSync == null) {
-      Logger.debug("SDCard: WARNING - Cannot register chunk, LocalWalSync not available");
-      return;
-    }
-
-    int chunkSeconds = sdcardChunkSizeSecs;
-
-    Wal localWal = Wal(
-      codec: wal.codec,
-      channel: wal.channel,
-      sampleRate: wal.sampleRate,
-      timerStart: timerStart,
-      filePath: file.path.split('/').last,
-      storage: WalStorage.disk,
-      status: WalStatus.miss,
-      device: wal.device,
-      deviceModel: wal.deviceModel,
-      seconds: chunkSeconds,
-      totalFrames: chunkSeconds * wal.codec.getFramesPerSecond(),
-      syncedFrameOffset: 0,
-      originalStorage: WalStorage.sdcard,
-    );
-
-    await _localSync!.addExternalWal(localWal);
-    Logger.debug(
-        "SDCard: Registered chunk (ts: $timerStart) with LocalWalSync - codec=${localWal.codec}, sampleRate=${localWal.sampleRate}, channel=${localWal.channel}");
+    Logger.debug("SDCard: Raw chunk saved to ${file.path}");
+    // Note: We no longer queue this for automatic processing in LocalWalSync.
+    // The chunks will sit on disk until the user manually triggers 'Reprocess Day'.
   }
 
   @override
@@ -1119,9 +1109,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
                 var utcTime = byteData.getUint32(0, Endian.little);
                 var uptimeMs = byteData.getUint32(4, Endian.little);
-                
+
                 Logger.debug("SDCardWalSync WiFi: Parsed timestamp: UTC=$utcTime, UptimeMs=$uptimeMs");
-                
+
                 packageOffset += 1 + 8;
                 bytesProcessed = packageOffset;
                 continue;

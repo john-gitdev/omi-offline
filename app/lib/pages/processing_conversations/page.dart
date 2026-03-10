@@ -134,7 +134,9 @@ class _ProcessingConversationPageState extends State<ProcessingConversationPage>
                             child: Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 16.0),
                               child: Text(
-                                widget.conversation.transcriptSegments.isEmpty ? context.l10n.noSummary : context.l10n.statusProcessing,
+                                widget.conversation.transcriptSegments.isEmpty
+                                    ? context.l10n.noSummary
+                                    : context.l10n.statusProcessing,
                                 textAlign: TextAlign.center,
                                 style: const TextStyle(fontSize: 16),
                               ),

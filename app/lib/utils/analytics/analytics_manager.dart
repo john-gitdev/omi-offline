@@ -1,4 +1,3 @@
-
 import 'package:omi/utils/platform/platform_manager.dart';
 
 class AnalyticsManager {
