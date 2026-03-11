@@ -27,12 +27,16 @@ class OfflineAudioProcessor {
   final double _silenceThresholdDbfs;
   final int _silenceDurationToSplitMs;
   final int _minSpeechMs;
+  final int _preSpeechBufferMs;
+  final int _gapThresholdMs;
 
   OfflineAudioProcessor()
       : _decoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels),
         _silenceThresholdDbfs = SharedPreferencesUtil().offlineSilenceThreshold,
         _silenceDurationToSplitMs = SharedPreferencesUtil().offlineSplitSeconds * 1000,
-        _minSpeechMs = SharedPreferencesUtil().offlineMinSpeechSeconds * 1000;
+        _minSpeechMs = SharedPreferencesUtil().offlineMinSpeechSeconds * 1000,
+        _preSpeechBufferMs = SharedPreferencesUtil().offlinePreSpeechSeconds * 1000,
+        _gapThresholdMs = SharedPreferencesUtil().offlineGapSeconds * 1000;
 
   void destroy() {
     _decoder.destroy();
@@ -65,8 +69,8 @@ class OfflineAudioProcessor {
           _recordingStartTime!.add(Duration(milliseconds: _currentRecordingFrames.length * frameDurationMs));
       final gapMs = chunkStartTime.difference(expectedStartTime).inMilliseconds.abs();
 
-      // If there is a gap of more than 10 seconds, force a split (e.g., device was turned off)
-      if (gapMs > 10000) {
+      // If there is a gap, force a split (e.g., device was turned off)
+      if (gapMs > _gapThresholdMs) {
         final filePath = await flushRemaining();
         if (filePath != null) {
           savedFiles.add(filePath);
@@ -80,7 +84,14 @@ class OfflineAudioProcessor {
     }
 
     for (var frame in opusFrames) {
-      final pcmData = _decoder.decode(input: frame);
+      Int16List pcmData;
+      try {
+        pcmData = _decoder.decode(input: frame);
+      } catch (e) {
+        // Skip corrupt or invalid Opus frames to prevent crashing the batch
+        continue;
+      }
+      
       final dbfs = _calculateDecibels(pcmData);
 
       if (dbfs < _silenceThresholdDbfs) {
@@ -106,16 +117,20 @@ class OfflineAudioProcessor {
 
           final tempDecoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels);
           for (var rFrame in recordingFrames) {
-            final rPcmData = tempDecoder.decode(input: rFrame);
-            final rDbfs = _calculateDecibels(rPcmData);
+            try {
+              final rPcmData = tempDecoder.decode(input: rFrame);
+              final rDbfs = _calculateDecibels(rPcmData);
 
-            if (rDbfs >= _silenceThresholdDbfs) {
-              currentConsecutiveSpeechFrames++;
-              if (currentConsecutiveSpeechFrames > maxConsecutiveSpeechFrames) {
-                maxConsecutiveSpeechFrames = currentConsecutiveSpeechFrames;
+              if (rDbfs >= _silenceThresholdDbfs) {
+                currentConsecutiveSpeechFrames++;
+                if (currentConsecutiveSpeechFrames > maxConsecutiveSpeechFrames) {
+                  maxConsecutiveSpeechFrames = currentConsecutiveSpeechFrames;
+                }
+              } else {
+                currentConsecutiveSpeechFrames = 0;
               }
-            } else {
-              currentConsecutiveSpeechFrames = 0;
+            } catch (e) {
+              // skip corrupt
             }
           }
           tempDecoder.destroy();
@@ -130,7 +145,7 @@ class OfflineAudioProcessor {
         }
 
         // Start new recording, keeping a small pre-speech buffer of silence (e.g. 1 second)
-        const preSpeechFramesCount = preSpeechBufferMs ~/ frameDurationMs;
+        final preSpeechFramesCount = _preSpeechBufferMs ~/ frameDurationMs;
         final bufferToKeep = min(preSpeechFramesCount, _consecutiveSilenceFrames);
 
         _currentRecordingFrames = _currentRecordingFrames.sublist(_currentRecordingFrames.length - bufferToKeep);
@@ -165,16 +180,20 @@ class OfflineAudioProcessor {
 
       final tempDecoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels);
       for (var rFrame in recordingFrames) {
-        final rPcmData = tempDecoder.decode(input: rFrame);
-        final rDbfs = _calculateDecibels(rPcmData);
+        try {
+          final rPcmData = tempDecoder.decode(input: rFrame);
+          final rDbfs = _calculateDecibels(rPcmData);
 
-        if (rDbfs >= _silenceThresholdDbfs) {
-          currentConsecutiveSpeechFrames++;
-          if (currentConsecutiveSpeechFrames > maxConsecutiveSpeechFrames) {
-            maxConsecutiveSpeechFrames = currentConsecutiveSpeechFrames;
+          if (rDbfs >= _silenceThresholdDbfs) {
+            currentConsecutiveSpeechFrames++;
+            if (currentConsecutiveSpeechFrames > maxConsecutiveSpeechFrames) {
+              maxConsecutiveSpeechFrames = currentConsecutiveSpeechFrames;
+            }
+          } else {
+            currentConsecutiveSpeechFrames = 0;
           }
-        } else {
-          currentConsecutiveSpeechFrames = 0;
+        } catch (e) {
+          // skip
         }
       }
       tempDecoder.destroy();
