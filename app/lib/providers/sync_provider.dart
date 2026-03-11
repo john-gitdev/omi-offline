@@ -10,7 +10,6 @@ import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/time_utils.dart';
 import 'package:omi/models/sync_state.dart';
 import 'package:omi/utils/audio_player_utils.dart';
-import 'package:omi/utils/conversation_sync_utils.dart';
 import 'package:omi/utils/waveform_utils.dart';
 
 enum WalStatusFilter { pending, synced }
@@ -310,11 +309,8 @@ class SyncProvider extends ChangeNotifier implements IWalServiceListener, IWalSy
 
   Future<void> _processConversationResults(SyncLocalFilesResponse result) async {
     _updateSyncState(_syncState.toFetchingConversations());
-    final conversations = await ConversationSyncUtils.processConversationIds(
-      newConversationIds: result.newConversationIds,
-      updatedConversationIds: result.updatedConversationIds,
-    );
-    _updateSyncState(_syncState.toCompleted(conversations: conversations));
+    // In offline mode, there are no cloud conversations. Just complete it.
+    _updateSyncState(_syncState.toCompleted(conversations: []));
   }
 
   // Audio playback delegate methods

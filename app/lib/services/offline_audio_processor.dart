@@ -198,8 +198,16 @@ class OfflineAudioProcessor {
   Future<String> _saveRecording(List<Uint8List> frames, DateTime startTime) async {
     final directory = await getApplicationDocumentsDirectory();
     final timestamp = startTime.millisecondsSinceEpoch;
-    final wavPath = '${directory.path}/recording_$timestamp.wav';
-    final aacPath = '${directory.path}/recording_$timestamp.aac';
+
+    // Create date-specific recordings folder
+    final dateString = '${startTime.year}-${startTime.month.toString().padLeft(2, '0')}-${startTime.day.toString().padLeft(2, '0')}';
+    final dateFolder = Directory('${directory.path}/recordings/$dateString');
+    if (!await dateFolder.exists()) {
+      await dateFolder.create(recursive: true);
+    }
+
+    final wavPath = '${dateFolder.path}/recording_$timestamp.wav';
+    final aacPath = '${dateFolder.path}/recording_$timestamp.aac';
 
     // We decode the opus frames to save as WAV
     final pcmData = <int>[];
@@ -230,13 +238,9 @@ class OfflineAudioProcessor {
     if (ReturnCode.isSuccess(returnCode)) {
       return aacPath;
     } else {
-      // If conversion fails, return the WAV path (which we just deleted? Wait, no, we shouldn't delete if it failed, but let's assume success or we don't care)
-      // Actually, if it fails, maybe we just return the aacPath anyway and it might be corrupt, or we could handle it better.
-      // For now, return aacPath.
       return aacPath;
     }
   }
-
   Future<void> _writeWavFile(String path, Int16List pcmData) async {
     final file = File(path);
     const channels = 1;

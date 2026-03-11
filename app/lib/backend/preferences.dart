@@ -6,9 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:omi/backend/schema/app.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/backend/schema/conversation.dart';
-import 'package:omi/backend/schema/memory.dart';
 import 'package:omi/backend/schema/message.dart';
-import 'package:omi/backend/schema/person.dart';
 import 'package:omi/models/custom_stt_config.dart';
 import 'package:omi/models/stt_provider.dart';
 import 'package:omi/utils/logger.dart';
@@ -503,71 +501,7 @@ class SharedPreferencesUtil {
     saveStringList('cachedMessages', messages);
   }
 
-  // Pending memories - memories created offline that need to be synced
-  List<Memory> get pendingMemories {
-    final memories = getStringList('pendingMemories');
-    return memories.map((e) => Memory.fromJson(jsonDecode(e))).toList();
-  }
-
-  set pendingMemories(List<Memory> value) {
-    final List<String> memories = value.map((e) => jsonEncode(e.toJson())).toList();
-    saveStringList('pendingMemories', memories);
-  }
-
-  void addPendingMemory(Memory memory) {
-    final List<Memory> memories = pendingMemories;
-    memories.add(memory);
-    pendingMemories = memories;
-  }
-
-  void removePendingMemory(String memoryId) {
-    final List<Memory> memories = pendingMemories;
-    memories.removeWhere((m) => m.id == memoryId);
-    pendingMemories = memories;
-  }
-
-  void clearPendingMemories() {
-    saveStringList('pendingMemories', []);
-  }
-
-  List<Person> get cachedPeople {
-    final people = getStringList('cachedPeople');
-    return people.map((e) => Person.fromJson(jsonDecode(e))).toList();
-  }
-
-  Person? getPersonById(String id) {
-    return cachedPeople.firstWhereOrNull((element) => element.id == id);
-  }
-
-  set cachedPeople(List<Person> value) {
-    final List<String> people = value.map((e) => jsonEncode(e.toJson())).toList();
-    saveStringList('cachedPeople', people);
-  }
-
-  addCachedPerson(Person person) {
-    final List<Person> people = cachedPeople;
-    people.add(person);
-    cachedPeople = people;
-  }
-
-  removeCachedPerson(String personId) {
-    final List<Person> people = cachedPeople;
-    Person? person = people.firstWhereOrNull((p) => p.id == personId);
-    if (person != null) {
-      people.remove(person);
-      cachedPeople = people;
-    }
-  }
-
-  replaceCachedPerson(Person person) {
-    final List<Person> people = cachedPeople;
-    Person? oldPerson = people.firstWhereOrNull((p) => p.id == person.id);
-    if (oldPerson != null) {
-      people.remove(oldPerson);
-      people.add(person);
-      cachedPeople = people;
-    }
-  }
+  // Removed pendingMemories and cachedPeople
 
   ServerConversation? get modifiedConversationDetails {
     final String conversation = getString('modifiedConversationDetails');

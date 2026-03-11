@@ -2,57 +2,26 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:omi/backend/preferences.dart';
-import 'package:omi/core/app_shell.dart';
-import 'package:omi/pages/persona/persona_provider.dart';
-import 'package:omi/services/auth_service.dart';
-import 'package:omi/pages/settings/developer.dart';
-import 'package:omi/pages/settings/notifications_settings_page.dart';
-import 'package:omi/pages/settings/profile.dart';
-import 'package:omi/pages/settings/integrations_page.dart';
-import 'package:omi/pages/settings/usage_page.dart';
-import 'package:omi/pages/referral/referral_page.dart';
 import 'package:omi/providers/device_provider.dart';
-import 'package:omi/providers/usage_provider.dart';
-import 'package:omi/models/subscription.dart';
-import 'package:omi/utils/other/temp.dart';
-import 'package:omi/utils/platform/platform_service.dart';
-import 'package:omi/widgets/dialog.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
-import 'package:omi/utils/l10n_extensions.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:device_info_plus/device_info_plus.dart';
-import 'package:omi/backend/http/api/announcements.dart';
-import 'package:omi/pages/announcements/changelog_sheet.dart';
-import 'package:omi/utils/analytics/mixpanel.dart';
 import 'device_settings.dart';
 import 'offline_audio_settings_page.dart';
-import 'phone_call_settings_page.dart';
-import '../conversations/sync_page.dart';
-
-enum SettingsMode {
-  no_device,
-  omi,
-}
+import 'sync_page.dart';
 
 class SettingsDrawer extends StatefulWidget {
-  final SettingsMode mode;
-
-  const SettingsDrawer({
-    super.key,
-    this.mode = SettingsMode.omi,
-  });
+  const SettingsDrawer({super.key});
 
   @override
   State<SettingsDrawer> createState() => _SettingsDrawerState();
 
-  static void show(BuildContext context, {SettingsMode mode = SettingsMode.omi}) {
+  static void show(BuildContext context) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => SettingsDrawer(mode: mode),
+      builder: (context) => const SettingsDrawer(),
     );
   }
 }
@@ -79,10 +48,10 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
         final iosInfo = await deviceInfoPlugin.iosInfo;
         return '${iosInfo.name} — iOS ${iosInfo.systemVersion}';
       } else {
-        return context.l10n.unknownDevice;
+        return 'Unknown Device';
       }
     } catch (e) {
-      return context.l10n.unknownDevice;
+      return 'Unknown Device';
     }
   }
 
@@ -101,7 +70,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          shortDeviceInfo = context.l10n.unknownDevice;
+          shortDeviceInfo = 'Unknown Device';
         });
       }
     }
@@ -111,9 +80,6 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
     required String title,
     required Widget icon,
     required VoidCallback onTap,
-    bool showBetaTag = false,
-    bool showNewTag = false,
-    Widget? trailingChip,
   }) {
     return GestureDetector(
       onTap: onTap,
@@ -134,59 +100,13 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
               ),
               const SizedBox(width: 16),
               Expanded(
-                child: Row(
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w400,
-                      ),
-                    ),
-                    if (showBetaTag) ...[
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Colors.orange.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          context.l10n.beta,
-                          style: const TextStyle(
-                            color: Colors.orange,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                      ),
-                    ],
-                    if (showNewTag) ...[
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Colors.green.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          context.l10n.newTag,
-                          style: const TextStyle(
-                            color: Colors.green,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                      ),
-                    ],
-                    if (trailingChip != null) ...[
-                      const SizedBox(width: 8),
-                      trailingChip,
-                    ],
-                  ],
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w400,
+                  ),
                 ),
               ),
               const Icon(
@@ -214,10 +134,6 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
   }
 
   Widget _buildVersionInfoSection() {
-    if (!Platform.isIOS && !Platform.isAndroid) {
-      return const SizedBox.shrink();
-    }
-
     final displayText = buildVersion != null ? '${version ?? ""} ($buildVersion)' : (version ?? '');
 
     return Row(
@@ -231,435 +147,20 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
             fontWeight: FontWeight.w400,
           ),
         ),
-        const SizedBox(width: 2),
+        const SizedBox(width: 4),
         GestureDetector(
-          onTap: _copyVersionInfo,
-          child: Container(
-            padding: const EdgeInsets.all(2),
-            child: const Icon(
-              Icons.copy,
-              size: 12,
-              color: Color(0xFF8E8E93),
-            ),
+          onTap: () async {
+             await Clipboard.setData(ClipboardData(text: displayText));
+             if (mounted) {
+               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
+             }
+          },
+          child: const Icon(
+            Icons.copy,
+            size: 12,
+            color: Color(0xFF8E8E93),
           ),
         ),
-      ],
-    );
-  }
-
-  Future<void> _copyVersionInfo() async {
-    final versionPart = buildVersion != null ? 'Omi AI ${version ?? ""} ($buildVersion)' : 'Omi AI ${version ?? ""}';
-    final devicePart = shortDeviceInfo ?? context.l10n.unknownDevice;
-    final fullVersionInfo = '$versionPart — $devicePart';
-
-    await Clipboard.setData(ClipboardData(text: fullVersionInfo));
-
-    if (mounted) {
-      _showCopyNotification();
-    }
-  }
-
-  void _showCopyNotification() {
-    final overlay = Overlay.of(context);
-    late OverlayEntry overlayEntry;
-
-    overlayEntry = OverlayEntry(
-      builder: (_) => Positioned(
-        bottom: 20,
-        left: 0,
-        right: 0,
-        child: Center(
-          child: Material(
-            color: Colors.transparent,
-            child: Container(
-              width: MediaQuery.of(context).size.width * 0.7,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: Colors.black87,
-                borderRadius: BorderRadius.circular(8),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.2),
-                    blurRadius: 4,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Text(
-                context.l10n.appAndDeviceCopied,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontSize: 14),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-
-    overlay.insert(overlayEntry);
-
-    Future.delayed(const Duration(seconds: 2), () {
-      overlayEntry.remove();
-    });
-  }
-
-  Widget _buildOmiModeContent(BuildContext context) {
-    return Consumer<UsageProvider>(builder: (context, usageProvider, child) {
-      return Column(
-        children: [
-          // Profile & Notifications Section
-          _buildSectionContainer(
-            children: [
-              // Wrapped 2025 - temporarily disabled
-              // _buildSettingsItem(
-              //   title: context.l10n.wrapped2025,
-              //   icon: const FaIcon(FontAwesomeIcons.gift, color: Color(0xFF8E8E93), size: 20),
-              //   showNewTag: true,
-              //   onTap: () {
-              //     Navigator.of(context).push(
-              //       MaterialPageRoute(
-              //         builder: (context) => const Wrapped2025Page(),
-              //       ),
-              //     );
-              //   },
-              // ),
-              // const Divider(height: 1, color: Color(0xFF3C3C43)),
-              _buildSettingsItem(
-                title: context.l10n.profile,
-                icon: const FaIcon(FontAwesomeIcons.solidUser, color: Color(0xFF8E8E93), size: 20),
-                onTap: () {
-                  routeToPage(context, const ProfilePage());
-                },
-              ),
-              const Divider(height: 1, color: Color(0xFF3C3C43)),
-              _buildSettingsItem(
-                title: context.l10n.notifications,
-                icon: const FaIcon(FontAwesomeIcons.solidBell, color: Color(0xFF8E8E93), size: 20),
-                onTap: () {
-                  routeToPage(context, const NotificationsSettingsPage());
-                },
-              ),
-              const Divider(height: 1, color: Color(0xFF3C3C43)),
-              Consumer<UsageProvider>(
-                builder: (context, usageProvider, child) {
-                  final isUnlimited = usageProvider.subscription?.subscription.plan == PlanType.unlimited;
-                  return _buildSettingsItem(
-                    title: context.l10n.planAndUsage,
-                    icon: const FaIcon(FontAwesomeIcons.chartLine, color: Color(0xFF8E8E93), size: 20),
-                    trailingChip: isUnlimited
-                        ? Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.amber.withOpacity(0.2),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const FaIcon(
-                                  FontAwesomeIcons.crown,
-                                  color: Colors.amber,
-                                  size: 10,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  context.l10n.pro.toUpperCase(),
-                                  style: const TextStyle(
-                                    color: Colors.amber,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w600,
-                                    letterSpacing: 0.5,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          )
-                        : null,
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (context) => const UsagePage(),
-                        ),
-                      );
-                    },
-                  );
-                },
-              ),
-              const Divider(height: 1, color: Color(0xFF3C3C43)),
-              _buildSettingsItem(
-                title: context.l10n.offlineSync,
-                icon: const FaIcon(FontAwesomeIcons.solidCloud, color: Color(0xFF8E8E93), size: 20),
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (context) => const SyncPage(),
-                    ),
-                  );
-                },
-              ),
-              const Divider(height: 1, color: Color(0xFF3C3C43)),
-              _buildSettingsItem(
-                title: 'Offline Audio Processing',
-                icon: const FaIcon(FontAwesomeIcons.microphoneLines, color: Color(0xFF8E8E93), size: 20),
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (context) => const OfflineAudioSettingsPage(),
-                    ),
-                  );
-                },
-              ),
-              Consumer<DeviceProvider>(
-                builder: (context, deviceProvider, child) {
-                  if (!deviceProvider.isConnected) {
-                    return const SizedBox.shrink();
-                  }
-                  return Column(
-                    children: [
-                      const Divider(height: 1, color: Color(0xFF3C3C43)),
-                      _buildSettingsItem(
-                        title: context.l10n.deviceSettings,
-                        icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Color(0xFF8E8E93), size: 20),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => const DeviceSettings(),
-                            ),
-                          );
-                        },
-                      ),
-                    ],
-                  );
-                },
-              ),
-              const Divider(height: 1, color: Color(0xFF3C3C43)),
-              _buildSettingsItem(
-                title: context.l10n.integrations,
-                icon: const FaIcon(FontAwesomeIcons.networkWired, color: Color(0xFF8E8E93), size: 20),
-                showBetaTag: true,
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (context) => const IntegrationsPage(),
-                    ),
-                  );
-                },
-              ),
-              Consumer<UsageProvider>(
-                builder: (context, usageProvider, child) {
-                  final isUnlimited = usageProvider.subscription?.subscription.plan == PlanType.unlimited;
-                  if (!isUnlimited) return const SizedBox.shrink();
-                  return Column(
-                    children: [
-                      const Divider(height: 1, color: Color(0xFF3C3C43)),
-                      _buildSettingsItem(
-                        title: 'Phone Calls',
-                        icon: const FaIcon(FontAwesomeIcons.phone, color: Color(0xFF8E8E93), size: 20),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => const PhoneCallSettingsPage(),
-                            ),
-                          );
-                        },
-                      ),
-                    ],
-                  );
-                },
-              ),
-            ],
-          ),
-          const SizedBox(height: 32),
-
-          // Support & Settings Section
-          _buildSectionContainer(
-            children: [
-              if (PlatformService.isIntercomSupported) ...[
-                _buildSettingsItem(
-                  title: context.l10n.feedbackBug,
-                  icon: const FaIcon(FontAwesomeIcons.solidEnvelope, color: Color(0xFF8E8E93), size: 20),
-                  onTap: () async {
-                    final Uri url = Uri.parse('https://feedback.omi.me/');
-                    if (await canLaunchUrl(url)) {
-                      await launchUrl(url, mode: LaunchMode.inAppBrowserView);
-                    }
-                  },
-                ),
-                const Divider(height: 1, color: Color(0xFF3C3C43)),
-                _buildSettingsItem(
-                  title: context.l10n.helpCenter,
-                  icon: const FaIcon(FontAwesomeIcons.book, color: Color(0xFF8E8E93), size: 20),
-                  onTap: () async {
-                    final Uri url = Uri.parse('https://help.omi.me/en/');
-                    if (await canLaunchUrl(url)) {
-                      try {
-                        await launchUrl(url, mode: LaunchMode.inAppBrowserView);
-                      } catch (e) {
-                        await launchUrl(url, mode: LaunchMode.externalApplication);
-                      }
-                    }
-                  },
-                ),
-                const Divider(height: 1, color: Color(0xFF3C3C43)),
-              ],
-              _buildSettingsItem(
-                title: context.l10n.developerSettings,
-                icon: const FaIcon(FontAwesomeIcons.code, color: Color(0xFF8E8E93), size: 20),
-                onTap: () async {
-                  await routeToPage(context, const DeveloperSettingsPage());
-                },
-              ),
-              const Divider(height: 1, color: Color(0xFF3C3C43)),
-              _buildSettingsItem(
-                title: context.l10n.whatsNew,
-                icon: const FaIcon(FontAwesomeIcons.solidStar, color: Color(0xFF8E8E93), size: 20),
-                onTap: () {
-                  MixpanelManager().whatsNewOpened();
-                  ChangelogSheet.showWithLoading(
-                    context,
-                    () => getAppChangelogs(limit: 5),
-                  );
-                },
-              ),
-            ],
-          ),
-          const SizedBox(height: 32),
-
-          // Share & Get Section
-          _buildSectionContainer(
-            children: [
-              _buildSettingsItem(
-                title: context.l10n.getOmiForMac,
-                icon: const FaIcon(FontAwesomeIcons.desktop, color: Color(0xFF8E8E93), size: 20),
-                onTap: () async {
-                  final Uri url = Uri.parse('https://apps.apple.com/us/app/omi-ai-scale-yourself/id6502156163');
-                  await launchUrl(url, mode: LaunchMode.externalApplication);
-                },
-              ),
-              const Divider(height: 1, color: Color(0xFF3C3C43)),
-              _buildSettingsItem(
-                title: context.l10n.referralProgram,
-                icon: const FaIcon(FontAwesomeIcons.gift, color: Color(0xFF8E8E93), size: 20),
-                showNewTag: true,
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (context) => const ReferralPage(),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-          const SizedBox(height: 32),
-
-          // Sign Out Section
-          _buildSectionContainer(
-            children: [
-              _buildSettingsItem(
-                title: context.l10n.signOut,
-                icon: const FaIcon(FontAwesomeIcons.signOutAlt, color: Color(0xFF8E8E93), size: 20),
-                onTap: () async {
-                  // Capture the provider reference before any navigation
-                  final personaProvider = Provider.of<PersonaProvider>(context, listen: false);
-                  final navigator = Navigator.of(context);
-
-                  navigator.pop(); // Close the settings drawer
-
-                  await showDialog(
-                    context: context,
-                    builder: (ctx) {
-                      return getDialog(
-                        ctx,
-                        () => Navigator.of(ctx).pop(),
-                        () async {
-                          Navigator.of(ctx).pop();
-                          await SharedPreferencesUtil().clear();
-                          await AuthService.instance.signOut();
-                          personaProvider.setRouting(PersonaProfileRouting.no_device);
-                          if (context.mounted) {
-                            routeToPage(context, const AppShell(), replace: true);
-                          }
-                        },
-                        context.l10n.signOutQuestion,
-                        context.l10n.signOutConfirmation,
-                      );
-                    },
-                  );
-                },
-              ),
-            ],
-          ),
-          const SizedBox(height: 32),
-
-          // Version Info
-          _buildVersionInfoSection(),
-          const SizedBox(height: 24),
-        ],
-      );
-    });
-  }
-
-  Widget _buildNoDeviceModeContent(BuildContext context) {
-    return Column(
-      children: [
-        // Support Section
-        _buildSectionContainer(
-          children: [
-            _buildSettingsItem(
-              title: context.l10n.needHelpChatWithUs,
-              icon: const FaIcon(FontAwesomeIcons.solidComments, color: Color(0xFF8E8E93), size: 20),
-              onTap: () async {
-                await Intercom.instance.displayMessenger();
-              },
-            ),
-          ],
-        ),
-        const SizedBox(height: 32),
-
-        // Sign Out Section
-        _buildSectionContainer(
-          children: [
-            _buildSettingsItem(
-              title: context.l10n.signOut,
-              icon: const FaIcon(FontAwesomeIcons.signOutAlt, color: Color(0xFF8E8E93), size: 20),
-              onTap: () async {
-                // Capture the provider reference before any navigation
-                final personaProvider = Provider.of<PersonaProvider>(context, listen: false);
-                final navigator = Navigator.of(context);
-
-                navigator.pop(); // Close the settings drawer
-
-                await showDialog(
-                  context: context,
-                  builder: (ctx) {
-                    return getDialog(
-                      ctx,
-                      () => Navigator.of(ctx).pop(),
-                      () async {
-                        Navigator.of(ctx).pop(); // Close dialog first
-                        SharedPreferencesUtil().hasOmiDevice = null;
-                        SharedPreferencesUtil().verifiedPersonaId = null;
-                        personaProvider.setRouting(PersonaProfileRouting.no_device);
-                        await AuthService.instance.signOut();
-                        if (context.mounted) {
-                          routeToPage(context, const AppShell(), replace: true);
-                        }
-                      },
-                      context.l10n.signOutQuestion,
-                      context.l10n.signOutConfirmation,
-                    );
-                  },
-                );
-              },
-            ),
-          ],
-        ),
-        const SizedBox(height: 32),
-
-        // Version Info
-        _buildVersionInfoSection(),
-        const SizedBox(height: 24),
       ],
     );
   }
@@ -692,25 +193,23 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
             child: Stack(
               children: [
-                // Centered title
-                Center(
+                const Center(
                   child: Text(
-                    context.l10n.settings,
-                    style: const TextStyle(
+                    'Settings',
+                    style: TextStyle(
                       color: Colors.white,
                       fontSize: 18,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
-                // Done button positioned to the right
                 Positioned(
                   right: 0,
                   child: GestureDetector(
                     onTap: () => Navigator.pop(context),
-                    child: Text(
-                      context.l10n.done,
-                      style: const TextStyle(
+                    child: const Text(
+                      'Done',
+                      style: TextStyle(
                         color: Colors.white,
                         fontSize: 17,
                         fontWeight: FontWeight.w400,
@@ -726,8 +225,63 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.symmetric(horizontal: 20),
-              child:
-                  widget.mode == SettingsMode.omi ? _buildOmiModeContent(context) : _buildNoDeviceModeContent(context),
+              child: Column(
+                children: [
+                  _buildSectionContainer(
+                    children: [
+                      _buildSettingsItem(
+                        title: 'Sync Device',
+                        icon: const FaIcon(FontAwesomeIcons.solidCloud, color: Color(0xFF8E8E93), size: 20),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => const SyncPage(),
+                            ),
+                          );
+                        },
+                      ),
+                      const Divider(height: 1, color: Color(0xFF3C3C43)),
+                      _buildSettingsItem(
+                        title: 'Offline Audio Processing',
+                        icon: const FaIcon(FontAwesomeIcons.microphoneLines, color: Color(0xFF8E8E93), size: 20),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => const OfflineAudioSettingsPage(),
+                            ),
+                          );
+                        },
+                      ),
+                      Consumer<DeviceProvider>(
+                        builder: (context, deviceProvider, child) {
+                          if (!deviceProvider.isConnected) {
+                            return const SizedBox.shrink();
+                          }
+                          return Column(
+                            children: [
+                              const Divider(height: 1, color: Color(0xFF3C3C43)),
+                              _buildSettingsItem(
+                                title: 'Device Settings',
+                                icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Color(0xFF8E8E93), size: 20),
+                                onTap: () {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (context) => const DeviceSettings(),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 32),
+                  _buildVersionInfoSection(),
+                  const SizedBox(height: 24),
+                ],
+              ),
             ),
           ),
         ],
