@@ -18,7 +18,6 @@ import 'package:omi/models/subscription.dart';
 import 'package:omi/utils/other/temp.dart';
 import 'package:omi/utils/platform/platform_service.dart';
 import 'package:omi/widgets/dialog.dart';
-import 'package:intercom_flutter/intercom_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/utils/l10n_extensions.dart';
@@ -28,6 +27,7 @@ import 'package:omi/backend/http/api/announcements.dart';
 import 'package:omi/pages/announcements/changelog_sheet.dart';
 import 'package:omi/utils/analytics/mixpanel.dart';
 import 'device_settings.dart';
+import 'offline_audio_settings_page.dart';
 import 'phone_call_settings_page.dart';
 import '../conversations/sync_page.dart';
 
@@ -393,6 +393,18 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                   Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (context) => const SyncPage(),
+                    ),
+                  );
+                },
+              ),
+              const Divider(height: 1, color: Color(0xFF3C3C43)),
+              _buildSettingsItem(
+                title: 'Offline Audio Processing',
+                icon: const FaIcon(FontAwesomeIcons.microphoneLines, color: Color(0xFF8E8E93), size: 20),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => const OfflineAudioSettingsPage(),
                     ),
                   );
                 },

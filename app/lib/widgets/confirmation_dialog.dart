@@ -93,9 +93,9 @@ class _ConfirmationDialogState extends State<ConfirmationDialog> {
                   Theme(
                     data: Theme.of(context).copyWith(
                       checkboxTheme: CheckboxThemeData(
-                        fillColor: MaterialStateProperty.resolveWith<Color>(
-                          (Set<MaterialState> states) {
-                            if (states.contains(MaterialState.selected)) {
+                        fillColor: WidgetStateProperty.resolveWith<Color>(
+                          (Set<WidgetState> states) {
+                            if (states.contains(WidgetState.selected)) {
                               return Colors.deepPurple;
                             }
                             return Colors.grey.shade700;

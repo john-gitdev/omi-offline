@@ -8,7 +8,6 @@ import 'package:awesome_notifications/awesome_notifications.dart';
 import 'package:omi/main.dart';
 import 'package:omi/pages/home/page.dart';
 import 'package:omi/services/notifications/daily_reflection_notification.dart';
-import 'package:omi/utils/l10n_extensions.dart';
 import 'package:omi/utils/logger.dart';
 
 // Re-export the main notification service for backward compatibility

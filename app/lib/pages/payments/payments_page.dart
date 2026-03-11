@@ -42,7 +42,7 @@ class _PaymentsPageState extends State<PaymentsPage> {
         color: const Color(0xFF1F1F25),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: Color(0xFF35343B),
+          color: const Color(0xFF35343B),
           width: 1,
         ),
       ),

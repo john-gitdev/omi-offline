@@ -346,7 +346,7 @@ void main() {
   });
 
   group('People cache refresh', () {
-    TranscriptSegment _segmentWithPerson(String id, String? personId) {
+    TranscriptSegment segmentWithPerson(String id, String? personId) {
       return TranscriptSegment(
         id: id,
         text: 'text',
@@ -365,10 +365,10 @@ void main() {
       provider.peopleProvider = mockPeopleProvider;
 
       // Pre-populate segments to skip platform-specific initialization code
-      provider.segments = [_segmentWithPerson('seed', null)];
+      provider.segments = [segmentWithPerson('seed', null)];
 
       // Segment with personId that's not in cache (cachedPeople is empty)
-      final segments = [_segmentWithPerson('seg1', 'unknown-person-id')];
+      final segments = [segmentWithPerson('seg1', 'unknown-person-id')];
 
       provider.onSegmentReceived(segments);
 
@@ -382,9 +382,9 @@ void main() {
       provider.peopleProvider = mockPeopleProvider;
 
       // Pre-populate segments to skip platform-specific initialization code
-      provider.segments = [_segmentWithPerson('seed', null)];
+      provider.segments = [segmentWithPerson('seed', null)];
 
-      final segments = [_segmentWithPerson('seg2', null)];
+      final segments = [segmentWithPerson('seg2', null)];
 
       provider.onSegmentReceived(segments);
 
@@ -403,17 +403,17 @@ void main() {
       provider.peopleProvider = mockPeopleProvider;
 
       // Pre-populate segments to skip platform-specific initialization code
-      provider.segments = [_segmentWithPerson('seed', null)];
+      provider.segments = [segmentWithPerson('seed', null)];
 
       // First segment with unknown personId
-      final segments1 = [_segmentWithPerson('seg-a', 'unknown-1')];
+      final segments1 = [segmentWithPerson('seg-a', 'unknown-1')];
       provider.onSegmentReceived(segments1);
 
       // Should trigger first call
       expect(mockPeopleProvider.setPeopleCallCount, 1);
 
       // Second segment with different unknown personId while first is still in-flight
-      final segments2 = [_segmentWithPerson('seg-b', 'unknown-2')];
+      final segments2 = [segmentWithPerson('seg-b', 'unknown-2')];
       provider.onSegmentReceived(segments2);
 
       // Should NOT trigger another call (first is still in-flight)
@@ -424,7 +424,7 @@ void main() {
       await Future.delayed(Duration.zero); // Let the future complete
 
       // Third segment - now a new call should be allowed
-      final segments3 = [_segmentWithPerson('seg-c', 'unknown-3')];
+      final segments3 = [segmentWithPerson('seg-c', 'unknown-3')];
       provider.onSegmentReceived(segments3);
 
       // Should trigger a new call

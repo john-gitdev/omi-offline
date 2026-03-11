@@ -26,8 +26,40 @@ class SharedPreferencesUtil {
   String get deviceIdHash => _preferences?.getString('deviceIdHash') ?? '';
   set deviceIdHash(String value) => _preferences?.setString('deviceIdHash', value);
 
+  //--------------------------- Offline Audio Processing ---------------------//
+
+  double get offlineSilenceThreshold => getDouble('offlineSilenceThreshold', defaultValue: -45.0);
+
+  set offlineSilenceThreshold(double value) => saveDouble('offlineSilenceThreshold', value);
+
+  int get offlineSplitSeconds => getInt('offlineSplitSeconds', defaultValue: 120);
+
+  set offlineSplitSeconds(int value) => saveInt('offlineSplitSeconds', value);
+
+  int get offlineMinSpeechSeconds => getInt('offlineMinSpeechSeconds', defaultValue: 0);
+
+  set offlineMinSpeechSeconds(int value) => saveInt('offlineMinSpeechSeconds', value);
+
+  bool get offlineAdjustmentMode => getBool('offlineAdjustmentMode', defaultValue: false);
+
+  set offlineAdjustmentMode(bool value) => saveBool('offlineAdjustmentMode', value);
+
   static Future<void> init() async {
     _preferences = await SharedPreferences.getInstance();
+    
+    // Set default values if not present
+    if (!_preferences!.containsKey('offlineSilenceThreshold')) {
+      _preferences!.setDouble('offlineSilenceThreshold', -45.0);
+    }
+    if (!_preferences!.containsKey('offlineSplitSeconds')) {
+      _preferences!.setInt('offlineSplitSeconds', 120); // 2 minutes default
+    }
+    if (!_preferences!.containsKey('offlineMinSpeechSeconds')) {
+      _preferences!.setInt('offlineMinSpeechSeconds', 0); // 0 seconds default
+    }
+    if (!_preferences!.containsKey('offlineAdjustmentMode')) {
+      _preferences!.setBool('offlineAdjustmentMode', false);
+    }
   }
 
   set uid(String value) => saveString('uid', value);

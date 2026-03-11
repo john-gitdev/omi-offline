@@ -33,14 +33,14 @@ class LanguageSelectionDialog {
         : null;
     String searchQuery = '';
     List<MapEntry<String, String>> filteredLanguages = List.from(languages);
-    final ScrollController _scrollController = ScrollController();
+    final ScrollController scrollController = ScrollController();
 
     // Function to scroll to the selected language
     void scrollToSelectedLanguage() {
       if (selectedLanguage != null) {
         final selectedIndex = filteredLanguages.indexWhere((lang) => lang.value == selectedLanguage);
-        if (selectedIndex != -1 && _scrollController.hasClients) {
-          _scrollController.animateTo(
+        if (selectedIndex != -1 && scrollController.hasClients) {
+          scrollController.animateTo(
             selectedIndex * 56.0, // Approximate height of each list item
             duration: const Duration(milliseconds: 300),
             curve: Curves.easeInOut,
@@ -139,11 +139,11 @@ class LanguageSelectionDialog {
                         fillColor: const Color(0xFF2A2A2A),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(color: Color(0xFF35343B)),
+                          borderSide: const BorderSide(color: Color(0xFF35343B)),
                         ),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(color: Color(0xFF35343B)),
+                          borderSide: const BorderSide(color: Color(0xFF35343B)),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
@@ -161,7 +161,7 @@ class LanguageSelectionDialog {
                               ),
                             )
                           : ListView.builder(
-                              controller: _scrollController,
+                              controller: scrollController,
                               itemCount: filteredLanguages.length,
                               itemBuilder: (context, index) {
                                 final language = filteredLanguages[index];
@@ -200,8 +200,8 @@ class LanguageSelectionDialog {
                       Builder(builder: (context) {
                         WidgetsBinding.instance.addPostFrameCallback((_) {
                           final selectedIndex = filteredLanguages.indexWhere((lang) => lang.value == selectedLanguage);
-                          if (selectedIndex != -1 && _scrollController.hasClients) {
-                            _scrollController.animateTo(
+                          if (selectedIndex != -1 && scrollController.hasClients) {
+                            scrollController.animateTo(
                               selectedIndex * 56.0, // Approximate height of each list item
                               duration: const Duration(milliseconds: 300),
                               curve: Curves.easeInOut,

@@ -27,13 +27,13 @@ class LanguageSelectorWidget extends StatefulWidget {
   final Function(String?, String?) onLanguageSelected;
 
   const LanguageSelectorWidget({
-    Key? key,
+    super.key,
     required this.availableLanguages,
     this.selectedLanguage,
     this.selectedLanguageName,
     required this.languageScrollController,
     required this.onLanguageSelected,
-  }) : super(key: key);
+  });
 
   @override
   State<LanguageSelectorWidget> createState() => _LanguageSelectorWidgetState();

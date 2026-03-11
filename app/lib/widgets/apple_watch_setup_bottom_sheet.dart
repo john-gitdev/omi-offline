@@ -13,10 +13,10 @@ class AppleWatchSetupBottomSheet extends StatefulWidget {
   final VoidCallback? onConnected;
 
   const AppleWatchSetupBottomSheet({
-    Key? key,
+    super.key,
     required this.deviceId,
     this.onConnected,
-  }) : super(key: key);
+  });
 
   @override
   State<AppleWatchSetupBottomSheet> createState() => _AppleWatchSetupBottomSheetState();

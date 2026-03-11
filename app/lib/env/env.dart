@@ -55,15 +55,11 @@ abstract class Env {
     return 'wss://$host/v1/agent/ws';
   }
 
-  static String? get growthbookApiKey => _instance.growthbookApiKey;
 
   static String? get googleMapsApiKey => _instance.googleMapsApiKey;
 
-  static String? get intercomAppId => _instance.intercomAppId;
 
-  static String? get intercomIOSApiKey => _instance.intercomIOSApiKey;
 
-  static String? get intercomAndroidApiKey => _instance.intercomAndroidApiKey;
 
   static String? get googleClientId => _instance.googleClientId;
 
@@ -81,15 +77,11 @@ abstract class EnvFields {
 
   String? get apiBaseUrl;
 
-  String? get growthbookApiKey;
 
   String? get googleMapsApiKey;
 
-  String? get intercomAppId;
 
-  String? get intercomIOSApiKey;
 
-  String? get intercomAndroidApiKey;
 
   String? get googleClientId;
 

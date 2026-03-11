@@ -251,9 +251,9 @@ class _ActionItemFormSheetState extends State<ActionItemFormSheet> {
     } else {
       // Show short form: "Sat, Jan 31" or "Sat, Jan 31, 2027" if different year
       if (date.year == now.year) {
-        dateStr = DateFormat.E(locale).format(date) + ', ' + DateFormat.MMMd(locale).format(date);
+        dateStr = '${DateFormat.E(locale).format(date)}, ${DateFormat.MMMd(locale).format(date)}';
       } else {
-        dateStr = DateFormat.E(locale).format(date) + ', ' + DateFormat.yMMMd(locale).format(date);
+        dateStr = '${DateFormat.E(locale).format(date)}, ${DateFormat.yMMMd(locale).format(date)}';
       }
     }
 

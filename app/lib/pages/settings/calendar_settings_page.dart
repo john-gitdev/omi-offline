@@ -256,7 +256,7 @@ class _CalendarSettingsPageState extends State<CalendarSettingsPage> {
             child: CupertinoSwitch(
               value: isEnabled,
               onChanged: onToggle,
-              activeColor: ResponsiveHelper.purplePrimary,
+              activeTrackColor: ResponsiveHelper.purplePrimary,
             ),
           ),
         ],
@@ -335,7 +335,7 @@ class _CalendarSettingsPageState extends State<CalendarSettingsPage> {
             child: CupertinoSwitch(
               value: value,
               onChanged: onChanged,
-              activeColor: ResponsiveHelper.purplePrimary,
+              activeTrackColor: ResponsiveHelper.purplePrimary,
             ),
           ),
         ],
@@ -408,7 +408,7 @@ class _CalendarSettingsPageState extends State<CalendarSettingsPage> {
                         SharedPreferencesUtil().enabledCalendarIds = _enabledCalendarIds.toList();
                       });
                     },
-                    activeColor: ResponsiveHelper.purplePrimary,
+                    activeTrackColor: ResponsiveHelper.purplePrimary,
                   ),
                 ),
               ],

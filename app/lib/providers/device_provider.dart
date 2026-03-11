@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:omi/backend/http/api/device.dart';
@@ -596,7 +595,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       return;
     }
     _bleDisconnectDevice(connectedDevice!);
-    _reconnectAt = DateTime.now().add(Duration(seconds: 30));
+    _reconnectAt = DateTime.now().add(const Duration(seconds: 30));
   }
 
   // Reset firmware update state when update completes or fails

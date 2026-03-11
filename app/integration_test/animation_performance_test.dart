@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -70,9 +69,9 @@ void main() {
 
       // Collect frame timing data manually
       final frameTimings = <FrameTiming>[];
-      final frameCallback = (List<FrameTiming> timings) {
+      void frameCallback(List<FrameTiming> timings) {
         frameTimings.addAll(timings);
-      };
+      }
 
       // Register frame callback
       WidgetsBinding.instance.addTimingsCallback(frameCallback);
@@ -140,20 +139,20 @@ class _TestApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return const MaterialApp(
       home: Scaffold(
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Text('Animation Performance Test'),
-              const SizedBox(height: 20),
+              Text('Animation Performance Test'),
+              SizedBox(height: 20),
               // Simulate animations similar to the app
-              const _AnimatedWidget(),
-              const SizedBox(height: 20),
-              const _ShimmerWidget(),
-              const SizedBox(height: 20),
-              const _TypingIndicatorWidget(),
+              _AnimatedWidget(),
+              SizedBox(height: 20),
+              _ShimmerWidget(),
+              SizedBox(height: 20),
+              _TypingIndicatorWidget(),
             ],
           ),
         ),
