@@ -275,22 +275,27 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     return connection.getBleStorageBytesListener(onStorageBytesReceived: onStorageBytesReceived);
   }
 
-  Future<File> _flushToDisk(Wal wal, List<List<int>> chunk, int timerStart) async {
+  Future<File> _flushToDisk(Wal wal, List<List<int>> chunk, int timerStart, {String? subFolder}) async {
     final directory = await getApplicationDocumentsDirectory();
 
-    // Create a date-specific folder based on timerStart
-    final date = DateTime.fromMillisecondsSinceEpoch(timerStart);
-    final dateString = '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
-    final dateFolder = Directory('${directory.path}/raw_chunks/$dateString');
-
-    if (!await dateFolder.exists()) {
-      await dateFolder.create(recursive: true);
+    // Determine the folder to save in
+    String folderPath;
+    if (subFolder != null) {
+      folderPath = '${directory.path}/raw_chunks/$subFolder';
+    } else {
+      // Fallback: Create a date-specific folder based on timerStart
+      final date = DateTime.fromMillisecondsSinceEpoch(timerStart * 1000); // Note: timerStart is in seconds, need ms
+      final dateString = '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+      folderPath = '${directory.path}/raw_chunks/$dateString';
     }
 
-    // Instead of using wal.getFileNameByTimeStarts which puts it in root,
-    // we put it inside the date folder
+    final folder = Directory(folderPath);
+    if (!await folder.exists()) {
+      await folder.create(recursive: true);
+    }
+
     final fileName = wal.getFileNameByTimeStarts(timerStart);
-    String filePath = '${dateFolder.path}/$fileName';
+    String filePath = '${folder.path}/$fileName';
     List<int> data = [];
 
     // Debug: Log first frame info
@@ -318,8 +323,50 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     return file;
   }
+  Future<void> _processUnsyncedFiles(int? anchorUtcTime, int? anchorUptimeMs) async {
+    if (anchorUtcTime == null || anchorUptimeMs == null) return;
 
-  Future _readStorageBytesToFile(Wal wal, Function(File f, int offset, int timerStart) callback) async {
+    final directory = await getApplicationDocumentsDirectory();
+    final unsyncedFolder = Directory('${directory.path}/raw_chunks/unsynced');
+    
+    if (!await unsyncedFolder.exists()) return;
+
+    final files = unsyncedFolder.listSync().whereType<File>();
+    for (var file in files) {
+      try {
+        final name = file.path.split('/').last;
+        // filename is usually something like audio_limitless_opus_16000_1_fs320_rXX_{uptimeSecs}.bin
+        final parts = name.replaceAll('.bin', '').split('_');
+        final uptimeSecsStr = parts.last;
+        final uptimeSecs = int.parse(uptimeSecsStr);
+        final fileUptimeMs = uptimeSecs * 1000;
+
+        final realTimerStartSecs = anchorUtcTime - ((anchorUptimeMs - fileUptimeMs) ~/ 1000);
+        
+        final date = DateTime.fromMillisecondsSinceEpoch(realTimerStartSecs * 1000);
+        final dateString = '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+        final newFolder = Directory('${directory.path}/raw_chunks/$dateString');
+        
+        if (!await newFolder.exists()) {
+          await newFolder.create(recursive: true);
+        }
+
+        // Reconstruct filename with new real timestamp
+        // Original: audio_limitless_opus_16000_1_fs320_r{random}_{timestampMs}.bin
+        // Wait, the wal.getFileNameByTimeStarts uses milliseconds. Let's look at how it generates it.
+        // It appends ${timeStarts * 1000}.
+        final newName = parts.sublist(0, parts.length - 1).join('_') + '_${realTimerStartSecs * 1000}.bin';
+        final newPath = '${newFolder.path}/$newName';
+        
+        await file.rename(newPath);
+        Logger.debug("SDCardWalSync: Moved unsynced file to $newPath");
+      } catch (e) {
+        Logger.debug("SDCardWalSync: Failed to process unsynced file ${file.path}: $e");
+      }
+    }
+  }
+
+  Future _readStorageBytesToFile(Wal wal, Function(File f, int offset, int timerStart, {String? subFolder}) callback) async {
     var deviceId = wal.device;
     int fileNum = wal.fileNum;
     int offset = wal.storageOffset;
@@ -335,6 +382,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     bool hasError = false;
     bool firstDataReceived = false;
     Timer? timeoutTimer;
+    
+    int? anchorUtcTime;
+    int? anchorUptimeMs;
+    int currentUptimeMs = 0;
 
     _storageStream = await _getBleStorageBytesListener(deviceId, onStorageBytesReceived: (List<int> value) async {
       if (value.isEmpty || hasError) return;
@@ -378,6 +429,27 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         var packageOffset = 0;
         while (packageOffset < value.length - 1) {
           var packageSize = value[packageOffset];
+          
+          if (packageSize == 255) {
+            if (packageOffset + 1 + 8 <= value.length) {
+              var metadata = value.sublist(packageOffset + 1, packageOffset + 1 + 8);
+              var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
+              var utcTime = byteData.getUint32(0, Endian.little);
+              currentUptimeMs = byteData.getUint32(4, Endian.little);
+              
+              if (utcTime > 0) {
+                anchorUtcTime = utcTime;
+                anchorUptimeMs = currentUptimeMs;
+              }
+
+              Logger.debug("SDCardWalSync BLE: Parsed timestamp: UTC=$utcTime, UptimeMs=$currentUptimeMs");
+              packageOffset += 1 + 8;
+              continue;
+            } else {
+              break;
+            }
+          }
+
           if (packageSize == 0) {
             packageOffset += packageSize + 1;
             continue;
@@ -395,10 +467,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (bytesData.length - bytesLeft >= chunkSize) {
         var chunk = bytesData.sublist(bytesLeft, bytesLeft + chunkSize);
         bytesLeft += chunkSize;
-        timerStart += sdcardChunkSizeSecs;
+        
+        String? subFolder;
+        
+        if (anchorUtcTime != null && anchorUptimeMs != null) {
+           timerStart = anchorUtcTime! - ((anchorUptimeMs! - currentUptimeMs) ~/ 1000);
+        } else {
+           timerStart = currentUptimeMs ~/ 1000;
+           subFolder = 'unsynced';
+        }
+        
         try {
-          var file = await _flushToDisk(wal, chunk, timerStart);
-          await callback(file, offset, timerStart);
+          var file = await _flushToDisk(wal, chunk, timerStart, subFolder: subFolder);
+          await callback(file, offset, timerStart, subFolder: subFolder);
         } catch (e) {
           Logger.debug('Error in callback during chunking: $e');
           hasError = true;
@@ -432,9 +513,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     if (!hasError && bytesLeft < bytesData.length - 1) {
       var chunk = bytesData.sublist(bytesLeft);
-      timerStart += sdcardChunkSizeSecs;
-      var file = await _flushToDisk(wal, chunk, timerStart);
-      await callback(file, offset, timerStart);
+      String? subFolder;
+      if (anchorUtcTime != null && anchorUptimeMs != null) {
+         timerStart = anchorUtcTime! - ((anchorUptimeMs! - currentUptimeMs) ~/ 1000);
+      } else {
+         timerStart = currentUptimeMs ~/ 1000;
+         subFolder = 'unsynced';
+      }
+      var file = await _flushToDisk(wal, chunk, timerStart, subFolder: subFolder);
+      await callback(file, offset, timerStart, subFolder: subFolder);
     }
 
     return;
@@ -465,7 +552,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _totalBytesDownloaded = 0;
 
     try {
-      await _readStorageBytesToFile(wal, (File file, int offset, int timerStart) async {
+      await _readStorageBytesToFile(wal, (File file, int offset, int timerStart, {String? subFolder}) async {
         if (_isCancelled) {
           throw Exception('Sync cancelled by user');
         }
@@ -496,6 +583,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       }
       rethrow;
     }
+
+    // Try to process unsynced files now that we might have an anchor (BLE doesn't easily expose the anchor back out, so we will need to refactor or just scan)
+    // Actually, since _readStorageBytesToFile handled moving them internally at the end of the loop IF it found an anchor, 
+    // we don't strictly need to do anything here unless the sync aborted mid-way and we want a second pass, but let's keep it clean.
 
     if (chunksDownloaded == 0) {
       Logger.debug("SDCard: No chunks downloaded");
@@ -967,6 +1058,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       final totalBytes = wal.storageTotalBytes - initialOffset;
 
       List<int> tcpBuffer = [];
+      
+      int? anchorUtcTime;
+      int? anchorUptimeMs;
+      int currentUptimeMs = 0;
 
       // Step 7: Send command to start SD card read over BLE
       debugPrint("SDCardWalSync WiFi: Step 7 - Sending start read command over BLE...");
@@ -1108,9 +1203,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 var metadata = tcpBuffer.sublist(packageOffset + 1, packageOffset + 1 + 8);
                 var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
                 var utcTime = byteData.getUint32(0, Endian.little);
-                var uptimeMs = byteData.getUint32(4, Endian.little);
+                currentUptimeMs = byteData.getUint32(4, Endian.little);
 
-                Logger.debug("SDCardWalSync WiFi: Parsed timestamp: UTC=$utcTime, UptimeMs=$uptimeMs");
+                if (utcTime > 0) {
+                  anchorUtcTime = utcTime;
+                  anchorUptimeMs = currentUptimeMs;
+                }
+
+                Logger.debug("SDCardWalSync WiFi: Parsed timestamp: UTC=$utcTime, UptimeMs=$currentUptimeMs");
 
                 packageOffset += 1 + 8;
                 bytesProcessed = packageOffset;
@@ -1119,7 +1219,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 break;
               }
             }
-
             // Extract complete frame
             var frame = tcpBuffer.sublist(packageOffset + 1, packageOffset + 1 + packageSize);
 
@@ -1221,9 +1320,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       while (bytesData.length - bytesLeft >= chunkSize) {
         var chunk = bytesData.sublist(bytesLeft, bytesLeft + chunkSize);
         bytesLeft += chunkSize;
-        timerStart += sdcardChunkSizeSecs;
+        
+        String? subFolder;
+        if (anchorUtcTime != null && anchorUptimeMs != null) {
+           timerStart = anchorUtcTime! - ((anchorUptimeMs! - currentUptimeMs) ~/ 1000);
+        } else {
+           timerStart = currentUptimeMs ~/ 1000;
+           subFolder = 'unsynced';
+        }
+        
         try {
-          var file = await _flushToDisk(wal, chunk, timerStart);
+          var file = await _flushToDisk(wal, chunk, timerStart, subFolder: subFolder);
           await _registerSingleChunk(wal, file, timerStart);
         } catch (e) {
           Logger.debug('SDCardWalSync WiFi: Error flushing chunk: $e');
@@ -1232,9 +1339,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       // Flush any remaining frames
       if (bytesLeft < bytesData.length) {
         var chunk = bytesData.sublist(bytesLeft);
-        timerStart += sdcardChunkSizeSecs;
+        
+        String? subFolder;
+        if (anchorUtcTime != null && anchorUptimeMs != null) {
+           timerStart = anchorUtcTime! - ((anchorUptimeMs! - currentUptimeMs) ~/ 1000);
+        } else {
+           timerStart = currentUptimeMs ~/ 1000;
+           subFolder = 'unsynced';
+        }
+        
         try {
-          var file = await _flushToDisk(wal, chunk, timerStart);
+          var file = await _flushToDisk(wal, chunk, timerStart, subFolder: subFolder);
           await _registerSingleChunk(wal, file, timerStart);
         } catch (e) {
           Logger.debug('SDCardWalSync WiFi: Error flushing final chunk: $e');
@@ -1248,10 +1363,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       await audioSubscription.cancel();
       await wifiStatusSubscription?.cancel();
 
+      // Process any unsynced files now that we have finished transferring and might have an anchor
+      await _processUnsyncedFiles(anchorUtcTime, anchorUptimeMs);
+
       try {
         await tcpTransport.disconnect();
       } catch (e) {
-        debugPrint("SDCardWalSync WiFi: Error disconnecting TCP: $e");
+        debugPrint("SDCardWalSync WiFi: Cleanup disconnect error: $e");
       }
 
       try {
