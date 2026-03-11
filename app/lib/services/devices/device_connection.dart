@@ -20,7 +20,6 @@ import 'package:omi/services/devices/plaud_connection.dart';
 import 'package:omi/services/devices/wifi_sync_error.dart';
 import 'package:omi/main.dart';
 import 'package:omi/services/notifications.dart';
-import 'package:omi/utils/l10n_extensions.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:omi/services/devices/transports/ble_transport.dart';
 import 'package:omi/services/devices/transports/frame_transport.dart';

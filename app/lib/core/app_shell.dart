@@ -6,7 +6,6 @@ import 'package:app_links/app_links.dart';
 import 'package:provider/provider.dart';
 
 import 'package:omi/backend/http/api/action_items.dart' as action_items_api;
-import 'package:omi/backend/preferences.dart';
 import 'package:omi/mobile/mobile_app.dart';
 import 'package:omi/pages/action_items/widgets/accept_shared_tasks_sheet.dart';
 import 'package:omi/pages/apps/app_detail/app_detail.dart';
@@ -351,7 +350,6 @@ class _AppShellState extends State<AppShell> {
       context.read<UserProvider>().initialize();
       context.read<PeopleProvider>().initialize();
       try {
-        await PlatformManager.instance.intercom.loginIdentifiedUser(SharedPreferencesUtil().uid);
       } catch (e) {
         Logger.debug('Failed to login to Intercom: $e');
       }
@@ -366,11 +364,9 @@ class _AppShellState extends State<AppShell> {
       NotificationService.instance.saveNotificationToken();
     } else {
       if (!PlatformManager.instance.isAnalyticsSupported) {
-        await PlatformManager.instance.intercom.loginUnidentifiedUser();
       }
       if (!mounted) return;
     }
-    PlatformManager.instance.intercom.setUserAttributes();
   }
 
   @override

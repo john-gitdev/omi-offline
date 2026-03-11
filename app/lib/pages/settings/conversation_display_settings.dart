@@ -111,7 +111,7 @@ class _ConversationDisplaySettingsState extends State<ConversationDisplaySetting
           Switch(
             value: value,
             onChanged: onChanged,
-            activeColor: const Color(0xFF22C55E),
+            activeThumbColor: const Color(0xFF22C55E),
           ),
         ],
       ),

@@ -7,7 +7,6 @@ import 'package:image_picker/image_picker.dart';
 import 'package:omi/backend/http/api/apps.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/main.dart';
-import 'package:omi/utils/l10n_extensions.dart';
 import 'package:omi/backend/schema/app.dart';
 import 'package:omi/utils/alerts/app_snackbar.dart';
 import 'package:omi/utils/analytics/mixpanel.dart';

@@ -69,7 +69,7 @@ class OmiButton extends AdaptiveWidget {
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
                       )
-                    : LinearGradient(
+                    : const LinearGradient(
                         colors: [ResponsiveHelper.backgroundTertiary, ResponsiveHelper.backgroundTertiary]),
                 borderRadius: BorderRadius.circular(12),
                 boxShadow: enabled

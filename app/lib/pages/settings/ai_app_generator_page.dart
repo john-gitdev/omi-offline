@@ -1247,7 +1247,7 @@ class _AiAppGeneratorPageState extends State<AiAppGeneratorPage> {
         Switch(
           value: value,
           onChanged: onChanged,
-          activeColor: activeColor,
+          activeThumbColor: activeColor,
         ),
       ],
     );

@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
-import 'package:growthbook_sdk_flutter/growthbook_sdk_flutter.dart';
 
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/env/env.dart';
@@ -19,21 +18,18 @@ class GrowthbookUtil {
   GrowthbookUtil._internal();
 
   static Future<void> init() async {
-    if (Env.growthbookApiKey == null) return;
     print('GrowthbookUtil init');
     var attr = {
       'id': SharedPreferencesUtil().uid,
       'device': Platform.isAndroid ? 'android' : 'ios',
     };
     _gb = await GBSDKBuilderApp(
-      apiKey: Env.growthbookApiKey!,
       backgroundSync: true,
       enable: true,
       attributes: attr,
       growthBookTrackingCallBack: (gbExperiment, gbExperimentResult) {
         Logger.debug('growthBookTrackingCallBack: $gbExperiment $gbExperimentResult');
       },
-      hostURL: 'https://cdn.growthbook.io/',
       qaMode: true,
     ).initialize();
     _gb!.setAttributes(attr);

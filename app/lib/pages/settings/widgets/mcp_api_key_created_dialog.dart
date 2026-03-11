@@ -41,7 +41,6 @@ class McpApiKeyCreatedDialog extends StatelessWidget {
           },
         ),
         ElevatedButton(
-          child: Text(context.l10n.copy),
           style: ElevatedButton.styleFrom(
             foregroundColor: Colors.white,
             backgroundColor: Theme.of(context).colorScheme.secondary,
@@ -50,6 +49,7 @@ class McpApiKeyCreatedDialog extends StatelessWidget {
             Clipboard.setData(ClipboardData(text: apiKey.key));
             AppSnackbar.showSnackbar(context.l10n.copiedToClipboard(context.l10n.keyWord));
           },
+          child: Text(context.l10n.copy),
         ),
       ],
     );

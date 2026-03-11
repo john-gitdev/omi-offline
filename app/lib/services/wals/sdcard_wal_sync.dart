@@ -312,7 +312,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     int offset = wal.storageOffset;
     int timerStart = wal.timerStart;
 
-    Logger.debug("_readStorageBytesToFile ${offset}");
+    Logger.debug("_readStorageBytesToFile $offset");
 
     List<List<int>> bytesData = [];
     var bytesLeft = 0;
@@ -1109,6 +1109,25 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             // Check if we have the complete frame
             if (packageOffset + 1 + packageSize > bufferLength) {
               break;
+            }
+
+            // Handle custom timestamp metadata packet (size 255)
+            if (packageSize == 255) {
+              if (packageOffset + 1 + 8 <= bufferLength) {
+                // Parse 8 bytes of timestamp data (4 bytes UTC + 4 bytes Uptime)
+                var metadata = tcpBuffer.sublist(packageOffset + 1, packageOffset + 1 + 8);
+                var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
+                var utcTime = byteData.getUint32(0, Endian.little);
+                var uptimeMs = byteData.getUint32(4, Endian.little);
+                
+                Logger.debug("SDCardWalSync WiFi: Parsed timestamp: UTC=$utcTime, UptimeMs=$uptimeMs");
+                
+                packageOffset += 1 + 8;
+                bytesProcessed = packageOffset;
+                continue;
+              } else {
+                break;
+              }
             }
 
             // Extract complete frame

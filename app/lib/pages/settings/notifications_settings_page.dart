@@ -241,8 +241,7 @@ class _NotificationsSettingsPageState extends State<NotificationsSettingsPage> {
               onPrimary: Colors.white,
               surface: Color(0xFF1C1C1E),
               onSurface: Colors.white,
-            ),
-            dialogBackgroundColor: const Color(0xFF1C1C1E),
+            ), dialogTheme: const DialogThemeData(backgroundColor: Color(0xFF1C1C1E)),
           ),
           child: child!,
         );
@@ -519,7 +518,7 @@ class _NotificationsSettingsPageState extends State<NotificationsSettingsPage> {
             trailing: Switch(
               value: _dailySummaryEnabled,
               onChanged: _updateDailySummaryEnabled,
-              activeColor: const Color(0xFF6366F1),
+              activeThumbColor: const Color(0xFF6366F1),
             ),
           ),
 
@@ -577,7 +576,7 @@ class _NotificationsSettingsPageState extends State<NotificationsSettingsPage> {
         trailing: Switch(
           value: _dailyReflectionEnabled,
           onChanged: _updateDailyReflectionEnabled,
-          activeColor: const Color(0xFF6366F1),
+          activeThumbColor: const Color(0xFF6366F1),
         ),
       ),
     );

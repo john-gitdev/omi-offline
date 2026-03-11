@@ -37,7 +37,7 @@ class ActionItemsProvider extends ChangeNotifier {
 
   // Multi-selection state
   bool _isSelectionMode = false;
-  Set<String> _selectedItems = {};
+  final Set<String> _selectedItems = {};
 
   // Getters
   List<ActionItemWithMetadata> get actionItems => _actionItems;

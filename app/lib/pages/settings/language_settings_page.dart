@@ -254,7 +254,7 @@ class _LanguageSettingsPageState extends State<LanguageSettingsPage> {
                       context.read<CaptureProvider>().onTranscriptionSettingsChanged();
                     }
                   },
-                  activeColor: const Color(0xFF22C55E),
+                  activeThumbColor: const Color(0xFF22C55E),
                 ),
             ],
           ),

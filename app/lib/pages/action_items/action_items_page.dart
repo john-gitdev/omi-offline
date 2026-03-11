@@ -1323,7 +1323,7 @@ class _ActionItemsPageState extends State<ActionItemsPage> with AutomaticKeepAli
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               // Circular progress indicator
-              Container(
+              SizedBox(
                 width: 22,
                 height: 22,
                 child: CustomPaint(

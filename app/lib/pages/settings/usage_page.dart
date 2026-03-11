@@ -35,7 +35,7 @@ class _UsagePageState extends State<UsagePage> with TickerProviderStateMixin {
   late TabController _tabController;
   final List<GlobalKey> _screenshotKeys = List.generate(4, (_) => GlobalKey());
   final List<bool> _isMetricVisible = [true, true, true, true];
-  bool _isUpgrading = false;
+  final bool _isUpgrading = false;
   late AnimationController _waveController;
   late AnimationController _notesController;
   late AnimationController _arrowController;

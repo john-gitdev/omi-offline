@@ -18,7 +18,6 @@ import 'package:omi/services/notifications/important_conversation_notification_h
 import 'package:omi/services/notifications/merge_notification_handler.dart';
 import 'package:omi/services/notifications/notification_interface.dart';
 import 'package:omi/services/apple_reminders_service.dart';
-import 'package:omi/utils/analytics/intercom.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/platform/platform_service.dart';
 

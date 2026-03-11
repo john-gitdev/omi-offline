@@ -14,7 +14,6 @@ import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/main.dart';
 import 'package:omi/services/wals.dart';
 import 'package:omi/utils/alerts/app_snackbar.dart';
-import 'package:omi/utils/l10n_extensions.dart';
 import 'package:omi/utils/logger.dart';
 
 class AudioPlayerUtils extends ChangeNotifier {
@@ -283,11 +282,9 @@ class AudioPlayerUtils extends ChangeNotifier {
     List<Uint8List> pcmFrames = [];
     for (final opusFrame in opusFrames) {
       final pcmFrame = decoder.decode(input: opusFrame);
-      if (pcmFrame != null) {
-        final uint8Frame = Uint8List.fromList(pcmFrame.buffer.asUint8List());
-        pcmFrames.add(uint8Frame);
-      }
-    }
+      final uint8Frame = Uint8List.fromList(pcmFrame.buffer.asUint8List());
+      pcmFrames.add(uint8Frame);
+        }
 
     if (pcmFrames.isEmpty) return null;
 

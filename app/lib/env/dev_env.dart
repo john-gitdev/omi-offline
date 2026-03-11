@@ -22,7 +22,6 @@ final class DevEnv implements EnvFields {
 
   @override
   @EnviedField(varName: 'GROWTHBOOK_API_KEY', obfuscate: true)
-  final String? growthbookApiKey = _DevEnv.growthbookApiKey;
 
   @override
   @EnviedField(varName: 'GOOGLE_MAPS_API_KEY', obfuscate: true)
@@ -30,15 +29,12 @@ final class DevEnv implements EnvFields {
 
   @override
   @EnviedField(varName: 'INTERCOM_APP_ID', obfuscate: true)
-  final String? intercomAppId = _DevEnv.intercomAppId;
 
   @override
   @EnviedField(varName: 'INTERCOM_IOS_API_KEY', obfuscate: true)
-  final String? intercomIOSApiKey = _DevEnv.intercomIOSApiKey;
 
   @override
   @EnviedField(varName: 'INTERCOM_ANDROID_API_KEY', obfuscate: true)
-  final String? intercomAndroidApiKey = _DevEnv.intercomAndroidApiKey;
 
   @override
   @EnviedField(varName: 'GOOGLE_CLIENT_ID', obfuscate: true)

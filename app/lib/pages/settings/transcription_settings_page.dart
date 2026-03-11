@@ -554,7 +554,7 @@ class _TranscriptionSettingsPageState extends State<TranscriptionSettingsPage> {
 
       // Build the active config (with correct provider based on _useCustomStt)
       final currentConfig = _buildCurrentConfig();
-      final activeConfig = _useCustomStt ? currentConfig : CustomSttConfig(provider: SttProvider.omi);
+      final activeConfig = _useCustomStt ? currentConfig : const CustomSttConfig(provider: SttProvider.omi);
 
       final previousConfig = SharedPreferencesUtil().customSttConfig;
       final configChanged = previousConfig.sttConfigId != activeConfig.sttConfigId;
