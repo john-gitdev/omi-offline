@@ -14,6 +14,7 @@
 #include <zephyr/dt-bindings/gpio/nordic-nrf-gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/random/random.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/ring_buffer.h>
 
@@ -826,18 +827,28 @@ bool write_to_storage(void)
     return write_custom_packet_to_storage((uint8_t)tx_buffer_size, buffer, (uint8_t)tx_buffer_size);
 }
 
+static uint32_t session_id = 0;
+static uint32_t chunk_index = 0;
+
 bool write_timestamp_to_storage(void)
 {
-    uint8_t temp_buffer[8];
+    if (session_id == 0) {
+        session_id = sys_rand32_get();
+    }
+
+    uint8_t temp_buffer[16];
     uint32_t utc_time = get_utc_time();
     uint32_t uptime_ms = k_uptime_get_32();
-    
+
     memcpy(temp_buffer, &utc_time, 4);
     memcpy(temp_buffer + 4, &uptime_ms, 4);
-    
-    return write_custom_packet_to_storage(255, temp_buffer, 8);
-}
-#endif
+    memcpy(temp_buffer + 8, &session_id, 4);
+    memcpy(temp_buffer + 12, &chunk_index, 4);
+
+    chunk_index++;
+
+    return write_custom_packet_to_storage(255, temp_buffer, 16);
+}#endif
 
 static bool use_storage = true;
 #define MAX_FILES 10
