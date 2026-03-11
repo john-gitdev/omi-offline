@@ -61,8 +61,41 @@ class OfflineAudioProcessor {
 
   /// Processes a list of Opus frames.
   /// Returns a list of saved file paths if any recordings were completed during this chunk.
-  Future<List<String>> processFrames(List<Uint8List> opusFrames, DateTime chunkStartTime) async {
+  Future<List<String>> processFrames(List<Uint8List> opusFrames, DateTime fallbackStartTime, {int? sessionId}) async {
     List<String> savedFiles = [];
+
+    // 1. Scan for the first 255 metadata packet to get exact timing
+    DateTime chunkStartTime = fallbackStartTime;
+    
+    if (sessionId != null) {
+       for (var frame in opusFrames) {
+          if (frame.length == 255) {
+             try {
+                // The frame itself doesn't have the size byte if it's already extracted, 
+                // but let's assume the frame passed in is exactly 255 bytes long.
+                var byteData = ByteData.sublistView(frame);
+                var utcTime = byteData.getUint32(0, Endian.little);
+                var uptimeMs = byteData.getUint32(4, Endian.little);
+                
+                if (utcTime > 0) {
+                   chunkStartTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
+                } else {
+                   // Lookup anchor
+                   final anchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
+                   final anchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
+                   
+                   if (anchorUtc > 0 && anchorUptime > 0) {
+                      final realUtcSecs = anchorUtc - ((anchorUptime - uptimeMs) ~/ 1000);
+                      chunkStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+                   }
+                }
+                break; // Found the precise time, stop scanning
+             } catch (e) {
+                // skip corrupt
+             }
+          }
+       }
+    }
 
     if (_currentRecordingFrames.isNotEmpty && _recordingStartTime != null) {
       final expectedStartTime =
@@ -84,6 +117,9 @@ class OfflineAudioProcessor {
     }
 
     for (var frame in opusFrames) {
+      // Skip the metadata packets during actual audio processing
+      if (frame.length == 255) continue;
+
       Int16List pcmData;
       try {
         pcmData = _decoder.decode(input: frame);

@@ -43,27 +43,55 @@ class RecordingsManager {
       return null;
     }
 
-    // Process raw chunks
+    // Process raw chunks (Now they are in Session Folders!)
     if (await rawChunksDir.exists()) {
-      final dateFolders = rawChunksDir.listSync().whereType<Directory>();
-      for (var folder in dateFolders) {
-        final dateString = folder.path.split('/').last;
-        final date = parseDate(dateString);
-        if (date != null) {
-          final chunks = folder.listSync().whereType<File>().where((f) => f.path.endsWith('.bin')).toList();
-          chunks.sort((a, b) => a.path.compareTo(b.path)); // Simple sort by name
-          
-          batchesMap[dateString] = DailyBatch(
-            dateString: dateString,
-            date: date,
-            rawChunks: chunks,
-            processedRecordings: [],
-          );
+      final sessionFolders = rawChunksDir.listSync().whereType<Directory>();
+      for (var folder in sessionFolders) {
+        final sessionIdStr = folder.path.split('/').last;
+        
+        // Skip the unsynced folder
+        if (sessionIdStr == 'unsynced') continue;
+
+        // Try to determine the real date from the anchor
+        final anchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionIdStr', defaultValue: 0);
+        
+        DateTime chunkDate;
+        if (anchorUtc > 0) {
+          chunkDate = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
+        } else {
+          // Fallback if no anchor yet (or device still unsynced)
+          chunkDate = DateTime.now(); // Should maybe be something else, but works for grouping
+        }
+        
+        final dateString = '${chunkDate.year}-${chunkDate.month.toString().padLeft(2, '0')}-${chunkDate.day.toString().padLeft(2, '0')}';
+
+        final chunks = folder.listSync().whereType<File>().where((f) => f.path.endsWith('.bin')).toList();
+        
+        // Sort chunks by their index (e.g. "12345_1.bin", "12345_2.bin")
+        chunks.sort((a, b) {
+          final aName = a.path.split('/').last.replaceAll('.bin', '');
+          final bName = b.path.split('/').last.replaceAll('.bin', '');
+          final aIndex = int.tryParse(aName.split('_').last) ?? 0;
+          final bIndex = int.tryParse(bName.split('_').last) ?? 0;
+          return aIndex.compareTo(bIndex);
+        });
+
+        if (chunks.isNotEmpty) {
+          if (batchesMap.containsKey(dateString)) {
+            batchesMap[dateString]!.rawChunks.addAll(chunks);
+          } else {
+            batchesMap[dateString] = DailyBatch(
+              dateString: dateString,
+              date: chunkDate,
+              rawChunks: chunks,
+              processedRecordings: [],
+            );
+          }
         }
       }
     }
 
-    // Process recordings
+    // Process finalized recordings (These are still grouped cleanly in YYYY-MM-DD folders)
     if (await recordingsDir.exists()) {
       final dateFolders = recordingsDir.listSync().whereType<Directory>();
       for (var folder in dateFolders) {
@@ -113,20 +141,14 @@ class RecordingsManager {
       final file = batch.rawChunks[i];
       final bytes = await file.readAsBytes();
       
-      // Parse timestamp from filename (assuming audio_limitless_opus_..._timestampMs.bin)
-      // or simply fallback to file modified time if filename format is different.
-      // Current format: audio_limitless_opus_16000_1_fs320_r{random}_{timestampMs}.bin
+      // Get session ID from folder name
+      final sessionIdStr = file.parent.path.split('/').last;
+      int? sessionId = int.tryParse(sessionIdStr);
+      
+      // The exact chunk start time will be computed INSIDE processFrames by reading the 255 packet!
+      // We just pass a fallback time here in case the chunk doesn't have one (very rare).
       DateTime chunkStartTime = file.lastModifiedSync();
-      try {
-        final name = file.path.split('/').last;
-        final parts = name.replaceAll('.bin', '').split('_');
-        final tsString = parts.last;
-        final tsMs = int.parse(tsString);
-        chunkStartTime = DateTime.fromMillisecondsSinceEpoch(tsMs);
-      } catch (e) {
-        // Keep fallback
-      }
-
+      
       // Read frames from .bin file (Format: [4-byte length][frame data][4-byte length][frame data]...)
       List<Uint8List> frames = [];
       int offset = 0;
@@ -145,8 +167,8 @@ class RecordingsManager {
         offset += length;
       }
 
-      // Process frames
-      await processor.processFrames(frames, chunkStartTime);
+      // Process frames (Pass sessionId so it can look up the correct anchor)
+      await processor.processFrames(frames, chunkStartTime, sessionId: sessionId);
 
       // Report progress
       onProgress((i + 1) / batch.rawChunks.length);
@@ -158,20 +180,24 @@ class RecordingsManager {
 
     // 5. Check adjustment mode. If OFF, delete the raw chunks.
     if (!SharedPreferencesUtil().offlineAdjustmentMode) {
+      Set<String> sessionFoldersToDelete = {};
+      
       for (var file in batch.rawChunks) {
         if (await file.exists()) {
+          sessionFoldersToDelete.add(file.parent.path);
           await file.delete();
         }
       }
       
-      // Try to delete the empty folder
-      final directory = await getApplicationDocumentsDirectory();
-      final dateFolder = Directory('${directory.path}/raw_chunks/${batch.dateString}');
-      if (await dateFolder.exists()) {
-        try {
-          await dateFolder.delete();
-        } catch (e) {
-          // Ignore if not empty
+      // Try to delete the empty session folders
+      for (var folderPath in sessionFoldersToDelete) {
+        final folder = Directory(folderPath);
+        if (await folder.exists()) {
+          try {
+            await folder.delete();
+          } catch (e) {
+            // Ignore if not empty
+          }
         }
       }
     }
