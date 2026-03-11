@@ -38,6 +38,14 @@ class SharedPreferencesUtil {
 
   set offlineMinSpeechSeconds(int value) => saveInt('offlineMinSpeechSeconds', value);
 
+  int get offlinePreSpeechSeconds => getInt('offlinePreSpeechSeconds', defaultValue: 1);
+
+  set offlinePreSpeechSeconds(int value) => saveInt('offlinePreSpeechSeconds', value);
+
+  int get offlineGapSeconds => getInt('offlineGapSeconds', defaultValue: 10);
+
+  set offlineGapSeconds(int value) => saveInt('offlineGapSeconds', value);
+
   bool get offlineAdjustmentMode => getBool('offlineAdjustmentMode', defaultValue: false);
 
   set offlineAdjustmentMode(bool value) => saveBool('offlineAdjustmentMode', value);
@@ -55,11 +63,16 @@ class SharedPreferencesUtil {
     if (!_preferences!.containsKey('offlineMinSpeechSeconds')) {
       _preferences!.setInt('offlineMinSpeechSeconds', 0); // 0 seconds default
     }
+    if (!_preferences!.containsKey('offlinePreSpeechSeconds')) {
+      _preferences!.setInt('offlinePreSpeechSeconds', 1);
+    }
+    if (!_preferences!.containsKey('offlineGapSeconds')) {
+      _preferences!.setInt('offlineGapSeconds', 10);
+    }
     if (!_preferences!.containsKey('offlineAdjustmentMode')) {
       _preferences!.setBool('offlineAdjustmentMode', false);
     }
   }
-
   set uid(String value) => saveString('uid', value);
 
   String get uid => getString('uid');
