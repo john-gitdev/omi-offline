@@ -26,6 +26,7 @@
 #include "lib/core/sd_card.h"
 #include "spi_flash.h"
 #include "wdog_facade.h"
+#include "wifi.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
 
