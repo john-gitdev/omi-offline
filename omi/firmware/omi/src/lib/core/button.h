@@ -7,6 +7,8 @@
 typedef enum { IDLE, GRACE } FSM_STATE_T;
 
 extern volatile bool is_muted;
+extern volatile bool is_led_enabled;
+extern volatile uint8_t star_flash_count;
 
 int button_init();
 void activate_button_work();
