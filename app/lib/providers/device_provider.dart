@@ -25,6 +25,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   int storageFullPercentage = -1;
   int _lastNotifiedBatteryLevel = -1;
   DateTime? _lastBatteryNotifyTime;
+  int _lastNotifiedStorageLevel = -1;
+  DateTime? _lastStorageNotifyTime;
   bool _hasLowBatteryAlerted = false;
   Timer? _reconnectionTimer;
   DateTime? _reconnectAt;
@@ -172,7 +174,21 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       connectedDevice!.id,
       onStorageFullChange: (int value) {
         storageFullPercentage = value;
-        notifyListeners();
+
+        final delta = (_lastNotifiedStorageLevel - value).abs();
+        final elapsed = _lastStorageNotifyTime == null
+            ? const Duration(minutes: 999)
+            : DateTime.now().difference(_lastStorageNotifyTime!);
+        final crossedWarningThreshold =
+            (value >= 90 && _lastNotifiedStorageLevel < 90) || (value < 90 && _lastNotifiedStorageLevel >= 90);
+        final shouldNotify =
+            _lastNotifiedStorageLevel == -1 || delta >= 5 || elapsed.inMinutes >= 15 || crossedWarningThreshold;
+
+        if (shouldNotify) {
+          _lastNotifiedStorageLevel = value;
+          _lastStorageNotifyTime = DateTime.now();
+          notifyListeners();
+        }
       },
     );
     notifyListeners();

@@ -9,6 +9,7 @@ import 'package:version/version.dart';
 
 import 'package:path_provider/path_provider.dart';
 
+import 'package:disk_space_2/disk_space_2.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/backend/preferences.dart';
@@ -80,6 +81,22 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _lastProgressUpdate = null;
     _activeTcpTransport = null;
     _activeTransferCompleter = null;
+  }
+
+  Future<void> _checkDiskSpaceBeforeSync(int totalBytesToDownload) async {
+    try {
+      final double? freeSpaceMb = await DiskSpace.getFreeDiskSpace;
+      if (freeSpaceMb != null) {
+        // We need at least 2x the space (raw .bin + temporary WAV + final .aac)
+        final double requiredMb = (totalBytesToDownload * 2.5) / (1024 * 1024);
+        if (freeSpaceMb < requiredMb) {
+          throw Exception("Phone Storage Full: Need ${requiredMb.toStringAsFixed(1)} MB free, but only ${freeSpaceMb.toStringAsFixed(1)} MB available.");
+        }
+      }
+    } catch (e) {
+      if (e.toString().contains("Phone Storage Full")) rethrow;
+      Logger.debug("SDCardWalSync: Disk space check failed (non-fatal): $e");
+    }
   }
 
   void _updateSpeed(int bytesDownloaded) {
@@ -506,6 +523,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     _downloadStartTime = DateTime.now();
     _totalBytesDownloaded = 0;
+
+    await _checkDiskSpaceBeforeSync(totalBytesToDownload);
 
     try {
       await _readStorageBytesToFile(wal, (File file, int offset, int timerStart, {String? subFolder}) async {
@@ -1020,6 +1039,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       int currentUptimeMs = 0;
       int? currentSessionId;
       int? currentChunkIndex;
+
+      await _checkDiskSpaceBeforeSync(totalBytes);
 
       // Step 7: Send command to start SD card read over BLE
       debugPrint("SDCardWalSync WiFi: Step 7 - Sending start read command over BLE...");

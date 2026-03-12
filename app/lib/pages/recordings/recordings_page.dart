@@ -4,6 +4,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/services/services.dart';
 import 'package:omi/pages/settings/settings_drawer.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:omi/widgets/dialog.dart';
@@ -21,6 +22,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
   
   List<DailyBatch> _batches = [];
   bool _isLoading = true;
+  bool _isSyncing = false;
   String? _currentlyPlayingPath;
   bool _isPlaying = false;
   
@@ -59,6 +61,45 @@ class _RecordingsPageState extends State<RecordingsPage> {
         _batches = batches;
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _handleSync() async {
+    if (_isSyncing) return;
+    
+    setState(() {
+      _isSyncing = true;
+    });
+
+    try {
+      final syncService = ServiceManager.instance().wal.getSyncs();
+      syncService.start(); // Refresh missing WALs list
+      final result = await syncService.syncAll();
+      
+      if (mounted) {
+        if (result != null && (result.newConversationIds.isNotEmpty || result.updatedConversationIds.isNotEmpty)) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Sync complete! New recordings found.')),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Sync complete. No new data.')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sync failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSyncing = false;
+        });
+        _loadBatches();
+      }
     }
   }
 
@@ -277,14 +318,15 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
                     : RefreshIndicator(
                         color: Colors.deepPurpleAccent,
-                        onRefresh: _loadBatches,
+                        onRefresh: _handleSync,
                         child: _batches.isEmpty
                             ? ListView(
+                                physics: const AlwaysScrollableScrollPhysics(),
                                 children: const [
                                   SizedBox(height: 100),
                                   Center(
                                     child: Text(
-                                      'No recordings found.\nSync your device to begin.',
+                                      'No recordings found.\nSwipe down to sync device.',
                                       textAlign: TextAlign.center,
                                       style: TextStyle(color: Colors.grey, fontSize: 16),
                                     ),
@@ -292,6 +334,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                 ],
                               )
                             : ListView.builder(
+                                physics: const AlwaysScrollableScrollPhysics(),
                                 padding: const EdgeInsets.all(16),
                                 itemCount: _batches.length,
                                 itemBuilder: (context, index) {
