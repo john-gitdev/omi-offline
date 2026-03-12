@@ -95,6 +95,12 @@ int haptic_init(void)
         return -ENODEV;
     }
 
+    int err = gpio_pin_configure_dt(&haptic_pin, GPIO_OUTPUT_INACTIVE);
+    if (err) {
+        LOG_ERR("Failed to configure haptic pin (err %d)", err);
+        return err;
+    }
+
     // Initialize the delayable work item
     k_work_init_delayable(&haptic_off_work, haptic_off_work_handler);
 
@@ -119,13 +125,6 @@ void play_haptic_milli(uint32_t duration)
         return;
     }
 
-    // Configure GPIO pin just before turning it on
-    int err = gpio_pin_configure_dt(&haptic_pin, GPIO_OUTPUT);
-    if (err) {
-        LOG_ERR("Failed to configure haptic pin for output (err %d)", err);
-        return;
-    }
-
     if (duration > MAX_HAPTIC_DURATION) {
         LOG_WRN("Requested haptic duration %u exceeds max %d, capping.", duration, MAX_HAPTIC_DURATION);
         duration = MAX_HAPTIC_DURATION;
@@ -133,8 +132,16 @@ void play_haptic_milli(uint32_t duration)
 
     LOG_INF("Playing haptic for %u ms", duration);
     gpio_pin_set_dt(&haptic_pin, 1);
+    
     // Schedule the work item to turn the haptic off after the duration
-    k_work_schedule(&haptic_off_work, K_MSEC(duration));
+    int ret = k_work_schedule(&haptic_off_work, K_MSEC(duration));
+    if (ret < 0) {
+        LOG_ERR("Failed to schedule haptic off work (%d)", ret);
+        // Fallback: turn off immediately or after a busy wait?
+        // Let's just turn it off to prevent infinite vibration
+        k_msleep(duration);
+        gpio_pin_set_dt(&haptic_pin, 0);
+    }
 }
 
 void register_haptic_service(void)

@@ -10,8 +10,10 @@
 #include "lib/core/button.h"
 #include "lib/core/led.h"
 #include "lib/core/mic.h"
+#include "lib/core/haptic.h"
 #include "lib/core/utils.h"
 #include "lib/core/sd_card.h"
+#include "lib/core/storage.h"
 #include "lib/core/settings.h"
 #include "rtc.h"
 #include "imu.h"
@@ -148,7 +150,20 @@ int main(void)
     if (ret) printk("LED failed %d\n", ret);
     boot_led_sequence();
 
+    app_settings_init();
+
     init_rtc();
+    lsm6dsl_time_boot_adjust_rtc();
+
+    haptic_init();
+
+    flash_init();
+
+    app_sd_init();
+
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    storage_init();
+#endif
 
     suspend_unused_modules();
 
