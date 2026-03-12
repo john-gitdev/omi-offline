@@ -6,10 +6,22 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import 'package:omi/backend/preferences.dart';
-import 'package:omi/utils/analytics/mixpanel.dart';
-import 'package:omi/utils/debugging/crash_reporter.dart';
-import 'package:omi/utils/debugging/crashlytics_manager.dart';
+import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/platform/platform_service.dart';
+
+class DummyCrashReporter {
+  void logInfo(String message) {
+    Logger.debug('CrashReporter: $message');
+  }
+
+  void logError(dynamic error, dynamic stackTrace, {String? reason}) {
+    Logger.error('CrashReporter Error: $error - Reason: $reason');
+  }
+
+  void reportCrash(dynamic error, dynamic stackTrace) {
+    Logger.error('CrashReporter Crash: $error');
+  }
+}
 
 /// Centralized platform manager for all platform-specific services
 /// This provides a single point of access for all platform services
@@ -24,14 +36,11 @@ class PlatformManager {
   static PlatformManager get instance => _instance;
 
   // Service instances
-  MixpanelManager get mixpanel => MixpanelManager();
-  CrashReporter get crashReporter => CrashlyticsManager.instance;
+  DummyCrashReporter get crashReporter => DummyCrashReporter();
 
   static Future<void> initializeServices() async {
     _instance._packageInfo = await PackageInfo.fromPlatform();
     _instance._deviceIdHash = await _instance._getDeviceIdHash();
-    await MixpanelManager.init();
-    await IntercomManager.instance.initIntercom();
   }
 
   Future<String> _getDeviceIdHash() async {

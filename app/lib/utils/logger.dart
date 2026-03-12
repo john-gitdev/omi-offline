@@ -1,36 +1,27 @@
 import 'package:flutter/material.dart';
 
-import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:talker_flutter/talker_flutter.dart';
 
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/l10n_extensions.dart';
 
-class CrashlyticsTalkerObserver extends TalkerObserver {
-  CrashlyticsTalkerObserver();
+class SimpleTalkerObserver extends TalkerObserver {
+  SimpleTalkerObserver();
 
   @override
   void onError(err) {
-    FirebaseCrashlytics.instance.recordError(
-      err.error,
-      err.stackTrace,
-      reason: err.message,
-    );
+    // Local logging only
   }
 
   @override
   void onException(err) {
-    FirebaseCrashlytics.instance.recordError(
-      err.exception,
-      err.stackTrace,
-      reason: err.message,
-    );
+    // Local logging only
   }
 }
 
 class Logger {
-  final crashlyticsTalkerObserver = CrashlyticsTalkerObserver();
-  late final talker = TalkerFlutter.init(observer: crashlyticsTalkerObserver);
+  final talkerObserver = SimpleTalkerObserver();
+  late final talker = TalkerFlutter.init(observer: talkerObserver);
 
   Logger._();
 
@@ -88,13 +79,6 @@ class LoggerSnackbar extends StatelessWidget {
         title: Text(
           data.message ?? context.l10n.somethingWentWrongTryAgain,
           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
-        trailing: IconButton(
-          icon: const Icon(Icons.share, color: Colors.white),
-          onPressed: () async {
-            // TODO: Have a custom form which can be prefilled with the error stack trace instead of opening the Gleap Homepage
-            await Intercom.instance.displayMessenger();
-          },
         ),
       ),
     );

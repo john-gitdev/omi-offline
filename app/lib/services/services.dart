@@ -9,7 +9,6 @@ import 'package:flutter_sound/flutter_sound.dart';
 
 import 'package:omi/services/connectivity_service.dart';
 import 'package:omi/services/devices.dart';
-import 'package:omi/services/sockets.dart';
 import 'package:omi/services/wals.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/platform/platform_service.dart';
@@ -17,7 +16,6 @@ import 'package:omi/utils/platform/platform_service.dart';
 class ServiceManager {
   late IMicRecorderService _mic;
   late IDeviceService _device;
-  late ISocketService _socket;
   late IWalService _wal;
   late ISystemAudioRecorderService _systemAudio;
 
@@ -29,7 +27,6 @@ class ServiceManager {
       runner: BackgroundService(),
     );
     sm._device = DeviceService();
-    sm._socket = SocketServicePool();
     sm._wal = WalService();
     if (PlatformService.isDesktop) {
       sm._systemAudio = DesktopSystemAudioRecorderService();
@@ -49,8 +46,6 @@ class ServiceManager {
   IMicRecorderService get mic => _mic;
 
   IDeviceService get device => _device;
-
-  ISocketService get socket => _socket;
 
   IWalService get wal => _wal;
 
