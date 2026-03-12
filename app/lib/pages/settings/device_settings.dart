@@ -10,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
+import 'package:omi/utils/device.dart';
 import 'sync_page.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
@@ -229,10 +230,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       child: Column(
         children: [
           _buildProfileStyleItem(
-            icon: FontAwesomeIcons.microchip,
-            title: context.l10n.deviceName,
-            chipValue: deviceName,
-            copyValue: deviceName,
+            icon: FontAwesomeIcons.batteryFull,
+            title: context.l10n.battery,
+            chipValue: provider.batteryLevel >= 0 ? '${provider.batteryLevel}%' : '...',
             showChevron: false,
           ),
           const Divider(height: 1, color: Color(0xFF3C3C43)),
@@ -714,6 +714,54 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     );
   }
 
+  Widget _buildDeviceHeader(BtDevice? device, bool isConnected) {
+    return Center(
+      child: Column(
+        children: [
+          const SizedBox(height: 20),
+          Hero(
+            tag: 'device_image',
+            child: Image.asset(
+              DeviceUtils.getDeviceImagePathWithState(isConnected: isConnected),
+              width: 180,
+              height: 180,
+              fit: BoxFit.contain,
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            device?.name ?? 'Omi CV1',
+            style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  color: isConnected ? Colors.greenAccent : Colors.redAccent,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                isConnected ? context.l10n.connected : context.l10n.disconnected,
+                style: TextStyle(
+                  color: isConnected ? Colors.greenAccent : Colors.redAccent,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 40),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Consumer<DeviceProvider>(
@@ -738,8 +786,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                _buildDeviceHeader(provider.pairedDevice, provider.isConnected),
                 if (!provider.isConnected) ...[
-                  const SizedBox(height: 16),
                   _buildDisconnectedOverlay(),
                   const SizedBox(height: 32),
                 ],

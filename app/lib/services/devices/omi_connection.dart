@@ -260,6 +260,47 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<BtDevice> performGetDeviceInfo(DeviceConnection? connection) async {
-    return device;
+    try {
+      String? modelNumber;
+      try {
+        final data = await transport.readCharacteristic(disServiceUuid, disModelNumberCharacteristicUuid);
+        if (data.isNotEmpty) modelNumber = String.fromCharCodes(data);
+      } catch (_) {}
+
+      String? firmwareRevision;
+      try {
+        final data = await transport.readCharacteristic(disServiceUuid, disFirmwareRevisionCharacteristicUuid);
+        if (data.isNotEmpty) firmwareRevision = String.fromCharCodes(data);
+      } catch (_) {}
+
+      String? hardwareRevision;
+      try {
+        final data = await transport.readCharacteristic(disServiceUuid, disHardwareRevisionCharacteristicUuid);
+        if (data.isNotEmpty) hardwareRevision = String.fromCharCodes(data);
+      } catch (_) {}
+
+      String? manufacturerName;
+      try {
+        final data = await transport.readCharacteristic(disServiceUuid, disManufacturerNameCharacteristicUuid);
+        if (data.isNotEmpty) manufacturerName = String.fromCharCodes(data);
+      } catch (_) {}
+
+      String? serialNumber;
+      try {
+        final data = await transport.readCharacteristic(disServiceUuid, disSerialNumberCharacteristicUuid);
+        if (data.isNotEmpty) serialNumber = String.fromCharCodes(data);
+      } catch (_) {}
+
+      return device.copyWith(
+        modelNumber: modelNumber,
+        firmwareRevision: firmwareRevision,
+        hardwareRevision: hardwareRevision,
+        manufacturerName: manufacturerName,
+        serialNumber: serialNumber,
+      );
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Error getting device info: $e');
+      return device;
+    }
   }
 }

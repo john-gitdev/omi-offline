@@ -6,6 +6,7 @@ import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/pages/settings/settings_drawer.dart';
+import 'package:omi/pages/settings/find_devices_page.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -325,6 +326,24 @@ class _RecordingsPageState extends State<RecordingsPage> {
             title: const Text('Daily Recordings', style: TextStyle(color: Colors.white)),
             backgroundColor: const Color(0xFF0D0D0D),
             actions: [
+              if (!deviceProvider.isConnected)
+                IconButton(
+                  icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Colors.grey, size: 20),
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                    );
+                  },
+                )
+              else
+                IconButton(
+                  icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Colors.blueAccent, size: 20),
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (c) => const DeviceSettings()),
+                    );
+                  },
+                ),
               IconButton(
                 icon: const FaIcon(FontAwesomeIcons.gear, color: Colors.white, size: 20),
                 onPressed: () {
@@ -345,13 +364,32 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         child: _batches.isEmpty
                             ? ListView(
                                 physics: const AlwaysScrollableScrollPhysics(),
-                                children: const [
-                                  SizedBox(height: 100),
+                                children: [
+                                  const SizedBox(height: 100),
                                   Center(
-                                    child: Text(
-                                      'No recordings found.\nSwipe down to sync device.',
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(color: Colors.grey, fontSize: 16),
+                                    child: Column(
+                                      children: [
+                                        const Text(
+                                          'No recordings found.\nSwipe down to sync device.',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(color: Colors.grey, fontSize: 16),
+                                        ),
+                                        if (!deviceProvider.isConnected) ...[
+                                          const SizedBox(height: 32),
+                                          ElevatedButton(
+                                            onPressed: () {
+                                              Navigator.of(context).push(
+                                                MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                                              );
+                                            },
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: Colors.deepPurpleAccent,
+                                              foregroundColor: Colors.white,
+                                            ),
+                                            child: const Text('Connect Omi'),
+                                          ),
+                                        ],
+                                      ],
                                     ),
                                   ),
                                 ],

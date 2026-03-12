@@ -7,6 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'device_settings.dart';
+import 'find_devices_page.dart';
 import 'offline_audio_settings_page.dart';
 import 'sync_page.dart';
 
@@ -229,6 +230,18 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                 children: [
                   _buildSectionContainer(
                     children: [
+                      _buildSettingsItem(
+                        title: 'Find Omi Devices',
+                        icon: const FaIcon(FontAwesomeIcons.magnifyingGlass, color: Color(0xFF8E8E93), size: 20),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => const FindDevicesPage(),
+                            ),
+                          );
+                        },
+                      ),
+                      const Divider(height: 1, color: Color(0xFF3C3C43)),
                       _buildSettingsItem(
                         title: 'Sync Device',
                         icon: const FaIcon(FontAwesomeIcons.solidCloud, color: Color(0xFF8E8E93), size: 20),
