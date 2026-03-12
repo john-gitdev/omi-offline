@@ -27,6 +27,8 @@ LOG_MODULE_REGISTER(button, CONFIG_LOG_DEFAULT_LEVEL);
 
 extern bool is_off;
 volatile bool is_muted = false;
+volatile bool is_led_enabled = true;
+volatile uint8_t star_flash_count = 0;
 
 static const struct device *const buttons = DEVICE_DT_GET(DT_ALIAS(buttons));
 static const struct gpio_dt_spec usr_btn = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(usr_btn), gpios, {0});
@@ -80,17 +82,11 @@ void check_button_level(struct k_work *work_item)
                 LOG_INF("Mute toggled: %s", is_muted ? "ON" : "OFF");
                 play_haptic_milli(500);
                 
-                if (is_muted) {
-                    set_led_red(true);
-                    set_led_green(false);
-                } else {
-                    set_led_red(false);
-                    set_led_green(true);
-                }
+                // Note: LED colors are now handled in set_led_state() in main.c
                 
                 fsm_state = STATE_IDLE;
             } else {
-                // Short press. Wait for second tap.
+                // Short press. Wait for second tap window.
                 fsm_state = STATE_FIRST_RELEASE;
                 state_timer = 0;
             }
@@ -104,8 +100,9 @@ void check_button_level(struct k_work *work_item)
         } else {
             uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
             if (idle_duration_ms > DOUBLE_TAP_WINDOW) {
-                // Timeout. It was just a single tap. Do nothing.
-                LOG_INF("Single tap detected (ignored)");
+                // Timeout. It was a single tap!
+                is_led_enabled = !is_led_enabled;
+                LOG_INF("Single tap: LED toggled %s", is_led_enabled ? "ON" : "OFF");
                 fsm_state = STATE_IDLE;
             }
         }
@@ -117,14 +114,19 @@ void check_button_level(struct k_work *work_item)
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
             if (duration_ms < POWER_OFF_HOLD_TIME) {
                 // Double tap (release happened before 3s) -> Star
-                LOG_INF("Double tap (Star) detected");
-                play_haptic_milli(300);
-                // TODO: Write Star marker to SD card
+                if (!is_muted) {
+                    LOG_INF("Double tap (Star) detected");
+                    play_haptic_milli(300);
+                    star_flash_count = 2; // Trigger 1s white flash (2 cycles of 500ms)
+                } else {
+                    LOG_INF("Double tap ignored (muted)");
+                }
             }
             fsm_state = STATE_IDLE;
         } else {
             // Still pressed. Check if we hit 3s.
-            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            uint32_t duration_ms = state_timer * BUTTON_TIMER_CHECK_INTERVAL; // Wait, macro name typo check
+            duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
             if (duration_ms >= POWER_OFF_HOLD_TIME) {
                 // Double tap + Long hold 3s -> Power Off
                 LOG_INF("Power off triggered via Double-Tap-Hold");
