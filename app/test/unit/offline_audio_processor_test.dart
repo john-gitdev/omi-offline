@@ -7,7 +7,6 @@ import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:path/path.dart' as p;
 
 class MockPathProvider extends Fake with MockPlatformInterfaceMixin implements PathProviderPlatform {
   String? tempPath;

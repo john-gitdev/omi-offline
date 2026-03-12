@@ -533,7 +533,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         int bytesInChunk = offset - lastOffset;
         _updateSpeed(bytesInChunk);
-        await _registerSingleChunk(wal, file, timerStart, chunkFrames);
+        await _registerSingleChunk(wal, file, timerStart);
         chunksDownloaded++;
         lastOffset = offset;
 
@@ -1027,7 +1027,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       final bool useMarkers = _supportsTimestampMarkers();
       var chunkSize = useMarkers ? sdcardChunkSizeSecs * wal.codec.getFramesPerSecond() : sdcardChunkSizeSecs * 100;
       var timerStart = wal.timerStart;
-      List<MapEntry<int, int>> timestampMarkers = [];
 
       final initialOffset = wal.storageOffset;
       var offset = wal.storageOffset;
@@ -1118,21 +1117,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             if (packageSize == 0) {
               packageOffset += 1;
               bytesProcessed = packageOffset;
-              continue;
-            }
-
-            // Timestamp marker: 0xFF followed by 4-byte little-endian epoch (firmware >= 3.0.16)
-            if (useMarkers && packageSize == 0xFF && packageOffset + 5 <= bufferLength) {
-              var epoch = tcpBuffer[packageOffset + 1] |
-                  (tcpBuffer[packageOffset + 2] << 8) |
-                  (tcpBuffer[packageOffset + 3] << 16) |
-                  (tcpBuffer[packageOffset + 4] << 24);
-              packageOffset += 5;
-              bytesProcessed = packageOffset;
-              if (epoch > 0) {
-                timestampMarkers.add(MapEntry(bytesData.length, epoch));
-                Logger.debug('SDCardWalSync WiFi: Timestamp marker: epoch=$epoch at frame ${bytesData.length}');
-              }
               continue;
             }
 
@@ -1321,6 +1305,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         } catch (e) {
           Logger.debug('SDCardWalSync WiFi: Error flushing chunk: $e');
         }
+      }
 
       // Flush any remaining frames
       if (bytesLeft < bytesData.length) {
