@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
+import 'package:version/version.dart';
 
 import 'package:path_provider/path_provider.dart';
 
@@ -39,7 +40,18 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   double get currentSpeedKBps => _currentSpeedKBps;
 
+  static final Version _timestampMarkerMinVersion = Version.parse("3.0.16");
+
   SDCardWalSyncImpl(this.listener);
+
+  bool _supportsTimestampMarkers() {
+    if (_device == null) return false;
+    try {
+      return Version.parse(_device!.firmwareRevision) >= _timestampMarkerMinVersion;
+    } catch (e) {
+      return false;
+    }
+  }
 
   @override
   void cancelSync() {
@@ -195,7 +207,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     BleAudioCodec codec = await _getAudioCodec(deviceId);
     if (totalBytes - storageOffset > 10 * codec.getFramesLengthInBytes() * codec.getFramesPerSecond()) {
       var seconds = ((totalBytes - storageOffset) / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
-      var timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
+      // Use device-provided recording start timestamp if available (firmware >= 3.0.16), otherwise estimate
+      int timerStart;
+      if (_supportsTimestampMarkers() && storageFiles.length >= 3 && storageFiles[2] > 0) {
+        timerStart = storageFiles[2];
+      } else {
+        timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
+      }
+      Logger.debug(
+          'SDCardWalSync: totalBytes=$totalBytes storageOffset=$storageOffset frameLengthInBytes=${codec.getFramesLengthInBytes()} fps=${codec.getFramesPerSecond()} calculatedSeconds=$seconds timerStart=$timerStart now=${DateTime.now().millisecondsSinceEpoch ~/ 1000}');
 
       var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
       if (connection == null) {
@@ -513,7 +533,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         int bytesInChunk = offset - lastOffset;
         _updateSpeed(bytesInChunk);
-        await _registerSingleChunk(wal, file, timerStart);
+        await _registerSingleChunk(wal, file, timerStart, chunkFrames);
         chunksDownloaded++;
         lastOffset = offset;
 
@@ -1004,8 +1024,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       List<List<int>> bytesData = [];
       var bytesLeft = 0;
-      var chunkSize = sdcardChunkSizeSecs * wal.codec.getFramesPerSecond();
+      final bool useMarkers = _supportsTimestampMarkers();
+      var chunkSize = useMarkers ? sdcardChunkSizeSecs * wal.codec.getFramesPerSecond() : sdcardChunkSizeSecs * 100;
       var timerStart = wal.timerStart;
+      List<MapEntry<int, int>> timestampMarkers = [];
 
       final initialOffset = wal.storageOffset;
       var offset = wal.storageOffset;
@@ -1096,6 +1118,21 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             if (packageSize == 0) {
               packageOffset += 1;
               bytesProcessed = packageOffset;
+              continue;
+            }
+
+            // Timestamp marker: 0xFF followed by 4-byte little-endian epoch (firmware >= 3.0.16)
+            if (useMarkers && packageSize == 0xFF && packageOffset + 5 <= bufferLength) {
+              var epoch = tcpBuffer[packageOffset + 1] |
+                  (tcpBuffer[packageOffset + 2] << 8) |
+                  (tcpBuffer[packageOffset + 3] << 16) |
+                  (tcpBuffer[packageOffset + 4] << 24);
+              packageOffset += 5;
+              bytesProcessed = packageOffset;
+              if (epoch > 0) {
+                timestampMarkers.add(MapEntry(bytesData.length, epoch));
+                Logger.debug('SDCardWalSync WiFi: Timestamp marker: epoch=$epoch at frame ${bytesData.length}');
+              }
               continue;
             }
 
@@ -1284,7 +1321,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         } catch (e) {
           Logger.debug('SDCardWalSync WiFi: Error flushing chunk: $e');
         }
-      }
 
       // Flush any remaining frames
       if (bytesLeft < bytesData.length) {
