@@ -36,7 +36,11 @@ class BluetoothDeviceDiscoverer extends DeviceDiscoverer {
     });
 
     try {
-      await BluetoothAdapter.adapterState.where((v) => v == BluetoothAdapterStateHelper.on).first;
+      // Check current state first
+      final currentState = await BluetoothAdapter.flutterBluePlus.adapterState.first;
+      if (currentState != BluetoothAdapterStateHelper.on) {
+        await BluetoothAdapter.adapterState.where((v) => v == BluetoothAdapterStateHelper.on).first;
+      }
 
       // Delay to allow Bluetooth permissions to settle on Android before scanning.
       if (PlatformService.isAndroid) {

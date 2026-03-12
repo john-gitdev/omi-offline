@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices/device_connection.dart';
+import 'package:omi/services/devices/discovery/bluetooth_discoverer.dart';
+import 'package:omi/utils/logger.dart';
 
 enum DeviceConnectionState {
   connected,
@@ -93,7 +95,20 @@ class DeviceService implements IDeviceService {
 
   @override
   Future<List<BtDevice>> discover({String? desirableDeviceId}) async {
-    return [];
+    final discoverer = BluetoothDeviceDiscoverer();
+    final result = await discoverer.discover();
+    final devices = result.devices;
+    
+    // If we were looking for a specific device and found it, we can stop early
+    if (desirableDeviceId != null && devices.any((d) => d.id == desirableDeviceId)) {
+       Logger.debug('DeviceService: Found desirable device $desirableDeviceId');
+    }
+
+    for (var s in _subscriptions.values) {
+      s.onDevices(devices);
+    }
+    
+    return devices;
   }
 
   @override

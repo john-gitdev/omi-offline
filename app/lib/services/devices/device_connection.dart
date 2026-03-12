@@ -42,6 +42,13 @@ const String storageDataStreamCharacteristicUuid = '30295781-4301-eabd-2904-2849
 const String storageFullCharacteristicUuid = '30295784-4301-eabd-2904-2849adfeae43';
 const String storageDataCharacteristicUuid = '30295781-4301-eabd-2904-2849adfeae43';
 
+const String disServiceUuid = '0000180a-0000-1000-8000-00805f9b34fb';
+const String disModelNumberCharacteristicUuid = '00002a24-0000-1000-8000-00805f9b34fb';
+const String disSerialNumberCharacteristicUuid = '00002a25-0000-1000-8000-00805f9b34fb';
+const String disFirmwareRevisionCharacteristicUuid = '00002a26-0000-1000-8000-00805f9b34fb';
+const String disHardwareRevisionCharacteristicUuid = '00002a27-0000-1000-8000-00805f9b34fb';
+const String disManufacturerNameCharacteristicUuid = '00002a29-0000-1000-8000-00805f9b34fb';
+
 class DeviceConnectionFactory {
   static DeviceConnection? create(BtDevice device) {
     DeviceTransport transport;
