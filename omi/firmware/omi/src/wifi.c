@@ -28,6 +28,7 @@ LOG_MODULE_REGISTER(wifi, CONFIG_LOG_DEFAULT_LEVEL);
 #include <net/wifi_ready.h>
 #include "wifi.h"
 #include "storage.h"
+#include "mic.h"
 
 #define WIFI_SAP_MGMT_EVENTS                                                                    \
 	(NET_EVENT_WIFI_AP_ENABLE_RESULT | NET_EVENT_WIFI_AP_DISABLE_RESULT |                     \

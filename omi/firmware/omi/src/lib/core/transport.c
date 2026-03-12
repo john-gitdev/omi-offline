@@ -24,6 +24,7 @@
 #include "features.h"
 #include "haptic.h"
 #include "mic.h"
+#include "lib/battery/battery.h"
 #ifdef CONFIG_OMI_ENABLE_MONITOR
 #include "monitor.h"
 #endif
@@ -848,7 +849,8 @@ bool write_timestamp_to_storage(void)
     chunk_index++;
 
     return write_custom_packet_to_storage(255, temp_buffer, 16);
-}#endif
+}
+#endif
 
 static bool use_storage = true;
 #define MAX_FILES 10

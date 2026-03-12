@@ -15,6 +15,7 @@
 #include "sd_card.h"
 #include "transport.h"
 #include "utils.h"
+#include "mic.h"
 #ifdef CONFIG_OMI_ENABLE_WIFI
 #include "wifi.h"
 #endif
@@ -174,7 +175,7 @@ static int setup_storage_tx()
 uint8_t delete_num = 0;
 uint8_t nuke_started = 0;
 static uint8_t heartbeat_count = 0;
-static uint8_t parse_storage_command(void *buf, uint16_t len)
+static uint8_t parse_storage_command(const void *buf, uint16_t len)
 {
 
     if (len != 6 && len != 2) {
