@@ -468,7 +468,7 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_
 #ifdef CONFIG_OMI_ENABLE_BATTERY
 #define BATTERY_REFRESH_INTERVAL        10000 // 10 seconds
 #define CONFIG_OMI_BATTERY_CRITICAL_MV  3500  // mV
-uint8_t battery_percentage = 0;
+uint8_t battery_percentage = 100;
 void broadcast_battery_level(struct k_work *work_item);
 
 K_WORK_DELAYABLE_DEFINE(battery_work, broadcast_battery_level);
@@ -800,27 +800,25 @@ bool write_custom_packet_to_storage(uint8_t marker, uint8_t *data, uint8_t data_
 {
     uint8_t packet_size = data_size + OPUS_PREFIX_LENGTH;
 
-    if (buffer_offset + packet_size > MAX_WRITE_SIZE - 1) {
-
-        storage_temp_data[buffer_offset] = marker;
-        uint8_t *write_ptr = storage_temp_data;
-        write_to_file(write_ptr, MAX_WRITE_SIZE);
-
-        buffer_offset = packet_size;
-        storage_temp_data[0] = marker;
-        memcpy(storage_temp_data + 1, data, data_size);
-
-    } else if (buffer_offset + packet_size == MAX_WRITE_SIZE - 1) {
-        // exact frame needed
-        storage_temp_data[buffer_offset] = marker;
-        memcpy(storage_temp_data + buffer_offset + 1, data, data_size);
+    if (buffer_offset + packet_size > MAX_WRITE_SIZE) {
+        // Doesn't fit in current block. Flush current block first.
+        // Pad the rest of the block with 0 or marker? 
+        // Better: write what we have and start fresh.
+        // Actually, the app expects blocks of exactly MAX_WRITE_SIZE.
+        // So we must pad the current block.
+        memset(storage_temp_data + buffer_offset, 0, MAX_WRITE_SIZE - buffer_offset);
+        write_to_file(storage_temp_data, MAX_WRITE_SIZE);
         buffer_offset = 0;
-        uint8_t *write_ptr = (uint8_t *) storage_temp_data;
-        write_to_file(write_ptr, MAX_WRITE_SIZE);
-    } else {
-        storage_temp_data[buffer_offset] = marker;
-        memcpy(storage_temp_data + buffer_offset + 1, data, data_size);
-        buffer_offset = buffer_offset + packet_size;
+    }
+
+    // Now it fits for sure (since packet_size < MAX_WRITE_SIZE)
+    storage_temp_data[buffer_offset] = marker;
+    memcpy(storage_temp_data + buffer_offset + 1, data, data_size);
+    buffer_offset += packet_size;
+
+    if (buffer_offset == MAX_WRITE_SIZE) {
+        write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        buffer_offset = 0;
     }
 
 #ifdef CONFIG_OMI_ENABLE_MONITOR
