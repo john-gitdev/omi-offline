@@ -189,9 +189,25 @@ class _RecordingsPageState extends State<RecordingsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              batch.dateString,
-              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  batch.dateString,
+                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                if (batch.starredTimestamps.isNotEmpty)
+                  Row(
+                    children: [
+                      const FaIcon(FontAwesomeIcons.solidStar, color: Colors.amber, size: 16),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${batch.starredTimestamps.length}',
+                        style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+              ],
             ),
             const SizedBox(height: 12),
             

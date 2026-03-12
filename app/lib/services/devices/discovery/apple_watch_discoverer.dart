@@ -25,7 +25,6 @@ class AppleWatchDiscoverer extends DeviceDiscoverer {
           id: 'apple-watch',
           type: DeviceType.appleWatch,
           rssi: reachable ? 0 : -100,
-          locator: DeviceLocator.watchConnectivity(),
         );
         return DeviceDiscoveryResult(devices: [device]);
       }

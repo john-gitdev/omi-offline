@@ -118,6 +118,10 @@ void check_button_level(struct k_work *work_item)
                     LOG_INF("Double tap (Star) detected");
                     play_haptic_milli(300);
                     star_flash_count = 2; // Trigger 1s white flash (2 cycles of 500ms)
+                    
+                    #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+                    write_star_to_storage();
+                    #endif
                 } else {
                     LOG_INF("Double tap ignored (muted)");
                 }

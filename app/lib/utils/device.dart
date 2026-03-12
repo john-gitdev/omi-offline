@@ -61,10 +61,12 @@ class DeviceUtils {
           return Assets.images.limitless.path;
         case DeviceType.bee:
           return Assets.images.beeDevice.path;
+        case DeviceType.glass:
         case DeviceType.openglass:
           return Assets.images.omiGlass.path;
         case DeviceType.frame:
           return Assets.images.omiDevkitWithoutRope.path;
+        case DeviceType.watch:
         case DeviceType.appleWatch:
           return Assets.images.appleWatch.path;
         case DeviceType.plaud:

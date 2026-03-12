@@ -220,11 +220,14 @@ class WalFileManager {
           sampleRate: 16000,
           seconds: seconds,
           status: WalStatus.miss,
-          storage: WalStorage.disk,
+          storage: WalStorage.local,
           filePath: fileName,
           device: 'limitless',
           deviceModel: 'Limitless',
           originalStorage: WalStorage.flashPage,
+          fileNum: 0,
+          storageOffset: 0,
+          storageTotalBytes: fileSize,
         );
 
         newWals.add(wal);
@@ -259,13 +262,13 @@ class WalFileManager {
       // Case 1: FlashPage WAL that has a file locally - was downloaded but not transitioned
       if (wal.storage == WalStorage.flashPage && wal.filePath != null && wal.filePath!.isNotEmpty) {
         Logger.debug('WalFileManager: Fixing inconsistent WAL ${wal.id} - has file but storage=flashPage');
-        wal.storage = WalStorage.disk;
+        wal.storage = WalStorage.local;
         wal.originalStorage = WalStorage.flashPage;
         needsSave = true;
       }
 
       // Case 2: Limitless device WAL on disk without originalStorage tracking
-      if (wal.storage == WalStorage.disk &&
+      if (wal.storage == WalStorage.local &&
           wal.originalStorage == null &&
           (wal.deviceModel?.toLowerCase().contains('limitless') == true ||
               wal.filePath?.contains('limitless') == true)) {

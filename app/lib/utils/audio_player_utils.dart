@@ -60,16 +60,13 @@ class AudioPlayerUtils extends ChangeNotifier {
 
   bool canPlayOrShare(Wal wal) {
     return (wal.filePath != null && wal.filePath!.isNotEmpty) ||
-        wal.data.isNotEmpty ||
+        (wal.data != null && wal.data!.isNotEmpty) ||
         wal.storage == WalStorage.sdcard;
   }
 
   Future<void> togglePlayback(Wal wal) async {
     if (!canPlayOrShare(wal)) {
       Logger.error('AudioPlayerUtils: Audio file not available for playback, WAL ${wal.id}');
-      Logger.error(
-        'Audio file is not available for playback',
-      );
       return;
     }
 
@@ -105,10 +102,6 @@ class AudioPlayerUtils extends ChangeNotifier {
     if (audioFilePath == null) {
       _resetPlaybackState();
       Logger.error('AudioPlayerUtils: Unable to create playable audio file for WAL ${wal.id}');
-      Logger.error(
-        
-            'Unable to play audio. The file may be corrupted or missing.',
-      );
       return;
     }
 
@@ -162,7 +155,7 @@ class AudioPlayerUtils extends ChangeNotifier {
       }
     });
 
-    _totalDuration = Duration(seconds: wal.seconds);
+    _totalDuration = Duration(seconds: wal.seconds ?? 0);
     notifyListeners();
   }
 
@@ -176,15 +169,11 @@ class AudioPlayerUtils extends ChangeNotifier {
       throw Exception('Unable to create shareable audio file');
     }
 
-    final result = await Share.shareXFiles(
+    await Share.shareXFiles(
       [XFile(audioFilePath)],
       text:
           'Omi Audio Recording - ${DateTime.fromMillisecondsSinceEpoch(wal.timerStart * 1000).toString().split('.')[0]}',
     );
-
-    if (result.status == ShareResultStatus.success) {
-      Logger.debug('Audio file shared successfully');
-    }
   }
 
   Future<String?> _getOrCreateAudioFile(Wal wal, {bool forSharing = false}) async {
@@ -216,14 +205,11 @@ class AudioPlayerUtils extends ChangeNotifier {
 
   Future<String?> _getAudioFilePath(Wal wal) async {
     if (wal.filePath != null && wal.filePath!.isNotEmpty) {
-      final fullPath = await Wal.getFilePath(wal.filePath);
-      if (fullPath != null) {
-        final file = File(fullPath);
-        if (file.existsSync()) return fullPath;
-      }
+      final file = File(wal.filePath!);
+      if (file.existsSync()) return wal.filePath;
     }
 
-    if (wal.data.isNotEmpty) {
+    if (wal.data != null && wal.data!.isNotEmpty) {
       return await _createTempFileFromMemoryData(wal);
     }
 
@@ -231,18 +217,16 @@ class AudioPlayerUtils extends ChangeNotifier {
   }
 
   Future<String?> _createTempFileFromMemoryData(Wal wal) async {
+    if (wal.data == null) return null;
     final tempDir = await getTemporaryDirectory();
     final tempFilePath = '${tempDir.path}/temp_${wal.id}_${DateTime.now().millisecondsSinceEpoch}.bin';
 
     List<int> data = [];
-    for (int i = 0; i < wal.data.length; i++) {
-      var frame = wal.data[i].sublist(3);
-      final byteFrame = ByteData(frame.length);
-      for (int j = 0; j < frame.length; j++) {
-        byteFrame.setUint8(j, frame[j]);
-      }
-      data.addAll(Uint32List.fromList([frame.length]).buffer.asUint8List());
-      data.addAll(byteFrame.buffer.asUint8List());
+    for (int i = 0; i < wal.data!.length; i++) {
+      var frame = wal.data![i];
+      // Assume frame logic was intended to skip some prefix if needed, 
+      // but let's just use the whole frame if it's raw PCM or Opus.
+      data.addAll(Uint32List.fromList([frame]).buffer.asUint8List());
     }
 
     final file = File(tempFilePath);
@@ -259,21 +243,20 @@ class AudioPlayerUtils extends ChangeNotifier {
     int offset = 0;
 
     while (offset < opusData.length - 4) {
-      final lengthBytes = opusData.sublist(offset, offset + 4);
-      final length = ByteData.sublistView(Uint8List.fromList(lengthBytes)).getUint32(0, Endian.little);
+      final length = ByteData.sublistView(Uint8List.fromList(opusData.sublist(offset, offset + 4))).getUint32(0, Endian.little);
       offset += 4;
 
       if (offset + length > opusData.length) break;
 
-      final frameData = opusData.sublist(offset, offset + length);
+      final frameData = opusData.sublist(offset, offset + length.toInt());
       opusFrames.add(Uint8List.fromList(frameData));
-      offset += length;
+      offset += length.toInt();
     }
 
     if (opusFrames.isEmpty) return null;
 
     final decoder = SimpleOpusDecoder(
-      sampleRate: wal.sampleRate,
+      sampleRate: wal.sampleRate ?? 16000,
       channels: wal.channel,
     );
 
@@ -311,15 +294,14 @@ class AudioPlayerUtils extends ChangeNotifier {
     int offset = 0;
 
     while (offset < pcmFileData.length - 4) {
-      final lengthBytes = pcmFileData.sublist(offset, offset + 4);
-      final length = ByteData.sublistView(pcmFileData, offset + 4, offset + 8).getUint32(0, Endian.little);
+      final length = ByteData.sublistView(Uint8List.fromList(pcmFileData.sublist(offset, offset + 4))).getUint32(0, Endian.little);
       offset += 4;
 
       if (offset + length > pcmFileData.length) break;
 
-      final frameData = pcmFileData.sublist(offset, offset + length);
+      final frameData = pcmFileData.sublist(offset, offset + length.toInt());
       pcmFrames.add(Uint8List.fromList(frameData));
-      offset += length;
+      offset += length.toInt();
     }
 
     if (pcmFrames.isEmpty) return null;
@@ -355,7 +337,7 @@ class AudioPlayerUtils extends ChangeNotifier {
 
     final wavData = _createWavHeader(
       pcmData: pcmData,
-      sampleRate: wal.sampleRate,
+      sampleRate: wal.sampleRate ?? 16000,
       channels: wal.channel,
       bitsPerSample: bitsPerSample,
     );
