@@ -99,7 +99,11 @@ class OpusToWavTranscoder implements IAudioTranscoder {
   @override
   Uint8List transcode(Uint8List opusData) {
     final pcmSamples = _decoder.decode(input: opusData);
-    return WavBytesUtil.getUInt8ListBytes(pcmSamples.toList(), sampleRate);
+    return WavBytes.fromPcm(
+      Uint8List.fromList(pcmSamples.toList()),
+      sampleRate: sampleRate,
+      numChannels: channels,
+    ).asBytes();
   }
 
   @override
@@ -110,11 +114,16 @@ class OpusToWavTranscoder implements IAudioTranscoder {
         final pcmSamples = _decoder.decode(input: frame);
         allPcmSamples.addAll(pcmSamples);
       } catch (e) {
-        Logger.debug('[OpusToWav] Failed to decode frame: $e');
+        // skip
       }
     }
-    return WavBytesUtil.getUInt8ListBytes(allPcmSamples, sampleRate);
+    return WavBytes.fromPcm(
+      Uint8List.fromList(allPcmSamples),
+      sampleRate: sampleRate,
+      numChannels: channels,
+    ).asBytes();
   }
+
 
   @override
   String get outputFormat => 'wav';
@@ -254,7 +263,11 @@ class OpusFramesToWavTranscoder implements IAudioTranscoder {
       }
     }
 
-    return WavBytesUtil.getUInt8ListBytes(allPcmSamples, sampleRate);
+    return WavBytes.fromPcm(
+      Uint8List.fromList(allPcmSamples),
+      sampleRate: sampleRate,
+      numChannels: channels,
+    ).asBytes();
   }
 
   @override
@@ -268,7 +281,11 @@ class OpusFramesToWavTranscoder implements IAudioTranscoder {
         Logger.debug('[OpusFramesToWav] Failed to decode frame: $e');
       }
     }
-    return WavBytesUtil.getUInt8ListBytes(allPcmSamples, sampleRate);
+    return WavBytes.fromPcm(
+      Uint8List.fromList(allPcmSamples),
+      sampleRate: sampleRate,
+      numChannels: channels,
+    ).asBytes();
   }
 
   @override

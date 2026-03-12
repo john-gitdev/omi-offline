@@ -850,6 +850,27 @@ bool write_timestamp_to_storage(void)
 
     return write_custom_packet_to_storage(255, temp_buffer, 16);
 }
+
+bool write_star_to_storage(void)
+{
+    if (session_id == 0) {
+        // Should not really happen as we should be recording, but safety first
+        session_id = sys_rand32_get();
+    }
+
+    uint8_t temp_buffer[16];
+    uint32_t utc_time = get_utc_time();
+    uint32_t uptime_ms = k_uptime_get_32();
+
+    memcpy(temp_buffer, &utc_time, 4);
+    memcpy(temp_buffer + 4, &uptime_ms, 4);
+    memcpy(temp_buffer + 8, &session_id, 4);
+    // Padding for remaining 4 bytes
+    memset(temp_buffer + 12, 0, 4);
+
+    LOG_INF("Writing STAR marker to storage (Session: %u)", session_id);
+    return write_custom_packet_to_storage(254, temp_buffer, 16);
+}
 #endif
 
 static bool use_storage = true;

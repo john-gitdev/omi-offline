@@ -10,12 +10,14 @@ class DailyBatch {
   final DateTime date;
   final List<File> rawChunks;
   final List<File> processedRecordings;
+  final List<DateTime> starredTimestamps;
 
   DailyBatch({
     required this.dateString,
     required this.date,
     required this.rawChunks,
     required this.processedRecordings,
+    this.starredTimestamps = const [],
   });
 }
 
@@ -34,6 +36,7 @@ class RecordingsManager {
 
     Map<String, List<File>> rawChunksByDate = {};
     Map<String, List<File>> processedByDate = {};
+    Map<String, List<DateTime>> starsByDate = {};
 
     // Process raw chunks (Now they are in Session Folders!)
     if (await rawChunksDir.exists()) {
@@ -52,6 +55,25 @@ class RecordingsManager {
         // Skip the unsynced folder
         if (sessionIdStr == 'unsynced') continue;
 
+        // 1. Process Stars
+        final starFile = File('${folder.path}/stars.txt');
+        if (await starFile.exists()) {
+          try {
+            final content = await starFile.readAsLines();
+            for (var line in content) {
+              final utc = int.tryParse(line.trim());
+              if (utc != null) {
+                final date = DateTime.fromMillisecondsSinceEpoch(utc * 1000);
+                final dateString = '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+                starsByDate.putIfAbsent(dateString, () => []).add(date);
+              }
+            }
+          } catch (e) {
+            Logger.error("RecordingsManager: Failed to read stars for session $sessionIdStr: $e");
+          }
+        }
+
+        // 2. Process chunks
         final files = folder.listSync().whereType<File>().where((f) => f.path.endsWith('.bin')).toList();
         
         for (var file in files) {
@@ -89,6 +111,7 @@ class RecordingsManager {
         date: date,
         rawChunks: raw,
         processedRecordings: processedByDate[dateStr] ?? [],
+        starredTimestamps: starsByDate[dateStr] ?? [],
       ));
     }
 

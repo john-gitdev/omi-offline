@@ -1,26 +1,21 @@
-import 'package:path_provider/path_provider.dart';
-
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 
 const chunkSizeInSeconds = 60;
 const flushIntervalInSeconds = 90;
 const sdcardChunkSizeSecs = 60;
-const newFrameSyncDelaySeconds = 15;
-const framesPerFlashPage = 8;
-const secondsPerFlashPage = 1.4;
-
-enum WalStatus {
-  inProgress,
-  miss,
-  synced,
-  corrupted,
-}
+const newFrameSize = 80;
 
 enum WalStorage {
-  mem,
-  disk,
+  local,
   sdcard,
   flashPage,
+}
+
+enum WalStatus {
+  miss,
+  syncing,
+  synced,
+  corrupted,
 }
 
 enum SyncMethod {
@@ -28,164 +23,169 @@ enum SyncMethod {
   wifi,
 }
 
-class WalStats {
-  final int totalFiles;
-  final int phoneFiles;
-  final int sdcardFiles;
-  final int fromSdcardFiles;
-  final int limitlessFiles;
-  final int fromFlashPageFiles;
-  final int phoneSize;
-  final int sdcardSize;
-  final int syncedFiles;
-  final int missedFiles;
-
-  WalStats({
-    required this.totalFiles,
-    required this.phoneFiles,
-    required this.sdcardFiles,
-    required this.fromSdcardFiles,
-    required this.limitlessFiles,
-    required this.fromFlashPageFiles,
-    required this.phoneSize,
-    required this.sdcardSize,
-    required this.syncedFiles,
-    required this.missedFiles,
-  });
-
-  int get sdcardRelatedFiles => sdcardFiles + fromSdcardFiles;
-  int get flashPageRelatedFiles => limitlessFiles + fromFlashPageFiles;
-
-  String get totalSizeFormatted => _formatBytes(phoneSize + sdcardSize);
-  String get phoneSizeFormatted => _formatBytes(phoneSize);
-  String get sdcardSizeFormatted => _formatBytes(sdcardSize);
-
-  String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
-  }
-}
-
 class Wal {
-  int timerStart;
-  BleAudioCodec codec;
-  int channel;
-  int sampleRate;
-  int seconds;
-  String device;
-  String? deviceModel;
-
-  WalStatus status;
+  final BleAudioCodec codec;
+  final int channel;
+  final String device;
+  final int fileNum;
+  final int storageOffset;
+  final int storageTotalBytes;
+  final int timerStart;
   WalStorage storage;
 
-  String? filePath;
-  List<List<int>> data = [];
-  int storageOffset = 0;
-  int storageTotalBytes = 0;
-  int fileNum = 1;
-
-  bool isSyncing = false;
+  WalStatus status;
+  bool isSyncing;
   DateTime? syncStartedAt;
   int? syncEtaSeconds;
   double? syncSpeedKBps;
-  SyncMethod syncMethod = SyncMethod.ble;
+  SyncMethod syncMethod;
 
-  int frameSize = 160;
-
-  int totalFrames = 0;
-  int syncedFrameOffset = 0;
-
+  // Placeholder fields for compatibility with existing UI/Utils
+  String? filePath;
+  List<int>? data;
+  int? seconds;
+  int? sampleRate;
+  String? deviceModel;
   WalStorage? originalStorage;
 
-  String get id => '${device}_$timerStart';
-
   Wal({
-    required this.timerStart,
     required this.codec,
-    required this.seconds,
-    this.sampleRate = 16000,
-    this.channel = 1,
-    this.status = WalStatus.inProgress,
-    this.storage = WalStorage.mem,
+    required this.channel,
+    required this.device,
+    required this.fileNum,
+    required this.storageOffset,
+    required this.storageTotalBytes,
+    required this.timerStart,
+    required this.storage,
+    this.status = WalStatus.miss,
+    this.isSyncing = false,
+    this.syncMethod = SyncMethod.ble,
     this.filePath,
-    this.device = "phone",
+    this.data,
+    this.seconds,
+    this.sampleRate,
     this.deviceModel,
-    this.storageOffset = 0,
-    this.storageTotalBytes = 0,
-    this.fileNum = 1,
-    this.data = const [],
-    this.totalFrames = 0,
-    this.syncedFrameOffset = 0,
     this.originalStorage,
-  }) {
-    frameSize = codec.getFrameSize();
+  });
+
+  String get id => '$device-$fileNum-$storageOffset';
+
+  String getFileNameByTimeStarts(int timerStart) {
+    return 'chunk_$timerStart.bin';
   }
 
-  factory Wal.fromJson(Map<String, dynamic> json) {
-    return Wal(
-      timerStart: json['timer_start'],
-      codec: mapNameToCodec(json['codec']),
-      channel: json['channel'] ?? 1,
-      sampleRate: json['sample_rate'] ?? 16000,
-      status: WalStatus.values.asNameMap()[json['status']] ?? WalStatus.inProgress,
-      storage: WalStorage.values.asNameMap()[json['storage']] ?? WalStorage.mem,
-      filePath: json['file_path'],
-      seconds: json['seconds'] ?? chunkSizeInSeconds,
-      device: json['device'] ?? "phone",
-      deviceModel: json['device_model'],
-      storageOffset: json['storage_offset'] ?? 0,
-      storageTotalBytes: json['storage_total_bytes'] ?? 0,
-      fileNum: json['file_num'] ?? 1,
-      totalFrames: json['total_frames'] ?? 0,
-      syncedFrameOffset: json['synced_frame_offset'] ?? 0,
-      originalStorage:
-          json['original_storage'] != null ? WalStorage.values.asNameMap()[json['original_storage']] : null,
-    );
+  String getFileName() {
+    return getFileNameByTimeStarts(timerStart);
+  }
+
+  String? getFilePath() {
+    return filePath;
+  }
+
+  int getFrameSize() {
+    return codec.getFrameSize();
+  }
+
+  static BleAudioCodec mapNameToCodec(String name) {
+    switch (name.toLowerCase()) {
+      case 'pcm8':
+        return BleAudioCodec.pcm8;
+      case 'pcm16':
+        return BleAudioCodec.pcm16;
+      case 'mulaw8':
+        return BleAudioCodec.mulaw8;
+      case 'mulaw16':
+        return BleAudioCodec.mulaw16;
+      case 'opus':
+        return BleAudioCodec.opus;
+      case 'opusfs320':
+        return BleAudioCodec.opusFS320;
+      default:
+        return BleAudioCodec.unknown;
+    }
   }
 
   Map<String, dynamic> toJson() {
     return {
-      'timer_start': timerStart,
-      'codec': codec.toString(),
+      'codec': codec.name,
       'channel': channel,
-      'sample_rate': sampleRate,
-      'status': status.name,
-      'storage': storage.name,
-      'file_path': filePath,
-      'seconds': seconds,
       'device': device,
-      'device_model': deviceModel,
-      'storage_offset': storageOffset,
-      'storage_total_bytes': storageTotalBytes,
-      'file_num': fileNum,
-      'total_frames': totalFrames,
-      'synced_frame_offset': syncedFrameOffset,
-      'original_storage': originalStorage?.name,
+      'fileNum': fileNum,
+      'storageOffset': storageOffset,
+      'storageTotalBytes': storageTotalBytes,
+      'timerStart': timerStart,
+      'storage': storage.name,
+      'status': status.name,
+      'filePath': filePath,
+      'seconds': seconds,
+      'sampleRate': sampleRate,
+      'deviceModel': deviceModel,
+      'originalStorage': originalStorage?.name,
     };
   }
 
-  static List<Wal> fromJsonList(List<dynamic> jsonList) => jsonList.map((e) => Wal.fromJson(e)).toList();
-
-  getFileName() {
-    return "audio_${device.replaceAll(RegExp(r'[^a-zA-Z0-9]'), "").toLowerCase()}_${codec}_${sampleRate}_${channel}_fs${frameSize}_$timerStart.bin";
+  static List<Wal> fromJsonList(List<dynamic> jsonList) {
+    return jsonList.map((j) => Wal.fromJson(j)).toList();
   }
 
-  getFileNameByTimeStarts(int timestarts) {
-    return "audio_${device.replaceAll(RegExp(r'[^a-zA-Z0-9]'), "").toLowerCase()}_${codec}_${sampleRate}_${channel}_fs${frameSize}_$timestarts.bin";
+  factory Wal.fromJson(Map<String, dynamic> json) {
+    return Wal(
+      codec: mapNameToCodec(json['codec'] ?? 'pcm8'),
+      channel: json['channel'] ?? 1,
+      device: json['device'] ?? '',
+      fileNum: json['fileNum'] ?? 0,
+      storageOffset: json['storageOffset'] ?? 0,
+      storageTotalBytes: json['storageTotalBytes'] ?? 0,
+      timerStart: json['timerStart'] ?? 0,
+      storage: WalStorage.values.firstWhere((e) => e.name == json['storage'], orElse: () => WalStorage.local),
+      status: WalStatus.values.firstWhere((e) => e.name == json['status'], orElse: () => WalStatus.miss),
+      filePath: json['filePath'],
+      seconds: json['seconds'],
+      sampleRate: json['sampleRate'],
+      deviceModel: json['deviceModel'],
+      originalStorage: json['originalStorage'] != null 
+          ? WalStorage.values.firstWhere((e) => e.name == json['originalStorage'], orElse: () => WalStorage.local)
+          : null,
+    );
   }
 
-  static Future<String?> getFilePath(String? pathOrName) async {
-    if (pathOrName == null || pathOrName.isEmpty) {
-      return null;
-    }
-
-    final directory = await getApplicationDocumentsDirectory();
-    if (pathOrName.contains('/')) {
-      final filename = pathOrName.split('/').last;
-      return '${directory.path}/$filename';
-    }
-    return '${directory.path}/$pathOrName';
+  Wal copyWith({
+    BleAudioCodec? codec,
+    int? channel,
+    String? device,
+    int? fileNum,
+    int? storageOffset,
+    int? storageTotalBytes,
+    int? timerStart,
+    WalStorage? storage,
+    WalStatus? status,
+    bool? isSyncing,
+    SyncMethod? syncMethod,
+    String? filePath,
+    List<int>? data,
+    int? seconds,
+    int? sampleRate,
+    String? deviceModel,
+    WalStorage? originalStorage,
+  }) {
+    return Wal(
+      codec: codec ?? this.codec,
+      channel: channel ?? this.channel,
+      device: device ?? this.device,
+      fileNum: fileNum ?? this.fileNum,
+      storageOffset: storageOffset ?? this.storageOffset,
+      storageTotalBytes: storageTotalBytes ?? this.storageTotalBytes,
+      timerStart: timerStart ?? this.timerStart,
+      storage: storage ?? this.storage,
+      status: status ?? this.status,
+      isSyncing: isSyncing ?? this.isSyncing,
+      syncMethod: syncMethod ?? this.syncMethod,
+      filePath: filePath ?? this.filePath,
+      data: data ?? this.data,
+      seconds: seconds ?? this.seconds,
+      sampleRate: sampleRate ?? this.sampleRate,
+      deviceModel: deviceModel ?? this.deviceModel,
+      originalStorage: originalStorage ?? this.originalStorage,
+    );
   }
 }

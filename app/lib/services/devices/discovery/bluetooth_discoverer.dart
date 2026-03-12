@@ -51,7 +51,7 @@ class BluetoothDeviceDiscoverer extends DeviceDiscoverer {
       await Future.delayed(Duration(seconds: timeout));
 
       final List<BtDevice> devices = bleResults
-          .where((r) => BtDevice.isSupportedDevice(r))
+          .where((r) => BtDevice.isSupportedDevice(r.device))
           .sorted((a, b) => b.rssi.compareTo(a.rssi))
           .map<BtDevice>((r) => BtDevice.fromScanResult(r))
           .toList();
