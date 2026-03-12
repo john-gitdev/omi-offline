@@ -2654,7 +2654,7 @@ class AppLocalizationsAr extends AppLocalizations {
   String get showAll => 'عرض الكل ←';
 
   @override
-  String get noTasksForToday => 'لا توجد مهام لليوم.\\nاسأل Omi عن المزيد من المهام أو أنشئها يدويًا.';
+  String get noTasksForToday => 'لا توجد مهام لليوم.\nاسأل Omi عن المزيد من المهام أو أنشئها يدويًا.';
 
   @override
   String get dailyScore => 'النتيجة اليومية';
@@ -8439,4 +8439,59 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get phoneCallsMaybeLater => 'ربما لاحقاً';
+
+  @override
+  String get deleteSynced => 'حذف المتزامن';
+
+  @override
+  String get deleteSyncedFiles => 'حذف التسجيلات المتزامنة';
+
+  @override
+  String get deleteSyncedFilesMessage => 'تم مزامنة هذه التسجيلات مع هاتفك بالفعل. لا يمكن التراجع عن هذا.';
+
+  @override
+  String get syncedFilesDeleted => 'تم حذف التسجيلات المتزامنة';
+
+  @override
+  String get deletePending => 'حذف المعلق';
+
+  @override
+  String get deletePendingFiles => 'حذف التسجيلات المعلقة';
+
+  @override
+  String get deletePendingFilesWarning =>
+      'لم تتم مزامنة هذه التسجيلات مع هاتفك وستفقد نهائياً. لا يمكن التراجع عن هذا.';
+
+  @override
+  String get pendingFilesDeleted => 'تم حذف التسجيلات المعلقة';
+
+  @override
+  String get deleteAllFiles => 'حذف جميع التسجيلات';
+
+  @override
+  String get deleteAll => 'حذف الكل';
+
+  @override
+  String get deleteAllFilesWarning =>
+      'سيؤدي هذا إلى حذف التسجيلات المتزامنة والمعلقة. التسجيلات المعلقة لم تتم مزامنتها وستفقد نهائياً. لا يمكن التراجع عن هذا.';
+
+  @override
+  String get allFilesDeleted => 'تم حذف جميع التسجيلات';
+
+  @override
+  String nFiles(int count) {
+    return '$count تسجيل';
+  }
+
+  @override
+  String get manageStorage => 'إدارة التخزين';
+
+  @override
+  String get safelyBackedUp => 'تم النسخ الاحتياطي بأمان إلى هاتفك';
+
+  @override
+  String get notYetSynced => 'لم تتم المزامنة بعد مع هاتفك';
+
+  @override
+  String get clearAll => 'مسح الكل';
 }
