@@ -11,7 +11,6 @@ import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/models.dart';
 import 'package:omi/services/devices/wifi_sync_error.dart';
-import 'package:omi/services/notifications.dart';
 import 'package:omi/utils/logger.dart';
 
 class OmiDeviceConnection extends DeviceConnection {
@@ -487,7 +486,7 @@ class OmiDeviceConnection extends DeviceConnection {
             var fallNumber =
                 sqrt(pow(accelerometerData[0], 2) + pow(accelerometerData[1], 2) + pow(accelerometerData[2], 2));
             if (fallNumber > 30.0) {
-              await NotificationUtil.triggerFallNotification();
+              Logger.debug('Fall detected, but notifications are disabled offline');
             }
           }
         }

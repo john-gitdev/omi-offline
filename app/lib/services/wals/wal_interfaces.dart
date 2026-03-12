@@ -1,5 +1,4 @@
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
-import 'package:omi/models/sync_state.dart';
 import 'package:omi/services/wals/wal.dart';
 
 class SyncLocalFilesResponse {
@@ -10,6 +9,11 @@ class SyncLocalFilesResponse {
     required this.newConversationIds,
     required this.updatedConversationIds,
   });
+}
+
+enum SyncPhase {
+  downloading,
+  synced,
 }
 
 abstract class IWalSyncProgressListener {

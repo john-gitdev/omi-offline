@@ -1,3 +1,4 @@
+import "package:omi/widgets/dialog.dart";
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -10,11 +11,9 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'sync_page.dart';
-import 'package:omi/pages/home/firmware_update.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/services.dart';
-import 'package:omi/utils/analytics/mixpanel.dart';
 import 'package:omi/utils/l10n_extensions.dart';
 import 'package:omi/utils/other/temp.dart';
 import 'package:omi/utils/platform/platform_service.dart';
@@ -262,7 +261,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             icon: FontAwesomeIcons.download,
             title: context.l10n.firmware,
             chipValue: device?.firmwareRevision ?? '1.0.2',
-            onTap: () => routeToPage(context, FirmwareUpdate(device: device)),
           ),
           const Divider(height: 1, color: Color(0xFF3C3C43)),
           _buildProfileStyleItem(
@@ -719,23 +717,18 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           // Charging Help
           GestureDetector(
             onTap: () async {
-              if (PlatformService.isIntercomSupported) {
-                await IntercomManager().displayChargingArticle(provider.pairedDevice?.name ?? 'DevKit1');
+              final deviceName = provider.pairedDevice?.name ?? 'DevKit1';
+              String url;
+              if (deviceName == 'Omi DevKit 2') {
+                url = 'https://www.omi.me/pages/charging-devkit2';
+              } else if (deviceName == 'Omi') {
+                url = 'https://www.omi.me/pages/charging-omi';
               } else {
-                // Fallback to web URL for desktop platforms
-                final deviceName = provider.pairedDevice?.name ?? 'DevKit1';
-                String url;
-                if (deviceName == 'Omi DevKit 2') {
-                  url = 'https://www.omi.me/pages/charging-devkit2';
-                } else if (deviceName == 'Omi') {
-                  url = 'https://www.omi.me/pages/charging-omi';
-                } else {
-                  url = 'https://www.omi.me/pages/charging';
-                }
-                final uri = Uri.parse(url);
-                if (await canLaunchUrl(uri)) {
-                  await launchUrl(uri, mode: LaunchMode.externalApplication);
-                }
+                url = 'https://www.omi.me/pages/charging';
+              }
+              final uri = Uri.parse(url);
+              if (await canLaunchUrl(uri)) {
+                await launchUrl(uri, mode: LaunchMode.externalApplication);
               }
             },
             child: Padding(
@@ -772,7 +765,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                 provider.setIsConnected(false);
                 provider.setConnectedDevice(null);
                 provider.updateConnectingStatus(false);
-                MixpanelManager().disconnectFriendClicked();
                 if (context.mounted) {
                   Navigator.of(context).pop();
                   ScaffoldMessenger.of(
@@ -833,7 +825,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                     },
                     context.l10n.unpairDialogTitle,
                     context.l10n.unpairDialogMessage,
-                    okButtonText: context.l10n.unpair,
+                    confirmText: context.l10n.unpair,
                   ),
                 );
               },

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
-import 'package:omi/models/sync_state.dart';
 
 class SyncPage extends StatefulWidget {
   const SyncPage({super.key});
