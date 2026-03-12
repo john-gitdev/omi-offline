@@ -6,6 +6,8 @@
 
 typedef enum { IDLE, GRACE } FSM_STATE_T;
 
+extern volatile bool is_muted;
+
 int button_init();
 void activate_button_work();
 void register_button_service();
