@@ -8,6 +8,19 @@ import 'package:ffmpeg_kit_flutter_audio/return_code.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/logger.dart';
 
+abstract class IFFmpegWrapper {
+  Future<int?> execute(String command);
+}
+
+class FFmpegWrapper implements IFFmpegWrapper {
+  @override
+  Future<int?> execute(String command) async {
+    final session = await FFmpegKit.execute(command);
+    final returnCode = await session.getReturnCode();
+    return returnCode?.getValue();
+  }
+}
+
 class OfflineAudioProcessor {
   static const int sampleRate = 16000;
   static const int channels = 1;
@@ -16,7 +29,8 @@ class OfflineAudioProcessor {
   // Opus frame is typically 20ms
   static const int frameDurationMs = 20;
 
-  final SimpleOpusDecoder _decoder;
+  final SimpleOpusDecoder? _decoder;
+  final IFFmpegWrapper _ffmpeg;
 
   List<Uint8List> _currentRecordingFrames = [];
   int _consecutiveSilenceFrames = 0;
@@ -32,8 +46,9 @@ class OfflineAudioProcessor {
   final int _preSpeechBufferMs;
   final int _gapThresholdMs;
 
-  OfflineAudioProcessor({String? outputDir})
-      : _decoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels),
+  OfflineAudioProcessor({String? outputDir, SimpleOpusDecoder? decoder, IFFmpegWrapper? ffmpeg})
+      : _decoder = decoder ?? (Platform.isIOS || Platform.isAndroid ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels) : null),
+        _ffmpeg = ffmpeg ?? FFmpegWrapper(),
         _outputDir = outputDir,
         _silenceThresholdDbfs = SharedPreferencesUtil().offlineSilenceThreshold,
         _silenceDurationToSplitMs = SharedPreferencesUtil().offlineSplitSeconds * 1000,
@@ -42,7 +57,7 @@ class OfflineAudioProcessor {
         _gapThresholdMs = SharedPreferencesUtil().offlineGapSeconds * 1000;
 
   void destroy() {
-    _decoder.destroy();
+    _decoder?.destroy();
   }
 
   double _calculateDecibels(Int16List pcmData) {
@@ -126,7 +141,8 @@ class OfflineAudioProcessor {
 
       Int16List pcmData;
       try {
-        pcmData = _decoder.decode(input: frame);
+        if (_decoder == null) continue;
+        pcmData = _decoder!.decode(input: frame);
       } catch (e) {
         // Skip corrupt or invalid Opus frames to prevent crashing the batch
         continue;
@@ -155,25 +171,25 @@ class OfflineAudioProcessor {
           int maxConsecutiveSpeechFrames = 0;
           int currentConsecutiveSpeechFrames = 0;
 
-          final tempDecoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels);
-          for (var rFrame in recordingFrames) {
-            try {
-              final rPcmData = tempDecoder.decode(input: rFrame);
-              final rDbfs = _calculateDecibels(rPcmData);
+          if (_decoder != null) {
+            for (var rFrame in recordingFrames) {
+              try {
+                final rPcmData = _decoder!.decode(input: rFrame);
+                final rDbfs = _calculateDecibels(rPcmData);
 
-              if (rDbfs >= _silenceThresholdDbfs) {
-                currentConsecutiveSpeechFrames++;
-                if (currentConsecutiveSpeechFrames > maxConsecutiveSpeechFrames) {
-                  maxConsecutiveSpeechFrames = currentConsecutiveSpeechFrames;
+                if (rDbfs >= _silenceThresholdDbfs) {
+                  currentConsecutiveSpeechFrames++;
+                  if (currentConsecutiveSpeechFrames > maxConsecutiveSpeechFrames) {
+                    maxConsecutiveSpeechFrames = currentConsecutiveSpeechFrames;
+                  }
+                } else {
+                  currentConsecutiveSpeechFrames = 0;
                 }
-              } else {
-                currentConsecutiveSpeechFrames = 0;
+              } catch (e) {
+                // skip corrupt
               }
-            } catch (e) {
-              // skip corrupt
             }
           }
-          tempDecoder.destroy();
 
           final longestSpeechRunMs = maxConsecutiveSpeechFrames * frameDurationMs;
 
@@ -218,25 +234,25 @@ class OfflineAudioProcessor {
       int maxConsecutiveSpeechFrames = 0;
       int currentConsecutiveSpeechFrames = 0;
 
-      final tempDecoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels);
-      for (var rFrame in recordingFrames) {
-        try {
-          final rPcmData = tempDecoder.decode(input: rFrame);
-          final rDbfs = _calculateDecibels(rPcmData);
+      if (_decoder != null) {
+        for (var rFrame in recordingFrames) {
+          try {
+            final rPcmData = _decoder!.decode(input: rFrame);
+            final rDbfs = _calculateDecibels(rPcmData);
 
-          if (rDbfs >= _silenceThresholdDbfs) {
-            currentConsecutiveSpeechFrames++;
-            if (currentConsecutiveSpeechFrames > maxConsecutiveSpeechFrames) {
-              maxConsecutiveSpeechFrames = currentConsecutiveSpeechFrames;
+            if (rDbfs >= _silenceThresholdDbfs) {
+              currentConsecutiveSpeechFrames++;
+              if (currentConsecutiveSpeechFrames > maxConsecutiveSpeechFrames) {
+                maxConsecutiveSpeechFrames = currentConsecutiveSpeechFrames;
+              }
+            } else {
+              currentConsecutiveSpeechFrames = 0;
             }
-          } else {
-            currentConsecutiveSpeechFrames = 0;
+          } catch (e) {
+            // skip
           }
-        } catch (e) {
-          // skip
         }
       }
-      tempDecoder.destroy();
 
       final longestSpeechRunMs = maxConsecutiveSpeechFrames * frameDurationMs;
 
@@ -316,28 +332,27 @@ class OfflineAudioProcessor {
     sink.add(header.buffer.asUint8List());
 
     // 2. Decode and Stream PCM data
-    final tempDecoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels);
-    for (var frame in frames) {
-      try {
-        final decoded = tempDecoder.decode(input: frame);
-        sink.add(decoded.buffer.asUint8List());
-      } catch (e) {
-        // Skip bad frames
+    if (_decoder != null) {
+      for (var frame in frames) {
+        try {
+          final decoded = _decoder!.decode(input: frame);
+          sink.add(decoded.buffer.asUint8List());
+        } catch (e) {
+          // Skip bad frames
+        }
       }
     }
-    tempDecoder.destroy();
     await sink.close();
 
     // 3. Convert WAV to AAC using FFmpegKit
-    final session = await FFmpegKit.execute('-i $wavPath -c:a aac -b:a 64k $aacPath');
-    final returnCode = await session.getReturnCode();
+    final returnCode = await _ffmpeg.execute('-i $wavPath -c:a aac -b:a 64k $aacPath');
 
     // 4. Delete the intermediate WAV file
     if (await wavFile.exists()) {
       await wavFile.delete();
     }
 
-    if (returnCode == null || !ReturnCode.isSuccess(returnCode)) {
+    if (returnCode == null || !ReturnCode.isSuccess(ReturnCode(returnCode))) {
       final aacFile = File(aacPath);
       if (await aacFile.exists()) {
         await aacFile.delete();
