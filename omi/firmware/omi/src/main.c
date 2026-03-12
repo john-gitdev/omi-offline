@@ -13,7 +13,7 @@
 #include "lib/core/utils.h"
 #include "lib/core/sd_card.h"
 #include "lib/core/settings.h"
-#include "lib/core/rtc.h"
+#include "rtc.h"
 #include "imu.h"
 
 #include "spi_flash.h"
@@ -148,12 +148,11 @@ int main(void)
     if (ret) printk("LED failed %d\n", ret);
     boot_led_sequence();
 
-    ret = rtc_start();
-    if (ret) LOG_ERR("RTC failed %d", ret);
+    init_rtc();
 
     suspend_unused_modules();
 
-    ret = wdog_start();
+    ret = watchdog_init();
     if (ret) LOG_ERR("WD failed %d", ret);
 
     ret = button_init();

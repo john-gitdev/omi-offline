@@ -129,8 +129,7 @@ void check_button_level(struct k_work *work_item)
             fsm_state = STATE_IDLE;
         } else {
             // Still pressed. Check if we hit 3s.
-            uint32_t duration_ms = state_timer * BUTTON_TIMER_CHECK_INTERVAL; // Wait, macro name typo check
-            duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
             if (duration_ms >= POWER_OFF_HOLD_TIME) {
                 // Double tap + Long hold 3s -> Power Off
                 LOG_INF("Power off triggered via Double-Tap-Hold");

@@ -3,23 +3,8 @@ import 'dart:typed_data';
 import 'dart:math';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:ffmpeg_kit_flutter_audio/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_audio/return_code.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/logger.dart';
-
-abstract class IFFmpegWrapper {
-  Future<int?> execute(String command);
-}
-
-class FFmpegWrapper implements IFFmpegWrapper {
-  @override
-  Future<int?> execute(String command) async {
-    final session = await FFmpegKit.execute(command);
-    final returnCode = await session.getReturnCode();
-    return returnCode?.getValue();
-  }
-}
 
 class OfflineAudioProcessor {
   static const int sampleRate = 16000;
@@ -30,7 +15,6 @@ class OfflineAudioProcessor {
   static const int frameDurationMs = 20;
 
   final SimpleOpusDecoder? _decoder;
-  final IFFmpegWrapper _ffmpeg;
 
   List<Uint8List> _currentRecordingFrames = [];
   int _consecutiveSilenceFrames = 0;
@@ -46,9 +30,8 @@ class OfflineAudioProcessor {
   final int _preSpeechBufferMs;
   final int _gapThresholdMs;
 
-  OfflineAudioProcessor({String? outputDir, SimpleOpusDecoder? decoder, IFFmpegWrapper? ffmpeg})
+  OfflineAudioProcessor({String? outputDir, SimpleOpusDecoder? decoder})
       : _decoder = decoder ?? (Platform.isIOS || Platform.isAndroid ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels) : null),
-        _ffmpeg = ffmpeg ?? FFmpegWrapper(),
         _outputDir = outputDir,
         _silenceThresholdDbfs = SharedPreferencesUtil().offlineSilenceThreshold,
         _silenceDurationToSplitMs = SharedPreferencesUtil().offlineSplitSeconds * 1000,
@@ -89,8 +72,6 @@ class OfflineAudioProcessor {
        for (var frame in opusFrames) {
           if (frame.length == 255) {
              try {
-                // The frame itself doesn't have the size byte if it's already extracted, 
-                // but let's assume the frame passed in is exactly 255 bytes long.
                 var byteData = ByteData.sublistView(frame);
                 var utcTime = byteData.getUint32(0, Endian.little);
                 var uptimeMs = byteData.getUint32(4, Endian.little);
@@ -127,7 +108,6 @@ class OfflineAudioProcessor {
         if (filePath != null) {
           savedFiles.add(filePath);
         }
-        // State is cleared by flushRemaining, so the new chunk will start fresh
       }
     }
 
@@ -144,7 +124,7 @@ class OfflineAudioProcessor {
         if (_decoder == null) continue;
         pcmData = _decoder!.decode(input: frame);
       } catch (e) {
-        // Skip corrupt or invalid Opus frames to prevent crashing the batch
+        // Skip corrupt or invalid Opus frames
         continue;
       }
       
@@ -161,8 +141,6 @@ class OfflineAudioProcessor {
       final silenceDurationMs = _consecutiveSilenceFrames * frameDurationMs;
 
       if (silenceDurationMs >= _silenceDurationToSplitMs) {
-        // We hit the silence split mark.
-        // We want to discard the final trailing silence (which is _consecutiveSilenceFrames long)
         final framesToKeep = _currentRecordingFrames.length - _consecutiveSilenceFrames;
 
         if (framesToKeep > 0) {
@@ -193,20 +171,15 @@ class OfflineAudioProcessor {
 
           final longestSpeechRunMs = maxConsecutiveSpeechFrames * frameDurationMs;
 
-          // If there was at least ONE consecutive run of speech that met the minimum threshold, keep the whole file
           if (longestSpeechRunMs >= _minSpeechMs) {
             final filePath = await _saveRecording(recordingFrames, _recordingStartTime!);
             savedFiles.add(filePath);
           }
         }
 
-        // Start new recording, keeping a small pre-speech buffer of silence (e.g. 1 second)
         final preSpeechFramesCount = _preSpeechBufferMs ~/ frameDurationMs;
         final bufferToKeep = min(preSpeechFramesCount, _consecutiveSilenceFrames);
 
-        // Calculate the exact time the new buffer starts.
-        // It starts exactly (framesToKeep * 20ms) after the original _recordingStartTime,
-        // minus the pre-speech buffer we just kept.
         if (_recordingStartTime != null) {
           final int elapsedMs = (framesToKeep - bufferToKeep) * frameDurationMs;
           _recordingStartTime = _recordingStartTime!.add(Duration(milliseconds: elapsedMs));
@@ -222,7 +195,6 @@ class OfflineAudioProcessor {
     return savedFiles;
   }
 
-  /// Call this when the connection/sync is completely done to flush the final recording
   Future<String?> flushRemaining() async {
     if (_currentRecordingFrames.isEmpty) return null;
 
@@ -256,7 +228,6 @@ class OfflineAudioProcessor {
 
       final longestSpeechRunMs = maxConsecutiveSpeechFrames * frameDurationMs;
 
-      // If there was at least ONE consecutive run of speech that met the minimum threshold, keep the whole file
       if (longestSpeechRunMs >= _minSpeechMs) {
         final filePath = await _saveRecording(recordingFrames, _recordingStartTime ?? DateTime.now());
         _currentRecordingFrames.clear();
@@ -274,12 +245,10 @@ class OfflineAudioProcessor {
     final directory = await getApplicationDocumentsDirectory();
     final timestamp = startTime.millisecondsSinceEpoch;
 
-    // Determine target folder
     String dateFolderPath;
     if (_outputDir != null) {
       dateFolderPath = _outputDir!;
     } else {
-      // Create date-specific recordings folder
       final dateString =
           '${startTime.year}-${startTime.month.toString().padLeft(2, '0')}-${startTime.day.toString().padLeft(2, '0')}';
       dateFolderPath = '${directory.path}/recordings/$dateString';
@@ -291,14 +260,9 @@ class OfflineAudioProcessor {
     }
 
     final wavPath = '${dateFolder.path}/recording_$timestamp.wav';
-    final aacPath = '${dateFolder.path}/recording_$timestamp.aac';
-
     final wavFile = File(wavPath);
     final IOSink sink = wavFile.openWrite();
 
-    // 1. Write Initial WAV Header (44 bytes)
-    // We can calculate the total size because we know the frame count
-    // 16000Hz * 20ms = 320 samples per frame. 2 bytes per sample.
     const int samplesPerFrame = (sampleRate * frameDurationMs) ~/ 1000;
     final int totalPcmBytes = frames.length * samplesPerFrame * 2;
     
@@ -331,36 +295,17 @@ class OfflineAudioProcessor {
 
     sink.add(header.buffer.asUint8List());
 
-    // 2. Decode and Stream PCM data
     if (_decoder != null) {
       for (var frame in frames) {
         try {
           final decoded = _decoder!.decode(input: frame);
           sink.add(decoded.buffer.asUint8List());
         } catch (e) {
-          // Skip bad frames
+          // Skip
         }
       }
     }
     await sink.close();
-
-    // 3. Convert WAV to AAC using FFmpegKit
-    final returnCode = await _ffmpeg.execute('-i $wavPath -c:a aac -b:a 64k $aacPath');
-
-    // 4. Delete the intermediate WAV file
-    if (await wavFile.exists()) {
-      await wavFile.delete();
-    }
-
-    if (returnCode == null || !ReturnCode.isSuccess(ReturnCode(returnCode))) {
-      final aacFile = File(aacPath);
-      if (await aacFile.exists()) {
-        await aacFile.delete();
-      }
-      Logger.error("OfflineAudioProcessor: FFmpeg conversion failed with code $returnCode");
-      throw Exception("FFmpeg conversion failed");
-    }
-
-    return aacPath;
+    return wavPath;
   }
 }

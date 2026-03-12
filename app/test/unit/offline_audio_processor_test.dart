@@ -24,16 +24,6 @@ class MockDecoder extends Fake implements SimpleOpusDecoder {
   void destroy() {}
 }
 
-class MockFFmpeg extends Fake implements IFFmpegWrapper {
-  @override
-  Future<int?> execute(String command) async {
-    final parts = command.split(' ');
-    final aacPath = parts.last;
-    File(aacPath).createSync(recursive: true);
-    return 0; // Success
-  }
-}
-
 void main() {
   late Directory tempDir;
   late MockPathProvider mockPathProvider;
@@ -61,8 +51,7 @@ void main() {
 
   test('processFrames splits and calculates timestamps accurately', () async {
     final decoder = MockDecoder();
-    final ffmpeg = MockFFmpeg();
-    final processor = OfflineAudioProcessor(decoder: decoder, ffmpeg: ffmpeg);
+    final processor = OfflineAudioProcessor(decoder: decoder);
     
     final startTime = DateTime(2026, 3, 11, 10);
     final speechPcm = Int16List.fromList(List.filled(320, 1000));
@@ -85,15 +74,5 @@ void main() {
     // 4. Flush remaining
     final finalFile = await processor.flushRemaining();
     expect(finalFile, isNotNull);
-    
-    // Verify timestamp calculation logic
-    // The second recording should start exactly 10 frames + (100 - 50 frames of silence) after the first one.
-    // framesToKeep was 10. bufferToKeep was 50 (1s).
-    // elapsedMs = (10 - 50) * 20 = -800ms? No, wait.
-    // framesToKeep = currentRecordingFrames.length (110) - consecutiveSilence (100) = 10 frames.
-    // bufferToKeep = min(preSpeech (50), consecutiveSilence (100)) = 50 frames.
-    // elapsedMs = (10 - 50) * 20 = -800ms.
-    // This means the new recording starts 800ms BEFORE the first one ended? 
-    // Actually, it means it starts at (10 frames * 20ms) - (50 frames * 20ms) relative to original start.
   });
 }
