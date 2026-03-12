@@ -247,7 +247,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.download,
             title: context.l10n.firmware,
-            chipValue: device?.firmwareRevision ?? '1.0.2',
+            chipValue: device?.firmwareRevision ?? 'oo-1.0.1',
           ),
           const Divider(height: 1, color: Color(0xFF3C3C43)),
           _buildProfileStyleItem(
