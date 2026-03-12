@@ -18,6 +18,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   BtDevice? pairedDevice;
   StreamSubscription<List<int>>? _bleBatteryLevelListener;
   StreamSubscription<List<int>>? _bleStorageFullListener;
+  StreamSubscription<List<int>>? _bleButtonListener;
   int batteryLevel = -1;
   int storageFullPercentage = -1;
   int _lastNotifiedBatteryLevel = -1;
@@ -111,6 +112,17 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     return connection.getBleStorageFullListener(onStorageFullChange: onStorageFullChange);
   }
 
+  Future<StreamSubscription<List<int>>?> _getBleButtonListener(
+    String deviceId, {
+    void Function(List<int>)? onButtonReceived,
+  }) async {
+    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
+    if (connection == null) {
+      return Future.value(null);
+    }
+    return connection.getBleButtonListener(onButtonReceived: onButtonReceived!);
+  }
+
   Future<List<int>> _getStorageList(String deviceId) async {
     var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
     if (connection == null) {
@@ -185,6 +197,32 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
           _lastNotifiedStorageLevel = value;
           _lastStorageNotifyTime = DateTime.now();
           notifyListeners();
+        }
+      },
+    );
+    notifyListeners();
+  }
+
+  initiateBleButtonListener() async {
+    if (connectedDevice == null) {
+      return;
+    }
+    _bleButtonListener?.cancel();
+    _bleButtonListener = await _getBleButtonListener(
+      connectedDevice!.id,
+      onButtonReceived: (List<int> value) {
+        if (value.isEmpty) return;
+        int event = value[0];
+        if (event == 1) {
+          Logger.debug('DeviceProvider: Single Tap detected');
+        } else if (event == 2) {
+          Logger.debug('DeviceProvider: Double Tap detected');
+        } else if (event == 3) {
+          Logger.debug('DeviceProvider: Long Tap detected');
+        } else if (event == 4) {
+          Logger.debug('DeviceProvider: Button Press detected');
+        } else if (event == 5) {
+          Logger.debug('DeviceProvider: Button Release detected');
         }
       },
     );
@@ -330,6 +368,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   void dispose() {
     _bleBatteryLevelListener?.cancel();
     _bleStorageFullListener?.cancel();
+    _bleButtonListener?.cancel();
     _reconnectionTimer?.cancel();
     _disconnectDebouncer.cancel();
     _connectDebouncer.cancel();
@@ -378,6 +417,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
     await initiateBleBatteryListener();
     await initiateBleStorageListener();
+    await initiateBleButtonListener();
     if (batteryLevel != -1 && batteryLevel < 20) {
       _hasLowBatteryAlerted = false;
     }

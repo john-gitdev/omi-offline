@@ -30,6 +30,7 @@
 LOG_MODULE_REGISTER(button, CONFIG_LOG_DEFAULT_LEVEL);
 
 extern bool is_off;
+volatile bool is_muted = false;
 
 static void button_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
 static ssize_t button_data_read_characteristic(struct bt_conn *conn,
@@ -71,189 +72,128 @@ static const struct gpio_dt_spec usr_btn = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(usr_
 
 static bool was_pressed = false;
 
-// Using GPIO callback due to the lower priority of the input subsystem vs. storage.c's thread that prevents the
-// callback from working properly.
+// Polling interval for state machine
 #define BUTTON_CHECK_INTERVAL 40 // 0.04 seconds, 25 Hz
 
 void check_button_level(struct k_work *work_item);
 
 K_WORK_DELAYABLE_DEFINE(button_work, check_button_level);
 
-#define DEFAULT_STATE 0
 #define SINGLE_TAP 1
 #define DOUBLE_TAP 2
 #define LONG_TAP 3
 #define BUTTON_PRESS 4
 #define BUTTON_RELEASE 5
 
-// 4 is button down, 5 is button up
 static FSM_STATE_T current_button_state = IDLE;
-static uint32_t inc_count_1 = 0;
-static uint32_t inc_count_0 = 0;
-
 static int final_button_state[2] = {0, 0};
-const static int threshold = 10;
 
-static void reset_count()
-{
-    inc_count_0 = 0;
-    inc_count_1 = 0;
-}
-static inline void notify_press()
-{
-    final_button_state[0] = BUTTON_PRESS;
-    LOG_INF("Button pressed");
-    struct bt_conn *conn = get_current_connection();
-    if (conn != NULL) {
-        bt_gatt_notify(conn, &button_service.attrs[1], &final_button_state, sizeof(final_button_state));
-    }
-}
-
-static inline void notify_unpress()
-{
-    final_button_state[0] = BUTTON_RELEASE;
-    LOG_INF("Button released");
-    struct bt_conn *conn = get_current_connection();
-    if (conn != NULL) {
-        bt_gatt_notify(conn, &button_service.attrs[1], &final_button_state, sizeof(final_button_state));
-    }
-}
-
-static inline void notify_tap()
-{
-    final_button_state[0] = SINGLE_TAP;
-    LOG_INF("Button single tap");
-    struct bt_conn *conn = get_current_connection();
-    if (conn != NULL) {
-        bt_gatt_notify(conn, &button_service.attrs[1], &final_button_state, sizeof(final_button_state));
-    }
-}
-
-static inline void notify_double_tap()
-{
-    final_button_state[0] = DOUBLE_TAP; // button press
-    LOG_INF("Button double tap");
-    struct bt_conn *conn = get_current_connection();
-    if (conn != NULL) {
-        bt_gatt_notify(conn, &button_service.attrs[1], &final_button_state, sizeof(final_button_state));
-    }
-}
-
-static inline void notify_long_tap()
-{
-    final_button_state[0] = LONG_TAP; // button press
-    LOG_INF("Button long tap");
-    struct bt_conn *conn = get_current_connection();
-    if (conn != NULL) {
-        bt_gatt_notify(conn, &button_service.attrs[1], &final_button_state, sizeof(final_button_state));
-    }
-}
-
-#define BUTTON_PRESSED 1
-#define BUTTON_RELEASED 0
-
-#define TAP_THRESHOLD 300     // 300 ms for single tap
-#define DOUBLE_TAP_WINDOW 600 // 600 ms maximum for double-tap
-#define LONG_PRESS_TIME 3000  // 3000 ms for long press (power off)
-
+// State machine definitions
 typedef enum {
-    BUTTON_EVENT_NONE,
-    BUTTON_EVENT_SINGLE_TAP,
-    BUTTON_EVENT_DOUBLE_TAP,
-    BUTTON_EVENT_LONG_PRESS,
-    BUTTON_EVENT_RELEASE
-} ButtonEvent;
+    STATE_IDLE,
+    STATE_FIRST_PRESS,
+    STATE_FIRST_RELEASE,
+    STATE_SECOND_PRESS
+} button_fsm_state_t;
 
-static uint32_t current_time = 0;
-static uint32_t btn_press_start_time;
-static uint32_t btn_release_time;
-static uint32_t btn_last_tap_time;
-static bool btn_is_pressed;
+static button_fsm_state_t fsm_state = STATE_IDLE;
+static uint32_t state_timer = 0;
 
-static u_int8_t btn_last_event = BUTTON_EVENT_NONE;
+#define MUTE_HOLD_TIME 1000      // 1s hold for mute
+#define DOUBLE_TAP_WINDOW 600    // 600ms window for second tap
+#define POWER_OFF_HOLD_TIME 3000 // 3s hold for power off (on second tap)
+
+static inline void notify_app(int event_type)
+{
+    final_button_state[0] = event_type;
+    struct bt_conn *conn = get_current_connection();
+    if (conn != NULL) {
+        bt_gatt_notify(conn, &button_service.attrs[1], &final_button_state, sizeof(final_button_state));
+    }
+}
 
 void check_button_level(struct k_work *work_item)
 {
-    current_time = current_time + 1;
+    bool pressed = was_pressed;
+    state_timer++;
 
-    u_int8_t btn_state = was_pressed ? BUTTON_PRESSED : BUTTON_RELEASED;
+    switch (fsm_state) {
+    case STATE_IDLE:
+        if (pressed) {
+            fsm_state = STATE_FIRST_PRESS;
+            state_timer = 0;
+            notify_app(BUTTON_PRESS);
+        }
+        break;
 
-    ButtonEvent event = BUTTON_EVENT_NONE;
-
-    // Debouncing pressed state
-    if (btn_state == BUTTON_PRESSED && !btn_is_pressed) {
-        btn_is_pressed = true;
-        btn_press_start_time = current_time;
-    } else if (btn_state == BUTTON_RELEASED && btn_is_pressed) {
-        btn_is_pressed = false;
-        btn_release_time = current_time;
-
-        // Check for double tap
-        uint32_t press_duration = (btn_release_time - btn_press_start_time) * BUTTON_CHECK_INTERVAL;
-        if (press_duration < TAP_THRESHOLD) {
-            if (btn_last_tap_time > 0 &&
-                (current_time - btn_last_tap_time) * BUTTON_CHECK_INTERVAL < DOUBLE_TAP_WINDOW) {
-                event = BUTTON_EVENT_DOUBLE_TAP;
-                btn_last_tap_time = 0; // Reset double-tap / single-tap detection
+    case STATE_FIRST_PRESS:
+        if (!pressed) {
+            // Released. Check duration.
+            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            if (duration_ms >= MUTE_HOLD_TIME) {
+                // Long press 1s -> Mute toggle
+                is_muted = !is_muted;
+                LOG_INF("Mute toggled: %s", is_muted ? "ON" : "OFF");
+                play_haptic_milli(500);
+                
+                if (is_muted) {
+                    set_led_red(true);
+                    set_led_green(false);
+                } else {
+                    set_led_red(false);
+                    set_led_green(true);
+                }
+                
+                notify_app(LONG_TAP);
+                fsm_state = STATE_IDLE;
             } else {
-                btn_last_tap_time = current_time;
+                // Short press. Wait for second tap.
+                fsm_state = STATE_FIRST_RELEASE;
+                state_timer = 0;
+                notify_app(BUTTON_RELEASE);
             }
         }
-    }
+        break;
 
-    // Check for single tap
-    if (btn_state == BUTTON_RELEASED && !btn_is_pressed) {
-        uint32_t press_duration = (btn_release_time - btn_press_start_time) * BUTTON_CHECK_INTERVAL;
-        if (press_duration < TAP_THRESHOLD && btn_last_tap_time > 0 &&
-            (current_time - btn_press_start_time) * BUTTON_CHECK_INTERVAL > TAP_THRESHOLD) {
-            event = BUTTON_EVENT_SINGLE_TAP;
-            btn_last_tap_time = 0;
-        } else if ((current_time - btn_press_start_time) * BUTTON_CHECK_INTERVAL > TAP_THRESHOLD) {
-            event = BUTTON_EVENT_RELEASE;
+    case STATE_FIRST_RELEASE:
+        if (pressed) {
+            fsm_state = STATE_SECOND_PRESS;
+            state_timer = 0;
+            notify_app(BUTTON_PRESS);
+        } else {
+            uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            if (idle_duration_ms > DOUBLE_TAP_WINDOW) {
+                // Timeout. It was just a single tap. Do nothing.
+                LOG_INF("Single tap detected (ignored)");
+                fsm_state = STATE_IDLE;
+            }
         }
-    }
+        break;
 
-    // Check for long press
-    if (btn_is_pressed && (current_time - btn_press_start_time) * BUTTON_CHECK_INTERVAL >= LONG_PRESS_TIME) {
-        event = BUTTON_EVENT_LONG_PRESS;
-    }
-
-    // Single tap
-    if (event == BUTTON_EVENT_SINGLE_TAP) {
-        LOG_INF("single tap detected\n");
-        btn_last_event = event;
-
-        notify_tap();
-    }
-
-    // Double tap
-    if (event == BUTTON_EVENT_DOUBLE_TAP) {
-        LOG_INF("double tap detected\n");
-        btn_last_event = event;
-        notify_double_tap();
-    }
-
-    // Long press, one time event
-    if (event == BUTTON_EVENT_LONG_PRESS && btn_last_event != BUTTON_EVENT_LONG_PRESS) {
-        LOG_INF("long press detected\n");
-        btn_last_event = event;
-        turnoff_all();
-    }
-
-    // Releases, one time event
-    if (event == BUTTON_EVENT_RELEASE && btn_last_event != BUTTON_EVENT_RELEASE) {
-        LOG_PRINTK("release detected\n");
-        btn_last_event = event;
-        notify_unpress();
-
-        // Reset
-        current_time = 0;
-        btn_press_start_time = 0;
-        btn_release_time = 0;
-        btn_last_tap_time = 0;
-    }
-    if (event == BUTTON_EVENT_RELEASE) {
-        current_button_state = GRACE;
+    case STATE_SECOND_PRESS:
+        if (!pressed) {
+            // Released.
+            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            if (duration_ms < POWER_OFF_HOLD_TIME) {
+                // Double tap (release happened before 3s) -> Star
+                LOG_INF("Double tap (Star) detected");
+                play_haptic_milli(300);
+                notify_app(DOUBLE_TAP);
+            }
+            fsm_state = STATE_IDLE;
+            notify_app(BUTTON_RELEASE);
+        } else {
+            // Still pressed. Check if we hit 3s.
+            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            if (duration_ms >= POWER_OFF_HOLD_TIME) {
+                // Double tap + Long hold 3s -> Power Off
+                LOG_INF("Power off triggered via Double-Tap-Hold");
+                play_haptic_milli(1000);
+                turnoff_all(); // This shuts down the device.
+                fsm_state = STATE_IDLE;
+            }
+        }
+        break;
     }
 
     k_work_reschedule(&button_work, K_MSEC(BUTTON_CHECK_INTERVAL));
@@ -276,7 +216,7 @@ static struct gpio_callback button_cb_data;
 static void button_gpio_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
     was_pressed = (gpio_pin_get_dt(&usr_btn) == 1);
-    LOG_INF("Button %s (GPIO callback)", was_pressed ? "pressed" : "released");
+    // LOG_INF("Button %s (GPIO callback)", was_pressed ? "pressed" : "released");
 }
 
 int button_regist_callback()

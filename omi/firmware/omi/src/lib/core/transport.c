@@ -903,7 +903,7 @@ void pusher(void)
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
         // Always write to storage for offline-only recording
-        if (get_file_size() < MAX_STORAGE_BYTES && is_sd_on()) {
+        if (!is_muted && get_file_size() < MAX_STORAGE_BYTES && is_sd_on()) {
             storage_full_warned = false;
             
             // Inject timestamp every 60 seconds
@@ -915,7 +915,9 @@ void pusher(void)
             
             write_to_storage();
         } else {
-            if (!storage_full_warned) {
+            if (is_muted) {
+                // If muted, we just drop the buffer (which was already read_from_tx_queue)
+            } else if (!storage_full_warned) {
                 LOG_WRN("Storage full, stopping offline storage");
                 storage_full_warned = true;
             }
