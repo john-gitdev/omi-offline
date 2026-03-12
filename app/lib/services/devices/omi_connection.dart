@@ -62,6 +62,18 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
+  Future<int> performRetrieveStorageFull() async {
+    try {
+      final data = await transport.readCharacteristic(storageDataStreamServiceUuid, storageFullCharacteristicUuid);
+      if (data.isNotEmpty) return data[0];
+      return -1;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Error reading storage full status: $e');
+      return -1;
+    }
+  }
+
+  @override
   Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({
     void Function(int)? onBatteryLevelChange,
   }) async {
@@ -78,6 +90,27 @@ class OmiDeviceConnection extends DeviceConnection {
       return subscription;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error setting up battery listener: $e');
+      return null;
+    }
+  }
+
+  @override
+  Future<StreamSubscription<List<int>>?> performGetBleStorageFullListener({
+    void Function(int)? onStorageFullChange,
+  }) async {
+    try {
+      final stream = transport.getCharacteristicStream(storageDataStreamServiceUuid, storageFullCharacteristicUuid);
+
+      final subscription = stream.listen((value) {
+        if (value.isNotEmpty && onStorageFullChange != null) {
+          Logger.debug('Storage full status changed: ${value[0]}');
+          onStorageFullChange(value[0]);
+        }
+      });
+
+      return subscription;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Error setting up storage listener: $e');
       return null;
     }
   }

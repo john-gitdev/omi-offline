@@ -20,7 +20,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   BtDevice? connectedDevice;
   BtDevice? pairedDevice;
   StreamSubscription<List<int>>? _bleBatteryLevelListener;
+  StreamSubscription<List<int>>? _bleStorageFullListener;
   int batteryLevel = -1;
+  int storageFullPercentage = -1;
   int _lastNotifiedBatteryLevel = -1;
   DateTime? _lastBatteryNotifyTime;
   bool _hasLowBatteryAlerted = false;
@@ -80,6 +82,14 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     return connection.retrieveBatteryLevel();
   }
 
+  Future<int> _retrieveStorageFull(String deviceId) async {
+    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
+    if (connection == null) {
+      return -1;
+    }
+    return connection.retrieveStorageFull();
+  }
+
   Future<StreamSubscription<List<int>>?> _getBleBatteryLevelListener(
     String deviceId, {
     void Function(int)? onBatteryLevelChange,
@@ -89,6 +99,17 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       return Future.value(null);
     }
     return connection.getBleBatteryLevelListener(onBatteryLevelChange: onBatteryLevelChange);
+  }
+
+  Future<StreamSubscription<List<int>>?> _getBleStorageFullListener(
+    String deviceId, {
+    void Function(int)? onStorageFullChange,
+  }) async {
+    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
+    if (connection == null) {
+      return Future.value(null);
+    }
+    return connection.getBleStorageFullListener(onStorageFullChange: onStorageFullChange);
   }
 
   Future<List<int>> _getStorageList(String deviceId) async {
@@ -137,6 +158,21 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
           _lastBatteryNotifyTime = DateTime.now();
           notifyListeners();
         }
+      },
+    );
+    notifyListeners();
+  }
+
+  initiateBleStorageListener() async {
+    if (connectedDevice == null) {
+      return;
+    }
+    _bleStorageFullListener?.cancel();
+    _bleStorageFullListener = await _getBleStorageFullListener(
+      connectedDevice!.id,
+      onStorageFullChange: (int value) {
+        storageFullPercentage = value;
+        notifyListeners();
       },
     );
     notifyListeners();
@@ -280,6 +316,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   @override
   void dispose() {
     _bleBatteryLevelListener?.cancel();
+    _bleStorageFullListener?.cancel();
     _reconnectionTimer?.cancel();
     _disconnectDebouncer.cancel();
     _connectDebouncer.cancel();
@@ -321,7 +358,13 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       batteryLevel = currentLevel;
     }
 
+    int currentStorage = await _retrieveStorageFull(device.id);
+    if (currentStorage != -1) {
+      storageFullPercentage = currentStorage;
+    }
+
     await initiateBleBatteryListener();
+    await initiateBleStorageListener();
     if (batteryLevel != -1 && batteryLevel < 20) {
       _hasLowBatteryAlerted = false;
     }

@@ -400,6 +400,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 SharedPreferencesUtil().saveInt('anchor_utc_$currentSessionId', utcTime);
                 SharedPreferencesUtil().saveInt('anchor_uptime_$currentSessionId', currentUptimeMs);
               }
+              
+              if (currentSessionId != null) {
+                if (currentSessionId! > SharedPreferencesUtil().latestSyncedSessionId) {
+                  SharedPreferencesUtil().latestSyncedSessionId = currentSessionId!;
+                }
+              }
 
               Logger.debug("SDCardWalSync BLE: Parsed metadata: UTC=$utcTime, UptimeMs=$currentUptimeMs, Session=$currentSessionId, Chunk=$currentChunkIndex");
               packageOffset += 1 + 16;
@@ -614,6 +620,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             .where((id) => !resp.updatedConversationIds.contains(id) && !resp.newConversationIds.contains(id)));
 
         wal.status = WalStatus.synced;
+        _wals.removeWhere((w) => w.id == wal.id);
       } catch (e) {
         Logger.debug("SDCardWalSync: Error syncing WAL ${wal.id}: $e");
         DebugLogManager.logError(e, null, 'SD card syncAll WAL failed: ${e.toString()}', {'walId': wal.id});
@@ -682,6 +689,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           .where((id) => !resp.updatedConversationIds.contains(id) && !resp.newConversationIds.contains(id)));
 
       wal.status = WalStatus.synced;
+      _wals.removeWhere((w) => w.id == wal.id);
     } catch (e) {
       Logger.debug("SDCardWalSync: Error syncing WAL ${wal.id}: $e");
       DebugLogManager.logError(e, null, 'SD card single WAL sync failed: ${e.toString()}', {'walId': wal.id});
@@ -1163,6 +1171,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                   SharedPreferencesUtil().saveInt('anchor_uptime_$currentSessionId', currentUptimeMs);
                 }
 
+                if (currentSessionId != null) {
+                  if (currentSessionId! > SharedPreferencesUtil().latestSyncedSessionId) {
+                    SharedPreferencesUtil().latestSyncedSessionId = currentSessionId!;
+                  }
+                }
+
                 Logger.debug("SDCardWalSync WiFi: Parsed metadata: UTC=$utcTime, UptimeMs=$currentUptimeMs, Session=$currentSessionId, Chunk=$currentChunkIndex");
 
                 packageOffset += 1 + 16;
@@ -1370,6 +1384,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           debugPrint("SDCardWalSync WiFi: Skipping SD card clear - no BLE connection");
         }
         wal.status = WalStatus.synced;
+        _wals.removeWhere((w) => w.id == wal.id);
+        listener.onWalUpdated();
         debugPrint("SDCardWalSync WiFi: Sync completed successfully");
         DebugLogManager.logEvent('sdcard_wifi_sync_completed', {
           'bytesTransferred': offset - initialOffset,

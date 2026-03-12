@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/offline_audio_processor.dart';
+import 'package:omi/utils/logger.dart';
 
 class DailyBatch {
   final String dateString;
@@ -181,11 +182,21 @@ class RecordingsManager {
     // 5. Check adjustment mode. If OFF, delete the raw chunks.
     if (!SharedPreferencesUtil().offlineAdjustmentMode) {
       Set<String> sessionFoldersToDelete = {};
+      final latestSyncedSessionId = SharedPreferencesUtil().latestSyncedSessionId;
       
       for (var file in batch.rawChunks) {
         if (await file.exists()) {
-          sessionFoldersToDelete.add(file.parent.path);
-          await file.delete();
+          // Get session ID from folder name
+          final sessionIdStr = file.parent.path.split('/').last;
+          final sessionId = int.tryParse(sessionIdStr) ?? -1;
+
+          // Only delete if it's NOT the latest session (which might be ongoing)
+          if (sessionId < latestSyncedSessionId) {
+            await file.delete();
+            sessionFoldersToDelete.add(file.parent.path);
+          } else {
+            Logger.debug("RecordingsManager: Keeping raw chunk for session $sessionId as it might be ongoing.");
+          }
         }
       }
       
@@ -194,7 +205,10 @@ class RecordingsManager {
         final folder = Directory(folderPath);
         if (await folder.exists()) {
           try {
-            await folder.delete();
+            // Check if folder is actually empty before deleting
+            if ((await folder.list().isEmpty)) {
+              await folder.delete();
+            }
           } catch (e) {
             // Ignore if not empty
           }
