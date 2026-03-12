@@ -12,7 +12,6 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'sync_page.dart';
 import 'package:omi/providers/device_provider.dart';
-import 'package:omi/services/devices.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/utils/l10n_extensions.dart';
 import 'package:omi/utils/other/temp.dart';
@@ -40,22 +39,11 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   Timer? _debounce;
   Timer? _micGainDebounce;
 
-  // TODO: thinh, use connection directly
   Future _bleDisconnectDevice(BtDevice btDevice) async {
     var connection = await ServiceManager.instance().device.ensureConnection(btDevice.id);
     if (connection == null) {
       return Future.value(null);
     }
-    return await connection.disconnect();
-  }
-
-  Future _bleUnpairDevice(BtDevice btDevice) async {
-    var connection = await ServiceManager.instance().device.ensureConnection(btDevice.id);
-    if (connection == null) {
-      return Future.value(null);
-    }
-    await connection.unpair();
-
     return await connection.disconnect();
   }
 
@@ -81,8 +69,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       var connection = await ServiceManager.instance().device.ensureConnection(deviceProvider.pairedDevice!.id);
       if (connection != null) {
         var features = await connection.getFeatures();
-        final hasDimming = (features & OmiFeatures.ledDimming) != 0;
-        final hasMicGain = (features & OmiFeatures.micGain) != 0;
+        final hasDimming = OmiFeatures.hasFeature(features, OmiFeatures.ledDimming);
+        final hasMicGain = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
 
         if (!mounted) return;
         setState(() {
@@ -226,8 +214,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   }
 
   Widget _buildDeviceInfoSection(BtDevice? device, DeviceProvider provider) {
-    final deviceName = device?.name ?? 'Omi DevKit';
-    final deviceId = device?.id ?? '12AB34CD:56EF78GH';
+    final deviceName = device?.name ?? 'Omi';
+    final deviceId = device?.id ?? 'Unknown';
 
     String truncateId(String id) {
       if (id.length > 10) {
@@ -291,7 +279,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
   Widget _buildHardwareInfoSection(BtDevice? device) {
     final hardwareRevision = device?.hardwareRevision ?? 'XIAO';
-    final modelNumber = device?.modelNumber ?? 'Omi DevKit';
+    final modelNumber = device?.modelNumber ?? 'Omi CV1';
     final manufacturer = device?.manufacturerName ?? 'Based Hardware';
 
     return Container(
@@ -323,87 +311,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           ),
         ],
       ),
-    );
-  }
-
-  String _getDoubleTapActionLabel(int action) {
-    switch (action) {
-      case 0:
-        return context.l10n.endConversation;
-      case 1:
-        return context.l10n.pauseResume;
-      case 2:
-        return context.l10n.starConversation;
-      default:
-        return context.l10n.endConversation;
-    }
-  }
-
-  void _showDoubleTapActionSheet() {
-    int currentAction = SharedPreferencesUtil().doubleTapAction;
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1C1C1E),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-      builder: (sheetContext) {
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            return SafeArea(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    margin: const EdgeInsets.only(top: 12, bottom: 16),
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(color: const Color(0xFF3C3C43), borderRadius: BorderRadius.circular(2)),
-                  ),
-                  Text(
-                    context.l10n.doubleTapAction,
-                    style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 16),
-                  ListTile(
-                    title: Text(
-                      context.l10n.endAndProcess,
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w400),
-                    ),
-                    trailing: currentAction == 0 ? const Icon(Icons.check, color: Colors.white, size: 20) : null,
-                    onTap: () {
-                      setState(() => SharedPreferencesUtil().doubleTapAction = 0);
-                      Navigator.pop(sheetContext);
-                    },
-                  ),
-                  ListTile(
-                    title: Text(
-                      context.l10n.pauseResumeRecording,
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w400),
-                    ),
-                    trailing: currentAction == 1 ? const Icon(Icons.check, color: Colors.white, size: 20) : null,
-                    onTap: () {
-                      setState(() => SharedPreferencesUtil().doubleTapAction = 1);
-                      Navigator.pop(sheetContext);
-                    },
-                  ),
-                  ListTile(
-                    title: Text(
-                      context.l10n.starOngoing,
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w400),
-                    ),
-                    trailing: currentAction == 2 ? const Icon(Icons.check, color: Colors.white, size: 20) : null,
-                    onTap: () {
-                      setState(() => SharedPreferencesUtil().doubleTapAction = 2);
-                      Navigator.pop(sheetContext);
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                ],
-              ),
-            );
-          },
-        );
-      },
     );
   }
 
@@ -660,22 +567,12 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   }
 
   Widget _buildCustomizationSection() {
-    final doubleTapAction = SharedPreferencesUtil().doubleTapAction;
-
     return Container(
       decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
       child: Column(
         children: [
-          // Double Tap
-          _buildProfileStyleItem(
-            icon: FontAwesomeIcons.handPointer,
-            title: context.l10n.doubleTap,
-            chipValue: _getDoubleTapActionLabel(doubleTapAction),
-            onTap: _showDoubleTapActionSheet,
-          ),
           // LED Brightness
           if (_isDimRatioLoaded && _hasDimmingFeature == true) ...[
-            const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.lightbulb,
               title: context.l10n.ledBrightness,
@@ -716,15 +613,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           // Charging Help
           GestureDetector(
             onTap: () async {
-              final deviceName = provider.pairedDevice?.name ?? 'DevKit1';
-              String url;
-              if (deviceName == 'Omi DevKit 2') {
-                url = 'https://www.omi.me/pages/charging-devkit2';
-              } else if (deviceName == 'Omi') {
-                url = 'https://www.omi.me/pages/charging-omi';
-              } else {
-                url = 'https://www.omi.me/pages/charging';
-              }
+              const url = 'https://www.omi.me/pages/faq#11';
               final uri = Uri.parse(url);
               if (await canLaunchUrl(uri)) {
                 await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -784,63 +673,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                     Text(
                       provider.connectedDevice == null ? context.l10n.unpairDevice : context.l10n.disconnectDevice,
                       style: const TextStyle(color: Colors.redAccent, fontSize: 17, fontWeight: FontWeight.w400),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-          // Unpair Device - only for Limitless devices
-          if (provider.isConnected && provider.connectedDevice?.type == DeviceType.limitless) ...[
-            const Divider(height: 1, color: Color(0xFF3C3C43)),
-            GestureDetector(
-              onTap: () async {
-                showDialog(
-                  context: context,
-                  builder: (c) => getDialog(
-                    context,
-                    () => Navigator.of(context).pop(),
-                    () async {
-                      Navigator.of(context).pop();
-                      await SharedPreferencesUtil().btDeviceSet(
-                        BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0),
-                      );
-                      SharedPreferencesUtil().deviceName = '';
-                      if (provider.connectedDevice != null) {
-                        await _bleUnpairDevice(provider.connectedDevice!);
-                      }
-                      provider.setIsConnected(false);
-                      provider.setConnectedDevice(null);
-                      provider.updateConnectingStatus(false);
-                      if (context.mounted) {
-                        Navigator.of(context).pop();
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(context.l10n.deviceUnpairedMessage),
-                            duration: const Duration(seconds: 5),
-                          ),
-                        );
-                      }
-                    },
-                    context.l10n.unpairDialogTitle,
-                    context.l10n.unpairDialogMessage,
-                    confirmText: context.l10n.unpair,
-                  ),
-                );
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-                child: Row(
-                  children: [
-                    const SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: FaIcon(FontAwesomeIcons.ban, color: Colors.orange, size: 20),
-                    ),
-                    const SizedBox(width: 16),
-                    Text(
-                      context.l10n.unpairAndForget,
-                      style: const TextStyle(color: Colors.orange, fontSize: 17, fontWeight: FontWeight.w400),
                     ),
                   ],
                 ),

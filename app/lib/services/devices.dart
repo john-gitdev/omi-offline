@@ -2,9 +2,6 @@ import 'dart:async';
 
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices/device_connection.dart';
-import 'package:omi/services/devices/transports/tcp_transport.dart';
-import 'package:omi/services/devices/wifi_sync_error.dart';
-import 'package:omi/utils/logger.dart';
 
 enum DeviceConnectionState {
   connected,
