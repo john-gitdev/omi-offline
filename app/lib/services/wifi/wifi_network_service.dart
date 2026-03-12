@@ -1,5 +1,5 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:omi/utils/logger.dart';
 
 class WifiNetworkService {
   static const _channel = MethodChannel('com.omi.wifi_network');
@@ -42,23 +42,23 @@ class WifiNetworkService {
 
       return WifiConnectionResult.fromMap(result);
     } on PlatformException catch (e) {
-      debugPrint('WifiNetworkService: Platform exception: ${e.message}');
+      Logger.debug('WifiNetworkService: Platform exception: ${e.message}');
       return WifiConnectionResult.failure(e.message ?? 'Connection failed');
     } catch (e) {
-      debugPrint('WifiNetworkService: Error connecting to AP: $e');
+      Logger.debug('WifiNetworkService: Error connecting to AP: $e');
       return WifiConnectionResult.failure('Connection failed: $e');
     }
   }
 
   Future<bool> disconnectFromAp(String ssid) async {
-    debugPrint('WifiNetworkService: Disconnecting from AP: $ssid');
+    Logger.debug('WifiNetworkService: Disconnecting from AP: $ssid');
     try {
       final result = await _channel.invokeMethod<bool>('disconnectFromWifi', {
         'ssid': ssid,
       });
       return result ?? false;
     } catch (e) {
-      debugPrint('WifiNetworkService: Error disconnecting from AP: $e');
+      Logger.debug('WifiNetworkService: Error disconnecting from AP: $e');
       return false;
     }
   }
@@ -70,7 +70,7 @@ class WifiNetworkService {
       });
       return result ?? false;
     } catch (e) {
-      debugPrint('WifiNetworkService: Error checking connection: $e');
+      Logger.debug('WifiNetworkService: Error checking connection: $e');
       return false;
     }
   }

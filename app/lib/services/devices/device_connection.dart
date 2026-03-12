@@ -18,7 +18,6 @@ import 'package:omi/services/devices/omi_connection.dart';
 import 'package:omi/services/devices/omiglass_connection.dart';
 import 'package:omi/services/devices/plaud_connection.dart';
 import 'package:omi/services/devices/wifi_sync_error.dart';
-import 'package:omi/main.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:omi/services/devices/transports/ble_transport.dart';
 import 'package:omi/services/devices/transports/frame_transport.dart';
@@ -493,13 +492,13 @@ abstract class DeviceConnection {
 
   Future<WifiSyncSetupResult> setupWifiSync(String ssid, String password) async {
     final connected = await isConnected();
-    debugPrint('DeviceConnection: setupWifiSync - isConnected: $connected, ssid: $ssid');
+    Logger.debug('DeviceConnection: setupWifiSync - isConnected: $connected, ssid: $ssid');
     if (connected) {
       final result = await performSetupWifiSync(ssid, password);
-      debugPrint('DeviceConnection: setupWifiSync - result: ${result.success}, error: ${result.errorCode}');
+      Logger.debug('DeviceConnection: setupWifiSync - result: ${result.success}, error: ${result.errorCode}');
       return result;
     }
-    debugPrint('DeviceConnection: setupWifiSync - device disconnected');
+    Logger.debug('DeviceConnection: setupWifiSync - device disconnected');
     return WifiSyncSetupResult.connectionFailed();
   }
 
@@ -509,13 +508,13 @@ abstract class DeviceConnection {
 
   Future<bool> startWifiSync() async {
     final connected = await isConnected();
-    debugPrint('DeviceConnection: startWifiSync - isConnected: $connected');
+    Logger.debug('DeviceConnection: startWifiSync - isConnected: $connected');
     if (connected) {
       final result = await performStartWifiSync();
-      debugPrint('DeviceConnection: startWifiSync - performStartWifiSync returned: $result');
+      Logger.debug('DeviceConnection: startWifiSync - performStartWifiSync returned: $result');
       return result;
     }
-    debugPrint('DeviceConnection: startWifiSync - device disconnected, showing notification');
+    Logger.debug('DeviceConnection: startWifiSync - device disconnected, showing notification');
     return false;
   }
 
