@@ -46,7 +46,15 @@ class RecordingsManager {
 
     // Process raw chunks (Now they are in Session Folders!)
     if (await rawChunksDir.exists()) {
-      final sessionFolders = rawChunksDir.listSync().whereType<Directory>();
+      final sessionFolders = rawChunksDir.listSync().whereType<Directory>().toList();
+      
+      // Sort session folders by ID (e.g. "100", "101")
+      sessionFolders.sort((a, b) {
+        final aId = int.tryParse(a.path.split('/').last) ?? 0;
+        final bId = int.tryParse(b.path.split('/').last) ?? 0;
+        return aId.compareTo(bId);
+      });
+
       for (var folder in sessionFolders) {
         final sessionIdStr = folder.path.split('/').last;
         
