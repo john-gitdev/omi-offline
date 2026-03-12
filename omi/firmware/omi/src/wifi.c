@@ -18,6 +18,7 @@ LOG_MODULE_REGISTER(wifi, CONFIG_LOG_DEFAULT_LEVEL);
 #include <zephyr/kernel/thread_stack.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/wifi_mgmt.h>
+#include "lib/core/mic.h"
 #include <zephyr/net/wifi_utils.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/posix/sys/socket.h>
