@@ -209,6 +209,15 @@ abstract class DeviceConnection {
 
   Future<int> performRetrieveBatteryLevel();
 
+  Future<int> retrieveStorageFull() async {
+    if (await isConnected()) {
+      return await performRetrieveStorageFull();
+    }
+    return -1;
+  }
+
+  Future<int> performRetrieveStorageFull() async => -1;
+
   Future<StreamSubscription<List<int>>?> getBleBatteryLevelListener({
     void Function(int)? onBatteryLevelChange,
   }) async {
@@ -227,6 +236,21 @@ abstract class DeviceConnection {
         onBatteryLevelChange(value[0]);
       }
     });
+  }
+
+  Future<StreamSubscription<List<int>>?> getBleStorageFullListener({
+    void Function(int)? onStorageFullChange,
+  }) async {
+    if (await isConnected()) {
+      return await performGetBleStorageFullListener(onStorageFullChange: onStorageFullChange);
+    }
+    return null;
+  }
+
+  Future<StreamSubscription<List<int>>?> performGetBleStorageFullListener({
+    void Function(int)? onStorageFullChange,
+  }) async {
+    return null;
   }
 
   Future<StreamSubscription?> getBleAudioBytesListener({

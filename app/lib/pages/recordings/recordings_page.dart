@@ -1,9 +1,12 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:provider/provider.dart';
+import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/pages/settings/settings_drawer.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:omi/widgets/dialog.dart';
 
 class RecordingsPage extends StatefulWidget {
   const RecordingsPage({super.key});
@@ -60,6 +63,22 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _processBatch(DailyBatch batch) async {
+    // Large batch warning (e.g. > 60 chunks = ~1 hour of audio)
+    if (batch.rawChunks.length > 60) {
+      bool? confirm = await showDialog<bool>(
+        context: context,
+        builder: (c) => getDialog(
+          context,
+          () => Navigator.of(context).pop(false),
+          () => Navigator.of(context).pop(true),
+          'Large Batch',
+          'This day has over ${batch.rawChunks.length} raw chunks. Processing might take a few minutes. Continue?',
+          confirmText: 'Start',
+        ),
+      );
+      if (confirm != true) return;
+    }
+
     setState(() {
       _processingDateString = batch.dateString;
       _processingProgress = 0.0;
@@ -210,48 +229,81 @@ class _RecordingsPageState extends State<RecordingsPage> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0D0D0D),
-      appBar: AppBar(
-        title: const Text('Daily Recordings', style: TextStyle(color: Colors.white)),
-        backgroundColor: const Color(0xFF0D0D0D),
-        actions: [
-          IconButton(
-            icon: const FaIcon(FontAwesomeIcons.gear, color: Colors.white, size: 20),
-            onPressed: () {
-              SettingsDrawer.show(context);
-            },
+  Widget _buildStorageWarning(int percentage) {
+    if (percentage < 90) return const SizedBox.shrink();
+
+    return Container(
+      width: double.infinity,
+      color: Colors.red.shade900,
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: Row(
+        children: [
+          const FaIcon(FontAwesomeIcons.circleExclamation, color: Colors.white, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Device Storage $percentage% Full - Sync Now',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
-          : RefreshIndicator(
-              color: Colors.deepPurpleAccent,
-              onRefresh: _loadBatches,
-              child: _batches.isEmpty
-                  ? ListView(
-                      children: const [
-                         SizedBox(height: 100),
-                         Center(
-                          child: Text(
-                            'No recordings found.\nSync your device to begin.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: Colors.grey, fontSize: 16),
-                          ),
-                        ),
-                      ],
-                    )
-                  : ListView.builder(
-                      padding: const EdgeInsets.all(16),
-                      itemCount: _batches.length,
-                      itemBuilder: (context, index) {
-                        return _buildBatchCard(_batches[index]);
-                      },
-                    ),
-            ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<DeviceProvider>(
+      builder: (context, deviceProvider, child) {
+        return Scaffold(
+          backgroundColor: const Color(0xFF0D0D0D),
+          appBar: AppBar(
+            title: const Text('Daily Recordings', style: TextStyle(color: Colors.white)),
+            backgroundColor: const Color(0xFF0D0D0D),
+            actions: [
+              IconButton(
+                icon: const FaIcon(FontAwesomeIcons.gear, color: Colors.white, size: 20),
+                onPressed: () {
+                  SettingsDrawer.show(context);
+                },
+              ),
+            ],
+          ),
+          body: Column(
+            children: [
+              _buildStorageWarning(deviceProvider.storageFullPercentage),
+              Expanded(
+                child: _isLoading
+                    ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
+                    : RefreshIndicator(
+                        color: Colors.deepPurpleAccent,
+                        onRefresh: _loadBatches,
+                        child: _batches.isEmpty
+                            ? ListView(
+                                children: const [
+                                  SizedBox(height: 100),
+                                  Center(
+                                    child: Text(
+                                      'No recordings found.\nSync your device to begin.',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(color: Colors.grey, fontSize: 16),
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : ListView.builder(
+                                padding: const EdgeInsets.all(16),
+                                itemCount: _batches.length,
+                                itemBuilder: (context, index) {
+                                  return _buildBatchCard(_batches[index]);
+                                },
+                              ),
+                      ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
