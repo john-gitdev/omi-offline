@@ -2,8 +2,6 @@ import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
-
 import 'package:version/version.dart';
 
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
@@ -676,7 +674,7 @@ class OmiDeviceConnection extends DeviceConnection {
     try {
       // Validate SSID length (1-32 characters)
       if (ssid.isEmpty || ssid.length > 32) {
-        debugPrint('OmiDeviceConnection: Invalid SSID length: ${ssid.length}');
+        Logger.debug('OmiDeviceConnection: Invalid SSID length: ${ssid.length}');
         return WifiSyncSetupResult.failure(
           WifiSyncErrorCode.ssidLengthInvalid,
           customMessage: 'SSID must be 1-32 characters',
@@ -685,7 +683,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
       // Validate password length (8-63 characters for WPA2)
       if (password.isEmpty || password.length < 8 || password.length > 63) {
-        debugPrint('OmiDeviceConnection: Invalid password length: ${password.length}');
+        Logger.debug('OmiDeviceConnection: Invalid password length: ${password.length}');
         return WifiSyncSetupResult.failure(
           WifiSyncErrorCode.passwordLengthInvalid,
           customMessage: 'Password must be 8-63 characters',

@@ -4,7 +4,9 @@ import 'dart:math';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:ffmpeg_kit_flutter_audio/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_audio/return_code.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/utils/logger.dart';
 
 class OfflineAudioProcessor {
   static const int sampleRate = 16000;
@@ -92,6 +94,7 @@ class OfflineAudioProcessor {
                 }
                 break; // Found the precise time, stop scanning
              } catch (e) {
+                Logger.error("OfflineAudioProcessor: Error parsing metadata packet: $e");
                 // skip corrupt
              }
           }
@@ -332,6 +335,15 @@ class OfflineAudioProcessor {
     // 4. Delete the intermediate WAV file
     if (await wavFile.exists()) {
       await wavFile.delete();
+    }
+
+    if (returnCode == null || !ReturnCode.isSuccess(returnCode)) {
+      final aacFile = File(aacPath);
+      if (await aacFile.exists()) {
+        await aacFile.delete();
+      }
+      Logger.error("OfflineAudioProcessor: FFmpeg conversion failed with code $returnCode");
+      throw Exception("FFmpeg conversion failed");
     }
 
     return aacPath;

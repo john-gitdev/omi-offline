@@ -8,6 +8,7 @@ import 'package:omi/services/services.dart';
 import 'package:omi/pages/settings/settings_drawer.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:omi/widgets/dialog.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 class RecordingsPage extends StatefulWidget {
   const RecordingsPage({super.key});
@@ -65,11 +66,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _handleSync() async {
-    if (_isSyncing) return;
+    if (_isSyncing || RecordingsManager.isProcessingAny) return;
     
     setState(() {
       _isSyncing = true;
     });
+    WakelockPlus.enable();
 
     try {
       final syncService = ServiceManager.instance().wal.getSyncs();
@@ -94,6 +96,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
         );
       }
     } finally {
+      WakelockPlus.disable();
       if (mounted) {
         setState(() {
           _isSyncing = false;
@@ -104,6 +107,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _processBatch(DailyBatch batch) async {
+    if (RecordingsManager.isProcessingAny || _isSyncing) return;
+
     // Large batch warning (e.g. > 60 chunks = ~1 hour of audio)
     if (batch.rawChunks.length > 60) {
       bool? confirm = await showDialog<bool>(
@@ -124,6 +129,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
       _processingDateString = batch.dateString;
       _processingProgress = 0.0;
     });
+    WakelockPlus.enable();
 
     try {
       await _manager.processDay(batch, (progress) {
@@ -140,6 +146,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
         );
       }
     } finally {
+      WakelockPlus.disable();
       if (mounted) {
         setState(() {
           _processingDateString = null;

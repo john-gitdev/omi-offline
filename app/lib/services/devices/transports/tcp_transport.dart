@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
+import 'package:omi/utils/logger.dart';
 
 import 'device_transport.dart';
 
@@ -43,7 +43,7 @@ class TcpTransport extends DeviceTransport {
       _clientSocket!.add(data);
       await _clientSocket!.flush();
     } catch (e) {
-      debugPrint('TcpTransport: Error writing data: $e');
+      Logger.debug('TcpTransport: Error writing data: $e');
       rethrow;
     }
   }
@@ -83,7 +83,7 @@ class TcpTransport extends DeviceTransport {
           _dataStreamController?.add(data);
         },
         onError: (error) {
-          debugPrint('TcpTransport: Socket error: $error');
+          Logger.debug('TcpTransport: Socket error: $error');
           _dataStreamController?.addError(error);
           disconnect();
         },
@@ -93,17 +93,17 @@ class TcpTransport extends DeviceTransport {
         cancelOnError: false,
       );
     } on SocketException catch (e) {
-      debugPrint('TcpTransport: Socket exception starting server on port $port: $e');
+      Logger.debug('TcpTransport: Socket exception starting server on port $port: $e');
       _updateState(DeviceTransportState.disconnected);
       await _cleanup();
       rethrow;
     } on TimeoutException catch (e) {
-      debugPrint('TcpTransport: $e');
+      Logger.debug('TcpTransport: $e');
       _updateState(DeviceTransportState.disconnected);
       await _cleanup();
       rethrow;
     } catch (e) {
-      debugPrint('TcpTransport: Failed to start server on port $port: $e');
+      Logger.debug('TcpTransport: Failed to start server on port $port: $e');
       _updateState(DeviceTransportState.disconnected);
       await _cleanup();
       rethrow;
@@ -117,14 +117,14 @@ class TcpTransport extends DeviceTransport {
     try {
       await _clientSocket?.close();
     } catch (e) {
-      debugPrint('TcpTransport: Error closing client socket: $e');
+      Logger.debug('TcpTransport: Error closing client socket: $e');
     }
     _clientSocket = null;
 
     try {
       await _serverSocket?.close();
     } catch (e) {
-      debugPrint('TcpTransport: Error closing server socket: $e');
+      Logger.debug('TcpTransport: Error closing server socket: $e');
     }
     _serverSocket = null;
   }
@@ -142,7 +142,7 @@ class TcpTransport extends DeviceTransport {
     try {
       await _dataStreamController?.close();
     } catch (e) {
-      debugPrint('TcpTransport: Error closing data stream: $e');
+      Logger.debug('TcpTransport: Error closing data stream: $e');
     }
     _dataStreamController = null;
 
@@ -164,7 +164,7 @@ class TcpTransport extends DeviceTransport {
       _clientSocket!.remoteAddress;
       return true;
     } catch (e) {
-      debugPrint('TcpTransport: Ping failed: $e');
+      Logger.debug('TcpTransport: Ping failed: $e');
       return false;
     }
   }
@@ -193,7 +193,7 @@ class TcpTransport extends DeviceTransport {
     try {
       await _connectionStateController.close();
     } catch (e) {
-      debugPrint('TcpTransport: Error closing state controller: $e');
+      Logger.debug('TcpTransport: Error closing state controller: $e');
     }
   }
 }
