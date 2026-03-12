@@ -4,7 +4,6 @@ import 'dart:typed_data';
 
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
-import 'package:version/version.dart';
 
 import 'package:path_provider/path_provider.dart';
 
@@ -40,18 +39,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   double get currentSpeedKBps => _currentSpeedKBps;
 
-  static final Version _timestampMarkerMinVersion = Version.parse("3.0.16");
-
   SDCardWalSyncImpl(this.listener);
-
-  bool _supportsTimestampMarkers() {
-    if (_device == null) return false;
-    try {
-      return Version.parse(_device!.firmwareRevision) >= _timestampMarkerMinVersion;
-    } catch (e) {
-      return false;
-    }
-  }
 
   @override
   void cancelSync() {
@@ -207,13 +195,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     BleAudioCodec codec = await _getAudioCodec(deviceId);
     if (totalBytes - storageOffset > 10 * codec.getFramesLengthInBytes() * codec.getFramesPerSecond()) {
       var seconds = ((totalBytes - storageOffset) / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
-      // Use device-provided recording start timestamp if available (firmware >= 3.0.16), otherwise estimate
-      int timerStart;
-      if (_supportsTimestampMarkers() && storageFiles.length >= 3 && storageFiles[2] > 0) {
-        timerStart = storageFiles[2];
-      } else {
-        timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
-      }
+      int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
+      
       Logger.debug(
           'SDCardWalSync: totalBytes=$totalBytes storageOffset=$storageOffset frameLengthInBytes=${codec.getFramesLengthInBytes()} fps=${codec.getFramesPerSecond()} calculatedSeconds=$seconds timerStart=$timerStart now=${DateTime.now().millisecondsSinceEpoch ~/ 1000}');
 
@@ -1024,8 +1007,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       List<List<int>> bytesData = [];
       var bytesLeft = 0;
-      final bool useMarkers = _supportsTimestampMarkers();
-      var chunkSize = useMarkers ? sdcardChunkSizeSecs * wal.codec.getFramesPerSecond() : sdcardChunkSizeSecs * 100;
+      var chunkSize = sdcardChunkSizeSecs * 100;
       var timerStart = wal.timerStart;
 
       final initialOffset = wal.storageOffset;
