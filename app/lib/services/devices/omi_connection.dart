@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
-import 'package:omi/services/devices/models.dart';
 import 'package:omi/utils/logger.dart';
 
 class OmiDeviceConnection extends DeviceConnection {
@@ -67,7 +66,7 @@ class OmiDeviceConnection extends DeviceConnection {
         }
       });
 
-      return subscription as StreamSubscription<List<int>>;
+      return subscription ;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error setting up battery listener: $e');
       return null;
@@ -87,7 +86,7 @@ class OmiDeviceConnection extends DeviceConnection {
         }
       });
 
-      return subscription as StreamSubscription<List<int>>;
+      return subscription ;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error setting up storage listener: $e');
       return null;
@@ -115,7 +114,7 @@ class OmiDeviceConnection extends DeviceConnection {
         if (value.isNotEmpty) onButtonReceived(value);
       });
 
-      return subscription as StreamSubscription<List<int>>;
+      return subscription ;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error setting up button listener: $e');
       return null;

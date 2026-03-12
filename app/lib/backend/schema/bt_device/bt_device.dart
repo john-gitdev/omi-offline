@@ -3,25 +3,8 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/utils/logger.dart';
 
-enum ImageOrientation {
-  orientation0, // 0 degrees
-  orientation90, // 90 degrees clockwise
-  orientation180, // 180 degrees
-  orientation270, // 270 degrees clockwise
-}
-
 enum DeviceType {
   omi,
-  openglass,
-  glass,
-  frame,
-  appleWatch,
-  watch,
-  plaud,
-  bee,
-  fieldy,
-  friendPendant,
-  limitless,
 }
 
 enum BleAudioCodec {
@@ -89,24 +72,14 @@ class OmiFeatures {
 
 class BtDevice {
   static bool isSupportedDevice(BluetoothDevice device) {
-    final name = device.platformName.toLowerCase();
-    return name.contains('omi') || name.contains('friend') || name.contains('plaud') || name.contains('glass') || name.contains('watch');
+    return device.platformName.toLowerCase().contains('omi');
   }
 
   static BtDevice fromScanResult(ScanResult result) {
-    final device = result.device;
-    DeviceType type = DeviceType.omi;
-    if (isPlaudDeviceFromDevice(device)) type = DeviceType.plaud;
-    if (isBeeDeviceFromDevice(device)) type = DeviceType.bee;
-    if (isFriendPendantDeviceFromDevice(device)) type = DeviceType.friendPendant;
-    if (isLimitlessDeviceFromDevice(device)) type = DeviceType.limitless;
-    if (device.platformName.toLowerCase().contains('glass')) type = DeviceType.glass;
-    if (device.platformName.toLowerCase().contains('watch')) type = DeviceType.watch;
-
     return BtDevice(
-      id: device.remoteId.str,
-      name: device.platformName,
-      type: type,
+      id: result.device.remoteId.str,
+      name: result.device.platformName,
+      type: DeviceType.omi,
       rssi: result.rssi,
     );
   }
@@ -140,7 +113,7 @@ class BtDevice {
       id: json['id'],
       name: json['name'],
       rssi: json['rssi'] ?? 0,
-      type: DeviceType.values.firstWhere((e) => e.toString() == json['type'], orElse: () => DeviceType.omi),
+      type: DeviceType.omi,
       modelNumber: json['modelNumber'],
       firmwareRevision: json['firmwareRevision'],
       hardwareRevision: json['hardwareRevision'],
@@ -187,12 +160,6 @@ class BtDevice {
     );
   }
 
-  static bool isOmiDeviceFromDevice(BluetoothDevice device) => device.platformName.toLowerCase().contains('omi');
-  static bool isPlaudDeviceFromDevice(BluetoothDevice device) => device.platformName.toLowerCase().contains('plaud');
-  static bool isBeeDeviceFromDevice(BluetoothDevice device) => device.platformName.toLowerCase().contains('bee');
-  static bool isFriendPendantDeviceFromDevice(BluetoothDevice device) => device.platformName.toLowerCase().contains('friend');
-  static bool isLimitlessDeviceFromDevice(BluetoothDevice device) => device.platformName.toLowerCase().contains('limitless');
-
   Future<BtDevice> getDeviceInfo(DeviceConnection? conn) async {
     if (conn == null) return this;
 
@@ -201,43 +168,6 @@ class BtDevice {
     } catch (e) {
       Logger.error('Error getting device info: $e');
       return this;
-    }
-  }
-
-  String getFirmwareWarningTitle() {
-    switch (type) {
-      case DeviceType.plaud:
-      case DeviceType.bee:
-      case DeviceType.fieldy:
-      case DeviceType.friendPendant:
-      case DeviceType.limitless:
-        return 'Compatibility Note';
-      case DeviceType.omi:
-      case DeviceType.openglass:
-      case DeviceType.glass:
-      case DeviceType.frame:
-      case DeviceType.appleWatch:
-      case DeviceType.watch:
-        return '';
-    }
-  }
-
-  String getFirmwareWarningMessage() {
-    switch (type) {
-      case DeviceType.plaud:
-        return 'Your $name\'s current firmware works great with Omi.';
-      case DeviceType.bee:
-        return 'Your $name\'s current firmware works great with Omi.';
-      case DeviceType.omi:
-      case DeviceType.openglass:
-      case DeviceType.glass:
-      case DeviceType.frame:
-      case DeviceType.appleWatch:
-      case DeviceType.watch:
-      case DeviceType.fieldy:
-      case DeviceType.friendPendant:
-      case DeviceType.limitless:
-        return '';
     }
   }
 }

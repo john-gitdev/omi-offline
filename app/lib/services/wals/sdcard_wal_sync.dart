@@ -256,10 +256,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 SharedPreferencesUtil().saveInt('anchor_uptime_$currentSessionId', currentUptimeMs);
               }
               
-              if (currentSessionId != null) {
-                if (currentSessionId > SharedPreferencesUtil().latestSyncedSessionId) {
-                  SharedPreferencesUtil().latestSyncedSessionId = currentSessionId;
-                }
+              if (currentSessionId > SharedPreferencesUtil().latestSyncedSessionId) {
+                SharedPreferencesUtil().latestSyncedSessionId = currentSessionId;
               }
 
               Logger.debug("SDCardWalSync BLE: Parsed metadata: UTC=$utcTime, UptimeMs=$currentUptimeMs, Session=$currentSessionId, Chunk=$currentChunkIndex");

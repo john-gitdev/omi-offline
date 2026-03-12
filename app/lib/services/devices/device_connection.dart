@@ -4,57 +4,50 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/omi_connection.dart';
-import 'package:omi/services/devices/omiglass_connection.dart';
-import 'package:omi/services/devices/frame_connection.dart';
-import 'package:omi/services/devices/apple_watch_connection.dart';
-import 'package:omi/services/devices/plaud_connection.dart';
-import 'package:omi/services/devices/bee_connection.dart';
-import 'package:omi/services/devices/fieldy_connection.dart';
-import 'package:omi/services/devices/friend_pendant_connection.dart';
-import 'package:omi/services/devices/limitless_connection.dart';
 import 'package:omi/services/devices/wifi_sync_error.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:omi/services/devices/transports/ble_transport.dart';
-import 'package:omi/services/devices/models.dart';
 import 'package:omi/utils/logger.dart';
+
+// UUIDs
+const String batteryServiceUuid = '0000180f-0000-1000-8000-00805f9b34fb';
+const String batteryLevelCharacteristicUuid = '00002a19-0000-1000-8000-00805f9b34fb';
+
+const String audioServiceUuid = '19b10000-e8f2-537e-4f6c-d104768a1214';
+const String audioCharacteristicFormatUuid = '19b10002-e8f2-537e-4f6c-d104768a1214';
+
+const String omiServiceUuid = '19b10000-e8f2-537e-4f6c-d104768a1214';
+const String audioDataStreamCharacteristicUuid = '19b10001-e8f2-537e-4f6c-d104768a1214';
+const String audioCodecCharacteristicUuid = '19b10002-e8f2-537e-4f6c-d104768a1214';
+
+const String buttonServiceUuid = '19b10010-e8f2-537e-4f6c-d104768a1214';
+const String buttonTriggerCharacteristicUuid = '23ba7925-0000-1000-7450-346eac492e92';
+
+const String settingsServiceUuid = '19b10010-e8f2-537e-4f6c-d104768a1214';
+const String settingsDimRatioCharacteristicUuid = '19b10011-e8f2-537e-4f6c-d104768a1214';
+const String settingsMicGainCharacteristicUuid = '19b10012-e8f2-537e-4f6c-d104768a1214';
+
+const String featuresServiceUuid = '19b10020-e8f2-537e-4f6c-d104768a1214';
+const String featuresCharacteristicUuid = '19b10021-e8f2-537e-4f6c-d104768a1214';
+
+const String timeSyncServiceUuid = '19b10030-e8f2-537e-4f6c-d104768a1214';
+const String timeSyncWriteCharacteristicUuid = '19b10031-e8f2-537e-4f6c-d104768a1214';
+
+const String speakerDataStreamServiceUuid = '19b10040-e8f2-537e-4f6c-d104768a1214';
+const String speakerDataStreamCharacteristicUuid = '19b10041-e8f2-537e-4f6c-d104768a1214';
+
+const String storageDataStreamServiceUuid = '30295780-4301-eabd-2904-2849adfeae43';
+const String storageReadControlCharacteristicUuid = '30295782-4301-eabd-2904-2849adfeae43';
+const String storageDataStreamCharacteristicUuid = '30295781-4301-eabd-2904-2849adfeae43';
+const String storageFullCharacteristicUuid = '30295784-4301-eabd-2904-2849adfeae43';
+const String storageDataCharacteristicUuid = '30295781-4301-eabd-2904-2849adfeae43';
 
 class DeviceConnectionFactory {
   static DeviceConnection? create(BtDevice device) {
     DeviceTransport transport;
     final bleDevice = BluetoothDevice.fromId(device.id);
-    switch (device.type) {
-      case DeviceType.omi:
-        transport = BleTransport(bleDevice);
-        return OmiDeviceConnection(device, transport);
-      case DeviceType.openglass:
-      case DeviceType.glass:
-        transport = BleTransport(bleDevice);
-        return OmiGlassDeviceConnection(device, transport);
-      case DeviceType.frame:
-        transport = BleTransport(bleDevice); 
-        return FrameDeviceConnection(device, transport);
-      case DeviceType.appleWatch:
-      case DeviceType.watch:
-        transport = BleTransport(bleDevice);
-        return AppleWatchDeviceConnection(device, transport);
-      case DeviceType.plaud:
-        transport = BleTransport(bleDevice);
-        return PlaudDeviceConnection(device, transport);
-      case DeviceType.bee:
-        transport = BleTransport(bleDevice);
-        return BeeDeviceConnection(device, transport);
-      case DeviceType.fieldy:
-        transport = BleTransport(bleDevice);
-        return FieldyDeviceConnection(device, transport);
-      case DeviceType.friendPendant:
-        transport = BleTransport(bleDevice);
-        return FriendPendantDeviceConnection(device, transport);
-      case DeviceType.limitless:
-        transport = BleTransport(bleDevice);
-        return LimitlessDeviceConnection(device, transport);
-      default:
-        return null;
-    }
+    transport = BleTransport(bleDevice);
+    return OmiDeviceConnection(device, transport);
   }
 }
 
@@ -148,7 +141,7 @@ abstract class DeviceConnection {
       if (value.isNotEmpty && onBatteryLevelChange != null) {
         onBatteryLevelChange(value[0]);
       }
-    }) as StreamSubscription<List<int>>;
+    }) ;
   }
 
   Future<StreamSubscription<List<int>>?> getBleStorageFullListener({
@@ -179,7 +172,7 @@ abstract class DeviceConnection {
     required void Function(List<int>) onAudioBytesReceived,
   }) async {
     final stream = transport.getCharacteristicStream(omiServiceUuid, audioDataStreamCharacteristicUuid);
-    return stream.listen(onAudioBytesReceived) as StreamSubscription<List<int>>;
+    return stream.listen(onAudioBytesReceived) ;
   }
 
   Future<List<int>> getBleButtonState() async {
@@ -230,12 +223,9 @@ abstract class DeviceConnection {
     required void Function(BleAudioCodec) onAudioCodecReceived,
   }) async {
     final stream = transport.getCharacteristicStream(audioServiceUuid, audioCharacteristicFormatUuid);
-    return stream.listen((value) {
-      if (value.isNotEmpty) {
-        onAudioCodecReceived(BleAudioCodec.values[value[0]]);
-      }
-    }) as StreamSubscription<BleAudioCodec>;
+    return stream.map((value) => BleAudioCodec.values[value[0]]).listen(onAudioCodecReceived);
   }
+
 
   Future<List<int>> getStorageList() async {
     if (await isConnected()) {
@@ -259,7 +249,7 @@ abstract class DeviceConnection {
     required void Function(List<int>) onStorageBytesReceived,
   }) async {
     final stream = transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
-    return stream.listen(onStorageBytesReceived) as StreamSubscription<List<int>>;
+    return stream.listen(onStorageBytesReceived) ;
   }
 
   Future<bool> writeToStorage(int numFile, int command, int offset) async {
