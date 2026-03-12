@@ -4,7 +4,6 @@ import 'dart:math';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:ffmpeg_kit_flutter_audio/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_audio/return_code.dart';
 import 'package:omi/backend/preferences.dart';
 
 class OfflineAudioProcessor {
@@ -22,6 +21,7 @@ class OfflineAudioProcessor {
 
   // For time tracking
   DateTime? _recordingStartTime;
+  final String? _outputDir;
 
   // Cached settings for the duration of this processor instance (batch)
   final double _silenceThresholdDbfs;
@@ -30,8 +30,9 @@ class OfflineAudioProcessor {
   final int _preSpeechBufferMs;
   final int _gapThresholdMs;
 
-  OfflineAudioProcessor()
+  OfflineAudioProcessor({String? outputDir})
       : _decoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels),
+        _outputDir = outputDir,
         _silenceThresholdDbfs = SharedPreferencesUtil().offlineSilenceThreshold,
         _silenceDurationToSplitMs = SharedPreferencesUtil().offlineSplitSeconds * 1000,
         _minSpeechMs = SharedPreferencesUtil().offlineMinSpeechSeconds * 1000,
@@ -184,18 +185,18 @@ class OfflineAudioProcessor {
         final preSpeechFramesCount = _preSpeechBufferMs ~/ frameDurationMs;
         final bufferToKeep = min(preSpeechFramesCount, _consecutiveSilenceFrames);
 
-        _currentRecordingFrames = _currentRecordingFrames.sublist(_currentRecordingFrames.length - bufferToKeep);
-        _consecutiveSilenceFrames = bufferToKeep;
-
         // Calculate the exact time the new buffer starts.
         // It starts exactly (framesToKeep * 20ms) after the original _recordingStartTime,
         // minus the pre-speech buffer we just kept.
         if (_recordingStartTime != null) {
-          final int elapsedMs = framesToKeep * frameDurationMs;
+          final int elapsedMs = (framesToKeep - bufferToKeep) * frameDurationMs;
           _recordingStartTime = _recordingStartTime!.add(Duration(milliseconds: elapsedMs));
         } else {
           _recordingStartTime = chunkStartTime;
         }
+
+        _currentRecordingFrames = _currentRecordingFrames.sublist(_currentRecordingFrames.length - bufferToKeep);
+        _consecutiveSilenceFrames = bufferToKeep;
       }
     }
 
@@ -254,9 +255,18 @@ class OfflineAudioProcessor {
     final directory = await getApplicationDocumentsDirectory();
     final timestamp = startTime.millisecondsSinceEpoch;
 
-    // Create date-specific recordings folder
-    final dateString = '${startTime.year}-${startTime.month.toString().padLeft(2, '0')}-${startTime.day.toString().padLeft(2, '0')}';
-    final dateFolder = Directory('${directory.path}/recordings/$dateString');
+    // Determine target folder
+    String dateFolderPath;
+    if (_outputDir != null) {
+      dateFolderPath = _outputDir!;
+    } else {
+      // Create date-specific recordings folder
+      final dateString =
+          '${startTime.year}-${startTime.month.toString().padLeft(2, '0')}-${startTime.day.toString().padLeft(2, '0')}';
+      dateFolderPath = '${directory.path}/recordings/$dateString';
+    }
+
+    final dateFolder = Directory(dateFolderPath);
     if (!await dateFolder.exists()) {
       await dateFolder.create(recursive: true);
     }
@@ -264,101 +274,66 @@ class OfflineAudioProcessor {
     final wavPath = '${dateFolder.path}/recording_$timestamp.wav';
     final aacPath = '${dateFolder.path}/recording_$timestamp.aac';
 
-    // We decode the opus frames to save as WAV
-    final pcmData = <int>[];
+    final wavFile = File(wavPath);
+    final IOSink sink = wavFile.openWrite();
 
+    // 1. Write Initial WAV Header (44 bytes)
+    // We can calculate the total size because we know the frame count
+    // 16000Hz * 20ms = 320 samples per frame. 2 bytes per sample.
+    const int samplesPerFrame = (sampleRate * frameDurationMs) ~/ 1000;
+    final int totalPcmBytes = frames.length * samplesPerFrame * 2;
+    
+    final header = ByteData(44);
+    header.setUint8(0, 0x52); // R
+    header.setUint8(1, 0x49); // I
+    header.setUint8(2, 0x46); // F
+    header.setUint8(3, 0x46); // F
+    header.setUint32(4, 36 + totalPcmBytes, Endian.little);
+    header.setUint8(8, 0x57); // W
+    header.setUint8(9, 0x41); // A
+    header.setUint8(10, 0x56); // V
+    header.setUint8(11, 0x45); // E
+    header.setUint8(12, 0x66); // f
+    header.setUint8(13, 0x6D); // m
+    header.setUint8(14, 0x74); // t
+    header.setUint8(15, 0x20); //  
+    header.setUint32(16, 16, Endian.little);
+    header.setUint16(20, 1, Endian.little);
+    header.setUint16(22, channels, Endian.little);
+    header.setUint32(24, sampleRate, Endian.little);
+    header.setUint32(28, sampleRate * channels * 2, Endian.little);
+    header.setUint16(32, channels * 2, Endian.little);
+    header.setUint16(34, 16, Endian.little);
+    header.setUint8(36, 0x64); // d
+    header.setUint8(37, 0x61); // a
+    header.setUint8(38, 0x74); // t
+    header.setUint8(39, 0x61); // a
+    header.setUint32(40, totalPcmBytes, Endian.little);
+
+    sink.add(header.buffer.asUint8List());
+
+    // 2. Decode and Stream PCM data
     final tempDecoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels);
     for (var frame in frames) {
       try {
         final decoded = tempDecoder.decode(input: frame);
-        pcmData.addAll(decoded);
+        sink.add(decoded.buffer.asUint8List());
       } catch (e) {
         // Skip bad frames
       }
     }
     tempDecoder.destroy();
+    await sink.close();
 
-    await _writeWavFile(wavPath, Int16List.fromList(pcmData));
-
-    // Convert WAV to AAC using FFmpegKit
+    // 3. Convert WAV to AAC using FFmpegKit
     final session = await FFmpegKit.execute('-i $wavPath -c:a aac -b:a 64k $aacPath');
     final returnCode = await session.getReturnCode();
 
-    // Delete the intermediate WAV file to save space
-    final wavFile = File(wavPath);
+    // 4. Delete the intermediate WAV file
     if (await wavFile.exists()) {
       await wavFile.delete();
     }
 
-    if (ReturnCode.isSuccess(returnCode)) {
-      return aacPath;
-    } else {
-      return aacPath;
-    }
-  }
-  Future<void> _writeWavFile(String path, Int16List pcmData) async {
-    final file = File(path);
-    const channels = 1;
-    const sampleRate = 16000;
-    const byteRate = sampleRate * channels * 2;
-
-    final header = ByteData(44);
-
-    // "RIFF"
-    header.setUint8(0, 0x52);
-    header.setUint8(1, 0x49);
-    header.setUint8(2, 0x46);
-    header.setUint8(3, 0x46);
-
-    // File size
-    header.setUint32(4, 36 + pcmData.lengthInBytes, Endian.little);
-
-    // "WAVE"
-    header.setUint8(8, 0x57);
-    header.setUint8(9, 0x41);
-    header.setUint8(10, 0x56);
-    header.setUint8(11, 0x45);
-
-    // "fmt "
-    header.setUint8(12, 0x66);
-    header.setUint8(13, 0x6D);
-    header.setUint8(14, 0x74);
-    header.setUint8(15, 0x20);
-
-    // fmt chunk size
-    header.setUint32(16, 16, Endian.little);
-
-    // format tag (PCM)
-    header.setUint16(20, 1, Endian.little);
-
-    // channels
-    header.setUint16(22, channels, Endian.little);
-
-    // sample rate
-    header.setUint32(24, sampleRate, Endian.little);
-
-    // byte rate
-    header.setUint32(28, byteRate, Endian.little);
-
-    // block align
-    header.setUint16(32, channels * 2, Endian.little);
-
-    // bits per sample
-    header.setUint16(34, 16, Endian.little);
-
-    // "data"
-    header.setUint8(36, 0x64);
-    header.setUint8(37, 0x61);
-    header.setUint8(38, 0x74);
-    header.setUint8(39, 0x61);
-
-    // data chunk size
-    header.setUint32(40, pcmData.lengthInBytes, Endian.little);
-
-    final bytes = BytesBuilder();
-    bytes.add(header.buffer.asUint8List());
-    bytes.add(pcmData.buffer.asUint8List());
-
-    await file.writeAsBytes(bytes.toBytes());
+    return aacPath;
   }
 }

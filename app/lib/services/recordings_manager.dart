@@ -131,95 +131,112 @@ class RecordingsManager {
   }
 
   /// Reprocesses or processes a specific day's raw chunks.
-  /// If there are already processed recordings, they will be deleted first.
+  /// Uses a temporary folder to ensure processing is atomic.
   Future<void> processDay(DailyBatch batch, Function(double progress) onProgress) async {
     if (batch.rawChunks.isEmpty) return;
 
-    // 1. Delete existing processed recordings for this day
-    for (var file in batch.processedRecordings) {
-      if (await file.exists()) {
-        await file.delete();
+    final directory = await getApplicationDocumentsDirectory();
+    final dateString = batch.dateString;
+    final liveRecordingsPath = '${directory.path}/recordings/$dateString';
+    final tempProcessingPath = '${directory.path}/processing_temp/$dateString';
+
+    // 1. Clear any leftover temp processing folder
+    final tempDir = Directory(tempProcessingPath);
+    if (await tempDir.exists()) {
+      await tempDir.delete(recursive: true);
+    }
+    await tempDir.create(recursive: true);
+
+    // 2. Initialize the OfflineAudioProcessor with temp folder
+    final processor = OfflineAudioProcessor(outputDir: tempProcessingPath);
+
+    try {
+      // 3. Process each raw chunk sequentially
+      for (int i = 0; i < batch.rawChunks.length; i++) {
+        final file = batch.rawChunks[i];
+        final bytes = await file.readAsBytes();
+
+        // Get session ID from folder name
+        final sessionIdStr = file.parent.path.split('/').last;
+        int? sessionId = int.tryParse(sessionIdStr);
+
+        DateTime chunkStartTime = file.lastModifiedSync();
+
+        // Read frames from .bin file
+        List<Uint8List> frames = [];
+        int offset = 0;
+        while (offset < bytes.length) {
+          if (offset + 4 > bytes.length) break;
+          final length = ByteData.sublistView(Uint8List.fromList(bytes.sublist(offset, offset + 4))).getUint32(0, Endian.little);
+          offset += 4;
+          if (offset + length > bytes.length) break;
+          frames.add(bytes.sublist(offset, offset + length));
+          offset += length;
+        }
+
+        await processor.processFrames(frames, chunkStartTime, sessionId: sessionId);
+        onProgress((i + 1) / batch.rawChunks.length);
       }
+
+      // 4. Flush remaining buffer
+      await processor.flushRemaining();
+      processor.destroy();
+
+      // 5. ATOMIC SWAP: Success! Replace live recordings with temp ones
+      final liveDir = Directory(liveRecordingsPath);
+      if (await liveDir.exists()) {
+        await liveDir.delete(recursive: true);
+      }
+      await liveDir.create(recursive: true);
+
+      // Move files from temp to live
+      final newFiles = tempDir.listSync().whereType<File>();
+      for (var file in newFiles) {
+        final fileName = file.path.split('/').last;
+        await file.rename('$liveRecordingsPath/$fileName');
+      }
+      
+      // Cleanup temp dir
+      await tempDir.delete(recursive: true);
+
+    } catch (e) {
+      Logger.error("RecordingsManager: Processing failed for $dateString: $e");
+      processor.destroy();
+      // Keep old recordings intact
+      rethrow;
     }
 
-    // 2. Initialize the OfflineAudioProcessor
-    final processor = OfflineAudioProcessor();
-
-    // 3. Process each raw chunk sequentially
-    for (int i = 0; i < batch.rawChunks.length; i++) {
-      final file = batch.rawChunks[i];
-      final bytes = await file.readAsBytes();
-      
-      // Get session ID from folder name
-      final sessionIdStr = file.parent.path.split('/').last;
-      int? sessionId = int.tryParse(sessionIdStr);
-      
-      // The exact chunk start time will be computed INSIDE processFrames by reading the 255 packet!
-      // We just pass a fallback time here in case the chunk doesn't have one (very rare).
-      DateTime chunkStartTime = file.lastModifiedSync();
-      
-      // Read frames from .bin file (Format: [4-byte length][frame data][4-byte length][frame data]...)
-      List<Uint8List> frames = [];
-      int offset = 0;
-      while (offset < bytes.length) {
-        if (offset + 4 > bytes.length) break;
-        
-        // Read 4-byte length (Little Endian)
-        final lengthData = bytes.sublist(offset, offset + 4);
-        final length = ByteData.sublistView(Uint8List.fromList(lengthData)).getUint32(0, Endian.little);
-        offset += 4;
-        
-        if (offset + length > bytes.length) break;
-        
-        final frame = bytes.sublist(offset, offset + length);
-        frames.add(frame);
-        offset += length;
-      }
-
-      // Process frames (Pass sessionId so it can look up the correct anchor)
-      await processor.processFrames(frames, chunkStartTime, sessionId: sessionId);
-
-      // Report progress
-      onProgress((i + 1) / batch.rawChunks.length);
-    }
-
-    // 4. Flush remaining buffer
-    await processor.flushRemaining();
-    processor.destroy();
-
-    // 5. Check adjustment mode. If OFF, delete the raw chunks.
+    // 6. Check adjustment mode. If OFF, delete the raw chunks.
     if (!SharedPreferencesUtil().offlineAdjustmentMode) {
       Set<String> sessionFoldersToDelete = {};
       final latestSyncedSessionId = SharedPreferencesUtil().latestSyncedSessionId;
-      
+
       for (var file in batch.rawChunks) {
         if (await file.exists()) {
-          // Get session ID from folder name
           final sessionIdStr = file.parent.path.split('/').last;
           final sessionId = int.tryParse(sessionIdStr) ?? -1;
 
-          // Only delete if it's NOT the latest session (which might be ongoing)
           if (sessionId < latestSyncedSessionId) {
             await file.delete();
             sessionFoldersToDelete.add(file.parent.path);
+
+            // Cleanup SharedPreferences anchors
+            SharedPreferencesUtil().remove('anchor_utc_$sessionId');
+            SharedPreferencesUtil().remove('anchor_uptime_$sessionId');
           } else {
             Logger.debug("RecordingsManager: Keeping raw chunk for session $sessionId as it might be ongoing.");
           }
         }
       }
-      
-      // Try to delete the empty session folders
+
       for (var folderPath in sessionFoldersToDelete) {
         final folder = Directory(folderPath);
         if (await folder.exists()) {
           try {
-            // Check if folder is actually empty before deleting
             if ((await folder.list().isEmpty)) {
               await folder.delete();
             }
-          } catch (e) {
-            // Ignore if not empty
-          }
+          } catch (e) {}
         }
       }
     }
