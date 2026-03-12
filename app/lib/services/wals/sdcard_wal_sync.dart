@@ -26,7 +26,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   StreamSubscription? _storageStream;
 
   IWalSyncListener listener;
-  LocalWalSync? _localSync;
 
   bool _isCancelled = false;
   bool _isSyncing = false;
@@ -42,11 +41,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   double get currentSpeedKBps => _currentSpeedKBps;
 
   SDCardWalSyncImpl(this.listener);
-
-  @override
-  void setLocalSync(LocalWalSync localSync) {
-    _localSync = localSync;
-  }
 
   @override
   void cancelSync() {
@@ -472,12 +466,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   Future<SyncLocalFilesResponse> _syncWal(final Wal wal, Function(int offset, double speedKBps)? updates) async {
     Logger.debug("SDCard sync (two-phase): ${wal.id} byte offset: ${wal.storageOffset} ts ${wal.timerStart}");
-
-    if (_localSync == null) {
-      Logger.debug("SDCard: ERROR - LocalWalSync not available, aborting to preserve data safety");
-      DebugLogManager.logError('SD card sync aborted: LocalWalSync not available', null, null);
-      throw Exception('Local sync service not available. Cannot safely download SD card data.');
-    }
 
     int chunksDownloaded = 0;
     int lastOffset = wal.storageOffset;

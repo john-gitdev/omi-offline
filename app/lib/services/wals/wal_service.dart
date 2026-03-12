@@ -1,18 +1,16 @@
-import 'package:omi/backend/schema/conversation.dart';
 import 'package:omi/services/wals/wal.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
-import 'package:omi/services/wals/wal_syncs.dart';
+import 'package:omi/services/wals/sdcard_wal_sync.dart';
 
 class WalService implements IWalService, IWalSyncListener {
   final Map<Object, IWalServiceListener> _subscriptions = {};
   WalServiceStatus _status = WalServiceStatus.init;
   WalServiceStatus get status => _status;
 
-  late WalSyncs _syncs;
-  WalSyncs get syncs => _syncs;
+  late SDCardWalSyncImpl _sdSync;
 
   WalService() {
-    _syncs = WalSyncs(this);
+    _sdSync = SDCardWalSyncImpl(this);
   }
 
   @override
@@ -30,13 +28,13 @@ class WalService implements IWalService, IWalSyncListener {
 
   @override
   void start() {
-    _syncs.start();
+    _sdSync.start();
     _status = WalServiceStatus.ready;
   }
 
   @override
   Future stop() async {
-    await _syncs.stop();
+    await _sdSync.stop();
 
     _status = WalServiceStatus.stop;
     _onStatusChanged(_status);
@@ -50,8 +48,8 @@ class WalService implements IWalService, IWalSyncListener {
   }
 
   @override
-  WalSyncs getSyncs() {
-    return _syncs;
+  SDCardWalSync getSyncs() {
+    return _sdSync;
   }
 
   @override
@@ -62,9 +60,9 @@ class WalService implements IWalService, IWalSyncListener {
   }
 
   @override
-  void onWalSynced(Wal wal, {ServerConversation? conversation}) {
+  void onWalSynced(Wal wal) {
     for (var s in _subscriptions.values) {
-      s.onWalSynced(wal, conversation: conversation);
+      s.onWalSynced(wal);
     }
   }
 }
