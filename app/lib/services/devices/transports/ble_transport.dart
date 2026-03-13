@@ -71,7 +71,8 @@ class BleTransport extends DeviceTransport {
         await _bleDevice.requestMtu(512);
       }
 
-      // Discover services
+      // Discover services with a small delay to ensure device is ready
+      await Future.delayed(const Duration(milliseconds: 500));
       _services = await _bleDevice.discoverServices();
 
       _updateState(DeviceTransportState.connected);
@@ -198,17 +199,31 @@ class BleTransport extends DeviceTransport {
   }
 
   Future<BluetoothCharacteristic?> _getCharacteristic(String serviceUuid, String characteristicUuid) async {
-    final service = _services.firstWhereOrNull(
-      (service) => service.uuid.str128.toLowerCase() == serviceUuid.toLowerCase(),
-    );
+    for (int retry = 0; retry < 3; retry++) {
+      if (_services.isEmpty) {
+        _services = await _bleDevice.discoverServices();
+      }
 
-    if (service == null) {
-      return null;
+      final service = _services.firstWhereOrNull(
+        (service) => service.uuid.str128.toLowerCase() == serviceUuid.toLowerCase(),
+      );
+
+      if (service != null) {
+        final characteristic = service.characteristics.firstWhereOrNull(
+          (characteristic) => characteristic.uuid.str128.toLowerCase() == characteristicUuid.toLowerCase(),
+        );
+        if (characteristic != null) return characteristic;
+      }
+      
+      // If not found, wait and try one more service discovery
+      if (retry < 2) {
+        Logger.debug('BLE Transport: Characteristic $characteristicUuid not found, retrying discovery...');
+        await Future.delayed(Duration(milliseconds: 500 * (retry + 1)));
+        _services = await _bleDevice.discoverServices();
+      }
     }
 
-    return service.characteristics.firstWhereOrNull(
-      (characteristic) => characteristic.uuid.str128.toLowerCase() == characteristicUuid.toLowerCase(),
-    );
+    return null;
   }
 
   @override

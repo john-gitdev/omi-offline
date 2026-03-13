@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
+import 'package:omi/widgets/dialog.dart';
 
 class SyncPage extends StatefulWidget {
   const SyncPage({super.key});
@@ -153,14 +154,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   ),
                   child: const Text('Start Download', style: TextStyle(color: Colors.white, fontSize: 16)),
                 ),
-                if (_statusMessage.contains('synced') || _statusMessage.contains('Complete')) ...[
-                  const SizedBox(height: 16),
-                  TextButton.icon(
-                    onPressed: _forceSync,
-                    icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 14, color: Colors.grey),
-                    label: const Text('Re-download All Recordings', style: TextStyle(color: Colors.grey, fontSize: 14)),
-                  ),
-                ],
+                const SizedBox(height: 16),
+                TextButton.icon(
+                  onPressed: _forceSync,
+                  icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 14, color: Colors.grey),
+                  label: const Text('Re-download All Recordings', style: TextStyle(color: Colors.grey, fontSize: 14)),
+                ),
                 const SizedBox(height: 16),
                 Text(
                   'This will download all raw recordings directly from your Omi device to your phone via Bluetooth/WiFi.',

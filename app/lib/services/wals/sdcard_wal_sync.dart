@@ -170,7 +170,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   Future<File> _flushToDisk(Wal wal, List<List<int>> chunk, int timerStart,
-      {String? subFolder, int? sessionId, int? chunkIndex}) async {
+      {String? subFolder, int? sessionId, int? chunkIndex, bool append = false}) async {
     final directory = await getApplicationDocumentsDirectory();
     final folderPath =
         sessionId != null ? '${directory.path}/raw_chunks/$sessionId' : '${directory.path}/raw_chunks/$subFolder';
@@ -187,20 +187,22 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       fileName = wal.getFileNameByTimeStarts(timerStart);
     }
     String filePath = '${folder.path}/$fileName';
-    List<int> data = [];
-
+    
+    final builder = BytesBuilder(copy: false);
     for (var frame in chunk) {
-      final byteFrame = ByteData(frame.length);
-      for (var i = 0; i < frame.length; i++) {
-        byteFrame.setUint8(i, frame[i]);
-      }
-      data.addAll(Uint32List.fromList([frame.length]).buffer.asUint8List());
-      data.addAll(byteFrame.buffer.asUint8List());
+      final len = frame.length;
+      builder.addByte(len & 0xFF);
+      builder.addByte((len >> 8) & 0xFF);
+      builder.addByte((len >> 16) & 0xFF);
+      builder.addByte((len >> 24) & 0xFF);
+      builder.add(frame);
     }
+    
+    final data = builder.takeBytes();
     final file = File(filePath);
-    await file.writeAsBytes(data);
+    await file.writeAsBytes(data, mode: append ? FileMode.append : FileMode.write);
 
-    Logger.debug("SDCardWalSync _flushToDisk: Wrote ${data.length} bytes to $filePath");
+    Logger.debug("SDCardWalSync _flushToDisk: Wrote ${data.length} bytes to $filePath (append: $append)");
 
     return file;
   }
@@ -243,7 +245,25 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     int? currentSessionId;
     int? currentChunkIndex;
+    int? lastSessionId;
+    int? lastChunkIndex;
+    final List<List<int>> frameBuffer = [];
     final List<int> streamBuffer = [];
+
+    Future<void> flushBuffer() async {
+      if (frameBuffer.isEmpty) return;
+      
+      String subFolder = lastSessionId?.toString() ?? 'unsynced';
+      var file = await _flushToDisk(wal, frameBuffer, timerStart,
+          subFolder: subFolder, sessionId: lastSessionId, chunkIndex: lastChunkIndex, append: true);
+      
+      try {
+        await callback(file, offset, timerStart, subFolder: subFolder);
+      } catch (e) {
+        Logger.debug("SDCardWalSync: Callback failed: $e");
+      }
+      frameBuffer.clear();
+    }
 
     _storageStream?.cancel();
     _storageStream = (await connection.getBleStorageBytesListener(onStorageBytesReceived: (List<int> value) async {
@@ -287,6 +307,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           // Check for completion marker (100) at packet boundary
           if (packageSize == 100 && streamBuffer.length == 1) {
             Logger.debug("SDCardWalSync: Received termination marker (100)");
+            await flushBuffer();
             if (!completer.isCompleted) completer.complete();
             streamBuffer.clear();
             break;
@@ -312,6 +333,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               }
 
               Logger.debug("SDCardWalSync BLE: Parsed metadata session $currentSessionId");
+              
+              if (currentSessionId != lastSessionId || currentChunkIndex != lastChunkIndex) {
+                await flushBuffer();
+                lastSessionId = currentSessionId;
+                lastChunkIndex = currentChunkIndex;
+              }
+
               streamBuffer.removeRange(0, 1 + 16);
               continue;
             } else {
@@ -346,14 +374,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             var frame = streamBuffer.sublist(1, 1 + packageSize);
             streamBuffer.removeRange(0, 1 + packageSize);
 
-            String subFolder = currentSessionId?.toString() ?? 'unsynced';
-            var file = await _flushToDisk(wal, [frame], timerStart,
-                subFolder: subFolder, sessionId: currentSessionId, chunkIndex: currentChunkIndex);
-
-            try {
-              await callback(file, offset, timerStart, subFolder: subFolder);
-            } catch (e) {
-              Logger.debug("SDCardWalSync: Callback failed: $e");
+            frameBuffer.add(frame);
+            if (frameBuffer.length >= 100) {
+              await flushBuffer();
             }
           } else {
             // Log that we are waiting for a partial frame
@@ -368,13 +391,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       } finally {
         isProcessing = false;
       }
-    }, onError: (e) {
+    }, onError: (e) async {
       Logger.error('SDCard BLE Stream Error: $e');
+      await flushBuffer();
       hasError = true;
       if (!completer.isCompleted) completer.completeError(e);
-    }, onDone: () {
+    }, onDone: () async {
       if (!completer.isCompleted) {
         Logger.debug("SDCardWalSync: BLE stream closed before termination marker");
+        await flushBuffer();
         completer.complete();
       }
     })) as StreamSubscription<List<int>>;
