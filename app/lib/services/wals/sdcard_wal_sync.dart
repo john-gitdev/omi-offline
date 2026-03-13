@@ -103,8 +103,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     BleAudioCodec codec = await _getAudioCodec(deviceId);
     int threshold = 10 * codec.getFramesLengthInBytes() * codec.getFramesPerSecond();
     Logger.debug("SDCardWalSync: totalBytes=$totalBytes, storageOffset=$storageOffset, diff=${totalBytes - storageOffset}, threshold=$threshold");
-    if (totalBytes - storageOffset > threshold) {
-      var seconds = ((totalBytes - storageOffset) / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
+    
+    if (totalBytes > 0) {
+      var seconds = (totalBytes / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
       int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
 
       // Ensure stable ID for existing entries by matching device and fileNum
@@ -113,14 +114,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         timerStart = existingWal.timerStart;
       }
       
-      Logger.debug(
-          'SDCardWalSync: totalBytes=$totalBytes storageOffset=$storageOffset frameLengthInBytes=${codec.getFramesLengthInBytes()} fps=${codec.getFramesPerSecond()} calculatedSeconds=$seconds timerStart=$timerStart now=${DateTime.now().millisecondsSinceEpoch ~/ 1000}');
-
-      var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
-      if (connection == null) {
-        return [];
-      }
-
       var wal = Wal(
         codec: codec,
         channel: 1,
@@ -131,6 +124,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         timerStart: timerStart,
         storage: WalStorage.sdcard,
       );
+
+      // If the difference is too small, mark as already synced
+      if (totalBytes - storageOffset < threshold) {
+        wal.status = WalStatus.synced;
+      }
 
       // Keep status if already syncing
       if (existingWal != null && existingWal.isSyncing) {
@@ -224,10 +222,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
   }
 
-  Future _readStorageBytesToFile(Wal wal, Function(File f, int offset, int timerStart, {String? subFolder}) callback) async {
+  Future _readStorageBytesToFile(Wal wal, Function(File f, int offset, int timerStart, {String? subFolder}) callback, {bool force = false}) async {
     var deviceId = wal.device;
     int fileNum = wal.fileNum;
-    int offset = wal.storageOffset;
+    int offset = force ? 0 : wal.storageOffset;
     int timerStart = wal.timerStart;
 
     Logger.debug("_readStorageBytesToFile $offset");
@@ -433,6 +431,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<SyncLocalFilesResponse?> syncAll({
     IWalSyncProgressListener? progress,
     IWifiConnectionListener? connectionListener,
+    bool force = false,
   }) async {
     if (_isSyncing) {
       Logger.debug("SDCardWalSync: Sync already in progress, ignoring duplicate request");
@@ -450,7 +449,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       _wals = await getMissingWals();
     }
 
-    var wals = _wals.where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard).toList();
+    var wals = _wals.where((w) => (force || w.status == WalStatus.miss) && w.storage == WalStorage.sdcard).toList();
     if (wals.isEmpty) {
       Logger.debug("SDCardWalSync: All synced!");
       return null;
@@ -468,8 +467,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       wal.syncStartedAt = DateTime.now();
       listener.onWalUpdated();
 
-      int lastOffset = wal.storageOffset;
-      int totalBytesToDownload = wal.storageTotalBytes - wal.storageOffset;
+      int lastOffset = force ? 0 : wal.storageOffset;
+      int totalBytesToDownload = wal.storageTotalBytes - lastOffset;
 
       await _checkDiskSpaceBeforeSync(totalBytesToDownload);
       _downloadStartTime = DateTime.now();
@@ -488,10 +487,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
           listener.onWalUpdated();
           if (progress != null) {
-            final double progressPercent = (offset - wal.storageOffset) / totalBytesToDownload;
+            final double progressPercent = (offset - (force ? 0 : wal.storageOffset)) / totalBytesToDownload;
             progress.onWalSyncedProgress(progressPercent.clamp(0.0, 1.0), speedKBps: _currentSpeedKBps);
           }
-        });
+        }, force: force);
 
         await deleteWal(wal);
         wal.status = WalStatus.synced;

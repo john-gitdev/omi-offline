@@ -43,6 +43,7 @@ abstract class IWalSync {
   Future<SyncLocalFilesResponse?> syncAll({
     IWalSyncProgressListener? progress,
     IWifiConnectionListener? connectionListener,
+    bool force = false,
   });
   Future<SyncLocalFilesResponse?> syncWal({
     required Wal wal,
