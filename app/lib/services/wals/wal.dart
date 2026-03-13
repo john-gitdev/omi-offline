@@ -47,6 +47,7 @@ class Wal {
   int? sampleRate;
   String? deviceModel;
   WalStorage? originalStorage;
+  int estimatedChunks;
 
   Wal({
     required this.codec,
@@ -66,6 +67,7 @@ class Wal {
     this.sampleRate,
     this.deviceModel,
     this.originalStorage,
+    this.estimatedChunks = 0,
   });
 
   String get id => '$device-$fileNum-$storageOffset';
@@ -121,6 +123,7 @@ class Wal {
       'sampleRate': sampleRate,
       'deviceModel': deviceModel,
       'originalStorage': originalStorage?.name,
+      'estimatedChunks': estimatedChunks,
     };
   }
 
@@ -146,6 +149,7 @@ class Wal {
       originalStorage: json['originalStorage'] != null 
           ? WalStorage.values.firstWhere((e) => e.name == json['originalStorage'], orElse: () => WalStorage.local)
           : null,
+      estimatedChunks: json['estimatedChunks'] ?? 0,
     );
   }
 
@@ -167,6 +171,7 @@ class Wal {
     int? sampleRate,
     String? deviceModel,
     WalStorage? originalStorage,
+    int? estimatedChunks,
   }) {
     return Wal(
       codec: codec ?? this.codec,
@@ -186,6 +191,7 @@ class Wal {
       sampleRate: sampleRate ?? this.sampleRate,
       deviceModel: deviceModel ?? this.deviceModel,
       originalStorage: originalStorage ?? this.originalStorage,
+      estimatedChunks: estimatedChunks ?? this.estimatedChunks,
     );
   }
 }
