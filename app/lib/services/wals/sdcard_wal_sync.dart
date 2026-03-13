@@ -36,8 +36,22 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   double get currentSpeedKBps => _currentSpeedKBps;
 
-  SDCardWalSyncImpl(this.listener);
+  final Set<int> _sessionsSeen = {};
+  @override
+  int get recordingsCount => _sessionsSeen.length;
 
+  @override
+  int get estimatedTotalChunks {
+    int total = 0;
+    for (var wal in _wals) {
+      if (wal.status == WalStatus.miss && wal.storage == WalStorage.sdcard) {
+        total += wal.estimatedChunks;
+      }
+    }
+    return total;
+  }
+
+  SDCardWalSyncImpl(this.listener);
   @override
   void cancelSync() {
     if (_isSyncing) {
@@ -119,17 +133,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         channel: 1,
         device: deviceId,
         fileNum: 1,
-        storageOffset: storageOffset,
+        storageOffset: 0, // Always sync from beginning to handle app reinstalls/new connections
         storageTotalBytes: totalBytes,
         timerStart: timerStart,
         storage: WalStorage.sdcard,
+        estimatedChunks: (seconds / 60).ceil(),
       );
-
-      // If the difference is too small, mark as already synced
-      if (totalBytes - storageOffset < threshold) {
-        wal.status = WalStatus.synced;
-      }
-
       // Keep status if already syncing
       if (existingWal != null && existingWal.isSyncing) {
         wal.isSyncing = true;
@@ -224,7 +233,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
   }
 
-  Future _readStorageBytesToFile(Wal wal, Function(File f, int offset, int timerStart, {String? subFolder}) callback, {bool force = false}) async {
+  Future _readStorageBytesToFile(Wal wal, Function(File f, int offset, int timerStart, {String? subFolder}) callback,
+      {bool force = false, Function(int offset)? onProgress}) async {
     var deviceId = wal.device;
     int fileNum = wal.fileNum;
     int offset = force ? 0 : wal.storageOffset;
@@ -292,6 +302,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       // Add to buffer synchronously
       streamBuffer.addAll(value);
       offset += value.length;
+      
+      if (onProgress != null) {
+        onProgress(offset);
+      }
 
       // Serial processing loop to prevent concurrent buffer access
       if (isProcessing) {
@@ -304,15 +318,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         while (streamBuffer.isNotEmpty) {
           int packageSize = streamBuffer[0];
 
-          // Check for completion marker (100) at packet boundary
-          if (packageSize == 100 && streamBuffer.length == 1) {
+          // Check for completion marker (100)
+          // We treat 100 as termination if it's the last byte OR if we've reached/exceeded the expected size.
+          // This avoids getting stuck if 100 is followed by padding (0) in the same BLE packet.
+          if (packageSize == 100 && (streamBuffer.length == 1 || offset >= wal.storageTotalBytes)) {
             Logger.debug("SDCardWalSync: Received termination marker (100)");
             await flushBuffer();
             if (!completer.isCompleted) completer.complete();
             streamBuffer.clear();
             break;
           }
-
           if (packageSize == 255) { // Metadata
             if (1 + 16 <= streamBuffer.length) {
               var metadata = streamBuffer.sublist(1, 1 + 16);
@@ -320,6 +335,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               var utcTime = byteData.getUint32(0, Endian.little);
               var currentUptimeMs = byteData.getUint32(4, Endian.little);
               currentSessionId = byteData.getUint32(8, Endian.little);
+              if (currentSessionId != null) {
+                _sessionsSeen.add(currentSessionId!);
+              }
               currentChunkIndex = byteData.getUint32(12, Endian.little);
 
               if (currentSessionId != null) {
@@ -383,6 +401,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             Logger.debug("SDCardWalSync: Waiting for more data (Frame size $packageSize, Buffer ${streamBuffer.length})");
             break; 
           }
+          
+          // Yield to microtasks to prevent blocking UI/other events during high throughput
+          await Future.microtask(() {});
         }
       } catch (e) {
         Logger.error('SDCard BLE Transfer Error: $e');
@@ -424,6 +445,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _currentSpeedKBps = 0.0;
     _activeTcpTransport = null;
     _activeTransferCompleter = null;
+    _sessionsSeen.clear();
   }
 
   Future<void> _checkDiskSpaceBeforeSync(int totalBytesToDownload) async {
@@ -492,8 +514,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       wal.syncStartedAt = DateTime.now();
       listener.onWalUpdated();
 
-      int lastOffset = force ? 0 : wal.storageOffset;
-      int totalBytesToDownload = wal.storageTotalBytes - lastOffset;
+      int lastOffset = 0;
+      int totalBytesToDownload = wal.storageTotalBytes;
 
       await _checkDiskSpaceBeforeSync(totalBytesToDownload);
       _downloadStartTime = DateTime.now();
@@ -501,7 +523,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       try {
         await _readStorageBytesToFile(wal, (File file, int offset, int timerStart, {String? subFolder}) async {
           if (_isCancelled) {
-            throw Exception('Sync cancelled by user');
+            throw Exception("Sync cancelled by user");
           }
 
           int bytesInChunk = offset - lastOffset;
@@ -511,11 +533,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           lastOffset = offset;
 
           listener.onWalUpdated();
+        }, force: true, onProgress: (offset) {
           if (progress != null) {
-            final double progressPercent = (offset - (force ? 0 : wal.storageOffset)) / totalBytesToDownload;
+            final double progressPercent = offset / totalBytesToDownload;
             progress.onWalSyncedProgress(progressPercent.clamp(0.0, 1.0), speedKBps: _currentSpeedKBps);
           }
-        }, force: force);
+        });
 
         await deleteWal(wal);
         wal.status = WalStatus.synced;
@@ -549,8 +572,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     listener.onWalUpdated();
 
     var resp = SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
-    int lastOffset = wal.storageOffset;
-    int totalBytesToDownload = wal.storageTotalBytes - wal.storageOffset;
+    int lastOffset = 0;
+    int totalBytesToDownload = wal.storageTotalBytes;
 
     await _checkDiskSpaceBeforeSync(totalBytesToDownload);
     _downloadStartTime = DateTime.now();
@@ -558,7 +581,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     try {
       await _readStorageBytesToFile(wal, (File file, int offset, int timerStart, {String? subFolder}) async {
         if (_isCancelled) {
-          throw Exception('Sync cancelled by user');
+          throw Exception("Sync cancelled by user");
         }
 
         int bytesInChunk = offset - lastOffset;
@@ -567,8 +590,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         lastOffset = offset;
 
         listener.onWalUpdated();
+      }, force: true, onProgress: (offset) {
         if (progress != null) {
-          final double progressPercent = (offset - wal.storageOffset) / totalBytesToDownload;
+          final double progressPercent = offset / totalBytesToDownload;
           progress.onWalSyncedProgress(progressPercent.clamp(0.0, 1.0), speedKBps: _currentSpeedKBps);
         }
       });

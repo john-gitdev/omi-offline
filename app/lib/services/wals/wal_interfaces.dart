@@ -72,13 +72,14 @@ enum WalServiceStatus {
   ready,
   stop,
 }
-
 abstract class SDCardWalSync implements IWalSync {
   void setDevice(BtDevice? device);
   Future<void> deleteAllSyncedWals();
   Future<void> deleteAllPendingWals();
   bool get isSyncing;
   double get currentSpeedKBps;
+  int get recordingsCount;
+  int get estimatedTotalChunks;
 
   Future<bool> isWifiSyncSupported();
   Future<bool> setWifiCredentials(String ssid, String password);

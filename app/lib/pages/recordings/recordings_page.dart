@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
+import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/pages/settings/settings_drawer.dart';
 import 'package:omi/pages/settings/find_devices_page.dart';
 import 'package:omi/pages/settings/device_settings.dart';
@@ -19,16 +20,19 @@ class RecordingsPage extends StatefulWidget {
   State<RecordingsPage> createState() => _RecordingsPageState();
 }
 
-class _RecordingsPageState extends State<RecordingsPage> {
+class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProgressListener {
   final RecordingsManager _manager = RecordingsManager();
   final AudioPlayer _audioPlayer = AudioPlayer();
-  
+
   List<DailyBatch> _batches = [];
   bool _isLoading = true;
   bool _isSyncing = false;
+  double _syncProgress = 0.0;
+  double _syncSpeed = 0.0;
+  int _syncRecordingsCount = 0;
   String? _currentlyPlayingPath;
   bool _isPlaying = false;
-  
+
   // Processing state
   String? _processingDateString;
   double _processingProgress = 0.0;
@@ -37,7 +41,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
   void initState() {
     super.initState();
     _loadBatches();
-    
+
     _audioPlayer.playerStateStream.listen((state) {
       if (mounted) {
         setState(() {
@@ -67,34 +71,54 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
   }
 
+  @override
+  void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
+    if (mounted) {
+      setState(() {
+        _syncProgress = percentage;
+        _syncSpeed = speedKBps ?? 0.0;
+        _syncRecordingsCount = ServiceManager.instance().wal.getSyncs().estimatedTotalChunks;
+      });
+    }
+  }
   Future<void> _handleSync() async {
+    _performSync(force: false);
+  }
+  Future<void> _handleForceSync() async {
+    await _performSync(force: true);
+  }
+
+  Future<void> _performSync({bool force = false}) async {
     if (_isSyncing || RecordingsManager.isProcessingAny) return;
-    
+
     setState(() {
       _isSyncing = true;
+      _syncProgress = 0.0;
+      _syncSpeed = 0.0;
+      _syncRecordingsCount = 0;
     });
     WakelockPlus.enable();
 
     try {
       final syncService = ServiceManager.instance().wal.getSyncs();
       syncService.start(); // Refresh missing WALs list
-      final result = await syncService.syncAll();
-      
+      final result = await syncService.syncAll(progress: this, force: force);
+
       if (mounted) {
         if (result != null && (result.newConversationIds.isNotEmpty || result.updatedConversationIds.isNotEmpty)) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Sync complete! New recordings found.')),
+            const SnackBar(content: Text("Sync complete! New recordings found.")),
           );
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Sync complete. No new data.')),
+            const SnackBar(content: Text("Sync complete. No new data.")),
           );
         }
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Sync failed: $e')),
+          SnackBar(content: Text("Sync failed: $e")),
         );
       }
     } finally {
@@ -119,9 +143,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
           context,
           () => Navigator.of(context).pop(false),
           () => Navigator.of(context).pop(true),
-          'Large Batch',
-          'This day has over ${batch.rawChunks.length} raw chunks. Processing might take a few minutes. Continue?',
-          confirmText: 'Start',
+          "Large Batch",
+          "This day has over ${batch.rawChunks.length} raw chunks. Processing might take a few minutes. Continue?",
+          confirmText: "Start",
         ),
       );
       if (confirm != true) return;
@@ -179,6 +203,78 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
   }
 
+  Widget _buildSyncStatus() {
+    if (!_isSyncing) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.deepPurpleAccent,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Syncing Recordings...',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+              ),
+              Text(
+                '${_syncSpeed.toStringAsFixed(1)} KB/s',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
+              ),
+              const SizedBox(width: 12),
+              GestureDetector(
+                onTap: () {
+                  ServiceManager.instance().wal.getSyncs().cancelSync();
+                },
+                child: FaIcon(FontAwesomeIcons.circleXmark, color: Colors.grey.shade600, size: 20),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: _syncProgress,
+              minHeight: 6,
+              backgroundColor: Colors.grey.shade800,
+              color: Colors.deepPurpleAccent,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '$_syncRecordingsCount Chunks to Sync',
+                style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+              ),
+              Text(
+                '${(_syncProgress * 100).toInt()}%',
+                style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildBatchCard(DailyBatch batch) {
     final isProcessing = _processingDateString == batch.dateString;
 
@@ -212,7 +308,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
               ],
             ),
             const SizedBox(height: 12),
-            
+
             if (batch.rawChunks.isNotEmpty) ...[
               Container(
                 padding: const EdgeInsets.all(12),
@@ -265,7 +361,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
               ...batch.processedRecordings.map((file) {
                 final fileName = file.path.split('/').last;
                 final isThisPlaying = _currentlyPlayingPath == file.path && _isPlaying;
-                
+
                 return ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: CircleAvatar(
@@ -356,6 +452,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
           body: Column(
             children: [
               _buildStorageWarning(deviceProvider.storageFullPercentage),
+              _buildSyncStatus(),
               Expanded(
                 child: _isLoading
                     ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
@@ -375,7 +472,18 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           textAlign: TextAlign.center,
                                           style: TextStyle(color: Colors.grey, fontSize: 16),
                                         ),
-                                        if (!deviceProvider.isConnected) ...[
+                                        if (deviceProvider.isConnected) ...[
+                                          const SizedBox(height: 32),
+                                          ElevatedButton.icon(
+                                            onPressed: _handleForceSync,
+                                            icon: const FaIcon(FontAwesomeIcons.rotate, size: 16),
+                                            label: const Text("Sync All From Device"),
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: Colors.deepPurpleAccent,
+                                              foregroundColor: Colors.white,
+                                            ),
+                                          ),
+                                        ] else ...[
                                           const SizedBox(height: 32),
                                           ElevatedButton(
                                             onPressed: () {
@@ -387,7 +495,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                               backgroundColor: Colors.deepPurpleAccent,
                                               foregroundColor: Colors.white,
                                             ),
-                                            child: const Text('Connect Omi'),
+                                            child: const Text("Connect Omi"),
                                           ),
                                         ],
                                       ],
