@@ -122,7 +122,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         codec: codec,
         channel: 1,
         device: deviceId,
-        fileNum: 0,
+        fileNum: 1,
         storageOffset: storageOffset,
         storageTotalBytes: totalBytes,
         timerStart: timerStart,
