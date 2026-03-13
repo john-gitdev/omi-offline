@@ -15,6 +15,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   double _progress = 0.0;
   String _statusMessage = 'Ready to sync';
 
+  @override
+  void initState() {
+    super.initState();
+    // Trigger a refresh of the WAL list when entering the page
+    ServiceManager.instance().wal.getSyncs().start();
+  }
+
   Future<void> _startSync() async {
     setState(() {
       _isSyncing = true;
@@ -24,10 +31,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
     try {
       // Call syncAll on the sync service (SdcardWalSync)
-      await ServiceManager.instance().wal.getSyncs().syncAll(progress: this);
+      final result = await ServiceManager.instance().wal.getSyncs().syncAll(progress: this);
       
       setState(() {
-        _statusMessage = 'Sync Complete. Raw chunks downloaded.';
+        if (result == null) {
+          _statusMessage = 'All synced! No new recordings found.';
+        } else {
+          _statusMessage = 'Sync Complete. Raw chunks downloaded.';
+        }
         _isSyncing = false;
       });
     } catch (e) {
@@ -39,6 +50,19 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _forceSync() async {
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        'Force Re-download',
+        'This will download all recordings from the beginning of the SD card. This may take a long time and use significant battery. Continue?',
+        confirmText: 'Start',
+      ),
+    );
+    if (confirm != true) return;
+
     setState(() {
       _isSyncing = true;
       _progress = 0.0;
@@ -129,7 +153,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   ),
                   child: const Text('Start Download', style: TextStyle(color: Colors.white, fontSize: 16)),
                 ),
-                if (_statusMessage.contains('All synced')) ...[
+                if (_statusMessage.contains('synced') || _statusMessage.contains('Complete')) ...[
                   const SizedBox(height: 16),
                   TextButton.icon(
                     onPressed: _forceSync,
