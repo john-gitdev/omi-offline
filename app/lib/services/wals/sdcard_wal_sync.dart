@@ -240,15 +240,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     int? currentSessionId;
     int? currentChunkIndex;
+    final List<int> streamBuffer = [];
 
     _storageStream = (await connection.getBleStorageBytesListener(onStorageBytesReceived: (List<int> value) async {
       if (_isCancelled || hasError) return;
 
       try {
-        final buffer = Uint8List.fromList(value);
+        streamBuffer.addAll(value);
+        offset += value.length;
 
-        // Check for completion marker (value 100) from firmware
-        if (buffer.length == 1 && buffer[0] == 100) {
+        // Check for completion marker (value 100) from firmware at the end of buffer
+        if (streamBuffer.length == 1 && streamBuffer[0] == 100) {
           Logger.debug("SDCardWalSync: Received completion marker (100)");
           if (!completer.isCompleted) {
             completer.complete();
@@ -256,20 +258,18 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           return;
         }
 
-        int packageOffset = 0;
         List<List<int>> bytesData = [];
+        int bufferPtr = 0;
 
-        int currentUptimeMs = 0;
+        while (bufferPtr < streamBuffer.length) {
+          int packageSize = streamBuffer[bufferPtr];
 
-        while (packageOffset < buffer.length) {
-          int packageSize = buffer[packageOffset];
-
-          if (packageSize == 255) {
-            if (packageOffset + 1 + 16 <= buffer.length) {
-              var metadata = buffer.sublist(packageOffset + 1, packageOffset + 1 + 16);
+          if (packageSize == 255) { // Metadata
+            if (bufferPtr + 1 + 16 <= streamBuffer.length) {
+              var metadata = streamBuffer.sublist(bufferPtr + 1, bufferPtr + 1 + 16);
               var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
               var utcTime = byteData.getUint32(0, Endian.little);
-              currentUptimeMs = byteData.getUint32(4, Endian.little);
+              var currentUptimeMs = byteData.getUint32(4, Endian.little);
               currentSessionId = byteData.getUint32(8, Endian.little);
               currentChunkIndex = byteData.getUint32(12, Endian.little);
 
@@ -277,23 +277,23 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 SharedPreferencesUtil().saveInt('anchor_utc_$currentSessionId', utcTime);
                 SharedPreferencesUtil().saveInt('anchor_uptime_$currentSessionId', currentUptimeMs);
               }
-              
+
               final sessionId = currentSessionId;
               if (sessionId != null && sessionId > SharedPreferencesUtil().latestSyncedSessionId) {
                 SharedPreferencesUtil().latestSyncedSessionId = sessionId;
               }
 
-              Logger.debug("SDCardWalSync BLE: Parsed metadata: UTC=$utcTime, UptimeMs=$currentUptimeMs, Session=$currentSessionId, Chunk=$currentChunkIndex");
-              packageOffset += 1 + 16;
+              Logger.debug("SDCardWalSync BLE: Parsed metadata: UTC=$utcTime, Session=$currentSessionId, Chunk=$currentChunkIndex");
+              bufferPtr += 1 + 16;
               continue;
             } else {
-              break;
+              break; // Need more bytes for metadata
             }
           }
 
-          if (packageSize == 254) {
-            if (packageOffset + 1 + 16 <= buffer.length) {
-              var metadata = buffer.sublist(packageOffset + 1, packageOffset + 1 + 16);
+          if (packageSize == 254) { // Star marker
+            if (bufferPtr + 1 + 16 <= streamBuffer.length) {
+              var metadata = streamBuffer.sublist(bufferPtr + 1, bufferPtr + 1 + 16);
               var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
               var utcTime = byteData.getUint32(0, Endian.little);
               var uptimeMs = byteData.getUint32(4, Endian.little);
@@ -311,32 +311,39 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 await _saveStarMarker(sessionId, utcTime);
               }
 
-              packageOffset += 1 + 16;
+              bufferPtr += 1 + 16;
               continue;
             } else {
-              break;
+              break; // Need more bytes for star marker
             }
           }
 
           if (packageSize == 0) {
-            packageOffset += packageSize + 1;
+            bufferPtr++;
             continue;
           }
-          if (packageOffset + 1 + packageSize >= buffer.length) {
-            break;
+
+          // Regular audio data frame
+          if (bufferPtr + 1 + packageSize <= streamBuffer.length) {
+            var frame = streamBuffer.sublist(bufferPtr + 1, bufferPtr + 1 + packageSize);
+            bytesData.add(frame);
+            bufferPtr += packageSize + 1;
+          } else {
+            break; // Partial frame, wait for more bytes
           }
-          var frame = buffer.sublist(packageOffset + 1, packageOffset + 1 + packageSize);
-          bytesData.add(frame);
-          packageOffset += packageSize + 1;
         }
 
-        offset += value.length;
+        // Remove processed bytes from buffer
+        if (bufferPtr > 0) {
+          streamBuffer.removeRange(0, bufferPtr);
+        }
+
         String subFolder = currentSessionId?.toString() ?? 'unsynced';
 
         if (bytesData.isNotEmpty) {
           var file = await _flushToDisk(wal, bytesData, timerStart,
               subFolder: subFolder, sessionId: currentSessionId, chunkIndex: currentChunkIndex);
-          
+
           try {
             await callback(file, offset, timerStart, subFolder: subFolder);
           } catch (e) {
@@ -347,14 +354,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             }
           }
         } else {
-          // Still need to update progress even if no audio frames were in this packet
-          // (e.g. metadata-only packets)
+          // Still need to update progress
           try {
-            // Use a marker file to indicate no new data but advanced offset
             await callback(File(''), offset, timerStart, subFolder: subFolder);
-          } catch (e) {
-            // Ignore error from callback with empty file
-          }
+          } catch (e) {}
         }
       } catch (e) {
         Logger.error('SDCard BLE Transfer Error: $e');
@@ -364,7 +367,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         }
       }
     })) as StreamSubscription<List<int>>;
-
     final readStarted = await _writeToStorage(deviceId, fileNum, 0, offset);
     if (!readStarted) {
       throw Exception('Could not start SD card read command');
