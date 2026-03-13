@@ -256,14 +256,14 @@ static ssize_t storage_wifi_handler(struct bt_conn *conn,
 
     if (len < 1) {
         result_buffer[0] = 1; // error: invalid length
-        bt_gatt_notify(conn, &storage_service.attrs[8], &result_buffer, 1);
+        bt_gatt_notify(conn, &storage_service.attrs[7], &result_buffer, 1);
         return len;
     }
 
     if (wifi_is_hw_available() == false) {
         LOG_ERR("Wi-Fi hardware not available");
         result_buffer[0] = 0xFE; // error: hardware not available
-        bt_gatt_notify(conn, &storage_service.attrs[8], &result_buffer, 1);
+        bt_gatt_notify(conn, &storage_service.attrs[7], &result_buffer, 1);
         return len;
     }
 
@@ -330,7 +330,7 @@ static ssize_t storage_wifi_handler(struct bt_conn *conn,
             break;
     }
 
-    bt_gatt_notify(conn, &storage_service.attrs[8], &result_buffer, 1);
+    bt_gatt_notify(conn, &storage_service.attrs[7], &result_buffer, 1);
     return len;
 }
 #endif
@@ -353,7 +353,7 @@ static void write_to_gatt(struct bt_conn *conn)
         return;
     }
 
-    int err = bt_gatt_notify(conn, &storage_service.attrs[2], &storage_write_buffer, packet_size);
+    int err = bt_gatt_notify(conn, &storage_service.attrs[1], &storage_write_buffer, packet_size);
     if (err) {
         if (err == -ENOMEM || err == -EAGAIN) {
             // Buffer full, try again in next loop without advancing offset
@@ -423,7 +423,7 @@ void storage_write(void)
                 offset = 0;
                 uint8_t result_buffer[1] = {200};
                 if (conn) {
-                    bt_gatt_notify(get_current_connection(), &storage_service.attrs[2], &result_buffer, 1);
+                    bt_gatt_notify(get_current_connection(), &storage_service.attrs[1], &result_buffer, 1);
                 }
             }
             delete_started = 0;
@@ -483,7 +483,7 @@ void storage_write(void)
                     LOG_INF("Storage transfer done. Sending completion marker (100).");
                     uint8_t stop_result[1] = {100};
 
-                    int err = bt_gatt_notify(get_current_connection(), &storage_service.attrs[2], &stop_result, 1);
+                    int err = bt_gatt_notify(get_current_connection(), &storage_service.attrs[1], &stop_result, 1);
                     if (err) {
                         LOG_ERR("Failed to send completion marker: %d", err);
                     }
