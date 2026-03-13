@@ -138,14 +138,10 @@ static ssize_t storage_read_characteristic(struct bt_conn *conn,
 }
 
 uint8_t transport_started = 0;
-static uint16_t packet_next_index = 0;
 #define SD_BLE_SIZE 440
 static uint8_t storage_write_buffer[SD_BLE_SIZE * 10];
 
 static uint32_t offset = 0;
-static uint8_t index = 0;
-static uint8_t current_packet_size = 0;
-static uint8_t tx_buffer_size = 0;
 static uint8_t stop_started = 0;
 static uint8_t delete_started = 0;
 uint32_t remaining_length = 0;
@@ -341,8 +337,14 @@ static ssize_t storage_wifi_handler(struct bt_conn *conn,
 
 static void write_to_gatt(struct bt_conn *conn)
 {
+    // Use the negotiated MTU minus 3 bytes for GATT overhead
+    uint32_t max_payload = (current_mtu > 3) ? (current_mtu - 3) : 20;
+    
+    // Cap the payload at SD_BLE_SIZE to ensure we don't exceed our buffer
+    uint32_t effective_packet_size = MIN(max_payload, SD_BLE_SIZE);
+    uint32_t packet_size = MIN(remaining_length, effective_packet_size);
 
-    uint32_t packet_size = MIN(remaining_length, SD_BLE_SIZE);
+    if (packet_size == 0) return;
 
     int r = read_audio_data(storage_write_buffer, packet_size, offset);
     if (r < 0) {
@@ -351,12 +353,19 @@ static void write_to_gatt(struct bt_conn *conn)
         return;
     }
 
-    offset = offset + packet_size;
-    int err = bt_gatt_notify(conn, &storage_service.attrs[1], &storage_write_buffer, packet_size);
+    int err = bt_gatt_notify(conn, &storage_service.attrs[2], &storage_write_buffer, packet_size);
     if (err) {
-        LOG_PRINTK("error writing to gatt: %d\n", err);
+        if (err == -ENOMEM || err == -EAGAIN) {
+            // Buffer full, try again in next loop without advancing offset
+            k_yield();
+        } else {
+            LOG_WRN("error writing to gatt: %d, packet_size: %u, MTU: %u", err, packet_size, current_mtu);
+            // For other errors, maybe try to advance slightly or just yield
+            k_msleep(10);
+        }
     } else {
-        remaining_length = remaining_length - packet_size; // FIX: Use packet_size, not SD_BLE_SIZE
+        offset = offset + packet_size;
+        remaining_length = remaining_length - packet_size;
     }
 }
 
@@ -396,11 +405,6 @@ void storage_stop_transfer()
 
 void storage_write(void)
 {
-    static uint8_t tmp_buffer[SD_BLE_SIZE]; // 440 bytes temporary buffer
-
-    uint32_t total_sent = 0;
-    uint32_t consecutive_errors = 0;
-
     while (1) {
         struct bt_conn *conn = get_current_connection();
 
@@ -419,7 +423,7 @@ void storage_write(void)
                 offset = 0;
                 uint8_t result_buffer[1] = {200};
                 if (conn) {
-                    bt_gatt_notify(get_current_connection(), &storage_service.attrs[1], &result_buffer, 1);
+                    bt_gatt_notify(get_current_connection(), &storage_service.attrs[2], &result_buffer, 1);
                 }
             }
             delete_started = 0;
@@ -476,10 +480,13 @@ void storage_write(void)
                     stop_started = 0;
                 } else {
                     save_offset(offset);
-                    LOG_PRINTK("done. attempting to download more files\n");
+                    LOG_INF("Storage transfer done. Sending completion marker (100).");
                     uint8_t stop_result[1] = {100};
 
-                    int err = bt_gatt_notify(get_current_connection(), &storage_service.attrs[1], &stop_result, 1);
+                    int err = bt_gatt_notify(get_current_connection(), &storage_service.attrs[2], &stop_result, 1);
+                    if (err) {
+                        LOG_ERR("Failed to send completion marker: %d", err);
+                    }
                     k_msleep(10);
                 }
             }

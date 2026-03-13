@@ -53,9 +53,15 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       if (pairedDevice?.firmwareRevision != null && pairedDevice?.firmwareRevision != 'Unknown') {
         return;
       }
-      var connection = await ServiceManager.instance().device.ensureConnection(connectedDevice!.id);
-      pairedDevice = await connectedDevice?.getDeviceInfo(connection);
-      SharedPreferencesUtil().btDevice = pairedDevice!;
+      final currentConnectedDevice = connectedDevice;
+      if (currentConnectedDevice != null) {
+        var connection = await ServiceManager.instance().device.ensureConnection(currentConnectedDevice.id);
+        final info = await currentConnectedDevice.getDeviceInfo(connection);
+        if (info != null) {
+          pairedDevice = info;
+          SharedPreferencesUtil().btDevice = info;
+        }
+      }
     } else {
       if (SharedPreferencesUtil().btDevice.id.isEmpty) {
         pairedDevice = BtDevice.empty();
@@ -117,10 +123,10 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     void Function(List<int>)? onButtonReceived,
   }) async {
     var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null) {
+    if (connection == null || onButtonReceived == null) {
       return Future.value(null);
     }
-    return connection.getBleButtonListener(onButtonReceived: onButtonReceived!);
+    return connection.getBleButtonListener(onButtonReceived: onButtonReceived);
   }
 
   Future<List<int>> _getStorageList(String deviceId) async {
@@ -146,7 +152,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     }
     _bleBatteryLevelListener?.cancel();
     _bleBatteryLevelListener = await _getBleBatteryLevelListener(
-      connectedDevice!.id,
+      connectedDevice?.id ?? '',
       onBatteryLevelChange: (int value) {
         batteryLevel = value;
         if (batteryLevel < 20 && !_hasLowBatteryAlerted) {
@@ -157,9 +163,10 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
         }
         
         final delta = (_lastNotifiedBatteryLevel - value).abs();
-        final elapsed = _lastBatteryNotifyTime == null
+        final batteryNotifyTime = _lastBatteryNotifyTime;
+        final elapsed = batteryNotifyTime == null
             ? const Duration(minutes: 999)
-            : DateTime.now().difference(_lastBatteryNotifyTime!);
+            : DateTime.now().difference(batteryNotifyTime);
         final crossedLowBatteryThreshold =
             (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
         final shouldNotify =
@@ -180,14 +187,15 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     }
     _bleStorageFullListener?.cancel();
     _bleStorageFullListener = await _getBleStorageFullListener(
-      connectedDevice!.id,
+      connectedDevice?.id ?? '',
       onStorageFullChange: (int value) {
         storageFullPercentage = value;
 
         final delta = (_lastNotifiedStorageLevel - value).abs();
-        final elapsed = _lastStorageNotifyTime == null
+        final storageNotifyTime = _lastStorageNotifyTime;
+        final elapsed = storageNotifyTime == null
             ? const Duration(minutes: 999)
-            : DateTime.now().difference(_lastStorageNotifyTime!);
+            : DateTime.now().difference(storageNotifyTime);
         final crossedWarningThreshold =
             (value >= 90 && _lastNotifiedStorageLevel < 90) || (value < 90 && _lastNotifiedStorageLevel >= 90);
         final shouldNotify =
@@ -209,7 +217,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     }
     _bleButtonListener?.cancel();
     _bleButtonListener = await _getBleButtonListener(
-      connectedDevice!.id,
+      connectedDevice?.id ?? '',
       onButtonReceived: (List<int> value) {
         if (value.isEmpty) return;
         int event = value[0];
@@ -235,8 +243,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     final currentTime = now ?? DateTime.now();
 
     final delta = (_lastNotifiedBatteryLevel - value).abs();
+    final batteryNotifyTime = _lastBatteryNotifyTime;
     final elapsed =
-        _lastBatteryNotifyTime == null ? const Duration(minutes: 999) : currentTime.difference(_lastBatteryNotifyTime!);
+        batteryNotifyTime == null ? const Duration(minutes: 999) : currentTime.difference(batteryNotifyTime);
     final crossedLowBatteryThreshold =
         (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
     final shouldNotify =
@@ -266,7 +275,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
         Logger.debug("Skipping BLE reconnect - WiFi sync in progress");
         return;
       }
-      if (_reconnectAt != null && _reconnectAt!.isAfter(DateTime.now())) {
+      final reconnectAt = _reconnectAt;
+      if (reconnectAt != null && reconnectAt.isAfter(DateTime.now())) {
         return;
       }
       if (boundDeviceOnly && SharedPreferencesUtil().btDevice.id.isEmpty) {
@@ -325,7 +335,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     if (isConnected) {
       if (connectedDevice == null) {
         connectedDevice = await _getConnectedDevice();
-        SharedPreferencesUtil().deviceName = connectedDevice!.name;
+        if (connectedDevice != null) {
+          SharedPreferencesUtil().deviceName = connectedDevice!.name;
+        }
       }
 
       setIsConnected(true);
@@ -442,10 +454,11 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   Future setisDeviceStorageSupport() async {
-    if (connectedDevice == null) {
+    final dev = connectedDevice;
+    if (dev == null) {
       isDeviceStorageSupport = false;
     } else {
-      var storageFiles = await _getStorageList(connectedDevice!.id);
+      var storageFiles = await _getStorageList(dev.id);
       isDeviceStorageSupport = storageFiles.isNotEmpty;
     }
     notifyListeners();
@@ -475,10 +488,11 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   void onStatusChanged(DeviceServiceStatus status) {}
 
   prepareDFU() {
-    if (connectedDevice == null) {
+    final dev = connectedDevice;
+    if (dev == null) {
       return;
     }
-    _bleDisconnectDevice(connectedDevice!);
+    _bleDisconnectDevice(dev);
     _reconnectAt = DateTime.now().add(const Duration(seconds: 30));
   }
 }

@@ -1,29 +1,29 @@
 flavors:
   prod:
     app:
-      name: "Omi"
+      name: "Omi Offline"
       icon: "assets/images/app_launcher_icon.png"
     android:
-      applicationId: "com.friend.ios"
+      applicationId: "com.omi.offline"
       icon: "assets/images/app_launcher_icon.png"
       firebase:
         config: "app/android/app/src/prod/google-services.json"
     ios:
-      bundleId: "com.friend-app-with-wearable.ios12"
+      bundleId: "com.omi.offline"
       icon: "assets/images/app_launcher_icon.png"
       firebase:
         config: "app/ios/Config/Prod/GoogleService-Info.plist"
   dev:
     app:
-      name: "Omi Dev"
+      name: "Omi Offline Dev"
       icon: "assets/images/app_launcher_icon.png"
     android:
       icon: "assets/images/app_launcher_icon.png"
-      applicationId: "com.friend.ios.dev"
+      applicationId: "com.omi.offline.dev"
       firebase:
         config: "app/android/app/src/dev/google-services.json"
     ios:
-      bundleId: "com.friend-app-with-wearable.ios12.development"
+      bundleId: "com.omi.offline.development"
       icon: "assets/images/app_launcher_icon.png"
       firebase:
         config: "app/ios/Config/Dev/GoogleService-Info.plist"

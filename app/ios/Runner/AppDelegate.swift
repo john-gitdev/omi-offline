@@ -51,7 +51,7 @@ extension FlutterError: Error {}
     }
     //Creates a method channel to handle notifications on kill
     let controller = window?.rootViewController as? FlutterViewController
-    methodChannel = FlutterMethodChannel(name: "com.friend.ios/notifyOnKill", binaryMessenger: controller!.binaryMessenger)
+    methodChannel = FlutterMethodChannel(name: "com.omi.offline/notifyOnKill", binaryMessenger: controller!.binaryMessenger)
     methodChannel?.setMethodCallHandler { [weak self] (call, result) in
       self?.handleMethodCall(call, result: result)
     }

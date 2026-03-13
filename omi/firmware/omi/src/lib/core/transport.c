@@ -790,7 +790,6 @@ static bool push_to_gatt(struct bt_conn *conn)
 #define OPUS_PREFIX_LENGTH 1
 #define OPUS_PADDED_LENGTH 80
 #define MAX_WRITE_SIZE 440
-static uint32_t offset = 0;
 static uint16_t buffer_offset = 0;
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
@@ -878,11 +877,8 @@ bool write_star_to_storage(void)
 }
 #endif
 
-static bool use_storage = true;
 #define MAX_FILES 10
 #define MAX_AUDIO_FILE_SIZE 300000
-static int recent_file_size_updated = 0;
-static uint8_t heartbeat_count = 0;
 static uint32_t last_timestamp_uptime = 0;
 
 void test_pusher(void)

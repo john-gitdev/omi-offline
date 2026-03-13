@@ -12,7 +12,7 @@ Usage: compare_cpu_builds.sh <apk1_path> <apk1_name> <apk2_path> <apk2_name> [-p
 USAGE
 }
 
-PACKAGE="${PACKAGE_NAME:-${PACKAGE:-com.friend.ios.dev}}"
+PACKAGE="${PACKAGE_NAME:-${PACKAGE:-com.omi.offline.dev}}"
 DEVICE="${DEVICE_ID:-}"
 SAMPLES=15
 DELAY=2

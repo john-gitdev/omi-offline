@@ -44,12 +44,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       _isCancelled = true;
       Logger.debug("SDCardWalSync: Cancel requested, actively tearing down connections");
 
-      if (_activeTcpTransport != null) {
-        _activeTcpTransport!.disconnect();
+      final tcpTransport = _activeTcpTransport;
+      if (tcpTransport != null) {
+        tcpTransport.disconnect();
       }
 
-      if (_activeTransferCompleter != null && !_activeTransferCompleter!.isCompleted) {
-        _activeTransferCompleter!.completeError(Exception('Sync cancelled by user'));
+      final transferCompleter = _activeTransferCompleter;
+      if (transferCompleter != null && !transferCompleter.isCompleted) {
+        transferCompleter.completeError(Exception('Sync cancelled by user'));
       }
     }
   }
@@ -79,10 +81,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   @override
   Future<List<Wal>> getMissingWals() async {
-    if (_device == null) {
+    final dev = _device;
+    if (dev == null) {
       return [];
     }
-    String deviceId = _device!.id;
+    String deviceId = dev.id;
     List<Wal> wals = [];
     var storageFiles = await _getStorageList(deviceId);
     if (storageFiles.isEmpty) {
@@ -100,6 +103,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     if (totalBytes - storageOffset > 10 * codec.getFramesLengthInBytes() * codec.getFramesPerSecond()) {
       var seconds = ((totalBytes - storageOffset) / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
       int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
+
+      // Ensure stable ID for existing entries by matching device and fileNum
+      final existingWal = _wals.firstWhereOrNull((w) => w.device == deviceId && w.fileNum == 0 && w.storage == WalStorage.sdcard);
+      if (existingWal != null) {
+        timerStart = existingWal.timerStart;
+      }
       
       Logger.debug(
           'SDCardWalSync: totalBytes=$totalBytes storageOffset=$storageOffset frameLengthInBytes=${codec.getFramesLengthInBytes()} fps=${codec.getFramesPerSecond()} calculatedSeconds=$seconds timerStart=$timerStart now=${DateTime.now().millisecondsSinceEpoch ~/ 1000}');
@@ -119,15 +128,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         timerStart: timerStart,
         storage: WalStorage.sdcard,
       );
+
+      // Keep status if already syncing
+      if (existingWal != null && existingWal.isSyncing) {
+        wal.isSyncing = true;
+        wal.syncStartedAt = existingWal.syncStartedAt;
+      }
+      
       wals.add(wal);
     }
 
-    // Keep active sync if exists
-    var syncingWal = _wals.firstWhereOrNull((w) => w.isSyncing);
-    // Remove duplicates but keep the syncing one if it was lost
-    if (syncingWal != null && !wals.any((w) => w.id == syncingWal.id)) {
-      wals = [syncingWal, ...wals];
-    }
     return wals;
   }
 
@@ -151,8 +161,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   @override
   Future deleteWal(Wal wal) async {
-    if (_device == null) return;
-    await _writeToStorage(_device!.id, wal.fileNum, 1, 0); // 1 is DELETE command
+    final dev = _device;
+    if (dev == null) return;
+    await _writeToStorage(dev.id, wal.fileNum, 1, 0); // 1 is DELETE command
     _wals = _wals.where((w) => w.id != wal.id).toList();
     listener.onWalUpdated();
   }
@@ -227,17 +238,28 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _activeTransferCompleter = completer;
     bool hasError = false;
 
+    int? currentSessionId;
+    int? currentChunkIndex;
+
     _storageStream = (await connection.getBleStorageBytesListener(onStorageBytesReceived: (List<int> value) async {
       if (_isCancelled || hasError) return;
 
       try {
         final buffer = Uint8List.fromList(value);
+
+        // Check for completion marker (value 100) from firmware
+        if (buffer.length == 1 && buffer[0] == 100) {
+          Logger.debug("SDCardWalSync: Received completion marker (100)");
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+          return;
+        }
+
         int packageOffset = 0;
         List<List<int>> bytesData = [];
 
         int currentUptimeMs = 0;
-        int? currentSessionId;
-        int? currentChunkIndex;
 
         while (packageOffset < buffer.length) {
           int packageSize = buffer[packageOffset];
@@ -256,8 +278,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 SharedPreferencesUtil().saveInt('anchor_uptime_$currentSessionId', currentUptimeMs);
               }
               
-              if (currentSessionId > SharedPreferencesUtil().latestSyncedSessionId) {
-                SharedPreferencesUtil().latestSyncedSessionId = currentSessionId;
+              final sessionId = currentSessionId;
+              if (sessionId != null && sessionId > SharedPreferencesUtil().latestSyncedSessionId) {
+                SharedPreferencesUtil().latestSyncedSessionId = sessionId;
               }
 
               Logger.debug("SDCardWalSync BLE: Parsed metadata: UTC=$utcTime, UptimeMs=$currentUptimeMs, Session=$currentSessionId, Chunk=$currentChunkIndex");
@@ -309,16 +332,28 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         offset += value.length;
         String subFolder = currentSessionId?.toString() ?? 'unsynced';
-        var file = await _flushToDisk(wal, bytesData, timerStart,
-            subFolder: subFolder, sessionId: currentSessionId, chunkIndex: currentChunkIndex);
-        
-        try {
-          await callback(file, offset, timerStart, subFolder: subFolder);
-        } catch (e) {
-          Logger.debug('Error in callback during chunking: $e');
-          hasError = true;
-          if (!completer.isCompleted) {
-            completer.completeError(e);
+
+        if (bytesData.isNotEmpty) {
+          var file = await _flushToDisk(wal, bytesData, timerStart,
+              subFolder: subFolder, sessionId: currentSessionId, chunkIndex: currentChunkIndex);
+          
+          try {
+            await callback(file, offset, timerStart, subFolder: subFolder);
+          } catch (e) {
+            Logger.debug('Error in callback during chunking: $e');
+            hasError = true;
+            if (!completer.isCompleted) {
+              completer.completeError(e);
+            }
+          }
+        } else {
+          // Still need to update progress even if no audio frames were in this packet
+          // (e.g. metadata-only packets)
+          try {
+            // Use a marker file to indicate no new data but advanced offset
+            await callback(File(''), offset, timerStart, subFolder: subFolder);
+          } catch (e) {
+            // Ignore error from callback with empty file
           }
         }
       } catch (e) {
@@ -365,8 +400,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   void _updateSpeed(int bytesDownloaded) {
     _totalBytesDownloaded += bytesDownloaded;
-    if (_downloadStartTime != null) {
-      final elapsedSeconds = DateTime.now().difference(_downloadStartTime!).inMilliseconds / 1000.0;
+    final downloadStartTime = _downloadStartTime;
+    if (downloadStartTime != null) {
+      final elapsedSeconds = DateTime.now().difference(downloadStartTime).inMilliseconds / 1000.0;
       if (elapsedSeconds > 0) {
         _currentSpeedKBps = (_totalBytesDownloaded / 1024) / elapsedSeconds;
       }
@@ -518,10 +554,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   @override
   Future<bool> isWifiSyncSupported() async {
-    if (_device == null) {
+    final dev = _device;
+    if (dev == null) {
       return false;
     }
-    var connection = await ServiceManager.instance().device.ensureConnection(_device!.id);
+    var connection = await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) return false;
     return await connection.isWifiSyncSupported();
   }
@@ -553,12 +590,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return null;
     }
 
-    if (_device == null) {
+    final dev = _device;
+    if (dev == null) {
       Logger.debug("SDCardWalSync WiFi: No device connected");
       return null;
     }
 
-    final deviceId = _device!.id;
+    final deviceId = dev.id;
     var bleConnection = await ServiceManager.instance().device.ensureConnection(deviceId);
     if (bleConnection == null) {
       Logger.debug("SDCardWalSync WiFi: BLE connection lost");

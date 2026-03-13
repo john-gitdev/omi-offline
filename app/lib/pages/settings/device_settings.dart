@@ -16,7 +16,6 @@ import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/utils/l10n_extensions.dart';
 import 'package:omi/utils/other/temp.dart';
-import 'package:omi/widgets/dialog.dart';
 
 class DeviceSettings extends StatefulWidget {
   const DeviceSettings({super.key});
@@ -66,8 +65,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
   void _loadInitialDimRatio() async {
     final deviceProvider = context.read<DeviceProvider>();
-    if (deviceProvider.pairedDevice != null) {
-      var connection = await ServiceManager.instance().device.ensureConnection(deviceProvider.pairedDevice!.id);
+    final pairedDevice = deviceProvider.pairedDevice;
+    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
+      var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
       if (connection != null) {
         var features = await connection.getFeatures();
         final hasDimming = OmiFeatures.hasFeature(features, OmiFeatures.ledDimming);
@@ -127,16 +127,18 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
   void _updateDimRatio(double value) async {
     final deviceProvider = context.read<DeviceProvider>();
-    if (deviceProvider.pairedDevice != null) {
-      var connection = await ServiceManager.instance().device.ensureConnection(deviceProvider.pairedDevice!.id);
+    final pairedDevice = deviceProvider.pairedDevice;
+    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
+      var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
       await connection?.setLedDimRatio(value.toInt());
     }
   }
 
   void _updateMicGain(double value) async {
     final deviceProvider = context.read<DeviceProvider>();
-    if (deviceProvider.pairedDevice != null) {
-      var connection = await ServiceManager.instance().device.ensureConnection(deviceProvider.pairedDevice!.id);
+    final pairedDevice = deviceProvider.pairedDevice;
+    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
+      var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
       await connection?.setMicGain(value.toInt());
     }
   }
@@ -231,7 +233,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
         children: [
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.batteryFull,
-            title: context.l10n.battery,
+            title: context.l10n.batteryLevel,
             chipValue: provider.batteryLevel >= 0 ? '${provider.batteryLevel}%' : '...',
             showChevron: false,
           ),
@@ -647,8 +649,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               onTap: () async {
                 await SharedPreferencesUtil().btDeviceSet(BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0));
                 SharedPreferencesUtil().deviceName = '';
-                if (provider.connectedDevice != null) {
-                  await _bleDisconnectDevice(provider.connectedDevice!);
+                final currentDevice = provider.connectedDevice;
+                if (currentDevice != null) {
+                  await _bleDisconnectDevice(currentDevice);
                 }
                 provider.setIsConnected(false);
                 provider.setConnectedDevice(null);

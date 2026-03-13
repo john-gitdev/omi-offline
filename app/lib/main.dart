@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:omi/l10n/app_localizations.dart';
 import 'package:omi/pages/recordings/recordings_page.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/services.dart';
@@ -40,6 +41,8 @@ class _MyAppState extends State<MyApp> {
       child: MaterialApp(
         title: 'Offline Recorder',
         theme: ThemeData.dark(),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
         home: const RecordingsPage(),
       ),
     );

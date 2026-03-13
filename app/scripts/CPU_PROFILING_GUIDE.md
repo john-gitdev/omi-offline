@@ -32,7 +32,7 @@ flutter run --profile --flavor dev
 ### 3. Measure CPU
 
 ```bash
-./scripts/measure_cpu_android.sh -p com.friend.ios.dev -n 15 -d 2 -o /tmp/omi_cpu_baseline.csv
+./scripts/measure_cpu_android.sh -p com.omi.offline.dev -n 15 -d 2 -o /tmp/omi_cpu_baseline.csv
 ```
 
 ## Measurement Methods
@@ -43,8 +43,8 @@ flutter run --profile --flavor dev
 ./scripts/measure_cpu_android.sh -p <package> [-s <device>] [-n <samples>] [-d <delay>] [-o <csv>]
 
 # Examples:
-./scripts/measure_cpu_android.sh -p com.friend.ios.dev -n 15 -d 2
-./scripts/measure_cpu_android.sh -p com.friend.ios.dev -n 20 -d 1 -o /tmp/omi_cpu_idle.csv
+./scripts/measure_cpu_android.sh -p com.omi.offline.dev -n 15 -d 2
+./scripts/measure_cpu_android.sh -p com.omi.offline.dev -n 20 -d 1 -o /tmp/omi_cpu_idle.csv
 ```
 
 ### Method 2: Compare Two Builds
@@ -53,17 +53,17 @@ flutter run --profile --flavor dev
 ./scripts/compare_cpu_builds.sh \
   build/app/outputs/flutter-apk/app-A.apk "version-A" \
   build/app/outputs/flutter-apk/app-B.apk "version-B" \
-  -p com.friend.ios.dev -n 15 -d 2
+  -p com.omi.offline.dev -n 15 -d 2
 ```
 
 ### Method 3: Manual Measurement
 
 ```bash
 # Single sample
-adb shell "top -b -n 1 | grep com.friend.ios.dev"
+adb shell "top -b -n 1 | grep com.omi.offline.dev"
 
 # Continuous monitoring
-adb shell "top -d 2 | grep --line-buffered com.friend.ios.dev"
+adb shell "top -d 2 | grep --line-buffered com.omi.offline.dev"
 ```
 
 ## Understanding Results
@@ -111,7 +111,7 @@ flutter build apk --flavor dev --profile
 cp build/app/outputs/flutter-apk/app-dev-profile.apk /tmp/feature.apk
 
 # 3. Compare
-./scripts/compare_cpu_builds.sh /tmp/baseline.apk "baseline" /tmp/feature.apk "feature" -p com.friend.ios.dev
+./scripts/compare_cpu_builds.sh /tmp/baseline.apk "baseline" /tmp/feature.apk "feature" -p com.omi.offline.dev
 ```
 
 ## Findings Log

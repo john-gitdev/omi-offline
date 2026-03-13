@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Set up the Omi Mobile Project(iOS/Android).
+# Set up the Omi Offline Mobile Project(iOS/Android).
 #
 # Prerequisites (stable versions, use these or higher):
 #
@@ -25,7 +25,7 @@
 
 set -euo pipefail
 
-echo "👋 Yo folks! Welcome to the OMI Mobile Project - We're hiring! Join us on Discord: http://discord.omi.me"
+echo "👋 Yo folks! Welcome to the Omi Offline Mobile Project - We're hiring! Join us on Discord: http://discord.omi.me"
 echo "Prerequisites (stable versions, use these or higher):"
 echo ""
 echo "Common for all developers:"
@@ -68,7 +68,7 @@ function generate_ios_custom_config() {
 
   # Custom bundle identifier
   SUFFIX=$(generate_device_suffix)
-  CUSTOM_BUNDLE="com.friend-app-with-wearable.ios12-${SUFFIX}"
+  CUSTOM_BUNDLE="com.omi.offline-${SUFFIX}"
   echo APP_BUNDLE_IDENTIFIER=${CUSTOM_BUNDLE} >> "ios/Flutter/Custom.xcconfig"
 }
 
@@ -97,8 +97,8 @@ function setup_firebase_with_service_account() {
   flutterfire config \
     --platforms="android,ios,web" \
     --out=lib/firebase_options_dev.dart \
-    --ios-bundle-id=com.friend-app-with-wearable.ios12.development \
-    --android-app-id=com.friend.ios.dev \
+    --ios-bundle-id=com.omi.offline.development \
+    --android-app-id=com.omi.offline.dev \
     --android-out=android/app/src/dev/  \
     --ios-out=ios/Config/Dev/ \
     --service-account="$FIREBASE_SERVICE_ACCOUNT_KEY" \
@@ -109,8 +109,8 @@ function setup_firebase_with_service_account() {
   flutterfire config \
     --platforms="android,ios,web" \
     --out=lib/firebase_options_prod.dart \
-    --ios-bundle-id=com.friend-app-with-wearable.ios12 \
-    --android-app-id=com.friend.ios.dev \
+    --ios-bundle-id=com.omi.offline \
+    --android-app-id=com.omi.offline.dev \
     --android-out=android/app/src/prod/ \
     --ios-out=ios/Config/Prod/ \
     --service-account="$FIREBASE_SERVICE_ACCOUNT_KEY" \
@@ -130,7 +130,7 @@ function setup_provisioning_profile() {
     fi
 
     MATCH_PASSWORD=omi fastlane match development --readonly \
-        --app_identifier com.friend-app-with-wearable.ios12.development \
+        --app_identifier com.omi.offline.development \
         --git_url "git@github.com:BasedHardware/omi-community-certs.git"
 }
 

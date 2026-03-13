@@ -464,15 +464,6 @@ void sd_worker_thread(void)
             case REQ_READ_DATA:
                 LOG_DBG("[SD_WORK] Reading %u bytes from data file at offset %u\n",
                         (unsigned)req.u.read.length, (unsigned)req.u.read.offset);
-                if (&fil_data == NULL) {
-                    LOG_ERR("[SD_WORK] data file not open (read)\n");
-                    if (req.u.read.resp) {
-                        req.u.read.resp->res = -1;
-                        req.u.read.resp->read_bytes = 0;
-                        k_sem_give(&req.u.read.resp->sem);
-                    }
-                    break;
-                }
 
                 res = fs_seek(&fil_data, req.u.read.offset, FS_SEEK_SET);
                 if (res < 0) {
@@ -495,10 +486,6 @@ void sd_worker_thread(void)
             case REQ_SAVE_OFFSET:
                 LOG_DBG("[SD_WORK] Saving offset %u to info file\n", (unsigned)req.u.info.offset_value);
                 /* Overwrite info.txt with 4-byte offset value (binary) */
-                if (&fil_info == NULL) {
-                    LOG_ERR("[SD_WORK] info file not open\n");
-                    break;
-                }
                 res = fs_seek(&fil_info, 0, FS_SEEK_SET);
                 if (res == 0) {
                     bw = fs_write(&fil_info, &req.u.info.offset_value, sizeof(req.u.info.offset_value));

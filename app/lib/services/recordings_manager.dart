@@ -52,8 +52,8 @@ class RecordingsManager {
       for (var folder in sessionFolders) {
         final sessionIdStr = folder.path.split('/').last;
         
-        // Skip the unsynced folder
-        if (sessionIdStr == 'unsynced') continue;
+        // Skip hidden folders or system folders if any
+        if (sessionIdStr.startsWith('.')) continue;
 
         // 1. Process Stars
         final starFile = File('${folder.path}/stars.txt');

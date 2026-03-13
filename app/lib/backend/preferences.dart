@@ -43,26 +43,27 @@ class SharedPreferencesUtil {
   set offlineAdjustmentMode(bool value) => saveBool('offlineAdjustmentMode', value);
 
   static Future<void> init() async {
-    _preferences = await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
+    _preferences = prefs;
 
     // Set default values if not present
-    if (!_preferences!.containsKey('offlineSilenceThreshold')) {
-      _preferences!.setDouble('offlineSilenceThreshold', -45.0);
+    if (!prefs.containsKey('offlineSilenceThreshold')) {
+      prefs.setDouble('offlineSilenceThreshold', -45.0);
     }
-    if (!_preferences!.containsKey('offlineSplitSeconds')) {
-      _preferences!.setInt('offlineSplitSeconds', 120); // 2 minutes default
+    if (!prefs.containsKey('offlineSplitSeconds')) {
+      prefs.setInt('offlineSplitSeconds', 120); // 2 minutes default
     }
-    if (!_preferences!.containsKey('offlineMinSpeechSeconds')) {
-      _preferences!.setInt('offlineMinSpeechSeconds', 0); // 0 seconds default
+    if (!prefs.containsKey('offlineMinSpeechSeconds')) {
+      prefs.setInt('offlineMinSpeechSeconds', 0); // 0 seconds default
     }
-    if (!_preferences!.containsKey('offlinePreSpeechSeconds')) {
-      _preferences!.setInt('offlinePreSpeechSeconds', 1);
+    if (!prefs.containsKey('offlinePreSpeechSeconds')) {
+      prefs.setInt('offlinePreSpeechSeconds', 1);
     }
-    if (!_preferences!.containsKey('offlineGapSeconds')) {
-      _preferences!.setInt('offlineGapSeconds', 10);
+    if (!prefs.containsKey('offlineGapSeconds')) {
+      prefs.setInt('offlineGapSeconds', 10);
     }
-    if (!_preferences!.containsKey('offlineAdjustmentMode')) {
-      _preferences!.setBool('offlineAdjustmentMode', false);
+    if (!prefs.containsKey('offlineAdjustmentMode')) {
+      prefs.setBool('offlineAdjustmentMode', false);
     }
   }
 

@@ -35,13 +35,14 @@ class TcpTransport extends DeviceTransport {
 
   /// Write data to the connected device.
   Future<void> write(List<int> data) async {
-    if (_clientSocket == null || _state != DeviceTransportState.connected) {
+    final socket = _clientSocket;
+    if (socket == null || _state != DeviceTransportState.connected) {
       throw StateError('TcpTransport: Cannot write - no client connected');
     }
 
     try {
-      _clientSocket!.add(data);
-      await _clientSocket!.flush();
+      socket.add(data);
+      await socket.flush();
     } catch (e) {
       Logger.debug('TcpTransport: Error writing data: $e');
       rethrow;
@@ -65,20 +66,22 @@ class TcpTransport extends DeviceTransport {
     _updateState(DeviceTransportState.connecting);
 
     try {
-      _serverSocket = await ServerSocket.bind(InternetAddress.anyIPv4, port);
+      final server = await ServerSocket.bind(InternetAddress.anyIPv4, port);
+      _serverSocket = server;
 
-      final clientFuture = _serverSocket!.first.timeout(
+      final clientFuture = server.first.timeout(
         connectionTimeout,
         onTimeout: () {
           throw TimeoutException('No device connected within ${connectionTimeout.inSeconds} seconds');
         },
       );
 
-      _clientSocket = await clientFuture;
+      final client = await clientFuture;
+      _clientSocket = client;
       _updateState(DeviceTransportState.connected);
 
       // Listen for incoming data from the device
-      _clientSubscription = _clientSocket!.listen(
+      _clientSubscription = client.listen(
         (List<int> data) {
           _dataStreamController?.add(data);
         },
@@ -156,12 +159,13 @@ class TcpTransport extends DeviceTransport {
 
   @override
   Future<bool> ping() async {
-    if (_clientSocket == null || _state != DeviceTransportState.connected) {
+    final socket = _clientSocket;
+    if (socket == null || _state != DeviceTransportState.connected) {
       return false;
     }
 
     try {
-      _clientSocket!.remoteAddress;
+      socket.remoteAddress;
       return true;
     } catch (e) {
       Logger.debug('TcpTransport: Ping failed: $e');

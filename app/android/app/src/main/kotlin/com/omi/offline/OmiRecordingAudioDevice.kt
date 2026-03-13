@@ -1,4 +1,4 @@
-package com.friend.ios
+package com.omi.offline
 
 import android.media.AudioManager
 import android.media.AudioRecord

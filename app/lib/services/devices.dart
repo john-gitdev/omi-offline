@@ -113,19 +113,22 @@ class DeviceService implements IDeviceService {
 
   @override
   Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false}) async {
-    if (_connection != null && _connection!.device.id == deviceId && !force) {
-      return _connection;
+    final currentConnection = _connection;
+    if (currentConnection != null && currentConnection.device.id == deviceId && !force) {
+      return currentConnection;
     }
 
-    if (_connection != null) {
-      await _connection!.disconnect();
+    final existingConnection = _connection;
+    if (existingConnection != null) {
+      await existingConnection.disconnect();
     }
 
     final device = BtDevice(id: deviceId, name: 'Omi', type: DeviceType.omi, rssi: 0);
     _connection = DeviceConnectionFactory.create(device);
 
-    if (_connection != null) {
-      await _connection!.connect(onConnectionStateChanged: (id, state) {
+    final newConnection = _connection;
+    if (newConnection != null) {
+      await newConnection.connect(onConnectionStateChanged: (id, state) {
         for (var s in _subscriptions.values) {
           s.onDeviceConnectionStateChanged(id, state);
         }
@@ -147,8 +150,9 @@ class DeviceService implements IDeviceService {
 
   @override
   Future<void> disconnectDevice() async {
-    if (_connection != null) {
-      await _connection!.disconnect();
+    final currentConnection = _connection;
+    if (currentConnection != null) {
+      await currentConnection.disconnect();
       _connection = null;
     }
   }
