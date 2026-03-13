@@ -150,7 +150,7 @@ static int setup_storage_tx()
 {
     transport_started = (uint8_t) 0;
     LOG_INF("about to transmit storage\n");
-    k_msleep(1000);
+    k_msleep(100);
 
     uint32_t file_size = get_file_size();
 

@@ -237,6 +237,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final completer = Completer<void>();
     _activeTransferCompleter = completer;
     bool hasError = false;
+    bool isFirstPacket = true;
+    bool isProcessing = false;
 
     int? currentSessionId;
     int? currentChunkIndex;
@@ -246,35 +248,59 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _storageStream = (await connection.getBleStorageBytesListener(onStorageBytesReceived: (List<int> value) async {
       if (_isCancelled || hasError) return;
 
-      try {
-        streamBuffer.addAll(value);
-        offset += value.length;
+      // Log every incoming packet size to verify firmware output
+      if (value.length > 1 || !isFirstPacket) {
+        Logger.debug("SDCardWalSync: Received ${value.length} bytes (Buffer: ${streamBuffer.length})");
+      }
 
-        // Check for completion marker (value 100) from firmware at the end of buffer
-        if (streamBuffer.length == 1 && streamBuffer[0] == 100) {
-          Logger.debug("SDCardWalSync: Received completion marker (100)");
-          if (!completer.isCompleted) {
-            completer.complete();
-          }
+      // Handle the initial ACK byte (0) separately to avoid offset desync
+      if (isFirstPacket && value.length == 1) {
+        isFirstPacket = false;
+        if (value[0] == 0) {
+          Logger.debug("SDCardWalSync: Received initial success ACK (0)");
+          return;
+        } else if (value[0] != 100) {
+          Logger.debug("SDCardWalSync: Received firmware error ACK: ${value[0]}");
+          hasError = true;
+          if (!completer.isCompleted) completer.completeError(Exception('Firmware error: ${value[0]}'));
           return;
         }
+      }
+      isFirstPacket = false;
 
-        List<List<int>> bytesData = [];
-        int bufferPtr = 0;
+      // Add to buffer synchronously
+      streamBuffer.addAll(value);
+      offset += value.length;
 
-        while (bufferPtr < streamBuffer.length) {
-          int packageSize = streamBuffer[bufferPtr];
+      // Serial processing loop to prevent concurrent buffer access
+      if (isProcessing) {
+        Logger.debug("SDCardWalSync: Already processing, queuing data");
+        return;
+      }
+      isProcessing = true;
+
+      try {
+        while (streamBuffer.isNotEmpty) {
+          int packageSize = streamBuffer[0];
+
+          // Check for completion marker (100) at packet boundary
+          if (packageSize == 100 && streamBuffer.length == 1) {
+            Logger.debug("SDCardWalSync: Received termination marker (100)");
+            if (!completer.isCompleted) completer.complete();
+            streamBuffer.clear();
+            break;
+          }
 
           if (packageSize == 255) { // Metadata
-            if (bufferPtr + 1 + 16 <= streamBuffer.length) {
-              var metadata = streamBuffer.sublist(bufferPtr + 1, bufferPtr + 1 + 16);
+            if (1 + 16 <= streamBuffer.length) {
+              var metadata = streamBuffer.sublist(1, 1 + 16);
               var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
               var utcTime = byteData.getUint32(0, Endian.little);
               var currentUptimeMs = byteData.getUint32(4, Endian.little);
               currentSessionId = byteData.getUint32(8, Endian.little);
               currentChunkIndex = byteData.getUint32(12, Endian.little);
 
-              if (utcTime > 0) {
+              if (currentSessionId != null) {
                 SharedPreferencesUtil().saveInt('anchor_utc_$currentSessionId', utcTime);
                 SharedPreferencesUtil().saveInt('anchor_uptime_$currentSessionId', currentUptimeMs);
               }
@@ -284,8 +310,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 SharedPreferencesUtil().latestSyncedSessionId = sessionId;
               }
 
-              Logger.debug("SDCardWalSync BLE: Parsed metadata: UTC=$utcTime, Session=$currentSessionId, Chunk=$currentChunkIndex");
-              bufferPtr += 1 + 16;
+              Logger.debug("SDCardWalSync BLE: Parsed metadata session $currentSessionId");
+              streamBuffer.removeRange(0, 1 + 16);
               continue;
             } else {
               break; // Need more bytes for metadata
@@ -293,26 +319,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           }
 
           if (packageSize == 254) { // Star marker
-            if (bufferPtr + 1 + 16 <= streamBuffer.length) {
-              var metadata = streamBuffer.sublist(bufferPtr + 1, bufferPtr + 1 + 16);
+            if (1 + 16 <= streamBuffer.length) {
+              var metadata = streamBuffer.sublist(1, 1 + 16);
               var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
               var utcTime = byteData.getUint32(0, Endian.little);
-              var uptimeMs = byteData.getUint32(4, Endian.little);
-              var sessionId = byteData.getUint32(8, Endian.little);
-
-              if (utcTime == 0 && sessionId > 0) {
-                final anchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
-                final anchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
-                if (anchorUtc > 0 && anchorUptime > 0) {
-                  utcTime = anchorUtc - ((anchorUptime - uptimeMs) ~/ 1000);
-                }
-              }
-
-              if (sessionId > 0 && utcTime > 0) {
+              // ignore other fields for star
+              final sessionId = currentSessionId;
+              if (sessionId != null) {
                 await _saveStarMarker(sessionId, utcTime);
               }
-
-              bufferPtr += 1 + 16;
+              streamBuffer.removeRange(0, 1 + 16);
               continue;
             } else {
               break; // Need more bytes for star marker
@@ -320,52 +336,36 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           }
 
           if (packageSize == 0) {
-            bufferPtr++;
+            streamBuffer.removeAt(0);
             continue;
           }
 
           // Regular audio data frame
-          if (bufferPtr + 1 + packageSize <= streamBuffer.length) {
-            var frame = streamBuffer.sublist(bufferPtr + 1, bufferPtr + 1 + packageSize);
-            bytesData.add(frame);
-            bufferPtr += packageSize + 1;
-          } else {
-            break; // Partial frame, wait for more bytes
-          }
-        }
+          if (1 + packageSize <= streamBuffer.length) {
+            var frame = streamBuffer.sublist(1, 1 + packageSize);
+            streamBuffer.removeRange(0, 1 + packageSize);
 
-        // Remove processed bytes from buffer
-        if (bufferPtr > 0) {
-          streamBuffer.removeRange(0, bufferPtr);
-        }
+            String subFolder = currentSessionId?.toString() ?? 'unsynced';
+            var file = await _flushToDisk(wal, [frame], timerStart,
+                subFolder: subFolder, sessionId: currentSessionId, chunkIndex: currentChunkIndex);
 
-        String subFolder = currentSessionId?.toString() ?? 'unsynced';
-
-        if (bytesData.isNotEmpty) {
-          var file = await _flushToDisk(wal, bytesData, timerStart,
-              subFolder: subFolder, sessionId: currentSessionId, chunkIndex: currentChunkIndex);
-
-          try {
-            await callback(file, offset, timerStart, subFolder: subFolder);
-          } catch (e) {
-            Logger.debug('Error in callback during chunking: $e');
-            hasError = true;
-            if (!completer.isCompleted) {
-              completer.completeError(e);
+            try {
+              await callback(file, offset, timerStart, subFolder: subFolder);
+            } catch (e) {
+              Logger.debug("SDCardWalSync: Callback failed: $e");
             }
+          } else {
+            // Log that we are waiting for a partial frame
+            Logger.debug("SDCardWalSync: Waiting for more data (Frame size $packageSize, Buffer ${streamBuffer.length})");
+            break; 
           }
-        } else {
-          // Still need to update progress
-          try {
-            await callback(File(''), offset, timerStart, subFolder: subFolder);
-          } catch (e) {}
         }
       } catch (e) {
         Logger.error('SDCard BLE Transfer Error: $e');
         hasError = true;
-        if (!completer.isCompleted) {
-          completer.completeError(e);
-        }
+        if (!completer.isCompleted) completer.completeError(e);
+      } finally {
+        isProcessing = false;
       }
     })) as StreamSubscription<List<int>>;
     final readStarted = await _writeToStorage(deviceId, fileNum, 0, offset);
