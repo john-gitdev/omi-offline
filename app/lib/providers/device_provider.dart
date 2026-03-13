@@ -406,7 +406,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     updateConnectingStatus(false);
 
     // Wals
-    ServiceManager.instance().wal.getSyncs().setDevice(null);
+    final walSync = ServiceManager.instance().wal.getSyncs();
+    walSync.cancelSync();
+    walSync.setDevice(null);
 
     PlatformManager.instance.crashReporter.logInfo('Omi Device Disconnected');
     _disconnectNotificationTimer?.cancel();

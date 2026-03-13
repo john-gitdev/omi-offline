@@ -367,6 +367,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       } finally {
         isProcessing = false;
       }
+    }, onError: (e) {
+      Logger.error('SDCard BLE Stream Error: $e');
+      hasError = true;
+      if (!completer.isCompleted) completer.completeError(e);
+    }, onDone: () {
+      if (!completer.isCompleted) {
+        Logger.debug("SDCardWalSync: BLE stream closed before termination marker");
+        completer.complete();
+      }
     })) as StreamSubscription<List<int>>;
     final readStarted = await _writeToStorage(deviceId, fileNum, 0, offset);
     if (!readStarted) {
