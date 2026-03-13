@@ -422,6 +422,22 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     IWalSyncProgressListener? progress,
     IWifiConnectionListener? connectionListener,
   }) async {
+    if (_isSyncing) {
+      Logger.debug("SDCardWalSync: Sync already in progress, ignoring duplicate request");
+      return null;
+    }
+
+    if (_device == null) {
+      Logger.debug("SDCardWalSync: No device connected, sync aborted");
+      return null;
+    }
+
+    // If our list is empty, refresh it before checking sync status
+    if (_wals.isEmpty) {
+      Logger.debug("SDCardWalSync: File list empty, refreshing before sync...");
+      _wals = await getMissingWals();
+    }
+
     var wals = _wals.where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard).toList();
     if (wals.isEmpty) {
       Logger.debug("SDCardWalSync: All synced!");
