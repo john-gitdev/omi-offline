@@ -147,7 +147,7 @@ class BleTransport extends DeviceTransport {
 
       await characteristic.setNotifyValue(true);
 
-      final subscription = characteristic.lastValueStream.listen(
+      final subscription = characteristic.onValueReceived.listen(
         (value) {
           if (_streamControllers[key] != null && !(_streamControllers[key]?.isClosed ?? true)) {
             _streamControllers[key]?.add(value);
