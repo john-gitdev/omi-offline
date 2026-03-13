@@ -38,6 +38,27 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
+  Future<void> _forceSync() async {
+    setState(() {
+      _isSyncing = true;
+      _progress = 0.0;
+      _statusMessage = 'Forcing re-sync from beginning...';
+    });
+
+    try {
+      await ServiceManager.instance().wal.getSyncs().syncAll(progress: this, force: true);
+      setState(() {
+        _statusMessage = 'Re-sync Complete.';
+        _isSyncing = false;
+      });
+    } catch (e) {
+      setState(() {
+        _statusMessage = 'Re-sync Error: $e';
+        _isSyncing = false;
+      });
+    }
+  }
+
   Future<void> _cancelSync() async {
     ServiceManager.instance().wal.getSyncs().cancelSync();
     setState(() {
@@ -108,6 +129,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   ),
                   child: const Text('Start Download', style: TextStyle(color: Colors.white, fontSize: 16)),
                 ),
+                if (_statusMessage.contains('All synced')) ...[
+                  const SizedBox(height: 16),
+                  TextButton.icon(
+                    onPressed: _forceSync,
+                    icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 14, color: Colors.grey),
+                    label: const Text('Re-download All Recordings', style: TextStyle(color: Colors.grey, fontSize: 14)),
+                  ),
+                ],
                 const SizedBox(height: 16),
                 Text(
                   'This will download all raw recordings directly from your Omi device to your phone via Bluetooth/WiFi.',
