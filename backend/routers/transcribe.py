@@ -1,0 +1,2819 @@
+import asyncio
+import hashlib
+import io
+import json
+import logging
+import os
+import struct
+import time
+import uuid
+import wave
+from collections import deque, OrderedDict
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+from typing import Dict, List, Optional, Set, Tuple, Callable
+
+import av
+import numpy as np
+import opuslib  # type: ignore
+
+import lc3  # lc3py
+
+from fastapi import APIRouter, Depends
+from fastapi.websockets import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
+from websockets.exceptions import ConnectionClosed
+
+from firebase_admin.auth import InvalidIdTokenError
+
+from utils.speaker_assignment import (
+    process_speaker_assigned_segments,
+    update_speaker_assignment_maps,
+    should_update_speaker_to_person_map,
+)
+import database.conversations as conversations_db
+import database.calendar_meetings as calendar_db
+import database.users as user_db
+from database.users import get_user_transcription_preferences
+from database import redis_db
+from database.redis_db import (
+    check_credits_invalidation,
+    get_cached_user_geolocation,
+)
+from models.conversation import (
+    Conversation,
+    ConversationPhoto,
+    ConversationSource,
+    ConversationStatus,
+    Geolocation,
+    Structured,
+    TranscriptSegment,
+)
+from models.message_event import (
+    ConversationEvent,
+    FREEMIUM_ACTION_SETUP_ON_DEVICE_STT,
+    FreemiumThresholdReachedEvent,
+    LastConversationEvent,
+    MessageEvent,
+    MessageServiceStatusEvent,
+    PhotoDescribedEvent,
+    PhotoProcessingEvent,
+    SegmentsDeletedEvent,
+    SpeakerLabelSuggestionEvent,
+    TranslationEvent,
+)
+from models.transcript_segment import Translation
+from models.users import PlanType
+from utils.analytics import record_usage
+from utils.app_integrations import trigger_external_integrations, trigger_realtime_integrations
+from utils.apps import is_audio_bytes_app_enabled
+from utils.conversations.location import get_google_maps_location
+from utils.conversations.process_conversation import process_conversation, retrieve_in_progress_conversation
+from utils.notifications import send_credit_limit_notification, send_silent_user_notification
+from utils.other import endpoints as auth
+from utils.other.storage import get_profile_audio_if_exists, get_user_has_speech_profile
+from utils.pusher import connect_to_trigger_pusher
+from utils.speaker_identification import detect_speaker_from_text
+from utils.stt.streaming import (
+    SPEECH_PROFILE_FIXED_DURATION,
+    SPEECH_PROFILE_PADDING_DURATION,
+    SPEECH_PROFILE_STABILIZE_DELAY,
+    STTService,
+    get_stt_service_for_language,
+    process_audio_dg,
+    process_audio_soniox,
+    process_audio_speechmatics,
+    send_initial_file_path,
+)
+from utils.stt.vad_gate import VADStreamingGate, VAD_GATE_MODE, is_gate_enabled
+from utils.subscription import has_transcription_credits, get_remaining_transcription_seconds
+from utils.translation import TranslationService
+from utils.translation_cache import TranscriptSegmentLanguageCache
+from utils.webhooks import get_audio_bytes_webhook_seconds
+from utils.onboarding import OnboardingHandler
+
+from utils.aac import AACDecoder
+from utils.audio import AudioRingBuffer
+from utils.metrics import ACTIVE_WS_CONNECTIONS
+from utils.stt.speaker_embedding import (
+    extract_embedding_from_bytes,
+    compare_embeddings,
+    SPEAKER_MATCH_THRESHOLD,
+)
+from utils.speaker_sample_migration import maybe_migrate_person_samples
+from utils.log_sanitizer import sanitize, sanitize_pii
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+PUSHER_ENABLED = bool(os.getenv('HOSTED_PUSHER_API_URL'))
+
+# Freemium: Send notification when credits threshold is reached
+FREEMIUM_THRESHOLD_SECONDS = 180  # 3 minutes remaining - notify user
+
+TARGET_SAMPLE_RATE = 16000
+
+
+# ---- Multi-channel support ----
+
+
+@dataclass
+class ChannelConfig:
+    channel_id: int  # Wire protocol ID (1-indexed: 0x01, 0x02, ...)
+    label: str  # Human-readable label
+    is_user: bool  # Whether this channel represents the user's voice
+    speaker_label: str  # STT speaker label
+
+
+def build_channel_config(source: str) -> List[ChannelConfig]:
+    """Build channel configuration based on source type."""
+    if source == 'phone_call':
+        return [
+            ChannelConfig(channel_id=0x01, label='mic', is_user=True, speaker_label='SPEAKER_00'),
+            ChannelConfig(channel_id=0x02, label='remote', is_user=False, speaker_label='SPEAKER_01'),
+        ]
+    elif source == 'desktop':
+        return [
+            ChannelConfig(channel_id=0x01, label='mic', is_user=True, speaker_label='SPEAKER_00'),
+            ChannelConfig(channel_id=0x02, label='system_audio', is_user=False, speaker_label='SPEAKER_01'),
+        ]
+    return [
+        ChannelConfig(channel_id=0x01, label='mic', is_user=True, speaker_label='SPEAKER_00'),
+        ChannelConfig(channel_id=0x02, label='remote', is_user=False, speaker_label='SPEAKER_01'),
+    ]
+
+
+def mix_n_channel_buffers(buffers: List[bytearray]) -> bytes:
+    """Mix N 16-bit PCM mono buffers sample-by-sample into one mono stream, clamping to int16 range."""
+    min_len = min((len(b) for b in buffers), default=0)
+    if min_len < 2:
+        return b''
+    # Align to sample boundary (2 bytes per sample)
+    min_len = min_len - (min_len % 2)
+    num_samples = min_len // 2
+    channel_samples = [struct.unpack(f'<{num_samples}h', b[:min_len]) for b in buffers]
+    mixed = []
+    for i in range(num_samples):
+        s = sum(ch[i] for ch in channel_samples)
+        mixed.append(max(-32768, min(32767, s)))
+    return struct.pack(f'<{num_samples}h', *mixed)
+
+
+def resample_pcm(pcm_data: bytes, source_rate: int, target_rate: int) -> bytes:
+    """Simple resampling by sample duplication/decimation."""
+    if source_rate == target_rate:
+        return pcm_data
+    num_samples = len(pcm_data) // 2
+    if num_samples == 0:
+        return pcm_data
+    samples = struct.unpack(f'<{num_samples}h', pcm_data)
+    ratio = target_rate / source_rate
+    new_length = int(num_samples * ratio)
+    resampled = []
+    for i in range(new_length):
+        src_idx = min(int(i / ratio), num_samples - 1)
+        resampled.append(samples[src_idx])
+    return struct.pack(f'<{len(resampled)}h', *resampled)
+
+
+class CustomSttMode(str, Enum):
+    disabled = "disabled"
+    enabled = "enabled"
+
+
+async def _stream_handler(
+    websocket: WebSocket,
+    uid: str,
+    language: str = 'en',
+    sample_rate: int = 8000,
+    codec: str = 'pcm8',
+    channels: int = 1,
+    include_speech_profile: bool = True,
+    stt_service: Optional[STTService] = None,
+    conversation_timeout: int = 120,
+    source: Optional[str] = None,
+    custom_stt_mode: CustomSttMode = CustomSttMode.disabled,
+    onboarding_mode: bool = False,
+    speaker_auto_assign_enabled: bool = False,
+    vad_gate_override: Optional[str] = None,
+    call_id: Optional[str] = None,
+):
+    """
+    Core WebSocket streaming handler. Assumes websocket is already accepted and uid is validated.
+    This function is called by both _listen (for app clients) and web_listen_handler (for web clients).
+    """
+    session_id = str(uuid.uuid4())
+    ACTIVE_WS_CONNECTIONS.inc()
+    logger.info(
+        f'_stream_handler {uid} {session_id} {language} {sample_rate} {codec} {include_speech_profile} {stt_service} {conversation_timeout} custom_stt={custom_stt_mode} onboarding={onboarding_mode}'
+    )
+
+    use_custom_stt = custom_stt_mode == CustomSttMode.enabled
+    is_multi_channel = channels >= 2
+
+    # Multi-channel state (only allocated when channels >= 2)
+    channel_configs: List[ChannelConfig] = []
+    channel_id_to_index: Dict[int, int] = {}
+    stt_sockets_multi: list = []
+    multi_opus_decoders: list = []
+    channel_mix_buffers: List[bytearray] = []
+    if is_multi_channel:
+        channel_configs = build_channel_config(source or 'phone_call')
+        channel_id_to_index = {ch.channel_id: i for i, ch in enumerate(channel_configs)}
+        stt_sockets_multi = [None] * len(channel_configs)
+        if codec == 'opus':
+            multi_opus_decoders = [opuslib.Decoder(sample_rate, 1) for _ in channel_configs]
+        else:
+            multi_opus_decoders = [None] * len(channel_configs)
+        channel_mix_buffers = [bytearray() for _ in channel_configs]
+        # Multi-channel doesn't use speech profiles or onboarding
+        include_speech_profile = False
+
+    # Helper to gate person_id based on client capability (backward compatibility)
+    # OLD apps don't send speaker_auto_assign param -> receive empty person_id
+    # NEW apps send speaker_auto_assign=enabled -> receive populated person_id
+    def _person_id_for_client(person_id: str) -> str:
+        if speaker_auto_assign_enabled:
+            return person_id
+        return ""
+
+    # Onboarding mode overrides: no speech profile (creating new one), single language
+    if onboarding_mode:
+        include_speech_profile = False
+
+    if not uid or len(uid) <= 0:
+        await websocket.close(code=1008, reason="Bad uid")
+        return
+
+    user_has_credits = True if use_custom_stt else has_transcription_credits(uid)
+    if not user_has_credits:
+        try:
+            await send_credit_limit_notification(uid)
+        except Exception as e:
+            logger.error(f"Error sending credit limit notification: {e} {uid} {session_id}")
+
+    # Frame size, codec
+    frame_size: int = 160
+    lc3_chunk_size: Optional[int] = None
+    lc3_frame_duration_us: Optional[int] = None
+
+    if codec == "opus_fs320":
+        codec = "opus"
+        frame_size = 320
+    elif codec == "lc3_fs1030":
+        codec = "lc3"
+        lc3_chunk_size = 30  # 30 bytes per frame
+        lc3_frame_duration_us = 10000  # 10ms = 10000 microseconds
+
+    # Fetch user transcription preferences
+    transcription_prefs = get_user_transcription_preferences(uid)
+    single_language_mode = transcription_prefs.get('single_language_mode', False)
+    vocabulary = transcription_prefs.get('vocabulary', [])
+
+    # Onboarding mode: force single language for better accuracy
+    if onboarding_mode:
+        single_language_mode = True
+
+    # Always include "Omi" as predefined vocabulary
+    vocabulary = list({"Omi"} | set(vocabulary))
+
+    # Convert 'auto' to 'multi' for consistency
+    language = 'multi' if language == 'auto' else language
+
+    # Determine the best STT service
+    stt_service, stt_language, stt_model = get_stt_service_for_language(
+        language, multi_lang_enabled=not single_language_mode
+    )
+    if not stt_service or not stt_language:
+        await websocket.close(code=1008, reason=f"The language is not supported, {language}")
+        return
+
+    # Translation language (disabled in single language mode)
+    translation_language = None
+    if single_language_mode:
+        translation_language = None
+    elif stt_language == 'multi':
+        if language == "multi":
+            user_language_preference = user_db.get_user_language_preference(uid)
+            if user_language_preference:
+                translation_language = user_language_preference
+        else:
+            translation_language = language
+
+    websocket_active = True
+    websocket_close_code = 1001  # Going Away, don't close with good from backend
+
+    # Buffer size limits to prevent memory leaks during outages/lag
+    MAX_SEGMENT_BUFFER_SIZE = 1000  # Max segments to buffer
+    MAX_PHOTO_BUFFER_SIZE = 100  # Max photos to buffer
+    MAX_AUDIO_BUFFER_SIZE = 1024 * 1024 * 10  # 10MB max audio buffer
+    MAX_PENDING_REQUESTS = 100  # Max pending conversation requests
+    MAX_IMAGE_CHUNKS = 50  # Max concurrent image uploads
+    IMAGE_CHUNK_TTL = 60.0  # Seconds before incomplete image chunks expire
+    IMAGE_CHUNK_CLEANUP_INTERVAL = 2.0  # Seconds between cleanup scans
+    IMAGE_CHUNK_CLEANUP_MIN_SIZE = 5  # Skip scans for tiny caches unless oldest can expire
+
+    # Initialize segment buffers early (before onboarding handler needs them)
+    realtime_segment_buffers: deque = deque(maxlen=MAX_SEGMENT_BUFFER_SIZE)
+    realtime_photo_buffers: deque[ConversationPhoto] = deque(maxlen=MAX_PHOTO_BUFFER_SIZE)
+
+    # === Speaker Identification State ===
+    RING_BUFFER_DURATION = 60.0  # seconds
+    SPEAKER_ID_MIN_AUDIO = 2.0
+    SPEAKER_ID_TARGET_AUDIO = 4.0
+
+    audio_ring_buffer: Optional[AudioRingBuffer] = None
+    speaker_id_segment_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=100)
+    person_embeddings_cache: Dict[str, dict] = {}  # person_id -> {embedding, name}
+    speaker_id_enabled = False  # Will be set after private_cloud_sync_enabled is known
+
+    # Track background tasks to cancel on cleanup (prevents memory leaks from fire-and-forget tasks)
+    bg_tasks: Set[asyncio.Task] = set()
+
+    def spawn(coro) -> asyncio.Task:
+        """Create a tracked background task that will be cancelled on cleanup."""
+        task = asyncio.create_task(coro)
+        bg_tasks.add(task)
+
+        def on_done(t):
+            bg_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc:
+                logger.error(f"Unhandled exception in background task: {exc} {uid} {session_id}")
+
+        task.add_done_callback(on_done)
+        return task
+
+    # Onboarding handler
+    onboarding_handler: Optional[OnboardingHandler] = None
+    if onboarding_mode:
+
+        async def send_onboarding_event(event: dict):
+            if websocket_active and websocket.client_state == WebSocketState.CONNECTED:
+                try:
+                    await websocket.send_json(event)
+                except Exception as e:
+                    logger.error(f"Error sending onboarding event: {e} {uid} {session_id}")
+
+        def onboarding_stream_transcript(segments: List[dict]):
+            """Inject onboarding question segments into the transcript stream."""
+            nonlocal realtime_segment_buffers
+            realtime_segment_buffers.extend(segments)
+
+        onboarding_handler = OnboardingHandler(uid, send_onboarding_event, onboarding_stream_transcript)
+        spawn(onboarding_handler.send_current_question())
+
+    locked_conversation_ids: Set[str] = set()
+    speaker_to_person_map: Dict[int, Tuple[str, str]] = {}
+    segment_person_assignment_map: Dict[str, str] = {}
+    current_session_segments: Dict[str, bool] = {}  # Store only speech_profile_processed status
+    suggested_segments: Set[str] = set()
+    first_audio_byte_timestamp: Optional[float] = None
+    last_usage_record_timestamp: Optional[float] = None
+    words_transcribed_since_last_record: int = 0
+    last_transcript_time: Optional[float] = None
+    current_conversation_id = None
+
+    freemium_threshold_sent = False  # Track if we've sent the freemium threshold notification
+
+    # Credit cache: avoid querying ~720 Firestore docs every 60s per stream (#5439 sub-task 1)
+    CREDITS_REFRESH_SECONDS = 900  # 15 min
+    remaining_seconds_cache: Optional[int] = None  # None = not yet fetched (distinct from unlimited)
+    remaining_seconds_cache_ts: float = 0.0
+    remaining_seconds_cache_initialized = False
+
+    async def _record_usage_periodically():
+        nonlocal websocket_active, last_usage_record_timestamp, words_transcribed_since_last_record
+        nonlocal last_audio_received_time, last_transcript_time, user_has_credits
+        nonlocal freemium_threshold_sent
+        nonlocal remaining_seconds_cache, remaining_seconds_cache_ts, remaining_seconds_cache_initialized
+
+        while websocket_active:
+            await asyncio.sleep(60)
+            if not websocket_active:
+                break
+
+            if use_custom_stt:
+                continue
+
+            transcription_seconds = 0
+            if last_usage_record_timestamp:
+                current_time = time.time()
+                transcription_seconds = int(current_time - last_usage_record_timestamp)
+
+                words_to_record = words_transcribed_since_last_record
+                words_transcribed_since_last_record = 0  # reset
+
+                if transcription_seconds > 0 or words_to_record > 0:
+                    record_usage(uid, transcription_seconds=transcription_seconds, words_transcribed=words_to_record)
+                last_usage_record_timestamp = current_time
+
+            # Freemium: Check remaining credits with local cache (#5439)
+            # Refresh from Firestore only every CREDITS_REFRESH_SECONDS; decrement locally between refreshes
+            # Active invalidation: subscription changes set a Redis signal (#5446)
+            now = time.time()
+            credits_invalidated = check_credits_invalidation(uid)
+            needs_refresh = (
+                not remaining_seconds_cache_initialized
+                or credits_invalidated
+                or now - remaining_seconds_cache_ts >= CREDITS_REFRESH_SECONDS
+                # Fast-refresh when credits exhausted (user may upgrade or month may roll over)
+                or (
+                    remaining_seconds_cache is not None
+                    and remaining_seconds_cache <= 0
+                    and now - remaining_seconds_cache_ts >= 60
+                )
+            )
+            if needs_refresh:
+                remaining_seconds_cache = get_remaining_transcription_seconds(uid)
+                remaining_seconds_cache_ts = now
+                remaining_seconds_cache_initialized = True
+            elif remaining_seconds_cache is not None and transcription_seconds > 0:
+                # Decrement locally between refreshes (None = unlimited, don't decrement)
+                remaining_seconds_cache = max(0, remaining_seconds_cache - transcription_seconds)
+
+            remaining_seconds = remaining_seconds_cache
+
+            # Notify user when approaching limit (3 minutes remaining)
+            if (
+                remaining_seconds is not None
+                and remaining_seconds <= FREEMIUM_THRESHOLD_SECONDS
+                and not freemium_threshold_sent
+            ):
+                # Determine required action
+                # Currently: user must setup on-device STT
+                # Future: backend may auto-fallback to lower-tier cloud STT (action = ACTION_NONE)
+                await _asend_message_event(
+                    FreemiumThresholdReachedEvent(
+                        remaining_seconds=remaining_seconds,
+                        action=FREEMIUM_ACTION_SETUP_ON_DEVICE_STT,
+                    )
+                )
+                freemium_threshold_sent = True
+
+                # Also send push notification
+                try:
+                    await send_credit_limit_notification(uid)
+                except Exception as e:
+                    logger.error(f"Error sending credit limit notification: {e} {uid} {session_id}")
+
+            # Update credits state
+            if remaining_seconds is not None and remaining_seconds <= 0:
+                user_has_credits = False
+            elif remaining_seconds is None or remaining_seconds > 0:
+                user_has_credits = True
+                # Reset threshold flag if credits were restored (new month, upgrade, etc.)
+                if remaining_seconds is None or remaining_seconds > FREEMIUM_THRESHOLD_SECONDS:
+                    freemium_threshold_sent = False
+
+            # Silence notification logic for basic plan users
+            user_subscription = user_db.get_user_valid_subscription(uid)
+            if not user_subscription or user_subscription.plan == PlanType.basic:
+                time_of_last_words = last_transcript_time or first_audio_byte_timestamp
+                if (
+                    last_audio_received_time
+                    and time_of_last_words
+                    and (last_audio_received_time - time_of_last_words) > 15 * 60
+                ):
+                    logger.info(f"User {uid} has been silent for over 15 minutes. Sending notification. {session_id}")
+                    try:
+                        await send_silent_user_notification(uid)
+                    except Exception as e:
+                        logger.error(f"Error sending silent user notification: {e} {uid} {session_id}")
+
+    async def _asend_message_event(msg: MessageEvent):
+        nonlocal websocket_active
+        if not websocket_active:
+            return False
+        try:
+            await websocket.send_json(msg.to_json())
+            return True
+        except WebSocketDisconnect:
+            logger.info(f"WebSocket disconnected {uid} {session_id}")
+            websocket_active = False
+        except Exception as e:
+            logger.error(f"Can not send message event, error: {e} {uid} {session_id}")
+
+        return False
+
+    def _send_message_event(msg: MessageEvent):
+        nonlocal websocket_active
+        if not websocket_active:
+            return
+        return spawn(_asend_message_event(msg))
+
+    # Heart beat
+    started_at = time.time()
+    inactivity_timeout_seconds = 90
+    last_audio_received_time = None
+    last_activity_time = None
+
+    # Send pong every 10s then handle it in the app \
+    # since Starlette is not support pong automatically
+    async def send_heartbeat():
+        logger.debug(f"send_heartbeat {uid} {session_id}")
+        nonlocal websocket_active
+        nonlocal websocket_close_code
+        nonlocal started_at
+        nonlocal last_audio_received_time
+
+        try:
+            while websocket_active:
+                # ping fast
+                if websocket.client_state == WebSocketState.CONNECTED:
+                    await websocket.send_text("ping")
+                else:
+                    break
+
+                # Inactivity timeout
+                if last_activity_time and time.time() - last_activity_time > inactivity_timeout_seconds:
+                    logger.warning(
+                        f"Session timeout due to inactivity ({inactivity_timeout_seconds}s) {uid} {session_id}"
+                    )
+                    websocket_close_code = 1001
+                    websocket_active = False
+                    break
+
+                # next
+                await asyncio.sleep(10)
+        except WebSocketDisconnect:
+            logger.info(f"WebSocket disconnected {uid} {session_id}")
+        except Exception as e:
+            logger.error(f'Heartbeat error: {e} {uid} {session_id}')
+            websocket_close_code = 1011
+        finally:
+            websocket_active = False
+
+    # Start heart beat
+    heartbeat_task = asyncio.create_task(send_heartbeat())
+
+    _send_message_event(
+        MessageServiceStatusEvent(event_type="service_status", status="initiating", status_text="Service Starting")
+    )
+
+    # Validate user
+    if not user_db.is_exists_user(uid):
+        websocket_active = False
+        await websocket.close(code=1008, reason="Bad user")
+        return
+
+    # Create or get conversation ID early for audio chunk storage
+    private_cloud_sync_enabled = user_db.get_user_private_cloud_sync_enabled(uid)
+
+    # Enable speaker identification if not custom STT and private cloud sync is enabled
+    speaker_id_enabled = not use_custom_stt and private_cloud_sync_enabled
+    if speaker_id_enabled:
+        audio_ring_buffer = AudioRingBuffer(RING_BUFFER_DURATION, sample_rate)
+
+    # Conversation timeout (to process the conversation after x seconds of silence)
+    # Max: 4h, min 2m
+    conversation_creation_timeout = conversation_timeout
+    if conversation_creation_timeout == -1 or is_multi_channel:
+        conversation_creation_timeout = 4 * 60 * 60  # Max timeout for multi-channel / phone calls
+    if conversation_creation_timeout < 120:
+        conversation_creation_timeout = 120
+
+    # Stream transcript
+    # Callback for when pusher finishes processing a conversation
+    def on_conversation_processed(conversation_id: str):
+        conversation_data = conversations_db.get_conversation(uid, conversation_id)
+        if conversation_data:
+            conversation = Conversation(**conversation_data)
+            _send_message_event(ConversationEvent(event_type="memory_created", memory=conversation, messages=[]))
+
+    def on_conversation_processing_started(conversation_id: str):
+        conversation_data = conversations_db.get_conversation(uid, conversation_id)
+        if conversation_data:
+            conversation = Conversation(**conversation_data)
+            _send_message_event(ConversationEvent(event_type="memory_processing_started", memory=conversation))
+
+    # Fallback for when pusher is not available
+    async def _create_conversation_fallback(conversation_data: dict):
+        conversation = Conversation(**conversation_data)
+        if conversation.status != ConversationStatus.processing:
+            _send_message_event(ConversationEvent(event_type="memory_processing_started", memory=conversation))
+            conversations_db.update_conversation_status(uid, conversation.id, ConversationStatus.processing)
+            conversation.status = ConversationStatus.processing
+
+        try:
+            # Geolocation
+            geolocation = get_cached_user_geolocation(uid)
+            if geolocation:
+                geolocation = Geolocation(**geolocation)
+                conversation.geolocation = get_google_maps_location(geolocation.latitude, geolocation.longitude)
+
+            conversation = process_conversation(uid, language, conversation)
+            messages = trigger_external_integrations(uid, conversation)
+        except Exception as e:
+            logger.error(f"Error processing conversation: {e} {uid} {session_id}")
+            conversations_db.set_conversation_as_discarded(uid, conversation.id)
+            conversation.discarded = True
+            messages = []
+
+        _send_message_event(ConversationEvent(event_type="memory_created", memory=conversation, messages=messages))
+
+    async def cleanup_processing_conversations():
+        processing = conversations_db.get_processing_conversations(uid)
+        logger.info(f'finalize_processing_conversations len(processing): {len(processing)} {uid} {session_id}')
+        if not processing or len(processing) == 0:
+            return
+
+        for conversation in processing:
+            if PUSHER_ENABLED:
+                await request_conversation_processing(conversation['id'])
+            else:
+                await _create_conversation_fallback(conversation)
+
+    async def process_pending_conversations(timed_out_id: Optional[str]):
+        await asyncio.sleep(7.0)
+        if timed_out_id:
+            await _process_conversation(timed_out_id)
+        await cleanup_processing_conversations()
+
+    # Send last completed conversation to client
+    def send_last_conversation():
+        last_conversation = conversations_db.get_last_completed_conversation(uid)
+        if last_conversation:
+            _send_message_event(LastConversationEvent(memory_id=last_conversation['id']))
+
+    send_last_conversation()
+
+    # Create new stub conversation for next batch
+    async def _create_new_in_progress_conversation():
+        nonlocal current_conversation_id
+
+        conversation_source = ConversationSource.omi
+        if source:
+            try:
+                conversation_source = ConversationSource(source)
+            except ValueError:
+                logger.error(f"Invalid conversation source '{source}', defaulting to 'omi' {uid} {session_id}")
+                conversation_source = ConversationSource.omi
+
+        new_conversation_id = str(uuid.uuid4())
+        stub_conversation = Conversation(
+            id=new_conversation_id,
+            created_at=datetime.now(timezone.utc),
+            started_at=datetime.now(timezone.utc),
+            finished_at=datetime.now(timezone.utc),
+            structured=Structured(),
+            language=language,
+            transcript_segments=[],
+            photos=[],
+            status=ConversationStatus.in_progress,
+            source=conversation_source,
+            private_cloud_sync_enabled=private_cloud_sync_enabled,
+            call_id=call_id if is_multi_channel else None,
+        )
+        conversations_db.upsert_conversation(uid, conversation_data=stub_conversation.dict())
+        redis_db.set_in_progress_conversation_id(uid, new_conversation_id)
+
+        detected_meeting_id = None
+
+        # Only check for meetings if source is desktop
+        if conversation_source == ConversationSource.desktop:
+            now = datetime.now(timezone.utc)
+            # Check ±2 minute window
+            time_window = timedelta(minutes=2)
+            start_range = now - time_window
+            end_range = now + time_window
+
+            meetings = calendar_db.get_meetings_in_time_range(uid, start_range, end_range)
+
+            if len(meetings) == 1:
+                # Exactly one meeting found
+                detected_meeting_id = meetings[0]['id']
+            elif len(meetings) > 1:
+                closest_meeting = None
+                smallest_diff = None
+
+                for meeting in meetings:
+                    # Calculate absolute time difference between meeting start and now
+                    time_diff = abs((meeting['start_time'] - now).total_seconds())
+
+                    if smallest_diff is None or time_diff < smallest_diff:
+                        smallest_diff = time_diff
+                        closest_meeting = meeting
+
+                if closest_meeting:
+                    detected_meeting_id = closest_meeting['id']
+                    logger.info(
+                        f"Selected closest meeting: {closest_meeting['title']} (diff: {smallest_diff}s) {uid} {session_id}"
+                    )
+
+        # Store meeting association if auto-detected
+        if detected_meeting_id:
+            redis_db.set_conversation_meeting_id(new_conversation_id, detected_meeting_id)
+
+        current_conversation_id = new_conversation_id
+
+        logger.info(f"Created new stub conversation: {new_conversation_id} {uid} {session_id}")
+
+    async def _process_conversation(conversation_id: str):
+        logger.info(f"_process_conversation {uid} {session_id}")
+        conversation = conversations_db.get_conversation(uid, conversation_id)
+        if conversation:
+            has_content = conversation.get('transcript_segments') or conversation.get('photos')
+            if has_content:
+                if PUSHER_ENABLED:
+                    on_conversation_processing_started(conversation_id)
+                    await request_conversation_processing(conversation_id)
+                else:
+                    await _create_conversation_fallback(conversation)
+            else:
+                logger.info(f'Clean up the conversation {conversation_id}, reason: no content {uid} {session_id}')
+                conversations_db.delete_conversation(uid, conversation_id)
+
+    # Process existing conversations
+    async def _prepare_in_progess_conversations():
+        nonlocal current_conversation_id
+
+        if existing_conversation := retrieve_in_progress_conversation(uid):
+            finished_at = datetime.fromisoformat(existing_conversation['finished_at'].isoformat())
+            seconds_since_last_segment = (datetime.now(timezone.utc) - finished_at).total_seconds()
+            if seconds_since_last_segment >= conversation_creation_timeout:
+                logger.info(
+                    f'Processing existing conversation {existing_conversation["id"]} (timed out: {seconds_since_last_segment:.1f}s) {uid} {session_id}'
+                )
+                await _create_new_in_progress_conversation()
+                return existing_conversation["id"]
+
+            # Continue with the existing conversation
+            current_conversation_id = existing_conversation['id']
+            logger.info(
+                f"Resuming conversation {current_conversation_id}. Will timeout in {conversation_creation_timeout - seconds_since_last_segment:.1f}s {uid} {session_id}"
+            )
+            return None
+
+        # else
+        await _create_new_in_progress_conversation()
+        return None
+
+    _send_message_event(
+        MessageServiceStatusEvent(status="in_progress_conversations_processing", status_text="Processing Conversations")
+    )
+    if is_multi_channel:
+        # Multi-channel: one conversation per session, no resuming
+        await _create_new_in_progress_conversation()
+        timed_out_conversation_id = None
+    else:
+        timed_out_conversation_id = await _prepare_in_progess_conversations()
+
+    def _update_in_progress_conversation(
+        conversation: Conversation,
+        segments: List[TranscriptSegment],
+        photos: List[ConversationPhoto],
+        finished_at: datetime,
+    ):
+        updated_segments: List[TranscriptSegment] = []
+        removed_ids: List[str] = []
+
+        if segments:
+            conversation.transcript_segments, updated_segments, removed_ids = TranscriptSegment.combine_segments(
+                conversation.transcript_segments, segments
+            )
+            process_speaker_assigned_segments(
+                updated_segments,
+                segment_person_assignment_map,
+                speaker_to_person_map,
+            )
+            segments_dicts = [segment.dict() for segment in conversation.transcript_segments]
+            conversations_db.update_conversation_segments(
+                uid, conversation.id, segments_dicts, data_protection_level=_cached_protection_level
+            )
+            _update_cached_segments(segments_dicts)
+
+        if photos:
+            conversations_db.store_conversation_photos(uid, conversation.id, photos)
+            # Update source if we now have photos
+            if conversation.source != ConversationSource.openglass:
+                conversations_db.update_conversation(uid, conversation.id, {'source': ConversationSource.openglass})
+                conversation.source = ConversationSource.openglass
+
+        conversations_db.update_conversation_finished_at(uid, conversation.id, finished_at)
+        return conversation, updated_segments, removed_ids
+
+    # STT
+    # Validate websocket_active before initiating STT
+    if not websocket_active or websocket.client_state != WebSocketState.CONNECTED:
+        logger.info(f"websocket was closed {uid} {session_id}")
+        if websocket.client_state == WebSocketState.CONNECTED:
+            try:
+                await websocket.close(code=websocket_close_code)
+            except Exception as e:
+                logger.error(f"Error closing WebSocket: {e} {uid} {session_id}")
+        return
+
+    # Process STT
+    soniox_socket = None
+    soniox_profile_socket = None  # Temporary socket for speech profile phase
+    speechmatics_socket = None
+    deepgram_socket = None
+    deepgram_profile_socket = None  # Temporary socket for speech profile phase
+    speech_profile_complete = asyncio.Event()  # Signals when speech profile send is done
+
+    vad_gate = None
+
+    def stream_transcript(segments):
+        nonlocal realtime_segment_buffers
+        # Note: DG timestamp remapping is handled inside GatedDeepgramSocket wrapper
+        realtime_segment_buffers.extend(segments)
+
+    async def _process_stt():
+        nonlocal websocket_close_code
+        nonlocal soniox_socket
+        nonlocal soniox_profile_socket
+        nonlocal speechmatics_socket
+        nonlocal deepgram_socket
+        nonlocal deepgram_profile_socket
+        try:
+            if use_custom_stt:
+                speech_profile_complete.set()  # No speech profile needed
+                logger.info(f"Custom STT mode enabled - using suggested transcripts from app {uid} {session_id}")
+                return None
+
+            if is_multi_channel:
+                speech_profile_complete.set()  # No speech profile for multi-channel
+                # Create one STT connection per channel
+                for i, ch_config in enumerate(channel_configs):
+
+                    def make_multi_channel_callback(cfg):
+                        def cb(segments):
+                            for seg in segments:
+                                seg['is_user'] = cfg.is_user
+                                seg['speaker'] = cfg.speaker_label
+                            realtime_segment_buffers.extend(segments)
+
+                        return cb
+
+                    callback = make_multi_channel_callback(ch_config)
+                    if stt_service == STTService.deepgram:
+                        stt_sockets_multi[i] = await process_audio_dg(
+                            callback,
+                            stt_language,
+                            TARGET_SAMPLE_RATE,
+                            1,
+                            preseconds=0,
+                            model=stt_model,
+                            is_active=lambda: websocket_active,
+                        )
+                    elif stt_service == STTService.soniox:
+                        stt_sockets_multi[i] = await process_audio_soniox(
+                            callback, TARGET_SAMPLE_RATE, stt_language, uid, preseconds=0
+                        )
+                    elif stt_service == STTService.speechmatics:
+                        stt_sockets_multi[i] = await process_audio_speechmatics(
+                            callback, TARGET_SAMPLE_RATE, stt_language, preseconds=0
+                        )
+                logger.info(
+                    f"Multi-channel STT connections established ({len(channel_configs)} channels) {uid} {session_id}"
+                )
+                return None
+
+            speech_profile_preseconds = 0
+            has_speech_profile = False
+            if (
+                (language == 'en' or language == 'auto')
+                and (codec == 'opus' or codec == 'pcm16')
+                and include_speech_profile
+            ):
+                has_speech_profile = get_user_has_speech_profile(uid)
+                if has_speech_profile:
+                    speech_profile_preseconds = SPEECH_PROFILE_FIXED_DURATION + SPEECH_PROFILE_PADDING_DURATION
+
+            # If no speech profile, mark as complete immediately
+            if not has_speech_profile:
+                speech_profile_complete.set()
+
+            # Initialize VAD gate for all eligible DG sessions.
+            # Guard: gate requires PCM16 LE (linear16). All codecs (opus, aac, lc3)
+            # decode to int16 before buffering. pcm8/pcm16 are linear16 from hardware
+            # (the "8"/"16" refers to sample rate kHz, not bit depth).
+            # DG always receives mono (channels=1), so clamp gate channels to 1.
+            # When speech profile is active (preseconds > 0), start in shadow mode
+            # so preseconds filtering uses uncompressed DG timestamps. After profile
+            # completes, switch to active mode to start saving cost.
+            nonlocal vad_gate
+            gate_enabled_by_override = vad_gate_override == 'enabled'
+            gate_disabled_by_override = vad_gate_override == 'disabled'
+            if (
+                not gate_disabled_by_override
+                and (is_gate_enabled() or gate_enabled_by_override)
+                and stt_service == STTService.deepgram
+            ):
+                gate_mode = 'active' if gate_enabled_by_override else VAD_GATE_MODE
+                if speech_profile_preseconds > 0 and gate_mode == 'active':
+                    gate_mode = 'shadow'  # Shadow during profile, activate later
+                try:
+                    vad_gate = VADStreamingGate(
+                        sample_rate=sample_rate,
+                        channels=1,  # DG always receives mono (encoding=linear16, channels=1)
+                        mode=gate_mode,
+                        uid=uid,
+                        session_id=session_id,
+                    )
+                    logger.info(
+                        'VAD gate initialized mode=%s preseconds=%s codec=%s sample_rate=%s uid=%s session=%s',
+                        gate_mode,
+                        speech_profile_preseconds,
+                        codec,
+                        sample_rate,
+                        uid,
+                        session_id,
+                    )
+                except Exception:
+                    logger.exception('VAD gate init failed, continuing without gate uid=%s session=%s', uid, session_id)
+                    vad_gate = None
+
+            # DEEPGRAM
+            if stt_service == STTService.deepgram:
+                deepgram_socket = await process_audio_dg(
+                    stream_transcript,
+                    stt_language,
+                    sample_rate,
+                    1,
+                    preseconds=speech_profile_preseconds,
+                    model=stt_model,
+                    keywords=vocabulary[:100] if vocabulary else None,
+                    vad_gate=vad_gate,
+                    is_active=lambda: websocket_active,
+                )
+                if has_speech_profile:
+                    deepgram_profile_socket = await process_audio_dg(
+                        stream_transcript,
+                        stt_language,
+                        sample_rate,
+                        1,
+                        model=stt_model,
+                        keywords=vocabulary[:100] if vocabulary else None,
+                        is_active=lambda: websocket_active,
+                    )
+
+            # SONIOX
+            elif stt_service == STTService.soniox:
+                # For multi-language detection, provide language hints if available
+                hints = None
+                if stt_language == 'multi' and language != 'multi':
+                    # Include the original language as a hint for multi-language detection
+                    hints = [language]
+
+                soniox_socket = await process_audio_soniox(
+                    stream_transcript,
+                    sample_rate,
+                    stt_language,
+                    uid if include_speech_profile else None,
+                    preseconds=speech_profile_preseconds,
+                    language_hints=hints,
+                )
+
+                # Create a second socket for initial speech profile if needed
+                if has_speech_profile:
+                    soniox_profile_socket = await process_audio_soniox(
+                        stream_transcript,
+                        sample_rate,
+                        stt_language,
+                        uid if include_speech_profile else None,
+                        language_hints=hints,
+                    )
+
+            # SPEECHMATICS
+            elif stt_service == STTService.speechmatics:
+                speechmatics_socket = await process_audio_speechmatics(
+                    stream_transcript, sample_rate, stt_language, preseconds=speech_profile_preseconds
+                )
+
+            # Return background task to load and send speech profile
+            if has_speech_profile:
+                return _create_speech_profile_loader_task(lambda: websocket_active, sample_rate)
+            return None
+
+        except Exception as e:
+            logger.error(f"Initial processing error: {e} {uid} {session_id}")
+            websocket_close_code = 1011
+            await websocket.close(code=websocket_close_code)
+            return None
+
+    def _create_speech_profile_loader_task(is_active: Callable, audio_sample_rate: int):
+        """Create async task to load speech profile and send to STT in background."""
+
+        async def _process_speech_profile():
+            try:
+                # Check if we should stop before doing any work
+                if not is_active():
+                    return
+
+                # Download file in background thread (not blocking main flow)
+                file_path = await asyncio.to_thread(get_profile_audio_if_exists, uid)
+
+                if not file_path:
+                    logger.warning(f"Speech profile file not found for {uid} {session_id}")
+                    return
+
+                # Send to appropriate STT socket with fixed duration padding
+                if stt_service == STTService.deepgram and deepgram_socket:
+
+                    async def deepgram_socket_send(data):
+                        return deepgram_socket.send(data)
+
+                    await send_initial_file_path(
+                        file_path,
+                        deepgram_socket_send,
+                        is_active,
+                        sample_rate=audio_sample_rate,
+                        target_duration=SPEECH_PROFILE_FIXED_DURATION,
+                    )
+                elif stt_service == STTService.soniox and soniox_socket:
+                    await send_initial_file_path(
+                        file_path,
+                        soniox_socket.send,
+                        is_active,
+                        sample_rate=audio_sample_rate,
+                        target_duration=SPEECH_PROFILE_FIXED_DURATION,
+                    )
+                elif stt_service == STTService.speechmatics and speechmatics_socket:
+                    await send_initial_file_path(
+                        file_path,
+                        speechmatics_socket.send,
+                        is_active,
+                        sample_rate=audio_sample_rate,
+                        target_duration=SPEECH_PROFILE_FIXED_DURATION,
+                    )
+
+                # Stabilization delay before switching to main socket
+                if is_active():
+                    logger.info(
+                        f"Speech profile sent, waiting {SPEECH_PROFILE_STABILIZE_DELAY}s for stabilization {uid} {session_id}"
+                    )
+                    await asyncio.sleep(SPEECH_PROFILE_STABILIZE_DELAY)
+
+            except Exception as e:
+                logger.error(f"Error loading speech profile in background: {e} {uid} {session_id}")
+            finally:
+                # Always signal completion so main socket routing can proceed
+                speech_profile_complete.set()
+                logger.info(f"Speech profile complete flag set {uid} {session_id}")
+
+        return asyncio.create_task(_process_speech_profile())
+
+    # Pusher
+    #
+    def create_pusher_task_handler():
+        nonlocal websocket_active
+        nonlocal current_conversation_id
+
+        pusher_ws = None
+        pusher_connect_lock = asyncio.Lock()
+        pusher_connected = False
+
+        # Transcript (bounded to prevent memory growth when pusher is down)
+        segment_buffers: deque = deque(maxlen=MAX_SEGMENT_BUFFER_SIZE)
+
+        last_synced_conversation_id = None
+
+        # Conversation processing — maps conversation_id to {sent_at, retries}
+        PENDING_REQUEST_TIMEOUT = 120  # seconds before retrying a pending request
+        MAX_RETRIES_PER_REQUEST = 3
+        pending_conversation_requests: Dict[str, dict] = {}
+        pending_request_event = asyncio.Event()
+
+        def transcript_send(segments):
+            nonlocal segment_buffers
+            segment_buffers.extend(segments)
+
+        async def request_conversation_processing(conversation_id: str):
+            """Request pusher to process a conversation."""
+            nonlocal pusher_ws, pusher_connected, pending_conversation_requests, pending_request_event
+            if not pusher_connected or not pusher_ws:
+                logger.info(f"Pusher not connected for {conversation_id}, will retry on reconnect {uid} {session_id}")
+                # Track as pending so it gets retried on reconnect
+                if conversation_id not in pending_conversation_requests:
+                    pending_conversation_requests[conversation_id] = {'sent_at': time.time(), 'retries': 0}
+                    pending_request_event.set()
+                return False
+            # Prevent unbounded growth of pending requests
+            if len(pending_conversation_requests) >= MAX_PENDING_REQUESTS:
+                oldest_id = min(
+                    pending_conversation_requests, key=lambda k: pending_conversation_requests[k]['sent_at']
+                )
+                logger.info(
+                    f"Too many pending requests, dropping {oldest_id} to add {conversation_id} {uid} {session_id}"
+                )
+                del pending_conversation_requests[oldest_id]
+            try:
+                pending_conversation_requests[conversation_id] = {
+                    'sent_at': time.time(),
+                    'retries': pending_conversation_requests.get(conversation_id, {}).get('retries', 0),
+                }
+                pending_request_event.set()  # Signal the receiver
+                data = bytearray()
+                data.extend(struct.pack("I", 104))
+                data.extend(bytes(json.dumps({"conversation_id": conversation_id, "language": language}), "utf-8"))
+                await pusher_ws.send(data)
+                logger.info(f"Sent process_conversation request to pusher: {conversation_id} {uid} {session_id}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to send process_conversation request: {e} {uid} {session_id}")
+                return False
+
+        async def _transcript_flush(auto_reconnect: bool = True):
+            nonlocal pusher_ws
+            nonlocal pusher_connected
+            if pusher_connected and pusher_ws and len(segment_buffers) > 0:
+                try:
+                    # 102|data
+                    data = bytearray()
+                    data.extend(struct.pack("I", 102))
+                    data.extend(
+                        bytes(
+                            json.dumps({"segments": list(segment_buffers), "memory_id": current_conversation_id}),
+                            "utf-8",
+                        )
+                    )
+                    segment_buffers.clear()  # reset
+                    await pusher_ws.send(data)
+                except ConnectionClosed as e:
+                    logger.error(f"Pusher transcripts Connection closed: {e} {uid} {session_id}")
+                    pusher_connected = False
+                except Exception as e:
+                    logger.error(f"Pusher transcripts failed: {e} {uid} {session_id}")
+            if auto_reconnect and pusher_connected is False and websocket_active:
+                await connect()
+
+        async def transcript_consume():
+            nonlocal websocket_active
+            while websocket_active:
+                await asyncio.sleep(1)
+                if len(segment_buffers) > 0:
+                    await _transcript_flush(auto_reconnect=True)
+
+        # Audio bytes (bounded to prevent memory growth when pusher is down)
+        # Using deque of chunks for O(1) trimming instead of O(n) bytearray slice
+        audio_chunks: deque = deque()  # deque of bytes objects
+        audio_total_size = 0  # Track total size for O(1) limit check
+        audio_buffer_last_received: float = None  # Track when last audio was received
+        audio_bytes_enabled = (
+            bool(get_audio_bytes_webhook_seconds(uid)) or is_audio_bytes_app_enabled(uid) or private_cloud_sync_enabled
+        )
+
+        def audio_bytes_send(audio_bytes: bytes, received_at: float):
+            nonlocal audio_chunks, audio_total_size, audio_buffer_last_received
+            chunk = audio_bytes
+            # Trim oversized incoming chunk
+            if len(chunk) > MAX_AUDIO_BUFFER_SIZE:
+                chunk = chunk[-MAX_AUDIO_BUFFER_SIZE:]
+            # Drop oldest chunks to make room - O(1) per chunk
+            while audio_total_size + len(chunk) > MAX_AUDIO_BUFFER_SIZE and audio_chunks:
+                old = audio_chunks.popleft()
+                audio_total_size -= len(old)
+            audio_chunks.append(chunk)
+            audio_total_size += len(chunk)
+            audio_buffer_last_received = received_at
+
+        async def _audio_bytes_flush(auto_reconnect: bool = True):
+            nonlocal audio_chunks, audio_total_size
+            nonlocal audio_buffer_last_received
+            nonlocal pusher_ws
+            nonlocal pusher_connected
+            nonlocal last_synced_conversation_id
+
+            # Send conversation ID
+            if (
+                pusher_ws
+                and current_conversation_id
+                and (last_synced_conversation_id is None or current_conversation_id != last_synced_conversation_id)
+            ):
+                try:
+                    # 103|conversation_id
+                    data = bytearray()
+                    data.extend(struct.pack("I", 103))
+                    data.extend(bytes(current_conversation_id, "utf-8"))
+                    await pusher_ws.send(data)
+                    last_synced_conversation_id = current_conversation_id
+                except ConnectionClosed as e:
+                    logger.error(f"Pusher audio_bytes Connection closed: {e} {uid} {session_id}")
+                    pusher_connected = False
+                except Exception as e:
+                    logger.error(f"Failed to send conversation_id to pusher: {e} {uid} {session_id}")
+
+            # Send audio bytes
+            if pusher_connected and pusher_ws and audio_total_size > 0:
+                try:
+                    # Calculate buffer start time:
+                    # buffer_start = last_received_time - buffer_duration
+                    # buffer_duration = buffer_length_bytes / (rate * 2 bytes per sample)
+                    # Multi-channel audio is resampled to TARGET_SAMPLE_RATE before reaching the pusher
+                    effective_rate = TARGET_SAMPLE_RATE if is_multi_channel else sample_rate
+                    buffer_duration_seconds = audio_total_size / (effective_rate * 2)
+                    buffer_start_time = (audio_buffer_last_received or time.time()) - buffer_duration_seconds
+
+                    # Join chunks into contiguous bytes for sending
+                    audio_data = b''.join(audio_chunks)
+
+                    # 101|timestamp(8 bytes double)|audio_data
+                    data = bytearray()
+                    data.extend(struct.pack("I", 101))
+                    data.extend(struct.pack("d", buffer_start_time))
+                    data.extend(audio_data)
+                    # Reset buffer
+                    audio_chunks.clear()
+                    audio_total_size = 0
+                    del audio_data  # Free immediately
+                    await pusher_ws.send(data)
+                except ConnectionClosed as e:
+                    logger.error(f"Pusher audio_bytes Connection closed: {e} {uid} {session_id}")
+                    pusher_connected = False
+                except Exception as e:
+                    logger.error(f"Pusher audio_bytes failed: {e} {uid} {session_id}")
+            if auto_reconnect and pusher_connected is False and websocket_active:
+                await connect()
+
+        async def audio_bytes_consume():
+            nonlocal websocket_active
+            nonlocal audio_chunks, audio_total_size
+            nonlocal pusher_ws
+            nonlocal pusher_connected
+            while websocket_active:
+                await asyncio.sleep(1)
+                if audio_total_size > 0:
+                    await _audio_bytes_flush(auto_reconnect=True)
+
+        async def pusher_receive():
+            """Receive and handle messages from pusher, with timeout-based retry for pending requests."""
+            nonlocal websocket_active, pusher_ws, pusher_connected, pending_conversation_requests, pending_request_event
+            while websocket_active:
+                # Wait efficiently until there's work to do
+                if not pending_conversation_requests:
+                    pending_request_event.clear()
+                    try:
+                        await asyncio.wait_for(pending_request_event.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        continue  # Check websocket_active
+
+                if not pusher_connected or not pusher_ws:
+                    await asyncio.sleep(0.5)
+                    continue
+
+                try:
+                    msg = await asyncio.wait_for(pusher_ws.recv(), timeout=5.0)
+                    if not msg or len(msg) < 4:
+                        continue
+                    header_type = struct.unpack('<I', msg[:4])[0]
+
+                    # Conversation processed response
+                    if header_type == 201:
+                        result = json.loads(msg[4:].decode("utf-8"))
+                        conversation_id = result.get("conversation_id")
+                        pending_conversation_requests.pop(conversation_id, None)
+
+                        if "error" in result:
+                            logger.error(f"Conversation processing failed: {result['error']} {uid} {session_id}")
+                            continue
+
+                        if result.get("success"):
+                            logger.info(f"Conversation processed by pusher: {conversation_id} {uid} {session_id}")
+                            on_conversation_processed(conversation_id)
+
+                except asyncio.TimeoutError:
+                    pass  # Fall through to retry check below
+                except asyncio.CancelledError:
+                    break
+                except ConnectionClosed as e:
+                    logger.error(f"Pusher receive connection closed: {e} {uid} {session_id}")
+                    pusher_connected = False
+                except Exception as e:
+                    logger.error(f"Pusher receive error: {e} {uid} {session_id}")
+                    await asyncio.sleep(0.5)
+
+                # Retry timed-out pending requests (handles silent WS death)
+                now = time.time()
+                timed_out = [
+                    cid
+                    for cid, info in list(pending_conversation_requests.items())
+                    if now - info['sent_at'] > PENDING_REQUEST_TIMEOUT
+                ]
+                for cid in timed_out:
+                    info = pending_conversation_requests.get(cid)
+                    if not info:
+                        continue
+                    if info['retries'] >= MAX_RETRIES_PER_REQUEST:
+                        logger.error(
+                            f"Conversation {cid} failed after {MAX_RETRIES_PER_REQUEST} retries, giving up {uid} {session_id}"
+                        )
+                        pending_conversation_requests.pop(cid, None)
+                        continue
+                    info['retries'] += 1
+                    logger.warning(
+                        f"Retrying process_conversation for {cid} (attempt {info['retries']}/{MAX_RETRIES_PER_REQUEST}) {uid} {session_id}"
+                    )
+                    await request_conversation_processing(cid)
+
+                # Reconnect outside try/except (same pattern as flush functions)
+                if pusher_connected is False and websocket_active:
+                    await connect()
+
+        async def _flush():
+            await _audio_bytes_flush(auto_reconnect=False)
+            await _transcript_flush(auto_reconnect=False)
+
+        async def connect():
+            nonlocal pusher_connected
+            nonlocal pusher_connect_lock
+            nonlocal pusher_ws
+            async with pusher_connect_lock:
+                if pusher_connected:
+                    return
+                # drain
+                if pusher_ws:
+                    try:
+                        await pusher_ws.close()
+                        pusher_ws = None
+                    except Exception as e:
+                        logger.error(f"Pusher draining failed: {e} {uid} {session_id}")
+                # connect
+                await _connect()
+
+        async def _connect():
+            nonlocal pusher_ws
+            nonlocal pusher_connected
+            nonlocal current_conversation_id
+
+            try:
+                pusher_sample_rate = TARGET_SAMPLE_RATE if is_multi_channel else sample_rate
+                pusher_ws = await connect_to_trigger_pusher(
+                    uid, pusher_sample_rate, retries=5, is_active=lambda: websocket_active
+                )
+                if pusher_ws is None:
+                    # Session ended during connection attempt
+                    return
+                pusher_connected = True
+                # Re-send any pending conversation requests after reconnect
+                if pending_conversation_requests:
+                    logger.info(
+                        f"Reconnected to pusher, re-sending {len(pending_conversation_requests)} pending requests {uid} {session_id}"
+                    )
+                    for cid in list(pending_conversation_requests.keys()):
+                        pending_conversation_requests[cid]['sent_at'] = time.time()
+                        await request_conversation_processing(cid)
+            except Exception as e:
+                logger.error(f"Exception in connect: {e}")
+
+        async def close(code: int = 1000):
+            await _flush()
+            if pusher_ws:
+                await pusher_ws.close(code)
+
+        async def send_speaker_sample_request(
+            person_id: str,
+            conv_id: str,
+            segment_ids: List[str],
+        ):
+            """Send speaker sample extraction request to pusher with segment IDs."""
+            nonlocal pusher_ws, pusher_connected
+            if not pusher_connected or not pusher_ws:
+                return
+            try:
+                data = bytearray()
+                data.extend(struct.pack("I", 105))
+                data.extend(
+                    bytes(
+                        json.dumps(
+                            {
+                                "person_id": person_id,
+                                "conversation_id": conv_id,
+                                "segment_ids": segment_ids,
+                            }
+                        ),
+                        "utf-8",
+                    )
+                )
+                await pusher_ws.send(data)
+                logger.info(
+                    f"Sent speaker sample request to pusher: person={person_id}, {len(segment_ids)} segments {uid} {session_id}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to send speaker sample request: {e} {uid} {session_id}")
+
+        def is_connected():
+            return pusher_connected
+
+        async def pusher_heartbeat():
+            """Send periodic data-frame heartbeats to reset the GKE ILB idle timer.
+
+            The GKE Internal Load Balancer counts only data frames for its idle
+            timeout (default 30 s). WebSocket control frames (ping/pong) are
+            ignored. During user silence most connections carry zero data frames,
+            causing the ILB to kill the connection. This task sends a minimal
+            4-byte data frame (header type 100) every 20 s to keep the link alive.
+            """
+            nonlocal pusher_ws, pusher_connected, websocket_active
+            while websocket_active:
+                await asyncio.sleep(20)
+                if pusher_connected and pusher_ws:
+                    try:
+                        await pusher_ws.send(struct.pack("I", 100))
+                    except ConnectionClosed:
+                        pusher_connected = False
+                    except Exception as e:
+                        logger.error(f"Pusher heartbeat send failed: {e} {uid} {session_id}")
+
+        return (
+            connect,
+            close,
+            transcript_send,
+            transcript_consume,
+            audio_bytes_send if audio_bytes_enabled else None,
+            audio_bytes_consume if audio_bytes_enabled else None,
+            request_conversation_processing,
+            pusher_receive,
+            is_connected,
+            send_speaker_sample_request,
+            pusher_heartbeat,
+        )
+
+    transcript_send = None
+    transcript_consume = None
+    audio_bytes_send = None
+    audio_bytes_consume = None
+    pusher_close = None
+    pusher_connect = None
+    request_conversation_processing = None
+    pusher_receive = None
+    pusher_is_connected = None
+    send_speaker_sample_request = None
+    pusher_heartbeat = None
+
+    # Transcripts
+    #
+    translation_enabled = translation_language is not None
+    language_cache = TranscriptSegmentLanguageCache()
+    translation_service = TranslationService()
+
+    # Normalize locale-tagged language (e.g. "en-US" -> "en") for langdetect compatibility
+    translation_language_base = translation_language.split('-')[0] if translation_language else None
+
+    # Temporal debounce state: accumulate segments, translate after quiet period
+    pending_translations = {}  # segment_id -> {text_hash, version} for stale-write protection
+    TRANSLATION_DEBOUNCE_SECONDS = 1.0
+    translation_persist_lock = asyncio.Lock()
+    translation_flushing = False
+    translation_version_counter = 0  # Monotonic counter to avoid version reuse after prune
+    _debounce_buffer = []  # [(segment, conversation_id, version), ...]
+    _debounce_task = None  # asyncio.Task for the pending batch timer
+    _inflight_translate_tasks = []  # tracked tasks from _flush_debounce_buffer
+
+    # Translation metrics counters
+    translate_metrics = {
+        'api_calls': 0,
+        'cache_hits_memory': 0,
+        'cache_hits_redis': 0,
+        'segments_buffered': 0,
+        'lang_cache_skips': 0,
+        'same_text_skips': 0,
+        'segments_translated': 0,
+        'total_translate_calls': 0,
+    }
+
+    async def _translate_segment(segment: TranscriptSegment, conversation_id: str, version: int):
+        """Translate a single segment and persist/notify."""
+        if not translation_language:
+            return
+        # Allow translation during flush (translation_flushing=True) but not after full shutdown
+        if not websocket_active and not translation_flushing:
+            return
+
+        try:
+            segment_text = segment.text.strip()
+            if not segment_text:
+                return
+
+            # Pre-API stale-write check: abort if a newer version exists or entry was pruned
+            pending = pending_translations.get(segment.id)
+            if not pending or pending.get('version', 0) != version:
+                return
+
+            translated_text, detected_lang = translation_service.translate_text_by_sentence(
+                translation_language, segment_text
+            )
+
+            # Post-API stale-write check: abort if a newer version exists or entry was pruned
+            pending = pending_translations.get(segment.id)
+            if not pending or pending.get('version', 0) != version:
+                return
+
+            # Update language cache from translate response (free detection)
+            if detected_lang:
+                language_cache.update_from_translate_response(
+                    segment.id, detected_lang, translation_language_base or translation_language
+                )
+
+            # Create/Update Translation object
+            trans = Translation(lang=translation_language, text=translated_text)
+            if segment.translations is not None:
+                existing_idx = next(
+                    (i for i, t in enumerate(segment.translations) if t.lang == translation_language), None
+                )
+                if existing_idx is not None:
+                    segment.translations[existing_idx] = trans
+                else:
+                    segment.translations.append(trans)
+
+            # Persist with lock to prevent concurrent read-modify-write clobbering
+            async with translation_persist_lock:
+                # Use cache only if conversation_id matches current; fall back to DB otherwise
+                if conversation_id == current_conversation_id:
+                    conversation = _get_cached_conversation()
+                    protection_level = _cached_protection_level
+                else:
+                    conversation = conversations_db.get_conversation(uid, conversation_id)
+                    protection_level = None  # let DB function read it
+                if conversation:
+                    for i, existing_segment in enumerate(conversation['transcript_segments']):
+                        if existing_segment['id'] == segment.id:
+                            conversation['transcript_segments'][i]['translations'] = segment.dict()['translations']
+                            conversations_db.update_conversation_segments(
+                                uid,
+                                conversation_id,
+                                conversation['transcript_segments'],
+                                data_protection_level=protection_level,
+                            )
+                            if conversation_id == current_conversation_id:
+                                _update_cached_segments(conversation['transcript_segments'])
+                            break
+
+            if websocket_active:
+                _send_message_event(TranslationEvent(segments=[segment.dict()]))
+
+            # Prune completed entry
+            pending_translations.pop(segment.id, None)
+
+        except Exception as e:
+            logger.error(f"Translation error: {e} {uid} {session_id}")
+            # Prune failed entry so it doesn't block future translations for this segment
+            pending = pending_translations.get(segment.id)
+            if pending and pending.get('version', 0) == version:
+                pending_translations.pop(segment.id, None)
+
+    async def _flush_debounce_buffer():
+        """Translate all segments accumulated in the debounce buffer."""
+        nonlocal _debounce_task
+        batch = list(_debounce_buffer)
+        _debounce_buffer.clear()
+        _debounce_task = None
+
+        if not batch:
+            return
+
+        translate_metrics['segments_translated'] += len(batch)
+        logger.info(f"translate [batch] segments={len(batch)} {uid}")
+
+        for seg, conv_id, ver in batch:
+            task = asyncio.ensure_future(_translate_segment(seg, conv_id, ver))
+            _inflight_translate_tasks.append(task)
+
+    async def translate(segments: List[TranscriptSegment], conversation_id: str):
+        nonlocal _debounce_task
+        if not translation_language:
+            return
+
+        for segment in segments:
+            if not segment or not segment.id:
+                continue
+
+            segment_text = segment.text.strip()
+            if not segment_text:
+                continue
+
+            # Free local language detection pre-filter (use base language for comparison)
+            if language_cache.is_in_target_language(
+                segment.id, segment_text, translation_language_base or translation_language
+            ):
+                translate_metrics['lang_cache_skips'] += 1
+                continue
+
+            text_hash = hashlib.md5(segment_text.encode()).hexdigest()
+            pending = pending_translations.get(segment.id)
+
+            if pending and pending.get('text_hash') == text_hash:
+                # Same text, skip (already translating or translated)
+                translate_metrics['same_text_skips'] += 1
+                continue
+
+            # Monotonic version for stale-write protection (never reuses values after prune)
+            nonlocal translation_version_counter
+            translation_version_counter += 1
+            new_version = translation_version_counter
+
+            # Register in pending_translations for stale-write protection in _translate_segment
+            pending_translations[segment.id] = {
+                'text_hash': text_hash,
+                'version': new_version,
+            }
+
+            # Add to temporal debounce buffer
+            translate_metrics['segments_buffered'] += 1
+            _debounce_buffer.append((segment, conversation_id, new_version))
+            logger.info(f"translate [buffered] seg={segment.id[:8]} v={new_version} buf={len(_debounce_buffer)} {uid}")
+
+        # (Re)start the debounce timer — fires after TRANSLATION_DEBOUNCE_SECONDS of quiet
+        if _debounce_buffer:
+            if _debounce_task and not _debounce_task.done():
+                _debounce_task.cancel()
+
+            async def _debounce_timer():
+                await asyncio.sleep(TRANSLATION_DEBOUNCE_SECONDS)
+                await _flush_debounce_buffer()
+
+            _debounce_task = asyncio.ensure_future(_debounce_timer())
+
+    async def flush_pending_translations():
+        """Flush all pending debounced translations before cleanup."""
+        nonlocal translation_flushing, _debounce_task
+        translation_flushing = True
+
+        # Cancel debounce timer and immediately flush the buffer
+        if _debounce_task and not _debounce_task.done():
+            _debounce_task.cancel()
+            _debounce_task = None
+        await _flush_debounce_buffer()
+
+        # Await all in-flight _translate_segment tasks with bounded timeout
+        if _inflight_translate_tasks:
+            pending = [t for t in _inflight_translate_tasks if not t.done()]
+            if pending:
+                try:
+                    await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning(f"translate flush timeout: {len(pending)} tasks still pending {uid} {session_id}")
+            _inflight_translate_tasks.clear()
+
+        pending_translations.clear()
+        _debounce_buffer.clear()
+        translation_flushing = False
+        # Log session translation metrics summary
+        # total_segments = segments that entered translate() (buffered + lang_skip + same_text_skip)
+        # segments_translated = subset of buffered that were dispatched to _translate_segment
+        m = translate_metrics
+        total_segments = m['segments_buffered'] + m['lang_cache_skips'] + m['same_text_skips']
+        logger.info(
+            f"translate_summary {uid} session={session_id} "
+            f"total={total_segments} buffered={m['segments_buffered']} translated={m['segments_translated']} "
+            f"lang_skip={m['lang_cache_skips']} same_text_skip={m['same_text_skips']}"
+        )
+
+    async def conversation_lifecycle_manager():
+        """Background task that checks conversation timeout and triggers processing every 5 seconds."""
+        nonlocal websocket_active, current_conversation_id, conversation_creation_timeout
+
+        logger.info(
+            f"Starting conversation lifecycle manager (timeout: {conversation_creation_timeout}s) {uid} {session_id}"
+        )
+
+        while websocket_active:
+            await asyncio.sleep(5)
+
+            if not current_conversation_id:
+                logger.warning(f"WARN: the current conversation is not valid {uid} {session_id}")
+                continue
+
+            conversation = conversations_db.get_conversation(uid, current_conversation_id)
+            if not conversation:
+                logger.warning(
+                    f"WARN: the current conversation is not found (id: {current_conversation_id}) {uid} {session_id}"
+                )
+                await _create_new_in_progress_conversation()
+                continue
+
+            # Check if conversation status is not in_progress
+            if conversation.get('status') != ConversationStatus.in_progress:
+                logger.warning(
+                    f"WARN: conversation {current_conversation_id} status is {conversation.get('status')}, not in_progress. Creating new conversation. {uid} {session_id}"
+                )
+                await _create_new_in_progress_conversation()
+                continue
+
+            # Check if conversation should be processed
+            finished_at = datetime.fromisoformat(conversation['finished_at'].isoformat())
+            seconds_since_last_update = (datetime.now(timezone.utc) - finished_at).total_seconds()
+            if seconds_since_last_update >= conversation_creation_timeout:
+                logger.info(
+                    f"Conversation {current_conversation_id} timeout reached ({seconds_since_last_update:.1f}s). Processing... {uid} {session_id}"
+                )
+                await _process_conversation(current_conversation_id)
+                await _create_new_in_progress_conversation()
+
+    async def speaker_identification_task():
+        """Consume segment queue, accumulate per speaker, trigger match when ready."""
+        nonlocal websocket_active, speaker_to_person_map
+        nonlocal person_embeddings_cache, audio_ring_buffer
+
+        if not speaker_id_enabled:
+            return
+
+        # Load person embeddings (migrate if needed for v2 API compatibility)
+        try:
+            people = user_db.get_people(uid)
+            for person in people:
+                # Migrate if needed for v2 API compatibility
+                if person.get('speech_samples'):
+                    person = await maybe_migrate_person_samples(uid, person)
+
+                # Skip cache if migration failed (version still <3) to avoid mixing embedding spaces
+                if person.get('speech_samples_version', 1) < 3:
+                    continue
+
+                emb = person.get('speaker_embedding')
+                if emb:
+                    person_embeddings_cache[person['id']] = {
+                        'embedding': np.array(emb, dtype=np.float32).reshape(1, -1),
+                        'name': person['name'],
+                    }
+            logger.info(f"Speaker ID: loaded {len(person_embeddings_cache)} person embeddings {uid} {session_id}")
+        except Exception as e:
+            logger.error(f"Speaker ID: failed to load embeddings: {e} {uid} {session_id}")
+            return
+
+        if not person_embeddings_cache:
+            logger.info(f"Speaker ID: no stored embeddings, task disabled {uid} {session_id}")
+            return
+
+        # Consume loop
+        while websocket_active:
+            try:
+                seg = await asyncio.wait_for(speaker_id_segment_queue.get(), timeout=2.0)
+            except asyncio.TimeoutError:
+                continue
+
+            speaker_id = seg['speaker_id']
+
+            # Skip if already resolved
+            if speaker_id in speaker_to_person_map:
+                continue
+
+            duration = seg['duration']
+            if duration >= SPEAKER_ID_MIN_AUDIO:
+                spawn(_match_speaker_embedding(speaker_id, seg))
+
+        logger.info(f"Speaker ID task ended {uid} {session_id}")
+
+    async def _match_speaker_embedding(speaker_id: int, segment: dict):
+        """Extract audio from ring buffer and match against stored embeddings."""
+        nonlocal speaker_to_person_map, segment_person_assignment_map, audio_ring_buffer
+
+        try:
+            seg_start = segment['abs_start']
+            seg_end = segment['abs_end']
+            duration = segment['duration']
+
+            if duration < SPEAKER_ID_MIN_AUDIO:
+                logger.info(f"Speaker ID: segment too short ({duration:.1f}s) {uid} {session_id}")
+                return
+
+            # Get buffer time range
+            time_range = audio_ring_buffer.get_time_range()
+            if time_range is None:
+                logger.info(f"Speaker ID: buffer empty {uid} {session_id}")
+                return
+
+            buffer_start_ts, buffer_end_ts = time_range
+
+            # Calculate extraction range - stay within segment bounds, max 10 seconds from center
+            MAX_EXTRACT_DURATION = 10.0
+
+            if duration <= MAX_EXTRACT_DURATION:
+                # Segment fits within max duration, use full segment
+                extract_start = seg_start
+                extract_end = seg_end
+            else:
+                # Segment is longer than max, extract 10s from center
+                center = (seg_start + seg_end) / 2
+                half_duration = MAX_EXTRACT_DURATION / 2
+                extract_start = center - half_duration
+                extract_end = center + half_duration
+
+            # Clamp to buffer availability
+            extract_start = max(buffer_start_ts, extract_start)
+            extract_end = min(buffer_end_ts, extract_end)
+
+            if extract_end <= extract_start:
+                logger.info(f"Speaker ID: no audio to extract {uid} {session_id}")
+                return
+
+            # Reject clips too short for speaker embedding (issue #4572)
+            extracted_duration = extract_end - extract_start
+            if extracted_duration < SPEAKER_ID_MIN_AUDIO:
+                logger.info(
+                    f"Speaker ID: extracted audio too short ({extracted_duration:.2f}s < {SPEAKER_ID_MIN_AUDIO}s) after buffer clamping {uid} {session_id}"
+                )
+                return
+
+            # Extract only the needed bytes directly from ring buffer
+            pcm_data = audio_ring_buffer.extract(extract_start, extract_end)
+            if not pcm_data:
+                logger.error(f"Speaker ID: failed to extract audio {uid} {session_id}")
+                return
+
+            # Convert PCM to numpy for WAV encoding
+            samples = np.frombuffer(pcm_data, dtype=np.int16)
+
+            # Convert PCM to WAV using av
+            output_buffer = io.BytesIO()
+            output_container = av.open(output_buffer, mode='w', format='wav')
+            output_stream = output_container.add_stream('pcm_s16le', rate=sample_rate)
+            output_stream.layout = 'mono'
+
+            frame = av.AudioFrame.from_ndarray(samples.reshape(1, -1), format='s16', layout='mono')
+            frame.rate = sample_rate
+
+            for packet in output_stream.encode(frame):
+                output_container.mux(packet)
+            for packet in output_stream.encode():
+                output_container.mux(packet)
+
+            output_container.close()
+            wav_bytes = output_buffer.getvalue()
+
+            # Extract embedding (API call)
+            query_embedding = await asyncio.to_thread(extract_embedding_from_bytes, wav_bytes, "query.wav")
+
+            # Find best match
+            best_match = None
+            best_distance = float('inf')
+
+            # Print all candidates with scores for tuning
+            logger.info(
+                f"Speaker ID: comparing speaker {speaker_id} against {len(person_embeddings_cache)} people: {uid} {session_id}"
+            )
+            for person_id, data in person_embeddings_cache.items():
+                distance = compare_embeddings(query_embedding, data['embedding'])
+                logger.info(f"  - {sanitize_pii(data['name'])}: {distance:.4f} {uid} {session_id}")
+                if distance < best_distance:
+                    best_distance = distance
+                    best_match = (person_id, data['name'])
+
+            if best_match and best_distance < SPEAKER_MATCH_THRESHOLD:
+                person_id, person_name = best_match
+                logger.info(
+                    f"Speaker ID: speaker {speaker_id} -> {sanitize_pii(person_name)} (distance={best_distance:.3f}) {uid} {session_id}"
+                )
+
+                # Store for session consistency
+                speaker_to_person_map[speaker_id] = (person_id, person_name)
+
+                # Auto-assign processed segment
+                segment_person_assignment_map[segment['id']] = person_id
+
+                # Notify client (gated for backward compatibility)
+                _send_message_event(
+                    SpeakerLabelSuggestionEvent(
+                        speaker_id=speaker_id,
+                        person_id=_person_id_for_client(person_id),
+                        person_name=person_name,
+                        segment_id=segment['id'],
+                    )
+                )
+            else:
+                logger.info(f"Speaker ID: speaker {speaker_id} no match (best={best_distance:.3f}) {uid} {session_id}")
+
+        except Exception as e:
+            logger.error(f"Speaker ID: match error for speaker {speaker_id}: {e} {uid} {session_id}")
+
+    # In-memory conversation cache to avoid Firestore re-reads every 0.6s
+    _cached_conversation_data = None
+    _cached_conversation_id = None
+    _cached_conversation_time = 0.0  # monotonic
+    _cached_protection_level = 'standard'
+    CONVERSATION_CACHE_REFRESH_SECONDS = 30
+
+    def _get_cached_conversation(force_refresh=False):
+        nonlocal _cached_conversation_data, _cached_conversation_id, _cached_conversation_time, _cached_protection_level
+        now = time.monotonic()
+        id_changed = current_conversation_id != _cached_conversation_id
+        stale = (now - _cached_conversation_time) >= CONVERSATION_CACHE_REFRESH_SECONDS
+        if _cached_conversation_data is None or id_changed or stale or force_refresh:
+            data = conversations_db.get_conversation(uid, current_conversation_id)
+            if data:
+                _cached_conversation_data = data
+                _cached_conversation_id = current_conversation_id
+                _cached_conversation_time = now
+                _cached_protection_level = data.get('data_protection_level', 'standard')
+            return data
+        return _cached_conversation_data
+
+    def _update_cached_segments(segments_dicts):
+        """Update the cached conversation's transcript_segments in-place after a write."""
+        if _cached_conversation_data is not None:
+            _cached_conversation_data['transcript_segments'] = segments_dicts
+
+    async def stream_transcript_process():
+        nonlocal websocket_active, realtime_segment_buffers, realtime_photo_buffers, websocket
+        nonlocal current_conversation_id, translation_enabled, speaker_to_person_map, suggested_segments, words_transcribed_since_last_record, last_transcript_time
+
+        while websocket_active or len(realtime_segment_buffers) > 0 or len(realtime_photo_buffers) > 0:
+            await asyncio.sleep(0.6)
+
+            # Periodic cleanup of expired image chunks (enforces TTL even when uploads stop)
+            _cleanup_expired_image_chunks()
+
+            if not realtime_segment_buffers and not realtime_photo_buffers:
+                continue
+
+            segments_to_process = list(realtime_segment_buffers)
+            realtime_segment_buffers.clear()
+
+            photos_to_process = list(realtime_photo_buffers)
+            realtime_photo_buffers.clear()
+
+            finished_at = datetime.now(timezone.utc)
+
+            # Get conversation (cached — refreshes on ID change or every 30s)
+            conversation_data = _get_cached_conversation()
+            if not conversation_data:
+                logger.warning(
+                    f"Warning: conversation {current_conversation_id} not found during segment processing {uid} {session_id}"
+                )
+                continue
+
+            # Guard first_audio_byte_timestamp must be set
+            if not first_audio_byte_timestamp:
+                logger.warning(
+                    f"Warning: first_audio_byte_timestamp not set, skipping segment processing {uid} {session_id}"
+                )
+                continue
+
+            transcript_segments = []
+            if segments_to_process:
+                last_transcript_time = time.time()
+
+                # If conversation has no segments yet, set started_at based on when first speech occurred
+                if not conversation_data.get('transcript_segments'):
+                    first_speech_timestamp = first_audio_byte_timestamp + segments_to_process[0]["start"]
+                    new_started_at = datetime.fromtimestamp(first_speech_timestamp, tz=timezone.utc)
+                    conversations_db.update_conversation(uid, current_conversation_id, {'started_at': new_started_at})
+                    conversation_data['started_at'] = new_started_at
+
+                # Calculate unified time offset: audio stream start relative to conversation start
+                conversation_started_at = conversation_data['started_at']
+                if isinstance(conversation_started_at, str):
+                    conversation_started_at = datetime.fromisoformat(conversation_started_at)
+                time_offset = first_audio_byte_timestamp - conversation_started_at.timestamp()
+
+                # Apply offset to all segments
+                for i, segment in enumerate(segments_to_process):
+                    segment["start"] += time_offset
+                    segment["end"] += time_offset
+                    segments_to_process[i] = segment
+
+                newly_processed_segments = []
+                for s in segments_to_process:
+                    segment = TranscriptSegment(**s, speech_profile_processed=speech_profile_complete.is_set())
+                    # In onboarding mode, force is_user=True for non-Omi segments (user's answers)
+                    if onboarding_mode and s.get('speaker_id') != OnboardingHandler.OMI_SPEAKER_ID:
+                        segment.is_user = True
+                    newly_processed_segments.append(segment)
+                words_transcribed = len(" ".join([seg.text for seg in newly_processed_segments]).split())
+                if words_transcribed > 0:
+                    words_transcribed_since_last_record += words_transcribed
+
+                for seg in newly_processed_segments:
+                    current_session_segments[seg.id] = seg.speech_profile_processed
+                transcript_segments, _, _ = TranscriptSegment.combine_segments([], newly_processed_segments)
+
+            # Update transcript segments
+            conversation = Conversation(**conversation_data)
+            result = _update_in_progress_conversation(conversation, transcript_segments, photos_to_process, finished_at)
+            if not result or not result[0]:
+                continue
+            conversation, updated_segments, removed_ids = result
+
+            if removed_ids:
+                _send_message_event(SegmentsDeletedEvent(segment_ids=removed_ids))
+
+            if transcript_segments:
+                await websocket.send_json([segment.dict() for segment in updated_segments])
+
+                if transcript_send is not None and user_has_credits:
+                    transcript_send([segment.dict() for segment in transcript_segments])
+                elif not PUSHER_ENABLED and user_has_credits:
+                    # Fallback: trigger realtime integrations directly when pusher is disabled
+                    try:
+                        await trigger_realtime_integrations(
+                            uid, [s.dict() for s in transcript_segments], current_conversation_id
+                        )
+                    except Exception as e:
+                        logger.error(f"Error triggering realtime integrations: {e} {uid} {session_id}")
+
+                # Onboarding: pass segments to handler for answer detection
+                if onboarding_handler and not onboarding_handler.completed:
+                    onboarding_handler.on_segments_received([s.dict() for s in transcript_segments])
+
+                if translation_enabled:
+                    await translate(updated_segments, conversation.id)
+
+                # Speaker detection
+                for segment in updated_segments:
+                    if segment.person_id or segment.is_user or segment.id in suggested_segments:
+                        continue
+
+                    # Session consistency speaker identification
+                    if speech_profile_complete.is_set():
+                        if segment.speaker_id in speaker_to_person_map:
+                            person_id, person_name = speaker_to_person_map[segment.speaker_id]
+                            _send_message_event(
+                                SpeakerLabelSuggestionEvent(
+                                    speaker_id=segment.speaker_id,
+                                    person_id=_person_id_for_client(person_id),
+                                    person_name=person_name,
+                                    segment_id=segment.id,
+                                )
+                            )
+                            suggested_segments.add(segment.id)
+                            continue
+
+                    # Embeding id speaker indentification
+                    if speaker_id_enabled and person_embeddings_cache:
+                        started_at_ts = conversation.started_at.timestamp()
+                        if (
+                            segment.speaker_id is not None
+                            and not segment.person_id
+                            and not segment.is_user
+                            and segment.speaker_id not in speaker_to_person_map
+                        ):
+                            try:
+                                speaker_id_segment_queue.put_nowait(
+                                    {
+                                        'id': segment.id,
+                                        'speaker_id': segment.speaker_id,
+                                        'abs_start': first_audio_byte_timestamp
+                                        + segment.start
+                                        - time_offset,  # raw start/end
+                                        'abs_end': first_audio_byte_timestamp + segment.end - time_offset,
+                                        'duration': segment.end - segment.start,
+                                        'text': segment.text,  # TODO: remove
+                                    }
+                                )
+                            except asyncio.QueueFull:
+                                pass  # Drop if queue is full
+
+                    # Text-based detection
+                    detected_name = detect_speaker_from_text(segment.text)
+                    if detected_name:
+                        person = user_db.get_person_by_name(uid, detected_name)
+                        if person:
+                            person_id = person['id']
+                        else:
+                            # Backend creates person if missing
+                            person_id = str(uuid.uuid4())
+                            user_db.create_person(
+                                uid,
+                                {
+                                    'id': person_id,
+                                    'name': detected_name,
+                                    'created_at': datetime.now(timezone.utc),
+                                    'updated_at': datetime.now(timezone.utc),
+                                },
+                            )
+                        _send_message_event(
+                            SpeakerLabelSuggestionEvent(
+                                speaker_id=segment.speaker_id,
+                                person_id=_person_id_for_client(person_id),
+                                person_name=detected_name,
+                                segment_id=segment.id,
+                            )
+                        )
+                        # Set maps for future segments, but only if diarization is active
+                        # (speaker_id > 0 means diarization assigned a real speaker)
+                        # Set maps for future segments using helper function
+                        if should_update_speaker_to_person_map(segment.speaker_id):
+                            speaker_to_person_map[segment.speaker_id] = (person_id, detected_name)
+                        segment_person_assignment_map[segment.id] = person_id
+                        suggested_segments.add(segment.id)
+
+    # Image chunks cache with TTL tracking: {temp_id: {'chunks': [...], 'created_at': float}}
+    # Using OrderedDict for O(1) oldest removal (insertion order preserved)
+    image_chunks: OrderedDict[str, dict] = OrderedDict()
+    last_image_chunk_cleanup = 0.0
+
+    def _cleanup_expired_image_chunks():
+        """Remove image chunks that have exceeded TTL."""
+        nonlocal last_image_chunk_cleanup
+        now = time.time()
+        if now - last_image_chunk_cleanup < IMAGE_CHUNK_CLEANUP_INTERVAL:
+            return
+        if image_chunks and len(image_chunks) < IMAGE_CHUNK_CLEANUP_MIN_SIZE:
+            oldest_created_at = next(iter(image_chunks.values()))['created_at']
+            if now - oldest_created_at <= IMAGE_CHUNK_TTL:
+                last_image_chunk_cleanup = now
+                return
+        last_image_chunk_cleanup = now
+        expired = [tid for tid, data in image_chunks.items() if now - data['created_at'] > IMAGE_CHUNK_TTL]
+        for tid in expired:
+            del image_chunks[tid]
+            logger.warning(f"Expired incomplete image upload: {tid} {uid} {session_id}")
+
+    async def process_photo(uid: str, image_b64: str, temp_id: str, send_event_func, photo_buffer):
+        from utils.llm.openglass import describe_image
+
+        photo_id = str(uuid.uuid4())
+        await send_event_func(PhotoProcessingEvent(temp_id=temp_id, photo_id=photo_id))
+
+        try:
+            description = await describe_image(image_b64)
+            discarded = not description or not description.strip()
+        except Exception as e:
+            logger.error(f"Error describing image: {e} {uid} {session_id}")
+            description = "Could not generate description."
+            discarded = True
+
+        final_photo = ConversationPhoto(id=photo_id, base64=image_b64, description=description, discarded=discarded)
+        photo_buffer.append(final_photo)
+        await send_event_func(PhotoDescribedEvent(photo_id=photo_id, description=description, discarded=discarded))
+
+    async def handle_image_chunk(uid: str, chunk_data: dict, image_chunks_cache: dict, send_event_func, photo_buffer):
+        temp_id = chunk_data.get('id')
+        index = chunk_data.get('index')
+        total = chunk_data.get('total')
+        data = chunk_data.get('data')
+
+        if not temp_id or not isinstance(index, int) or not isinstance(total, int) or not data:
+            logger.error(f"Invalid image chunk received: {sanitize(chunk_data)} {uid} {session_id}")
+            return
+
+        # Cleanup expired chunks periodically
+        _cleanup_expired_image_chunks()
+
+        if temp_id not in image_chunks_cache:
+            if total <= 0:
+                return
+            # Enforce max concurrent uploads - O(1) with OrderedDict
+            if len(image_chunks_cache) >= MAX_IMAGE_CHUNKS:
+                # Remove oldest entry (first inserted)
+                oldest_id, _ = image_chunks_cache.popitem(last=False)
+                logger.info(f"Dropped oldest image upload to make room: {oldest_id} {uid} {session_id}")
+            image_chunks_cache[temp_id] = {'chunks': [None] * total, 'created_at': time.time()}
+
+        chunks_data = image_chunks_cache[temp_id]['chunks']
+        if index < total and chunks_data[index] is None:
+            chunks_data[index] = data
+
+        if all(chunk is not None for chunk in chunks_data):
+            b64_image_data = "".join(chunks_data)
+            del image_chunks_cache[temp_id]
+            spawn(process_photo(uid, b64_image_data, temp_id, send_event_func, photo_buffer))
+
+    # Initialize decoders based on codec
+    opus_decoder = None
+    aac_decoder = None
+    lc3_decoder = None
+
+    if codec == 'opus':
+        opus_decoder = opuslib.Decoder(sample_rate, 1)
+    elif codec == 'aac':
+        aac_decoder = AACDecoder(uid=uid, session_id=session_id, sample_rate=sample_rate, channels=channels)
+    elif codec == 'lc3':
+        lc3_decoder = lc3.Decoder(lc3_frame_duration_us, sample_rate)
+
+    async def receive_data(dg_socket, dg_profile_socket, soniox_sock, soniox_profile_sock, speechmatics_sock):
+        nonlocal websocket_active, websocket_close_code, last_audio_received_time, last_activity_time, current_conversation_id
+        nonlocal realtime_photo_buffers, speaker_to_person_map, first_audio_byte_timestamp, last_usage_record_timestamp
+        nonlocal soniox_profile_socket, deepgram_profile_socket, audio_ring_buffer
+        timer_start = time.time()
+        last_audio_received_time = timer_start
+        last_activity_time = timer_start
+
+        # STT audio buffer - accumulate 30ms before sending for better transcription quality
+        stt_audio_buffer = bytearray()
+        stt_buffer_flush_size = int(sample_rate * 2 * 0.03)  # 30ms at 16-bit mono (e.g., 6400 bytes at 16kHz)
+
+        async def flush_stt_buffer(force: bool = False):
+            nonlocal stt_audio_buffer, soniox_profile_socket, deepgram_profile_socket
+
+            if not stt_audio_buffer:
+                return
+            if not force and len(stt_audio_buffer) < stt_buffer_flush_size:
+                return
+
+            chunk = bytes(stt_audio_buffer)
+            stt_audio_buffer.clear()
+
+            # Use event-based routing instead of time-based
+            profile_complete = speech_profile_complete.is_set()
+
+            if dg_socket is not None:
+                if profile_complete or not deepgram_profile_socket:
+                    dg_socket.send(chunk)
+                    if deepgram_profile_socket:
+                        logger.info(f'Scheduling delayed close of deepgram_profile_socket {uid} {session_id}')
+                        socket_to_close = deepgram_profile_socket
+                        deepgram_profile_socket = None  # Stop sending immediately
+
+                        # Activate VAD gate now that speech profile phase is done
+                        if (
+                            vad_gate is not None
+                            and (VAD_GATE_MODE == 'active' or vad_gate_override == 'enabled')
+                            and vad_gate.mode == 'shadow'
+                        ):
+                            vad_gate.activate()
+                            logger.info('VAD gate activated after speech profile uid=%s session=%s', uid, session_id)
+
+                        async def close_dg_profile():
+                            await asyncio.sleep(5)
+                            socket_to_close.finish()
+                            logger.info(f'Closed deepgram_profile_socket after 5s delay {uid} {session_id}')
+
+                        spawn(close_dg_profile())
+                else:
+                    deepgram_profile_socket.send(chunk)
+
+            if soniox_sock is not None:
+                if profile_complete or not soniox_profile_socket:
+                    await soniox_sock.send(chunk)
+                    if soniox_profile_socket:
+                        logger.info(f'Scheduling delayed close of soniox_profile_socket {uid} {session_id}')
+                        socket_to_close = soniox_profile_socket
+                        soniox_profile_socket = None  # Stop sending immediately
+
+                        async def close_soniox_profile():
+                            await asyncio.sleep(5)
+                            await socket_to_close.close()
+                            logger.info(f'Closed soniox_profile_socket after 5s delay {uid} {session_id}')
+
+                        spawn(close_soniox_profile())
+                else:
+                    await soniox_profile_socket.send(chunk)
+
+            if speechmatics_sock is not None:
+                await speechmatics_sock.send(chunk)
+
+        try:
+            while websocket_active:
+                message = await websocket.receive()
+                last_activity_time = time.time()
+
+                # Handle client disconnect
+                if message.get("type") == "websocket.disconnect":
+                    close_code = message.get("code", 1000)
+                    close_reason = {
+                        1000: "normal_closure",
+                        1001: "going_away_os_or_background",
+                        1006: "abnormal_closure",
+                        1011: "server_error",
+                    }.get(close_code, "unknown")
+                    logger.info(f"Client disconnected: code={close_code} reason={close_reason} {uid} {session_id}")
+                    break
+
+                if message.get("bytes") is not None:
+                    data = message.get("bytes")
+                    if len(data) <= 2:  # Ping/keepalive, 0x8a 0x00
+                        continue
+
+                    last_audio_received_time = time.time()
+
+                    if first_audio_byte_timestamp is None:
+                        first_audio_byte_timestamp = last_audio_received_time
+                        last_usage_record_timestamp = first_audio_byte_timestamp
+
+                    if is_multi_channel:
+                        # Multi-channel: demux [channel_id][audio_bytes]
+                        channel_id = data[0]
+                        audio_data = data[1:]
+                        ch_idx = channel_id_to_index.get(channel_id)
+                        if ch_idx is None:
+                            continue
+
+                        # Decode per-channel
+                        if codec == 'opus' and multi_opus_decoders[ch_idx]:
+                            try:
+                                mc_frame_size = sample_rate // 50  # 20ms frames
+                                audio_data = multi_opus_decoders[ch_idx].decode(bytes(audio_data), mc_frame_size)
+                                if not audio_data:
+                                    continue
+                            except Exception as e:
+                                logger.error(f"[OPUS-MC] ch={ch_idx} decoding error: {e} {uid} {session_id}")
+                                continue
+
+                        # Resample to TARGET_SAMPLE_RATE for STT
+                        pcm_16k = resample_pcm(bytes(audio_data), sample_rate, TARGET_SAMPLE_RATE)
+
+                        # Send to per-channel STT
+                        if stt_sockets_multi[ch_idx]:
+                            try:
+                                if stt_service == STTService.deepgram:
+                                    stt_sockets_multi[ch_idx].send(pcm_16k)
+                                else:
+                                    await stt_sockets_multi[ch_idx].send(pcm_16k)
+                            except Exception as e:
+                                logger.error(f"[MC-STT] ch={ch_idx} send error: {e} {uid} {session_id}")
+
+                        # Accumulate per-channel audio for mixing before sending to pusher
+                        channel_mix_buffers[ch_idx].extend(pcm_16k)
+
+                        # Mix when all channels have data, send mixed mono to pusher
+                        if audio_bytes_send is not None and all(len(b) > 0 for b in channel_mix_buffers):
+                            min_len = min(len(b) for b in channel_mix_buffers)
+                            min_len = min_len - (min_len % 2)  # align to sample boundary
+                            if min_len > 0:
+                                trim_bufs = [bytearray(b[:min_len]) for b in channel_mix_buffers]
+                                mixed = mix_n_channel_buffers(trim_bufs)
+                                if mixed:
+                                    audio_bytes_send(mixed, last_audio_received_time)
+                                # Remove consumed bytes from each buffer
+                                for buf in channel_mix_buffers:
+                                    del buf[:min_len]
+
+                    else:
+                        # Single-channel: existing logic
+                        # Decode based on codec
+                        if codec == 'opus' and sample_rate == 16000:
+                            try:
+                                data = opus_decoder.decode(bytes(data), frame_size=frame_size)
+                                if not data:
+                                    continue
+                            except Exception as e:
+                                logger.error(f"[OPUS] Decoding error: {e} {uid} {session_id}")
+                                continue
+                        elif codec == 'aac':
+                            try:
+                                data = aac_decoder.decode(bytes(data))
+                                if not data:
+                                    continue
+                            except Exception as e:
+                                logger.error(f"[AAC] Decoding error: {e} {uid} {session_id}")
+                                continue
+                        elif codec == 'lc3':
+                            try:
+                                # Decode LC3 frame to PCM
+                                # lc3.decode returns PCM bytes directly with bit_depth=16
+                                pcm_bytes = lc3_decoder.decode(bytes(data), bit_depth=16)
+                                if not pcm_bytes:
+                                    continue
+                                data = pcm_bytes
+                            except Exception as e:
+                                logger.error(
+                                    f"[LC3] Decoding error: {e} | "
+                                    f"Data size: {len(data)} bytes (expected: {lc3_chunk_size}) | "
+                                    f"Frame duration: {lc3_frame_duration_us}μs | "
+                                    f"Sample rate: {sample_rate}Hz {uid} {session_id}"
+                                )
+                                continue
+
+                        # Feed ring buffer for speaker identification (always, with wall-clock time)
+                        if audio_ring_buffer is not None:
+                            audio_ring_buffer.write(data, last_audio_received_time)
+
+                        if not use_custom_stt:
+                            # VAD gating is handled inside GatedDeepgramSocket.send()
+                            stt_audio_buffer.extend(data)
+                            await flush_stt_buffer()
+
+                        if audio_bytes_send is not None:
+                            audio_bytes_send(data, last_audio_received_time)
+
+                elif message.get("text") is not None:
+                    try:
+                        json_data = json.loads(message.get("text"))
+                        if json_data.get('type') == 'image_chunk':
+                            await handle_image_chunk(
+                                uid, json_data, image_chunks, _asend_message_event, realtime_photo_buffers
+                            )
+                        elif json_data.get('type') == 'skip_question':
+                            if onboarding_handler and not onboarding_handler.completed:
+                                await onboarding_handler.skip_current_question()
+                        elif json_data.get('type') == 'suggested_transcript':
+                            if use_custom_stt:
+                                suggested_segments = json_data.get('segments', [])
+                                stt_provider = json_data.get('stt_provider')
+                                if suggested_segments:
+                                    # Attach stt_provider to each segment
+                                    if stt_provider:
+                                        for seg in suggested_segments:
+                                            seg['stt_provider'] = stt_provider
+                                    stream_transcript(suggested_segments)
+                        elif json_data.get('type') == 'speaker_assigned':
+                            segment_ids = json_data.get('segment_ids', [])
+                            can_assign = False
+                            if segment_ids:
+                                for sid in segment_ids:
+                                    if sid in current_session_segments and current_session_segments[sid]:
+                                        can_assign = True
+                                        break
+
+                            # Always set maps regardless of can_assign (fixes latest segments missed)
+                            speaker_id = json_data.get('speaker_id')
+                            person_id = json_data.get('person_id')
+                            person_name = json_data.get('person_name')
+                            maps_updated = update_speaker_assignment_maps(
+                                speaker_id,
+                                person_id,
+                                person_name,
+                                segment_ids,
+                                speaker_to_person_map,
+                                segment_person_assignment_map,
+                            )
+                            if maps_updated:
+                                logger.info(
+                                    f"Speaker {speaker_id} assigned to {person_name} ({person_id}) {uid} {session_id}"
+                                )
+
+                                # Forward to pusher for speech sample extraction (non-blocking)
+                                # Only for real people (not 'user') and when private cloud sync is enabled
+                                # Only when can_assign is true (has speech_profile_processed segment)
+                                if (
+                                    can_assign
+                                    and person_id
+                                    and person_id != 'user'
+                                    and private_cloud_sync_enabled
+                                    and send_speaker_sample_request is not None
+                                    and current_conversation_id
+                                ):
+                                    spawn(
+                                        send_speaker_sample_request(
+                                            person_id=person_id,
+                                            conv_id=current_conversation_id,
+                                            segment_ids=segment_ids,
+                                        )
+                                    )
+                            else:
+                                logger.info(
+                                    f"Speaker assignment ignored: missing speaker_id/person_id/person_name. {uid} {session_id}"
+                                )
+                    except json.JSONDecodeError:
+                        logger.info(
+                            f"Received non-json text message: {sanitize(message.get('text'))} {uid} {session_id}"
+                        )
+
+        except WebSocketDisconnect:
+            logger.error(f"WebSocket disconnected (exception) {uid} {session_id}")
+        except Exception as e:
+            logger.error(f'Could not process data: error {e} {uid} {session_id}')
+            websocket_close_code = 1011
+        finally:
+            # Log VAD gate metrics before cleanup
+            if vad_gate is not None:
+                logger.info(json.dumps(vad_gate.to_json_log()))
+            # Flush any remaining audio in buffer to STT
+            if not use_custom_stt:
+                await flush_stt_buffer(force=True)
+            websocket_active = False
+
+    # Start
+    #
+    try:
+        # Init STT (fast - profile file loads and sends in background)
+        _send_message_event(MessageServiceStatusEvent(status="stt_initiating", status_text="STT Service Starting"))
+        speech_profile_task = await _process_stt()
+
+        # Init pusher
+        pusher_tasks = []
+        if PUSHER_ENABLED:
+            (
+                pusher_connect,
+                pusher_close,
+                transcript_send,
+                transcript_consume,
+                audio_bytes_send,
+                audio_bytes_consume,
+                request_conversation_processing,
+                pusher_receive,
+                pusher_is_connected,
+                send_speaker_sample_request,
+                pusher_heartbeat,
+            ) = create_pusher_task_handler()
+
+            # Pusher connection
+            await pusher_connect()
+            if not pusher_is_connected():
+                logger.error(f"Pusher connection failed after retries {uid} {session_id}")
+                await websocket.close(code=1011, reason="Pusher connection failed")
+                return
+
+            # Pusher tasks
+            if transcript_consume is not None:
+                pusher_tasks.append(asyncio.create_task(transcript_consume()))
+            if audio_bytes_consume is not None:
+                pusher_tasks.append(asyncio.create_task(audio_bytes_consume()))
+            if pusher_receive is not None:
+                pusher_tasks.append(asyncio.create_task(pusher_receive()))
+            pusher_tasks.append(asyncio.create_task(pusher_heartbeat()))
+
+        # Tasks
+        data_process_task = asyncio.create_task(
+            receive_data(
+                deepgram_socket, deepgram_profile_socket, soniox_socket, soniox_profile_socket, speechmatics_socket
+            )
+        )
+        stream_transcript_task = asyncio.create_task(stream_transcript_process())
+        record_usage_task = asyncio.create_task(_record_usage_periodically())
+
+        _send_message_event(MessageServiceStatusEvent(status="ready"))
+
+        tasks = [
+            data_process_task,
+            stream_transcript_task,
+            heartbeat_task,
+            record_usage_task,
+        ] + pusher_tasks
+
+        if not is_multi_channel:
+            # Single-channel: conversation lifecycle (timeout splitting), pending processing, speaker ID
+            lifecycle_manager_task = asyncio.create_task(conversation_lifecycle_manager())
+            pending_conversations_task = asyncio.create_task(process_pending_conversations(timed_out_conversation_id))
+            speaker_id_task = asyncio.create_task(speaker_identification_task())
+            tasks.extend([lifecycle_manager_task, pending_conversations_task, speaker_id_task])
+
+        # Add speech profile task to run concurrently (sends profile audio in background)
+        if speech_profile_task:
+            tasks.append(speech_profile_task)
+
+        await asyncio.gather(*tasks)
+
+    except Exception as e:
+        logger.error(f"Error during WebSocket operation: {e} {uid} {session_id}")
+    finally:
+        ACTIVE_WS_CONNECTIONS.dec()
+        if not use_custom_stt and last_usage_record_timestamp:
+            transcription_seconds = int(time.time() - last_usage_record_timestamp)
+            words_to_record = words_transcribed_since_last_record
+            if transcription_seconds > 0 or words_to_record > 0:
+                record_usage(uid, transcription_seconds=transcription_seconds, words_transcribed=words_to_record)
+
+        # Flush pending debounced translations BEFORE setting websocket_active=False
+        try:
+            await flush_pending_translations()
+        except Exception as e:
+            logger.error(f"Error flushing pending translations: {e} {uid} {session_id}")
+
+        websocket_active = False
+
+        # STT sockets
+        try:
+            if is_multi_channel:
+                for mc_stt_socket in stt_sockets_multi:
+                    if mc_stt_socket:
+                        if stt_service == STTService.deepgram:
+                            mc_stt_socket.finish()
+                        else:
+                            await mc_stt_socket.close()
+            else:
+                if deepgram_socket:
+                    # GatedDeepgramSocket.finish() handles finalize automatically
+                    deepgram_socket.finish()
+                if deepgram_profile_socket:
+                    deepgram_profile_socket.finish()
+                if soniox_socket:
+                    await soniox_socket.close()
+                if soniox_profile_socket:
+                    await soniox_profile_socket.close()
+                if speechmatics_socket:
+                    await speechmatics_socket.close()
+        except Exception as e:
+            logger.error(f"Error closing STT sockets: {e} {uid} {session_id}")
+
+        # Client sockets
+        if websocket.client_state == WebSocketState.CONNECTED:
+            try:
+                await websocket.close(code=websocket_close_code)
+            except Exception as e:
+                logger.error(f"Error closing Client WebSocket: {e} {uid} {session_id}")
+
+        # Multi-channel: process the single conversation at session end
+        if is_multi_channel and current_conversation_id:
+            try:
+                redis_db.remove_in_progress_conversation_id(uid)
+                await _process_conversation(current_conversation_id)
+                logger.info(
+                    f"Multi-channel conversation {current_conversation_id} submitted for processing {uid} {session_id}"
+                )
+            except Exception as e:
+                logger.error(f"Error processing multi-channel conversation: {e} {uid} {session_id}")
+
+        # Pusher sockets
+        if pusher_close is not None:
+            try:
+                await pusher_close()
+            except Exception as e:
+                logger.error(f"Error closing Pusher: {e} {uid} {session_id}")
+
+        # Clean up onboarding handler
+        if onboarding_handler:
+            onboarding_handler.cleanup()
+
+        # Cancel all tracked background tasks to prevent memory leaks
+        # Snapshot to avoid mutation during iteration
+        tasks_to_cancel = list(bg_tasks)
+        for task in tasks_to_cancel:
+            task.cancel()
+        if tasks_to_cancel:
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+        bg_tasks.clear()
+
+        # Flush any remaining mixed audio to pusher
+        if is_multi_channel and audio_bytes_send is not None and any(len(b) > 0 for b in channel_mix_buffers):
+            try:
+                mixed = mix_n_channel_buffers(channel_mix_buffers)
+                if mixed:
+                    audio_bytes_send(mixed, time.time())
+            except Exception:
+                pass
+            for buf in channel_mix_buffers:
+                buf.clear()
+
+        # Clean up collections and heavy objects to aid garbage collection
+        try:
+            locked_conversation_ids.clear()
+            speaker_to_person_map.clear()
+            segment_person_assignment_map.clear()
+            current_session_segments.clear()
+            suggested_segments.clear()
+            realtime_segment_buffers.clear()
+            realtime_photo_buffers.clear()
+            image_chunks.clear()
+            person_embeddings_cache.clear()
+            # Release conversation cache
+            _cached_conversation_data = None
+        except NameError as e:
+            # Variables might not be defined if an error occurred early
+            logger.error(f"Cleanup error (safe to ignore): {e} {uid} {session_id}")
+
+        # Release heavy objects that hold model state / native resources
+        try:
+            if vad_gate is not None:
+                del vad_gate
+            if language_cache is not None:
+                language_cache.cache.clear()
+            if translation_service is not None:
+                translation_service.translation_cache.clear()
+        except NameError:
+            pass
+
+    logger.info(f"_stream_handler ended {uid} {session_id}")
+
+
+async def _listen(
+    websocket: WebSocket,
+    uid: str,
+    language: str = 'en',
+    sample_rate: int = 8000,
+    codec: str = 'pcm8',
+    channels: int = 1,
+    include_speech_profile: bool = True,
+    stt_service: Optional[STTService] = None,
+    conversation_timeout: int = 120,
+    source: Optional[str] = None,
+    custom_stt_mode: CustomSttMode = CustomSttMode.disabled,
+    onboarding_mode: bool = False,
+    speaker_auto_assign_enabled: bool = False,
+    vad_gate_override: Optional[str] = None,
+    call_id: Optional[str] = None,
+):
+    """
+    WebSocket handler for app clients. Accepts the websocket connection and delegates to _stream_handler.
+    """
+    logger.info(f"_listen {uid}")
+    try:
+        await websocket.accept()
+    except RuntimeError as e:
+        logger.error(f"_listen: accept error {e} {uid}")
+        return
+
+    await _stream_handler(
+        websocket,
+        uid,
+        language,
+        sample_rate,
+        codec,
+        channels,
+        include_speech_profile,
+        stt_service,
+        conversation_timeout=conversation_timeout,
+        source=source,
+        custom_stt_mode=custom_stt_mode,
+        onboarding_mode=onboarding_mode,
+        speaker_auto_assign_enabled=speaker_auto_assign_enabled,
+        vad_gate_override=vad_gate_override,
+        call_id=call_id,
+    )
+    logger.info(f"_listen ended {uid}")
+
+
+@router.websocket("/v4/listen")
+async def listen_handler(
+    websocket: WebSocket,
+    uid: str = Depends(auth.get_current_user_uid_ws_listen),
+    language: str = 'en',
+    sample_rate: int = 8000,
+    codec: str = 'pcm8',
+    channels: int = 1,
+    include_speech_profile: bool = True,
+    stt_service: Optional[STTService] = None,
+    conversation_timeout: int = 120,
+    source: Optional[str] = None,
+    custom_stt: str = 'disabled',
+    onboarding: str = 'disabled',
+    speaker_auto_assign: str = 'disabled',
+    vad_gate: str = '',
+    call_id: Optional[str] = None,
+):
+    custom_stt_mode = CustomSttMode.enabled if custom_stt == 'enabled' else CustomSttMode.disabled
+    onboarding_mode = onboarding == 'enabled'
+    speaker_auto_assign_enabled = speaker_auto_assign == 'enabled'
+    vad_gate_override = vad_gate if vad_gate in ('enabled', 'disabled') else None
+    await _listen(
+        websocket,
+        uid,
+        language,
+        sample_rate,
+        codec,
+        channels,
+        include_speech_profile,
+        None,
+        conversation_timeout=conversation_timeout,
+        source=source,
+        custom_stt_mode=custom_stt_mode,
+        onboarding_mode=onboarding_mode,
+        speaker_auto_assign_enabled=speaker_auto_assign_enabled,
+        vad_gate_override=vad_gate_override,
+        call_id=call_id,
+    )
+
+
+@router.websocket("/v4/web/listen")
+async def web_listen_handler(
+    websocket: WebSocket,
+    language: str = 'en',
+    sample_rate: int = 8000,
+    codec: str = 'pcm8',
+    channels: int = 1,
+    include_speech_profile: bool = True,
+    conversation_timeout: int = 120,
+    source: Optional[str] = None,
+    custom_stt: str = 'disabled',
+    onboarding: str = 'disabled',
+    call_id: Optional[str] = None,
+):
+    """
+    WebSocket endpoint for web browser clients using first-message authentication.
+
+    First message must be: {"type": "auth", "token": "<firebase_token>"}
+    Response: {"type": "auth_response", "success": true/false}
+    """
+    logger.info("web_listen_handler")
+    try:
+        await websocket.accept()
+    except RuntimeError as e:
+        logger.error(f"web_listen_handler: accept error {e}")
+        return
+
+    # Wait for auth message with timeout
+    try:
+        first_message = await asyncio.wait_for(websocket.receive(), timeout=5.0)
+    except asyncio.TimeoutError:
+        await websocket.close(code=1008, reason="Auth timeout")
+        return
+    except WebSocketDisconnect:
+        return
+
+    # Authenticate via first message
+    try:
+        uid = auth.get_current_user_uid_from_ws_message(first_message)
+    except ValueError as e:
+        await websocket.close(code=1008, reason=str(e))
+        return
+    except InvalidIdTokenError:
+        await websocket.send_json({"type": "auth_response", "success": False})
+        await websocket.close(code=1008, reason="Invalid token")
+        return
+    except Exception as e:
+        logger.error(f"web_listen_handler: auth error {e}")
+        await websocket.send_json({"type": "auth_response", "success": False})
+        await websocket.close(code=1008, reason="Auth error")
+        return
+
+    # Send success response
+    await websocket.send_json({"type": "auth_response", "success": True})
+    logger.info(f"web_listen_handler authenticated {uid}")
+
+    # Proceed with streaming (websocket already accepted, uid already validated)
+    custom_stt_mode = CustomSttMode.enabled if custom_stt == 'enabled' else CustomSttMode.disabled
+    onboarding_mode = onboarding == 'enabled'
+
+    await _stream_handler(
+        websocket,
+        uid,
+        language,
+        sample_rate,
+        codec,
+        channels,
+        include_speech_profile,
+        None,
+        conversation_timeout=conversation_timeout,
+        source=source,
+        custom_stt_mode=custom_stt_mode,
+        onboarding_mode=onboarding_mode,
+        call_id=call_id,
+    )
+    logger.info(f"web_listen_handler ended {uid}")

@@ -1,0 +1,32 @@
+{
+    "applinks":{
+      "apps":[
+         
+      ],
+      "details":[
+        {
+          "appIDs":[
+            "9536L8KLMP.com.friend-app-with-wearable.ios12"
+          ],
+          "components":[
+            {
+              "/":"/apps/*",
+              "comment":"Matches any URL with a path that starts with /apps/."
+            },
+            {
+              "/":"/unlimited",
+              "comment":"Matches any URL with a path that starts with /unlimited."
+            },
+            {
+              "/":"/wrapped",
+              "comment":"Matches any URL with a path that starts with /wrapped."
+            },
+            {
+              "/":"/tasks/*",
+              "comment":"Matches any URL with a path that starts with /tasks/."
+            }
+          ]
+        }
+      ]
+    }
+  }
