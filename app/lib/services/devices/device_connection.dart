@@ -245,18 +245,30 @@ abstract class DeviceConnection {
 
   Future<StreamSubscription<List<int>>?> getBleStorageBytesListener({
     required void Function(List<int>) onStorageBytesReceived,
+    Function? onError,
+    void Function()? onDone,
   }) async {
     if (await isConnected()) {
-      return await performGetBleStorageBytesListener(onStorageBytesReceived: onStorageBytesReceived);
+      return await performGetBleStorageBytesListener(
+        onStorageBytesReceived: onStorageBytesReceived,
+        onError: onError,
+        onDone: onDone,
+      );
     }
     return null;
   }
 
   Future<StreamSubscription<List<int>>?> performGetBleStorageBytesListener({
     required void Function(List<int>) onStorageBytesReceived,
+    Function? onError,
+    void Function()? onDone,
   }) async {
     final stream = transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
-    return stream.listen(onStorageBytesReceived) ;
+    return stream.listen(
+      onStorageBytesReceived,
+      onError: onError,
+      onDone: onDone,
+    );
   }
 
   Future<bool> writeToStorage(int numFile, int command, int offset) async {
