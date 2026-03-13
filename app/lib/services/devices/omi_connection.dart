@@ -152,6 +152,7 @@ class OmiDeviceConnection extends DeviceConnection {
     try {
       final storageValue =
           await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
+      Logger.debug('OmiDeviceConnection: Raw storage characteristic value: $storageValue');
 
       List<int> storageLengths = [];
       for (int i = 0; i < (storageValue.length / 4); i++) {

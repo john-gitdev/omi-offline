@@ -88,6 +88,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     String deviceId = dev.id;
     List<Wal> wals = [];
     var storageFiles = await _getStorageList(deviceId);
+    Logger.debug("SDCardWalSync: _getStorageList returned $storageFiles");
     if (storageFiles.isEmpty) {
       return [];
     }
@@ -95,17 +96,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     var storageOffset = storageFiles.length >= 2 ? storageFiles[1] : 0;
 
     if (storageOffset > totalBytes) {
-      Logger.debug("SDCard bad state, offset > total");
+      Logger.debug("SDCard bad state, offset $storageOffset > total $totalBytes");
       storageOffset = 0;
     }
 
     BleAudioCodec codec = await _getAudioCodec(deviceId);
-    if (totalBytes - storageOffset > 10 * codec.getFramesLengthInBytes() * codec.getFramesPerSecond()) {
+    int threshold = 10 * codec.getFramesLengthInBytes() * codec.getFramesPerSecond();
+    Logger.debug("SDCardWalSync: totalBytes=$totalBytes, storageOffset=$storageOffset, diff=${totalBytes - storageOffset}, threshold=$threshold");
+    if (totalBytes - storageOffset > threshold) {
       var seconds = ((totalBytes - storageOffset) / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
       int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
 
       // Ensure stable ID for existing entries by matching device and fileNum
-      final existingWal = _wals.firstWhereOrNull((w) => w.device == deviceId && w.fileNum == 0 && w.storage == WalStorage.sdcard);
+      final existingWal = _wals.firstWhereOrNull((w) => w.device == deviceId && w.fileNum == 1 && w.storage == WalStorage.sdcard);
       if (existingWal != null) {
         timerStart = existingWal.timerStart;
       }
