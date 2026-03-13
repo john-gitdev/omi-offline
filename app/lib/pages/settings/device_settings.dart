@@ -251,7 +251,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.download,
             title: context.l10n.firmware,
-            chipValue: device?.firmwareRevision ?? 'oo-1.0.6',
+            chipValue: device?.firmwareRevision ?? 'oo-1.0.7',
             showChevron: false,
           ),
           if (provider.isDeviceStorageSupport) ...[
