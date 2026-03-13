@@ -66,8 +66,8 @@ function SetupFirebaseWithServiceAccount {
     flutterfire config `
         --platforms="android,ios,web" `
         --out="lib/firebase_options_dev.dart" `
-        --ios-bundle-id="com.friend-app-with-wearable.ios12.development" `
-        --android-app-id="com.friend.ios.dev" `
+        --ios-bundle-id="com.omi.offline.development" `
+        --android-app-id="com.omi.offline.dev" `
         --android-out="android/app/src/dev/" `
         --ios-out="ios/Config/Dev/" `
         --service-account="$env:FIREBASE_SERVICE_ACCOUNT_KEY" `
@@ -79,8 +79,8 @@ function SetupFirebaseWithServiceAccount {
     flutterfire config `
         --platforms="android,ios,web" `
         --out="lib/firebase_options_prod.dart" `
-        --ios-bundle-id="com.friend-app-with-wearable.ios12" `
-        --android-app-id="com.friend.ios.dev" `
+        --ios-bundle-id="com.omi.offline" `
+        --android-app-id="com.omi.offline.dev" `
         --android-out="android/app/src/prod/" `
         --ios-out="ios/Config/Prod/" `
         --service-account="$env:FIREBASE_SERVICE_ACCOUNT_KEY" `
@@ -98,7 +98,7 @@ function SetupProvisioningProfile {
     
     $env:MATCH_PASSWORD = "omi"
     fastlane match development --readonly `
-        --app_identifier "com.friend-app-with-wearable.ios12.development" `
+        --app_identifier "com.omi.offline.development" `
         --git_url "git@github.com:BasedHardware/omi-community-certs.git"
 }
 

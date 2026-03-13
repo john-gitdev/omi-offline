@@ -4,5 +4,6 @@
 #include "Custom.xcconfig"
 
 ASSET_PREFIX=dev
-BUNDLE_NAME=Omi Dev
-BUNDLE_DISPLAY_NAME=Omi Dev
+BUNDLE_NAME=Omi Offline Dev
+BUNDLE_DISPLAY_NAME=Omi Offline Dev
+APP_BUNDLE_IDENTIFIER=com.omi.offline.development

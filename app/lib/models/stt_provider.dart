@@ -296,7 +296,7 @@ class SttProviderConfig {
     ),
   };
 
-  static SttProviderConfig get(SttProvider provider) => _configs[provider]!;
+  static SttProviderConfig get(SttProvider provider) => _configs[provider] ?? _configs[SttProvider.custom]!;
 
   /// Safely get display name with fallback to raw string if provider not found
   static String getDisplayName(String? providerString) {

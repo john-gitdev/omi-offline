@@ -14,7 +14,7 @@ usage() {
 Usage: profile_flutter_android.sh [options]
 
 Options:
-  -p, --package <name>    Android package name (default: com.friend.ios.dev)
+  -p, --package <name>    Android package name (default: com.omi.offline.dev)
   -f, --flavor <flavor>   Flutter build flavor (default: dev)
   -s, --session <name>    Session name for recording (default: profile_<timestamp>)
   -w, --wait-for <text>   UI text to wait for via Semantics label (default: device_state_Listening)
@@ -39,7 +39,7 @@ USAGE
 }
 
 # Defaults
-PACKAGE="com.friend.ios.dev"
+PACKAGE="com.omi.offline.dev"
 FLAVOR="dev"
 SESSION=""
 WAIT_FOR="device_state_Listening"

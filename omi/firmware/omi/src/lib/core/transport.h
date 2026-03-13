@@ -5,6 +5,8 @@
 #ifdef CONFIG_OMI_ENABLE_BATTERY
 extern uint8_t battery_percentage;
 #endif
+extern uint16_t current_mtu;
+
 /**
  * @brief Initialize the BLE transport logic
  *

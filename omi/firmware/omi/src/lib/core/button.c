@@ -49,7 +49,8 @@ typedef enum {
     STATE_IDLE,
     STATE_FIRST_PRESS,
     STATE_FIRST_RELEASE,
-    STATE_SECOND_PRESS
+    STATE_SECOND_PRESS,
+    STATE_WAIT_FOR_RELEASE
 } button_fsm_state_t;
 
 static button_fsm_state_t fsm_state = STATE_IDLE;
@@ -74,7 +75,12 @@ void check_button_level(struct k_work *work_item)
 
     case STATE_FIRST_PRESS:
         if (!pressed) {
-            // Released. Check duration.
+            // Released before MUTE_HOLD_TIME.
+            // Short press. Wait for second tap window.
+            fsm_state = STATE_FIRST_RELEASE;
+            state_timer = 0;
+        } else {
+            // Still pressed. Check duration.
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
             if (duration_ms >= MUTE_HOLD_TIME) {
                 // Long press 1s -> Mute toggle
@@ -84,11 +90,7 @@ void check_button_level(struct k_work *work_item)
                 
                 // Note: LED colors are now handled in set_led_state() in main.c
                 
-                fsm_state = STATE_IDLE;
-            } else {
-                // Short press. Wait for second tap window.
-                fsm_state = STATE_FIRST_RELEASE;
-                state_timer = 0;
+                fsm_state = STATE_WAIT_FOR_RELEASE;
             }
         }
         break;
@@ -137,6 +139,12 @@ void check_button_level(struct k_work *work_item)
                 turnoff_all(); // This shuts down the device.
                 fsm_state = STATE_IDLE;
             }
+        }
+        break;
+
+    case STATE_WAIT_FOR_RELEASE:
+        if (!pressed) {
+            fsm_state = STATE_IDLE;
         }
         break;
     }

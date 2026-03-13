@@ -34,7 +34,7 @@ agent-flutter snapshot -i --json    # see what's on screen
 **Prerequisites:**
 - AVD name: `omi-dev` (check: `$ANDROID_HOME/emulator/emulator -list-avds`)
 - KVM access required: user must be in `kvm` group (`sg kvm -c "..."` if not in current session)
-- App package: `com.friend.ios.dev` (dev flavor)
+- App package: `com.omi.offline.dev` (dev flavor)
 - **System language must be English** — non-English IME breaks `fill` commands
 - **App must be authenticated and connected to the correct backend** (local, dev, or prod — depends on the task)
 - Marionette already integrated: `marionette_flutter: ^0.3.0` in pubspec.yaml
@@ -66,7 +66,7 @@ agent-flutter snapshot -i --json    # see what's on screen
 ### Recovery
 ```bash
 # "No isolate with Marionette" → bring app to foreground + reconnect
-adb -s emulator-5554 shell am start -n com.friend.ios.dev/com.friend.ios.MainActivity
+adb -s emulator-5554 shell am start -n com.omi.offline.dev/com.omi.offline.MainActivity
 agent-flutter disconnect && agent-flutter connect
 
 # Unhealthy widget tree → hot restart
@@ -213,7 +213,7 @@ Speech Profile (speech_profile/page.dart)
 
 ### Changing Locale
 ```bash
-DEVICE=emulator-5554; APP_PKG=com.friend.ios.dev
+DEVICE=emulator-5554; APP_PKG=com.omi.offline.dev
 
 # Read current
 adb -s $DEVICE shell "run-as $APP_PKG cat shared_prefs/FlutterSharedPreferences.xml" | grep app_locale
@@ -235,12 +235,12 @@ Every flow lists `prerequisites:` — conditions that MUST be true before runnin
 |-------------|---------------|--------------------------|----------------------|
 | `auth_ready` | User completed sign-in (Google or Apple), app shows home screen | Run `bash setup.sh android` → launch app → complete Google Sign-In flow → complete onboarding | Run `bash setup.sh ios` → launch on simulator or device → complete Google/Apple Sign-In → complete onboarding |
 | `signed_out` | Fresh app, user NOT signed in, shows Get Started screen | Uninstall + reinstall, or clear app data via Settings → Apps → Omi → Clear Data | Delete app from simulator/device and reinstall |
-| `microphone_permission` | App has mic permission granted | When app requests mic permission during use, tap "Allow". Or pre-grant: `adb shell pm grant com.friend.ios.dev android.permission.RECORD_AUDIO` | When app requests mic permission, tap "Allow" in the iOS permission dialog |
+| `microphone_permission` | App has mic permission granted | When app requests mic permission during use, tap "Allow". Or pre-grant: `adb shell pm grant com.omi.offline.dev android.permission.RECORD_AUDIO` | When app requests mic permission, tap "Allow" in the iOS permission dialog |
 | `ble_on` | Bluetooth enabled on device | Enable Bluetooth in device Settings → Connected Devices. **Emulators/simulators do not support BLE** — requires physical device | Enable Bluetooth in device Settings. **iOS Simulator has no BLE** — requires physical iPhone |
 | `omi_device_connected` | Omi hardware paired and connected via BLE | Power on Omi device within BLE range → app auto-discovers on home screen → tap Connect. **Physical device only** | Same — power on Omi, app discovers it. **Physical iPhone only** |
 | `phone_number_verified` | Phone number added and verified in settings | Settings → Phone Calls → add phone number → receive SMS → enter code. Requires real phone number | Same flow — requires real phone number that receives SMS |
 | `developer_settings_enabled` | Developer Settings screen is open | Settings drawer → scroll down → tap "Developer Settings" (visible to all users) | Same navigation path |
-| `adb_access` | Shell access for locale/prefs manipulation (Android only) | Debug build + `adb` in PATH. Verify: `adb shell run-as com.friend.ios.dev ls shared_prefs/` | Not applicable — iOS equivalent uses `xcrun simctl` for simulator or Xcode for device |
+| `adb_access` | Shell access for locale/prefs manipulation (Android only) | Debug build + `adb` in PATH. Verify: `adb shell run-as com.omi.offline.dev ls shared_prefs/` | Not applicable — iOS equivalent uses `xcrun simctl` for simulator or Xcode for device |
 
 ### Prerequisite dependency chain
 ```

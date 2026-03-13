@@ -134,7 +134,7 @@ class BleTransport extends DeviceTransport {
       _setupCharacteristicListener(serviceUuid, characteristicUuid, key);
     }
 
-    return _streamControllers[key]!.stream;
+    return _streamControllers[key]?.stream ?? const Stream.empty();
   }
 
   Future<void> _setupCharacteristicListener(String serviceUuid, String characteristicUuid, String key) async {
@@ -149,8 +149,8 @@ class BleTransport extends DeviceTransport {
 
       final subscription = characteristic.lastValueStream.listen(
         (value) {
-          if (_streamControllers[key] != null && !_streamControllers[key]!.isClosed) {
-            _streamControllers[key]!.add(value);
+          if (_streamControllers[key] != null && !(_streamControllers[key]?.isClosed ?? true)) {
+            _streamControllers[key]?.add(value);
           }
         },
         onError: (error) {

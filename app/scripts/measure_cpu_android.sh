@@ -8,7 +8,7 @@
 #   ./measure_cpu_android.sh [duration_seconds] [output_name]
 #
 # Examples:
-#   ./measure_cpu_android.sh -p com.friend.ios.dev -n 15 -d 2 -o /tmp/omi_cpu.csv
+#   ./measure_cpu_android.sh -p com.omi.offline.dev -n 15 -d 2 -o /tmp/omi_cpu.csv
 #   ./measure_cpu_android.sh 60 "baseline"
 
 set -euo pipefail
@@ -18,7 +18,7 @@ usage() {
 Usage: measure_cpu_android.sh -p <package> [-s <device>] [-n <samples>] [-d <delay>] [-o <csv>]
 
 Options:
-  -p  Android package name (default: env PACKAGE or com.friend.ios.dev)
+  -p  Android package name (default: env PACKAGE or com.omi.offline.dev)
   -s  Device ID (default: first connected device)
   -n  Number of samples (default: 15)
   -d  Delay between samples in seconds (default: 2)
@@ -79,7 +79,7 @@ elif [[ $# -gt 0 ]]; then
 fi
 
 if [[ -z "$PACKAGE" ]]; then
-  PACKAGE="com.friend.ios.dev"
+  PACKAGE="com.omi.offline.dev"
   echo "Warning: no package provided; defaulting to $PACKAGE" >&2
 fi
 
