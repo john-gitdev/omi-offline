@@ -242,6 +242,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     int? currentChunkIndex;
     final List<int> streamBuffer = [];
 
+    _storageStream?.cancel();
     _storageStream = (await connection.getBleStorageBytesListener(onStorageBytesReceived: (List<int> value) async {
       if (_isCancelled || hasError) return;
 
@@ -372,7 +373,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       throw Exception('Could not start SD card read command');
     }
 
-    return completer.future;
+    try {
+      await completer.future;
+    } finally {
+      _storageStream?.cancel();
+      _storageStream = null;
+    }
   }
 
   void _resetSyncState() {

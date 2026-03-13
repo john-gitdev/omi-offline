@@ -137,6 +137,16 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     return connection.getStorageList();
   }
 
+  Future updateBatteryLevel() async {
+    if (connectedDevice != null && batteryLevel == -1) {
+      int currentLevel = await _retrieveBatteryLevel(connectedDevice!.id);
+      if (currentLevel != -1) {
+        batteryLevel = currentLevel;
+        notifyListeners();
+      }
+    }
+  }
+
   Future<BtDevice?> _getConnectedDevice() async {
     var deviceId = SharedPreferencesUtil().btDevice.id;
     if (deviceId.isEmpty) {

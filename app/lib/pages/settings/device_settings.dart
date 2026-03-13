@@ -50,7 +50,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   @override
   void initState() {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await context.read<DeviceProvider>().getDeviceInfo();
+      final provider = context.read<DeviceProvider>();
+      await provider.getDeviceInfo();
+      await provider.updateBatteryLevel();
       _loadInitialDimRatio();
     });
     super.initState();
@@ -250,30 +252,19 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             icon: FontAwesomeIcons.download,
             title: context.l10n.firmware,
             chipValue: device?.firmwareRevision ?? 'oo-1.0.5',
+            showChevron: false,
           ),
-          const Divider(height: 1, color: Color(0xFF3C3C43)),
-          _buildProfileStyleItem(
-            icon: FontAwesomeIcons.sdCard,
-            title: context.l10n.sdCardSync,
-            onTap: () {
-              if (!provider.isDeviceStorageSupport) {
-                showDialog(
-                  context: context,
-                  builder: (c) => getDialog(
-                    context,
-                    () => Navigator.of(context).pop(),
-                    () {},
-                    context.l10n.v2Undetected,
-                    context.l10n.v2UndetectedMessage,
-                    singleButton: true,
-                  ),
-                );
-              } else {
+          if (provider.isDeviceStorageSupport) ...[
+            const Divider(height: 1, color: Color(0xFF3C3C43)),
+            _buildProfileStyleItem(
+              icon: FontAwesomeIcons.sdCard,
+              title: context.l10n.sdCardSync,
+              onTap: () {
                 var page = const SyncPage();
                 routeToPage(context, page);
-              }
-            },
-          ),
+              },
+            ),
+          ],
         ],
       ),
     );
