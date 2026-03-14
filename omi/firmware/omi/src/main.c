@@ -12,6 +12,7 @@
 #include "lib/core/mic.h"
 #include "lib/core/haptic.h"
 #include "lib/core/utils.h"
+#include "lib/core/lib/battery/battery.h"
 #include "lib/core/sd_card.h"
 #include "lib/core/storage.h"
 #include "lib/core/settings.h"
@@ -163,6 +164,16 @@ int main(void)
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     storage_init();
+#endif
+
+    // Initialize battery
+#ifdef CONFIG_OMI_ENABLE_BATTERY
+    ret = battery_init();
+    if (ret) {
+        LOG_ERR("Battery init failed (err %d)", ret);
+        return ret;
+    }
+    LOG_INF("Battery initialized");
 #endif
 
     suspend_unused_modules();

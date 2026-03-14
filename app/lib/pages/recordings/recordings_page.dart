@@ -75,7 +75,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
     if (mounted) {
       setState(() {
-        _syncProgress = percentage;
+        // Cap visual progress at 99% until the sync logic actually completes the future
+        _syncProgress = percentage.clamp(0.0, 0.99);
         _syncSpeed = speedKBps ?? 0.0;
         _syncRecordingsCount = ServiceManager.instance().wal.getSyncs().estimatedTotalChunks;
       });
@@ -101,7 +102,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     try {
       final syncService = ServiceManager.instance().wal.getSyncs();
-      syncService.start(); // Refresh missing WALs list
+      // syncService.start(); // REMOVED: calling start() asynchronously overwrites _wals and orphans the sync loop objects
       final result = await syncService.syncAll(progress: this, force: force);
 
       if (mounted) {
@@ -127,7 +128,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         setState(() {
           _isSyncing = false;
         });
-        _loadBatches();
+        await _loadBatches();
+        
+        // Auto-process any days that have raw chunks but no processed recordings
+        for (var batch in _batches) {
+          if (batch.rawChunks.isNotEmpty && batch.processedRecordings.isEmpty) {
+            await _processBatch(batch);
+          }
+        }
       }
     }
   }
@@ -144,7 +152,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           () => Navigator.of(context).pop(false),
           () => Navigator.of(context).pop(true),
           "Large Batch",
-          "This day has over ${batch.rawChunks.length} raw chunks. Processing might take a few minutes. Continue?",
+          "This day has over ${batch.rawChunks.length} raw chunks (~${batch.rawChunks.length} mins). Processing might take a few minutes. Continue?",
           confirmText: "Start",
         ),
       );
@@ -322,7 +330,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          '${batch.rawChunks.length} Raw Chunks',
+                          '${batch.rawChunks.length} Raw Chunks (~${batch.rawChunks.length} mins)',
                           style: TextStyle(color: Colors.grey.shade400),
                         ),
                         ElevatedButton.icon(
@@ -340,10 +348,21 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     ),
                     if (isProcessing) ...[
                       const SizedBox(height: 8),
-                      LinearProgressIndicator(
-                        value: _processingProgress,
-                        backgroundColor: Colors.grey.shade800,
-                        color: Colors.deepPurpleAccent,
+                      Row(
+                        children: [
+                          Expanded(
+                            child: LinearProgressIndicator(
+                              value: _processingProgress,
+                              backgroundColor: Colors.grey.shade800,
+                              color: Colors.deepPurpleAccent,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            '${(_processingProgress * 100).toInt()}%',
+                            style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                        ],
                       ),
                     ],
                   ],
@@ -380,7 +399,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     style: const TextStyle(color: Colors.white, fontSize: 14),
                   ),
                   subtitle: Text(
-                    'Processed AAC Audio',
+                    'Processed Audio',
                     style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
                   ),
                 );

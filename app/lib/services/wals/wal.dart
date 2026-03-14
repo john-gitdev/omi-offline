@@ -28,7 +28,7 @@ class Wal {
   final int channel;
   final String device;
   final int fileNum;
-  final int storageOffset;
+  int storageOffset;
   final int storageTotalBytes;
   final int timerStart;
   WalStorage storage;

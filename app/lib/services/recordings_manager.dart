@@ -89,7 +89,7 @@ class RecordingsManager {
       final dateFolders = recordingsDir.listSync().whereType<Directory>();
       for (var folder in dateFolders) {
         final dateString = folder.path.split('/').last;
-        final files = folder.listSync().whereType<File>().where((f) => f.path.endsWith('.aac')).toList();
+        final files = folder.listSync().whereType<File>().where((f) => f.path.endsWith('.wav')).toList();
         processedByDate[dateString] = files;
       }
     }
@@ -171,6 +171,8 @@ class RecordingsManager {
 
           await processor.processFrames(frames, chunkStartTime, sessionId: sessionId);
           onProgress((i + 1) / batch.rawChunks.length);
+          // Yield to the UI to keep it responsive
+          await Future.delayed(const Duration(milliseconds: 50));
         }
 
         // 4. Flush remaining buffer
@@ -179,17 +181,22 @@ class RecordingsManager {
 
         // 5. ATOMIC SWAP: Success! Replace live recordings with temp ones
         final liveDir = Directory(liveRecordingsPath);
+        final newFiles = tempDir.listSync().whereType<File>().toList();
+        Logger.debug("RecordingsManager: Processing complete for $dateString. Found ${newFiles.length} recordings in temp.");
+
         if (await liveDir.exists()) {
           await liveDir.delete(recursive: true);
         }
         await liveDir.create(recursive: true);
 
         // Move files from temp to live
-        final newFiles = tempDir.listSync().whereType<File>();
         for (var file in newFiles) {
           final fileName = file.path.split('/').last;
           await file.rename('$liveRecordingsPath/$fileName');
         }
+        
+        // Final flush and a small delay to ensure FS is ready
+        await Future.delayed(const Duration(milliseconds: 200));
         
         // Cleanup temp dir
         await tempDir.delete(recursive: true);
@@ -211,7 +218,10 @@ class RecordingsManager {
             final sessionIdStr = file.parent.path.split('/').last;
             final sessionId = int.tryParse(sessionIdStr) ?? -1;
 
-            if (sessionId < latestSyncedSessionId) {
+            // Delete if it's an old session OR if it's the latest session but we've successfully processed it.
+            // We only keep it if sessionId > latestSyncedSessionId (which shouldn't happen for synced chunks).
+            if (sessionId <= latestSyncedSessionId) {
+              Logger.debug("RecordingsManager: Deleting successfully processed raw chunk: ${file.path}");
               await file.delete();
               sessionFoldersToDelete.add(file.parent.path);
 

@@ -18,7 +18,7 @@ class SharedPreferencesUtil {
 
   //--------------------------- Offline Audio Processing ---------------------//
 
-  double get offlineSilenceThreshold => getDouble('offlineSilenceThreshold', defaultValue: -45.0);
+  double get offlineSilenceThreshold => getDouble('offlineSilenceThreshold', defaultValue: -55.0);
 
   set offlineSilenceThreshold(double value) => saveDouble('offlineSilenceThreshold', value);
 
@@ -48,7 +48,7 @@ class SharedPreferencesUtil {
 
     // Set default values if not present
     if (!prefs.containsKey('offlineSilenceThreshold')) {
-      prefs.setDouble('offlineSilenceThreshold', -45.0);
+      prefs.setDouble('offlineSilenceThreshold', -55.0);
     }
     if (!prefs.containsKey('offlineSplitSeconds')) {
       prefs.setInt('offlineSplitSeconds', 120); // 2 minutes default

@@ -115,6 +115,7 @@ class OfflineAudioProcessor {
       _recordingStartTime = chunkStartTime;
     }
 
+    int speechFramesCount = 0;
     for (var frame in opusFrames) {
       // Skip the metadata packets during actual audio processing
       if (frame.length == 255) continue;
@@ -129,6 +130,10 @@ class OfflineAudioProcessor {
       }
       
       final dbfs = _calculateDecibels(pcmData);
+
+      if (dbfs >= _silenceThresholdDbfs) {
+        speechFramesCount++;
+      }
 
       if (dbfs < _silenceThresholdDbfs) {
         _consecutiveSilenceFrames++;
@@ -192,6 +197,10 @@ class OfflineAudioProcessor {
       }
     }
 
+    if (opusFrames.isNotEmpty) {
+      Logger.debug("OfflineAudioProcessor: Processed ${opusFrames.length} frames. Speech frames: $speechFramesCount (Threshold: $_silenceThresholdDbfs dB)");
+    }
+
     return savedFiles;
   }
 
@@ -230,6 +239,7 @@ class OfflineAudioProcessor {
 
       if (longestSpeechRunMs >= _minSpeechMs) {
         final filePath = await _saveRecording(recordingFrames, _recordingStartTime ?? DateTime.now());
+        Logger.debug("OfflineAudioProcessor: Flushed remaining buffer and saved recording: $filePath");
         _currentRecordingFrames.clear();
         _consecutiveSilenceFrames = 0;
         return filePath;
@@ -306,6 +316,7 @@ class OfflineAudioProcessor {
       }
     }
     await sink.close();
+    Logger.debug("OfflineAudioProcessor: Saved recording (${frames.length} frames) starting at $startTime to $wavPath");
     return wavPath;
   }
 }

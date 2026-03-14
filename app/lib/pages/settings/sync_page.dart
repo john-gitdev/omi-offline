@@ -84,6 +84,39 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
+  Future<void> _deleteAllPending() async {
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        'Delete All Data',
+        'This will permanently delete all raw recordings from your Omi device SD card. This action cannot be undone. Continue?',
+        confirmText: 'Delete',
+      ),
+    );
+    if (confirm != true) return;
+
+    setState(() {
+      _isSyncing = true;
+      _statusMessage = 'Deleting all data from device...';
+    });
+
+    try {
+      await ServiceManager.instance().wal.getSyncs().deleteAllPendingWals();
+      setState(() {
+        _statusMessage = 'Delete Complete. Device storage cleared.';
+        _isSyncing = false;
+      });
+    } catch (e) {
+      setState(() {
+        _statusMessage = 'Delete Error: $e';
+        _isSyncing = false;
+      });
+    }
+  }
+
   Future<void> _cancelSync() async {
     ServiceManager.instance().wal.getSyncs().cancelSync();
     setState(() {
@@ -159,6 +192,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   onPressed: _forceSync,
                   icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 14, color: Colors.grey),
                   label: const Text('Re-download All Recordings', style: TextStyle(color: Colors.grey, fontSize: 14)),
+                ),
+                const SizedBox(height: 8),
+                TextButton.icon(
+                  onPressed: _deleteAllPending,
+                  icon: const FaIcon(FontAwesomeIcons.trashCan, size: 14, color: Colors.redAccent),
+                  label: const Text('Delete All from Device', style: TextStyle(color: Colors.redAccent, fontSize: 14)),
                 ),
                 const SizedBox(height: 16),
                 Text(

@@ -1081,14 +1081,6 @@ int transport_start()
     }
 
 #ifdef CONFIG_OMI_ENABLE_BATTERY
-    int battErr = 0;
-    battErr |= battery_charge_start();
-    if (battErr) {
-        LOG_ERR("Battery init failed (err %d)", battErr);
-    } else {
-        LOG_INF("Battery initialized");
-    }
-
     k_work_schedule(&battery_work, K_MSEC(3000));
 #endif
 
