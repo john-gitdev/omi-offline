@@ -24,14 +24,10 @@ class BleTransport extends DeviceTransport {
         case BluetoothConnectionState.disconnected:
           _updateState(DeviceTransportState.disconnected);
           break;
-        case BluetoothConnectionState.connecting:
-          _updateState(DeviceTransportState.connecting);
-          break;
         case BluetoothConnectionState.connected:
           _updateState(DeviceTransportState.connected);
           break;
-        case BluetoothConnectionState.disconnecting:
-          _updateState(DeviceTransportState.disconnecting);
+        default:
           break;
       }
     });
@@ -52,7 +48,12 @@ class BleTransport extends DeviceTransport {
 
   @override
   Future<void> connect() async {
-    if (_state == DeviceTransportState.connected) {
+    // Only skip the full connect sequence if we are already connected AND have
+    // already discovered services. If _services is empty (e.g. the constructor's
+    // connectionState listener fired "connected" because the OS-level BLE link was
+    // already up from a previous session) we must still run discoverServices() so
+    // that _getCharacteristic() callers don't all race to discover concurrently.
+    if (_state == DeviceTransportState.connected && _services.isNotEmpty) {
       return;
     }
 
