@@ -138,7 +138,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   Future updateBatteryLevel() async {
-    if (connectedDevice != null && batteryLevel == -1) {
+    // Always fetch a fresh reading — the batteryLevel == -1 guard was skipping updates
+    // after reconnect and showing a stale value until the BLE notification fired.
+    if (connectedDevice != null) {
       int currentLevel = await _retrieveBatteryLevel(connectedDevice!.id);
       if (currentLevel != -1) {
         batteryLevel = currentLevel;
@@ -171,12 +173,11 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
         } else if (batteryLevel > 20) {
           _hasLowBatteryAlerted = true;
         }
-        
+
         final delta = (_lastNotifiedBatteryLevel - value).abs();
         final batteryNotifyTime = _lastBatteryNotifyTime;
-        final elapsed = batteryNotifyTime == null
-            ? const Duration(minutes: 999)
-            : DateTime.now().difference(batteryNotifyTime);
+        final elapsed =
+            batteryNotifyTime == null ? const Duration(minutes: 999) : DateTime.now().difference(batteryNotifyTime);
         final crossedLowBatteryThreshold =
             (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
         final shouldNotify =
@@ -203,9 +204,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
         final delta = (_lastNotifiedStorageLevel - value).abs();
         final storageNotifyTime = _lastStorageNotifyTime;
-        final elapsed = storageNotifyTime == null
-            ? const Duration(minutes: 999)
-            : DateTime.now().difference(storageNotifyTime);
+        final elapsed =
+            storageNotifyTime == null ? const Duration(minutes: 999) : DateTime.now().difference(storageNotifyTime);
         final crossedWarningThreshold =
             (value >= 90 && _lastNotifiedStorageLevel < 90) || (value < 90 && _lastNotifiedStorageLevel >= 90);
         final shouldNotify =
