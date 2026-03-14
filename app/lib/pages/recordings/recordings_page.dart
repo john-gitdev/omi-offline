@@ -82,9 +82,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       });
     }
   }
+
   Future<void> _handleSync() async {
     _performSync(force: false);
   }
+
   Future<void> _handleForceSync() async {
     await _performSync(force: true);
   }
@@ -129,7 +131,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           _isSyncing = false;
         });
         await _loadBatches();
-        
+
         // Auto-process any days that have raw chunks but no processed recordings
         for (var batch in _batches) {
           if (batch.rawChunks.isNotEmpty && batch.processedRecordings.isEmpty) {
@@ -191,7 +193,44 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     }
   }
 
+  Future<void> _deleteDay(DailyBatch batch) async {
+    final messenger = ScaffoldMessenger.of(context);
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        'Delete Day',
+        'This will permanently delete all processed recordings for ${batch.dateString}. This cannot be undone.',
+        confirmText: 'Delete',
+      ),
+    );
+    if (confirm != true) return;
+
+    // Stop playback if we're playing a file from this batch
+    if (_currentlyPlayingPath != null && batch.processedRecordings.any((f) => f.path == _currentlyPlayingPath)) {
+      await _audioPlayer.stop();
+      setState(() {
+        _currentlyPlayingPath = null;
+        _isPlaying = false;
+      });
+    }
+
+    try {
+      await _manager.deleteDay(batch);
+      await _loadBatches();
+    } catch (e) {
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Error deleting day: $e')),
+        );
+      }
+    }
+  }
+
   Future<void> _togglePlay(File file) async {
+    final messenger = ScaffoldMessenger.of(context);
     try {
       if (_currentlyPlayingPath == file.path && _isPlaying) {
         await _audioPlayer.pause();
@@ -205,7 +244,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         });
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         SnackBar(content: Text('Error playing audio: $e')),
       );
     }
@@ -316,7 +355,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               ],
             ),
             const SizedBox(height: 12),
-
             if (batch.rawChunks.isNotEmpty) ...[
               Container(
                 padding: const EdgeInsets.all(12),
@@ -370,13 +408,12 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               ),
               const SizedBox(height: 16),
             ],
-
             if (batch.processedRecordings.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8.0),
                 child: Text('No processed recordings yet.', style: TextStyle(color: Colors.grey.shade500)),
               )
-            else
+            else ...[
               ...batch.processedRecordings.map((file) {
                 final fileName = file.path.split('/').last;
                 final isThisPlaying = _currentlyPlayingPath == file.path && _isPlaying;
@@ -404,6 +441,17 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                   ),
                 );
               }),
+              const SizedBox(height: 8),
+              const Divider(color: Color(0xFF2C2C2E), height: 1),
+              TextButton.icon(
+                onPressed: () => _deleteDay(batch),
+                icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
+                label: Text(
+                  'Delete Day',
+                  style: TextStyle(color: Colors.red.shade400, fontSize: 13),
+                ),
+              ),
+            ],
           ],
         ),
       ),
