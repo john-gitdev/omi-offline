@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:talker_flutter/talker_flutter.dart';
 
 import 'package:omi/utils/debug_log_manager.dart';
-import 'package:omi/utils/l10n_extensions.dart';
 
 class SimpleTalkerObserver extends TalkerObserver {
   SimpleTalkerObserver();
@@ -77,7 +76,7 @@ class LoggerSnackbar extends StatelessWidget {
         contentPadding: const EdgeInsets.all(0),
         leading: const Icon(Icons.error_outline, color: Colors.white),
         title: Text(
-          data.message ?? context.l10n.somethingWentWrongTryAgain,
+          data.message ?? 'Something went wrong. Please try again.',
           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
       ),

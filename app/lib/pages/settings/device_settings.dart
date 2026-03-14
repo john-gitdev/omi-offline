@@ -14,7 +14,6 @@ import 'package:omi/utils/device.dart';
 import 'sync_page.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
-import 'package:omi/utils/l10n_extensions.dart';
 import 'package:omi/utils/other/temp.dart';
 
 class DeviceSettings extends StatefulWidget {
@@ -206,7 +205,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           Clipboard.setData(ClipboardData(text: copyValue));
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text(context.l10n.itemCopiedToClipboard(title))));
+          ).showSnackBar(SnackBar(content: Text('$title copied to clipboard')));
         },
         child: content,
       );
@@ -235,14 +234,14 @@ class _DeviceSettingsState extends State<DeviceSettings> {
         children: [
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.batteryFull,
-            title: context.l10n.batteryLevel,
+            title: 'Battery Level',
             chipValue: provider.batteryLevel >= 0 ? '${provider.batteryLevel}%' : '...',
             showChevron: false,
           ),
           const Divider(height: 1, color: Color(0xFF3C3C43)),
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.fingerprint,
-            title: context.l10n.deviceId,
+            title: 'Device ID',
             chipValue: truncateId(deviceId),
             copyValue: deviceId,
             showChevron: false,
@@ -250,7 +249,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           const Divider(height: 1, color: Color(0xFF3C3C43)),
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.download,
-            title: context.l10n.firmware,
+            title: 'Firmware',
             chipValue: device?.firmwareRevision ?? 'oo-1.0.9',
             showChevron: false,
           ),
@@ -258,7 +257,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.sdCard,
-              title: context.l10n.sdCardSync,
+              title: 'SD Card Sync',
               onTap: () {
                 var page = const SyncPage();
                 routeToPage(context, page);
@@ -281,7 +280,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
         children: [
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.gears,
-            title: context.l10n.hardwareRevision,
+            title: 'Hardware Revision',
             chipValue: hardwareRevision,
             copyValue: hardwareRevision,
             showChevron: false,
@@ -289,7 +288,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           const Divider(height: 1, color: Color(0xFF3C3C43)),
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.hashtag,
-            title: context.l10n.modelNumber,
+            title: 'Model Number',
             chipValue: modelNumber,
             copyValue: modelNumber,
             showChevron: false,
@@ -297,7 +296,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           const Divider(height: 1, color: Color(0xFF3C3C43)),
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.industry,
-            title: context.l10n.manufacturer,
+            title: 'Manufacturer',
             chipValue: manufacturer,
             copyValue: manufacturer,
             showChevron: false,
@@ -331,7 +330,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          context.l10n.ledBrightness,
+                          'LED Brightness',
                           style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
                         ),
                         Text(
@@ -377,8 +376,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(context.l10n.off, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                        Text(context.l10n.max, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                        Text('Off', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                        Text('Max', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
                       ],
                     ),
                     const SizedBox(height: 16),
@@ -406,16 +405,16 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             }
 
             String getGainDescription(int level) {
-              final descriptions = [
-                context.l10n.micGainDescMuted,
-                context.l10n.micGainDescLow,
-                context.l10n.micGainDescModerate,
-                context.l10n.micGainDescNeutral,
-                context.l10n.micGainDescSlightlyBoosted,
-                context.l10n.micGainDescBoosted,
-                context.l10n.micGainDescHigh,
-                context.l10n.micGainDescVeryHigh,
-                context.l10n.micGainDescMax,
+              const descriptions = [
+                'Microphone is muted',
+                'Very quiet - for loud environments',
+                'Quiet - for moderate noise',
+                'Neutral - balanced recording',
+                'Slightly boosted - normal use',
+                'Boosted - for quiet environments',
+                'High - for distant or soft voices',
+                'Very high - for very quiet sources',
+                'Maximum - use with caution',
               ];
               return level >= 0 && level < descriptions.length ? descriptions[level] : '';
             }
@@ -438,7 +437,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          context.l10n.micGain,
+                          'Mic Gain',
                           style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
                         ),
                         Text(
@@ -486,15 +485,15 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(context.l10n.mute, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                        Text(context.l10n.max, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                        Text('Mute', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                        Text('Max', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
                       ],
                     ),
                     const SizedBox(height: 20),
                     Row(
                       children: [
                         Expanded(
-                          child: _buildPresetButton(context.l10n.quiet, 2, currentLevel, () {
+                          child: _buildPresetButton('Quiet', 2, currentLevel, () {
                             setSheetState(() {});
                             setState(() => _micGain = 2.0);
                             _updateMicGain(2.0);
@@ -502,7 +501,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: _buildPresetButton(context.l10n.normal, 4, currentLevel, () {
+                          child: _buildPresetButton('Normal', 4, currentLevel, () {
                             setSheetState(() {});
                             setState(() => _micGain = 4.0);
                             _updateMicGain(4.0);
@@ -510,7 +509,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: _buildPresetButton(context.l10n.high, 6, currentLevel, () {
+                          child: _buildPresetButton('High', 6, currentLevel, () {
                             setSheetState(() {});
                             setState(() => _micGain = 6.0);
                             _updateMicGain(6.0);
@@ -568,7 +567,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           if (_isDimRatioLoaded && _hasDimmingFeature == true) ...[
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.lightbulb,
-              title: context.l10n.ledBrightness,
+              title: 'LED Brightness',
               chipValue: '${_dimRatio.round()}%',
               onTap: _showBrightnessSheet,
             ),
@@ -578,7 +577,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.microphone,
-              title: context.l10n.micGain,
+              title: 'Mic Gain',
               chipValue: _getMicGainLabel(_micGain.round()),
               onTap: _showMicGainSheet,
             ),
@@ -588,8 +587,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.wifi,
-              title: context.l10n.wifiSync,
-              chipValue: context.l10n.available,
+              title: 'WiFi Sync',
+              chipValue: 'Available',
               showChevron: false,
             ),
           ],
@@ -624,7 +623,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                   const SizedBox(width: 16),
                   Expanded(
                     child: Text(
-                      context.l10n.chargingIssues,
+                      'Charging Issues',
                       style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
                     ),
                   ),
@@ -651,7 +650,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                   Navigator.of(context).pop();
                   ScaffoldMessenger.of(
                     context,
-                  ).showSnackBar(SnackBar(content: Text(context.l10n.deviceDisconnectedMessage)));
+                  ).showSnackBar(const SnackBar(content: Text('Your Omi has been disconnected')));
                 }
               },
               child: Padding(
@@ -665,7 +664,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                     ),
                     const SizedBox(width: 16),
                     Text(
-                      provider.connectedDevice == null ? context.l10n.unpairDevice : context.l10n.disconnectDevice,
+                      provider.connectedDevice == null ? 'Unpair Device' : 'Disconnect Device',
                       style: const TextStyle(color: Colors.redAccent, fontSize: 17, fontWeight: FontWeight.w400),
                     ),
                   ],
@@ -694,12 +693,12 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           ),
           const SizedBox(height: 20),
           Text(
-            context.l10n.deviceNotConnected,
+            'Device Not Connected',
             style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           Text(
-            context.l10n.connectDeviceMessage,
+            'Connect your Omi device to access\ndevice settings and customization',
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.grey.shade500, fontSize: 14, height: 1.4),
           ),
@@ -741,7 +740,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               ),
               const SizedBox(width: 8),
               Text(
-                isConnected ? context.l10n.connected : context.l10n.disconnected,
+                isConnected ? 'Connected' : 'Disconnected',
                 style: TextStyle(
                   color: isConnected ? Colors.greenAccent : Colors.redAccent,
                   fontSize: 15,
@@ -770,7 +769,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               onPressed: () => Navigator.of(context).pop(),
             ),
             title: Text(
-              context.l10n.deviceSettings,
+              'Device Settings',
               style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
             ),
             centerTitle: true,
@@ -787,13 +786,13 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                 ],
                 if (provider.isConnected) ...[
                   const SizedBox(height: 16),
-                  _buildSectionHeader(context.l10n.customizationSection),
+                  _buildSectionHeader('Customization'),
                   _buildCustomizationSection(),
                   const SizedBox(height: 32),
-                  _buildSectionHeader(context.l10n.deviceInfoSection),
+                  _buildSectionHeader('Device Info'),
                   _buildDeviceInfoSection(provider.pairedDevice, provider),
                   const SizedBox(height: 32),
-                  _buildSectionHeader(context.l10n.hardwareSection),
+                  _buildSectionHeader('Hardware'),
                   _buildHardwareInfoSection(provider.pairedDevice),
                   const SizedBox(height: 32),
                 ],

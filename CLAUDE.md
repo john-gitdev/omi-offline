@@ -1,4 +1,6 @@
-# Coding Guidelines
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Behavior
 
@@ -7,27 +9,79 @@
 
 ## Setup
 
-### Install Pre-commit Hook
-Run once to enable auto-formatting on commit:
 ```bash
-ln -s -f ../../scripts/pre-commit .git/hooks/pre-commit
-```
-
-### Mobile App Setup
-```bash
+ln -s -f ../../scripts/pre-commit .git/hooks/pre-commit  # enable auto-formatting on commit
 cd app && bash setup.sh ios    # or: bash setup.sh android
 ```
 
-## App (Flutter)
+## Commands
 
-### Localization Required
-
-- All user-facing strings must use l10n. Use `context.l10n.keyName` instead of hardcoded strings. Add new keys to ARB files using `jq` (never read full ARB files - they're large and will burn tokens). See skill `add-a-new-localization-key-l10n-arb` for details.
-- **Translate all locales**: When adding new l10n keys, provide real translations for all 33 non-English locales — do not leave English text in non-English ARB files. Use the `omi-add-missing-language-keys-l10n` skill to generate proper translations. Ensure `{parameter}` placeholders match the English ARB exactly.
-- After modifying ARB files in `app/lib/l10n/`, regenerate the localization files:
 ```bash
+# Run app
+cd app && flutter run
+
+# Test
+cd app && bash test.sh
+
+# Format (pre-commit hook does this automatically)
+dart format --line-length 120 <files>
+clang-format -i <files>          # firmware C/C++
+
+# Regenerate l10n after editing ARB files
 cd app && flutter gen-l10n
 ```
+
+## Architecture
+
+### Overview
+
+Omi is an offline-first wearable audio recorder. The nRF52840 firmware captures audio via Opus codec, stores it to SD card, and exposes it over BLE. The Flutter app discovers the device, syncs recordings via WAL, decodes Opus to WAV, and splits by silence.
+
+**Data flow:** Mic → Opus encode (firmware) → SD card → BLE/WiFi transfer → WAL sync → Opus decode → silence detection → WAV files → daily batch UI
+
+### App (`app/lib/`)
+
+**State management**: `DeviceProvider` (ChangeNotifier) drives all UI. `ServiceManager` is the singleton that holds `IDeviceService`.
+
+**Connection pipeline** (`services/devices/`):
+- `DeviceService.ensureConnection()` is serialized via `_pendingConnection` future — N concurrent callers (battery, storage, WAL sync) share one connection attempt. Critical: never bypass this.
+- `BleTransport` retries service discovery up to 3× if service is missing (transient), but bails immediately if service is found but characteristic is absent (firmware lacks it — retrying cannot help).
+- On connect: time sync writes UTC as little-endian u32 to `timeSyncWriteCharacteristicUuid` so the device can anchor recording timestamps.
+
+**Audio pipeline** (`services/`):
+- `RecordingsManager` stores raw BLE frames in `raw_chunks/<sessionId>/<chunk>.bin`
+- `OfflineAudioProcessor` decodes Opus → 16 kHz mono 16-bit PCM, applies RMS silence detection (-55 dBFS threshold), splits into `recordings/<YYYY-MM-DD>/<recording_<millis>>.wav`
+- Metadata packets (255-byte frames) carry UTC + device uptime for timestamp anchoring when device clock was reset
+
+**Sync** (`services/wals/`):
+- `WalService` creates `Wal` entries per file (tracks codec, device, storage location, sync status: miss → syncing → synced)
+- `SDCardWalSyncImpl` reads files over BLE (256-byte chunks) or TCP (WiFi, port 8080) — allows resume on reconnect without re-downloading
+
+### Firmware (`omi/firmware/devkit/src/`)
+
+Zephyr RTOS on nRF52840. Key threads: mic capture → codec ring buffer → Opus encode → BLE notify / SD card write.
+
+**Opus config**: 16 kHz mono, VBR, complexity 5, 20 ms frames.
+
+### BLE Protocol
+
+All Omi services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`:
+
+| Service | UUID suffix | Purpose |
+|---------|-------------|---------|
+| Audio | `0000` / `0001` / `0002` | Stream + codec ID |
+| Settings | `0010` / `0011` / `0012` | Dim ratio, mic gain |
+| Features | `0020` / `0021` | Capability flags |
+| Time sync | `0030` / `0031` | Write epoch seconds (u32 LE) |
+| Speaker/haptic | `0040` / `0041` | Playback commands |
+| Storage | `30295780-…` | File list + read/delete |
+| Button | `23ba7924-…` | Tap events (1=single, 2=double, 3=long, 4=press, 5=release) |
+
+Storage protocol: read characteristic returns 4-byte LE file lengths; write `[cmd, fileNum, offset_4B]` where cmd: 0=READ, 1=DELETE, 2=NUKE, 3=STOP.
+
+Audio codec IDs: 1=pcm8, 20=opus (80 B/frame, 50 fps), 21=opusFS320 (40 B/frame, 50 fps).
+
+## App (Flutter)
 
 ### Verifying UI Changes (agent-flutter)
 
@@ -35,68 +89,40 @@ After editing Flutter UI code, **verify the change programmatically** — do not
 
 Marionette is already integrated in debug builds (`marionette_flutter: ^0.3.0`). Install agent-flutter once: `npm install -g agent-flutter-cli`.
 
-**Edit → Verify → Evidence loop:**
 ```bash
-# 1. Edit Dart code, then hot restart
-kill -SIGUSR2 $(pgrep -f "flutter run" | head -1)
-
-# 2. Connect (must reconnect after every hot restart)
+kill -SIGUSR2 $(pgrep -f "flutter run" | head -1)   # hot restart
 AGENT_FLUTTER_LOG=/tmp/flutter-run.log agent-flutter connect
-
-# 3. See what's on screen
 agent-flutter snapshot -i              # list interactive widgets
-agent-flutter snapshot -i --json       # structured data for parsing
-
-# 4. Interact
-agent-flutter press @e3                # tap by ref
+agent-flutter press @e3                # tap by ref (re-snapshot first — refs go stale)
 agent-flutter press 540 1200           # tap by coordinates (ADB fallback)
-agent-flutter dismiss                  # dismiss system dialogs (location, permissions)
-agent-flutter find type button press   # find and tap (more stable than @ref)
-agent-flutter fill @e5 "hello"         # type into textfield
-agent-flutter scroll down              # scroll current view
-
-# 5. Screenshot evidence for PRs
-agent-flutter screenshot /tmp/after-change.png
+agent-flutter find type button press   # more stable than @ref
+agent-flutter fill @e5 "hello"
+agent-flutter screenshot /tmp/after.png
 ```
 
-**Key rules:**
-- Refs go stale frequently (Flutter rebuilds aggressively) — always re-snapshot before every interaction. Use `press x y` as fallback.
-- `AGENT_FLUTTER_LOG` must point to the flutter run stdout log file (not logcat). This is how agent-flutter finds the correct VM Service URI.
-- `find type X` or `find text "label"` is more stable than hardcoded `@ref` numbers.
-- When adding new interactive widgets, use `Key('descriptive_name')` so agents can use `find key` (survives i18n and theme changes).
-- Android: auto-detects via ADB. iOS: requires `AGENT_FLUTTER_LOG` or explicit URI.
-- **App flows & exploration skill**: See `app/e2e/SKILL.md` for navigation architecture, screen map, widget patterns, and known flows. Read this when developing features or exploring the app.
+- `AGENT_FLUTTER_LOG` must point to the flutter run stdout log (not logcat).
+- Use `Key('descriptive_name')` on new interactive widgets so agents can use `find key`.
+- See `app/e2e/SKILL.md` for screen map and known flows.
 
 ### Firebase Prod Config
 Never run `flutterfire configure` — it overwrites prod credentials. Prod config files in `app/ios/Config/Prod/`, `app/lib/firebase_options_prod.dart`, `app/android/app/src/prod/`.
 
 ## Formatting
 
-Always format code after making changes. The pre-commit hook handles this automatically, but you can also run manually:
+The pre-commit hook handles formatting automatically. To run manually:
 
-### Dart (app/)
 ```bash
-dart format --line-length 120 <files>
-```
-Note: Files ending in `.gen.dart` or `.g.dart` are auto-generated and should not be formatted manually.
-
-### C/C++ (firmware: omi/)
-```bash
-clang-format -i <files>
+dart format --line-length 120 <files>   # Dart (not *.gen.dart or *.g.dart)
+clang-format -i <files>                  # C/C++ firmware
 ```
 
 ## Git
 
-### Rules
 - Always commit to the current branch — never switch branches.
 - Never squash merge PRs — use regular merge.
 - Make individual commits per file, not bulk commits.
-- The pre-commit hook auto-formats staged code — no need to format manually before committing.
-- If push fails because the remote is ahead, pull with rebase first: `git pull --rebase && git push`.
+- If push fails because the remote is ahead: `git pull --rebase && git push`.
 - Never push or create PRs unless explicitly asked — commit locally by default.
 
 ### RELEASE command
 When the user says "RELEASE", create a branch from `main`, make individual commits per changed file, push/create a PR, merge without squash, then switch back to `main` and pull.
-
-## Testing
-Run `app/test.sh` before committing app changes.

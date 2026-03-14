@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:omi/l10n/app_localizations.dart';
 import 'package:omi/pages/recordings/recordings_page.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/services.dart';
@@ -11,12 +10,12 @@ import 'package:opus_flutter/opus_flutter.dart' as opus_flutter;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   FlutterBluePlus.setLogLevel(LogLevel.none);
   initOpus(await opus_flutter.load());
   await SharedPreferencesUtil.init();
   await ServiceManager.init();
-  
+
   runApp(const MyApp());
 }
 
@@ -43,8 +42,6 @@ class _MyAppState extends State<MyApp> {
       child: MaterialApp(
         title: 'Offline Recorder',
         theme: ThemeData.dark(),
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
-        supportedLocales: AppLocalizations.supportedLocales,
         home: const RecordingsPage(),
       ),
     );
