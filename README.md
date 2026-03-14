@@ -25,7 +25,7 @@ bash setup.sh ios       # or: bash setup.sh android
 flutter run --flavor dev
 ```
 
-**Firmware** — pre-built binaries for flashing are in `omi/firmware/FLASH_3.0.8/`. Source is in `omi/firmware/omi/`.
+**Firmware** — build from source in `omi/firmware/omi/` using Zephyr. `omi/firmware/FLASH_3.0.8/` contains backup binaries only.
 
 ## License
 
