@@ -166,8 +166,6 @@ flutter:
     - assets/fonts/
     - assets/images/
 
-    - shorebird.yaml
-
   fonts:
     - family: "SF Pro Display"
       fonts:
