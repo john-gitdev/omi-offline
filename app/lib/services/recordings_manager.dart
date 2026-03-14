@@ -5,6 +5,53 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/offline_audio_processor.dart';
 import 'package:omi/utils/logger.dart';
 
+/// Parsed metadata for a single processed WAV recording.
+class RecordingInfo {
+  final File file;
+  final DateTime startTime;
+  final Duration duration;
+
+  const RecordingInfo({required this.file, required this.startTime, required this.duration});
+
+  DateTime get endTime => startTime.add(duration);
+  int get fileSizeBytes => file.lengthSync();
+
+  /// Parses start time from the filename (`recording_<millis>.wav`) and
+  /// computes duration from the WAV file size (44-byte header + PCM at 16 kHz mono 16-bit).
+  static RecordingInfo fromFile(File file) {
+    final name = file.path.split('/').last;
+    final millisStr = name.contains('_') ? name.split('_').last.split('.').first : null;
+    final millis = millisStr != null ? int.tryParse(millisStr) : null;
+    final startTime =
+        (millis != null && millis > 0) ? DateTime.fromMillisecondsSinceEpoch(millis) : file.lastModifiedSync();
+
+    final fileSize = file.lengthSync();
+    final pcmBytes = fileSize > 44 ? fileSize - 44 : 0;
+    // 16 kHz · 1 channel · 2 bytes/sample  →  32000 bytes/second
+    final durationMs = (pcmBytes / 32000.0 * 1000).round();
+
+    return RecordingInfo(file: file, startTime: startTime, duration: Duration(milliseconds: durationMs));
+  }
+
+  String get timeRangeLabel {
+    String fmt(DateTime dt) => '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    return '${fmt(startTime)} – ${fmt(endTime)}';
+  }
+
+  String get durationLabel {
+    final mins = duration.inMinutes;
+    final secs = duration.inSeconds % 60;
+    return mins > 0 ? '${mins}m ${secs}s' : '${secs}s';
+  }
+
+  String get sizeLabel {
+    final bytes = fileSizeBytes;
+    if (bytes >= 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
+    return '$bytes B';
+  }
+}
+
 class DailyBatch {
   final String dateString;
   final DateTime date;
