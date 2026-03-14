@@ -7,7 +7,6 @@ Offline-first audio recorder for the Omi wearable. The device captures audio con
 1. **Omi device** captures audio via Opus codec (16 kHz mono) and stores to SD card
 2. **App connects** over BLE, reads the file list, and pulls recordings via resumable WAL sync
 3. **App decodes** Opus → WAV, splits by silence, and organises recordings by date
-4. **WiFi sync** (optional) uses a direct TCP connection for faster transfers on the same network
 
 ## Repo structure
 
