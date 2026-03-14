@@ -16,7 +16,7 @@ import 'package:omi/services/wals/wal.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
 
 class SDCardWalSyncImpl implements SDCardWalSync {
-  List<Wal> _wals = const [];
+  List<Wal> _wals = <Wal>[];
   BtDevice? _device;
 
   StreamSubscription? _storageStream;
@@ -77,7 +77,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         _wals = wals;
         listener.onWalUpdated();
       } else {
-        Logger.debug("SDCardWalSync: start() finished while syncing, ignoring overwrite of _wals to avoid race condition.");
+        Logger.debug(
+            "SDCardWalSync: start() finished while syncing, ignoring overwrite of _wals to avoid race condition.");
       }
     });
   }
@@ -120,18 +121,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     BleAudioCodec codec = await _getAudioCodec(deviceId);
     int threshold = 10 * codec.getFramesLengthInBytes() * codec.getFramesPerSecond();
-    Logger.debug("SDCardWalSync: totalBytes=$totalBytes, storageOffset=$storageOffset, diff=${totalBytes - storageOffset}, threshold=$threshold");
-    
+    Logger.debug(
+        "SDCardWalSync: totalBytes=$totalBytes, storageOffset=$storageOffset, diff=${totalBytes - storageOffset}, threshold=$threshold");
+
     if (totalBytes > 0) {
       var seconds = (totalBytes / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
       int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
 
       // Ensure stable ID for existing entries by matching device and fileNum
-      final existingWal = _wals.firstWhereOrNull((w) => w.device == deviceId && w.fileNum == 1 && w.storage == WalStorage.sdcard);
+      final existingWal =
+          _wals.firstWhereOrNull((w) => w.device == deviceId && w.fileNum == 1 && w.storage == WalStorage.sdcard);
       if (existingWal != null) {
         timerStart = existingWal.timerStart;
       }
-      
+
       var wal = Wal(
         codec: codec,
         channel: 1,
@@ -148,7 +151,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal.isSyncing = true;
         wal.syncStartedAt = existingWal.syncStartedAt;
       }
-      
+
       wals.add(wal);
     }
 
@@ -201,7 +204,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       fileName = wal.getFileNameByTimeStarts(timerStart);
     }
     String filePath = '${folder.path}/$fileName';
-    
+
     final builder = BytesBuilder(copy: false);
     for (var frame in chunk) {
       final len = frame.length;
@@ -211,7 +214,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       builder.addByte((len >> 24) & 0xFF);
       builder.add(frame);
     }
-    
+
     final data = builder.takeBytes();
     final file = File(filePath);
     await file.writeAsBytes(data, mode: append ? FileMode.append : FileMode.write);
@@ -267,13 +270,23 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final List<List<int>> frameBuffer = [];
     final List<int> streamBuffer = [];
 
+    // Track which (sessionId, chunkIndex) files have been created during this transfer.
+    // The FIRST write to a file must use FileMode.write (overwrite) to avoid appending to
+    // leftover data from a prior sync or force-resync. Subsequent flushes within the same
+    // transfer can append.
+    final Set<String> flushedChunksThisTransfer = {};
+
     Future<void> flushBuffer() async {
       if (frameBuffer.isEmpty) return;
-      
+
       String subFolder = lastSessionId?.toString() ?? 'unsynced';
+      final chunkKey = '${lastSessionId}_$lastChunkIndex';
+      final appendMode = flushedChunksThisTransfer.contains(chunkKey);
+      if (!appendMode) flushedChunksThisTransfer.add(chunkKey);
+
       var file = await _flushToDisk(wal, frameBuffer, timerStart,
-          subFolder: subFolder, sessionId: lastSessionId, chunkIndex: lastChunkIndex, append: true);
-      
+          subFolder: subFolder, sessionId: lastSessionId, chunkIndex: lastChunkIndex, append: appendMode);
+
       try {
         await callback(file, offset, timerStart, subFolder: subFolder);
       } catch (e) {
@@ -290,21 +303,30 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       packetsReceived++;
       // Log only every 100 packets to reduce noise, unless it's near the end
       if (packetsReceived % 100 == 0 || offset >= wal.storageTotalBytes - 512) {
-        Logger.debug("SDCardWalSync: Received ${value.length} bytes (Buffer: ${streamBuffer.length}, Packet #$packetsReceived)");
+        Logger.debug(
+            "SDCardWalSync: Received ${value.length} bytes (Buffer: ${streamBuffer.length}, Packet #$packetsReceived)");
       }
 
-      // Handle the initial ACK byte (0) separately to avoid offset desync
+      // Handle the initial ACK byte separately to avoid offset desync.
+      // Firmware sends a single-byte ACK immediately after receiving the READ command:
+      //   0x00 = success (start streaming)
+      //   0x03 = INVALID_FILE_SIZE
+      //   0x04 = ZERO_FILE_SIZE
+      //   0x06 = INVALID_COMMAND
+      // All error codes are small integers (< 16). Any other single-byte first packet
+      // is unexpected and falls through to be treated as the start of audio data.
       if (isFirstPacket && value.length == 1) {
         isFirstPacket = false;
         if (value[0] == 0) {
-          Logger.debug("SDCardWalSync: Received initial success ACK (0)");
+          Logger.debug("SDCardWalSync: Received initial success ACK");
           return;
-        } else if (value[0] != 100) {
+        } else if (value[0] < 16) {
           Logger.debug("SDCardWalSync: Received firmware error ACK: ${value[0]}");
           hasError = true;
-          if (!completer.isCompleted) completer.completeError(Exception('Firmware error: ${value[0]}'));
+          if (!completer.isCompleted) completer.completeError(Exception('Firmware error code: ${value[0]}'));
           return;
         }
+        // else: unexpected first packet — fall through and process as data
       }
       isFirstPacket = false;
 
@@ -318,7 +340,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           Logger.debug("SDCardWalSync: End bytes (Total $offset/${wal.storageTotalBytes}): $value");
         }
       }
-      
+
       if (onProgress != null) {
         onProgress(offset);
       }
@@ -327,12 +349,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       completionTimeout?.cancel();
       if (offset >= wal.storageTotalBytes) {
         if (offset >= wal.storageTotalBytes + 1024) {
-           Logger.debug("SDCardWalSync: Overrun threshold reached ($offset/${wal.storageTotalBytes}). Forcing completion.");
-           await flushBuffer();
-           if (!completer.isCompleted) completer.complete();
-           return;
+          Logger.debug(
+              "SDCardWalSync: Overrun threshold reached ($offset/${wal.storageTotalBytes}). Forcing completion.");
+          await flushBuffer();
+          if (!completer.isCompleted) completer.complete();
+          return;
         }
-        
+
         completionTimeout = Timer(const Duration(seconds: 5), () async {
           if (!completer.isCompleted) {
             Logger.debug("SDCardWalSync: Progress at 100% and 5s idle. Forcing completion.");
@@ -353,24 +376,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         while (streamBuffer.isNotEmpty) {
           int packageSize = streamBuffer[0];
 
-          // Check for completion marker (100)
-          // We treat 100 as termination if it's the last byte OR if we've reached/exceeded the expected size.
-          // This avoids getting stuck if 100 is followed by padding (0) in the same BLE packet.
-          bool isNearEnd = offset >= wal.storageTotalBytes - 20;
-          if (packageSize == 100 && (streamBuffer.length == 1 || isNearEnd)) {
-            Logger.debug("SDCardWalSync: Received termination marker (100). isNearEnd=$isNearEnd, offset=$offset, bufferLen=${streamBuffer.length}");
+          // 0xFD = End-of-Transfer marker. Single byte, no payload.
+          // Mirrors the firmware constant EOT_MARKER = 0xFD. Unambiguous: Opus frames
+          // are always 80 bytes (0x50), so 0xFD will never appear as a valid length prefix.
+          if (packageSize == 0xFD) {
+            Logger.debug("SDCardWalSync: Received EOT marker (0xFD). offset=$offset, bufferLen=${streamBuffer.length}");
             completionTimeout?.cancel();
             await flushBuffer();
             if (!completer.isCompleted) completer.complete();
             streamBuffer.clear();
             break;
           }
-          
-          if (packageSize == 100 && !isNearEnd) {
-             Logger.debug("SDCardWalSync: WARNING - Received 100 but NOT near end ($offset/${wal.storageTotalBytes}). Treating as audio package size.");
-          }
 
-          if (packageSize == 255) { // Metadata
+          if (packageSize == 255) {
+            // Metadata
             if (1 + 16 <= streamBuffer.length) {
               var metadata = streamBuffer.sublist(1, 1 + 16);
               var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
@@ -393,7 +412,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               }
 
               Logger.debug("SDCardWalSync BLE: Parsed metadata session $currentSessionId");
-              
+
               if (currentSessionId != lastSessionId || currentChunkIndex != lastChunkIndex) {
                 await flushBuffer();
                 lastSessionId = currentSessionId;
@@ -407,15 +426,34 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             }
           }
 
-          if (packageSize == 254) { // Star marker
+          if (packageSize == 254) {
+            // Star marker
             if (1 + 16 <= streamBuffer.length) {
               var metadata = streamBuffer.sublist(1, 1 + 16);
               var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
               var utcTime = byteData.getUint32(0, Endian.little);
-              // ignore other fields for star
+              var starUptimeMs = byteData.getUint32(4, Endian.little);
+
+              // If device has no RTC lock, utcTime will be 0. Reconstruct UTC time from
+              // the uptime anchor saved when we parsed the most recent metadata packet.
+              int resolvedUtcTime = utcTime;
+              if (utcTime == 0 && currentSessionId != null) {
+                final anchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$currentSessionId');
+                final anchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_$currentSessionId');
+                if (anchorUtc > 0 && anchorUptime > 0) {
+                  final uptimeDeltaSeconds = (starUptimeMs - anchorUptime) ~/ 1000;
+                  resolvedUtcTime = anchorUtc + uptimeDeltaSeconds;
+                  Logger.debug(
+                      "SDCardWalSync: Star marker UTC resolved via anchor: $resolvedUtcTime (delta ${uptimeDeltaSeconds}s)");
+                } else {
+                  Logger.debug(
+                      "SDCardWalSync: Star marker utcTime=0 and no anchor available for session $currentSessionId");
+                }
+              }
+
               final sessionId = currentSessionId;
               if (sessionId != null) {
-                await _saveStarMarker(sessionId, utcTime);
+                await _saveStarMarker(sessionId, resolvedUtcTime);
               }
               streamBuffer.removeRange(0, 1 + 16);
               continue;
@@ -442,12 +480,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             // Throttled logging for "Waiting for more data"
             final now = DateTime.now();
             if (now.difference(lastWaitingLog).inSeconds >= 5) {
-              Logger.debug("SDCardWalSync: Waiting for more data (Frame size $packageSize, Buffer ${streamBuffer.length}, Total $offset/${wal.storageTotalBytes})");
+              Logger.debug(
+                  "SDCardWalSync: Waiting for more data (Frame size $packageSize, Buffer ${streamBuffer.length}, Total $offset/${wal.storageTotalBytes})");
               lastWaitingLog = now;
             }
-            break; 
+            break;
           }
-          
+
           // Yield to microtasks to prevent blocking UI/other events during high throughput
           await Future.microtask(() {});
         }
@@ -458,16 +497,21 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       } finally {
         isProcessing = false;
       }
-    }, onError: (e) async {
+    }, onError: (e) {
+      // Do NOT mark this handler async — Stream.listen() ignores the returned Future,
+      // meaning any exception thrown inside an async handler is silently dropped.
+      // Use .then/.catchError to safely chain the async flush.
       Logger.error('SDCard BLE Stream Error: $e');
-      await flushBuffer();
-      hasError = true;
-      if (!completer.isCompleted) completer.completeError(e);
-    }, onDone: () async {
+      flushBuffer().whenComplete(() {
+        hasError = true;
+        if (!completer.isCompleted) completer.completeError(e);
+      });
+    }, onDone: () {
       if (!completer.isCompleted) {
         Logger.debug("SDCardWalSync: BLE stream closed before termination marker");
-        await flushBuffer();
-        completer.complete();
+        flushBuffer().whenComplete(() {
+          if (!completer.isCompleted) completer.complete();
+        });
       }
     })) as StreamSubscription<List<int>>;
     final readStarted = await _writeToStorage(deviceId, fileNum, 0, offset);
@@ -499,9 +543,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     try {
       final double? freeSpaceMb = await DiskSpace.getFreeDiskSpace;
       if (freeSpaceMb != null) {
-        final double requiredMb = (totalBytesToDownload * 2.5) / (1024 * 1024);
+        // 1.1x: raw download bytes + ~5% overhead for the 4-byte length prefix added per
+        // Opus frame in _flushToDisk, plus a small safety margin. The old 2.5x multiplier
+        // was incorrect — we store the compressed audio, not decoded PCM.
+        final double requiredMb = (totalBytesToDownload * 1.1) / (1024 * 1024);
         if (freeSpaceMb < requiredMb) {
-          throw Exception("Phone Storage Full: Need ${requiredMb.toStringAsFixed(1)} MB free, but only ${freeSpaceMb.toStringAsFixed(1)} MB available.");
+          throw Exception(
+              "Phone Storage Full: Need ${requiredMb.toStringAsFixed(1)} MB free, but only ${freeSpaceMb.toStringAsFixed(1)} MB available.");
         }
       }
     } catch (e) {
@@ -543,6 +591,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       _wals = await getMissingWals();
     }
 
+    // NOTE: `force` controls WAL *selection* only (include already-synced wals vs. only
+    // missing ones). The firmware offset is always 0 regardless — we always re-download
+    // from the beginning because that's the only safe strategy after an app reinstall or
+    // new device pairing. The `force: false` default in _readStorageBytesToFile is dead code.
     var wals = _wals.where((w) => (force || w.status == WalStatus.miss) && w.storage == WalStorage.sdcard).toList();
     if (wals.isEmpty) {
       Logger.debug("SDCardWalSync: All synced!");
@@ -568,29 +620,32 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       _downloadStartTime = DateTime.now();
 
       try {
-        await _readStorageBytesToFile(wal, (File file, int offset, int timerStart, {String? subFolder}) async {
-          if (_isCancelled) {
-            throw Exception("Sync cancelled by user");
-          }
+        await _readStorageBytesToFile(
+            wal,
+            (File file, int offset, int timerStart, {String? subFolder}) async {
+              if (_isCancelled) {
+                throw Exception("Sync cancelled by user");
+              }
 
-          int bytesInChunk = offset - lastOffset;
-          _updateSpeed(bytesInChunk);
-          await _registerSingleChunk(wal, file, timerStart);
-          chunksDownloaded++;
-          lastOffset = offset;
+              int bytesInChunk = offset - lastOffset;
+              _updateSpeed(bytesInChunk);
+              await _registerSingleChunk(wal, file, timerStart);
+              lastOffset = offset;
 
-          listener.onWalUpdated();
-        }, force: true, onProgress: (offset) {
-          wal.storageOffset = offset;
-          final remainingBytes = wal.storageTotalBytes - offset;
-          final seconds = (remainingBytes / wal.codec.getFramesLengthInBytes()) ~/ wal.codec.getFramesPerSecond();
-          wal.estimatedChunks = (seconds / 60).ceil();
+              listener.onWalUpdated();
+            },
+            force: true,
+            onProgress: (offset) {
+              wal.storageOffset = offset;
+              final remainingBytes = wal.storageTotalBytes - offset;
+              final seconds = (remainingBytes / wal.codec.getFramesLengthInBytes()) ~/ wal.codec.getFramesPerSecond();
+              wal.estimatedChunks = (seconds / 60).ceil();
 
-          if (progress != null) {
-            final double progressPercent = offset / totalBytesToDownload;
-            progress.onWalSyncedProgress(progressPercent.clamp(0.0, 1.0), speedKBps: _currentSpeedKBps);
-          }
-        });
+              if (progress != null) {
+                final double progressPercent = offset / totalBytesToDownload;
+                progress.onWalSyncedProgress(progressPercent.clamp(0.0, 1.0), speedKBps: _currentSpeedKBps);
+              }
+            });
 
         // Small delay to allow firmware buffers to clear before sending DELETE
         await Future.delayed(const Duration(milliseconds: 500));
@@ -633,28 +688,32 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _downloadStartTime = DateTime.now();
 
     try {
-      await _readStorageBytesToFile(wal, (File file, int offset, int timerStart, {String? subFolder}) async {
-        if (_isCancelled) {
-          throw Exception("Sync cancelled by user");
-        }
+      await _readStorageBytesToFile(
+          wal,
+          (File file, int offset, int timerStart, {String? subFolder}) async {
+            if (_isCancelled) {
+              throw Exception("Sync cancelled by user");
+            }
 
-        int bytesInChunk = offset - lastOffset;
-        _updateSpeed(bytesInChunk);
-        await _registerSingleChunk(wal, file, timerStart);
-        lastOffset = offset;
+            int bytesInChunk = offset - lastOffset;
+            _updateSpeed(bytesInChunk);
+            await _registerSingleChunk(wal, file, timerStart);
+            lastOffset = offset;
 
-        listener.onWalUpdated();
-      }, force: true, onProgress: (offset) {
-        wal.storageOffset = offset;
-        final remainingBytes = wal.storageTotalBytes - offset;
-        final seconds = (remainingBytes / wal.codec.getFramesLengthInBytes()) ~/ wal.codec.getFramesPerSecond();
-        wal.estimatedChunks = (seconds / 60).ceil();
+            listener.onWalUpdated();
+          },
+          force: true,
+          onProgress: (offset) {
+            wal.storageOffset = offset;
+            final remainingBytes = wal.storageTotalBytes - offset;
+            final seconds = (remainingBytes / wal.codec.getFramesLengthInBytes()) ~/ wal.codec.getFramesPerSecond();
+            wal.estimatedChunks = (seconds / 60).ceil();
 
-        if (progress != null) {
-          final double progressPercent = offset / totalBytesToDownload;
-          progress.onWalSyncedProgress(progressPercent.clamp(0.0, 1.0), speedKBps: _currentSpeedKBps);
-        }
-      });
+            if (progress != null) {
+              final double progressPercent = offset / totalBytesToDownload;
+              progress.onWalSyncedProgress(progressPercent.clamp(0.0, 1.0), speedKBps: _currentSpeedKBps);
+            }
+          });
 
       // Small delay to allow firmware buffers to clear before sending DELETE
       await Future.delayed(const Duration(milliseconds: 500));
@@ -673,8 +732,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _isSyncing = false;
     return resp;
   }
-
-  int chunksDownloaded = 0;
 
   Future<void> _registerSingleChunk(Wal wal, File file, int timerStart) async {
     // Note: We no longer queue this for automatic processing in LocalWalSync.
@@ -762,11 +819,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       try {
         final totalBytes = wal.storageTotalBytes - wal.storageOffset;
         await _checkDiskSpaceBeforeSync(totalBytes);
-        
+
         // This is a simplified placeholder for the WiFi sync logic
         // In a real implementation, this would involve connecting to the device's AP
         // and streaming data over TCP.
-        
+
         await deleteWal(wal);
         wal.status = WalStatus.synced;
         _wals.removeWhere((w) => w.id == wal.id);
