@@ -37,6 +37,16 @@ LOG_MODULE_REGISTER(storage, CONFIG_LOG_DEFAULT_LEVEL);
 
 #define MAX_HEARTBEAT_FRAMES 100
 #define HEARTBEAT 50
+
+// End-of-Transfer marker sent as a single notification once all audio data has been sent.
+// Chosen as 0xFD to extend the existing reserved-byte hierarchy:
+//   0xFF = metadata packet (16-byte payload follows)
+//   0xFE = star marker    (16-byte payload follows)
+//   0xFD = end of transfer (no payload — this byte alone signals completion)
+// Values 0x01–0xFC are audio frame length prefixes; 0xFD will never appear as a
+// legitimate Opus frame size (OPUS_ENTRY_LENGTH = 80). This is purely a storage
+// protocol marker and has no interaction with MCUboot or the SMP OTA service.
+#define EOT_MARKER 0xFD
 static void storage_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
 static ssize_t storage_write_handler(struct bt_conn *conn,
                                      const struct bt_gatt_attr *attr,
@@ -78,30 +88,48 @@ static struct k_thread storage_thread;
 
 void broadcast_storage_packet(struct k_work *work_item);
 
+// GATT attribute index map — update these comments whenever the table changes.
+// attrs[0] = primary service declaration
+// attrs[1] = write characteristic declaration   (BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY)
+// attrs[2] = write characteristic value
+// attrs[3] = write CCC descriptor
+// attrs[4] = read characteristic declaration    (BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY)
+// attrs[5] = read characteristic value
+// attrs[6] = read CCC descriptor
+// [CONFIG_OMI_ENABLE_WIFI only:]
+// attrs[7] = wifi characteristic declaration    (BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY)
+// attrs[8] = wifi characteristic value
+// attrs[9] = wifi CCC descriptor
+//
+// bt_gatt_notify() for the write/data path always uses attrs[1].
+// bt_gatt_notify() for the wifi path uses attrs[7] (only valid when WiFi is enabled).
+#define STORAGE_ATTR_WRITE_CHAR 1
+#define STORAGE_ATTR_WIFI_CHAR  7
+
 static struct bt_gatt_attr storage_service_attr[] = {
-    BT_GATT_PRIMARY_SERVICE(&storage_service_uuid),
-    BT_GATT_CHARACTERISTIC(&storage_write_uuid.uuid,
+    BT_GATT_PRIMARY_SERVICE(&storage_service_uuid),                           /* attrs[0] */
+    BT_GATT_CHARACTERISTIC(&storage_write_uuid.uuid,                         /* attrs[1] */
                            BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_WRITE,
                            NULL,
                            storage_write_handler,
                            NULL),
-    BT_GATT_CCC(storage_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
-    BT_GATT_CHARACTERISTIC(&storage_read_uuid.uuid,
+    BT_GATT_CCC(storage_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE), /* attrs[3] */
+    BT_GATT_CHARACTERISTIC(&storage_read_uuid.uuid,                          /* attrs[4] */
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_READ,
                            storage_read_characteristic,
                            NULL,
                            NULL),
-    BT_GATT_CCC(storage_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    BT_GATT_CCC(storage_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE), /* attrs[6] */
 #ifdef CONFIG_OMI_ENABLE_WIFI
-    BT_GATT_CHARACTERISTIC(&storage_wifi_uuid.uuid,
+    BT_GATT_CHARACTERISTIC(&storage_wifi_uuid.uuid,                          /* attrs[7] */
                            BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_WRITE,
                            NULL,
                            storage_wifi_handler,
                            NULL),
-    BT_GATT_CCC(storage_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    BT_GATT_CCC(storage_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE), /* attrs[9] */
 #endif
 };
 
@@ -150,7 +178,11 @@ static int setup_storage_tx()
 {
     transport_started = (uint8_t) 0;
     LOG_INF("about to transmit storage\n");
-    k_msleep(100);
+    // Give the central time to subscribe to notifications before data starts flowing.
+    // This delay was split across setup_storage_tx (100ms) and the GATT write handler
+    // (500ms). The write handler sleep has been removed because it blocked the BT thread,
+    // so the full delay now lives here in the storage thread where it is safe.
+    k_msleep(600);
 
     uint32_t file_size = get_file_size();
 
@@ -238,8 +270,10 @@ static ssize_t storage_write_handler(struct bt_conn *conn,
     result_buffer[0] = result;
     LOG_INF("length of storage write: %d", len);
     LOG_INF("result: %d ", result);
-    bt_gatt_notify(conn, &storage_service.attrs[1], &result_buffer, 1);
-    k_msleep(500);
+    bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], &result_buffer, 1);
+    // NOTE: do NOT sleep here. This handler runs in the Bluetooth host stack's cooperative
+    // thread. Sleeping would block ALL BLE operations (connection events, supervision
+    // timeouts, etc.). The storage thread handles its own startup delay in setup_storage_tx().
     return len;
 }
 
@@ -256,14 +290,14 @@ static ssize_t storage_wifi_handler(struct bt_conn *conn,
 
     if (len < 1) {
         result_buffer[0] = 1; // error: invalid length
-        bt_gatt_notify(conn, &storage_service.attrs[7], &result_buffer, 1);
+        bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WIFI_CHAR], &result_buffer, 1);
         return len;
     }
 
     if (wifi_is_hw_available() == false) {
         LOG_ERR("Wi-Fi hardware not available");
         result_buffer[0] = 0xFE; // error: hardware not available
-        bt_gatt_notify(conn, &storage_service.attrs[7], &result_buffer, 1);
+        bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WIFI_CHAR], &result_buffer, 1);
         return len;
     }
 
@@ -330,7 +364,7 @@ static ssize_t storage_wifi_handler(struct bt_conn *conn,
             break;
     }
 
-    bt_gatt_notify(conn, &storage_service.attrs[7], &result_buffer, 1);
+    bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WIFI_CHAR], &result_buffer, 1);
     return len;
 }
 #endif
@@ -353,7 +387,7 @@ static void write_to_gatt(struct bt_conn *conn)
         return;
     }
 
-    int err = bt_gatt_notify(conn, &storage_service.attrs[1], &storage_write_buffer, packet_size);
+    int err = bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], &storage_write_buffer, packet_size);
     if (err) {
         if (err == -ENOMEM || err == -EAGAIN) {
             // Buffer full, try again in next loop without advancing offset
@@ -423,7 +457,7 @@ void storage_write(void)
                 offset = 0;
                 uint8_t result_buffer[1] = {200};
                 if (conn) {
-                    bt_gatt_notify(get_current_connection(), &storage_service.attrs[1], &result_buffer, 1);
+                    bt_gatt_notify(get_current_connection(), &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], &result_buffer, 1);
                 }
             }
             delete_started = 0;
@@ -480,10 +514,10 @@ void storage_write(void)
                     stop_started = 0;
                 } else {
                     save_offset(offset);
-                    LOG_INF("Storage transfer done. Sending completion marker (100).");
-                    uint8_t stop_result[1] = {100};
+                    LOG_INF("Storage transfer done. Sending EOT marker (0xFD).");
+                    uint8_t stop_result[1] = {EOT_MARKER};
 
-                    int err = bt_gatt_notify(get_current_connection(), &storage_service.attrs[1], &stop_result, 1);
+                    int err = bt_gatt_notify(get_current_connection(), &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], &stop_result, 1);
                     if (err) {
                         LOG_ERR("Failed to send completion marker: %d", err);
                     }
