@@ -10,7 +10,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Setup
 
 ```bash
-ln -s -f ../../scripts/pre-commit .git/hooks/pre-commit  # enable auto-formatting on commit
 cd app && bash setup.sh ios    # or: bash setup.sh android
 ```
 
