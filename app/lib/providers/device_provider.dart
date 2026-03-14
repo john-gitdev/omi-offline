@@ -40,7 +40,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     ServiceManager.instance().device.subscribe(this, this);
   }
 
-  void setConnectedDevice(BtDevice? device) async {
+  Future<void> setConnectedDevice(BtDevice? device) async {
     connectedDevice = device;
     pairedDevice = device;
     await getDeviceInfo();
@@ -424,9 +424,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   void _onDeviceConnected(BtDevice device) async {
     Logger.debug('_onConnected inside: $connectedDevice');
     _disconnectNotificationTimer?.cancel();
-    setConnectedDevice(device);
 
-    setisDeviceStorageSupport();
+    // Await these — both call ensureConnection() internally. Fire-and-forget
+    // here means they race against the sequential awaits below, each spawning
+    // their own BleTransport and calling discoverServices() concurrently.
+    await setConnectedDevice(device);
+    await setisDeviceStorageSupport();
     setIsConnected(true);
 
     int currentLevel = await _retrieveBatteryLevel(device.id);
@@ -447,6 +450,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     }
     updateConnectingStatus(false);
 
+    // getDeviceInfo() already ran inside setConnectedDevice(); this is a no-op
+    // if firmware revision was fetched successfully (early-exit guard inside it).
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
 
