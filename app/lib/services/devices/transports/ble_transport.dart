@@ -199,27 +199,29 @@ class BleTransport extends DeviceTransport {
   }
 
   Future<BluetoothCharacteristic?> _getCharacteristic(String serviceUuid, String characteristicUuid) async {
+    // Attempt up to 3 service discoveries, but only re-discover when the characteristic
+    // is not found — not unconditionally on every retry (which was causing up to 4 calls).
     for (int retry = 0; retry < 3; retry++) {
-      if (_services.isEmpty) {
+      // Only (re-)discover if we have no services yet, or this is a retry after a miss.
+      if (_services.isEmpty || retry > 0) {
+        Logger.debug('BLE Transport: Discovering services (attempt ${retry + 1})...');
         _services = await _bleDevice.discoverServices();
       }
 
       final service = _services.firstWhereOrNull(
-        (service) => service.uuid.str128.toLowerCase() == serviceUuid.toLowerCase(),
+        (s) => s.uuid.str128.toLowerCase() == serviceUuid.toLowerCase(),
       );
 
       if (service != null) {
         final characteristic = service.characteristics.firstWhereOrNull(
-          (characteristic) => characteristic.uuid.str128.toLowerCase() == characteristicUuid.toLowerCase(),
+          (c) => c.uuid.str128.toLowerCase() == characteristicUuid.toLowerCase(),
         );
         if (characteristic != null) return characteristic;
       }
-      
-      // If not found, wait and try one more service discovery
+
       if (retry < 2) {
-        Logger.debug('BLE Transport: Characteristic $characteristicUuid not found, retrying discovery...');
+        Logger.debug('BLE Transport: Characteristic $characteristicUuid not found, retrying...');
         await Future.delayed(Duration(milliseconds: 500 * (retry + 1)));
-        _services = await _bleDevice.discoverServices();
       }
     }
 
