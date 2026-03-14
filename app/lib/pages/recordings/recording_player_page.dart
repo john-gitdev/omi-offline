@@ -270,22 +270,16 @@ class _SeekButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTap,
-      child: SizedBox(
-        width: 52,
-        height: 52,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            FaIcon(icon, color: Colors.grey.shade300, size: 36),
-            Positioned(
-              bottom: 6,
-              child: Text(
-                '$seconds',
-                style: TextStyle(color: Colors.grey.shade300, fontSize: 9, fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
-        ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FaIcon(icon, color: Colors.grey.shade300, size: 32),
+          const SizedBox(height: 5),
+          Text(
+            '${seconds}s',
+            style: TextStyle(color: Colors.grey.shade400, fontSize: 11, fontWeight: FontWeight.w500),
+          ),
+        ],
       ),
     );
   }
