@@ -8,7 +8,6 @@ const newFrameSize = 80;
 enum WalStorage {
   local,
   sdcard,
-  flashPage,
 }
 
 enum WalStatus {
@@ -46,7 +45,6 @@ class Wal {
   int? seconds;
   int? sampleRate;
   String? deviceModel;
-  WalStorage? originalStorage;
   int estimatedChunks;
 
   Wal({
@@ -66,7 +64,6 @@ class Wal {
     this.seconds,
     this.sampleRate,
     this.deviceModel,
-    this.originalStorage,
     this.estimatedChunks = 0,
   });
 
@@ -125,7 +122,6 @@ class Wal {
       'seconds': seconds,
       'sampleRate': sampleRate,
       'deviceModel': deviceModel,
-      'originalStorage': originalStorage?.name,
       'estimatedChunks': estimatedChunks,
     };
   }
@@ -149,9 +145,6 @@ class Wal {
       seconds: json['seconds'],
       sampleRate: json['sampleRate'],
       deviceModel: json['deviceModel'],
-      originalStorage: json['originalStorage'] != null
-          ? WalStorage.values.firstWhere((e) => e.name == json['originalStorage'], orElse: () => WalStorage.local)
-          : null,
       estimatedChunks: json['estimatedChunks'] ?? 0,
     );
   }
@@ -173,7 +166,6 @@ class Wal {
     int? seconds,
     int? sampleRate,
     String? deviceModel,
-    WalStorage? originalStorage,
     int? estimatedChunks,
   }) {
     return Wal(
@@ -193,7 +185,6 @@ class Wal {
       seconds: seconds ?? this.seconds,
       sampleRate: sampleRate ?? this.sampleRate,
       deviceModel: deviceModel ?? this.deviceModel,
-      originalStorage: originalStorage ?? this.originalStorage,
       estimatedChunks: estimatedChunks ?? this.estimatedChunks,
     );
   }
