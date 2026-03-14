@@ -70,7 +70,10 @@ class Wal {
     this.estimatedChunks = 0,
   });
 
-  String get id => '$device-$fileNum-$storageOffset';
+  // id is stable: storageOffset is always 0 at creation and must not be part of the key
+  // because storageOffset is mutated during sync progress callbacks, which would silently
+  // break deleteWal / removeWhere lookups that rely on id equality.
+  String get id => '$device-$fileNum';
 
   String getFileNameByTimeStarts(int timerStart) {
     return 'chunk_$timerStart.bin';
@@ -146,7 +149,7 @@ class Wal {
       seconds: json['seconds'],
       sampleRate: json['sampleRate'],
       deviceModel: json['deviceModel'],
-      originalStorage: json['originalStorage'] != null 
+      originalStorage: json['originalStorage'] != null
           ? WalStorage.values.firstWhere((e) => e.name == json['originalStorage'], orElse: () => WalStorage.local)
           : null,
       estimatedChunks: json['estimatedChunks'] ?? 0,
