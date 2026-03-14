@@ -68,26 +68,35 @@ abstract class DeviceConnection {
   DeviceTransport transport;
 
   DeviceConnectionState _connectionState = DeviceConnectionState.disconnected;
+  // Single persistent subscriptions — replaced on each connect() call so listeners
+  // never accumulate across reconnects (each connect() previously added a new
+  // listener to the broadcast stream without cancelling the old one).
+  StreamSubscription? _internalStateSubscription;
+  StreamSubscription? _externalStateSubscription;
 
-  DeviceConnection(this.device, this.transport) {
-    transport.connectionStateStream.listen((state) {
-      _connectionState = state == DeviceTransportState.connected
-          ? DeviceConnectionState.connected
-          : DeviceConnectionState.disconnected;
-    });
-  }
+  DeviceConnection(this.device, this.transport);
 
   Future<void> connect({
     void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged,
   }) async {
-    if (_connectionState == DeviceConnectionState.connected) {
-      throw DeviceConnectionException("Connection already established, please disconnect before start new connection");
-    }
+    // Cancel any previous subscriptions before adding new ones.
+    await _internalStateSubscription?.cancel();
+    await _externalStateSubscription?.cancel();
+
+    _internalStateSubscription = transport.connectionStateStream.listen((state) {
+      _connectionState = state == DeviceTransportState.connected
+          ? DeviceConnectionState.connected
+          : DeviceConnectionState.disconnected;
+    });
 
     if (onConnectionStateChanged != null) {
-      transport.connectionStateStream.listen((state) {
-        onConnectionStateChanged(device.id, 
-          state == DeviceTransportState.connected ? DeviceConnectionState.connected : DeviceConnectionState.disconnected);
+      _externalStateSubscription = transport.connectionStateStream.listen((state) {
+        onConnectionStateChanged(
+          device.id,
+          state == DeviceTransportState.connected
+              ? DeviceConnectionState.connected
+              : DeviceConnectionState.disconnected,
+        );
       });
     }
 
@@ -148,7 +157,7 @@ abstract class DeviceConnection {
       if (value.isNotEmpty && onBatteryLevelChange != null) {
         onBatteryLevelChange(value[0]);
       }
-    }) ;
+    });
   }
 
   Future<StreamSubscription<List<int>>?> getBleStorageFullListener({
@@ -179,7 +188,7 @@ abstract class DeviceConnection {
     required void Function(List<int>) onAudioBytesReceived,
   }) async {
     final stream = transport.getCharacteristicStream(omiServiceUuid, audioDataStreamCharacteristicUuid);
-    return stream.listen(onAudioBytesReceived) ;
+    return stream.listen(onAudioBytesReceived);
   }
 
   Future<List<int>> getBleButtonState() async {
@@ -232,7 +241,6 @@ abstract class DeviceConnection {
     final stream = transport.getCharacteristicStream(audioServiceUuid, audioCharacteristicFormatUuid);
     return stream.map((value) => BleAudioCodec.values[value[0]]).listen(onAudioCodecReceived);
   }
-
 
   Future<List<int>> getStorageList() async {
     if (await isConnected()) {
