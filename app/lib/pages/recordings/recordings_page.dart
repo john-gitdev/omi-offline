@@ -1,7 +1,7 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
@@ -9,7 +9,7 @@ import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/pages/settings/settings_drawer.dart';
 import 'package:omi/pages/settings/find_devices_page.dart';
 import 'package:omi/pages/settings/device_settings.dart';
-import 'package:just_audio/just_audio.dart';
+import 'package:omi/pages/recordings/recording_player_page.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -22,7 +22,6 @@ class RecordingsPage extends StatefulWidget {
 
 class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProgressListener {
   final RecordingsManager _manager = RecordingsManager();
-  final AudioPlayer _audioPlayer = AudioPlayer();
 
   List<DailyBatch> _batches = [];
   bool _isLoading = true;
@@ -30,8 +29,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   double _syncProgress = 0.0;
   double _syncSpeed = 0.0;
   int _syncRecordingsCount = 0;
-  String? _currentlyPlayingPath;
-  bool _isPlaying = false;
 
   // Processing state
   String? _processingDateString;
@@ -41,23 +38,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   void initState() {
     super.initState();
     _loadBatches();
-
-    _audioPlayer.playerStateStream.listen((state) {
-      if (mounted) {
-        setState(() {
-          _isPlaying = state.playing && state.processingState != ProcessingState.completed;
-          if (state.processingState == ProcessingState.completed) {
-            _currentlyPlayingPath = null;
-          }
-        });
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _audioPlayer.dispose();
-    super.dispose();
   }
 
   Future<void> _loadBatches() async {
@@ -75,7 +55,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
     if (mounted) {
       setState(() {
-        // Cap visual progress at 99% until the sync logic actually completes the future
         _syncProgress = percentage.clamp(0.0, 0.99);
         _syncSpeed = speedKBps ?? 0.0;
         _syncRecordingsCount = ServiceManager.instance().wal.getSyncs().estimatedTotalChunks;
@@ -104,7 +83,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     try {
       final syncService = ServiceManager.instance().wal.getSyncs();
-      // syncService.start(); // REMOVED: calling start() asynchronously overwrites _wals and orphans the sync loop objects
       final result = await syncService.syncAll(progress: this, force: force);
 
       if (mounted) {
@@ -145,7 +123,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   Future<void> _processBatch(DailyBatch batch) async {
     if (RecordingsManager.isProcessingAny || _isSyncing) return;
 
-    // Large batch warning (e.g. > 60 chunks = ~1 hour of audio)
     if (batch.rawChunks.length > 60) {
       bool? confirm = await showDialog<bool>(
         context: context,
@@ -169,11 +146,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     try {
       await _manager.processDay(batch, (progress) {
-        if (mounted) {
-          setState(() {
-            _processingProgress = progress;
-          });
-        }
+        if (mounted) setState(() => _processingProgress = progress);
       });
     } catch (e) {
       if (mounted) {
@@ -208,46 +181,20 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     );
     if (confirm != true) return;
 
-    // Stop playback if we're playing a file from this batch
-    if (_currentlyPlayingPath != null && batch.processedRecordings.any((f) => f.path == _currentlyPlayingPath)) {
-      await _audioPlayer.stop();
-      setState(() {
-        _currentlyPlayingPath = null;
-        _isPlaying = false;
-      });
-    }
-
     try {
       await _manager.deleteDay(batch);
       await _loadBatches();
     } catch (e) {
       if (mounted) {
-        messenger.showSnackBar(
-          SnackBar(content: Text('Error deleting day: $e')),
-        );
+        messenger.showSnackBar(SnackBar(content: Text('Error deleting day: $e')));
       }
     }
   }
 
-  Future<void> _togglePlay(File file) async {
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      if (_currentlyPlayingPath == file.path && _isPlaying) {
-        await _audioPlayer.pause();
-      } else {
-        if (_currentlyPlayingPath != file.path) {
-          await _audioPlayer.setFilePath(file.path);
-        }
-        await _audioPlayer.play();
-        setState(() {
-          _currentlyPlayingPath = file.path;
-        });
-      }
-    } catch (e) {
-      messenger.showSnackBar(
-        SnackBar(content: Text('Error playing audio: $e')),
-      );
-    }
+  Future<void> _exportAll(DailyBatch batch) async {
+    if (batch.processedRecordings.isEmpty) return;
+    final files = batch.processedRecordings.map((f) => XFile(f.path)).toList();
+    await SharePlus.instance.share(ShareParams(files: files, subject: 'Recordings – ${batch.dateString}'));
   }
 
   Widget _buildSyncStatus() {
@@ -268,10 +215,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               const SizedBox(
                 width: 18,
                 height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.deepPurpleAccent,
-                ),
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.deepPurpleAccent),
               ),
               const SizedBox(width: 12),
               const Expanded(
@@ -280,15 +224,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                   style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
                 ),
               ),
-              Text(
-                '${_syncSpeed.toStringAsFixed(1)} KB/s',
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
-              ),
+              Text('${_syncSpeed.toStringAsFixed(1)} KB/s',
+                  style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
               const SizedBox(width: 12),
               GestureDetector(
-                onTap: () {
-                  ServiceManager.instance().wal.getSyncs().cancelSync();
-                },
+                onTap: () => ServiceManager.instance().wal.getSyncs().cancelSync(),
                 child: FaIcon(FontAwesomeIcons.circleXmark, color: Colors.grey.shade600, size: 20),
               ),
             ],
@@ -307,14 +247,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                '$_syncRecordingsCount Chunks to Sync',
-                style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-              ),
-              Text(
-                '${(_syncProgress * 100).toInt()}%',
-                style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
-              ),
+              Text('$_syncRecordingsCount Chunks to Sync', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+              Text('${(_syncProgress * 100).toInt()}%',
+                  style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold)),
             ],
           ),
         ],
@@ -324,6 +259,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   Widget _buildBatchCard(DailyBatch batch) {
     final isProcessing = _processingDateString == batch.dateString;
+    final recordings = batch.processedRecordings.map(RecordingInfo.fromFile).toList();
 
     return Card(
       color: const Color(0xFF1C1C1E),
@@ -334,6 +270,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Header row
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -355,6 +292,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               ],
             ),
             const SizedBox(height: 12),
+
+            // Raw chunks / process button
             if (batch.rawChunks.isNotEmpty) ...[
               Container(
                 padding: const EdgeInsets.all(12),
@@ -408,50 +347,71 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               ),
               const SizedBox(height: 16),
             ],
-            if (batch.processedRecordings.isEmpty)
+
+            // Processed recordings list
+            if (recordings.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8.0),
                 child: Text('No processed recordings yet.', style: TextStyle(color: Colors.grey.shade500)),
               )
             else ...[
-              ...batch.processedRecordings.map((file) {
-                final fileName = file.path.split('/').last;
-                final isThisPlaying = _currentlyPlayingPath == file.path && _isPlaying;
-
-                return ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: CircleAvatar(
-                    backgroundColor: isThisPlaying ? Colors.deepPurpleAccent : Colors.grey.shade800,
-                    child: IconButton(
-                      icon: FaIcon(
-                        isThisPlaying ? FontAwesomeIcons.pause : FontAwesomeIcons.play,
-                        color: Colors.white,
-                        size: 14,
-                      ),
-                      onPressed: () => _togglePlay(file),
-                    ),
-                  ),
-                  title: Text(
-                    fileName,
-                    style: const TextStyle(color: Colors.white, fontSize: 14),
-                  ),
-                  subtitle: Text(
-                    'Processed Audio',
-                    style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-                  ),
-                );
-              }),
-              const SizedBox(height: 8),
+              ...recordings.map((rec) => _buildRecordingTile(rec)),
+              const SizedBox(height: 4),
               const Divider(color: Color(0xFF2C2C2E), height: 1),
-              TextButton.icon(
-                onPressed: () => _deleteDay(batch),
-                icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
-                label: Text(
-                  'Delete Day',
-                  style: TextStyle(color: Colors.red.shade400, fontSize: 13),
-                ),
+              const SizedBox(height: 4),
+
+              // Action row: Export All + Delete Day
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  TextButton.icon(
+                    key: Key('export_all_${batch.dateString}'),
+                    onPressed: () => _exportAll(batch),
+                    icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 13, color: Colors.grey.shade400),
+                    label: Text('Export All', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+                  ),
+                  TextButton.icon(
+                    key: Key('delete_day_${batch.dateString}'),
+                    onPressed: () => _deleteDay(batch),
+                    icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
+                    label: Text('Delete Day', style: TextStyle(color: Colors.red.shade400, fontSize: 13)),
+                  ),
+                ],
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRecordingTile(RecordingInfo rec) {
+    return InkWell(
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => RecordingPlayerPage(recording: rec)),
+      ),
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    rec.timeRangeLabel,
+                    style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '${rec.durationLabel}  ·  ${rec.sizeLabel}',
+                    style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
           ],
         ),
       ),
@@ -493,26 +453,20 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               if (!deviceProvider.isConnected)
                 IconButton(
                   icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Colors.grey, size: 20),
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (c) => const FindDevicesPage()),
-                    );
-                  },
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                  ),
                 )
               else
                 IconButton(
                   icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Colors.blueAccent, size: 20),
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (c) => const DeviceSettings()),
-                    );
-                  },
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (c) => const DeviceSettings()),
+                  ),
                 ),
               IconButton(
                 icon: const FaIcon(FontAwesomeIcons.gear, color: Colors.white, size: 20),
-                onPressed: () {
-                  SettingsDrawer.show(context);
-                },
+                onPressed: () => SettingsDrawer.show(context),
               ),
             ],
           ),
@@ -553,11 +507,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                                         ] else ...[
                                           const SizedBox(height: 32),
                                           ElevatedButton(
-                                            onPressed: () {
-                                              Navigator.of(context).push(
-                                                MaterialPageRoute(builder: (c) => const FindDevicesPage()),
-                                              );
-                                            },
+                                            onPressed: () => Navigator.of(context).push(
+                                              MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                                            ),
                                             style: ElevatedButton.styleFrom(
                                               backgroundColor: Colors.deepPurpleAccent,
                                               foregroundColor: Colors.white,
@@ -574,9 +526,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                                 physics: const AlwaysScrollableScrollPhysics(),
                                 padding: const EdgeInsets.all(16),
                                 itemCount: _batches.length,
-                                itemBuilder: (context, index) {
-                                  return _buildBatchCard(_batches[index]);
-                                },
+                                itemBuilder: (context, index) => _buildBatchCard(_batches[index]),
                               ),
                       ),
               ),
