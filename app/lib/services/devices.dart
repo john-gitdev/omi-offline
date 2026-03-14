@@ -4,6 +4,7 @@ import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/discovery/bluetooth_discoverer.dart';
 import 'package:omi/utils/logger.dart';
+import 'package:omi/services/devices/discovery/device_discoverer.dart';
 
 enum DeviceConnectionState {
   connected,
@@ -52,6 +53,10 @@ class DeviceService implements IDeviceService {
 
   DeviceConnection? _connection;
   bool _isWifiSyncInProgress = false;
+  // Tracks the active BLE scan so concurrent calls to discover() can cancel the
+  // prior scan before starting a new one. Without this, two scans would run in
+  // parallel, and most BLE stacks silently fail or throw on concurrent scans.
+  DeviceDiscoverer? _activeDiscoverer;
 
   @override
   DeviceConnection? get connection => _connection;
@@ -95,20 +100,36 @@ class DeviceService implements IDeviceService {
 
   @override
   Future<List<BtDevice>> discover({String? desirableDeviceId}) async {
-    final discoverer = BluetoothDeviceDiscoverer();
-    final result = await discoverer.discover();
-    final devices = result.devices;
-    
-    // If we were looking for a specific device and found it, we can stop early
-    if (desirableDeviceId != null && devices.any((d) => d.id == desirableDeviceId)) {
-       Logger.debug('DeviceService: Found desirable device $desirableDeviceId');
+    // Cancel any in-progress scan before starting a new one. Most BLE stacks
+    // do not support concurrent scans and will throw or silently return empty.
+    final previous = _activeDiscoverer;
+    if (previous != null) {
+      Logger.debug('DeviceService: Cancelling previous scan before starting new one');
+      await previous.stop();
+      _activeDiscoverer = null;
     }
 
-    for (var s in _subscriptions.values) {
-      s.onDevices(devices);
+    final discoverer = BluetoothDeviceDiscoverer();
+    _activeDiscoverer = discoverer;
+
+    try {
+      final result = await discoverer.discover();
+      final devices = result.devices;
+
+      if (desirableDeviceId != null && devices.any((d) => d.id == desirableDeviceId)) {
+        Logger.debug('DeviceService: Found desirable device $desirableDeviceId');
+      }
+
+      for (var s in _subscriptions.values) {
+        s.onDevices(devices);
+      }
+
+      return devices;
+    } finally {
+      // Clear the reference once the scan completes (or fails), so a subsequent
+      // page pop / dispose doesn't call stop() on an already-finished scan.
+      if (_activeDiscoverer == discoverer) _activeDiscoverer = null;
     }
-    
-    return devices;
   }
 
   @override
