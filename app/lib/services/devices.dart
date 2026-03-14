@@ -57,6 +57,12 @@ class DeviceService implements IDeviceService {
   // prior scan before starting a new one. Without this, two scans would run in
   // parallel, and most BLE stacks silently fail or throw on concurrent scans.
   DeviceDiscoverer? _activeDiscoverer;
+  // Mutex for ensureConnection(): non-forced callers wait for the in-progress
+  // connection attempt instead of spawning a parallel one.  Multiple concurrent
+  // callers (battery read, storage read, WAL sync, etc.) all racing into
+  // ensureConnection() would each create a separate DeviceConnection/BleTransport
+  // and call discoverServices() concurrently — causing the phantom-connection log spam.
+  Future<DeviceConnection?>? _pendingConnection;
 
   @override
   DeviceConnection? get connection => _connection;
@@ -134,11 +140,35 @@ class DeviceService implements IDeviceService {
 
   @override
   Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false}) async {
+    // Fast path: already have a live connection to the right device.
     final currentConnection = _connection;
     if (currentConnection != null && currentConnection.device.id == deviceId && !force) {
       return currentConnection;
     }
 
+    // Serialize: if a connection attempt is already running and this isn't a
+    // force call, wait for it to finish and return whatever it produced.
+    // Without this, N callers (battery, storage, WAL sync …) all race in,
+    // each creates its own DeviceConnection/BleTransport, and every one of
+    // them calls discoverServices() simultaneously → the phantom-connect storm.
+    if (!force) {
+      final pending = _pendingConnection;
+      if (pending != null) {
+        Logger.debug('DeviceService: ensureConnection waiting for in-progress attempt');
+        return await pending;
+      }
+    }
+
+    final future = _performConnect(deviceId);
+    _pendingConnection = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_pendingConnection, future)) _pendingConnection = null;
+    }
+  }
+
+  Future<DeviceConnection?> _performConnect(String deviceId) async {
     final existingConnection = _connection;
     if (existingConnection != null) {
       await existingConnection.disconnect();
