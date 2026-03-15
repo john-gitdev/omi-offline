@@ -534,9 +534,7 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
             supervision_timeout);
     LOG_INF("Initial MTU: %u", mtu);
 
-    // Initiate PHY, Data Length, and MTU updates
-    update_phy(current_connection);
-
+    // PHY update is handled automatically by CONFIG_BT_AUTO_PHY_UPDATE — no manual call needed.
     // Add a delay before data length and MTU updates as per Nordic example
     k_sleep(K_MSEC(1000));
     update_data_length(current_connection);
