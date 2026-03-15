@@ -140,7 +140,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         channel: 1,
         device: deviceId,
         fileNum: 1,
-        storageOffset: 0, // Always sync from beginning to handle app reinstalls/new connections
+        storageOffset: storageOffset,
         storageTotalBytes: totalBytes,
         timerStart: timerStart,
         storage: WalStorage.sdcard,
@@ -245,7 +245,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       {bool force = false, Function(int offset)? onProgress}) async {
     var deviceId = wal.device;
     int fileNum = wal.fileNum;
-    int offset = force ? 0 : wal.storageOffset;
+    int offset = wal.storageOffset;
     int timerStart = wal.timerStart;
 
     Logger.debug("_readStorageBytesToFile $offset");
@@ -613,8 +613,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       wal.syncStartedAt = DateTime.now();
       listener.onWalUpdated();
 
-      int lastOffset = 0;
-      int totalBytesToDownload = wal.storageTotalBytes;
+      int lastOffset = wal.storageOffset;
+      int totalBytesToDownload = wal.storageTotalBytes - wal.storageOffset;
 
       await _checkDiskSpaceBeforeSync(totalBytesToDownload);
       _downloadStartTime = DateTime.now();
