@@ -350,35 +350,37 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
   Future scanAndConnectToDevice() async {
     updateConnectingStatus(true);
-    if (isConnected) {
-      if (connectedDevice == null) {
-        connectedDevice = await _getConnectedDevice();
-        if (connectedDevice != null) {
-          SharedPreferencesUtil().deviceName = connectedDevice!.name;
+    try {
+      if (isConnected) {
+        if (connectedDevice == null) {
+          connectedDevice = await _getConnectedDevice();
+          if (connectedDevice != null) {
+            SharedPreferencesUtil().deviceName = connectedDevice!.name;
+          }
         }
-      }
 
-      setIsConnected(true);
-      updateConnectingStatus(false);
-      notifyListeners();
-      return;
-    }
-
-    var device = await _scanConnectDevice();
-    Logger.debug('inside scanAndConnectToDevice $device in device_provider');
-    if (device != null) {
-      var cDevice = await _getConnectedDevice();
-      if (cDevice != null) {
-        setConnectedDevice(cDevice);
-        setisDeviceStorageSupport();
-        SharedPreferencesUtil().deviceName = cDevice.name;
         setIsConnected(true);
+        notifyListeners();
+        return;
       }
-      Logger.debug('device is not null $cDevice');
-    }
-    updateConnectingStatus(false);
 
-    notifyListeners();
+      var device = await _scanConnectDevice();
+      Logger.debug('inside scanAndConnectToDevice $device in device_provider');
+      if (device != null) {
+        var cDevice = await _getConnectedDevice();
+        if (cDevice != null) {
+          setConnectedDevice(cDevice);
+          setisDeviceStorageSupport();
+          SharedPreferencesUtil().deviceName = cDevice.name;
+          setIsConnected(true);
+        }
+        Logger.debug('device is not null $cDevice');
+      }
+
+      notifyListeners();
+    } finally {
+      updateConnectingStatus(false);
+    }
   }
 
   void updateConnectingStatus(bool value) {
