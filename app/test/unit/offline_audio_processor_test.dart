@@ -34,7 +34,8 @@ void main() {
     PathProviderPlatform.instance = mockPathProvider;
     
     SharedPreferences.setMockInitialValues({
-      'offlineSilenceThreshold': -45.0,
+      'offlineSnrMarginDb': 10.0,
+      'offlineHangoverMs': 0, // disabled for determinism
       'offlineSplitSeconds': 2, // 100 frames
       'offlineMinSpeechSeconds': 0,
       'offlinePreSpeechSeconds': 1, // 50 frames
