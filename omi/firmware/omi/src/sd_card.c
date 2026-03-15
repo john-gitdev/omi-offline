@@ -211,9 +211,14 @@ int read_audio_data(uint8_t *buf, int amount, int offset)
     req.u.read.offset = offset;
     req.u.read.resp = &resp;
 
+    LOG_INF("[SD_READ] Queuing read (offset=%u len=%u queue_used=%u/%u)",
+            (unsigned)offset, (unsigned)amount,
+            (unsigned)k_msgq_num_used_get(&sd_msgq), (unsigned)SD_REQ_QUEUE_MSGS);
     int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(100));
     if (ret) {
-        LOG_ERR("Failed to queue read_audio_data request: %d", ret);
+        LOG_ERR("[SD_READ] Queue full (%u/%u) — read aborted at offset %u: %d",
+                (unsigned)k_msgq_num_used_get(&sd_msgq), (unsigned)SD_REQ_QUEUE_MSGS,
+                (unsigned)offset, ret);
         return ret;
     }
 
@@ -451,8 +456,10 @@ void sd_worker_thread(void)
                 }
 
                 if (bytes_since_sync >= SD_FSYNC_THRESHOLD) {
-                    LOG_INF("[SD_WORK] fs_sync triggered after %u bytes\n", (unsigned)bytes_since_sync);
+                    uint32_t t0 = k_uptime_get_32();
+                    LOG_INF("[SD_WORK] fs_sync start (queue_used=%u)", (unsigned)k_msgq_num_used_get(&sd_msgq));
                     res = fs_sync(&fil_data);
+                    LOG_INF("[SD_WORK] fs_sync done in %u ms (queue_used=%u)", (unsigned)(k_uptime_get_32() - t0), (unsigned)k_msgq_num_used_get(&sd_msgq));
                     if (res < 0) {
                         LOG_ERR("[SD_WORK] fs_sync data failed: %d\n", res);
                     }
