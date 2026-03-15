@@ -60,8 +60,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         context,
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
-        'Force Re-download',
-        'This will download all recordings from the beginning of the SD card. This may take a long time and use significant battery. Continue?',
+        'Force Re-scan Device',
+        'This will re-scan the device SD card from the beginning and download any recordings not yet on your phone. This may take a long time and use significant battery. Continue?',
         confirmText: 'Start',
       ),
     );
@@ -194,7 +194,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 TextButton.icon(
                   onPressed: _forceSync,
                   icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 14, color: Colors.grey),
-                  label: const Text('Re-download All Recordings', style: TextStyle(color: Colors.grey, fontSize: 14)),
+                  label: const Text('Force Re-scan Device', style: TextStyle(color: Colors.grey, fontSize: 14)),
                 ),
                 const SizedBox(height: 8),
                 TextButton.icon(
