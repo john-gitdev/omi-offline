@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
+import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/debouncer.dart';
@@ -30,6 +31,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   DateTime? _reconnectAt;
   final int _connectionCheckSeconds = 15; // 10s periods, 5s for each scan
 
+  Timer? _backgroundSyncTimer;
+  static const int _backgroundSyncMinutes = 60;
+
   Timer? _disconnectNotificationTimer;
   final Debouncer _disconnectDebouncer = Debouncer(delay: const Duration(milliseconds: 500));
   final Debouncer _connectDebouncer = Debouncer(delay: const Duration(milliseconds: 100));
@@ -38,6 +42,10 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
   DeviceProvider() {
     ServiceManager.instance().device.subscribe(this, this);
+    if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
+      Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true));
+    }
+    _startBackgroundSyncTimer();
   }
 
   Future<void> setConnectedDevice(BtDevice? device) async {
@@ -386,12 +394,40 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     notifyListeners();
   }
 
+  void _startBackgroundSyncTimer() {
+    _backgroundSyncTimer?.cancel();
+    _backgroundSyncTimer = Timer.periodic(const Duration(minutes: _backgroundSyncMinutes), (_) async {
+      if (!isConnected) {
+        if (!isConnecting) await scanAndConnectToDevice();
+        // sync triggers in _onDeviceConnected if connection succeeds
+      } else {
+        _doBackgroundSync();
+      }
+    });
+  }
+
+  Future<void> _doBackgroundSync() async {
+    final walSync = ServiceManager.instance().wal.getSyncs();
+    if (walSync.isSyncing) return;
+    if (RecordingsManager.isProcessingAny) return;
+    try {
+      final result = await walSync.syncAll();
+      final syncWasComplete = result != null && !result.isPartial;
+      if (syncWasComplete) {
+        await RecordingsManager.processAllCompletedSessions();
+      }
+    } catch (e) {
+      Logger.debug('Background sync failed: $e');
+    }
+  }
+
   @override
   void dispose() {
     _bleBatteryLevelListener?.cancel();
     _bleStorageFullListener?.cancel();
     _bleButtonListener?.cancel();
     _reconnectionTimer?.cancel();
+    _backgroundSyncTimer?.cancel();
     _disconnectDebouncer.cancel();
     _connectDebouncer.cancel();
     ServiceManager.instance().device.unsubscribe(this);
@@ -457,6 +493,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
     // Wals
     ServiceManager.instance().wal.getSyncs().setDevice(device);
+    _doBackgroundSync(); // fire-and-forget
 
     notifyListeners();
     onDeviceConnected?.call(device);
