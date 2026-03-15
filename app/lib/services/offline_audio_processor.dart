@@ -14,7 +14,11 @@ class OfflineAudioProcessor {
   // Opus frame is typically 20ms
   static const int frameDurationMs = 20;
 
-  static const double _noiseFloorAlpha = 0.98;
+  // Asymmetric noise floor tracking: slow to rise (avoid loud transients suppressing speech),
+  // slow to fall (preserve sensitivity after leaving a noisy environment).
+  // Rise is intentionally conservative — biased toward keeping more audio.
+  static const double _noiseFloorAlphaRise = 0.995; // ~10s to adapt upward
+  static const double _noiseFloorAlphaFall = 0.98;  // ~2s to adapt downward
 
   final SimpleOpusDecoder? _decoder;
 
@@ -165,9 +169,15 @@ class OfflineAudioProcessor {
       // 2. SNR speech test
       final bool rawSpeech = dbfs > _noiseFloorDbfs + _snrMarginDb;
 
-      // 3. Downward-only noise floor adaptation during silence
-      if (!rawSpeech && dbfs < _noiseFloorDbfs) {
-        _noiseFloorDbfs = _noiseFloorAlpha * _noiseFloorDbfs + (1 - _noiseFloorAlpha) * dbfs;
+      // 3. Asymmetric noise floor adaptation during silence:
+      //    - Rise slowly on louder frames (conservative — avoids transients suppressing speech)
+      //    - Fall slowly on quieter frames (recovers sensitivity after leaving noisy environment)
+      if (!rawSpeech) {
+        if (dbfs > _noiseFloorDbfs) {
+          _noiseFloorDbfs = _noiseFloorAlphaRise * _noiseFloorDbfs + (1 - _noiseFloorAlphaRise) * dbfs;
+        } else {
+          _noiseFloorDbfs = _noiseFloorAlphaFall * _noiseFloorDbfs + (1 - _noiseFloorAlphaFall) * dbfs;
+        }
       }
 
       // 4. Hangover smoothing
