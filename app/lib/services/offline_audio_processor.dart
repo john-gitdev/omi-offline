@@ -50,10 +50,10 @@ class OfflineAudioProcessor {
                 : null),
         _outputDir = outputDir,
         _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb,
-        _hangoverFrameCount = max(0, SharedPreferencesUtil().offlineHangoverMs ~/ frameDurationMs),
+        _hangoverFrameCount = max(0, (SharedPreferencesUtil().offlineHangoverSeconds * 1000).round() ~/ frameDurationMs),
         _silenceDurationToSplitMs = SharedPreferencesUtil().offlineSplitSeconds * 1000,
         _minSpeechMs = SharedPreferencesUtil().offlineMinSpeechSeconds * 1000,
-        _preSpeechBufferMs = SharedPreferencesUtil().offlinePreSpeechMs,
+        _preSpeechBufferMs = (SharedPreferencesUtil().offlinePreSpeechSeconds * 1000).round(),
         _gapThresholdMs = SharedPreferencesUtil().offlineGapSeconds * 1000;
 
   void destroy() {
