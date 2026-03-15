@@ -86,6 +86,11 @@ void check_button_level(struct k_work *work_item)
                 // Long press 1s -> Mute toggle
                 is_muted = !is_muted;
                 LOG_INF("Mute toggled: %s", is_muted ? "ON" : "OFF");
+                if (is_muted) {
+                    mic_pause();
+                } else {
+                    mic_resume();
+                }
                 play_haptic_milli(500);
                 
                 // Note: LED colors are now handled in set_led_state() in main.c
