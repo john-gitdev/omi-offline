@@ -18,9 +18,13 @@ class SharedPreferencesUtil {
 
   //--------------------------- Offline Audio Processing ---------------------//
 
-  double get offlineSilenceThreshold => getDouble('offlineSilenceThreshold', defaultValue: -55.0);
+  double get offlineSnrMarginDb => getDouble('offlineSnrMarginDb', defaultValue: 10.0);
 
-  set offlineSilenceThreshold(double value) => saveDouble('offlineSilenceThreshold', value);
+  set offlineSnrMarginDb(double value) => saveDouble('offlineSnrMarginDb', value);
+
+  int get offlineHangoverMs => getInt('offlineHangoverMs', defaultValue: 1500);
+
+  set offlineHangoverMs(int value) => saveInt('offlineHangoverMs', value);
 
   int get offlineSplitSeconds => getInt('offlineSplitSeconds', defaultValue: 120);
 
@@ -47,8 +51,11 @@ class SharedPreferencesUtil {
     _preferences = prefs;
 
     // Set default values if not present
-    if (!prefs.containsKey('offlineSilenceThreshold')) {
-      prefs.setDouble('offlineSilenceThreshold', -55.0);
+    if (!prefs.containsKey('offlineSnrMarginDb')) {
+      prefs.setDouble('offlineSnrMarginDb', 10.0);
+    }
+    if (!prefs.containsKey('offlineHangoverMs')) {
+      prefs.setInt('offlineHangoverMs', 1500);
     }
     if (!prefs.containsKey('offlineSplitSeconds')) {
       prefs.setInt('offlineSplitSeconds', 120); // 2 minutes default
