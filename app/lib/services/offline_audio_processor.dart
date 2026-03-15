@@ -53,7 +53,7 @@ class OfflineAudioProcessor {
         _hangoverFrameCount = max(0, SharedPreferencesUtil().offlineHangoverMs ~/ frameDurationMs),
         _silenceDurationToSplitMs = SharedPreferencesUtil().offlineSplitSeconds * 1000,
         _minSpeechMs = SharedPreferencesUtil().offlineMinSpeechSeconds * 1000,
-        _preSpeechBufferMs = SharedPreferencesUtil().offlinePreSpeechSeconds * 1000,
+        _preSpeechBufferMs = SharedPreferencesUtil().offlinePreSpeechMs,
         _gapThresholdMs = SharedPreferencesUtil().offlineGapSeconds * 1000;
 
   void destroy() {
