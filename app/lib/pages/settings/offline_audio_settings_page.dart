@@ -10,24 +10,33 @@ class OfflineAudioSettingsPage extends StatefulWidget {
 }
 
 class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
-  late double _silenceThreshold;
+  late double _snrMarginDb;
+  late int _hangoverMs;
   late int _splitSeconds;
   late int _minSpeechSeconds;
+  late int _preSpeechSeconds;
+  late int _gapSeconds;
   late bool _adjustmentMode;
 
   @override
   void initState() {
     super.initState();
-    _silenceThreshold = SharedPreferencesUtil().offlineSilenceThreshold;
+    _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb;
+    _hangoverMs = SharedPreferencesUtil().offlineHangoverMs;
     _splitSeconds = SharedPreferencesUtil().offlineSplitSeconds;
     _minSpeechSeconds = SharedPreferencesUtil().offlineMinSpeechSeconds;
+    _preSpeechSeconds = SharedPreferencesUtil().offlinePreSpeechSeconds;
+    _gapSeconds = SharedPreferencesUtil().offlineGapSeconds;
     _adjustmentMode = SharedPreferencesUtil().offlineAdjustmentMode;
   }
 
   void _saveSettings() {
-    SharedPreferencesUtil().offlineSilenceThreshold = _silenceThreshold;
+    SharedPreferencesUtil().offlineSnrMarginDb = _snrMarginDb;
+    SharedPreferencesUtil().offlineHangoverMs = _hangoverMs;
     SharedPreferencesUtil().offlineSplitSeconds = _splitSeconds;
     SharedPreferencesUtil().offlineMinSpeechSeconds = _minSpeechSeconds;
+    SharedPreferencesUtil().offlinePreSpeechSeconds = _preSpeechSeconds;
+    SharedPreferencesUtil().offlineGapSeconds = _gapSeconds;
     SharedPreferencesUtil().offlineAdjustmentMode = _adjustmentMode;
   }
 
@@ -104,25 +113,50 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
             ),
             const SizedBox(height: 32),
             const Text(
-              'Silence Threshold (dBFS)',
+              'Speech Sensitivity (SNR Margin)',
               style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
             ),
             const SizedBox(height: 8),
             Text(
-              'Sets the decibel level required to trigger the end of a silence period. -100 is absolute silence. (Current: ${_silenceThreshold.toStringAsFixed(1)} dBFS)',
+              'Minimum dB above ambient noise required to classify a frame as speech. Higher = less sensitive. Recommended: 8–12 dB. (Current: ${_snrMarginDb.toStringAsFixed(0)} dB)',
               style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
             ),
             const SizedBox(height: 12),
             Slider(
-              value: _silenceThreshold,
-              min: -100.0,
-              max: 0.0,
-              divisions: 100,
+              value: _snrMarginDb,
+              min: 3.0,
+              max: 20.0,
+              divisions: 17,
               activeColor: Colors.deepPurpleAccent,
               inactiveColor: const Color(0xFF3C3C43),
               onChanged: (value) {
                 setState(() {
-                  _silenceThreshold = value;
+                  _snrMarginDb = value;
+                });
+                _saveSettings();
+              },
+            ),
+            const SizedBox(height: 32),
+            const Text(
+              'Hangover Duration',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'How long to continue treating audio as speech after the signal drops below threshold. Prevents pauses and breaths from splitting recordings. (Current: ${_formatTime(_hangoverMs ~/ 1000)})',
+              style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            Slider(
+              value: _hangoverMs / 1000,
+              min: 0,
+              max: 5,
+              divisions: 10,
+              activeColor: Colors.deepPurpleAccent,
+              inactiveColor: const Color(0xFF3C3C43),
+              onChanged: (value) {
+                setState(() {
+                  _hangoverMs = (value * 1000).round();
                 });
                 _saveSettings();
               },
@@ -178,6 +212,56 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               },
             ),
             const SizedBox(height: 32),
+            const Text(
+              'Pre-Speech Buffer',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Audio kept before detected speech to avoid clipping the start of utterances. (Current: ${_formatTime(_preSpeechSeconds)})',
+              style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            Slider(
+              value: _preSpeechSeconds.toDouble(),
+              min: 0.0,
+              max: 5.0,
+              divisions: 10,
+              activeColor: Colors.deepPurpleAccent,
+              inactiveColor: const Color(0xFF3C3C43),
+              onChanged: (value) {
+                setState(() {
+                  _preSpeechSeconds = value.toInt();
+                });
+                _saveSettings();
+              },
+            ),
+            const SizedBox(height: 32),
+            const Text(
+              'Gap Threshold',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'If a time gap between chunks exceeds this duration, recordings are force-split (e.g. device was off). (Current: ${_formatTime(_gapSeconds)})',
+              style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            Slider(
+              value: _gapSeconds.toDouble(),
+              min: 5.0,
+              max: 60.0,
+              divisions: 11,
+              activeColor: Colors.deepPurpleAccent,
+              inactiveColor: const Color(0xFF3C3C43),
+              onChanged: (value) {
+                setState(() {
+                  _gapSeconds = value.toInt();
+                });
+                _saveSettings();
+              },
+            ),
+            const SizedBox(height: 32),
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
@@ -191,7 +275,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   const SizedBox(width: 16),
                   Expanded(
                     child: Text(
-                      'All recordings are processed locally and saved as heavily compressed AAC audio files to maximize storage.',
+                      'All recordings are processed locally and saved as WAV audio files.',
                       style: TextStyle(color: Colors.grey.shade300, fontSize: 14),
                     ),
                   ),
