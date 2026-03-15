@@ -29,6 +29,7 @@
 #ifdef CONFIG_OMI_ENABLE_MONITOR
 #include "monitor.h"
 #endif
+#include "codec.h"
 #include "sd_card.h"
 #include "settings.h"
 #include "storage.h"
@@ -795,6 +796,18 @@ static uint16_t buffer_offset = 0;
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 static uint8_t storage_temp_data[MAX_WRITE_SIZE];
 
+/* mic delivers 100ms mono blocks (1600 samples at 16kHz); forward to codec ring buffer */
+#define MIC_BLOCK_SAMPLES (16000 / 10)
+static void on_mic_audio(int16_t *pcm)
+{
+    codec_receive_pcm(pcm, MIC_BLOCK_SAMPLES);
+}
+
+static void on_codec_output(uint8_t *data, size_t len)
+{
+    broadcast_audio_packets(data, len);
+}
+
 bool write_custom_packet_to_storage(uint8_t marker, uint8_t *data, uint8_t data_size)
 {
     uint8_t packet_size = data_size + OPUS_PREFIX_LENGTH;
@@ -1072,7 +1085,15 @@ int transport_start()
     memset(storage_temp_data, 0, OPUS_PADDED_LENGTH * 4);
     bt_gatt_service_register(&storage_service);
 #endif
-    err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+    // Use slow advertising interval (1280 ms) to save power while still being
+    // discoverable. Fast interval (100 ms) is only needed for initial pairing;
+    // phones reconnect fine at slow intervals once paired.
+    static const struct bt_le_adv_param slow_adv_param =
+        BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_USE_NAME,
+                             BT_GAP_ADV_SLOW_INT_MIN,  /* 1000 ms */
+                             BT_GAP_ADV_SLOW_INT_MAX,  /* 1280 ms */
+                             NULL);
+    err = bt_le_adv_start(&slow_adv_param, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
     if (err) {
         LOG_ERR("Transport advertising failed to start (err %d)", err);
         return err;
@@ -1109,6 +1130,12 @@ int transport_start()
     }
 
     LOG_INF("Pusher successfully started");
+
+    // Wire the audio pipeline: mic PCM → codec → pusher ring buffer
+    set_codec_callback(on_codec_output);
+    codec_start();
+    set_mic_callback(on_mic_audio);
+    LOG_INF("Audio pipeline wired: mic → codec → pusher");
 
     return 0;
 }

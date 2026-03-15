@@ -18,7 +18,10 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define DISK_MOUNT_PT "/SD:"        // Mount point path
 #define SD_REQ_QUEUE_MSGS  25       // Number of messages in the SD request queue
 #define SD_FSYNC_THRESHOLD 20000    // Threshold in bytes to trigger fsync
-#define WRITE_BATCH_COUNT 10        // Number of writes to batch before writing to SD card
+#define WRITE_BATCH_COUNT 50        // Number of writes to batch before writing to SD card
+                                    // Increased from 10 → 50 for battery savings (~5s flush interval vs ~1s).
+                                    // Trade-off: up to 5s audio lost on sudden power cut (vs 1s).
+                                    // Revert to 10 if SD write reliability issues are observed.
 #define ERROR_THRESHOLD 5           // Maximum allowed write errors before taking action
 
 // batch write buffer
@@ -399,6 +402,21 @@ void sd_worker_thread(void)
         }
 
         fs_seek(&fil_data, 0, FS_SEEK_END);
+
+        /* If data file is empty but info.txt has a non-zero offset, it's a stale
+         * leftover (e.g. from a reflash or a crash after DELETE). Reset to 0 so
+         * the app characteristic doesn't show a false bad-state. */
+        if (current_file_size == 0 && current_file_offset > 0) {
+            LOG_WRN("[SD_WORK] Stale offset %u with empty data file — resetting info.txt to 0",
+                    current_file_offset);
+            current_file_offset = 0;
+            uint32_t zero = 0;
+            fs_seek(&fil_info, 0, FS_SEEK_SET);
+            bw = fs_write(&fil_info, &zero, sizeof(zero));
+            if (bw == sizeof(zero)) {
+                fs_sync(&fil_info);
+            }
+        }
     }
 
     while (1) {
@@ -522,24 +540,24 @@ void sd_worker_thread(void)
                 if (unlink_res != 0 && unlink_res != -2) {
                     LOG_ERR("[SD_WORK] Cannot unlink data file: %s, err: %d", FILE_DATA_PATH, unlink_res);
                 }
-                fs_file_t_init(&fil_data);
-                int reopen_res = fs_open(&fil_data, FILE_DATA_PATH, FS_O_CREATE | FS_O_RDWR | FS_O_TRUNC);
-                if (reopen_res == 0) {
-                    fs_seek(&fil_data, 0, FS_SEEK_SET);
-                } else {
-                    LOG_ERR("[SD_WORK] open new data file failed: %d. Retrying once.", reopen_res);
-                    k_msleep(200);
-                    fs_file_t_init(&fil_data);
-                    reopen_res = fs_open(&fil_data, FILE_DATA_PATH, FS_O_CREATE | FS_O_RDWR | FS_O_TRUNC);
-                    if (reopen_res != 0) {
-                        LOG_ERR("[SD_WORK] open new data file failed on retry: %d. Recording suspended.", reopen_res);
-                        if (req.u.clear_dir.resp) {
-                            req.u.clear_dir.resp->res = reopen_res;
-                            k_sem_give(&req.u.clear_dir.resp->sem);
+                {
+                    int reopen_res;
+                    int reopen_attempt = 0;
+                    while (1) {
+                        fs_file_t_init(&fil_data);
+                        reopen_res = fs_open(&fil_data, FILE_DATA_PATH, FS_O_CREATE | FS_O_RDWR | FS_O_TRUNC);
+                        if (reopen_res == 0) {
+                            fs_seek(&fil_data, 0, FS_SEEK_SET);
+                            if (reopen_attempt > 0) {
+                                LOG_INF("[SD_WORK] Data file reopened after %d retries.", reopen_attempt);
+                            }
+                            break;
                         }
-                        break;
+                        reopen_attempt++;
+                        LOG_ERR("[SD_WORK] open new data file failed (attempt %d): %d. Retrying in 5s.", reopen_attempt,
+                                reopen_res);
+                        k_msleep(5000);
                     }
-                    fs_seek(&fil_data, 0, FS_SEEK_SET);
                 }
                 current_file_size = 0;
                 current_file_offset = 0;
