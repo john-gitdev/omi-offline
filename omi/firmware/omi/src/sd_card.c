@@ -241,9 +241,14 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     memcpy(req.u.write.buf, data, length);
     req.u.write.len = length;
 
+    uint32_t q_used = k_msgq_num_used_get(&sd_msgq);
+    if (q_used >= SD_REQ_QUEUE_MSGS - 2) {
+        LOG_WRN("[SD_WRITE] Queue near-full (%u/%u) before write", (unsigned)q_used, (unsigned)SD_REQ_QUEUE_MSGS);
+    }
     int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(100));
     if (ret) {
-        LOG_ERR("Failed to queue write_to_file request: %d", ret);
+        LOG_ERR("[SD_WRITE] Queue full (%u/%u) — audio frame dropped: %d",
+                (unsigned)k_msgq_num_used_get(&sd_msgq), (unsigned)SD_REQ_QUEUE_MSGS, ret);
         return 0;
     }
 

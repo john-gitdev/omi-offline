@@ -173,6 +173,7 @@ static uint32_t offset = 0;
 static uint8_t stop_started = 0;
 static uint8_t delete_started = 0;
 uint32_t remaining_length = 0;
+static uint32_t ble_chunk_index = 0;
 
 static int setup_storage_tx()
 {
@@ -193,6 +194,7 @@ static int setup_storage_tx()
     }
 
     remaining_length = file_size - offset;
+    ble_chunk_index = 0;
 
     LOG_INF("remaining length: %d", remaining_length);
     LOG_INF("offset: %d", offset);
@@ -373,19 +375,23 @@ static void write_to_gatt(struct bt_conn *conn)
 {
     // Use the negotiated MTU minus 3 bytes for GATT overhead
     uint32_t max_payload = (current_mtu > 3) ? (current_mtu - 3) : 20;
-    
+
     // Cap the payload at SD_BLE_SIZE to ensure we don't exceed our buffer
     uint32_t effective_packet_size = MIN(max_payload, SD_BLE_SIZE);
     uint32_t packet_size = MIN(remaining_length, effective_packet_size);
 
     if (packet_size == 0) return;
 
+    LOG_INF("[BLE_TX] chunk=%u offset=%u remaining=%u", (unsigned)ble_chunk_index, (unsigned)offset, (unsigned)remaining_length);
+
     int r = read_audio_data(storage_write_buffer, packet_size, offset);
     if (r < 0) {
-        LOG_ERR("Failed to read audio data: %d", r);
+        LOG_ERR("[BLE_TX] read_audio_data failed at chunk=%u offset=%u: %d", (unsigned)ble_chunk_index, (unsigned)offset, r);
         remaining_length = 0; // Stop transfer on error
         return;
     }
+
+    ble_chunk_index++;
 
     int err = bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], &storage_write_buffer, packet_size);
     if (err) {
