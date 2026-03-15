@@ -22,9 +22,9 @@ class SharedPreferencesUtil {
 
   set offlineSnrMarginDb(double value) => saveDouble('offlineSnrMarginDb', value);
 
-  int get offlineHangoverMs => getInt('offlineHangoverMs', defaultValue: 1500);
+  double get offlineHangoverSeconds => getDouble('offlineHangoverSeconds', defaultValue: 1.5);
 
-  set offlineHangoverMs(int value) => saveInt('offlineHangoverMs', value);
+  set offlineHangoverSeconds(double value) => saveDouble('offlineHangoverSeconds', value);
 
   int get offlineSplitSeconds => getInt('offlineSplitSeconds', defaultValue: 120);
 
@@ -34,9 +34,9 @@ class SharedPreferencesUtil {
 
   set offlineMinSpeechSeconds(int value) => saveInt('offlineMinSpeechSeconds', value);
 
-  int get offlinePreSpeechMs => getInt('offlinePreSpeechMs', defaultValue: 1000);
+  double get offlinePreSpeechSeconds => getDouble('offlinePreSpeechSeconds', defaultValue: 1.0);
 
-  set offlinePreSpeechMs(int value) => saveInt('offlinePreSpeechMs', value);
+  set offlinePreSpeechSeconds(double value) => saveDouble('offlinePreSpeechSeconds', value);
 
   int get offlineGapSeconds => getInt('offlineGapSeconds', defaultValue: 10);
 
@@ -54,8 +54,8 @@ class SharedPreferencesUtil {
     if (!prefs.containsKey('offlineSnrMarginDb')) {
       prefs.setDouble('offlineSnrMarginDb', 10.0);
     }
-    if (!prefs.containsKey('offlineHangoverMs')) {
-      prefs.setInt('offlineHangoverMs', 1500);
+    if (!prefs.containsKey('offlineHangoverSeconds')) {
+      prefs.setDouble('offlineHangoverSeconds', 1.5);
     }
     if (!prefs.containsKey('offlineSplitSeconds')) {
       prefs.setInt('offlineSplitSeconds', 120); // 2 minutes default
@@ -63,8 +63,8 @@ class SharedPreferencesUtil {
     if (!prefs.containsKey('offlineMinSpeechSeconds')) {
       prefs.setInt('offlineMinSpeechSeconds', 0); // 0 seconds default
     }
-    if (!prefs.containsKey('offlinePreSpeechMs')) {
-      prefs.setInt('offlinePreSpeechMs', 1000);
+    if (!prefs.containsKey('offlinePreSpeechSeconds')) {
+      prefs.setDouble('offlinePreSpeechSeconds', 1.0);
     }
     if (!prefs.containsKey('offlineGapSeconds')) {
       prefs.setInt('offlineGapSeconds', 10);
