@@ -51,8 +51,9 @@ class BluetoothDeviceDiscoverer extends DeviceDiscoverer {
         timeout: Duration(seconds: timeout),
       );
 
-      // Give listener time to receive scan results within timeout
-      await Future.delayed(Duration(seconds: timeout));
+      // Cancel before reading results — flutter_blue_plus emits [] when scan stops,
+      // which would clear bleResults if the listener is still active.
+      await sub.cancel();
 
       final List<BtDevice> devices = bleResults
           .where((r) => BtDevice.isSupportedDevice(r.device))
@@ -60,14 +61,17 @@ class BluetoothDeviceDiscoverer extends DeviceDiscoverer {
           .map<BtDevice>((r) => BtDevice.fromScanResult(r))
           .toList();
 
+      Logger.debug('BLE discovery found ${devices.length} Omi device(s)');
       return DeviceDiscoveryResult(
         devices: devices,
         metadata: {
           'bleResults': bleResults,
         },
       );
-    } finally {
+    } on Exception catch (e) {
       await sub.cancel();
+      Logger.debug('BLE discovery failed: $e');
+      return const DeviceDiscoveryResult(devices: []);
     }
   }
 
