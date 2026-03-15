@@ -56,10 +56,14 @@ class OfflineAudioProcessor {
     _decoder?.destroy();
   }
 
-  /// True when frames have been buffered for an in-progress recording that
-  /// hasn't yet hit the silence threshold. Background callers use this to
-  /// decide whether to keep the raw chunks for the current conversation.
-  bool get hasOngoingRecording => _currentRecordingFrames.isNotEmpty;
+  /// True when there is an in-progress conversation with accumulated speech.
+  /// Checking _speechFrameCount > 0 is critical: after the silence threshold
+  /// fires, _currentRecordingFrames is refilled with trailing silence frames
+  /// as a pre-speech buffer for the next conversation, but _speechFrameCount
+  /// is reset to 0. Without this guard, hasOngoingRecording would return true
+  /// for those silence-only frames, preventing lastSafeToDeleteIndex from
+  /// advancing and causing background deletion to stall.
+  bool get hasOngoingRecording => _currentRecordingFrames.isNotEmpty && _speechFrameCount > 0;
 
   double _calculateDecibels(Int16List pcmData) {
     if (pcmData.isEmpty) return -100.0; // Minimum representable dBFS
