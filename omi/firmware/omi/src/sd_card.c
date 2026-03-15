@@ -16,7 +16,8 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 
 #define DISK_DRIVE_NAME "SD"        // Disk drive name
 #define DISK_MOUNT_PT "/SD:"        // Mount point path
-#define SD_REQ_QUEUE_MSGS  25       // Number of messages in the SD request queue
+#define SD_WRITE_QUEUE_MSGS 60      // Write queue: 50fps * ~1.2s headroom
+#define SD_READ_QUEUE_MSGS  10      // Read queue: BLE sync sends one chunk at a time
 #define SD_FSYNC_THRESHOLD 20000    // Threshold in bytes to trigger fsync
 #define WRITE_BATCH_COUNT 50        // Number of writes to batch before writing to SD card
                                     // Increased from 10 → 50 for battery savings (~5s flush interval vs ~1s).
@@ -57,7 +58,10 @@ static size_t bytes_since_sync = 0;
 static const struct device *const sd_dev = DEVICE_DT_GET(DT_NODELABEL(sdhc0));
 static const struct gpio_dt_spec sd_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(sdcard_en_pin), gpios, {0});
 
-K_MSGQ_DEFINE(sd_msgq, sizeof(sd_req_t), SD_REQ_QUEUE_MSGS, 4);
+// Separate queues eliminate write/read starvation: writes can no longer block
+// read enqueues. Worker services writes first (recording is primary), then reads.
+K_MSGQ_DEFINE(write_msgq, sizeof(sd_req_t), SD_WRITE_QUEUE_MSGS, 4);
+K_MSGQ_DEFINE(read_msgq,  sizeof(sd_req_t), SD_READ_QUEUE_MSGS,  4);
 
 void sd_worker_thread(void);
 
@@ -214,13 +218,13 @@ int read_audio_data(uint8_t *buf, int amount, int offset)
     req.u.read.offset = offset;
     req.u.read.resp = &resp;
 
-    LOG_INF("[SD_READ] Queuing read (offset=%u len=%u queue_used=%u/%u)",
+    LOG_INF("[SD_READ] Queuing read (offset=%u len=%u read_q=%u/%u write_q=%u/%u)",
             (unsigned)offset, (unsigned)amount,
-            (unsigned)k_msgq_num_used_get(&sd_msgq), (unsigned)SD_REQ_QUEUE_MSGS);
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(100));
+            (unsigned)k_msgq_num_used_get(&read_msgq),  (unsigned)SD_READ_QUEUE_MSGS,
+            (unsigned)k_msgq_num_used_get(&write_msgq), (unsigned)SD_WRITE_QUEUE_MSGS);
+    int ret = k_msgq_put(&read_msgq, &req, K_MSEC(100));
     if (ret) {
-        LOG_ERR("[SD_READ] Queue full (%u/%u) — read aborted at offset %u: %d",
-                (unsigned)k_msgq_num_used_get(&sd_msgq), (unsigned)SD_REQ_QUEUE_MSGS,
+        LOG_ERR("[SD_READ] read_msgq full — read aborted at offset %u: %d",
                 (unsigned)offset, ret);
         return ret;
     }
@@ -244,14 +248,14 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     memcpy(req.u.write.buf, data, length);
     req.u.write.len = length;
 
-    uint32_t q_used = k_msgq_num_used_get(&sd_msgq);
-    if (q_used >= SD_REQ_QUEUE_MSGS - 2) {
-        LOG_WRN("[SD_WRITE] Queue near-full (%u/%u) before write", (unsigned)q_used, (unsigned)SD_REQ_QUEUE_MSGS);
+    uint32_t q_used = k_msgq_num_used_get(&write_msgq);
+    if (q_used >= SD_WRITE_QUEUE_MSGS - 2) {
+        LOG_WRN("[SD_WRITE] write_msgq near-full (%u/%u)", (unsigned)q_used, (unsigned)SD_WRITE_QUEUE_MSGS);
     }
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(100));
+    int ret = k_msgq_put(&write_msgq, &req, K_MSEC(100));
     if (ret) {
-        LOG_ERR("[SD_WRITE] Queue full (%u/%u) — audio frame dropped: %d",
-                (unsigned)k_msgq_num_used_get(&sd_msgq), (unsigned)SD_REQ_QUEUE_MSGS, ret);
+        LOG_ERR("[SD_WRITE] write_msgq full (%u/%u) — audio frame dropped: %d",
+                (unsigned)k_msgq_num_used_get(&write_msgq), (unsigned)SD_WRITE_QUEUE_MSGS, ret);
         return 0;
     }
 
@@ -267,7 +271,7 @@ int clear_audio_directory(void)
     req.type = REQ_CLEAR_AUDIO_DIR;
     req.u.clear_dir.resp = &resp;
 
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(100));
+    int ret = k_msgq_put(&read_msgq, &req, K_MSEC(100));
     if (ret) {
         LOG_ERR("Failed to queue clear_audio_directory request: %d", ret);
         return -1;
@@ -294,7 +298,7 @@ int save_offset(uint32_t offset)
     req.type = REQ_SAVE_OFFSET;
     req.u.info.offset_value = offset;
 
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(100));
+    int ret = k_msgq_put(&write_msgq, &req, K_MSEC(100));
     if (ret) {
         LOG_ERR("Failed to queue save_offset request: %d", ret);
         return -1;
@@ -420,9 +424,20 @@ void sd_worker_thread(void)
     }
 
     while (1) {
-        /* Wait for a request */
-        if (k_msgq_get(&sd_msgq, &req, K_FOREVER) == 0) {
-            switch (req.type) {
+        // Write-priority poll: service writes first (recording is the primary function).
+        // Reads always enqueue to their own queue so they can never be blocked by a
+        // full write queue. Worst-case read latency = one batch-flush cycle (~1-2s on
+        // slow cards), well within the 5s semaphore timeout in read_audio_data().
+        // Bounded 20ms block on write queue (= one audio frame interval) keeps the
+        // loop responsive to reads when recording is idle.
+        if (k_msgq_get(&write_msgq, &req, K_NO_WAIT) != 0) {
+            if (k_msgq_get(&read_msgq, &req, K_NO_WAIT) != 0) {
+                if (k_msgq_get(&write_msgq, &req, K_MSEC(20)) != 0) {
+                    continue;
+                }
+            }
+        }
+        switch (req.type) {
             case REQ_WRITE_DATA:
                 LOG_DBG("[SD_WORK] Buffering %u bytes to batch write\n", (unsigned)req.u.write.len);
 
@@ -480,9 +495,14 @@ void sd_worker_thread(void)
 
                 if (bytes_since_sync >= SD_FSYNC_THRESHOLD) {
                     uint32_t t0 = k_uptime_get_32();
-                    LOG_INF("[SD_WORK] fs_sync start (queue_used=%u)", (unsigned)k_msgq_num_used_get(&sd_msgq));
+                    LOG_INF("[SD_WORK] fs_sync start (write_q=%u read_q=%u)",
+                            (unsigned)k_msgq_num_used_get(&write_msgq),
+                            (unsigned)k_msgq_num_used_get(&read_msgq));
                     res = fs_sync(&fil_data);
-                    LOG_INF("[SD_WORK] fs_sync done in %u ms (queue_used=%u)", (unsigned)(k_uptime_get_32() - t0), (unsigned)k_msgq_num_used_get(&sd_msgq));
+                    LOG_INF("[SD_WORK] fs_sync done in %u ms (write_q=%u read_q=%u)",
+                            (unsigned)(k_uptime_get_32() - t0),
+                            (unsigned)k_msgq_num_used_get(&write_msgq),
+                            (unsigned)k_msgq_num_used_get(&read_msgq));
                     if (res < 0) {
                         LOG_ERR("[SD_WORK] fs_sync data failed: %d\n", res);
                     }
@@ -571,6 +591,5 @@ void sd_worker_thread(void)
             default:
                 LOG_ERR("[SD_WORK] unknown req type\n");
             }
-        }
     }
 }
