@@ -649,7 +649,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         // Small delay to allow firmware buffers to clear before sending DELETE
         await Future.delayed(const Duration(milliseconds: 500));
-        await deleteWal(wal);
+        if (wal.storageOffset >= wal.storageTotalBytes) {
+          await deleteWal(wal);
+        } else {
+          Logger.debug(
+              "SDCardWalSync: Partial transfer (${wal.storageOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
+        }
         wal.status = WalStatus.synced;
         _wals.removeWhere((w) => w.id == wal.id);
         listener.onWalUpdated();
@@ -717,7 +722,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       // Small delay to allow firmware buffers to clear before sending DELETE
       await Future.delayed(const Duration(milliseconds: 500));
-      await deleteWal(wal);
+      if (wal.storageOffset >= wal.storageTotalBytes) {
+        await deleteWal(wal);
+      } else {
+        Logger.debug(
+            "SDCardWalSync: Partial transfer (${wal.storageOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
+      }
       wal.status = WalStatus.synced;
       _wals.removeWhere((w) => w.id == wal.id);
       listener.onWalUpdated();
