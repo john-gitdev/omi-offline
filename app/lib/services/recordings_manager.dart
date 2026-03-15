@@ -170,7 +170,12 @@ class RecordingsManager {
 
   /// Reprocesses or processes a specific day's raw chunks.
   /// Uses a temporary folder to ensure processing is atomic.
-  Future<void> processDay(DailyBatch batch, Function(double progress) onProgress) async {
+  ///
+  /// In [backgroundMode]:
+  /// - Does not call [flushRemaining]; only fully-completed conversations are written.
+  /// - Deletes only chunks whose conversations closed cleanly (up to [lastSafeToDeleteIndex]).
+  /// - Skips the 50 ms UI-yield delay.
+  Future<void> processDay(DailyBatch batch, Function(double progress) onProgress, {bool backgroundMode = false}) async {
     if (batch.rawChunks.isEmpty) return;
     if (_isProcessingAny) {
       throw Exception("Another processing task is already in progress.");
@@ -193,6 +198,10 @@ class RecordingsManager {
 
       // 2. Initialize the OfflineAudioProcessor with temp folder
       final processor = OfflineAudioProcessor(outputDir: tempProcessingPath);
+
+      // Tracks the last chunk index after which the ongoing recording was empty
+      // (conversation closed cleanly). Used in background mode for safe deletion.
+      int lastSafeToDeleteIndex = -1;
 
       try {
         // 3. Process each raw chunk sequentially
@@ -247,13 +256,22 @@ class RecordingsManager {
           }
 
           await processor.processFrames(frames, chunkStartTime, sessionId: sessionId);
+
+          if (backgroundMode && !processor.hasOngoingRecording) {
+            lastSafeToDeleteIndex = i;
+          }
+
           onProgress((i + 1) / batch.rawChunks.length);
-          // Yield to the UI to keep it responsive
-          await Future.delayed(const Duration(milliseconds: 50));
+          // Yield to the UI to keep it responsive (skipped in background mode)
+          if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
         }
 
-        // 4. Flush remaining buffer
-        await processor.flushRemaining();
+        // 4. Flush buffer
+        if (backgroundMode) {
+          await processor.flushOnlyCompleted(); // keep in-progress tail
+        } else {
+          await processor.flushRemaining();
+        }
         processor.destroy();
 
         // 5. Move new recordings into the live folder.
@@ -291,43 +309,76 @@ class RecordingsManager {
         rethrow;
       }
 
-      // 6. Check adjustment mode. If OFF, delete the raw chunks.
-      // Note: processed recordings (.wav) are kept until the user explicitly deletes
-      // the day via deleteDay(). Raw chunks are separate from processed recordings.
-      if (!SharedPreferencesUtil().offlineAdjustmentMode) {
-        Set<String> sessionFoldersToDelete = {};
-        final latestSyncedSessionId = SharedPreferencesUtil().latestSyncedSessionId;
-
-        for (var file in batch.rawChunks) {
-          if (await file.exists()) {
-            final sessionIdStr = file.parent.path.split('/').last;
-            final sessionId = int.tryParse(sessionIdStr) ?? -1;
-
-            // Delete if it's an old session OR if it's the latest session but we've successfully processed it.
-            // We only keep it if sessionId > latestSyncedSessionId (which shouldn't happen for synced chunks).
-            if (sessionId <= latestSyncedSessionId) {
-              Logger.debug("RecordingsManager: Deleting successfully processed raw chunk: ${file.path}");
+      // 6. Raw chunk deletion
+      if (backgroundMode) {
+        // Delete only chunks belonging to fully-completed conversations.
+        // If adjustment mode is ON, keep everything for re-processing.
+        if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
+          Set<String> sessionFoldersToDelete = {};
+          for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
+            final file = batch.rawChunks[i];
+            if (await file.exists()) {
+              final sessionIdStr = file.parent.path.split('/').last;
+              final sessionId = int.tryParse(sessionIdStr) ?? -1;
+              Logger.debug("RecordingsManager: [bg] Deleting completed raw chunk: ${file.path}");
               await file.delete();
               sessionFoldersToDelete.add(file.parent.path);
-
-              // Cleanup SharedPreferences anchors
               SharedPreferencesUtil().remove('anchor_utc_$sessionId');
               SharedPreferencesUtil().remove('anchor_uptime_$sessionId');
-            } else {
-              Logger.debug("RecordingsManager: Keeping raw chunk for session $sessionId as it might be ongoing.");
+            }
+          }
+          for (var folderPath in sessionFoldersToDelete) {
+            final folder = Directory(folderPath);
+            if (await folder.exists()) {
+              try {
+                if ((await folder.list().isEmpty)) {
+                  await folder.delete();
+                }
+              } catch (e) {
+                // Ignore if folder is not empty or cannot be deleted
+              }
             }
           }
         }
+      } else {
+        // 6. Check adjustment mode. If OFF, delete the raw chunks.
+        // Note: processed recordings (.wav) are kept until the user explicitly deletes
+        // the day via deleteDay(). Raw chunks are separate from processed recordings.
+        if (!SharedPreferencesUtil().offlineAdjustmentMode) {
+          Set<String> sessionFoldersToDelete = {};
+          final latestSyncedSessionId = SharedPreferencesUtil().latestSyncedSessionId;
 
-        for (var folderPath in sessionFoldersToDelete) {
-          final folder = Directory(folderPath);
-          if (await folder.exists()) {
-            try {
-              if ((await folder.list().isEmpty)) {
-                await folder.delete();
+          for (var file in batch.rawChunks) {
+            if (await file.exists()) {
+              final sessionIdStr = file.parent.path.split('/').last;
+              final sessionId = int.tryParse(sessionIdStr) ?? -1;
+
+              // Delete if it's an old session OR if it's the latest session but we've successfully processed it.
+              // We only keep it if sessionId > latestSyncedSessionId (which shouldn't happen for synced chunks).
+              if (sessionId <= latestSyncedSessionId) {
+                Logger.debug("RecordingsManager: Deleting successfully processed raw chunk: ${file.path}");
+                await file.delete();
+                sessionFoldersToDelete.add(file.parent.path);
+
+                // Cleanup SharedPreferences anchors
+                SharedPreferencesUtil().remove('anchor_utc_$sessionId');
+                SharedPreferencesUtil().remove('anchor_uptime_$sessionId');
+              } else {
+                Logger.debug("RecordingsManager: Keeping raw chunk for session $sessionId as it might be ongoing.");
               }
-            } catch (e) {
-              // Ignore if folder is not empty or cannot be deleted
+            }
+          }
+
+          for (var folderPath in sessionFoldersToDelete) {
+            final folder = Directory(folderPath);
+            if (await folder.exists()) {
+              try {
+                if ((await folder.list().isEmpty)) {
+                  await folder.delete();
+                }
+              } catch (e) {
+                // Ignore if folder is not empty or cannot be deleted
+              }
             }
           }
         }
@@ -335,6 +386,68 @@ class RecordingsManager {
     } finally {
       _isProcessingAny = false;
     }
+  }
+
+  /// Background auto-process: processes all daily batches in background mode.
+  /// Skips the newest chunk per session (may still be written by firmware).
+  /// Safe to call from a background timer; no-op if a manual process is running.
+  static Future<void> processAllCompletedSessions() async {
+    if (_isProcessingAny) return;
+    final manager = RecordingsManager();
+    final batches = await manager.getDailyBatches();
+    for (final batch in batches) {
+      if (batch.rawChunks.isEmpty) continue;
+      try {
+        final safeChunks = _excludeNewestChunkPerSession(batch.rawChunks);
+        if (safeChunks.isEmpty) continue;
+        final safeBatch = DailyBatch(
+          dateString: batch.dateString,
+          date: batch.date,
+          rawChunks: safeChunks,
+          processedRecordings: batch.processedRecordings,
+          starredTimestamps: batch.starredTimestamps,
+        );
+        await manager.processDay(safeBatch, (_) {}, backgroundMode: true);
+      } catch (e) {
+        Logger.error('RecordingsManager: Background processAllCompletedSessions error for ${batch.dateString}: $e');
+      }
+    }
+  }
+
+  /// Returns [chunks] with the highest chunkIndex file excluded per session.
+  /// Files are named `{sessionId}_{chunkIndex}.bin`; the last chunk per session
+  /// may still be actively written by the firmware, so we skip it.
+  static List<File> _excludeNewestChunkPerSession(List<File> chunks) {
+    final Map<String, List<File>> bySession = {};
+    for (final f in chunks) {
+      final name = f.path.split('/').last;
+      final sessionId = name.split('_').first;
+      bySession.putIfAbsent(sessionId, () => []).add(f);
+    }
+    final result = <File>[];
+    for (final sessionChunks in bySession.values) {
+      // Sort by chunkIndex numerically, then drop the last (highest) one.
+      sessionChunks.sort((a, b) {
+        final aParts = a.path.split('/').last.replaceAll('.bin', '').split('_');
+        final bParts = b.path.split('/').last.replaceAll('.bin', '').split('_');
+        final aChunk = int.tryParse(aParts.length > 1 ? aParts[1] : '0') ?? 0;
+        final bChunk = int.tryParse(bParts.length > 1 ? bParts[1] : '0') ?? 0;
+        return aChunk.compareTo(bChunk);
+      });
+      result.addAll(sessionChunks.take(sessionChunks.length - 1));
+    }
+    // Re-sort numerically by (sessionId, chunkIndex).
+    result.sort((a, b) {
+      final aParts = a.path.split('/').last.replaceAll('.bin', '').split('_');
+      final bParts = b.path.split('/').last.replaceAll('.bin', '').split('_');
+      final aSession = int.tryParse(aParts[0]) ?? 0;
+      final bSession = int.tryParse(bParts[0]) ?? 0;
+      if (aSession != bSession) return aSession.compareTo(bSession);
+      final aChunk = int.tryParse(aParts.length > 1 ? aParts[1] : '0') ?? 0;
+      final bChunk = int.tryParse(bParts.length > 1 ? bParts[1] : '0') ?? 0;
+      return aChunk.compareTo(bChunk);
+    });
+    return result;
   }
 
   /// Deletes all processed recordings (.wav) for a day, plus any remaining raw
