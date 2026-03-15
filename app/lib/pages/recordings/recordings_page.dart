@@ -131,7 +131,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           () => Navigator.of(context).pop(false),
           () => Navigator.of(context).pop(true),
           "Large Batch",
-          "This day has over ${batch.rawChunks.length} raw chunks (~${batch.rawChunks.length} mins). Processing might take a few minutes. Continue?",
+          "This day has over ${batch.rawChunks.length} minutes of unprocessed audio. Processing might take a few minutes. Continue?",
           confirmText: "Start",
         ),
       );
@@ -307,19 +307,20 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          '${batch.rawChunks.length} Raw Chunks (~${batch.rawChunks.length} mins)',
+                          '~${batch.rawChunks.length} min unprocessed',
                           style: TextStyle(color: Colors.grey.shade400),
                         ),
-                        ElevatedButton.icon(
+                        ElevatedButton(
                           onPressed: isProcessing ? null : () => _processBatch(batch),
-                          icon: isProcessing
-                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                              : const FaIcon(FontAwesomeIcons.gears, size: 14),
-                          label: Text(isProcessing ? 'Processing...' : 'Process Day'),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.deepPurpleAccent,
                             foregroundColor: Colors.white,
+                            minimumSize: const Size(40, 40),
+                            padding: const EdgeInsets.all(10),
                           ),
+                          child: isProcessing
+                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              : const FaIcon(FontAwesomeIcons.gears, size: 16),
                         ),
                       ],
                     ),
