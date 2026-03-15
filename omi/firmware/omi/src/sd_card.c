@@ -423,20 +423,32 @@ void sd_worker_thread(void)
         }
     }
 
+    // k_poll lets the thread sleep until either queue has data, with no periodic
+    // wakeups. This means zero CPU overhead when muted (no writes) and no sync
+    // is active. Write-priority is maintained by trying write_msgq first after wakeup.
+    struct k_poll_event poll_events[2] = {
+        K_POLL_EVENT_STATIC_INITIALIZER(K_POLL_TYPE_MSGQ_DATA_AVAILABLE,
+                                        K_POLL_MODE_NOTIFY_ONLY, &write_msgq, 0),
+        K_POLL_EVENT_STATIC_INITIALIZER(K_POLL_TYPE_MSGQ_DATA_AVAILABLE,
+                                        K_POLL_MODE_NOTIFY_ONLY, &read_msgq, 0),
+    };
+
     while (1) {
-        // Write-priority poll: service writes first (recording is the primary function).
-        // Reads always enqueue to their own queue so they can never be blocked by a
-        // full write queue. Worst-case read latency = one batch-flush cycle (~1-2s on
-        // slow cards), well within the 5s semaphore timeout in read_audio_data().
-        // Bounded 20ms block on write queue (= one audio frame interval) keeps the
-        // loop responsive to reads when recording is idle.
-        if (k_msgq_get(&write_msgq, &req, K_NO_WAIT) != 0) {
-            if (k_msgq_get(&read_msgq, &req, K_NO_WAIT) != 0) {
-                if (k_msgq_get(&write_msgq, &req, K_MSEC(20)) != 0) {
-                    continue;
-                }
+        // True sleep until at least one queue has data.
+        k_poll(poll_events, 2, K_FOREVER);
+        poll_events[0].state = K_POLL_STATE_NOT_READY;
+        poll_events[1].state = K_POLL_STATE_NOT_READY;
+
+        // Drain all available items before sleeping again.
+        // Writes are serviced before reads so audio frames are never delayed
+        // by a pending BLE sync read. Reads are still bounded by the 5s
+        // semaphore timeout in read_audio_data() — worst case latency is one
+        // full batch-flush cycle (~1-2s on slow cards).
+        while (1) {
+            if (k_msgq_get(&write_msgq, &req, K_NO_WAIT) != 0 &&
+                k_msgq_get(&read_msgq,  &req, K_NO_WAIT) != 0) {
+                break; // both queues empty — go back to sleep
             }
-        }
         switch (req.type) {
             case REQ_WRITE_DATA:
                 LOG_DBG("[SD_WORK] Buffering %u bytes to batch write\n", (unsigned)req.u.write.len);
@@ -590,6 +602,7 @@ void sd_worker_thread(void)
 
             default:
                 LOG_ERR("[SD_WORK] unknown req type\n");
-            }
-    }
+            } // switch
+        } // drain loop
+    } // k_poll loop
 }
