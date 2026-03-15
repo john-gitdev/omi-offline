@@ -34,9 +34,9 @@ class SharedPreferencesUtil {
 
   set offlineMinSpeechSeconds(int value) => saveInt('offlineMinSpeechSeconds', value);
 
-  int get offlinePreSpeechSeconds => getInt('offlinePreSpeechSeconds', defaultValue: 1);
+  int get offlinePreSpeechMs => getInt('offlinePreSpeechMs', defaultValue: 1000);
 
-  set offlinePreSpeechSeconds(int value) => saveInt('offlinePreSpeechSeconds', value);
+  set offlinePreSpeechMs(int value) => saveInt('offlinePreSpeechMs', value);
 
   int get offlineGapSeconds => getInt('offlineGapSeconds', defaultValue: 10);
 
@@ -63,8 +63,8 @@ class SharedPreferencesUtil {
     if (!prefs.containsKey('offlineMinSpeechSeconds')) {
       prefs.setInt('offlineMinSpeechSeconds', 0); // 0 seconds default
     }
-    if (!prefs.containsKey('offlinePreSpeechSeconds')) {
-      prefs.setInt('offlinePreSpeechSeconds', 1);
+    if (!prefs.containsKey('offlinePreSpeechMs')) {
+      prefs.setInt('offlinePreSpeechMs', 1000);
     }
     if (!prefs.containsKey('offlineGapSeconds')) {
       prefs.setInt('offlineGapSeconds', 10);
