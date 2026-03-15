@@ -229,21 +229,27 @@ class RecordingsManager {
         await processor.flushRemaining();
         processor.destroy();
 
-        // 5. ATOMIC SWAP: Success! Replace live recordings with temp ones
+        // 5. Move new recordings into the live folder.
+        // We APPEND rather than replace so that recordings from a previous sync
+        // (already processed and stored in liveDir) are preserved.  Each sync
+        // only downloads data the device hasn't sent before, so the generated
+        // filenames will be distinct timestamps and won't collide.
         final liveDir = Directory(liveRecordingsPath);
         final newFiles = tempDir.listSync().whereType<File>().toList();
         Logger.debug(
             "RecordingsManager: Processing complete for $dateString. Found ${newFiles.length} recordings in temp.");
 
-        if (await liveDir.exists()) {
-          await liveDir.delete(recursive: true);
-        }
         await liveDir.create(recursive: true);
 
         // Move files from temp to live
         for (var file in newFiles) {
           final fileName = file.path.split('/').last;
-          await file.rename('$liveRecordingsPath/$fileName');
+          final dest = '$liveRecordingsPath/$fileName';
+          // If a file with the same name already exists (re-process of identical
+          // data), overwrite it rather than failing.
+          final destFile = File(dest);
+          if (await destFile.exists()) await destFile.delete();
+          await file.rename(dest);
         }
 
         // Final flush and a small delay to ensure FS is ready
