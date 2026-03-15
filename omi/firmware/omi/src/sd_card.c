@@ -527,8 +527,19 @@ void sd_worker_thread(void)
                 if (reopen_res == 0) {
                     fs_seek(&fil_data, 0, FS_SEEK_SET);
                 } else {
-                    LOG_ERR("[SD_WORK] open new data file failed: %d. Terminating operation", reopen_res);
-                    return;
+                    LOG_ERR("[SD_WORK] open new data file failed: %d. Retrying once.", reopen_res);
+                    k_msleep(200);
+                    fs_file_t_init(&fil_data);
+                    reopen_res = fs_open(&fil_data, FILE_DATA_PATH, FS_O_CREATE | FS_O_RDWR | FS_O_TRUNC);
+                    if (reopen_res != 0) {
+                        LOG_ERR("[SD_WORK] open new data file failed on retry: %d. Recording suspended.", reopen_res);
+                        if (req.u.clear_dir.resp) {
+                            req.u.clear_dir.resp->res = reopen_res;
+                            k_sem_give(&req.u.clear_dir.resp->sem);
+                        }
+                        break;
+                    }
+                    fs_seek(&fil_data, 0, FS_SEEK_SET);
                 }
                 current_file_size = 0;
                 current_file_offset = 0;
