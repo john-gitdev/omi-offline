@@ -137,7 +137,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         "SDCardWalSync: totalBytes=$totalBytes, storageOffset=$storageOffset, diff=${totalBytes - storageOffset}, threshold=$threshold");
 
     if (totalBytes > 0) {
-      var seconds = (totalBytes / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
+      var seconds = ((totalBytes - storageOffset) / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
       int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
 
       // Ensure stable ID for existing entries by matching device and fileNum
@@ -416,6 +416,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               if (currentSessionId != null) {
                 SharedPreferencesUtil().saveInt('anchor_utc_$currentSessionId', utcTime);
                 SharedPreferencesUtil().saveInt('anchor_uptime_$currentSessionId', currentUptimeMs);
+                // Per-chunk anchors so processDay can recover the exact start time of each chunk.
+                if (currentChunkIndex != null) {
+                  SharedPreferencesUtil().saveInt('anchor_utc_${currentSessionId}_$currentChunkIndex', utcTime);
+                  SharedPreferencesUtil()
+                      .saveInt('anchor_uptime_${currentSessionId}_$currentChunkIndex', currentUptimeMs);
+                }
               }
 
               final sessionId = currentSessionId;
@@ -616,6 +622,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _resetSyncState();
     _isSyncing = true;
 
+    bool anyPartial = false;
     var resp = SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
 
     for (var wal in wals) {
@@ -625,8 +632,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       wal.syncStartedAt = DateTime.now();
       listener.onWalUpdated();
 
-      int lastOffset = wal.storageOffset;
-      int totalBytesToDownload = wal.storageTotalBytes - wal.storageOffset;
+      final int initialOffset = wal.storageOffset;
+      int lastOffset = initialOffset;
+      int totalBytesToDownload = wal.storageTotalBytes - initialOffset;
 
       await _checkDiskSpaceBeforeSync(totalBytesToDownload);
       _downloadStartTime = DateTime.now();
@@ -654,7 +662,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               wal.estimatedChunks = (seconds / 60).ceil();
 
               if (progress != null) {
-                final double progressPercent = offset / totalBytesToDownload;
+                final double progressPercent =
+                    totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
                 progress.onWalSyncedProgress(progressPercent.clamp(0.0, 1.0), speedKBps: _currentSpeedKBps);
               }
             });
@@ -666,6 +675,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         } else {
           Logger.debug(
               "SDCardWalSync: Partial transfer (${wal.storageOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
+          anyPartial = true;
         }
         wal.status = WalStatus.synced;
         _wals.removeWhere((w) => w.id == wal.id);
@@ -682,7 +692,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
 
     _isSyncing = false;
-    return resp;
+    return SyncLocalFilesResponse(
+      newConversationIds: resp.newConversationIds,
+      updatedConversationIds: resp.updatedConversationIds,
+      isPartial: anyPartial,
+    );
   }
 
   @override
@@ -698,8 +712,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     listener.onWalUpdated();
 
     var resp = SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
-    int lastOffset = 0;
-    int totalBytesToDownload = wal.storageTotalBytes;
+    final int initialOffset = wal.storageOffset;
+    int lastOffset = initialOffset;
+    int totalBytesToDownload = wal.storageTotalBytes - initialOffset;
 
     await _checkDiskSpaceBeforeSync(totalBytesToDownload);
     _downloadStartTime = DateTime.now();
@@ -727,7 +742,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             wal.estimatedChunks = (seconds / 60).ceil();
 
             if (progress != null) {
-              final double progressPercent = offset / totalBytesToDownload;
+              final double progressPercent =
+                  totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
               progress.onWalSyncedProgress(progressPercent.clamp(0.0, 1.0), speedKBps: _currentSpeedKBps);
             }
           });
