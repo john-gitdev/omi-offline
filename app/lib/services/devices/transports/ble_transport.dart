@@ -20,16 +20,15 @@ class BleTransport extends DeviceTransport {
 
   BleTransport(this._bleDevice) : _connectionStateController = StreamController<DeviceTransportState>.broadcast() {
     _bleConnectionSubscription = _bleDevice.connectionState.listen((state) {
-      switch (state) {
-        case BluetoothConnectionState.disconnected:
-          _updateState(DeviceTransportState.disconnected);
-          break;
-        case BluetoothConnectionState.connected:
-          _updateState(DeviceTransportState.connected);
-          break;
-        default:
-          break;
+      if (state == BluetoothConnectionState.disconnected) {
+        // Clear services so the next connect() always runs discoverServices().
+        _services = [];
+        _updateState(DeviceTransportState.disconnected);
       }
+      // Do NOT emit connected here. Only connect() emits connected, and only
+      // after discoverServices() succeeds. Emitting connected from the OS
+      // callback fires _onDeviceConnected before _services is populated,
+      // causing every characteristic read to fail immediately.
     });
   }
 
