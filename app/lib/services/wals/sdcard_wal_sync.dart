@@ -770,8 +770,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   @override
   Future<void> deleteAllPendingWals() async {
-    final pendingWals = _wals.where((w) => w.status == WalStatus.miss || w.status == WalStatus.corrupted).toList();
-    for (final wal in pendingWals) {
+    for (final wal in _wals.toList()) {
       await deleteWal(wal);
     }
   }
