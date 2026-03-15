@@ -40,7 +40,10 @@ class OfflineAudioProcessor {
   final int _gapThresholdMs;
 
   OfflineAudioProcessor({String? outputDir, SimpleOpusDecoder? decoder})
-      : _decoder = decoder ?? (Platform.isIOS || Platform.isAndroid ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels) : null),
+      : _decoder = decoder ??
+            (Platform.isIOS || Platform.isAndroid
+                ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
+                : null),
         _outputDir = outputDir,
         _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb,
         _hangoverFrameCount = max(0, SharedPreferencesUtil().offlineHangoverMs ~/ frameDurationMs),
@@ -77,34 +80,34 @@ class OfflineAudioProcessor {
 
     // 1. Scan for the first 255 metadata packet to get exact timing
     DateTime chunkStartTime = fallbackStartTime;
-    
+
     if (sessionId != null) {
-       for (var frame in opusFrames) {
-          if (frame.length == 255) {
-             try {
-                var byteData = ByteData.sublistView(frame);
-                var utcTime = byteData.getUint32(0, Endian.little);
-                var uptimeMs = byteData.getUint32(4, Endian.little);
-                
-                if (utcTime > 0) {
-                   chunkStartTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
-                } else {
-                   // Lookup anchor
-                   final anchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
-                   final anchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
-                   
-                   if (anchorUtc > 0 && anchorUptime > 0) {
-                      final realUtcSecs = anchorUtc - ((anchorUptime - uptimeMs) ~/ 1000);
-                      chunkStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
-                   }
-                }
-                break; // Found the precise time, stop scanning
-             } catch (e) {
-                Logger.error("OfflineAudioProcessor: Error parsing metadata packet: $e");
-                // skip corrupt
-             }
+      for (var frame in opusFrames) {
+        if (frame.length == 255) {
+          try {
+            var byteData = ByteData.sublistView(frame);
+            var utcTime = byteData.getUint32(0, Endian.little);
+            var uptimeMs = byteData.getUint32(4, Endian.little);
+
+            if (utcTime > 0) {
+              chunkStartTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
+            } else {
+              // Lookup anchor
+              final anchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
+              final anchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
+
+              if (anchorUtc > 0 && anchorUptime > 0) {
+                final realUtcSecs = anchorUtc - ((anchorUptime - uptimeMs) ~/ 1000);
+                chunkStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+              }
+            }
+            break; // Found the precise time, stop scanning
+          } catch (e) {
+            Logger.error("OfflineAudioProcessor: Error parsing metadata packet: $e");
+            // skip corrupt
           }
-       }
+        }
+      }
     }
 
     if (_currentRecordingFrames.isNotEmpty && _recordingStartTime != null) {
@@ -263,9 +266,23 @@ class OfflineAudioProcessor {
     final wavFile = File(wavPath);
     final IOSink sink = wavFile.openWrite();
 
-    const int samplesPerFrame = (sampleRate * frameDurationMs) ~/ 1000;
-    final int totalPcmBytes = frames.length * samplesPerFrame * 2;
-    
+    // Decode all frames first so the WAV header reflects the actual byte count.
+    // Skipping corrupt frames before writing the header prevents a size mismatch
+    // that breaks playback (header says N bytes, file contains fewer).
+    final List<Uint8List> decodedChunks = [];
+    if (_decoder != null) {
+      for (var frame in frames) {
+        try {
+          final decoded = _decoder!.decode(input: frame);
+          decodedChunks.add(decoded.buffer.asUint8List());
+        } catch (e) {
+          // Skip corrupt frame
+        }
+      }
+    }
+
+    final int totalPcmBytes = decodedChunks.fold(0, (sum, chunk) => sum + chunk.length);
+
     final header = ByteData(44);
     header.setUint8(0, 0x52); // R
     header.setUint8(1, 0x49); // I
@@ -279,7 +296,7 @@ class OfflineAudioProcessor {
     header.setUint8(12, 0x66); // f
     header.setUint8(13, 0x6D); // m
     header.setUint8(14, 0x74); // t
-    header.setUint8(15, 0x20); //  
+    header.setUint8(15, 0x20); //
     header.setUint32(16, 16, Endian.little);
     header.setUint16(20, 1, Endian.little);
     header.setUint16(22, channels, Endian.little);
@@ -294,16 +311,8 @@ class OfflineAudioProcessor {
     header.setUint32(40, totalPcmBytes, Endian.little);
 
     sink.add(header.buffer.asUint8List());
-
-    if (_decoder != null) {
-      for (var frame in frames) {
-        try {
-          final decoded = _decoder!.decode(input: frame);
-          sink.add(decoded.buffer.asUint8List());
-        } catch (e) {
-          // Skip
-        }
-      }
+    for (var pcm in decodedChunks) {
+      sink.add(pcm);
     }
     await sink.close();
     Logger.debug("OfflineAudioProcessor: Saved recording (${frames.length} frames) starting at $startTime to $wavPath");
