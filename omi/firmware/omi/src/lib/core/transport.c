@@ -1085,15 +1085,7 @@ int transport_start()
     memset(storage_temp_data, 0, OPUS_PADDED_LENGTH * 4);
     bt_gatt_service_register(&storage_service);
 #endif
-    // Use slow advertising interval (1280 ms) to save power while still being
-    // discoverable. Fast interval (100 ms) is only needed for initial pairing;
-    // phones reconnect fine at slow intervals once paired.
-    static const struct bt_le_adv_param slow_adv_param =
-        BT_LE_ADV_PARAM_INIT(BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_USE_NAME,
-                             BT_GAP_ADV_SLOW_INT_MIN,  /* 1000 ms */
-                             BT_GAP_ADV_SLOW_INT_MAX,  /* 1280 ms */
-                             NULL);
-    err = bt_le_adv_start(&slow_adv_param, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+    err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
     if (err) {
         LOG_ERR("Transport advertising failed to start (err %d)", err);
         return err;
