@@ -4,6 +4,7 @@ import 'package:omi/pages/recordings/recordings_page.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/providers/device_provider.dart';
+import 'package:omi/utils/notifications.dart';
 import 'package:provider/provider.dart';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:opus_flutter/opus_flutter.dart' as opus_flutter;
@@ -14,6 +15,7 @@ void main() async {
   FlutterBluePlus.setLogLevel(LogLevel.none);
   initOpus(await opus_flutter.load());
   await SharedPreferencesUtil.init();
+  await NotificationsService.initialize();
   await ServiceManager.init();
 
   runApp(const MyApp());
