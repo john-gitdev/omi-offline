@@ -14,17 +14,26 @@ class OfflineAudioProcessor {
   // Opus frame is typically 20ms
   static const int frameDurationMs = 20;
 
+  static const double _noiseFloorAlpha = 0.98;
+
   final SimpleOpusDecoder? _decoder;
 
   List<Uint8List> _currentRecordingFrames = [];
   int _consecutiveSilenceFrames = 0;
+
+  // SNR-based VAD state
+  double _noiseFloorDbfs = -70.0;
+  int _hangoverFrames = 0;
+  int _speechFrameCount = 0;
+  int _noiseFloorInitFrames = 50; // first ~1s: fast convergence without alpha
 
   // For time tracking
   DateTime? _recordingStartTime;
   final String? _outputDir;
 
   // Cached settings for the duration of this processor instance (batch)
-  final double _silenceThresholdDbfs;
+  final double _snrMarginDb;
+  final int _hangoverFrameCount;
   final int _silenceDurationToSplitMs;
   final int _minSpeechMs;
   final int _preSpeechBufferMs;
@@ -33,7 +42,8 @@ class OfflineAudioProcessor {
   OfflineAudioProcessor({String? outputDir, SimpleOpusDecoder? decoder})
       : _decoder = decoder ?? (Platform.isIOS || Platform.isAndroid ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels) : null),
         _outputDir = outputDir,
-        _silenceThresholdDbfs = SharedPreferencesUtil().offlineSilenceThreshold,
+        _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb,
+        _hangoverFrameCount = max(0, SharedPreferencesUtil().offlineHangoverMs ~/ frameDurationMs),
         _silenceDurationToSplitMs = SharedPreferencesUtil().offlineSplitSeconds * 1000,
         _minSpeechMs = SharedPreferencesUtil().offlineMinSpeechSeconds * 1000,
         _preSpeechBufferMs = SharedPreferencesUtil().offlinePreSpeechSeconds * 1000,
@@ -115,10 +125,12 @@ class OfflineAudioProcessor {
       _recordingStartTime = chunkStartTime;
     }
 
-    int speechFramesCount = 0;
+    int _frameIndex = 0;
     for (var frame in opusFrames) {
       // Skip the metadata packets during actual audio processing
       if (frame.length == 255) continue;
+
+      if (_frameIndex++ % 50 == 0) await Future.delayed(Duration.zero);
 
       Int16List pcmData;
       try {
@@ -128,17 +140,42 @@ class OfflineAudioProcessor {
         // Skip corrupt or invalid Opus frames
         continue;
       }
-      
+
       final dbfs = _calculateDecibels(pcmData);
 
-      if (dbfs >= _silenceThresholdDbfs) {
-        speechFramesCount++;
+      // 1. Fast convergence during initial frames — clamps downward with a +3 dB guard
+      //    so early speech frames don't drive the floor too low
+      if (_noiseFloorInitFrames > 0) {
+        _noiseFloorDbfs = min(_noiseFloorDbfs, dbfs + 3);
+        _noiseFloorInitFrames--;
       }
 
-      if (dbfs < _silenceThresholdDbfs) {
+      // 2. SNR speech test
+      final bool rawSpeech = dbfs > _noiseFloorDbfs + _snrMarginDb;
+
+      // 3. Downward-only noise floor adaptation during silence
+      if (!rawSpeech && dbfs < _noiseFloorDbfs) {
+        _noiseFloorDbfs = _noiseFloorAlpha * _noiseFloorDbfs + (1 - _noiseFloorAlpha) * dbfs;
+      }
+
+      // 4. Hangover smoothing
+      bool activeSpeech;
+      if (rawSpeech) {
+        _hangoverFrames = _hangoverFrameCount;
+        activeSpeech = true;
+      } else if (_hangoverFrames > 0) {
+        _hangoverFrames--;
+        activeSpeech = true;
+      } else {
+        activeSpeech = false;
+      }
+
+      // 5. Update counters
+      if (!activeSpeech) {
         _consecutiveSilenceFrames++;
       } else {
         _consecutiveSilenceFrames = 0;
+        _speechFrameCount++;
       }
 
       _currentRecordingFrames.add(frame);
@@ -151,32 +188,7 @@ class OfflineAudioProcessor {
         if (framesToKeep > 0) {
           final recordingFrames = _currentRecordingFrames.sublist(0, framesToKeep);
 
-          int maxConsecutiveSpeechFrames = 0;
-          int currentConsecutiveSpeechFrames = 0;
-
-          if (_decoder != null) {
-            for (var rFrame in recordingFrames) {
-              try {
-                final rPcmData = _decoder!.decode(input: rFrame);
-                final rDbfs = _calculateDecibels(rPcmData);
-
-                if (rDbfs >= _silenceThresholdDbfs) {
-                  currentConsecutiveSpeechFrames++;
-                  if (currentConsecutiveSpeechFrames > maxConsecutiveSpeechFrames) {
-                    maxConsecutiveSpeechFrames = currentConsecutiveSpeechFrames;
-                  }
-                } else {
-                  currentConsecutiveSpeechFrames = 0;
-                }
-              } catch (e) {
-                // skip corrupt
-              }
-            }
-          }
-
-          final longestSpeechRunMs = maxConsecutiveSpeechFrames * frameDurationMs;
-
-          if (longestSpeechRunMs >= _minSpeechMs) {
+          if (_speechFrameCount * frameDurationMs >= _minSpeechMs) {
             final filePath = await _saveRecording(recordingFrames, _recordingStartTime!);
             savedFiles.add(filePath);
           }
@@ -186,19 +198,22 @@ class OfflineAudioProcessor {
         final bufferToKeep = min(preSpeechFramesCount, _consecutiveSilenceFrames);
 
         if (_recordingStartTime != null) {
-          final int elapsedMs = (framesToKeep - bufferToKeep) * frameDurationMs;
+          final int elapsedMs = (_currentRecordingFrames.length - bufferToKeep) * frameDurationMs;
           _recordingStartTime = _recordingStartTime!.add(Duration(milliseconds: elapsedMs));
         } else {
           _recordingStartTime = chunkStartTime;
         }
 
         _currentRecordingFrames = _currentRecordingFrames.sublist(_currentRecordingFrames.length - bufferToKeep);
+        _speechFrameCount = 0;
+        _hangoverFrames = 0;
         _consecutiveSilenceFrames = bufferToKeep;
       }
     }
 
     if (opusFrames.isNotEmpty) {
-      Logger.debug("OfflineAudioProcessor: Processed ${opusFrames.length} frames. Speech frames: $speechFramesCount (Threshold: $_silenceThresholdDbfs dB)");
+      Logger.debug("OfflineAudioProcessor: Processed ${opusFrames.length} frames. "
+          "Speech: $_speechFrameCount, NoiseFloor: ${_noiseFloorDbfs.toStringAsFixed(1)} dB, Margin: $_snrMarginDb dB");
     }
 
     return savedFiles;
@@ -209,46 +224,21 @@ class OfflineAudioProcessor {
 
     final framesToKeep = max(0, _currentRecordingFrames.length - _consecutiveSilenceFrames);
 
+    String? filePath;
     if (framesToKeep > 0) {
       final recordingFrames = _currentRecordingFrames.sublist(0, framesToKeep);
 
-      int maxConsecutiveSpeechFrames = 0;
-      int currentConsecutiveSpeechFrames = 0;
-
-      if (_decoder != null) {
-        for (var rFrame in recordingFrames) {
-          try {
-            final rPcmData = _decoder!.decode(input: rFrame);
-            final rDbfs = _calculateDecibels(rPcmData);
-
-            if (rDbfs >= _silenceThresholdDbfs) {
-              currentConsecutiveSpeechFrames++;
-              if (currentConsecutiveSpeechFrames > maxConsecutiveSpeechFrames) {
-                maxConsecutiveSpeechFrames = currentConsecutiveSpeechFrames;
-              }
-            } else {
-              currentConsecutiveSpeechFrames = 0;
-            }
-          } catch (e) {
-            // skip
-          }
-        }
-      }
-
-      final longestSpeechRunMs = maxConsecutiveSpeechFrames * frameDurationMs;
-
-      if (longestSpeechRunMs >= _minSpeechMs) {
-        final filePath = await _saveRecording(recordingFrames, _recordingStartTime ?? DateTime.now());
+      if (_speechFrameCount * frameDurationMs >= _minSpeechMs) {
+        filePath = await _saveRecording(recordingFrames, _recordingStartTime ?? DateTime.now());
         Logger.debug("OfflineAudioProcessor: Flushed remaining buffer and saved recording: $filePath");
-        _currentRecordingFrames.clear();
-        _consecutiveSilenceFrames = 0;
-        return filePath;
       }
     }
 
     _currentRecordingFrames.clear();
     _consecutiveSilenceFrames = 0;
-    return null;
+    _speechFrameCount = 0;
+    _hangoverFrames = 0;
+    return filePath;
   }
 
   Future<String> _saveRecording(List<Uint8List> frames, DateTime startTime) async {
