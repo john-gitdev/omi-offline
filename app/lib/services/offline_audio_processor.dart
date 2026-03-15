@@ -56,6 +56,11 @@ class OfflineAudioProcessor {
     _decoder?.destroy();
   }
 
+  /// True when frames have been buffered for an in-progress recording that
+  /// hasn't yet hit the silence threshold. Background callers use this to
+  /// decide whether to keep the raw chunks for the current conversation.
+  bool get hasOngoingRecording => _currentRecordingFrames.isNotEmpty;
+
   double _calculateDecibels(Int16List pcmData) {
     if (pcmData.isEmpty) return -100.0; // Minimum representable dBFS
 
@@ -221,6 +226,11 @@ class OfflineAudioProcessor {
 
     return savedFiles;
   }
+
+  /// No-op: completed conversations are already written by [processFrames].
+  /// Background callers use this instead of [flushRemaining] to avoid
+  /// force-writing the in-progress tail.
+  Future<List<String>> flushOnlyCompleted() async => [];
 
   Future<String?> flushRemaining() async {
     if (_currentRecordingFrames.isEmpty) return null;
