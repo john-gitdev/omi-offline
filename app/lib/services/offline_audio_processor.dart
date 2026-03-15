@@ -22,7 +22,7 @@ class OfflineAudioProcessor {
   int _consecutiveSilenceFrames = 0;
 
   // SNR-based VAD state
-  double _noiseFloorDbfs = -70.0;
+  double _noiseFloorDbfs = -40.0;
   int _hangoverFrames = 0;
   int _speechFrameCount = 0;
   int _noiseFloorInitFrames = 50; // first ~1s: fast convergence without alpha
