@@ -11,10 +11,10 @@ class OfflineAudioSettingsPage extends StatefulWidget {
 
 class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late double _snrMarginDb;
-  late int _hangoverMs;
+  late double _hangoverSeconds;
   late int _splitSeconds;
   late int _minSpeechSeconds;
-  late int _preSpeechMs;
+  late double _preSpeechSeconds;
   late int _gapSeconds;
   late bool _adjustmentMode;
 
@@ -22,30 +22,30 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   void initState() {
     super.initState();
     _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb;
-    _hangoverMs = SharedPreferencesUtil().offlineHangoverMs;
+    _hangoverSeconds = SharedPreferencesUtil().offlineHangoverSeconds;
     _splitSeconds = SharedPreferencesUtil().offlineSplitSeconds;
     _minSpeechSeconds = SharedPreferencesUtil().offlineMinSpeechSeconds;
-    _preSpeechMs = SharedPreferencesUtil().offlinePreSpeechMs;
+    _preSpeechSeconds = SharedPreferencesUtil().offlinePreSpeechSeconds;
     _gapSeconds = SharedPreferencesUtil().offlineGapSeconds;
     _adjustmentMode = SharedPreferencesUtil().offlineAdjustmentMode;
   }
 
   void _saveSettings() {
     SharedPreferencesUtil().offlineSnrMarginDb = _snrMarginDb;
-    SharedPreferencesUtil().offlineHangoverMs = _hangoverMs;
+    SharedPreferencesUtil().offlineHangoverSeconds = _hangoverSeconds;
     SharedPreferencesUtil().offlineSplitSeconds = _splitSeconds;
     SharedPreferencesUtil().offlineMinSpeechSeconds = _minSpeechSeconds;
-    SharedPreferencesUtil().offlinePreSpeechMs = _preSpeechMs;
+    SharedPreferencesUtil().offlinePreSpeechSeconds = _preSpeechSeconds;
     SharedPreferencesUtil().offlineGapSeconds = _gapSeconds;
     SharedPreferencesUtil().offlineAdjustmentMode = _adjustmentMode;
   }
 
-  String _formatMs(int ms) {
-    final int wholeSecs = ms ~/ 1000;
-    final bool hasHalf = (ms % 1000) == 500;
-    if (!hasHalf) return _formatTime(wholeSecs);
-    if (wholeSecs == 0) return '0.5 sec';
-    return '${wholeSecs}.5 sec';
+  String _formatSeconds(double seconds) {
+    final int whole = seconds.toInt();
+    final bool hasHalf = (seconds - whole) >= 0.4;
+    if (!hasHalf) return _formatTime(whole);
+    if (whole == 0) return '0.5 sec';
+    return '$whole.5 sec';
   }
 
   String _formatTime(int totalSeconds) {
@@ -151,12 +151,12 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              'How long to continue treating audio as speech after the signal drops below threshold. Prevents pauses and breaths from splitting recordings. (Current: ${_formatMs(_hangoverMs)})',
+              'How long to continue treating audio as speech after the signal drops below threshold. Prevents pauses and breaths from splitting recordings. (Current: ${_formatSeconds(_hangoverSeconds)})',
               style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
             ),
             const SizedBox(height: 12),
             Slider(
-              value: _hangoverMs / 1000,
+              value: _hangoverSeconds,
               min: 0,
               max: 5,
               divisions: 10,
@@ -164,7 +164,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               inactiveColor: const Color(0xFF3C3C43),
               onChanged: (value) {
                 setState(() {
-                  _hangoverMs = (value * 1000).round();
+                  _hangoverSeconds = value;
                 });
                 _saveSettings();
               },
@@ -226,12 +226,12 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Audio kept before detected speech to avoid clipping the start of utterances. (Current: ${_formatMs(_preSpeechMs)})',
+              'Audio kept before detected speech to avoid clipping the start of utterances. (Current: ${_formatSeconds(_preSpeechSeconds)})',
               style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
             ),
             const SizedBox(height: 12),
             Slider(
-              value: _preSpeechMs / 1000,
+              value: _preSpeechSeconds,
               min: 0.0,
               max: 5.0,
               divisions: 10,
@@ -239,7 +239,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               inactiveColor: const Color(0xFF3C3C43),
               onChanged: (value) {
                 setState(() {
-                  _preSpeechMs = (value * 1000).round();
+                  _preSpeechSeconds = value;
                 });
                 _saveSettings();
               },
