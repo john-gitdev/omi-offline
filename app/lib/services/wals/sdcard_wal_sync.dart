@@ -25,10 +25,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   bool _isCancelled = false;
   bool _isSyncing = false;
+  bool _isDeviceRecordingFailed = false;
   TcpTransport? _activeTcpTransport;
   Completer<void>? _activeTransferCompleter;
   @override
   bool get isSyncing => _isSyncing;
+  @override
+  bool get isDeviceRecordingFailed => _isDeviceRecordingFailed;
 
   int _totalBytesDownloaded = 0;
   DateTime? _downloadStartTime;
@@ -116,7 +119,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     if (storageOffset > totalBytes) {
       Logger.debug("SDCard bad state, offset $storageOffset > total $totalBytes");
+      // totalBytes=0 with a stale offset means the firmware's SD worker failed to
+      // reopen the data file after a DELETE — recording has stopped on the device.
+      final failed = totalBytes == 0 && storageOffset > 0;
+      if (failed != _isDeviceRecordingFailed) {
+        _isDeviceRecordingFailed = failed;
+        if (failed) listener.onDeviceRecordingFailed();
+      }
       storageOffset = 0;
+    } else if (_isDeviceRecordingFailed) {
+      _isDeviceRecordingFailed = false;
     }
 
     BleAudioCodec codec = await _getAudioCodec(deviceId);

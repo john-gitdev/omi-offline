@@ -35,6 +35,7 @@ abstract class IWalServiceListener extends IWalSyncListener {
 abstract class IWalSyncListener {
   void onWalUpdated();
   void onWalSynced(Wal wal);
+  void onDeviceRecordingFailed() {}
 }
 
 abstract class IWalSync {
@@ -72,11 +73,13 @@ enum WalServiceStatus {
   ready,
   stop,
 }
+
 abstract class SDCardWalSync implements IWalSync {
   void setDevice(BtDevice? device);
   Future<void> deleteAllSyncedWals();
   Future<void> deleteAllPendingWals();
   bool get isSyncing;
+  bool get isDeviceRecordingFailed;
   double get currentSpeedKBps;
   int get recordingsCount;
   int get estimatedTotalChunks;

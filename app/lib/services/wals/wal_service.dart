@@ -1,6 +1,7 @@
 import 'package:omi/services/wals/wal.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/services/wals/sdcard_wal_sync.dart';
+import 'package:omi/utils/notifications.dart';
 
 class WalService implements IWalService, IWalSyncListener {
   final Map<Object, IWalServiceListener> _subscriptions = {};
@@ -63,6 +64,14 @@ class WalService implements IWalService, IWalSyncListener {
   void onWalSynced(Wal wal) {
     for (var s in _subscriptions.values) {
       s.onWalSynced(wal);
+    }
+  }
+
+  @override
+  void onDeviceRecordingFailed() {
+    NotificationsService.showDeviceRecordingFailed();
+    for (var s in _subscriptions.values) {
+      s.onDeviceRecordingFailed();
     }
   }
 }
