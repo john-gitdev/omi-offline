@@ -204,7 +204,34 @@ class RecordingsManager {
           final sessionIdStr = file.parent.path.split('/').last;
           int? sessionId = int.tryParse(sessionIdStr);
 
-          DateTime chunkStartTime = file.lastModifiedSync();
+          // Parse chunkIndex from filename: stored as {sessionId}_{chunkIndex}.bin
+          final chunkFileName = file.path.split('/').last.replaceAll('.bin', '');
+          final chunkIndexStr = chunkFileName.contains('_') ? chunkFileName.split('_').last : null;
+          final chunkIndex = chunkIndexStr != null ? int.tryParse(chunkIndexStr) : null;
+
+          DateTime chunkStartTime;
+          if (sessionId != null && chunkIndex != null) {
+            final anchorUtc = SharedPreferencesUtil().getInt('anchor_utc_${sessionId}_$chunkIndex', defaultValue: 0);
+            final anchorUptime =
+                SharedPreferencesUtil().getInt('anchor_uptime_${sessionId}_$chunkIndex', defaultValue: 0);
+            if (anchorUtc > 0) {
+              chunkStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
+            } else if (anchorUptime > 0) {
+              // No RTC lock at record time — back-calculate from session-level anchor
+              final sessionAnchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
+              final sessionAnchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
+              if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
+                final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
+                chunkStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+              } else {
+                chunkStartTime = file.lastModifiedSync();
+              }
+            } else {
+              chunkStartTime = file.lastModifiedSync();
+            }
+          } else {
+            chunkStartTime = file.lastModifiedSync();
+          }
 
           // Read frames from .bin file
           List<Uint8List> frames = [];
