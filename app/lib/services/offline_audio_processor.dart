@@ -200,7 +200,9 @@ class OfflineAudioProcessor {
         _speechFrameCount++;
       }
 
-      _currentRecordingFrames.add(frame);
+      // Store decoded PCM instead of raw Opus so _saveRecording can write
+      // directly without a second decode pass.
+      _currentRecordingFrames.add(pcmData.buffer.asUint8List());
 
       final silenceDurationMs = _consecutiveSilenceFrames * frameDurationMs;
 
@@ -290,22 +292,9 @@ class OfflineAudioProcessor {
     final wavFile = File(wavPath);
     final IOSink sink = wavFile.openWrite();
 
-    // Decode all frames first so the WAV header reflects the actual byte count.
-    // Skipping corrupt frames before writing the header prevents a size mismatch
-    // that breaks playback (header says N bytes, file contains fewer).
-    final List<Uint8List> decodedChunks = [];
-    if (_decoder != null) {
-      for (var frame in frames) {
-        try {
-          final decoded = _decoder!.decode(input: frame);
-          decodedChunks.add(decoded.buffer.asUint8List());
-        } catch (e) {
-          // Skip corrupt frame
-        }
-      }
-    }
-
-    final int totalPcmBytes = decodedChunks.fold(0, (sum, chunk) => sum + chunk.length);
+    // frames contains pre-decoded PCM (stored during processFrames to avoid
+    // decoding each frame twice). Write directly without re-decoding.
+    final int totalPcmBytes = frames.fold(0, (sum, chunk) => sum + chunk.length);
 
     final header = ByteData(44);
     header.setUint8(0, 0x52); // R
@@ -335,7 +324,7 @@ class OfflineAudioProcessor {
     header.setUint32(40, totalPcmBytes, Endian.little);
 
     sink.add(header.buffer.asUint8List());
-    for (var pcm in decodedChunks) {
+    for (var pcm in frames) {
       sink.add(pcm);
     }
     await sink.close();
