@@ -46,6 +46,14 @@ class SharedPreferencesUtil {
 
   set offlineAdjustmentMode(bool value) => saveBool('offlineAdjustmentMode', value);
 
+  bool get recordingsFilterEnabled => getBool('recordingsFilterEnabled', defaultValue: false);
+
+  set recordingsFilterEnabled(bool value) => saveBool('recordingsFilterEnabled', value);
+
+  int get recordingsFilterMinutes => getInt('recordingsFilterMinutes', defaultValue: 0);
+
+  set recordingsFilterMinutes(int value) => saveInt('recordingsFilterMinutes', value);
+
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _preferences = prefs;

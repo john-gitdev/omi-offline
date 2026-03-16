@@ -36,8 +36,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   int _syncRecordingsCount = 0;
 
   // Filter state
-  bool _filterEnabled = false;
-  int _filterMinutes = 0;
+  bool _filterEnabled = SharedPreferencesUtil().recordingsFilterEnabled;
+  int _filterMinutes = SharedPreferencesUtil().recordingsFilterMinutes;
 
   // Processing state
   String? _processingDateString;
@@ -314,6 +314,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                   onChanged: (v) {
                     setModalState(() => _filterEnabled = v);
                     setState(() => _filterEnabled = v);
+                    SharedPreferencesUtil().recordingsFilterEnabled = v;
                   },
                 ),
                 Padding(
@@ -337,6 +338,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                       ? (v) {
                           setModalState(() => _filterMinutes = v.round());
                           setState(() => _filterMinutes = v.round());
+                          SharedPreferencesUtil().recordingsFilterMinutes = v.round();
                         }
                       : null,
                 ),
