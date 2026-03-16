@@ -107,7 +107,7 @@ class MainActivity : FlutterActivity() {
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1).apply {
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 8192)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
         }
 
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
