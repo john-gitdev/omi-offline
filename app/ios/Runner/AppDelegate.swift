@@ -21,6 +21,7 @@ extension FlutterError: Error {}
   var session: WCSession?
     var flutterWatchAPI: WatchRecorderFlutterAPI?
   private var audioChunks: [Int: (Data, Double)] = [:] // (audioData, sampleRate)
+  fileprivate var aacEncoderSessions: [String: AacEncoderSession] = [:]
   private var nextExpectedChunkIndex: Int = 0
   private var isRecordingActive: Bool = false // Track recording state to handle app restarts
 
@@ -106,6 +107,9 @@ extension FlutterError: Error {}
             result(FlutterMethodNotImplemented)
         }
     }
+
+    // AAC encoder channel
+    setupAacEncoderChannel(controller!.binaryMessenger)
 
     // Create WiFi Network plugin for device AP connection
     _ = WifiNetworkPlugin(messenger: controller!.binaryMessenger)
@@ -283,6 +287,168 @@ extension FlutterError: Error {}
 
 func registerPlugins(registry: FlutterPluginRegistry) {
   GeneratedPluginRegistrant.register(with: registry)
+}
+
+// MARK: - AAC Encoder
+
+private class AacEncoderSession {
+  var audioFile: AVAudioFile?   // Optional so finishEncoder can nil it to force-close
+  let pcmFormat: AVAudioFormat
+  let tempPath: String
+  let finalPath: String
+  let queue: DispatchQueue
+
+  init(audioFile: AVAudioFile, pcmFormat: AVAudioFormat, tempPath: String, finalPath: String, queue: DispatchQueue) {
+    self.audioFile = audioFile
+    self.pcmFormat = pcmFormat
+    self.tempPath = tempPath
+    self.finalPath = finalPath
+    self.queue = queue
+  }
+}
+
+extension AppDelegate {
+  fileprivate func setupAacEncoderChannel(_ messenger: FlutterBinaryMessenger) {
+    let channel = FlutterMethodChannel(name: "com.omi.offline/aacEncoder", binaryMessenger: messenger)
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else { return }
+      switch call.method {
+      case "startEncoder":
+        self.aacStartEncoder(call: call, result: result)
+      case "encodeChunk":
+        self.aacEncodeChunk(call: call, result: result)
+      case "finishEncoder":
+        self.aacFinishEncoder(call: call, result: result)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  private func aacStartEncoder(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard let args = call.arguments as? [String: Any],
+          let sampleRate = args["sampleRate"] as? Int,
+          let outputPath = args["outputPath"] as? String,
+          let bitrate = args["bitrate"] as? Int else {
+      result(FlutterError(code: "INVALID_ARGS", message: "startEncoder requires sampleRate, outputPath, bitrate", details: nil))
+      return
+    }
+
+    // Derive temp path: insert ".tmp" before ".m4a"
+    let tempPath = outputPath.hasSuffix(".m4a")
+      ? String(outputPath.dropLast(4)) + ".tmp.m4a"
+      : outputPath + ".tmp"
+    let tempUrl = URL(fileURLWithPath: tempPath)
+
+    // Remove stale temp file if present
+    try? FileManager.default.removeItem(at: tempUrl)
+
+    let settings: [String: Any] = [
+      AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+      AVSampleRateKey: sampleRate,
+      AVNumberOfChannelsKey: 1,
+      AVEncoderBitRateKey: bitrate,
+      AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+      AVEncoderBitRateStrategyKey: AVAudioBitRateStrategy_Constant,
+    ]
+
+    let queue = DispatchQueue(label: "com.omi.aac.\(UUID().uuidString)", qos: .utility)
+    let sessionId = UUID().uuidString
+
+    queue.async {
+      do {
+        let audioFile = try AVAudioFile(forWriting: tempUrl, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        let pcmFormat = audioFile.processingFormat
+        let session = AacEncoderSession(audioFile: audioFile, pcmFormat: pcmFormat, tempPath: tempPath, finalPath: outputPath, queue: queue)
+        self.aacEncoderSessions[sessionId] = session
+        DispatchQueue.main.async { result(sessionId) }
+      } catch {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "ENCODER_START_ERROR", message: error.localizedDescription, details: nil))
+        }
+      }
+    }
+  }
+
+  private func aacEncodeChunk(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard let args = call.arguments as? [String: Any],
+          let sessionId = args["sessionId"] as? String,
+          let pcmFlutter = args["pcmBytes"] as? FlutterStandardTypedData else {
+      result(FlutterError(code: "INVALID_ARGS", message: "encodeChunk requires sessionId and pcmBytes", details: nil))
+      return
+    }
+
+    guard let session = aacEncoderSessions[sessionId] else {
+      result(FlutterError(code: "NO_SESSION", message: "No encoder session for id \(sessionId)", details: nil))
+      return
+    }
+
+    let pcmData = pcmFlutter.data
+
+    session.queue.async {
+      do {
+        let frameCount = pcmData.count / 2  // 16-bit samples
+        guard frameCount > 0 else {
+          DispatchQueue.main.async { result(nil) }
+          return
+        }
+        guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: session.pcmFormat, frameCapacity: AVAudioFrameCount(frameCount)) else {
+          throw NSError(domain: "AacEncoder", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate PCM buffer"])
+        }
+        pcmBuffer.frameLength = AVAudioFrameCount(frameCount)
+        let floatData = pcmBuffer.floatChannelData![0]
+        pcmData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
+          let int16Ptr = ptr.bindMemory(to: Int16.self)
+          for i in 0..<frameCount {
+            floatData[i] = Float(int16Ptr[i]) / 32768.0
+          }
+        }
+        guard let audioFile = session.audioFile else {
+          throw NSError(domain: "AacEncoder", code: -2, userInfo: [NSLocalizedDescriptionKey: "Session already closed"])
+        }
+        try audioFile.write(from: pcmBuffer)
+        DispatchQueue.main.async { result(nil) }
+      } catch {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "ENCODE_CHUNK_ERROR", message: error.localizedDescription, details: nil))
+        }
+      }
+    }
+  }
+
+  private func aacFinishEncoder(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard let args = call.arguments as? [String: Any],
+          let sessionId = args["sessionId"] as? String else {
+      result(FlutterError(code: "INVALID_ARGS", message: "finishEncoder requires sessionId", details: nil))
+      return
+    }
+
+    guard let session = aacEncoderSessions.removeValue(forKey: sessionId) else {
+      result(FlutterError(code: "NO_SESSION", message: "No encoder session for id \(sessionId)", details: nil))
+      return
+    }
+
+    session.queue.async {
+      let tempUrl = URL(fileURLWithPath: session.tempPath)
+      let finalUrl = URL(fileURLWithPath: session.finalPath)
+
+      // Nil out audioFile so ARC immediately releases it → AVAudioFile flushes on dealloc.
+      session.audioFile = nil
+
+      do {
+        if FileManager.default.fileExists(atPath: session.finalPath) {
+          try FileManager.default.removeItem(at: finalUrl)
+        }
+        try FileManager.default.moveItem(at: tempUrl, to: finalUrl)
+        DispatchQueue.main.async { result(nil) }
+      } catch {
+        try? FileManager.default.removeItem(at: tempUrl)
+        DispatchQueue.main.async {
+          result(FlutterError(code: "FINISH_ENCODER_ERROR", message: error.localizedDescription, details: nil))
+        }
+      }
+    }
+  }
 }
 
 extension AppDelegate: WCSessionDelegate {
