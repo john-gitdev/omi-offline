@@ -1,6 +1,6 @@
 # omi-offline
 
-Offline-first audio recorder for the Omi wearable. The device captures audio continuously with no cloud dependency — recordings sync to your phone over BLE or WiFi and are stored locally as AAC (M4A) files.
+Offline-first audio recorder for the Omi wearable. The device captures audio continuously with no cloud dependency — recordings sync to your phone over BLE and are stored locally as AAC (M4A) files.
 
 ## How it works
 
