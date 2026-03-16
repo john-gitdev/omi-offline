@@ -81,9 +81,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     });
     WakelockPlus.enable();
 
+    SyncLocalFilesResponse? result;
     try {
       final syncService = ServiceManager.instance().wal.getSyncs();
-      final result = await syncService.syncAll(progress: this, force: force);
+      result = await syncService.syncAll(progress: this, force: force);
 
       if (mounted) {
         if (result != null && (result.newConversationIds.isNotEmpty || result.updatedConversationIds.isNotEmpty)) {
