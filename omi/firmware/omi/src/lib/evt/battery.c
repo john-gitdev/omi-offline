@@ -27,16 +27,29 @@ static const struct gpio_dt_spec bat_chg_pin = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(
 static struct gpio_callback bat_chg_cb;
 
 bool is_charging = false;
+
+static struct k_work bat_chg_work;
+static bool bat_chg_state;
+
+static void bat_chg_work_handler(struct k_work *work)
+{
+    if (bat_chg_state) {
+        shell_execute_cmd(NULL, "led on 1");
+    } else {
+        shell_execute_cmd(NULL, "led off 1");
+    }
+}
+
 static void battrey_input_cb(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
     if (gpio_pin_get(bat_chg_pin.port, bat_chg_pin.pin) == 0) {
-        shell_execute_cmd(NULL, "led on 1");
+        bat_chg_state = true;
         is_charging = true;
     } else {
-        shell_execute_cmd(NULL, "led off 1");
+        bat_chg_state = false;
         is_charging = false;
     }
-    return;
+    k_work_submit(&bat_chg_work);
 }
 
 static const struct adc_channel_cfg m_1st_channel_cfg = {
@@ -63,7 +76,7 @@ static int adc_sample(uint16_t *m_buffer)
         .options = &sequence_opts,
         .channels = BIT(ADC_1ST_CHANNEL_ID),
         .buffer = m_buffer,
-        .buffer_size = sizeof(m_buffer),
+        .buffer_size = sizeof(uint16_t) * 2,
         .resolution = ADC_RESOLUTION,
     };
 
@@ -115,6 +128,7 @@ static int cmd_bat_get(const struct shell *sh, size_t argc, char **argv)
 int bat_init(void)
 {
     int err;
+    k_work_init(&bat_chg_work, bat_chg_work_handler);
     // err = gpio_pin_configure_dt(&power_pin, GPIO_OUTPUT );
     // if (err < 0)
     // {
