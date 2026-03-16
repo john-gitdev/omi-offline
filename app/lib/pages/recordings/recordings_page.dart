@@ -187,7 +187,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   }
 
   Future<void> _processBatch(DailyBatch batch) async {
-    if (RecordingsManager.isProcessingAny || _isSyncing) return;
+    if (RecordingsManager.isProcessingAny || _isSyncing) {
+      if (_isSyncing) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Sync in progress — processing will be available when sync finishes.')),
+        );
+      }
+      return;
+    }
 
     if (batch.rawChunks.length > 60) {
       bool? confirm = await showDialog<bool>(
