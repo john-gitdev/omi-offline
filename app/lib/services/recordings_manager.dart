@@ -222,6 +222,16 @@ class RecordingsManager {
       }
       await tempDir.create(recursive: true);
 
+      // In adjustment mode, wipe existing processed recordings before reprocessing
+      // so old conversations don't accumulate alongside the new ones.
+      if (SharedPreferencesUtil().offlineAdjustmentMode) {
+        final liveDir = Directory(liveRecordingsPath);
+        if (await liveDir.exists()) {
+          await liveDir.delete(recursive: true);
+          Logger.debug('RecordingsManager: Cleared existing recordings for $dateString (adjustment mode)');
+        }
+      }
+
       // 2. Initialize the OfflineAudioProcessor with temp folder
       final processor = OfflineAudioProcessor(outputDir: tempProcessingPath);
 
