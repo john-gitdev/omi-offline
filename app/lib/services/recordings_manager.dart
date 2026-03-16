@@ -29,13 +29,19 @@ class RecordingInfo {
     final name = file.path.split('/').last;
     final millisStr = name.contains('_') ? name.split('_').last.split('.').first : null;
     final millis = millisStr != null ? int.tryParse(millisStr) : null;
-    final startTime =
-        (millis != null && millis > 0) ? DateTime.fromMillisecondsSinceEpoch(millis) : file.lastModifiedSync();
+    DateTime startTime;
+    if (millis != null && millis > 0) {
+      startTime = DateTime.fromMillisecondsSinceEpoch(millis);
+    } else {
+      try {
+        startTime = file.lastModifiedSync();
+      } catch (_) {
+        startTime = DateTime.now();
+      }
+    }
 
     // Try .meta sidecar for authoritative duration
-    final basePath = file.path.contains('.')
-        ? file.path.substring(0, file.path.lastIndexOf('.'))
-        : file.path;
+    final basePath = file.path.contains('.') ? file.path.substring(0, file.path.lastIndexOf('.')) : file.path;
     final metaFile = File('$basePath.meta');
     if (metaFile.existsSync()) {
       try {
