@@ -135,7 +135,12 @@ class SharedPreferencesUtil {
 
   bool getBool(String key, {bool defaultValue = false}) => _preferences?.getBool(key) ?? defaultValue;
 
-  double getDouble(String key, {double defaultValue = 0.0}) => _preferences?.getDouble(key) ?? defaultValue;
+  double getDouble(String key, {double defaultValue = 0.0}) {
+    final value = _preferences?.get(key);
+    if (value is double) return value;
+    if (value is int) return value.toDouble();
+    return defaultValue;
+  }
 
   List<String> getStringList(String key, {List<String> defaultValue = const []}) =>
       _preferences?.getStringList(key) ?? defaultValue;
