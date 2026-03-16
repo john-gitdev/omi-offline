@@ -76,6 +76,9 @@ class RecordingsManager {
   static bool _isProcessingAny = false;
   static bool get isProcessingAny => _isProcessingAny;
 
+  static bool _cancelRequested = false;
+  static void cancelProcessing() => _cancelRequested = true;
+
   Future<List<DailyBatch>> getDailyBatches() async {
     final directory = await getApplicationDocumentsDirectory();
     final rawChunksDir = Directory('${directory.path}/raw_chunks');
@@ -182,6 +185,7 @@ class RecordingsManager {
     }
 
     _isProcessingAny = true;
+    _cancelRequested = false;
 
     try {
       final directory = await getApplicationDocumentsDirectory();
@@ -253,6 +257,11 @@ class RecordingsManager {
             if (offset + length > bytes.length) break;
             frames.add(bytes.sublist(offset, offset + length));
             offset += length;
+          }
+
+          if (_cancelRequested) {
+            Logger.debug("RecordingsManager: Processing cancelled by user at chunk $i.");
+            break;
           }
 
           await processor.processFrames(frames, chunkStartTime, sessionId: sessionId);

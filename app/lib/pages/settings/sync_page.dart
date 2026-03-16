@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/services/recordings_manager.dart';
@@ -14,12 +16,18 @@ class SyncPage extends StatefulWidget {
 
 class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener {
   bool _isSyncing = false;
+  bool _isProcessing = false;
   double _progress = 0.0;
   String _statusMessage = 'Ready to sync';
+  Timer? _pollTimer;
 
   @override
   void initState() {
     super.initState();
+    _pollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      final processing = RecordingsManager.isProcessingAny;
+      if (processing != _isProcessing) setState(() => _isProcessing = processing);
+    });
     // Do NOT call start() here. start() fires getMissingWals() asynchronously and
     // overwrites _wals via .then(), which races with syncAll() between the moment it
     // takes its local `wals` snapshot and when it sets _isSyncing = true.
@@ -139,6 +147,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
     if (mounted) {
       setState(() {
@@ -173,6 +187,22 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 style: const TextStyle(color: Colors.white, fontSize: 16),
               ),
               const SizedBox(height: 32),
+              if (_isProcessing) ...[
+                const Text('Processing recordings...', style: TextStyle(color: Colors.white70, fontSize: 14)),
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  onPressed: RecordingsManager.cancelProcessing,
+                  icon: const FaIcon(FontAwesomeIcons.circleXmark, size: 14),
+                  label: const Text('Cancel Processing'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                  ),
+                ),
+                const SizedBox(height: 32),
+              ],
               if (_isSyncing) ...[
                 LinearProgressIndicator(
                   value: _progress,
