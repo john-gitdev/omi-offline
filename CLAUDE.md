@@ -122,3 +122,6 @@ clang-format -i <files>                  # C/C++ firmware
 
 ### RELEASE command
 When the user says "RELEASE", create a branch from `main`, make individual commits per changed file, push/create a PR, merge without squash, then switch back to `main` and pull.
+
+### Version bumping
+When the user says "release" or asks to ship a build, increment the build number in `app/pubspec.yaml` by 1 (the `+N` part). Only change the semver (`X.Y.Z`) if the user explicitly specifies a new version. Example: `1.1.0+3` → `1.1.0+4`.
