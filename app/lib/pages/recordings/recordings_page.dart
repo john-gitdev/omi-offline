@@ -38,6 +38,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   double _processingProgress = 0.0;
 
   Timer? _syncPollTimer;
+  bool _wasProcessing = false;
 
   @override
   void initState() {
@@ -62,14 +63,20 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       // External sync started (DeviceProvider triggered it)
       setState(() => _isSyncing = true);
     } else if (!serviceIsSyncing && _isSyncing && !_syncUserTriggered) {
-      // External sync finished
+      // External sync finished — don't reload yet, processing may follow
       setState(() {
         _isSyncing = false;
         _syncProgress = 0.0;
         _syncSpeed = 0.0;
       });
+    }
+
+    // Reload batches when background processing finishes
+    final isProcessing = RecordingsManager.isProcessingAny;
+    if (_wasProcessing && !isProcessing) {
       _loadBatches();
     }
+    _wasProcessing = isProcessing;
   }
 
   Future<void> _loadBatches() async {
