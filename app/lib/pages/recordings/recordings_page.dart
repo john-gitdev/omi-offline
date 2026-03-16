@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
@@ -26,6 +28,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   List<DailyBatch> _batches = [];
   bool _isLoading = true;
   bool _isSyncing = false;
+  bool _syncUserTriggered = false;
   double _syncProgress = 0.0;
   double _syncSpeed = 0.0;
   int _syncRecordingsCount = 0;
@@ -34,10 +37,39 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   String? _processingDateString;
   double _processingProgress = 0.0;
 
+  Timer? _syncPollTimer;
+
   @override
   void initState() {
     super.initState();
     _loadBatches();
+    final syncService = ServiceManager.instance().wal.getSyncs();
+    syncService.setGlobalProgressListener(this);
+    _syncPollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _pollSyncState());
+  }
+
+  @override
+  void dispose() {
+    _syncPollTimer?.cancel();
+    ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(null);
+    super.dispose();
+  }
+
+  void _pollSyncState() {
+    if (!mounted) return;
+    final serviceIsSyncing = ServiceManager.instance().wal.getSyncs().isSyncing;
+    if (serviceIsSyncing && !_isSyncing) {
+      // External sync started (DeviceProvider triggered it)
+      setState(() => _isSyncing = true);
+    } else if (!serviceIsSyncing && _isSyncing && !_syncUserTriggered) {
+      // External sync finished
+      setState(() {
+        _isSyncing = false;
+        _syncProgress = 0.0;
+        _syncSpeed = 0.0;
+      });
+      _loadBatches();
+    }
   }
 
   Future<void> _loadBatches() async {
@@ -75,6 +107,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     setState(() {
       _isSyncing = true;
+      _syncUserTriggered = true;
       _syncProgress = 0.0;
       _syncSpeed = 0.0;
       _syncRecordingsCount = 0;
@@ -108,6 +141,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       if (mounted) {
         setState(() {
           _isSyncing = false;
+          _syncUserTriggered = false;
         });
         await _loadBatches();
 

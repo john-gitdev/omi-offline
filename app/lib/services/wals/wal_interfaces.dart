@@ -81,6 +81,7 @@ abstract class SDCardWalSync implements IWalSync {
   Future<void> deleteAllSyncedWals();
   Future<void> deleteAllPendingWals();
   bool get isSyncing;
+  void setGlobalProgressListener(IWalSyncProgressListener? listener);
   bool get isDeviceRecordingFailed;
   double get currentSpeedKBps;
   int get recordingsCount;
