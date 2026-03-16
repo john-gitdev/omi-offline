@@ -295,9 +295,10 @@ class OfflineAudioProcessor {
     // that breaks playback (header says N bytes, file contains fewer).
     final List<Uint8List> decodedChunks = [];
     if (_decoder != null) {
-      for (var frame in frames) {
+      for (var i = 0; i < frames.length; i++) {
+        if (i % 50 == 0) await Future.delayed(Duration.zero);
         try {
-          final decoded = _decoder!.decode(input: frame);
+          final decoded = _decoder!.decode(input: frames[i]);
           decodedChunks.add(decoded.buffer.asUint8List());
         } catch (e) {
           // Skip corrupt frame
