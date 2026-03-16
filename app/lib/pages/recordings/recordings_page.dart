@@ -391,7 +391,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                             padding: const EdgeInsets.all(10),
                           ),
                           child: isProcessingThisBatch
-                              ? const FaIcon(FontAwesomeIcons.circleXmark, size: 16)
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
                               : const FaIcon(FontAwesomeIcons.gears, size: 16),
                         ),
                       ],
