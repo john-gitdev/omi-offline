@@ -379,15 +379,18 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                           style: TextStyle(color: Colors.grey.shade400),
                         ),
                         ElevatedButton(
-                          onPressed: isButtonDisabled ? null : () => _processBatch(batch),
+                          onPressed: isProcessingThisBatch
+                              ? RecordingsManager.cancelProcessing
+                              : (isButtonDisabled ? null : () => _processBatch(batch)),
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.deepPurpleAccent,
+                            backgroundColor:
+                                isProcessingThisBatch ? Colors.redAccent : Colors.deepPurpleAccent,
                             foregroundColor: Colors.white,
                             minimumSize: const Size(40, 40),
                             padding: const EdgeInsets.all(10),
                           ),
                           child: isProcessingThisBatch
-                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              ? const FaIcon(FontAwesomeIcons.circleXmark, size: 16)
                               : const FaIcon(FontAwesomeIcons.gears, size: 16),
                         ),
                       ],
