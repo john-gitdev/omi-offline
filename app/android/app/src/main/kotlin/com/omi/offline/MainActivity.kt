@@ -163,9 +163,12 @@ class MainActivity : FlutterActivity() {
 
             session.codec.stop()
             session.codec.release()
-            if (session.muxerStarted) {
-                session.muxer.stop()
+            if (!session.muxerStarted) {
+                session.muxer.release()
+                File(session.tempPath).delete()
+                throw IllegalStateException("AAC encoder produced no output — no audio data was written")
             }
+            session.muxer.stop()
             session.muxer.release()
 
             // Rename temp → final
