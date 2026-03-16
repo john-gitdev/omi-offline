@@ -310,6 +310,7 @@ class RecordingsManager {
         await Future.delayed(const Duration(milliseconds: 200));
 
         // Cleanup temp dir
+        Logger.debug("RecordingsManager: Moved ${newFiles.length} recordings to live folder for $dateString.");
         await tempDir.delete(recursive: true);
       } catch (e) {
         Logger.error("RecordingsManager: Processing failed for $dateString: $e");
