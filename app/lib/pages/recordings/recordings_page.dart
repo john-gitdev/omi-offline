@@ -112,6 +112,12 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   }
 
   Future<void> _handleSync() async {
+    if (RecordingsManager.isProcessingAny) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Processing in progress — sync will be available when done.')),
+      );
+      return;
+    }
     await _performSync(force: false);
   }
 

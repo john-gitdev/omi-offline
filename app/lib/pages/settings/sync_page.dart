@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
 import 'package:omi/widgets/dialog.dart';
@@ -26,7 +27,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // syncAll() refreshes it internally if empty.
   }
 
+  void _showProcessingSnackbar() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Processing in progress — please wait until it finishes.')),
+    );
+  }
+
   Future<void> _startSync() async {
+    if (RecordingsManager.isProcessingAny) { _showProcessingSnackbar(); return; }
     setState(() {
       _isSyncing = true;
       _progress = 0.0;
@@ -54,6 +62,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _forceSync() async {
+    if (RecordingsManager.isProcessingAny) { _showProcessingSnackbar(); return; }
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -88,6 +97,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _deleteAllPending() async {
+    if (RecordingsManager.isProcessingAny) { _showProcessingSnackbar(); return; }
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
