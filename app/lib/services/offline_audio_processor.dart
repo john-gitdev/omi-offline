@@ -257,7 +257,7 @@ class OfflineAudioProcessor {
 
       if (_speechFrameCount * frameDurationMs >= _minSpeechMs) {
         filePath = await _saveRecording(recordingFrames, _recordingStartTime ?? DateTime.now());
-        Logger.debug("OfflineAudioProcessor: Flushed remaining buffer and saved recording: $filePath");
+        Logger.debug("OfflineAudioProcessor: Flushed remaining buffer.");
       }
     }
 
