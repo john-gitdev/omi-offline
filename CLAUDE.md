@@ -103,9 +103,6 @@ agent-flutter screenshot /tmp/after.png
 - Use `Key('descriptive_name')` on new interactive widgets so agents can use `find key`.
 - See `app/e2e/SKILL.md` for screen map and known flows.
 
-### Firebase Prod Config
-Never run `flutterfire configure` — it overwrites prod credentials. Prod config files in `app/ios/Config/Prod/`, `app/lib/firebase_options_prod.dart`, `app/android/app/src/prod/`.
-
 ## Formatting
 
 The pre-commit hook handles formatting automatically. To run manually:

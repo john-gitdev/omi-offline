@@ -110,10 +110,15 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         });
         await _loadBatches();
 
-        // Auto-process any days that have raw chunks but no processed recordings
-        for (var batch in _batches) {
-          if (batch.rawChunks.isNotEmpty && batch.processedRecordings.isEmpty) {
-            await _processBatch(batch);
+        // Auto-process days that have raw chunks, but only when sync fully completed.
+        // Skipping on partial transfer avoids processing truncated data that will be
+        // re-downloaded and overwritten on the next sync.
+        final syncWasComplete = result != null && !result.isPartial;
+        if (syncWasComplete) {
+          for (var batch in _batches) {
+            if (batch.rawChunks.isNotEmpty) {
+              await _processBatch(batch);
+            }
           }
         }
       }
