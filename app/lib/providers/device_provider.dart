@@ -413,11 +413,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     if (walSync.isSyncing) return;
     if (RecordingsManager.isProcessingAny) return;
     try {
-      final result = await walSync.syncAll();
-      final syncWasComplete = result != null && !result.isPartial;
-      if (syncWasComplete) {
-        await RecordingsManager.processAllCompletedSessions();
-      }
+      await walSync.syncAll();
+      await RecordingsManager.processAllCompletedSessions();
     } catch (e) {
       Logger.debug('Background sync failed: $e');
     }
