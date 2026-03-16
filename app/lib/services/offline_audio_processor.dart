@@ -1,9 +1,11 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:math';
+import 'package:flutter/services.dart';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/utils/logger.dart';
 
 class OfflineAudioProcessor {
@@ -286,13 +288,112 @@ class OfflineAudioProcessor {
       await dateFolder.create(recursive: true);
     }
 
-    final wavPath = '${dateFolder.path}/recording_$timestamp.wav';
+    // Short recording (<100 ms) → write WAV fallback (AAC encoders may misbehave)
+    if (frames.length < 5) {
+      return await _saveWav(frames, dateFolderPath, timestamp);
+    }
+
+    final m4aPath = '${dateFolder.path}/recording_$timestamp.m4a';
+
+    // Waveform: 200 fixed-size buckets of 800 samples (~50 ms at 16 kHz)
+    const waveformBuckets = 200;
+    const bucketSize = 800;
+    final peakAmplitudes = List<double>.filled(waveformBuckets, 0.0);
+
+    // Batch size: 15 Opus frames × 320 samples × 2 bytes = 9600 bytes
+    const batchFrames = 15;
+    final batchBuffer = BytesBuilder(copy: false);
+    int totalSamples = 0;
+    int batchFrameCount = 0;
+
+    String? sessionId;
+    bool aacFailed = false;
+
+    try {
+      sessionId = await AacEncoder.startEncoder(sampleRate, m4aPath);
+    } on PlatformException catch (e) {
+      Logger.error('OfflineAudioProcessor: AAC startEncoder failed, falling back to WAV: $e');
+      aacFailed = true;
+    }
+
+    if (aacFailed) {
+      return await _saveWav(frames, dateFolderPath, timestamp);
+    }
+
+    Future<void> flushBatch() async {
+      if (batchBuffer.isEmpty) return;
+      final bytes = batchBuffer.toBytes();
+      batchBuffer.clear();
+      batchFrameCount = 0;
+      await AacEncoder.encodeChunk(sessionId!, Uint8List.fromList(bytes));
+    }
+
+    try {
+      for (var i = 0; i < frames.length; i++) {
+        if (i % 50 == 0) await Future.delayed(Duration.zero);
+
+        Int16List pcmData;
+        try {
+          if (_decoder == null) continue;
+          pcmData = _decoder!.decode(input: frames[i]);
+        } catch (e) {
+          continue;
+        }
+
+        // Update waveform buckets
+        for (int s = 0; s < pcmData.length; s++) {
+          final bucketIndex = min(waveformBuckets - 1, (totalSamples + s) ~/ bucketSize);
+          final amplitude = pcmData[s].abs() / 32768.0;
+          if (amplitude > peakAmplitudes[bucketIndex]) {
+            peakAmplitudes[bucketIndex] = amplitude;
+          }
+        }
+        totalSamples += pcmData.length;
+
+        // Accumulate raw PCM bytes into batch
+        batchBuffer.add(pcmData.buffer.asUint8List(pcmData.offsetInBytes, pcmData.lengthInBytes));
+        batchFrameCount++;
+
+        if (batchFrameCount >= batchFrames) {
+          await flushBatch();
+        }
+      }
+
+      // Flush remaining batch
+      await flushBatch();
+
+      await AacEncoder.finishEncoder(sessionId!);
+    } on PlatformException catch (e) {
+      Logger.error('OfflineAudioProcessor: AAC encoding failed, falling back to WAV: $e');
+      // Clean up partial temp file
+      final tmpFile = File('${dateFolder.path}/recording_$timestamp.tmp.m4a');
+      if (await tmpFile.exists()) await tmpFile.delete();
+      return await _saveWav(frames, dateFolderPath, timestamp);
+    }
+
+    // Write .meta sidecar (408 bytes)
+    final durationMs = (totalSamples * 1000) ~/ sampleRate;
+    final metaBytes = ByteData(408);
+    metaBytes.setUint32(0, totalSamples, Endian.little);
+    metaBytes.setUint32(4, durationMs, Endian.little);
+    for (int i = 0; i < waveformBuckets; i++) {
+      final peak16 = (peakAmplitudes[i] * 65535.0).round().clamp(0, 65535);
+      metaBytes.setUint16(8 + i * 2, peak16, Endian.little);
+    }
+    final metaPath = '${dateFolder.path}/recording_$timestamp.meta';
+    await File(metaPath).writeAsBytes(metaBytes.buffer.asUint8List());
+
+    Logger.debug(
+        "OfflineAudioProcessor: Saved recording (${frames.length} frames, ${durationMs}ms) starting at $startTime to $m4aPath");
+    return m4aPath;
+  }
+
+  /// WAV fallback used for very short recordings or when AAC encoder fails.
+  Future<String> _saveWav(List<Uint8List> frames, String dateFolderPath, int timestamp) async {
+    final wavPath = '$dateFolderPath/recording_$timestamp.wav';
     final wavFile = File(wavPath);
     final IOSink sink = wavFile.openWrite();
 
-    // Decode all frames first so the WAV header reflects the actual byte count.
-    // Skipping corrupt frames before writing the header prevents a size mismatch
-    // that breaks playback (header says N bytes, file contains fewer).
     final List<Uint8List> decodedChunks = [];
     if (_decoder != null) {
       for (var i = 0; i < frames.length; i++) {
@@ -340,7 +441,7 @@ class OfflineAudioProcessor {
       sink.add(pcm);
     }
     await sink.close();
-    Logger.debug("OfflineAudioProcessor: Saved recording (${frames.length} frames) starting at $startTime to $wavPath");
+    Logger.debug("OfflineAudioProcessor: Saved WAV fallback (${frames.length} frames) to $wavPath");
     return wavPath;
   }
 }
