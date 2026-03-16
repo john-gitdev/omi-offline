@@ -122,13 +122,7 @@
 	<string>Access most functions for calendar viewing and editing.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>Access contacts for event attendee editing and to share conversation summaries via SMS.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>When creating your memories, we use your location for determining where they were created.</string>
-	<key>NSLocationUsageDescription</key>
-	<string>When creating your memories, we use your location for determining where they were created.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>When creating your memories, we use your location for determining where they were created.</string>
-	<key>NSMicrophoneUsageDescription</key>
+<key>NSMicrophoneUsageDescription</key>
 	<string>We need access to your microphone so you can share audio explanations of Bugs you find, and for voice commands.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>We use speech recognition to convert your speech to text for processing on your device.</string>
@@ -151,8 +145,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
-		<string>location</string>
-		<string>bluetooth-central</string>
+<string>bluetooth-central</string>
 		<string>fetch</string>
 		<string>processing</string>
 		<string>remote-notification</string>
