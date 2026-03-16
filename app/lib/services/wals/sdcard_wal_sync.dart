@@ -28,8 +28,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   bool _isDeviceRecordingFailed = false;
   TcpTransport? _activeTcpTransport;
   Completer<void>? _activeTransferCompleter;
+  IWalSyncProgressListener? _globalProgressListener;
   @override
   bool get isSyncing => _isSyncing;
+  @override
+  void setGlobalProgressListener(IWalSyncProgressListener? listener) {
+    _globalProgressListener = listener;
+  }
   @override
   bool get isDeviceRecordingFailed => _isDeviceRecordingFailed;
 
@@ -661,11 +666,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               final seconds = (remainingBytes / wal.codec.getFramesLengthInBytes()) ~/ wal.codec.getFramesPerSecond();
               wal.estimatedChunks = (seconds / 60).ceil();
 
-              if (progress != null) {
-                final double progressPercent =
-                    totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
-                progress.onWalSyncedProgress(progressPercent.clamp(0.0, 1.0), speedKBps: _currentSpeedKBps);
-              }
+              final double progressPercent =
+                  totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
+              final double clamped = progressPercent.clamp(0.0, 1.0);
+              progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+              _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
             });
 
         // Small delay to allow firmware buffers to clear before sending DELETE
@@ -741,11 +746,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             final seconds = (remainingBytes / wal.codec.getFramesLengthInBytes()) ~/ wal.codec.getFramesPerSecond();
             wal.estimatedChunks = (seconds / 60).ceil();
 
-            if (progress != null) {
-              final double progressPercent =
-                  totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
-              progress.onWalSyncedProgress(progressPercent.clamp(0.0, 1.0), speedKBps: _currentSpeedKBps);
-            }
+            final double progressPercent =
+                totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
+            final double clamped = progressPercent.clamp(0.0, 1.0);
+            progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+            _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
           });
 
       // Small delay to allow firmware buffers to clear before sending DELETE
