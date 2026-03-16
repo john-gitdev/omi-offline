@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/pages/settings/settings_drawer.dart';
 import 'package:omi/pages/settings/find_devices_page.dart';
@@ -444,9 +445,21 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                   ),
                   TextButton.icon(
                     key: Key('delete_day_${batch.dateString}'),
-                    onPressed: () => _deleteDay(batch),
-                    icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
-                    label: Text('Delete Day', style: TextStyle(color: Colors.red.shade400, fontSize: 13)),
+                    onPressed: () {
+                      if (SharedPreferencesUtil().offlineAdjustmentMode) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Delete Day is disabled while adjustment mode is on.')),
+                        );
+                        return;
+                      }
+                      _deleteDay(batch);
+                    },
+                    icon: FaIcon(FontAwesomeIcons.trashCan, size: 13,
+                        color: SharedPreferencesUtil().offlineAdjustmentMode ? Colors.grey.shade700 : Colors.red.shade400),
+                    label: Text('Delete Day',
+                        style: TextStyle(
+                            color: SharedPreferencesUtil().offlineAdjustmentMode ? Colors.grey.shade700 : Colors.red.shade400,
+                            fontSize: 13)),
                   ),
                 ],
               ),
