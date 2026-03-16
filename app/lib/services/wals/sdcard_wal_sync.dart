@@ -630,73 +630,76 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     bool anyPartial = false;
     var resp = SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
 
-    for (var wal in wals) {
-      if (_isCancelled) break;
+    try {
+      for (var wal in wals) {
+        if (_isCancelled) break;
 
-      wal.isSyncing = true;
-      wal.syncStartedAt = DateTime.now();
-      listener.onWalUpdated();
+        wal.isSyncing = true;
+        wal.syncStartedAt = DateTime.now();
+        listener.onWalUpdated();
 
-      final int initialOffset = wal.storageOffset;
-      int lastOffset = initialOffset;
-      int totalBytesToDownload = wal.storageTotalBytes - initialOffset;
+        final int initialOffset = wal.storageOffset;
+        int lastOffset = initialOffset;
+        int totalBytesToDownload = wal.storageTotalBytes - initialOffset;
 
-      await _checkDiskSpaceBeforeSync(totalBytesToDownload);
-      _downloadStartTime = DateTime.now();
+        await _checkDiskSpaceBeforeSync(totalBytesToDownload);
+        _downloadStartTime = DateTime.now();
 
-      try {
-        await _readStorageBytesToFile(
-            wal,
-            (File file, int offset, int timerStart, {String? subFolder}) async {
-              if (_isCancelled) {
-                throw Exception("Sync cancelled by user");
-              }
+        try {
+          await _readStorageBytesToFile(
+              wal,
+              (File file, int offset, int timerStart, {String? subFolder}) async {
+                if (_isCancelled) {
+                  throw Exception("Sync cancelled by user");
+                }
 
-              int bytesInChunk = offset - lastOffset;
-              _updateSpeed(bytesInChunk);
-              await _registerSingleChunk(wal, file, timerStart);
-              lastOffset = offset;
+                int bytesInChunk = offset - lastOffset;
+                _updateSpeed(bytesInChunk);
+                await _registerSingleChunk(wal, file, timerStart);
+                lastOffset = offset;
 
-              listener.onWalUpdated();
-            },
-            force: true,
-            onProgress: (offset) {
-              wal.storageOffset = offset;
-              final remainingBytes = wal.storageTotalBytes - offset;
-              final seconds = (remainingBytes / wal.codec.getFramesLengthInBytes()) ~/ wal.codec.getFramesPerSecond();
-              wal.estimatedChunks = (seconds / 60).ceil();
+                listener.onWalUpdated();
+              },
+              force: true,
+              onProgress: (offset) {
+                wal.storageOffset = offset;
+                final remainingBytes = wal.storageTotalBytes - offset;
+                final seconds = (remainingBytes / wal.codec.getFramesLengthInBytes()) ~/ wal.codec.getFramesPerSecond();
+                wal.estimatedChunks = (seconds / 60).ceil();
 
-              final double progressPercent =
-                  totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
-              final double clamped = progressPercent.clamp(0.0, 1.0);
-              progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
-              _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
-            });
+                final double progressPercent =
+                    totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
+                final double clamped = progressPercent.clamp(0.0, 1.0);
+                progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+                _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+              });
 
-        // Small delay to allow firmware buffers to clear before sending DELETE
-        await Future.delayed(const Duration(milliseconds: 500));
-        if (wal.storageOffset >= wal.storageTotalBytes) {
-          await deleteWal(wal);
-        } else {
-          Logger.debug(
-              "SDCardWalSync: Partial transfer (${wal.storageOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
-          anyPartial = true;
+          // Small delay to allow firmware buffers to clear before sending DELETE
+          await Future.delayed(const Duration(milliseconds: 500));
+          if (wal.storageOffset >= wal.storageTotalBytes) {
+            await deleteWal(wal);
+          } else {
+            Logger.debug(
+                "SDCardWalSync: Partial transfer (${wal.storageOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
+            anyPartial = true;
+          }
+          wal.status = WalStatus.synced;
+          _wals.removeWhere((w) => w.id == wal.id);
+          listener.onWalUpdated();
+        } catch (e) {
+          Logger.debug("SDCardWalSync: Error syncing WAL ${wal.id}: $e");
+          wal.isSyncing = false;
+          wal.syncStartedAt = null;
+          wal.syncEtaSeconds = null;
+          wal.syncSpeedKBps = null;
+          listener.onWalUpdated();
+          rethrow;
         }
-        wal.status = WalStatus.synced;
-        _wals.removeWhere((w) => w.id == wal.id);
-        listener.onWalUpdated();
-      } catch (e) {
-        Logger.debug("SDCardWalSync: Error syncing WAL ${wal.id}: $e");
-        wal.isSyncing = false;
-        wal.syncStartedAt = null;
-        wal.syncEtaSeconds = null;
-        wal.syncSpeedKBps = null;
-        listener.onWalUpdated();
-        rethrow;
       }
+    } finally {
+      _isSyncing = false;
     }
 
-    _isSyncing = false;
     return SyncLocalFilesResponse(
       newConversationIds: resp.newConversationIds,
       updatedConversationIds: resp.updatedConversationIds,
