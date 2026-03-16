@@ -1,21 +1,21 @@
-# E2E Flow: Settings → Offline Sync — data synchronization
+# E2E Flow: Settings → Sync Device — data synchronization
 # Tests: sync page navigation, local storage, recordings, fast transfer
 
 name: settings-sync
-description: Settings → Offline Sync — view sync status, local storage, recordings list, fast transfer settings
+description: Settings → Sync Device — view sync status, local storage, recordings list, fast transfer settings
 covers:
   - app/lib/pages/settings/settings_drawer.dart
-  - app/lib/pages/conversations/sync_page.dart
+  - app/lib/pages/settings/sync_page.dart
 prerequisites:
-  - auth_ready  # User completed real sign-in (Google/Apple) and onboarding. Android: `bash setup.sh android`. iOS: `bash setup.sh ios`. App must show home screen.
+  - auth_ready  # App launched, home (recordings) screen visible.
 setup: normal
 
 steps:
   - name: Open settings drawer
-    press: { type: button, position: rightmost }
+    press: { type: gesture, hint: "settings gear icon top-right" }
 
-  - name: Open Offline Sync
-    press: { type: gesture, hint: "Offline Sync row in settings" }
+  - name: Open Sync Device
+    press: { type: gesture, hint: "Sync Device row in settings" }
     screenshot: sync-page
 
   - name: Verify sync page
@@ -23,8 +23,7 @@ steps:
       interactive_count: { min: 3 }
     note: >
       SyncPage shows: sync status, local storage info,
-      recordings list, synced conversations, fast transfer settings,
-      private cloud sync option.
+      recordings list, fast transfer settings, private cloud sync option.
 
   - name: Scroll sync page
     scroll: down

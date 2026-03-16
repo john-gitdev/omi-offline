@@ -1,0 +1,37 @@
+# E2E Flow: Settings → Offline Audio Processing — audio processing configuration
+# Tests: STT provider config, silence detection, output settings
+
+name: offline-audio-settings
+description: Settings → Offline Audio Processing — configure STT provider, silence detection threshold, audio output
+covers:
+  - app/lib/pages/settings/settings_drawer.dart
+  - app/lib/pages/settings/offline_audio_settings_page.dart
+prerequisites:
+  - auth_ready  # App launched, home (recordings) screen visible.
+setup: normal
+
+steps:
+  - name: Open settings drawer
+    press: { type: gesture, hint: "settings gear icon top-right" }
+
+  - name: Open Offline Audio Processing
+    press: { type: gesture, hint: "Offline Audio Processing row" }
+    screenshot: offline-audio-settings
+
+  - name: Verify settings page
+    assert:
+      interactive_count: { min: 2 }
+    note: >
+      OfflineAudioSettingsPage: STT provider selector, API key fields,
+      silence detection threshold, audio output format settings.
+    screenshot: audio-settings-top
+
+  - name: Scroll settings
+    scroll: down
+    screenshot: audio-settings-bottom
+
+  - name: Back to settings
+    back: true
+
+  - name: Close settings
+    back: true

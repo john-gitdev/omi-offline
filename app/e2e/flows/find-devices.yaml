@@ -1,0 +1,35 @@
+# E2E Flow: Find Omi Devices — BLE device discovery and connection
+# Tests: scanning for devices, connecting, connection status
+
+name: find-devices
+description: Settings → Find Omi Devices — scan for BLE devices, connect
+covers:
+  - app/lib/pages/settings/settings_drawer.dart
+  - app/lib/pages/settings/find_devices_page.dart
+prerequisites:
+  - auth_ready  # App launched, home (recordings) screen visible.
+  - ble_on  # Bluetooth enabled. Emulators/simulators have no BLE — requires physical device.
+setup: normal
+
+steps:
+  - name: Open settings drawer
+    press: { type: gesture, hint: "settings gear icon top-right" }
+
+  - name: Open Find Omi Devices
+    press: { type: gesture, hint: "Find Omi Devices row" }
+    screenshot: find-devices
+
+  - name: Verify scanning state
+    assert:
+      interactive_count: { min: 1 }
+    note: >
+      FindDevicesPage: scanning spinner while searching for BLE devices.
+      Found devices appear as rows with device name and RSSI.
+      Tap a device row to initiate pairing/connection.
+    screenshot: scanning
+
+  - name: Back to settings
+    back: true
+
+  - name: Close settings
+    back: true
