@@ -195,9 +195,11 @@ class MainActivity : FlutterActivity() {
                     if (++retries > 200) break  // ~2s max wait
                 }
                 outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                    session.trackIndex = session.muxer.addTrack(session.codec.outputFormat)
-                    session.muxer.start()
-                    session.muxerStarted = true
+                    if (!session.muxerStarted) {
+                        session.trackIndex = session.muxer.addTrack(session.codec.outputFormat)
+                        session.muxer.start()
+                        session.muxerStarted = true
+                    }
                     retries = 0
                 }
                 outputIndex >= 0 -> {
