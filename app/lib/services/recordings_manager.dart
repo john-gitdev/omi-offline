@@ -51,7 +51,10 @@ class RecordingInfo {
     }
 
     // WAV fallback: duration from file size (44-byte header + PCM at 16 kHz mono 16-bit)
-    final fileSize = file.lengthSync();
+    int fileSize = 0;
+    try {
+      fileSize = file.lengthSync();
+    } catch (_) {}
     final pcmBytes = fileSize > 44 ? fileSize - 44 : 0;
     final durationMs = (pcmBytes / 32000.0 * 1000).round();
     return RecordingInfo(file: file, startTime: startTime, duration: Duration(milliseconds: durationMs));
