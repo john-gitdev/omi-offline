@@ -102,7 +102,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   }
 
   Future<void> _handleSync() async {
-    _performSync(force: false);
+    await _performSync(force: false);
   }
 
   Future<void> _handleForceSync() async {
@@ -117,7 +117,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       _syncUserTriggered = true;
       _syncProgress = 0.0;
       _syncSpeed = 0.0;
-      _syncRecordingsCount = 0;
+      _syncRecordingsCount = ServiceManager.instance().wal.getSyncs().estimatedTotalChunks;
     });
     WakelockPlus.enable();
 
