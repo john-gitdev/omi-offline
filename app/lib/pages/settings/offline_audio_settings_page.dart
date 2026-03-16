@@ -283,7 +283,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   const SizedBox(width: 16),
                   Expanded(
                     child: Text(
-                      'All recordings are processed locally and saved as WAV audio files.',
+                      'All recordings are processed locally on-device and saved as AAC (M4A) audio files.',
                       style: TextStyle(color: Colors.grey.shade300, fontSize: 14),
                     ),
                   ),
