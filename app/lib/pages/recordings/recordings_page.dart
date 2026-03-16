@@ -38,6 +38,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   // Processing state
   String? _processingDateString;
   double _processingProgress = 0.0;
+  bool _cancelPending = false;
 
   Timer? _syncPollTimer;
   bool _wasProcessing = false;
@@ -206,6 +207,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     setState(() {
       _processingDateString = batch.dateString;
       _processingProgress = 0.0;
+      _cancelPending = false;
     });
     WakelockPlus.enable();
 
@@ -227,6 +229,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         setState(() {
           _processingDateString = null;
           _processingProgress = 0.0;
+          _cancelPending = false;
         });
         _loadBatches();
       }
@@ -381,24 +384,27 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                         ),
                         ElevatedButton(
                           onPressed: isProcessingThisBatch
-                              ? RecordingsManager.cancelProcessing
+                              ? (_cancelPending
+                                  ? null
+                                  : () {
+                                      setState(() => _cancelPending = true);
+                                      RecordingsManager.cancelProcessing();
+                                    })
                               : (isButtonDisabled ? null : () => _processBatch(batch)),
                           style: ElevatedButton.styleFrom(
-                            backgroundColor:
-                                isProcessingThisBatch ? Colors.redAccent : Colors.deepPurpleAccent,
+                            backgroundColor: isProcessingThisBatch ? Colors.redAccent : Colors.deepPurpleAccent,
                             foregroundColor: Colors.white,
                             minimumSize: const Size(40, 40),
                             padding: const EdgeInsets.all(10),
                           ),
                           child: isProcessingThisBatch
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2,
-                                  ),
-                                )
+                              ? (_cancelPending
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                                    )
+                                  : const FaIcon(FontAwesomeIcons.circleXmark, size: 16))
                               : const FaIcon(FontAwesomeIcons.gears, size: 16),
                         ),
                       ],
@@ -461,11 +467,15 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                       }
                       _deleteDay(batch);
                     },
-                    icon: FaIcon(FontAwesomeIcons.trashCan, size: 13,
-                        color: SharedPreferencesUtil().offlineAdjustmentMode ? Colors.grey.shade700 : Colors.red.shade400),
+                    icon: FaIcon(FontAwesomeIcons.trashCan,
+                        size: 13,
+                        color:
+                            SharedPreferencesUtil().offlineAdjustmentMode ? Colors.grey.shade700 : Colors.red.shade400),
                     label: Text('Delete Day',
                         style: TextStyle(
-                            color: SharedPreferencesUtil().offlineAdjustmentMode ? Colors.grey.shade700 : Colors.red.shade400,
+                            color: SharedPreferencesUtil().offlineAdjustmentMode
+                                ? Colors.grey.shade700
+                                : Colors.red.shade400,
                             fontSize: 13)),
                   ),
                 ],
