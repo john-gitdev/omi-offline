@@ -203,7 +203,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     try {
       await _manager.processDay(batch, (progress) {
-        if (mounted) setState(() => _processingProgress = progress);
+        // Cap at 95% — the final flush/save/move can take significant time
+        // after the frame loop completes. The spinner clearing signals "done".
+        if (mounted) setState(() => _processingProgress = (progress * 0.95).clamp(0.0, 0.95));
       });
     } catch (e) {
       if (mounted) {
