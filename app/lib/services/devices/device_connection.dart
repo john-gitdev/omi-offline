@@ -33,8 +33,6 @@ const String featuresCharacteristicUuid = '19b10021-e8f2-537e-4f6c-d104768a1214'
 const String timeSyncServiceUuid = '19b10030-e8f2-537e-4f6c-d104768a1214';
 const String timeSyncWriteCharacteristicUuid = '19b10031-e8f2-537e-4f6c-d104768a1214';
 
-const String speakerDataStreamServiceUuid = '19b10040-e8f2-537e-4f6c-d104768a1214';
-const String speakerDataStreamCharacteristicUuid = '19b10041-e8f2-537e-4f6c-d104768a1214';
 
 const String storageDataStreamServiceUuid = '30295780-4301-eabd-2904-2849adfeae43';
 const String storageReadControlCharacteristicUuid = '30295782-4301-eabd-2904-2849adfeae43';
@@ -265,14 +263,6 @@ abstract class DeviceConnection {
 
   Future<bool> performWriteToStorage(int numFile, int command, int offset);
 
-  Future<bool> playToSpeakerHaptic(int level) async {
-    if (await isConnected()) {
-      return await performPlayToSpeakerHaptic(level);
-    }
-    return false;
-  }
-
-  Future<bool> performPlayToSpeakerHaptic(int level);
 
   Future<bool> isWifiSyncSupported() async {
     if (await isConnected()) {

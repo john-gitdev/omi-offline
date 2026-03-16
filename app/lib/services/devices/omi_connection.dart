@@ -160,18 +160,6 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<bool> performPlayToSpeakerHaptic(int level) async {
-    try {
-      await transport
-          .writeCharacteristic(speakerDataStreamServiceUuid, speakerDataStreamCharacteristicUuid, [level & 0xFF]);
-      return true;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error playing haptic: $e');
-      return false;
-    }
-  }
-
-  @override
   Future<int> performGetFeatures() async {
     try {
       final data = await transport.readCharacteristic(featuresServiceUuid, featuresCharacteristicUuid);
