@@ -208,6 +208,21 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       _processingDateString = batch.dateString;
       _processingProgress = 0.0;
       _cancelPending = false;
+      // In adjustment mode, wipe existing recordings from view immediately
+      // so the user sees them gone rather than zeroed-out placeholders.
+      if (SharedPreferencesUtil().offlineAdjustmentMode) {
+        final idx = _batches.indexWhere((b) => b.dateString == batch.dateString);
+        if (idx >= 0) {
+          final b = _batches[idx];
+          _batches[idx] = DailyBatch(
+            dateString: b.dateString,
+            date: b.date,
+            rawChunks: b.rawChunks,
+            processedRecordings: [],
+            starredTimestamps: b.starredTimestamps,
+          );
+        }
+      }
     });
     WakelockPlus.enable();
 
