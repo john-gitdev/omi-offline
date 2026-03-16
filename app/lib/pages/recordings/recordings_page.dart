@@ -411,11 +411,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                             '${(_processingProgress * 100).toInt()}%',
                             style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
                           ),
-                          const SizedBox(width: 8),
-                          GestureDetector(
-                            onTap: RecordingsManager.cancelProcessing,
-                            child: FaIcon(FontAwesomeIcons.circleXmark, color: Colors.grey.shade600, size: 18),
-                          ),
                         ],
                       ),
                     ],
