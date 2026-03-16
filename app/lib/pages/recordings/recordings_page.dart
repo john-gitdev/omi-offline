@@ -60,7 +60,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   void _pollSyncState() {
     if (!mounted) return;
-    final serviceIsSyncing = ServiceManager.instance().wal.getSyncs().isSyncing;
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    final serviceIsSyncing = syncs.isSyncing;
     if (serviceIsSyncing && !_isSyncing) {
       // External sync started (DeviceProvider triggered it)
       setState(() => _isSyncing = true);
@@ -78,7 +79,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     if (isProcessing != _isAnyProcessing) {
       setState(() => _isAnyProcessing = isProcessing);
     }
-    if (_wasProcessing && !isProcessing) {
+    if (_wasProcessing && !isProcessing && !_isLoading) {
       _loadBatches();
     }
     _wasProcessing = isProcessing;
@@ -324,8 +325,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   Widget _buildBatchCard(DailyBatch batch) {
     final isProcessingThisBatch = _processingDateString == batch.dateString;
-    // Show spinner only for the batch being manually processed; disable button for all when any processing is active
-    final isProcessing = isProcessingThisBatch;
     final isButtonDisabled = _isAnyProcessing || isProcessingThisBatch;
     final recordings = batch.processedRecordings.map(RecordingInfo.fromFile).toList()
       ..sort((a, b) => b.startTime.compareTo(a.startTime));
@@ -387,13 +386,13 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                             minimumSize: const Size(40, 40),
                             padding: const EdgeInsets.all(10),
                           ),
-                          child: isProcessing
+                          child: isProcessingThisBatch
                               ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                               : const FaIcon(FontAwesomeIcons.gears, size: 16),
                         ),
                       ],
                     ),
-                    if (isProcessing) ...[
+                    if (isProcessingThisBatch) ...[
                       const SizedBox(height: 8),
                       Row(
                         children: [
