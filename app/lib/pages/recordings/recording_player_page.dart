@@ -55,10 +55,29 @@ class _RecordingPlayerPageState extends State<RecordingPlayerPage> {
 
   Future<List<double>> _computeWaveform(File file) async {
     try {
+      // Check for .meta sidecar (written alongside .m4a files)
+      final basePath = file.path.contains('.')
+          ? file.path.substring(0, file.path.lastIndexOf('.'))
+          : file.path;
+      final metaFile = File('$basePath.meta');
+      if (await metaFile.exists()) {
+        final metaBytes = await metaFile.readAsBytes();
+        if (metaBytes.length >= 408) {
+          final bd = ByteData.sublistView(metaBytes);
+          const barCount = 200;
+          final amplitudes = <double>[];
+          for (int i = 0; i < barCount; i++) {
+            final peak = bd.getUint16(8 + i * 2, Endian.little);
+            amplitudes.add(peak / 65535.0);
+          }
+          return amplitudes;
+        }
+      }
+
+      // Legacy WAV fallback: parse raw PCM from byte 44
       final bytes = await file.readAsBytes();
       if (bytes.length <= 44) return [];
 
-      // WAV PCM starts at byte 44; 16-bit little-endian samples (native on ARM)
       final pcm = Int16List.sublistView(bytes, 44);
       const barCount = 200;
       final samplesPerBar = max(1, pcm.length ~/ barCount);
