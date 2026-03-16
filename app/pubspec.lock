@@ -806,14 +806,6 @@ packages:
       url: "https://github.com/mdmohsin7/frame-sdk-flutter.git"
     source: git
     version: "0.0.7"
-  freezed_annotation:
-    dependency: transitive
-    description:
-      name: freezed_annotation
-      sha256: "7294967ff0a6d98638e7acb774aac3af2550777accd8149c90af5b014e6d44d8"
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.1.0"
   frontend_server_client:
     dependency: transitive
     description:
@@ -1236,10 +1228,10 @@ packages:
     dependency: transitive
     description:
       name: matcher
-      sha256: "12956d0ad8390bbcc63ca2e1469c0619946ccb52809807067a7020d57e647aa6"
+      sha256: dc0b7dc7651697ea4ff3e69ef44b0407ea32c487a39fff6a4004fa585e901861
       url: "https://pub.dev"
     source: hosted
-    version: "0.12.18"
+    version: "0.12.19"
   material_color_utilities:
     dependency: transitive
     description:
@@ -1948,10 +1940,10 @@ packages:
     dependency: transitive
     description:
       name: test_api
-      sha256: "93167629bfc610f71560ab9312acdda4959de4df6fac7492c89ff0d3886f6636"
+      sha256: "8161c84903fd860b26bfdefb7963b3f0b68fee7adea0f59ef805ecca346f0c7a"
       url: "https://pub.dev"
     source: hosted
-    version: "0.7.9"
+    version: "0.7.10"
   time:
     dependency: transitive
     description:
@@ -2296,15 +2288,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.23.5"
-  whisper_flutter_new:
-    dependency: "direct main"
-    description:
-      path: "."
-      ref: "684fb43710dd4de5538ac2da7d0b1fa405363212"
-      resolved-ref: "684fb43710dd4de5538ac2da7d0b1fa405363212"
-      url: "https://github.com/BasedHardware/whisper_flutter_new.git"
-    source: git
-    version: "1.0.1"
   win32:
     dependency: transitive
     description:
