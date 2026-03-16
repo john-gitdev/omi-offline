@@ -35,6 +35,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   double _syncSpeed = 0.0;
   int _syncRecordingsCount = 0;
 
+  // Filter state
+  bool _filterEnabled = false;
+  int _filterMinutes = 0;
+
   // Processing state
   String? _processingDateString;
   double _processingProgress = 0.0;
@@ -279,10 +283,69 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     }
   }
 
-  Future<void> _exportAll(DailyBatch batch) async {
-    if (batch.processedRecordings.isEmpty) return;
-    final files = batch.processedRecordings.map((f) => XFile(f.path)).toList();
+  Future<void> _exportAll(DailyBatch batch, List<RecordingInfo> visibleRecordings) async {
+    if (visibleRecordings.isEmpty) return;
+    final files = visibleRecordings.map((r) => XFile(r.file.path)).toList();
     await SharePlus.instance.share(ShareParams(files: files, subject: 'Recordings – ${batch.dateString}'));
+  }
+
+  void _showFilterSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1C1C1E),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(color: Colors.grey.shade600, borderRadius: BorderRadius.circular(2)),
+                ),
+                const SizedBox(height: 16),
+                SwitchListTile(
+                  title: const Text('Filter by Duration', style: TextStyle(color: Colors.white)),
+                  value: _filterEnabled,
+                  activeThumbColor: Colors.deepPurpleAccent,
+                  onChanged: (v) {
+                    setModalState(() => _filterEnabled = v);
+                    setState(() => _filterEnabled = v);
+                  },
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    children: [
+                      Text('Min duration:', style: TextStyle(color: Colors.grey.shade400)),
+                      const Spacer(),
+                      Text('$_filterMinutes min', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ),
+                Slider(
+                  min: 0,
+                  max: 60,
+                  divisions: 60,
+                  value: _filterMinutes.toDouble(),
+                  activeColor: Colors.deepPurpleAccent,
+                  inactiveColor: Colors.grey.shade700,
+                  onChanged: _filterEnabled
+                      ? (v) {
+                          setModalState(() => _filterMinutes = v.round());
+                          setState(() => _filterMinutes = v.round());
+                        }
+                      : null,
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
   }
 
   Widget _buildSyncStatus() {
@@ -348,8 +411,12 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   Widget _buildBatchCard(DailyBatch batch) {
     final isProcessingThisBatch = _processingDateString == batch.dateString;
     final isButtonDisabled = _isAnyProcessing || isProcessingThisBatch;
-    final recordings = batch.processedRecordings.map(RecordingInfo.fromFile).toList()
+    final allRecordings = batch.processedRecordings.map(RecordingInfo.fromFile).toList()
       ..sort((a, b) => b.startTime.compareTo(a.startTime));
+    final minDuration = Duration(minutes: _filterMinutes);
+    final recordings = (_filterEnabled && _filterMinutes > 0)
+        ? allRecordings.where((r) => r.duration >= minDuration).toList()
+        : allRecordings;
 
     return Card(
       color: const Color(0xFF1C1C1E),
@@ -470,7 +537,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 children: [
                   TextButton.icon(
                     key: Key('export_all_${batch.dateString}'),
-                    onPressed: () => _exportAll(batch),
+                    onPressed: () => _exportAll(batch, recordings),
                     icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 13, color: Colors.grey.shade400),
                     label: Text('Export All', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
                   ),
@@ -585,6 +652,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                   ),
                 ),
               IconButton(
+                icon: FaIcon(
+                  FontAwesomeIcons.sliders,
+                  color: _filterEnabled ? Colors.deepPurpleAccent : Colors.white,
+                  size: 20,
+                ),
+                onPressed: _showFilterSheet,
+              ),
+              IconButton(
                 icon: const FaIcon(FontAwesomeIcons.gear, color: Colors.white, size: 20),
                 onPressed: () => SettingsDrawer.show(context),
               ),
@@ -594,13 +669,32 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
             children: [
               _buildStorageWarning(deviceProvider.storageFullPercentage),
               _buildSyncStatus(),
+              if (_filterEnabled && _filterMinutes > 0)
+                Container(
+                  width: double.infinity,
+                  color: Colors.deepPurpleAccent.withValues(alpha: 0.15),
+                  padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+                  child: Text(
+                    'Showing recordings \u2265 $_filterMinutes min',
+                    style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 12),
+                  ),
+                ),
               Expanded(
                 child: _isLoading
                     ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
-                    : RefreshIndicator(
+                    : Builder(builder: (context) {
+                        final minDuration = Duration(minutes: _filterMinutes);
+                        final visibleBatches = (_filterEnabled && _filterMinutes > 0)
+                            ? _batches.where((b) {
+                                if (b.rawChunks.isNotEmpty) return true;
+                                return b.processedRecordings
+                                    .any((f) => RecordingInfo.fromFile(f).duration >= minDuration);
+                              }).toList()
+                            : _batches;
+                        return RefreshIndicator(
                         color: Colors.deepPurpleAccent,
                         onRefresh: _handleSync,
-                        child: _batches.isEmpty
+                        child: visibleBatches.isEmpty
                             ? ListView(
                                 physics: const AlwaysScrollableScrollPhysics(),
                                 children: [
@@ -645,10 +739,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                             : ListView.builder(
                                 physics: const AlwaysScrollableScrollPhysics(),
                                 padding: const EdgeInsets.all(16),
-                                itemCount: _batches.length,
-                                itemBuilder: (context, index) => _buildBatchCard(_batches[index]),
+                                itemCount: visibleBatches.length,
+                                itemBuilder: (context, index) => _buildBatchCard(visibleBatches[index]),
                               ),
-                      ),
+                      );
+                      }),
               ),
             ],
           ),
