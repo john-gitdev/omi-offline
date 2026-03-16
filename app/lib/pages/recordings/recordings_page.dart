@@ -39,6 +39,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   Timer? _syncPollTimer;
   bool _wasProcessing = false;
+  bool _isAnyProcessing = false;
 
   @override
   void initState() {
@@ -71,8 +72,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       });
     }
 
-    // Reload batches when background processing finishes
+    // Track background processing state and reload when it finishes
     final isProcessing = RecordingsManager.isProcessingAny;
+    if (isProcessing != _isAnyProcessing) {
+      setState(() => _isAnyProcessing = isProcessing);
+    }
     if (_wasProcessing && !isProcessing) {
       _loadBatches();
     }
@@ -305,7 +309,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   }
 
   Widget _buildBatchCard(DailyBatch batch) {
-    final isProcessing = _processingDateString == batch.dateString;
+    final isProcessingThisBatch = _processingDateString == batch.dateString;
+    // Show spinner only for the batch being manually processed; disable button for all when any processing is active
+    final isProcessing = isProcessingThisBatch;
+    final isButtonDisabled = _isAnyProcessing || isProcessingThisBatch;
     final recordings = batch.processedRecordings.map(RecordingInfo.fromFile).toList();
 
     return Card(
@@ -358,7 +365,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                           style: TextStyle(color: Colors.grey.shade400),
                         ),
                         ElevatedButton(
-                          onPressed: isProcessing ? null : () => _processBatch(batch),
+                          onPressed: isButtonDisabled ? null : () => _processBatch(batch),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.deepPurpleAccent,
                             foregroundColor: Colors.white,
