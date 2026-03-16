@@ -551,7 +551,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                                         if (deviceProvider.isConnected) ...[
                                           const SizedBox(height: 32),
                                           ElevatedButton.icon(
-                                            onPressed: _handleForceSync,
+                                            onPressed: _isSyncing ? null : _handleForceSync,
                                             icon: const FaIcon(FontAwesomeIcons.rotate, size: 16),
                                             label: const Text("Sync All From Device"),
                                             style: ElevatedButton.styleFrom(
