@@ -321,7 +321,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     // Show spinner only for the batch being manually processed; disable button for all when any processing is active
     final isProcessing = isProcessingThisBatch;
     final isButtonDisabled = _isAnyProcessing || isProcessingThisBatch;
-    final recordings = batch.processedRecordings.map(RecordingInfo.fromFile).toList();
+    final recordings = batch.processedRecordings.map(RecordingInfo.fromFile).toList()
+      ..sort((a, b) => b.startTime.compareTo(a.startTime));
 
     return Card(
       color: const Color(0xFF1C1C1E),
