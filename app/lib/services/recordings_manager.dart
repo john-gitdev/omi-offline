@@ -14,7 +14,13 @@ class RecordingInfo {
   const RecordingInfo({required this.file, required this.startTime, required this.duration});
 
   DateTime get endTime => startTime.add(duration);
-  int get fileSizeBytes => file.lengthSync();
+  int get fileSizeBytes {
+    try {
+      return file.lengthSync();
+    } catch (_) {
+      return 0;
+    }
+  }
 
   /// Parses start time from the filename (`recording_<millis>.m4a` or `.wav`) and
   /// reads duration from the `.meta` sidecar if present, otherwise falls back to
