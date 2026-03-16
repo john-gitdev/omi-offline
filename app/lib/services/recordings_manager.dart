@@ -5,7 +5,7 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/offline_audio_processor.dart';
 import 'package:omi/utils/logger.dart';
 
-/// Parsed metadata for a single processed WAV recording.
+/// Parsed metadata for a single processed recording (M4A or WAV).
 class RecordingInfo {
   final File file;
   final DateTime startTime;
@@ -16,8 +16,9 @@ class RecordingInfo {
   DateTime get endTime => startTime.add(duration);
   int get fileSizeBytes => file.lengthSync();
 
-  /// Parses start time from the filename (`recording_<millis>.wav`) and
-  /// computes duration from the WAV file size (44-byte header + PCM at 16 kHz mono 16-bit).
+  /// Parses start time from the filename (`recording_<millis>.m4a` or `.wav`) and
+  /// reads duration from the `.meta` sidecar if present, otherwise falls back to
+  /// WAV file size calculation.
   static RecordingInfo fromFile(File file) {
     final name = file.path.split('/').last;
     final millisStr = name.contains('_') ? name.split('_').last.split('.').first : null;
@@ -25,11 +26,28 @@ class RecordingInfo {
     final startTime =
         (millis != null && millis > 0) ? DateTime.fromMillisecondsSinceEpoch(millis) : file.lastModifiedSync();
 
+    // Try .meta sidecar for authoritative duration
+    final basePath = file.path.contains('.')
+        ? file.path.substring(0, file.path.lastIndexOf('.'))
+        : file.path;
+    final metaFile = File('$basePath.meta');
+    if (metaFile.existsSync()) {
+      try {
+        final metaBytes = metaFile.readAsBytesSync();
+        if (metaBytes.length >= 8) {
+          final bd = ByteData.sublistView(metaBytes);
+          final durationMs = bd.getUint32(4, Endian.little);
+          return RecordingInfo(file: file, startTime: startTime, duration: Duration(milliseconds: durationMs));
+        }
+      } catch (_) {
+        // Fall through to size-based estimate
+      }
+    }
+
+    // WAV fallback: duration from file size (44-byte header + PCM at 16 kHz mono 16-bit)
     final fileSize = file.lengthSync();
     final pcmBytes = fileSize > 44 ? fileSize - 44 : 0;
-    // 16 kHz · 1 channel · 2 bytes/sample  →  32000 bytes/second
     final durationMs = (pcmBytes / 32000.0 * 1000).round();
-
     return RecordingInfo(file: file, startTime: startTime, duration: Duration(milliseconds: durationMs));
   }
 
@@ -141,7 +159,11 @@ class RecordingsManager {
       final dateFolders = recordingsDir.listSync().whereType<Directory>();
       for (var folder in dateFolders) {
         final dateString = folder.path.split('/').last;
-        final files = folder.listSync().whereType<File>().where((f) => f.path.endsWith('.wav')).toList();
+        final files = folder
+            .listSync()
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.m4a') || f.path.endsWith('.wav'))
+            .toList();
         processedByDate[dateString] = files;
       }
     }
@@ -303,6 +325,15 @@ class RecordingsManager {
           // data), overwrite it rather than failing.
           final destFile = File(dest);
           if (await destFile.exists()) await destFile.delete();
+
+          // When placing a new .m4a, remove any legacy .wav with the same timestamp
+          // prefix to avoid both formats coexisting after re-processing.
+          if (fileName.endsWith('.m4a')) {
+            final tsPrefix = fileName.replaceAll('.m4a', '');
+            final legacyWav = File('$liveRecordingsPath/$tsPrefix.wav');
+            if (await legacyWav.exists()) await legacyWav.delete();
+          }
+
           await file.rename(dest);
         }
 
@@ -460,12 +491,31 @@ class RecordingsManager {
     return result;
   }
 
-  /// Deletes all processed recordings (.wav) for a day, plus any remaining raw
-  /// chunks and their session folders. Safe to call while nothing is playing.
+  /// Deletes orphaned `.tmp.m4a` files left by interrupted encoding sessions.
+  /// Call once at app startup before processing begins.
+  static Future<void> cleanupOrphanedTempFiles() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final recordingsDir = Directory('${directory.path}/recordings');
+    if (!await recordingsDir.exists()) return;
+    await for (final entity in recordingsDir.list(recursive: true)) {
+      if (entity is File && entity.path.endsWith('.tmp.m4a')) {
+        try {
+          await entity.delete();
+          Logger.debug('RecordingsManager: Deleted orphaned temp file ${entity.path}');
+        } catch (e) {
+          Logger.error('RecordingsManager: Failed to delete orphaned temp file ${entity.path}: $e');
+        }
+      }
+    }
+  }
+
+  /// Deletes all processed recordings (.m4a/.wav) and their .meta sidecars for a
+  /// day, plus any remaining raw chunks and their session folders.
+  /// Safe to call while nothing is playing.
   Future<void> deleteDay(DailyBatch batch) async {
     final directory = await getApplicationDocumentsDirectory();
 
-    // 1. Delete processed recordings folder
+    // 1. Delete processed recordings folder (contains .m4a, .wav, .meta files)
     final recordingsDir = Directory('${directory.path}/recordings/${batch.dateString}');
     if (await recordingsDir.exists()) {
       await recordingsDir.delete(recursive: true);
