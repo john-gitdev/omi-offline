@@ -4,10 +4,12 @@ import 'package:omi/services/wals/wal.dart';
 class SyncLocalFilesResponse {
   final List<String> newConversationIds;
   final List<String> updatedConversationIds;
+  final bool isPartial;
 
   SyncLocalFilesResponse({
     required this.newConversationIds,
     required this.updatedConversationIds,
+    this.isPartial = false,
   });
 }
 

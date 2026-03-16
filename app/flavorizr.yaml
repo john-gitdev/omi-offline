@@ -6,13 +6,9 @@ flavors:
     android:
       applicationId: "com.omi.offline"
       icon: "assets/images/app_launcher_icon.png"
-      firebase:
-        config: "app/android/app/src/prod/google-services.json"
     ios:
       bundleId: "com.omi.offline"
       icon: "assets/images/app_launcher_icon.png"
-      firebase:
-        config: "app/ios/Config/Prod/GoogleService-Info.plist"
   dev:
     app:
       name: "Omi Offline Dev"
@@ -20,10 +16,6 @@ flavors:
     android:
       icon: "assets/images/app_launcher_icon.png"
       applicationId: "com.omi.offline.dev"
-      firebase:
-        config: "app/android/app/src/dev/google-services.json"
     ios:
       bundleId: "com.omi.offline.development"
       icon: "assets/images/app_launcher_icon.png"
-      firebase:
-        config: "app/ios/Config/Dev/GoogleService-Info.plist"

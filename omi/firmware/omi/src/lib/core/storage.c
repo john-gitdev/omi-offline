@@ -66,6 +66,11 @@ static void wifi_start_work_handler(struct k_work *work)
     mic_pause();
     wifi_turn_on();
 }
+
+// Placed inside the #ifdef block to prevent "unused variable" warnings when WiFi is not enabled
+static struct bt_uuid_128 storage_wifi_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x30295783, 0x4301, 0xEABD, 0x2904, 0x2849ADFEAE43));
+static struct k_work wifi_start_work;
 #endif
 
 static struct bt_uuid_128 storage_service_uuid =
@@ -74,14 +79,11 @@ static struct bt_uuid_128 storage_write_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x30295781, 0x4301, 0xEABD, 0x2904, 0x2849ADFEAE43));
 static struct bt_uuid_128 storage_read_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x30295782, 0x4301, 0xEABD, 0x2904, 0x2849ADFEAE43));
-static struct bt_uuid_128 storage_wifi_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x30295783, 0x4301, 0xEABD, 0x2904, 0x2849ADFEAE43));
 static ssize_t storage_read_characteristic(struct bt_conn *conn,
                                            const struct bt_gatt_attr *attr,
                                            void *buf,
                                            uint16_t len,
                                            uint16_t offset);
-static struct k_work wifi_start_work;
 
 K_THREAD_STACK_DEFINE(storage_stack, 4096);
 static struct k_thread storage_thread;

@@ -100,7 +100,7 @@ static ssize_t
 features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf, uint16_t len, uint16_t offset);
 
 // Forward declarations for update functions and callbacks
-static void update_phy(struct bt_conn *conn);
+/* static void update_phy(struct bt_conn *conn); */
 static void update_data_length(struct bt_conn *conn);
 static void update_mtu(struct bt_conn *conn);
 static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_exchange_params *params);
@@ -616,6 +616,7 @@ static struct bt_conn_cb _callback_references = {
 
 // --- Update Request Functions ---
 
+/*
 static void update_phy(struct bt_conn *conn)
 {
     int err;
@@ -631,6 +632,7 @@ static void update_phy(struct bt_conn *conn)
         LOG_ERR("bt_conn_le_phy_update() failed (err %d)", err);
     }
 }
+*/
 
 static void update_data_length(struct bt_conn *conn)
 {
