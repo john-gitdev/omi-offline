@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:omi/utils/logger.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
@@ -85,12 +86,17 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   Future<void> _loadBatches() async {
     setState(() => _isLoading = true);
-    final batches = await _manager.getDailyBatches();
-    if (mounted) {
-      setState(() {
-        _batches = batches;
-        _isLoading = false;
-      });
+    try {
+      final batches = await _manager.getDailyBatches();
+      if (mounted) {
+        setState(() {
+          _batches = batches;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      Logger.error('RecordingsPage: Failed to load batches: $e');
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
