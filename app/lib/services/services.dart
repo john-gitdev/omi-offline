@@ -511,13 +511,7 @@ class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
           _onStop!();
         }
         break;
-      case 'speakerStatusChanged': //TODO: Handle speaker status changed
-        if (call.arguments is Map) {
-          final args = Map<String, dynamic>.from(call.arguments as Map);
-          final isSpeakerActive = args['isSpeakerActive'] as bool? ?? false;
-          Logger.debug('Speaker status changed: $isSpeakerActive');
-        }
-        break;
+
       case 'isRecordingPaused':
         // Return the pause state to native code
         if (_isRecordingPausedCallback != null) {

@@ -54,7 +54,6 @@ enum BleAudioCodec {
 }
 
 class OmiFeatures {
-  static const int speaker = 1 << 0;
   static const int accelerometer = 1 << 1;
   static const int button = 1 << 2;
   static const int battery = 1 << 3;
