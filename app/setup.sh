@@ -60,64 +60,6 @@ function generate_device_suffix() {
   echo "${HOSTNAME}"
 }
 
-######################################
-# Generate custom configs for iOS
-######################################
-function generate_ios_custom_config() {
-  bash scripts/generate_ios_custom_config.sh ios/Config/Dev/GoogleService-Info.plist ios/Flutter \
-
-  # Custom bundle identifier
-  SUFFIX=$(generate_device_suffix)
-  CUSTOM_BUNDLE="com.omi.offline-${SUFFIX}"
-  echo APP_BUNDLE_IDENTIFIER=${CUSTOM_BUNDLE} >> "ios/Flutter/Custom.xcconfig"
-}
-
-######################################
-# Setup Firebase with prebuilt configs
-######################################
-function setup_firebase() {
-  mkdir -p android/app/src/dev/ ios/Config/Dev/ ios/Runner/
-  cp setup/prebuilt/firebase_options.dart lib/firebase_options_dev.dart
-  cp setup/prebuilt/google-services.json android/app/src/dev/
-  cp setup/prebuilt/GoogleService-Info.plist ios/Config/Dev/
-  cp setup/prebuilt/GoogleService-Info.plist ios/Runner/
-
-  # Warn: Mocking, should remove
-  mkdir -p android/app/src/prod/ ios/Config/Prod/
-  cp setup/prebuilt/firebase_options.dart lib/firebase_options_prod.dart
-  cp setup/prebuilt/google-services.json android/app/src/prod/
-  cp setup/prebuilt/GoogleService-Info.plist ios/Config/Prod/
-}
-
-##########################################
-# Setup Firebase with Service Account Json
-##########################################
-function setup_firebase_with_service_account() {
-  dart pub global activate flutterfire_cli
-  flutterfire config \
-    --platforms="android,ios,web" \
-    --out=lib/firebase_options_dev.dart \
-    --ios-bundle-id=com.omi.offline.development \
-    --android-app-id=com.omi.offline.dev \
-    --android-out=android/app/src/dev/  \
-    --ios-out=ios/Config/Dev/ \
-    --service-account="$FIREBASE_SERVICE_ACCOUNT_KEY" \
-    --project="based-hardware-dev" \
-    --ios-target="Runner" \
-    --yes
-
-  flutterfire config \
-    --platforms="android,ios,web" \
-    --out=lib/firebase_options_prod.dart \
-    --ios-bundle-id=com.omi.offline \
-    --android-app-id=com.omi.offline.dev \
-    --android-out=android/app/src/prod/ \
-    --ios-out=ios/Config/Prod/ \
-    --service-account="$FIREBASE_SERVICE_ACCOUNT_KEY" \
-    --project="based-hardware-dev" \
-    --ios-target="Runner" \
-    --yes
-}
 
 ######################################
 # Setup provisioning profile
@@ -173,14 +115,11 @@ function run_build_ios() {
 
 case "${1}" in
   ios)
-      setup_firebase \
-      && generate_ios_custom_config \
-      && setup_app_env \
+      setup_app_env \
       && run_build_ios
     ;;
   android)
     setup_keystore_android \
-      && setup_firebase \
       && setup_app_env \
       && run_build_android
     ;;
