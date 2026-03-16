@@ -39,7 +39,6 @@ const String speakerDataStreamCharacteristicUuid = '19b10041-e8f2-537e-4f6c-d104
 const String storageDataStreamServiceUuid = '30295780-4301-eabd-2904-2849adfeae43';
 const String storageReadControlCharacteristicUuid = '30295782-4301-eabd-2904-2849adfeae43';
 const String storageDataStreamCharacteristicUuid = '30295781-4301-eabd-2904-2849adfeae43';
-const String storageFullCharacteristicUuid = '30295784-4301-eabd-2904-2849adfeae43';
 const String storageDataCharacteristicUuid = '30295781-4301-eabd-2904-2849adfeae43';
 
 const String disServiceUuid = '0000180a-0000-1000-8000-00805f9b34fb';
@@ -131,14 +130,6 @@ abstract class DeviceConnection {
 
   Future<int> performRetrieveBatteryLevel();
 
-  Future<int> retrieveStorageFull() async {
-    if (await isConnected()) {
-      return await performRetrieveStorageFull();
-    }
-    return -1;
-  }
-
-  Future<int> performRetrieveStorageFull() async => -1;
 
   Future<StreamSubscription<List<int>>?> getBleBatteryLevelListener({
     void Function(int)? onBatteryLevelChange,
@@ -160,20 +151,6 @@ abstract class DeviceConnection {
     });
   }
 
-  Future<StreamSubscription<List<int>>?> getBleStorageFullListener({
-    void Function(int)? onStorageFullChange,
-  }) async {
-    if (await isConnected()) {
-      return await performGetBleStorageFullListener(onStorageFullChange: onStorageFullChange);
-    }
-    return null;
-  }
-
-  Future<StreamSubscription<List<int>>?> performGetBleStorageFullListener({
-    void Function(int)? onStorageFullChange,
-  }) async {
-    return null;
-  }
 
   Future<StreamSubscription<List<int>>?> getBleAudioBytesListener({
     required void Function(List<int>) onAudioBytesReceived,
