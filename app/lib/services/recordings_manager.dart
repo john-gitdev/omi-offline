@@ -522,24 +522,27 @@ class RecordingsManager {
       Logger.debug('RecordingsManager: Deleted processed recordings for ${batch.dateString}');
     }
 
-    // 2. Delete raw chunks (may still exist if adjustment mode was on during processing)
-    final Set<String> sessionFolderPaths = {};
-    for (var file in batch.rawChunks) {
-      if (await file.exists()) {
-        final sessionIdStr = file.parent.path.split('/').last;
-        final sessionId = int.tryParse(sessionIdStr) ?? -1;
-        await file.delete();
-        sessionFolderPaths.add(file.parent.path);
-        SharedPreferencesUtil().remove('anchor_utc_$sessionId');
-        SharedPreferencesUtil().remove('anchor_uptime_$sessionId');
+    // 2. Delete raw chunks only when adjustment mode is OFF.
+    //    In adjustment mode the user may want to re-process, so keep the chunks.
+    if (!SharedPreferencesUtil().offlineAdjustmentMode) {
+      final Set<String> sessionFolderPaths = {};
+      for (var file in batch.rawChunks) {
+        if (await file.exists()) {
+          final sessionIdStr = file.parent.path.split('/').last;
+          final sessionId = int.tryParse(sessionIdStr) ?? -1;
+          await file.delete();
+          sessionFolderPaths.add(file.parent.path);
+          SharedPreferencesUtil().remove('anchor_utc_$sessionId');
+          SharedPreferencesUtil().remove('anchor_uptime_$sessionId');
+        }
       }
-    }
 
-    // 3. Remove now-empty session folders
-    for (var folderPath in sessionFolderPaths) {
-      final folder = Directory(folderPath);
-      if (await folder.exists() && await folder.list().isEmpty) {
-        await folder.delete();
+      // 3. Remove now-empty session folders
+      for (var folderPath in sessionFolderPaths) {
+        final folder = Directory(folderPath);
+        if (await folder.exists() && await folder.list().isEmpty) {
+          await folder.delete();
+        }
       }
     }
   }
