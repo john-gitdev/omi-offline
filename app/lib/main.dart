@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:omi/pages/recordings/recordings_page.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/utils/notifications.dart';
@@ -33,6 +36,22 @@ class _MyAppState extends State<MyApp> {
   void initState() {
     super.initState();
     ServiceManager.instance().start();
+    _checkHeyPocketKey();
+  }
+
+  void _checkHeyPocketKey() {
+    final apiKey = SharedPreferencesUtil().heypocketApiKey;
+    if (apiKey.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(HeyPocketService.testConnection(apiKey).then((ok) {
+        if (!ok) {
+          SharedPreferencesUtil().heypocketEnabled = false;
+        }
+      }).catchError((e) {
+        SharedPreferencesUtil().heypocketEnabled = false;
+        debugPrint('HeyPocket startup check failed: $e');
+      }));
+    });
   }
 
   @override
