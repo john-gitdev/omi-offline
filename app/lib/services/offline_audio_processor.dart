@@ -388,6 +388,122 @@ class OfflineAudioProcessor {
     return m4aPath;
   }
 
+  /// Decodes [frames] from Opus to PCM, encodes to AAC/M4A at [outputPath], and
+  /// writes a waveform .meta sidecar alongside it.  Falls back to a .wav file
+  /// (same base name) if the AAC encoder is unavailable.  Returns the path of
+  /// the file actually written.
+  static Future<String> saveSegmentAsM4a(List<Uint8List> frames, String outputPath) async {
+    if (frames.isEmpty) return outputPath;
+
+    if (!(Platform.isIOS || Platform.isAndroid)) return outputPath;
+
+    final decoder = SimpleOpusDecoder(sampleRate: sampleRate, channels: channels);
+
+    // Very short recording (<100 ms) → write WAV to avoid AAC encoder edge cases.
+    if (frames.length < 5) {
+      return await _saveSegmentAsWav(frames, decoder, outputPath.replaceAll('.m4a', '.wav'));
+    }
+
+    const waveformBuckets = 200;
+    const bucketSize = 800;
+    final peakAmplitudes = List<double>.filled(waveformBuckets, 0.0);
+    const batchFrames = 15;
+    final batchBuffer = BytesBuilder(copy: false);
+    int totalSamples = 0;
+    int batchFrameCount = 0;
+
+    String? sessionId;
+    try {
+      sessionId = await AacEncoder.startEncoder(sampleRate, outputPath);
+    } on PlatformException catch (e) {
+      Logger.error('OfflineAudioProcessor.saveSegmentAsM4a: startEncoder failed: $e');
+      return await _saveSegmentAsWav(frames, decoder, outputPath.replaceAll('.m4a', '.wav'));
+    }
+
+    Future<void> flushBatch() async {
+      if (batchBuffer.isEmpty) return;
+      final bytes = batchBuffer.toBytes();
+      batchBuffer.clear();
+      batchFrameCount = 0;
+      await AacEncoder.encodeChunk(sessionId!, Uint8List.fromList(bytes));
+    }
+
+    try {
+      for (var i = 0; i < frames.length; i++) {
+        if (i % 50 == 0) await Future.delayed(Duration.zero);
+        Int16List pcmData;
+        try {
+          pcmData = decoder.decode(input: frames[i]);
+        } catch (e) {
+          continue;
+        }
+        for (int s = 0; s < pcmData.length; s++) {
+          final bucketIndex = min(waveformBuckets - 1, (totalSamples + s) ~/ bucketSize);
+          final amplitude = pcmData[s].abs() / 32768.0;
+          if (amplitude > peakAmplitudes[bucketIndex]) peakAmplitudes[bucketIndex] = amplitude;
+        }
+        totalSamples += pcmData.length;
+        batchBuffer.add(pcmData.buffer.asUint8List(pcmData.offsetInBytes, pcmData.lengthInBytes));
+        batchFrameCount++;
+        if (batchFrameCount >= batchFrames) await flushBatch();
+      }
+      await flushBatch();
+      await AacEncoder.finishEncoder(sessionId!);
+    } on PlatformException catch (e) {
+      Logger.error('OfflineAudioProcessor.saveSegmentAsM4a: encoding failed: $e');
+      final tmpFile = File(outputPath.replaceAll('.m4a', '.tmp.m4a'));
+      if (await tmpFile.exists()) await tmpFile.delete();
+      return await _saveSegmentAsWav(frames, decoder, outputPath.replaceAll('.m4a', '.wav'));
+    }
+
+    // Write .meta sidecar
+    final durationMs = (totalSamples * 1000) ~/ sampleRate;
+    final metaBytes = ByteData(408);
+    metaBytes.setUint32(0, totalSamples, Endian.little);
+    metaBytes.setUint32(4, durationMs, Endian.little);
+    for (int i = 0; i < waveformBuckets; i++) {
+      final peak16 = (peakAmplitudes[i] * 65535.0).round().clamp(0, 65535);
+      metaBytes.setUint16(8 + i * 2, peak16, Endian.little);
+    }
+    await File(outputPath.replaceAll('.m4a', '.meta')).writeAsBytes(metaBytes.buffer.asUint8List());
+
+    Logger.debug('OfflineAudioProcessor: saveSegmentAsM4a — ${frames.length} frames → $outputPath');
+    return outputPath;
+  }
+
+  static Future<String> _saveSegmentAsWav(List<Uint8List> frames, SimpleOpusDecoder decoder, String wavPath) async {
+    final List<Uint8List> decodedChunks = [];
+    for (var i = 0; i < frames.length; i++) {
+      if (i % 50 == 0) await Future.delayed(Duration.zero);
+      try {
+        decodedChunks.add(decoder.decode(input: frames[i]).buffer.asUint8List());
+      } catch (e) {
+        // skip corrupt frame
+      }
+    }
+    final int totalPcmBytes = decodedChunks.fold(0, (sum, c) => sum + c.length);
+    final header = ByteData(44);
+    header.setUint8(0, 0x52); header.setUint8(1, 0x49); header.setUint8(2, 0x46); header.setUint8(3, 0x46);
+    header.setUint32(4, 36 + totalPcmBytes, Endian.little);
+    header.setUint8(8, 0x57); header.setUint8(9, 0x41); header.setUint8(10, 0x56); header.setUint8(11, 0x45);
+    header.setUint8(12, 0x66); header.setUint8(13, 0x6D); header.setUint8(14, 0x74); header.setUint8(15, 0x20);
+    header.setUint32(16, 16, Endian.little);
+    header.setUint16(20, 1, Endian.little);
+    header.setUint16(22, channels, Endian.little);
+    header.setUint32(24, sampleRate, Endian.little);
+    header.setUint32(28, sampleRate * channels * 2, Endian.little);
+    header.setUint16(32, channels * 2, Endian.little);
+    header.setUint16(34, 16, Endian.little);
+    header.setUint8(36, 0x64); header.setUint8(37, 0x61); header.setUint8(38, 0x74); header.setUint8(39, 0x61);
+    header.setUint32(40, totalPcmBytes, Endian.little);
+    final sink = File(wavPath).openWrite();
+    sink.add(header.buffer.asUint8List());
+    for (final pcm in decodedChunks) sink.add(pcm);
+    await sink.close();
+    Logger.debug('OfflineAudioProcessor: saveSegmentAsM4a WAV fallback → $wavPath');
+    return wavPath;
+  }
+
   /// WAV fallback used for very short recordings or when AAC encoder fails.
   Future<String> _saveWav(List<Uint8List> frames, String dateFolderPath, int timestamp) async {
     final wavPath = '$dateFolderPath/recording_$timestamp.wav';
