@@ -83,8 +83,7 @@ class DeepgramBalanceService {
     final first = balances[0] as Map<String, dynamic>;
     // Deepgram returns "balance" as the remaining credit amount
     final amount = (first['balance'] as num?)?.toDouble() ?? 0.0;
-    final currency = first['purchase_order_id'] as String? ?? 'USD'; // fallback
-    // The actual currency field in the API is not documented — default USD
+    // Deepgram does not expose a currency field in the balances endpoint; USD is the only supported currency.
     return DeepgramBalance(amountDollars: amount, currency: 'USD');
   }
 }
