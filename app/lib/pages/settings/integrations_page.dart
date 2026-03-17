@@ -60,6 +60,9 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
       final result = await HeyPocketService.testConnection(key);
       if (_controller.text != key) return; // stale
       if (result) {
+        if (_prefs.heypocketKeySetAt == 0) {
+          _prefs.heypocketKeySetAt = DateTime.now().millisecondsSinceEpoch;
+        }
         _prefs.heypocketApiKey = key;
         setState(() => _connState = _ConnectionState.connected);
       } else {
