@@ -22,7 +22,7 @@ class SharedPreferencesUtil {
 
   set offlineSnrMarginDb(double value) => saveDouble('offlineSnrMarginDb', value);
 
-  double get offlineHangoverSeconds => getDouble('offlineHangoverSeconds', defaultValue: 1.5);
+  double get offlineHangoverSeconds => getDouble('offlineHangoverSeconds', defaultValue: 0.5);
 
   set offlineHangoverSeconds(double value) => saveDouble('offlineHangoverSeconds', value);
 
@@ -63,7 +63,7 @@ class SharedPreferencesUtil {
       prefs.setDouble('offlineSnrMarginDb', 10.0);
     }
     if (!prefs.containsKey('offlineHangoverSeconds')) {
-      prefs.setDouble('offlineHangoverSeconds', 1.5);
+      prefs.setDouble('offlineHangoverSeconds', 0.5);
     }
     if (!prefs.containsKey('offlineSplitSeconds')) {
       prefs.setInt('offlineSplitSeconds', 120); // 2 minutes default
