@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
@@ -35,9 +36,16 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   double _syncSpeed = 0.0;
   int _syncRecordingsCount = 0;
 
+  final _prefs = SharedPreferencesUtil();
+
   // Filter state
   bool _filterEnabled = SharedPreferencesUtil().recordingsFilterEnabled;
   int _filterMinutes = SharedPreferencesUtil().recordingsFilterMinutes;
+
+  // HeyPocket upload state
+  final Set<String> _uploadingFiles = {};
+  int _autoUploadActive = 0;
+  String _lastHpKey = '';
 
   // Processing state
   String? _processingDateString;
@@ -51,6 +59,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   @override
   void initState() {
     super.initState();
+    _lastHpKey = _prefs.heypocketApiKey;
     _loadBatches();
     final syncService = ServiceManager.instance().wal.getSyncs();
     syncService.setGlobalProgressListener(this);
@@ -89,6 +98,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       _loadBatches();
     }
     _wasProcessing = isProcessing;
+
+    // Refresh upload icons if HeyPocket key was set from integrations page
+    final currentKey = _prefs.heypocketApiKey;
+    if (currentKey != _lastHpKey) {
+      _lastHpKey = currentKey;
+      setState(() {});
+      if (currentKey.isNotEmpty) _tryAutoUploadNext();
+    }
   }
 
   Future<void> _loadBatches() async {
@@ -100,6 +117,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           _batches = batches;
           _isLoading = false;
         });
+        _tryAutoUploadNext();
       }
     } catch (e) {
       Logger.error('RecordingsPage: Failed to load batches: $e');
@@ -347,6 +365,141 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           );
         },
       ),
+    );
+  }
+
+  void _tryAutoUploadNext() {
+    if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty) return;
+    final apiKey = _prefs.heypocketApiKey;
+    final keySetAt = _prefs.heypocketKeySetAt;
+    final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
+    for (final batch in _batches) {
+      for (final file in batch.processedRecordings) {
+        if (_autoUploadActive >= 2) return;
+        final rec = RecordingInfo.fromFile(file);
+        // Only auto-upload recordings created after the API key was configured.
+        if (keySetTime != null && rec.startTime.isBefore(keySetTime)) continue;
+        if (_filterEnabled && rec.duration < Duration(minutes: _filterMinutes)) continue;
+        final uploadKey = rec.uploadKey;
+        if (uploadKey == null) continue;
+        if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
+        if (_uploadingFiles.contains(uploadKey)) continue;
+        _uploadingFiles.add(uploadKey);
+        _autoUploadActive++;
+        if (mounted) setState(() {});
+        unawaited(
+          HeyPocketService.uploadRecording(apiKey, rec)
+              .then((_) {
+                _prefs.markUploadedToHeypocket(uploadKey);
+              })
+              .catchError((e) {
+                debugPrint('HeyPocket auto-upload failed: $e');
+              })
+              .whenComplete(() {
+                _uploadingFiles.remove(uploadKey);
+                _autoUploadActive--;
+                if (mounted) {
+                  setState(() {});
+                  WidgetsBinding.instance.addPostFrameCallback((_) => _tryAutoUploadNext());
+                }
+              }),
+        );
+      }
+    }
+  }
+
+  Future<void> _handleUploadTap(RecordingInfo rec) async {
+    final uploadKey = rec.uploadKey;
+    if (uploadKey == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Upload key unavailable — please reconnect your device and try again.')),
+      );
+      return;
+    }
+    if (_uploadingFiles.contains(uploadKey)) return;
+
+    final alreadyUploaded = _prefs.isUploadedToHeypocket(uploadKey);
+    final title = alreadyUploaded ? 'Re-upload Recording' : 'Upload Recording';
+    final content = alreadyUploaded
+        ? 'This recording was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)'
+        : 'Upload this recording to HeyPocket?';
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        title,
+        content,
+        confirmText: 'Upload',
+      ),
+    );
+    if (confirm != true) return;
+
+    final apiKey = _prefs.heypocketApiKey;
+    _uploadingFiles.add(uploadKey);
+    setState(() {});
+    unawaited(
+      HeyPocketService.uploadRecording(apiKey, rec)
+          .then((_) {
+            _prefs.markUploadedToHeypocket(uploadKey);
+          })
+          .catchError((e) {
+            if (e is HeyPocketException) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('HeyPocket ${e.statusCode}: ${e.message}')),
+                );
+              }
+            }
+            debugPrint('HeyPocket upload failed: $e');
+          })
+          .whenComplete(() {
+            _uploadingFiles.remove(uploadKey);
+            if (mounted) setState(() {});
+          }),
+    );
+  }
+
+  Widget _buildUploadIcon(RecordingInfo rec) {
+    if (_prefs.heypocketApiKey.isEmpty) return const SizedBox.shrink();
+    final uploadKey = rec.uploadKey;
+    if (uploadKey == null) {
+      return IconButton(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        constraints: const BoxConstraints(),
+        icon: Icon(Icons.cloud_off, color: Colors.grey.shade600, size: 18),
+        onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Upload key unavailable — please reconnect your device and try again.')),
+        ),
+      );
+    }
+    if (_uploadingFiles.contains(uploadKey)) {
+      return IconButton(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        constraints: const BoxConstraints(),
+        icon: const SizedBox(
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
+        ),
+        onPressed: null,
+      );
+    }
+    if (_prefs.isUploadedToHeypocket(uploadKey)) {
+      return IconButton(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        constraints: const BoxConstraints(),
+        icon: const Icon(Icons.cloud_done, color: Colors.green, size: 18),
+        onPressed: () => _handleUploadTap(rec),
+      );
+    }
+    return IconButton(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      constraints: const BoxConstraints(),
+      icon: const Icon(Icons.cloud_upload, color: Colors.redAccent, size: 18),
+      onPressed: () => _handleUploadTap(rec),
     );
   }
 
@@ -600,6 +753,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 ],
               ),
             ),
+            _buildUploadIcon(rec),
             FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
           ],
         ),

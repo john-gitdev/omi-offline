@@ -54,6 +54,30 @@ class SharedPreferencesUtil {
 
   set recordingsFilterMinutes(int value) => saveInt('recordingsFilterMinutes', value);
 
+  //--------------------------- HeyPocket Integration ---------------------//
+
+  String get heypocketApiKey => getString('heypocketApiKey');
+  set heypocketApiKey(String v) => saveString('heypocketApiKey', v);
+
+  bool get heypocketEnabled => getBool('heypocketEnabled', defaultValue: false);
+  set heypocketEnabled(bool v) => saveBool('heypocketEnabled', v);
+
+  List<String> get heypocketUploadedFiles => getStringList('heypocketUploadedFiles');
+  set heypocketUploadedFiles(List<String> v) => saveStringList('heypocketUploadedFiles', v);
+
+  // Epoch ms when the API key was first saved — used to limit auto-upload to new recordings only.
+  int get heypocketKeySetAt => getInt('heypocketKeySetAt', defaultValue: 0);
+  set heypocketKeySetAt(int v) => saveInt('heypocketKeySetAt', v);
+
+  bool isUploadedToHeypocket(String uploadKey) => heypocketUploadedFiles.contains(uploadKey);
+
+  void markUploadedToHeypocket(String uploadKey) {
+    if (isUploadedToHeypocket(uploadKey)) return;
+    final set = {...heypocketUploadedFiles};
+    set.add(uploadKey);
+    heypocketUploadedFiles = set.toList();
+  }
+
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _preferences = prefs;
@@ -103,7 +127,7 @@ class SharedPreferencesUtil {
   }
 
   BtDevice get btDevice {
-    final String device = getString('btDevice') ?? '';
+    final String device = getString('btDevice');
     if (device.isEmpty) return BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0);
     return BtDevice.fromJson(jsonDecode(device));
   }
