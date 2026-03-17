@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 /// Wraps a list of raw Opus frames into a valid Ogg/Opus byte stream that
@@ -53,6 +54,34 @@ class OggOpusBuilder {
     }
 
     return out.toBytes();
+  }
+
+  /// Writes [opusFrames] as an Ogg/Opus stream directly to [dest], page by
+  /// page, avoiding a large in-memory buffer for long recordings.
+  static Future<void> buildToFile(List<Uint8List> opusFrames, File dest) async {
+    final serial = DateTime.now().millisecondsSinceEpoch & 0xFFFFFFFF;
+    final sink = dest.openWrite();
+    try {
+      sink.add(_buildIdHeaderPage(serial));
+      sink.add(_buildCommentHeaderPage(serial));
+
+      int pageSeq = 2;
+      int granulePos = _preSkip;
+      int frameIdx = 0;
+
+      while (frameIdx < opusFrames.length) {
+        final end = (frameIdx + _framesPerPage).clamp(0, opusFrames.length);
+        final pageFrames = opusFrames.sublist(frameIdx, end);
+        final isLast = end == opusFrames.length;
+        granulePos += pageFrames.length * _granulePerFrame;
+        sink.add(_buildAudioPage(serial, pageSeq, granulePos, pageFrames, isLast));
+        pageSeq++;
+        frameIdx = end;
+      }
+    } finally {
+      await sink.flush();
+      await sink.close();
+    }
   }
 
   // ---------------------------------------------------------------------------
