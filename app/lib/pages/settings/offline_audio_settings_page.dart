@@ -72,7 +72,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: const Text(
-          'Offline Audio Settings',
+          'Recording Settings',
           style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
         ),
         centerTitle: true,
