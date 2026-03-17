@@ -1,11 +1,13 @@
 import 'dart:convert';
 
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 
 class SharedPreferencesUtil {
   static final SharedPreferencesUtil _instance = SharedPreferencesUtil._internal();
   static SharedPreferences? _preferences;
+  static const _secure = FlutterSecureStorage();
 
   factory SharedPreferencesUtil() {
     return _instance;
@@ -56,8 +58,22 @@ class SharedPreferencesUtil {
 
   //--------------------------- Deepgram Integration -------------------------//
 
-  String get deepgramApiKey => getString('deepgramApiKey');
-  set deepgramApiKey(String value) => saveString('deepgramApiKey', value);
+  /// Reads the Deepgram API key from secure storage.
+  /// On first call after an upgrade, migrates any plaintext value from
+  /// SharedPreferences into secure storage and removes the plaintext copy.
+  Future<String> readDeepgramApiKey() async {
+    final legacy = _preferences?.getString('deepgramApiKey') ?? '';
+    if (legacy.isNotEmpty) {
+      await _secure.write(key: 'deepgramApiKey', value: legacy);
+      await _preferences?.remove('deepgramApiKey');
+    }
+    return await _secure.read(key: 'deepgramApiKey') ?? '';
+  }
+
+  Future<void> writeDeepgramApiKey(String value) async {
+    await _secure.write(key: 'deepgramApiKey', value: value);
+    await _preferences?.remove('deepgramApiKey'); // ensure no plaintext copy
+  }
 
   bool get deepgramEnabled => getBool('deepgramEnabled', defaultValue: false);
   set deepgramEnabled(bool value) => saveBool('deepgramEnabled', value);

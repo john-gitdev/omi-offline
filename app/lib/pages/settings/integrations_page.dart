@@ -71,7 +71,10 @@ class _DeepgramIntegrationCardState extends State<_DeepgramIntegrationCard> {
     _enabled = prefs.deepgramEnabled;
     _fallbackToVad = prefs.deepgramFallbackToVad;
     _splitGapSeconds = prefs.deepgramSplitGapSeconds;
-    _apiKeyController = TextEditingController(text: prefs.deepgramApiKey);
+    _apiKeyController = TextEditingController();
+    prefs.readDeepgramApiKey().then((key) {
+      if (mounted) setState(() => _apiKeyController.text = key);
+    });
   }
 
   @override
@@ -81,7 +84,7 @@ class _DeepgramIntegrationCardState extends State<_DeepgramIntegrationCard> {
   }
 
   void _saveApiKey(String value) {
-    SharedPreferencesUtil().deepgramApiKey = value;
+    SharedPreferencesUtil().writeDeepgramApiKey(value);
     // Reset balance display when key changes
     setState(() {
       _balanceText = null;
