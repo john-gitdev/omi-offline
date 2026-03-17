@@ -1,17 +1,88 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/services/audio/deepgram_transcription_service.dart';
+import 'package:omi/services/audio/ogg_opus_builder.dart';
 import 'package:omi/services/offline_audio_processor.dart';
 import 'package:omi/utils/logger.dart';
+
+enum SplitMethod { vad, deepgram }
+
+/// A single word from a Deepgram transcription response.
+class TranscriptWord {
+  final String word;
+  final double start; // seconds from recording start
+  final double end;
+  final int speaker;
+
+  const TranscriptWord({required this.word, required this.start, required this.end, required this.speaker});
+
+  factory TranscriptWord.fromJson(Map<String, dynamic> j) => TranscriptWord(
+        word: j['word'] as String? ?? '',
+        start: (j['start'] as num?)?.toDouble() ?? 0.0,
+        end: (j['end'] as num?)?.toDouble() ?? 0.0,
+        speaker: j['speaker'] as int? ?? 0,
+      );
+
+  Map<String, dynamic> toJson() => {'word': word, 'start': start, 'end': end, 'speaker': speaker};
+}
+
+/// Contents of the `.transcript.json` sidecar written alongside every processed recording.
+class RecordingTranscript {
+  final SplitMethod method;
+  final String? text;
+  final List<TranscriptWord> words;
+
+  const RecordingTranscript({required this.method, this.text, this.words = const []});
+
+  factory RecordingTranscript.fromJson(Map<String, dynamic> j) {
+    final methodStr = j['method'] as String? ?? 'vad';
+    final method = methodStr == 'deepgram' ? SplitMethod.deepgram : SplitMethod.vad;
+    final wordsJson = j['words'] as List<dynamic>? ?? [];
+    return RecordingTranscript(
+      method: method,
+      text: j['text'] as String?,
+      words: wordsJson.map((w) => TranscriptWord.fromJson(w as Map<String, dynamic>)).toList(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'method': method == SplitMethod.deepgram ? 'deepgram' : 'vad',
+        'text': text,
+        'words': words.map((w) => w.toJson()).toList(),
+      };
+
+  static RecordingTranscript vad() => const RecordingTranscript(method: SplitMethod.vad);
+}
+
+// Isolate-safe JSON decode helper used by compute().
+RecordingTranscript? _decodeTranscript(String jsonStr) {
+  try {
+    final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+    return RecordingTranscript.fromJson(map);
+  } catch (_) {
+    return null;
+  }
+}
 
 /// Parsed metadata for a single processed recording (M4A or WAV).
 class RecordingInfo {
   final File file;
   final DateTime startTime;
   final Duration duration;
+  final SplitMethod? splitMethod;
+  final RecordingTranscript? transcript;
 
-  const RecordingInfo({required this.file, required this.startTime, required this.duration});
+  const RecordingInfo({
+    required this.file,
+    required this.startTime,
+    required this.duration,
+    this.splitMethod,
+    this.transcript,
+  });
 
   DateTime get endTime => startTime.add(duration);
   int get fileSizeBytes {
@@ -25,6 +96,13 @@ class RecordingInfo {
   /// Parses start time from the filename (`recording_<millis>.m4a` or `.wav`) and
   /// reads duration from the `.meta` sidecar if present, otherwise falls back to
   /// WAV file size calculation.
+  ///
+  /// Also reads the `method` field from the `.transcript.json` sidecar (if present)
+  /// to populate [splitMethod] for the badge in the recordings list — this is
+  /// synchronous but reads only the tiny method string, not the full word list.
+  ///
+  /// To get the full transcript with word timestamps, call [loadTranscript] separately
+  /// (it uses [compute] to avoid blocking the main thread).
   static RecordingInfo fromFile(File file) {
     final name = file.path.split('/').last;
     final millisStr = name.contains('_') ? name.split('_').last.split('.').first : null;
@@ -40,8 +118,10 @@ class RecordingInfo {
       }
     }
 
-    // Try .meta sidecar for authoritative duration
     final basePath = file.path.contains('.') ? file.path.substring(0, file.path.lastIndexOf('.')) : file.path;
+
+    // Try .meta sidecar for authoritative duration
+    Duration duration;
     final metaFile = File('$basePath.meta');
     if (metaFile.existsSync()) {
       try {
@@ -49,13 +129,55 @@ class RecordingInfo {
         if (metaBytes.length >= 8) {
           final bd = ByteData.sublistView(metaBytes);
           final durationMs = bd.getUint32(4, Endian.little);
-          return RecordingInfo(file: file, startTime: startTime, duration: Duration(milliseconds: durationMs));
+          duration = Duration(milliseconds: durationMs);
+        } else {
+          duration = _durationFromFileSize(file);
         }
       } catch (_) {
-        // Fall through to size-based estimate
+        duration = _durationFromFileSize(file);
+      }
+    } else {
+      duration = _durationFromFileSize(file);
+    }
+
+    // Quick sync read of the method field only — avoids parsing potentially large
+    // word arrays on the main thread. The full transcript is loaded by loadTranscript().
+    SplitMethod? splitMethod;
+    final transcriptFile = File('$basePath.transcript.json');
+    if (transcriptFile.existsSync()) {
+      try {
+        final jsonStr = transcriptFile.readAsStringSync();
+        final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+        final methodStr = map['method'] as String? ?? 'vad';
+        splitMethod = methodStr == 'deepgram' ? SplitMethod.deepgram : SplitMethod.vad;
+      } catch (_) {
+        // Corrupt sidecar — leave splitMethod null
       }
     }
 
+    return RecordingInfo(file: file, startTime: startTime, duration: duration, splitMethod: splitMethod);
+  }
+
+  /// Loads the full transcript (including word list) from the `.transcript.json`
+  /// sidecar, decoding JSON in a background isolate via [compute] to prevent
+  /// UI jank on recordings with thousands of words.
+  ///
+  /// Returns null if no sidecar exists or it cannot be parsed.
+  static Future<RecordingTranscript?> loadTranscript(File recordingFile) async {
+    final basePath = recordingFile.path.contains('.')
+        ? recordingFile.path.substring(0, recordingFile.path.lastIndexOf('.'))
+        : recordingFile.path;
+    final transcriptFile = File('$basePath.transcript.json');
+    if (!transcriptFile.existsSync()) return null;
+    try {
+      final jsonStr = await transcriptFile.readAsString();
+      return compute(_decodeTranscript, jsonStr);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Duration _durationFromFileSize(File file) {
     // WAV fallback: duration from file size (44-byte header + PCM at 16 kHz mono 16-bit)
     int fileSize = 0;
     try {
@@ -63,7 +185,7 @@ class RecordingInfo {
     } catch (_) {}
     final pcmBytes = fileSize > 44 ? fileSize - 44 : 0;
     final durationMs = (pcmBytes / 32000.0 * 1000).round();
-    return RecordingInfo(file: file, startTime: startTime, duration: Duration(milliseconds: durationMs));
+    return Duration(milliseconds: durationMs);
   }
 
   String get timeRangeLabel {
@@ -360,6 +482,16 @@ class RecordingsManager {
           }
 
           await file.rename(dest);
+
+          // Write a VAD .transcript.json sidecar so the badge shows "VAD"
+          // on recordings produced by the local silence-detection path.
+          if (fileName.endsWith('.m4a') || fileName.endsWith('.wav')) {
+            final base = dest.contains('.') ? dest.substring(0, dest.lastIndexOf('.')) : dest;
+            final vadSidecar = File('$base.transcript.json');
+            if (!await vadSidecar.exists()) {
+              await vadSidecar.writeAsString(jsonEncode(RecordingTranscript.vad().toJson()));
+            }
+          }
         }
 
         // Final flush and a small delay to ensure FS is ready
@@ -571,4 +703,257 @@ class RecordingsManager {
       }
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Deepgram transcription-based sync path
+  // ---------------------------------------------------------------------------
+
+  /// Processes [batch] using Deepgram for smart conversation splitting.
+  ///
+  /// Strategy:
+  ///   1. Prepend an overlap window from previously synced audio so conversations
+  ///      that span a sync boundary are handled correctly.
+  ///   2. Build an Ogg/Opus file from the raw frames and upload to Deepgram.
+  ///   3. Use word-gap timestamps to find conversation split points.
+  ///   4. Slice the audio and write recordings + transcript sidecars.
+  ///   5. Skip any slices whose end time falls before [lastWrittenEndMs] (already
+  ///      written from a prior sync's overlap window).
+  ///
+  /// Falls back to [processDay] when:
+  ///   - Deepgram is disabled or has no API key
+  ///   - A network or API error occurs and [deepgramFallbackToVad] is true
+  ///   - [backgroundMode] is true and no Deepgram key is configured
+  ///
+  /// When [deepgramFallbackToVad] is false and Deepgram fails, the batch is
+  /// left unprocessed for the next sync attempt.
+  Future<void> processSyncWithTranscription(
+    DailyBatch batch,
+    Function(double progress) onProgress, {
+    bool backgroundMode = false,
+  }) async {
+    // Import lazily inside the method to avoid circular import at top-level.
+    // ignore: implementation_imports
+    final prefs = SharedPreferencesUtil();
+    if (!prefs.deepgramEnabled || prefs.deepgramApiKey.isEmpty) {
+      await processDay(batch, onProgress, backgroundMode: backgroundMode);
+      return;
+    }
+
+    try {
+      await _processSyncWithDeepgram(batch, onProgress, backgroundMode: backgroundMode);
+    } catch (e) {
+      Logger.error('RecordingsManager: Deepgram processing failed: $e');
+      if (prefs.deepgramFallbackToVad) {
+        Logger.debug('RecordingsManager: Falling back to VAD for ${batch.dateString}');
+        await processDay(batch, onProgress, backgroundMode: backgroundMode);
+      } else {
+        Logger.debug('RecordingsManager: Queuing ${batch.dateString} for next Deepgram sync attempt');
+        // Leave batch unprocessed — will be retried on the next sync.
+        rethrow;
+      }
+    }
+  }
+
+  Future<void> _processSyncWithDeepgram(
+    DailyBatch batch,
+    Function(double progress) onProgress, {
+    bool backgroundMode = false,
+  }) async {
+    final prefs = SharedPreferencesUtil();
+    final gapSeconds = prefs.deepgramSplitGapSeconds;
+
+    if (_isProcessingAny) {
+      throw Exception('Another processing task is already in progress.');
+    }
+    _isProcessingAny = true;
+    _cancelRequested = false;
+
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final dateString = batch.dateString;
+      final liveRecordingsPath = '${directory.path}/recordings/$dateString';
+
+      // 1. Parse all raw frames from the batch chunks
+      onProgress(0.05);
+      final allFrames = await _extractFrames(batch.rawChunks);
+      if (allFrames.isEmpty) {
+        Logger.debug('RecordingsManager: No frames found for $dateString, skipping Deepgram.');
+        return;
+      }
+
+      // 2. Determine overlap window so conversations spanning sync boundaries
+      //    are captured without explicit carry-forward state.
+      final overlapDuration = DeepgramTranscriptionService.computeOverlap(gapSeconds);
+      final overlapFrameCount = overlapDuration.inMilliseconds ~/ 20; // 20 ms per frame
+      final lastWrittenEndMs = prefs.deepgramLastWrittenEndMs(dateString);
+
+      // 3. Build Ogg/Opus segments (≤2 hours each) and transcribe
+      onProgress(0.10);
+      final segments = _splitIntoSegments(allFrames);
+      final List<WordTimestamp> allWords = [];
+      int segmentOffsetMs = 0;
+
+      for (int seg = 0; seg < segments.length; seg++) {
+        if (_cancelRequested) break;
+        final oggBytes = OggOpusBuilder.build(segments[seg]);
+        final segOffset = Duration(milliseconds: segmentOffsetMs);
+        final words = await DeepgramTranscriptionService.transcribeOggBytes(
+          oggBytes,
+          segOffset,
+          apiKey: prefs.deepgramApiKey,
+        );
+        allWords.addAll(words);
+        segmentOffsetMs += segments[seg].length * 20;
+        onProgress(0.10 + 0.60 * ((seg + 1) / segments.length));
+      }
+
+      // 4. Find conversation split points from word gaps
+      final gapThreshold = Duration(seconds: gapSeconds);
+      final splitPoints = _findSplitPoints(allWords, gapThreshold);
+
+      // 5. Write per-conversation recordings + transcript sidecars
+      onProgress(0.75);
+      final liveDir = Directory(liveRecordingsPath);
+      await liveDir.create(recursive: true);
+
+      final windowStartTime = _inferWindowStartTime(batch.rawChunks);
+      final windowStartMs = windowStartTime.millisecondsSinceEpoch;
+
+      // Boundaries list: [0ms, split0ms, split1ms, ..., totalMs]
+      final boundaries = <int>[0, ...splitPoints.map((d) => d.inMilliseconds), allFrames.length * 20];
+
+      int newLastWrittenEndMs = lastWrittenEndMs;
+
+      for (int i = 0; i < boundaries.length - 1; i++) {
+        final segStartMs = boundaries[i];
+        final segEndMs = boundaries[i + 1];
+        final segStartEpochMs = windowStartMs + segStartMs;
+        final segEndEpochMs = windowStartMs + segEndMs;
+
+        // Skip slices already written from the overlap window in a prior sync.
+        if (segEndEpochMs <= lastWrittenEndMs) continue;
+
+        final segWords = _wordsForRange(allWords, segStartMs / 1000.0, segEndMs / 1000.0);
+        final segText = segWords.map((w) => w.word).join(' ').trim();
+
+        // Write the audio segment as an Ogg/Opus file.
+        // TODO: replace with AudioSlicer platform channel once native implementations are done.
+        //       Until then the output is a valid Ogg/Opus file playable on device.
+        final segFrameStart = segStartMs ~/ 20;
+        final segFrameEnd = (segEndMs ~/ 20).clamp(0, allFrames.length);
+        final segOgg = OggOpusBuilder.build(allFrames.sublist(segFrameStart, segFrameEnd));
+        final outputFile = File('$liveRecordingsPath/recording_$segStartEpochMs.m4a');
+        await outputFile.writeAsBytes(segOgg);
+
+        // Write .transcript.json sidecar
+        final transcript = RecordingTranscript(
+          method: SplitMethod.deepgram,
+          text: segText.isEmpty ? null : segText,
+          words: segWords
+              .map((w) => TranscriptWord(word: w.word, start: w.start, end: w.end, speaker: w.speaker))
+              .toList(),
+        );
+        final sidecar = File('$liveRecordingsPath/recording_$segStartEpochMs.transcript.json');
+        await sidecar.writeAsString(jsonEncode(transcript.toJson()));
+
+        if (segEndEpochMs > newLastWrittenEndMs) newLastWrittenEndMs = segEndEpochMs;
+        Logger.debug('RecordingsManager: Deepgram segment $i — ${segWords.length} words');
+      }
+
+      // 6. Persist last-written marker
+      if (newLastWrittenEndMs > lastWrittenEndMs) {
+        await prefs.setDeepgramLastWrittenEndMs(dateString, newLastWrittenEndMs);
+      }
+
+      // 7. Delete chunks safely before the overlap window.
+      final safeToDeleteCount = (allFrames.length - overlapFrameCount).clamp(0, batch.rawChunks.length);
+      if (!prefs.offlineAdjustmentMode && !backgroundMode) {
+        for (int i = 0; i < safeToDeleteCount && i < batch.rawChunks.length; i++) {
+          final file = batch.rawChunks[i];
+          if (await file.exists()) await file.delete();
+        }
+      }
+
+      onProgress(1.0);
+      Logger.debug('RecordingsManager: Deepgram sync complete for $dateString — '
+          '${splitPoints.length} splits, ${boundaries.length - 1} segments');
+    } finally {
+      _isProcessingAny = false;
+    }
+  }
+
+  /// Extracts Opus frames from a list of .bin chunk files.
+  static Future<List<Uint8List>> _extractFrames(List<File> chunks) async {
+    final frames = <Uint8List>[];
+    for (final file in chunks) {
+      try {
+        final bytes = await file.readAsBytes();
+        int offset = 0;
+        while (offset + 4 <= bytes.length) {
+          final length =
+              ByteData.sublistView(Uint8List.fromList(bytes.sublist(offset, offset + 4))).getUint32(0, Endian.little);
+          offset += 4;
+          if (offset + length > bytes.length) break;
+          frames.add(bytes.sublist(offset, offset + length));
+          offset += length;
+        }
+      } catch (e) {
+        Logger.error('RecordingsManager: Failed to read chunk ${file.path}: $e');
+      }
+    }
+    return frames;
+  }
+
+  /// Splits frames into ≤2-hour segments for Deepgram.
+  static List<List<Uint8List>> _splitIntoSegments(List<Uint8List> frames) {
+    const maxFrames = 2 * 60 * 60 * 1000 ~/ 20; // 2 hours in 20-ms frames
+    if (frames.length <= maxFrames) return [frames];
+    final result = <List<Uint8List>>[];
+    int offset = 0;
+    while (offset < frames.length) {
+      final end = (offset + maxFrames).clamp(0, frames.length);
+      result.add(frames.sublist(offset, end));
+      offset = end;
+    }
+    return result;
+  }
+
+  static List<WordTimestamp> _wordsForRange(List<WordTimestamp> words, double startSecs, double endSecs) {
+    return words.where((w) => w.start >= startSecs && w.end <= endSecs).toList();
+  }
+
+  static List<Duration> _findSplitPoints(List<WordTimestamp> words, Duration gapThreshold) {
+    if (words.length < 2) return [];
+    final thresholdSecs = gapThreshold.inMilliseconds / 1000.0;
+    final result = <Duration>[];
+    for (int i = 1; i < words.length; i++) {
+      final gap = words[i].start - words[i - 1].end;
+      if (gap >= thresholdSecs) {
+        final midSecs = words[i - 1].end + gap / 2;
+        result.add(Duration(milliseconds: (midSecs * 1000).round()));
+      }
+    }
+    return result;
+  }
+
+  /// Infers the UTC start time of a batch by looking at the oldest chunk's anchor.
+  static DateTime _inferWindowStartTime(List<File> chunks) {
+    if (chunks.isEmpty) return DateTime.now();
+    final first = chunks.first;
+    final name = first.path.split('/').last.replaceAll('.bin', '');
+    final parts = name.split('_');
+    final sessionId = int.tryParse(parts[0]);
+    final chunkIndex = parts.length > 1 ? int.tryParse(parts[1]) : null;
+    if (sessionId != null && chunkIndex != null) {
+      final anchorUtc =
+          SharedPreferencesUtil().getInt('anchor_utc_${sessionId}_$chunkIndex', defaultValue: 0);
+      if (anchorUtc > 0) return DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
+    }
+    try {
+      return first.lastModifiedSync();
+    } catch (_) {
+      return DateTime.now();
+    }
+  }
 }
+
