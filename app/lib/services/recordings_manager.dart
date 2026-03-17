@@ -734,7 +734,7 @@ class RecordingsManager {
     // Import lazily inside the method to avoid circular import at top-level.
     // ignore: implementation_imports
     final prefs = SharedPreferencesUtil();
-    if (!prefs.deepgramEnabled || prefs.deepgramApiKey.isEmpty) {
+    if (!prefs.deepgramEnabled || (await prefs.readDeepgramApiKey()).isEmpty) {
       await processDay(batch, onProgress, backgroundMode: backgroundMode);
       return;
     }
@@ -761,6 +761,7 @@ class RecordingsManager {
   }) async {
     final prefs = SharedPreferencesUtil();
     final gapSeconds = prefs.deepgramSplitGapSeconds;
+    final deepgramApiKey = await prefs.readDeepgramApiKey();
 
     if (_isProcessingAny) {
       throw Exception('Another processing task is already in progress.');
@@ -795,17 +796,24 @@ class RecordingsManager {
 
       for (int seg = 0; seg < segments.length; seg++) {
         if (_cancelRequested) break;
-        final oggBytes = OggOpusBuilder.build(segments[seg]);
         final segOffset = Duration(milliseconds: segmentOffsetMs);
-        final words = await DeepgramTranscriptionService.transcribeOggBytes(
-          oggBytes,
-          segOffset,
-          apiKey: prefs.deepgramApiKey,
-        );
+        final tmpFile = File('${Directory.systemTemp.path}/${dateString}_seg$seg.ogg');
+        final List<WordTimestamp> words;
+        try {
+          await OggOpusBuilder.buildToFile(segments[seg], tmpFile);
+          words = await DeepgramTranscriptionService.transcribeOggBytes(
+            await tmpFile.readAsBytes(),
+            segOffset,
+            apiKey: deepgramApiKey,
+          );
+        } finally {
+          if (await tmpFile.exists()) await tmpFile.delete();
+        }
         allWords.addAll(words);
         segmentOffsetMs += segments[seg].length * 20;
         onProgress(0.10 + 0.60 * ((seg + 1) / segments.length));
       }
+      allWords.sort((a, b) => a.start.compareTo(b.start));
 
       // 4. Find conversation split points from word gaps
       final gapThreshold = Duration(seconds: gapSeconds);
@@ -833,7 +841,9 @@ class RecordingsManager {
         // Skip slices already written from the overlap window in a prior sync.
         if (segEndEpochMs <= lastWrittenEndMs) continue;
 
-        final segWords = _wordsForRange(allWords, segStartMs / 1000.0, segEndMs / 1000.0);
+        final skipBeforeSecs = (lastWrittenEndMs - windowStartMs) / 1000.0;
+        final segWords = _wordsForRange(allWords, segStartMs / 1000.0, segEndMs / 1000.0,
+            skipBeforeSecs: skipBeforeSecs);
         final segText = segWords.map((w) => w.word).join(' ').trim();
 
         // Write the audio segment as an Ogg/Opus file.
@@ -918,8 +928,16 @@ class RecordingsManager {
     return result;
   }
 
-  static List<WordTimestamp> _wordsForRange(List<WordTimestamp> words, double startSecs, double endSecs) {
-    return words.where((w) => w.start >= startSecs && w.end <= endSecs).toList();
+  static List<WordTimestamp> _wordsForRange(
+    List<WordTimestamp> words,
+    double startSecs,
+    double endSecs, {
+    double skipBeforeSecs = 0.0,
+  }) {
+    return words.where((w) {
+      if (skipBeforeSecs > 0 && w.end <= skipBeforeSecs) return false;
+      return w.start >= startSecs && w.end <= endSecs;
+    }).toList();
   }
 
   static List<Duration> _findSplitPoints(List<WordTimestamp> words, Duration gapThreshold) {
