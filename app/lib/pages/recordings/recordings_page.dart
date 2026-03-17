@@ -45,6 +45,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   // HeyPocket upload state
   final Set<String> _uploadingFiles = {};
   int _autoUploadActive = 0;
+  String _lastHpKey = '';
 
   // Processing state
   String? _processingDateString;
@@ -58,6 +59,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   @override
   void initState() {
     super.initState();
+    _lastHpKey = _prefs.heypocketApiKey;
     _loadBatches();
     final syncService = ServiceManager.instance().wal.getSyncs();
     syncService.setGlobalProgressListener(this);
@@ -96,6 +98,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       _loadBatches();
     }
     _wasProcessing = isProcessing;
+
+    // Refresh upload icons if HeyPocket key was set from integrations page
+    final currentKey = _prefs.heypocketApiKey;
+    if (currentKey != _lastHpKey) {
+      _lastHpKey = currentKey;
+      setState(() {});
+      if (currentKey.isNotEmpty) _tryAutoUploadNext();
+    }
   }
 
   Future<void> _loadBatches() async {
@@ -361,10 +371,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   void _tryAutoUploadNext() {
     if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty) return;
     final apiKey = _prefs.heypocketApiKey;
+    final keySetAt = _prefs.heypocketKeySetAt;
+    final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
     for (final batch in _batches) {
       for (final file in batch.processedRecordings) {
         if (_autoUploadActive >= 2) return;
         final rec = RecordingInfo.fromFile(file);
+        // Only auto-upload recordings created after the API key was configured.
+        if (keySetTime != null && rec.startTime.isBefore(keySetTime)) continue;
         if (_filterEnabled && rec.duration < Duration(minutes: _filterMinutes)) continue;
         final uploadKey = rec.uploadKey;
         if (uploadKey == null) continue;
@@ -462,13 +476,15 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       );
     }
     if (_uploadingFiles.contains(uploadKey)) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 8),
-        child: SizedBox(
-          width: 16,
-          height: 16,
+      return IconButton(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        constraints: const BoxConstraints(),
+        icon: const SizedBox(
+          width: 18,
+          height: 18,
           child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
         ),
+        onPressed: null,
       );
     }
     if (_prefs.isUploadedToHeypocket(uploadKey)) {
