@@ -61,8 +61,11 @@ class RecordingInfo {
               }
             }
           }
+          // Fall back to filename (without extension) as upload key for recordings
+          // processed before the upload key was written to the .meta sidecar.
+          final effectiveKey = uploadKey ?? file.path.split('/').last.split('.').first;
           return RecordingInfo(
-              file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: uploadKey);
+              file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: effectiveKey);
         }
       } catch (_) {
         // Fall through to size-based estimate
@@ -76,7 +79,8 @@ class RecordingInfo {
     } catch (_) {}
     final pcmBytes = fileSize > 44 ? fileSize - 44 : 0;
     final durationMs = (pcmBytes / 32000.0 * 1000).round();
-    return RecordingInfo(file: file, startTime: startTime, duration: Duration(milliseconds: durationMs));
+    final fallbackKey = file.path.split('/').last.split('.').first;
+    return RecordingInfo(file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: fallbackKey);
   }
 
   String get timeRangeLabel {
