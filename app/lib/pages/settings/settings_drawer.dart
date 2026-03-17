@@ -10,6 +10,7 @@ import 'device_settings.dart';
 import 'find_devices_page.dart';
 import 'offline_audio_settings_page.dart';
 import 'sync_page.dart';
+import 'integrations_page.dart';
 
 class SettingsDrawer extends StatefulWidget {
   const SettingsDrawer({super.key});
@@ -284,6 +285,18 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => const OfflineAudioSettingsPage(),
+                            ),
+                          );
+                        },
+                      ),
+                      const Divider(height: 1, color: Color(0xFF3C3C43)),
+                      _buildSettingsItem(
+                        title: 'Integrations',
+                        icon: const FaIcon(FontAwesomeIcons.plug, color: Color(0xFF8E8E93), size: 20),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => const IntegrationsPage(),
                             ),
                           );
                         },
