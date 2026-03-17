@@ -848,14 +848,13 @@ class RecordingsManager {
             skipBeforeSecs: skipBeforeSecs);
         final segText = segWords.map((w) => w.word).join(' ').trim();
 
-        // Write the audio segment as an Ogg/Opus file.
-        // TODO: replace with AudioSlicer platform channel once native implementations are done.
-        //       Until then the output is a valid Ogg/Opus file playable on device.
+        // Decode Opus frames → PCM → AAC/M4A via the same encoder pipeline as VAD.
         final segFrameStart = segStartMs ~/ 20;
         final segFrameEnd = (segEndMs ~/ 20).clamp(0, allFrames.length);
-        final segOgg = OggOpusBuilder.build(allFrames.sublist(segFrameStart, segFrameEnd));
-        final outputFile = File('$liveRecordingsPath/recording_$segStartEpochMs.m4a');
-        await outputFile.writeAsBytes(segOgg);
+        await OfflineAudioProcessor.saveSegmentAsM4a(
+          allFrames.sublist(segFrameStart, segFrameEnd),
+          '$liveRecordingsPath/recording_$segStartEpochMs.m4a',
+        );
 
         // Write .transcript.json sidecar
         final transcript = RecordingTranscript(
