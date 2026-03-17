@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -5,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:omi/backend/preferences.dart';
+import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/recordings_manager.dart';
 
 class RecordingPlayerPage extends StatefulWidget {
@@ -18,11 +21,13 @@ class RecordingPlayerPage extends StatefulWidget {
 
 class _RecordingPlayerPageState extends State<RecordingPlayerPage> {
   final AudioPlayer _player = AudioPlayer();
+  final _prefs = SharedPreferencesUtil();
   List<double> _waveform = [];
   bool _loadingWaveform = true;
   Duration _position = Duration.zero;
   Duration _total = Duration.zero;
   bool _isPlaying = false;
+  bool _isUploading = false;
 
   @override
   void initState() {
@@ -133,6 +138,45 @@ class _RecordingPlayerPageState extends State<RecordingPlayerPage> {
     );
   }
 
+  Future<void> _handleUpload() async {
+    final apiKey = _prefs.heypocketApiKey;
+    if (apiKey.isEmpty || _isUploading) return;
+    final uploadKey = widget.recording.uploadKey;
+    if (uploadKey == null) return;
+    setState(() => _isUploading = true);
+    try {
+      await HeyPocketService.uploadRecording(apiKey, widget.recording);
+      _prefs.markUploadedToHeypocket(uploadKey);
+      if (mounted) setState(() {});
+    } on HeyPocketException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('HeyPocket: ${e.message}')));
+      }
+    } finally {
+      if (mounted) setState(() => _isUploading = false);
+    }
+  }
+
+  Widget _buildUploadAction() {
+    final apiKey = _prefs.heypocketApiKey;
+    if (apiKey.isEmpty) return const SizedBox.shrink();
+    final uploadKey = widget.recording.uploadKey;
+    if (uploadKey == null) return const SizedBox.shrink();
+    if (_isUploading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 16),
+        child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+      );
+    }
+    final uploaded = _prefs.isUploadedToHeypocket(uploadKey);
+    return IconButton(
+      icon: Icon(uploaded ? Icons.cloud_done : Icons.cloud_upload,
+          color: uploaded ? Colors.green : Colors.redAccent, size: 22),
+      tooltip: uploaded ? 'Re-upload to HeyPocket' : 'Upload to HeyPocket',
+      onPressed: _handleUpload,
+    );
+  }
+
   @override
   void dispose() {
     _player.dispose();
@@ -160,6 +204,7 @@ class _RecordingPlayerPageState extends State<RecordingPlayerPage> {
           style: const TextStyle(color: Colors.white, fontSize: 18),
         ),
         actions: [
+          _buildUploadAction(),
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.shareFromSquare, color: Colors.white, size: 20),
             onPressed: _export,
