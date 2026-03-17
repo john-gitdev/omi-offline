@@ -54,6 +54,30 @@ class SharedPreferencesUtil {
 
   set recordingsFilterMinutes(int value) => saveInt('recordingsFilterMinutes', value);
 
+  //--------------------------- Deepgram Integration -------------------------//
+
+  String get deepgramApiKey => getString('deepgramApiKey');
+  set deepgramApiKey(String value) => saveString('deepgramApiKey', value);
+
+  bool get deepgramEnabled => getBool('deepgramEnabled', defaultValue: false);
+  set deepgramEnabled(bool value) => saveBool('deepgramEnabled', value);
+
+  /// Gap between words (in seconds) that triggers a conversation split.
+  /// Range: 0–600 s. Default: 30 s.
+  int get deepgramSplitGapSeconds => getInt('deepgramSplitGapSeconds', defaultValue: 30);
+  set deepgramSplitGapSeconds(int value) => saveInt('deepgramSplitGapSeconds', value);
+
+  /// When true: fall back to VAD immediately if Deepgram is unreachable.
+  /// When false: queue the batch and retry when connectivity is restored.
+  bool get deepgramFallbackToVad => getBool('deepgramFallbackToVad', defaultValue: true);
+  set deepgramFallbackToVad(bool value) => saveBool('deepgramFallbackToVad', value);
+
+  /// Epoch-ms timestamp of the last conversation end written for [dateString].
+  /// Used by the overlap strategy to avoid re-writing already-processed conversations.
+  int deepgramLastWrittenEndMs(String dateString) => getInt('deepgramLastWrittenEndMs_$dateString');
+  Future<void> setDeepgramLastWrittenEndMs(String dateString, int ms) =>
+      saveInt('deepgramLastWrittenEndMs_$dateString', ms);
+
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _preferences = prefs;
@@ -79,6 +103,15 @@ class SharedPreferencesUtil {
     }
     if (!prefs.containsKey('offlineAdjustmentMode')) {
       prefs.setBool('offlineAdjustmentMode', false);
+    }
+    if (!prefs.containsKey('deepgramEnabled')) {
+      prefs.setBool('deepgramEnabled', false);
+    }
+    if (!prefs.containsKey('deepgramSplitGapSeconds')) {
+      prefs.setInt('deepgramSplitGapSeconds', 30);
+    }
+    if (!prefs.containsKey('deepgramFallbackToVad')) {
+      prefs.setBool('deepgramFallbackToVad', true);
     }
   }
 
