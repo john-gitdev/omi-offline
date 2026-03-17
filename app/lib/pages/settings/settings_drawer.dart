@@ -241,30 +241,6 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           );
                         },
                       ),
-                      const Divider(height: 1, color: Color(0xFF3C3C43)),
-                      _buildSettingsItem(
-                        title: 'Sync Device',
-                        icon: const FaIcon(FontAwesomeIcons.solidCloud, color: Color(0xFF8E8E93), size: 20),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => const SyncPage(),
-                            ),
-                          );
-                        },
-                      ),
-                      const Divider(height: 1, color: Color(0xFF3C3C43)),
-                      _buildSettingsItem(
-                        title: 'Offline Audio Processing',
-                        icon: const FaIcon(FontAwesomeIcons.microphoneLines, color: Color(0xFF8E8E93), size: 20),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => const OfflineAudioSettingsPage(),
-                            ),
-                          );
-                        },
-                      ),
                       Consumer<DeviceProvider>(
                         builder: (context, deviceProvider, child) {
                           if (!deviceProvider.isConnected) {
@@ -285,6 +261,30 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                                 },
                               ),
                             ],
+                          );
+                        },
+                      ),
+                      const Divider(height: 1, color: Color(0xFF3C3C43)),
+                      _buildSettingsItem(
+                        title: 'Sync Device',
+                        icon: const FaIcon(FontAwesomeIcons.solidCloud, color: Color(0xFF8E8E93), size: 20),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => const SyncPage(),
+                            ),
+                          );
+                        },
+                      ),
+                      const Divider(height: 1, color: Color(0xFF3C3C43)),
+                      _buildSettingsItem(
+                        title: 'Recording Settings',
+                        icon: const FaIcon(FontAwesomeIcons.microphoneLines, color: Color(0xFF8E8E93), size: 20),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => const OfflineAudioSettingsPage(),
+                            ),
                           );
                         },
                       ),
