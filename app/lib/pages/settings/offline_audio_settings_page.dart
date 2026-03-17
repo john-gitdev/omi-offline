@@ -222,31 +222,33 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 _saveSettings();
               },
             ),
-            const SizedBox(height: 32),
-            const Text(
-              'Pre-Speech Buffer',
-              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Audio kept before detected speech to avoid clipping the start of utterances. (Current: ${_formatSeconds(_preSpeechSeconds)})',
-              style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-            ),
-            const SizedBox(height: 12),
-            Slider(
-              value: _preSpeechSeconds,
-              min: 0.0,
-              max: 5.0,
-              divisions: 10,
-              activeColor: Colors.deepPurpleAccent,
-              inactiveColor: const Color(0xFF3C3C43),
-              onChanged: (value) {
-                setState(() {
-                  _preSpeechSeconds = value;
-                });
-                _saveSettings();
-              },
-            ),
+            // Pre-Speech Buffer slider hidden — hardcoded to 1.0s default (offlinePreSpeechSeconds).
+            // To restore: uncomment this block and the _preSpeechSeconds field/init/save above.
+            // const SizedBox(height: 32),
+            // const Text(
+            //   'Pre-Speech Buffer',
+            //   style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+            // ),
+            // const SizedBox(height: 8),
+            // Text(
+            //   'Audio kept before detected speech to avoid clipping the start of utterances. (Current: ${_formatSeconds(_preSpeechSeconds)})',
+            //   style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+            // ),
+            // const SizedBox(height: 12),
+            // Slider(
+            //   value: _preSpeechSeconds,
+            //   min: 0.0,
+            //   max: 5.0,
+            //   divisions: 10,
+            //   activeColor: Colors.deepPurpleAccent,
+            //   inactiveColor: const Color(0xFF3C3C43),
+            //   onChanged: (value) {
+            //     setState(() {
+            //       _preSpeechSeconds = value;
+            //     });
+            //     _saveSettings();
+            //   },
+            // ),
             const SizedBox(height: 32),
             const Text(
               'Gap Threshold',
