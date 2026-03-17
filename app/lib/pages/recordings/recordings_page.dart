@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/widgets/split_method_badge.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
@@ -576,6 +577,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   Widget _buildRecordingTile(RecordingInfo rec) {
     return InkWell(
+      key: Key('recording_tile_${rec.startTime.millisecondsSinceEpoch}'),
       onTap: () => Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => RecordingPlayerPage(recording: rec)),
       ),
@@ -592,10 +594,18 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     rec.timeRangeLabel,
                     style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
                   ),
-                  const SizedBox(height: 3),
-                  Text(
-                    '${rec.durationLabel}  ·  ${rec.sizeLabel}',
-                    style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Text(
+                        '${rec.durationLabel}  ·  ${rec.sizeLabel}',
+                        style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                      ),
+                      if (rec.splitMethod != null) ...[
+                        const SizedBox(width: 8),
+                        SplitMethodBadge(method: rec.splitMethod!),
+                      ],
+                    ],
                   ),
                 ],
               ),
