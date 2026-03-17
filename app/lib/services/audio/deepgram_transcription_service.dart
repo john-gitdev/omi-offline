@@ -129,14 +129,13 @@ class DeepgramTranscriptionService {
 
   /// Returns the overlap duration to prepend to each sync window.
   ///
-  /// | splitGapSeconds | overlapSeconds         |
-  /// |-----------------|------------------------|
-  /// | < 300 (5 min)   | 300 (fixed 5 min)      |
-  /// | 300–600         | splitGap + 180, max 780 |
+  /// | splitGapSeconds | overlapSeconds  |
+  /// |-----------------|-----------------|
+  /// | < 120 (2 min)   | 300 (fixed 5 min) |
+  /// | ≥ 120           | splitGap + 300  |
   static Duration computeOverlap(int splitGapSeconds) {
-    if (splitGapSeconds < 300) return const Duration(seconds: 300);
-    final overlap = (splitGapSeconds + 180).clamp(0, 780);
-    return Duration(seconds: overlap);
+    if (splitGapSeconds < 120) return const Duration(seconds: 300);
+    return Duration(seconds: splitGapSeconds + 300);
   }
 
   // ---------------------------------------------------------------------------
