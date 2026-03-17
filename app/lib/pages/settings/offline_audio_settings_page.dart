@@ -144,31 +144,34 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 _saveSettings();
               },
             ),
-            const SizedBox(height: 32),
-            const Text(
-              'Hangover Duration',
-              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'How long to continue treating audio as speech after the signal drops below threshold. Prevents pauses and breaths from splitting recordings. (Current: ${_formatSeconds(_hangoverSeconds)})',
-              style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-            ),
-            const SizedBox(height: 12),
-            Slider(
-              value: _hangoverSeconds,
-              min: 0,
-              max: 5,
-              divisions: 10,
-              activeColor: Colors.deepPurpleAccent,
-              inactiveColor: const Color(0xFF3C3C43),
-              onChanged: (value) {
-                setState(() {
-                  _hangoverSeconds = value;
-                });
-                _saveSettings();
-              },
-            ),
+            // Hangover Duration slider hidden — hardcoded to 0.5s default (offlineHangoverSeconds).
+            // Users found it confusing alongside the conversation split threshold.
+            // To restore: uncomment this block and the _hangoverSeconds field/init/save above.
+            // const SizedBox(height: 32),
+            // const Text(
+            //   'Hangover Duration',
+            //   style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+            // ),
+            // const SizedBox(height: 8),
+            // Text(
+            //   'How long to continue treating audio as speech after the signal drops below threshold. Prevents pauses and breaths from splitting recordings. (Current: ${_formatSeconds(_hangoverSeconds)})',
+            //   style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+            // ),
+            // const SizedBox(height: 12),
+            // Slider(
+            //   value: _hangoverSeconds,
+            //   min: 0,
+            //   max: 5,
+            //   divisions: 10,
+            //   activeColor: Colors.deepPurpleAccent,
+            //   inactiveColor: const Color(0xFF3C3C43),
+            //   onChanged: (value) {
+            //     setState(() {
+            //       _hangoverSeconds = value;
+            //     });
+            //     _saveSettings();
+            //   },
+            // ),
             const SizedBox(height: 32),
             const Text(
               'Conversation Split Threshold',
