@@ -371,7 +371,7 @@ class OfflineAudioProcessor {
       return await _saveWav(frames, dateFolderPath, timestamp);
     }
 
-    // Write .meta sidecar (408 bytes)
+    // Write .meta sidecar (408 bytes base + optional upload key)
     final durationMs = (totalSamples * 1000) ~/ sampleRate;
     final metaBytes = ByteData(408);
     metaBytes.setUint32(0, totalSamples, Endian.little);
@@ -381,7 +381,18 @@ class OfflineAudioProcessor {
       metaBytes.setUint16(8 + i * 2, peak16, Endian.little);
     }
     final metaPath = '${dateFolder.path}/recording_$timestamp.meta';
-    await File(metaPath).writeAsBytes(metaBytes.buffer.asUint8List());
+    final List<int> metaOut = [...metaBytes.buffer.asUint8List()];
+    final deviceId = SharedPreferencesUtil().btDevice.id.replaceAll(':', '').toUpperCase();
+    if (deviceId.length >= 6) {
+      final mac6 = deviceId.substring(0, 6);
+      final uploadKey = '${mac6}_recording_$timestamp.m4a';
+      final keyBytes = uploadKey.codeUnits;
+      if (keyBytes.length <= 255) {
+        metaOut.add(keyBytes.length);
+        metaOut.addAll(keyBytes);
+      }
+    }
+    await File(metaPath).writeAsBytes(metaOut);
 
     Logger.debug(
         "OfflineAudioProcessor: Saved recording (${frames.length} frames, ${durationMs}ms) starting at $startTime to $m4aPath");
