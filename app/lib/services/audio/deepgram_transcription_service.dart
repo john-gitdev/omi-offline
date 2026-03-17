@@ -96,8 +96,9 @@ class DeepgramTranscriptionService {
         return _parseResponse(response.body, segmentOffset);
       } on DeepgramAuthException {
         rethrow;
-      } catch (_) {
+      } catch (e) {
         if (attempt == 1) rethrow;
+        Logger.debug('DeepgramTranscriptionService: transient error, retrying in 2 s: $e');
         await Future.delayed(const Duration(seconds: 2));
       }
     }

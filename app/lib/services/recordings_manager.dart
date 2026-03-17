@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' show max;
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:path_provider/path_provider.dart';
@@ -793,11 +794,12 @@ class RecordingsManager {
       final segments = _splitIntoSegments(allFrames);
       final List<WordTimestamp> allWords = [];
       int segmentOffsetMs = 0;
+      final syncRunId = DateTime.now().microsecondsSinceEpoch;
 
       for (int seg = 0; seg < segments.length; seg++) {
         if (_cancelRequested) break;
         final segOffset = Duration(milliseconds: segmentOffsetMs);
-        final tmpFile = File('${Directory.systemTemp.path}/${dateString}_seg$seg.ogg');
+        final tmpFile = File('${Directory.systemTemp.path}/dg_${syncRunId}_$seg.ogg');
         final List<WordTimestamp> words;
         try {
           await OggOpusBuilder.buildToFile(segments[seg], tmpFile);
@@ -841,7 +843,7 @@ class RecordingsManager {
         // Skip slices already written from the overlap window in a prior sync.
         if (segEndEpochMs <= lastWrittenEndMs) continue;
 
-        final skipBeforeSecs = (lastWrittenEndMs - windowStartMs) / 1000.0;
+        final skipBeforeSecs = max(0.0, (lastWrittenEndMs - windowStartMs) / 1000.0);
         final segWords = _wordsForRange(allWords, segStartMs / 1000.0, segEndMs / 1000.0,
             skipBeforeSecs: skipBeforeSecs);
         final segText = segWords.map((w) => w.word).join(' ').trim();
