@@ -10,8 +10,9 @@ class RecordingInfo {
   final File file;
   final DateTime startTime;
   final Duration duration;
+  final String? uploadKey;
 
-  const RecordingInfo({required this.file, required this.startTime, required this.duration});
+  const RecordingInfo({required this.file, required this.startTime, required this.duration, this.uploadKey});
 
   DateTime get endTime => startTime.add(duration);
   int get fileSizeBytes {
@@ -49,7 +50,19 @@ class RecordingInfo {
         if (metaBytes.length >= 8) {
           final bd = ByteData.sublistView(metaBytes);
           final durationMs = bd.getUint32(4, Endian.little);
-          return RecordingInfo(file: file, startTime: startTime, duration: Duration(milliseconds: durationMs));
+          String? uploadKey;
+          if (metaBytes.length >= 409) {
+            final keyLen = metaBytes[408];
+            if (409 + keyLen <= metaBytes.length) {
+              try {
+                uploadKey = String.fromCharCodes(metaBytes.sublist(409, 409 + keyLen));
+              } catch (_) {
+                uploadKey = null;
+              }
+            }
+          }
+          return RecordingInfo(
+              file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: uploadKey);
         }
       } catch (_) {
         // Fall through to size-based estimate
