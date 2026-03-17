@@ -55,7 +55,7 @@ class DeepgramTranscriptionService {
     Duration segmentOffset, {
     String? apiKey,
   }) async {
-    final key = apiKey ?? SharedPreferencesUtil().deepgramApiKey;
+    final key = apiKey ?? await SharedPreferencesUtil().readDeepgramApiKey();
     if (key.isEmpty) throw const DeepgramAuthException(0);
 
     final oggBytes = OggOpusBuilder.build(opusFrames);
@@ -68,7 +68,7 @@ class DeepgramTranscriptionService {
     Duration segmentOffset, {
     String? apiKey,
   }) async {
-    final key = apiKey ?? SharedPreferencesUtil().deepgramApiKey;
+    final key = apiKey ?? await SharedPreferencesUtil().readDeepgramApiKey();
     if (key.isEmpty) throw const DeepgramAuthException(0);
     return _transcribeBytes(oggBytes, segmentOffset, key);
   }
@@ -79,24 +79,29 @@ class DeepgramTranscriptionService {
     String apiKey,
   ) async {
     final uri = Uri.parse('$_baseUrl?model=$_model&diarize=true&punctuate=true&utterances=false&smart_format=true');
+    final headers = {
+      'Authorization': 'Token $apiKey',
+      'Content-Type': 'audio/ogg;codecs=opus',
+    };
 
-    final response = await http.post(
-      uri,
-      headers: {
-        'Authorization': 'Token $apiKey',
-        'Content-Type': 'audio/ogg;codecs=opus',
-      },
-      body: oggBytes,
-    );
-
-    if (response.statusCode == 401 || response.statusCode == 403) {
-      throw DeepgramAuthException(response.statusCode);
+    for (int attempt = 0; attempt < 2; attempt++) {
+      try {
+        final response = await http.post(uri, headers: headers, body: oggBytes);
+        if (response.statusCode == 401 || response.statusCode == 403) {
+          throw DeepgramAuthException(response.statusCode);
+        }
+        if (response.statusCode != 200) {
+          throw DeepgramApiException(response.statusCode, response.body);
+        }
+        return _parseResponse(response.body, segmentOffset);
+      } on DeepgramAuthException {
+        rethrow;
+      } catch (_) {
+        if (attempt == 1) rethrow;
+        await Future.delayed(const Duration(seconds: 2));
+      }
     }
-    if (response.statusCode != 200) {
-      throw DeepgramApiException(response.statusCode, response.body);
-    }
-
-    return _parseResponse(response.body, segmentOffset);
+    throw StateError('unreachable');
   }
 
   static List<WordTimestamp> _parseResponse(String jsonBody, Duration offset) {
