@@ -54,7 +54,8 @@ class OfflineAudioProcessor {
                 : null),
         _outputDir = outputDir,
         _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb,
-        _hangoverFrameCount = max(0, (SharedPreferencesUtil().offlineHangoverSeconds * 1000).round() ~/ frameDurationMs),
+        _hangoverFrameCount =
+            max(0, (SharedPreferencesUtil().offlineHangoverSeconds * 1000).round() ~/ frameDurationMs),
         _silenceDurationToSplitMs = SharedPreferencesUtil().offlineSplitSeconds * 1000,
         _minSpeechMs = SharedPreferencesUtil().offlineMinSpeechSeconds * 1000,
         _preSpeechBufferMs = (SharedPreferencesUtil().offlinePreSpeechSeconds * 1000).round(),
@@ -234,7 +235,7 @@ class OfflineAudioProcessor {
           final recordingRefs = _currentRecordingRefs.sublist(0, framesToKeep);
           if (_speechFrameCount * frameDurationMs >= _minSpeechMs) {
             final filePath = await _saveRecording(recordingRefs, _recordingStartTime!);
-            savedFiles.add(filePath);
+            if (filePath != null) savedFiles.add(filePath);
           }
         }
 
@@ -293,7 +294,7 @@ class OfflineAudioProcessor {
   ///
   /// Reads Opus bytes sequentially from source .bin files via [RandomAccessFile].
   /// Only one decoded PCM frame is held in memory at a time.
-  Future<String> _saveRecording(List<FrameRef> refs, DateTime startTime) async {
+  Future<String?> _saveRecording(List<FrameRef> refs, DateTime startTime) async {
     final directory = await getApplicationDocumentsDirectory();
     final timestamp = startTime.millisecondsSinceEpoch;
 
@@ -331,6 +332,7 @@ class OfflineAudioProcessor {
 
     String? sessionId;
     bool aacFailed = false;
+    bool hasEncodedAnyFrames = false;
 
     try {
       sessionId = await AacEncoder.startEncoder(sampleRate, m4aPath);
@@ -348,6 +350,7 @@ class OfflineAudioProcessor {
       final bytes = batchBuffer.toBytes();
       batchBuffer.clear();
       batchFrameCount = 0;
+      hasEncodedAnyFrames = true;
       await AacEncoder.encodeChunk(sessionId!, Uint8List.fromList(bytes));
     }
 
@@ -406,6 +409,17 @@ class OfflineAudioProcessor {
       }
 
       await flushBatch();
+
+      if (!hasEncodedAnyFrames) {
+        // Encoder was started but no PCM data was decoded — calling finishEncoder
+        // would trigger "Stop() called but track not started" in MPEG4Writer.
+        // Abandon cleanly: delete the empty file and return null.
+        Logger.debug('OfflineAudioProcessor: No frames encoded — discarding empty segment.');
+        final emptyFile = File(m4aPath);
+        if (await emptyFile.exists()) await emptyFile.delete();
+        return null;
+      }
+
       await AacEncoder.finishEncoder(sessionId!);
     } on Exception catch (e) {
       Logger.error('OfflineAudioProcessor: AAC encoding failed, falling back to WAV: $e');
