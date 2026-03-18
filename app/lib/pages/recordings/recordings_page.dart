@@ -508,45 +508,72 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF1C1C1E),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.2)),
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
         children: [
           Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.deepPurpleAccent),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _processingDateString != null
+                        ? 'Processing $_processingDateString...'
+                        : 'Processing recordings...',
+                    style: TextStyle(color: Colors.grey.shade400),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Processing in progress',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
+                  ),
+                ],
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  _processingDateString != null ? 'Processing ${_processingDateString}...' : 'Processing recordings...',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+              ElevatedButton(
+                onPressed: _cancelPending
+                    ? null
+                    : () {
+                        setState(() => _cancelPending = true);
+                        RecordingsManager.cancelProcessing();
+                      },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(40, 40),
+                  padding: const EdgeInsets.all(10),
                 ),
+                child: _cancelPending
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                      )
+                    : const FaIcon(FontAwesomeIcons.circleXmark, size: 16),
               ),
-              if (_processingDateString != null)
-                Text('${(_processingProgress * 100).toInt()}%',
-                    style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
             ],
           ),
-          if (_processingDateString != null) ...[
-            const SizedBox(height: 16),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: _processingProgress,
-                minHeight: 6,
-                backgroundColor: Colors.grey.shade800,
-                color: Colors.deepPurpleAccent,
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: LinearProgressIndicator(
+                  value: _processingDateString != null ? _processingProgress : null,
+                  backgroundColor: Colors.grey.shade800,
+                  color: Colors.deepPurpleAccent,
+                ),
               ),
-            ),
-          ],
+              const SizedBox(width: 12),
+              Text(
+                _processingDateString != null ? '${(_processingProgress * 100).toInt()}%' : '...',
+                style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
         ],
       ),
     );
