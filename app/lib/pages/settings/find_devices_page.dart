@@ -51,7 +51,17 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     });
 
     try {
-      final devices = await ServiceManager.instance().device.discover();
+      // Warmup: give BLE stack a moment to settle before scanning
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      var devices = await ServiceManager.instance().device.discover();
+
+      // Auto-retry once on empty results
+      if (devices.isEmpty && mounted) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        devices = await ServiceManager.instance().device.discover();
+      }
+
       if (mounted) {
         setState(() {
           _discoveredDevices = devices;
@@ -75,7 +85,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
 
   Future<void> _connectToDevice(BtDevice device) async {
     final deviceProvider = context.read<DeviceProvider>();
-    
+
     // Show connecting indicator
     showDialog(
       context: context,
@@ -87,7 +97,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
 
     try {
       await ServiceManager.instance().device.ensureConnection(device.id);
-      
+
       // Save paired device
       SharedPreferencesUtil().btDevice = device;
       deviceProvider.setConnectedDevice(device);
