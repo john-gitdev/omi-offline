@@ -503,8 +503,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     );
   }
 
-  Widget _buildProcessingStatus() {
-    if (!_isAnyProcessing) return const SizedBox.shrink();
+  Widget _buildStatusBanner() {
+    if (!_isSyncing && !_isAnyProcessing) return const SizedBox.shrink();
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -513,129 +513,111 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         color: Colors.white.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _processingDateString != null
-                        ? 'Processing $_processingDateString...'
-                        : 'Processing recordings...',
-                    style: TextStyle(color: Colors.grey.shade400),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    'Processing in progress',
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
-                  ),
-                ],
-              ),
-              ElevatedButton(
-                onPressed: _cancelPending
-                    ? null
-                    : () {
-                        setState(() => _cancelPending = true);
-                        RecordingsManager.cancelProcessing();
-                      },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.redAccent,
-                  foregroundColor: Colors.white,
-                  minimumSize: const Size(40, 40),
-                  padding: const EdgeInsets.all(10),
-                ),
-                child: _cancelPending
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                      )
-                    : const FaIcon(FontAwesomeIcons.circleXmark, size: 16),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: LinearProgressIndicator(
-                  value: _processingDateString != null ? _processingProgress : null,
-                  backgroundColor: Colors.grey.shade800,
-                  color: Colors.deepPurpleAccent,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                _processingDateString != null ? '${(_processingProgress * 100).toInt()}%' : '...',
-                style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-        ],
-      ),
+      child: _isSyncing ? _buildSyncContent() : _buildProcessingContent(),
     );
   }
 
-  Widget _buildSyncStatus() {
-    if (!_isSyncing) return const SizedBox.shrink();
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1C1C1E),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.2)),
-      ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.deepPurpleAccent),
-              ),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  'Syncing Recordings...',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                ),
-              ),
-              Text('${_syncSpeed.toStringAsFixed(1)} KB/s',
-                  style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
-              const SizedBox(width: 12),
-              GestureDetector(
-                onTap: () => ServiceManager.instance().wal.getSyncs().cancelSync(),
-                child: FaIcon(FontAwesomeIcons.circleXmark, color: Colors.grey.shade600, size: 20),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: _syncProgress,
-              minHeight: 6,
-              backgroundColor: Colors.grey.shade800,
-              color: Colors.deepPurpleAccent,
+  Widget _buildSyncContent() {
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Syncing recordings...', style: TextStyle(color: Colors.grey.shade400)),
+                const SizedBox(height: 2),
+                Text('${_syncSpeed.toStringAsFixed(1)} KB/s · $_syncRecordingsCount chunks',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+              ],
             ),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('$_syncRecordingsCount Chunks to Sync', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-              Text('${(_syncProgress * 100).toInt()}%',
-                  style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold)),
-            ],
-          ),
-        ],
-      ),
+            ElevatedButton(
+              onPressed: () => ServiceManager.instance().wal.getSyncs().cancelSync(),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(40, 40),
+                padding: const EdgeInsets.all(10),
+              ),
+              child: const FaIcon(FontAwesomeIcons.circleXmark, size: 16),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: LinearProgressIndicator(
+                value: _syncProgress,
+                backgroundColor: Colors.grey.shade800,
+                color: Colors.deepPurpleAccent,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text('${(_syncProgress * 100).toInt()}%',
+                style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProcessingContent() {
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _processingDateString != null ? 'Processing $_processingDateString...' : 'Processing recordings...',
+                  style: TextStyle(color: Colors.grey.shade400),
+                ),
+                const SizedBox(height: 2),
+                Text('Processing in progress', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+              ],
+            ),
+            ElevatedButton(
+              onPressed: _cancelPending
+                  ? null
+                  : () {
+                      setState(() => _cancelPending = true);
+                      RecordingsManager.cancelProcessing();
+                    },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(40, 40),
+                padding: const EdgeInsets.all(10),
+              ),
+              child: _cancelPending
+                  ? const SizedBox(
+                      width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                  : const FaIcon(FontAwesomeIcons.circleXmark, size: 16),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: LinearProgressIndicator(
+                value: _processingDateString != null ? _processingProgress : null,
+                backgroundColor: Colors.grey.shade800,
+                color: Colors.deepPurpleAccent,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              _processingDateString != null ? '${(_processingProgress * 100).toInt()}%' : '...',
+              style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+      ],
     );
   }
 
@@ -910,8 +892,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           body: Column(
             children: [
               _buildStorageWarning(deviceProvider.storageFullPercentage),
-              _buildSyncStatus(),
-              _buildProcessingStatus(),
+              _buildStatusBanner(),
               if (_filterEnabled && _filterMinutes > 0)
                 Container(
                   width: double.infinity,
