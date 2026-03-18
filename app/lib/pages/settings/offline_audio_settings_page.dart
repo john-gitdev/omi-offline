@@ -175,7 +175,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Minimum dB above ambient noise required to classify a frame as speech. Higher = less sensitive. Recommended: 8–12 dB. (Current: ${_snrMarginDb.toStringAsFixed(0)} dB)',
+              'How much louder than background noise your voice must be to count as speech. Higher = only loud, clear speech passes through. Lower = more sensitive, but may pick up background noise. Recommended: 8–12 dB. (Current: ${_snrMarginDb.toStringAsFixed(0)} dB)',
               style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
             ),
             const SizedBox(height: 12),
