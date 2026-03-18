@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/services/manual_recording_extractor.dart';
 import 'package:omi/services/offline_audio_processor.dart';
 import 'package:omi/utils/logger.dart';
 
@@ -264,88 +265,94 @@ class RecordingsManager {
         }
       }
 
-      // 2. Initialize the OfflineAudioProcessor with temp folder
-      final processor = OfflineAudioProcessor(outputDir: tempProcessingPath);
-
-      // Tracks the last chunk index after which the ongoing recording was empty
-      // (conversation closed cleanly). Used in background mode for safe deletion.
+      // 2. Route to automatic (VAD) or manual (star-marker) processing.
+      // Both paths write output files to tempProcessingPath; the move-to-live
+      // block below runs for both.
       int lastSafeToDeleteIndex = -1;
+      final isManualMode = SharedPreferencesUtil().offlineRecordingMode == 'manual';
 
       try {
-        // 3. Process each raw chunk sequentially
-        for (int i = 0; i < batch.rawChunks.length; i++) {
-          final file = batch.rawChunks[i];
-          final bytes = await file.readAsBytes();
+        if (isManualMode) {
+          // Manual mode: star-marker extraction via ManualRecordingExtractor.
+          // Produces recordings only for conversations the user explicitly starred.
+          // Always keeps a 2hr rolling buffer of raw chunks for future star markers.
+          final extractor = ManualRecordingExtractor();
+          try {
+            final result = await extractor.process(batch, tempProcessingPath, forceFlush: !backgroundMode);
+            lastSafeToDeleteIndex = result.lastSafeChunkIndex;
+            Logger.debug(
+                'RecordingsManager: Manual mode extracted ${result.savedPaths.length} conversations for $dateString');
+          } finally {
+            extractor.destroy();
+          }
+        } else {
+          // Automatic mode: continuous VAD via OfflineAudioProcessor.
+          final processor = OfflineAudioProcessor(outputDir: tempProcessingPath);
+          try {
+            // 3. Process each raw chunk sequentially
+            for (int i = 0; i < batch.rawChunks.length; i++) {
+              final file = batch.rawChunks[i];
+              // Get session ID from folder name
+              final sessionIdStr = file.parent.path.split('/').last;
+              int? sessionId = int.tryParse(sessionIdStr);
 
-          // Get session ID from folder name
-          final sessionIdStr = file.parent.path.split('/').last;
-          int? sessionId = int.tryParse(sessionIdStr);
+              // Parse chunkIndex from filename: stored as {sessionId}_{chunkIndex}.bin
+              final chunkFileName = file.path.split('/').last.replaceAll('.bin', '');
+              final chunkIndexStr = chunkFileName.contains('_') ? chunkFileName.split('_').last : null;
+              final chunkIndex = chunkIndexStr != null ? int.tryParse(chunkIndexStr) : null;
 
-          // Parse chunkIndex from filename: stored as {sessionId}_{chunkIndex}.bin
-          final chunkFileName = file.path.split('/').last.replaceAll('.bin', '');
-          final chunkIndexStr = chunkFileName.contains('_') ? chunkFileName.split('_').last : null;
-          final chunkIndex = chunkIndexStr != null ? int.tryParse(chunkIndexStr) : null;
-
-          DateTime chunkStartTime;
-          if (sessionId != null && chunkIndex != null) {
-            final anchorUtc = SharedPreferencesUtil().getInt('anchor_utc_${sessionId}_$chunkIndex', defaultValue: 0);
-            final anchorUptime =
-                SharedPreferencesUtil().getInt('anchor_uptime_${sessionId}_$chunkIndex', defaultValue: 0);
-            if (anchorUtc > 0) {
-              chunkStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
-            } else if (anchorUptime > 0) {
-              // No RTC lock at record time — back-calculate from session-level anchor
-              final sessionAnchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
-              final sessionAnchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
-              if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
-                final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
-                chunkStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+              DateTime chunkStartTime;
+              if (sessionId != null && chunkIndex != null) {
+                final anchorUtc =
+                    SharedPreferencesUtil().getInt('anchor_utc_${sessionId}_$chunkIndex', defaultValue: 0);
+                final anchorUptime =
+                    SharedPreferencesUtil().getInt('anchor_uptime_${sessionId}_$chunkIndex', defaultValue: 0);
+                if (anchorUtc > 0) {
+                  chunkStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
+                } else if (anchorUptime > 0) {
+                  // No RTC lock at record time — back-calculate from session-level anchor
+                  final sessionAnchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
+                  final sessionAnchorUptime =
+                      SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
+                  if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
+                    final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
+                    chunkStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+                  } else {
+                    chunkStartTime = file.lastModifiedSync();
+                  }
+                } else {
+                  chunkStartTime = file.lastModifiedSync();
+                }
               } else {
                 chunkStartTime = file.lastModifiedSync();
               }
-            } else {
-              chunkStartTime = file.lastModifiedSync();
+
+              if (_cancelRequested) {
+                Logger.debug("RecordingsManager: Processing cancelled by user at chunk $i.");
+                break;
+              }
+
+              await processor.processChunkFile(file, chunkStartTime, sessionId: sessionId);
+
+              if (backgroundMode && !processor.hasOngoingRecording) {
+                lastSafeToDeleteIndex = i;
+              }
+
+              onProgress((i + 1) / batch.rawChunks.length);
+              // Yield to the UI to keep it responsive (skipped in background mode)
+              if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
             }
-          } else {
-            chunkStartTime = file.lastModifiedSync();
+
+            // 4. Flush buffer
+            if (backgroundMode) {
+              await processor.flushOnlyCompleted(); // keep in-progress tail
+            } else {
+              await processor.flushRemaining();
+            }
+          } finally {
+            processor.destroy();
           }
-
-          // Read frames from .bin file
-          List<Uint8List> frames = [];
-          int offset = 0;
-          while (offset < bytes.length) {
-            if (offset + 4 > bytes.length) break;
-            final length =
-                ByteData.sublistView(Uint8List.fromList(bytes.sublist(offset, offset + 4))).getUint32(0, Endian.little);
-            offset += 4;
-            if (offset + length > bytes.length) break;
-            frames.add(bytes.sublist(offset, offset + length));
-            offset += length;
-          }
-
-          if (_cancelRequested) {
-            Logger.debug("RecordingsManager: Processing cancelled by user at chunk $i.");
-            break;
-          }
-
-          await processor.processFrames(frames, chunkStartTime, sessionId: sessionId);
-
-          if (backgroundMode && !processor.hasOngoingRecording) {
-            lastSafeToDeleteIndex = i;
-          }
-
-          onProgress((i + 1) / batch.rawChunks.length);
-          // Yield to the UI to keep it responsive (skipped in background mode)
-          if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
         }
-
-        // 4. Flush buffer
-        if (backgroundMode) {
-          await processor.flushOnlyCompleted(); // keep in-progress tail
-        } else {
-          await processor.flushRemaining();
-        }
-        processor.destroy();
 
         // 5. Move new recordings into the live folder.
         // We APPEND rather than replace so that recordings from a previous sync
@@ -387,13 +394,14 @@ class RecordingsManager {
         await tempDir.delete(recursive: true);
       } catch (e) {
         Logger.error("RecordingsManager: Processing failed for $dateString: $e");
-        processor.destroy();
         // Keep old recordings intact
         rethrow;
       }
 
       // 6. Raw chunk deletion
-      if (backgroundMode) {
+      // Manual mode always uses lastSafeToDeleteIndex (same as background mode path)
+      // because the extractor manages its own rolling buffer and returns a precise boundary.
+      if (backgroundMode || isManualMode) {
         // Delete only chunks belonging to fully-completed conversations.
         // If adjustment mode is ON, keep everything for re-processing.
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
