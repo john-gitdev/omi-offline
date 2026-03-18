@@ -162,7 +162,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'When enabled, your Omi will automatically sync and process recordings every hour while connected.',
+                    'When enabled, your Omi will automatically try to connect, sync, and process recordings every hour.',
                     style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                   ),
                 ],
