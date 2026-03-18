@@ -367,6 +367,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   Future<void> _doBackgroundSync() async {
+    if (!SharedPreferencesUtil().autoSyncEnabled) return;
     final walSync = ServiceManager.instance().wal.getSyncs();
     if (walSync.isSyncing) return;
     if (RecordingsManager.isProcessingAny) return;

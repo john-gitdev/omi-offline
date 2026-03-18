@@ -51,6 +51,10 @@ class SharedPreferencesUtil {
 
   set offlineRecordingMode(String v) => saveString('offlineRecordingMode', v);
 
+  bool get autoSyncEnabled => getBool('autoSyncEnabled', defaultValue: true);
+
+  set autoSyncEnabled(bool value) => saveBool('autoSyncEnabled', value);
+
   bool get recordingsFilterEnabled => getBool('recordingsFilterEnabled', defaultValue: false);
 
   set recordingsFilterEnabled(bool value) => saveBool('recordingsFilterEnabled', value);
