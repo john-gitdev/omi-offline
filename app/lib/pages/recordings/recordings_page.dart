@@ -686,7 +686,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     switch (_spState) {
       case SyncProcessState.idle:
         mainText = 'Sync and Process Now';
-        subText = 'Stops recording, syncs files, and prepares conversations';
+        subText = 'Syncs files from device and prepares conversations';
         iconBg = Colors.deepPurpleAccent;
         iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
         onIconTap = _startPipeline;
