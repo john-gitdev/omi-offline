@@ -35,6 +35,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   void setGlobalProgressListener(IWalSyncProgressListener? listener) {
     _globalProgressListener = listener;
   }
+
   @override
   bool get isDeviceRecordingFailed => _isDeviceRecordingFailed;
 
@@ -137,12 +138,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
 
     BleAudioCodec codec = await _getAudioCodec(deviceId);
-    int threshold = 10 * codec.getFramesLengthInBytes() * codec.getFramesPerSecond();
+    int threshold = 60 * codec.getFramesLengthInBytes() * codec.getFramesPerSecond();
+    final int newBytes = totalBytes - storageOffset;
     Logger.debug(
-        "SDCardWalSync: totalBytes=$totalBytes, storageOffset=$storageOffset, diff=${totalBytes - storageOffset}, threshold=$threshold");
+        "SDCardWalSync: totalBytes=$totalBytes, storageOffset=$storageOffset, diff=$newBytes, threshold=$threshold");
 
-    if (totalBytes > 0) {
-      var seconds = ((totalBytes - storageOffset) / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
+    if (totalBytes > 0 && newBytes >= threshold) {
+      var seconds = (newBytes / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
       int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
 
       // Ensure stable ID for existing entries by matching device and fileNum
@@ -172,6 +174,41 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       wals.add(wal);
     }
 
+    return wals;
+  }
+
+  /// Same as [getMissingWals] but ignores the 60-second threshold.
+  /// Used by [syncAll] with `force: true` so an explicit "Sync All" always works
+  /// even when the device has less than 60 seconds of audio buffered.
+  Future<List<Wal>> _getMissingWalsIgnoringThreshold() async {
+    final dev = _device;
+    if (dev == null) return [];
+    String deviceId = dev.id;
+    List<Wal> wals = [];
+    var storageFiles = await _getStorageList(deviceId);
+    if (storageFiles.isEmpty) return [];
+    var totalBytes = storageFiles[0];
+    var storageOffset = storageFiles.length >= 2 ? storageFiles[1] : 0;
+    if (storageOffset > totalBytes) storageOffset = 0;
+    BleAudioCodec codec = await _getAudioCodec(deviceId);
+    if (totalBytes > 0) {
+      var seconds = ((totalBytes - storageOffset) / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
+      int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
+      final existingWal =
+          _wals.firstWhereOrNull((w) => w.device == deviceId && w.fileNum == 1 && w.storage == WalStorage.sdcard);
+      if (existingWal != null) timerStart = existingWal.timerStart;
+      wals.add(Wal(
+        codec: codec,
+        channel: 1,
+        device: deviceId,
+        fileNum: 1,
+        storageOffset: storageOffset,
+        storageTotalBytes: totalBytes,
+        timerStart: timerStart,
+        storage: WalStorage.sdcard,
+        estimatedChunks: (seconds / 60).ceil(),
+      ));
+    }
     return wals;
   }
 
@@ -608,10 +645,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return null;
     }
 
-    // If our list is empty, refresh it before checking sync status
+    // If our list is empty, refresh it before checking sync status.
+    // force=true bypasses the 60-second threshold so an explicit "Sync All" always works.
     if (_wals.isEmpty) {
       Logger.debug("SDCardWalSync: File list empty, refreshing before sync...");
       _wals = await getMissingWals();
+      if (_wals.isEmpty && force) {
+        _wals = await _getMissingWalsIgnoringThreshold();
+      }
     }
 
     // NOTE: `force` controls WAL *selection* only (include already-synced wals vs. only
