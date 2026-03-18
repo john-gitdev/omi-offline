@@ -42,7 +42,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _startSync() async {
-    if (RecordingsManager.isProcessingAny) { _showProcessingSnackbar(); return; }
+    if (RecordingsManager.isProcessingAny) {
+      _showProcessingSnackbar();
+      return;
+    }
     setState(() {
       _isSyncing = true;
       _progress = 0.0;
@@ -70,7 +73,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _forceSync() async {
-    if (RecordingsManager.isProcessingAny) { _showProcessingSnackbar(); return; }
+    if (RecordingsManager.isProcessingAny) {
+      _showProcessingSnackbar();
+      return;
+    }
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -105,7 +111,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _deleteAllPending() async {
-    if (RecordingsManager.isProcessingAny) { _showProcessingSnackbar(); return; }
+    if (RecordingsManager.isProcessingAny) {
+      _showProcessingSnackbar();
+      return;
+    }
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -170,7 +179,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       appBar: AppBar(
         backgroundColor: const Color(0xFF0D0D0D),
         elevation: 0,
-        title: const Text('Download Recordings'),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const FaIcon(FontAwesomeIcons.triangleExclamation, size: 14, color: Colors.amber),
+            const SizedBox(width: 8),
+            const Text('Debug Tools', style: TextStyle(color: Colors.amber)),
+          ],
+        ),
         centerTitle: true,
       ),
       body: Center(
@@ -179,8 +195,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const FaIcon(FontAwesomeIcons.download, size: 64, color: Colors.deepPurpleAccent),
-              const SizedBox(height: 32),
+              const FaIcon(FontAwesomeIcons.bug, size: 48, color: Colors.amber),
+              const SizedBox(height: 16),
               Text(
                 _statusMessage,
                 textAlign: TextAlign.center,
@@ -228,25 +244,68 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                     padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
                   ),
-                  child: const Text('Start Download', style: TextStyle(color: Colors.white, fontSize: 16)),
+                  child: const Text('Sync from Device', style: TextStyle(color: Colors.white, fontSize: 16)),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 4),
+                Text(
+                  'Download raw recordings from your Omi via Bluetooth/WiFi.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton(
+                  onPressed: _isProcessing
+                      ? null
+                      : () async {
+                          if (RecordingsManager.isProcessingAny) {
+                            _showProcessingSnackbar();
+                            return;
+                          }
+                          setState(() => _statusMessage = 'Force processing all chunks...');
+                          try {
+                            await RecordingsManager.forceProcessAll();
+                            if (mounted) setState(() => _statusMessage = 'Force process complete.');
+                          } catch (e) {
+                            if (mounted) setState(() => _statusMessage = 'Force process error: $e');
+                          }
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.deepPurple.shade900,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                  ),
+                  child: const Text('Force Process All', style: TextStyle(fontSize: 16)),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Process all raw chunks immediately, including the newest (may be incomplete).',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                ),
+                const SizedBox(height: 20),
                 TextButton.icon(
                   onPressed: _forceSync,
                   icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 14, color: Colors.grey),
                   label: const Text('Force Re-scan Device', style: TextStyle(color: Colors.grey, fontSize: 14)),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 4),
+                Text(
+                  'Re-scans the SD card from the beginning and downloads any missing recordings.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey.shade700, fontSize: 11),
+                ),
+                const SizedBox(height: 12),
                 TextButton.icon(
                   onPressed: _deleteAllPending,
                   icon: const FaIcon(FontAwesomeIcons.trashCan, size: 14, color: Colors.redAccent),
                   label: const Text('Delete All from Device', style: TextStyle(color: Colors.redAccent, fontSize: 14)),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 4),
                 Text(
-                  'This will download all raw recordings directly from your Omi device to your phone via Bluetooth/WiFi.',
+                  'Permanently deletes all raw recordings from the Omi SD card.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                  style: TextStyle(color: Colors.grey.shade700, fontSize: 11),
                 ),
               ],
             ],
