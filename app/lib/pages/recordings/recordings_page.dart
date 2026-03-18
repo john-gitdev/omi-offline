@@ -503,6 +503,55 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     );
   }
 
+  Widget _buildProcessingStatus() {
+    if (!_isAnyProcessing) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.deepPurpleAccent),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  _processingDateString != null ? 'Processing ${_processingDateString}...' : 'Processing recordings...',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+              ),
+              if (_processingDateString != null)
+                Text('${(_processingProgress * 100).toInt()}%',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
+            ],
+          ),
+          if (_processingDateString != null) ...[
+            const SizedBox(height: 16),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: _processingProgress,
+                minHeight: 6,
+                backgroundColor: Colors.grey.shade800,
+                color: Colors.deepPurpleAccent,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildSyncStatus() {
     if (!_isSyncing) return const SizedBox.shrink();
 
@@ -835,6 +884,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
             children: [
               _buildStorageWarning(deviceProvider.storageFullPercentage),
               _buildSyncStatus(),
+              _buildProcessingStatus(),
               if (_filterEnabled && _filterMinutes > 0)
                 Container(
                   width: double.infinity,
