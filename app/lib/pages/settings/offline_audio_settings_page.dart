@@ -18,6 +18,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late int _gapSeconds;
   late bool _adjustmentMode;
   late String _recordingMode;
+  late bool _autoSyncEnabled;
 
   @override
   void initState() {
@@ -30,6 +31,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _gapSeconds = SharedPreferencesUtil().offlineGapSeconds;
     _adjustmentMode = SharedPreferencesUtil().offlineAdjustmentMode;
     _recordingMode = SharedPreferencesUtil().offlineRecordingMode;
+    _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
   }
 
   void _saveSettings() {
@@ -41,6 +43,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     SharedPreferencesUtil().offlineGapSeconds = _gapSeconds;
     SharedPreferencesUtil().offlineAdjustmentMode = _adjustmentMode;
     SharedPreferencesUtil().offlineRecordingMode = _recordingMode;
+    SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
   }
 
   String _formatSeconds(double seconds) {
@@ -134,7 +137,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               decoration: BoxDecoration(
                 color: const Color(0xFF1C1C1E),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: _adjustmentMode ? Colors.deepPurpleAccent : Colors.transparent),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -143,15 +145,15 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text(
-                        'Adjustment Mode',
+                        'Auto Sync',
                         style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                       ),
                       Switch(
-                        value: _adjustmentMode,
+                        value: _autoSyncEnabled,
                         activeThumbColor: Colors.deepPurpleAccent,
                         onChanged: (value) {
                           setState(() {
-                            _adjustmentMode = value;
+                            _autoSyncEnabled = value;
                           });
                           _saveSettings();
                         },
@@ -160,7 +162,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'When enabled, raw audio chunks are NOT deleted after processing. This allows you to fine-tune these sliders and reprocess your audio until you find the perfect settings. Turning this off will delete all raw chunks after they are processed.',
+                    'When enabled, your Omi will automatically sync and process recordings every hour while connected.',
                     style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                   ),
                 ],
@@ -320,6 +322,44 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 });
                 _saveSettings();
               },
+            ),
+            const SizedBox(height: 32),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1C1C1E),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: _adjustmentMode ? Colors.deepPurpleAccent : Colors.transparent),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Adjustment Mode',
+                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                      ),
+                      Switch(
+                        value: _adjustmentMode,
+                        activeThumbColor: Colors.deepPurpleAccent,
+                        onChanged: (value) {
+                          setState(() {
+                            _adjustmentMode = value;
+                          });
+                          _saveSettings();
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'When enabled, raw audio chunks are NOT deleted after processing. This allows you to fine-tune these sliders and reprocess your audio until you find the perfect settings. Turning this off will delete all raw chunks after they are processed.',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 32),
             Container(
