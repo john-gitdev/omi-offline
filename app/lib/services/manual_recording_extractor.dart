@@ -370,6 +370,11 @@ class ManualRecordingExtractor {
             byteOffsets[audioIdx] = byteOff;
             frameLengths[audioIdx] = len;
 
+            // Warmup frames that land inside the first range chunk (when warmupChunk == range.$1):
+            // isWarmupChunk is false but these frames still need to warm up the noise floor
+            // without having their (cold-VAD) speech flags stored.
+            final isWarmupFrame = ci == range.$1 && audioIdx < warmupFrameStart;
+
             // Decode for VAD only if within warmup range or main range
             final skipVad = isWarmupChunk && audioIdx < warmupFrameStart;
             if (!skipVad && decoder != null) {
@@ -378,7 +383,7 @@ class ManualRecordingExtractor {
                 final opus = Uint8List.sublistView(bytes, byteOff + 4, byteOff + 4 + len);
                 final pcm = decoder.decode(input: opus);
                 final flag = _vadStep(pcm, vadState);
-                if (!isWarmupChunk) {
+                if (!isWarmupChunk && !isWarmupFrame) {
                   speechFlags[audioIdx] = flag ? 1 : 0;
                 }
               } catch (_) {}
@@ -403,7 +408,7 @@ class ManualRecordingExtractor {
 
           // Evict completed earlier ranges if over budget
           if (cacheBytes > _cacheMaxBytes) {
-            cacheBytes = _evictCache(cache, range.$1);
+            cacheBytes -= _evictCache(cache, range.$1);
           }
         }
       }
