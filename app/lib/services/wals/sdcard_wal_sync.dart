@@ -52,11 +52,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   int get estimatedTotalChunks {
     int total = 0;
+    final pending = <String>[];
     for (var wal in _wals) {
       if (wal.status == WalStatus.miss && wal.storage == WalStorage.sdcard) {
         total += wal.estimatedChunks;
+        pending.add('  wal[${wal.id}] estimatedChunks=${wal.estimatedChunks} '
+            'totalBytes=${wal.storageTotalBytes} offset=${wal.storageOffset}');
       }
     }
+    Logger.debug(
+        'SDCardWalSync: estimatedTotalChunks=$total from ${pending.length} pending WALs:\n${pending.join('\n')}');
     return total;
   }
 
@@ -171,9 +176,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal.syncStartedAt = existingWal.syncStartedAt;
       }
 
+      Logger.debug('SDCardWalSync: getMissingWals → WAL created: '
+          'seconds=$seconds estimatedChunks=${wal.estimatedChunks} '
+          'totalBytes=$totalBytes storageOffset=$storageOffset newBytes=$newBytes');
       wals.add(wal);
+    } else {
+      Logger.debug('SDCardWalSync: getMissingWals → skipped (newBytes=$newBytes < threshold=$threshold '
+          'OR totalBytes=0). totalBytes=$totalBytes storageOffset=$storageOffset');
     }
 
+    Logger.debug('SDCardWalSync: getMissingWals → returning ${wals.length} WAL(s)');
     return wals;
   }
 
@@ -653,6 +665,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (_wals.isEmpty && force) {
         _wals = await _getMissingWalsIgnoringThreshold();
       }
+    }
+
+    // Log full WAL state at sync start so we can audit what's being synced and why.
+    Logger.debug('SDCardWalSync: syncAll start — _wals total=${_wals.length} force=$force');
+    for (final w in _wals) {
+      Logger.debug('  WAL[${w.id}] status=${w.status} estimatedChunks=${w.estimatedChunks} '
+          'totalBytes=${w.storageTotalBytes} offset=${w.storageOffset} '
+          'isSyncing=${w.isSyncing}');
     }
 
     // NOTE: `force` controls WAL *selection* only (include already-synced wals vs. only
