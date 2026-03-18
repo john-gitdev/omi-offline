@@ -46,6 +46,11 @@ class SharedPreferencesUtil {
 
   set offlineAdjustmentMode(bool value) => saveBool('offlineAdjustmentMode', value);
 
+  // 'automatic' = continuous VAD, 'manual' = star-marker extraction
+  String get offlineRecordingMode => getString('offlineRecordingMode', defaultValue: 'automatic');
+
+  set offlineRecordingMode(String v) => saveString('offlineRecordingMode', v);
+
   bool get recordingsFilterEnabled => getBool('recordingsFilterEnabled', defaultValue: false);
 
   set recordingsFilterEnabled(bool value) => saveBool('recordingsFilterEnabled', value);
@@ -103,6 +108,9 @@ class SharedPreferencesUtil {
     }
     if (!prefs.containsKey('offlineAdjustmentMode')) {
       prefs.setBool('offlineAdjustmentMode', false);
+    }
+    if (!prefs.containsKey('offlineRecordingMode')) {
+      prefs.setString('offlineRecordingMode', 'automatic');
     }
   }
 
