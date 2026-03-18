@@ -193,18 +193,18 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         });
         await _loadBatches();
 
-        // Auto-process after sync. _processBatch handles the large-batch dialog
-        // and skips if another process is already running.
+        // Auto-process after sync — background mode (flush only completed, keep open recording).
+        // _processBatch handles the large-batch dialog and skips if another process is running.
         for (var batch in _batches) {
           if (batch.rawChunks.isNotEmpty) {
-            await _processBatch(batch);
+            await _processBatch(batch, backgroundMode: true);
           }
         }
       }
     }
   }
 
-  Future<void> _processBatch(DailyBatch batch) async {
+  Future<void> _processBatch(DailyBatch batch, {bool backgroundMode = false}) async {
     if (RecordingsManager.isProcessingAny || _isSyncing) {
       if (_isSyncing) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -256,7 +256,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         // Cap at 95% — the final flush/save/move can take significant time
         // after the frame loop completes. The spinner clearing signals "done".
         if (mounted) setState(() => _processingProgress = (progress * 0.95).clamp(0.0, 0.95));
-      });
+      }, backgroundMode: backgroundMode);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -618,9 +618,19 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          '~${batch.rawChunks.length} min unprocessed',
-                          style: TextStyle(color: Colors.grey.shade400),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '~${batch.rawChunks.length} min open recording',
+                              style: TextStyle(color: Colors.grey.shade400),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Tap \u2699 to save and close',
+                              style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
+                            ),
+                          ],
                         ),
                         ElevatedButton(
                           onPressed: isProcessingThisBatch
