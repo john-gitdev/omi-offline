@@ -17,6 +17,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late double _preSpeechSeconds;
   late int _gapSeconds;
   late bool _adjustmentMode;
+  late String _recordingMode;
 
   @override
   void initState() {
@@ -28,6 +29,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _preSpeechSeconds = SharedPreferencesUtil().offlinePreSpeechSeconds;
     _gapSeconds = SharedPreferencesUtil().offlineGapSeconds;
     _adjustmentMode = SharedPreferencesUtil().offlineAdjustmentMode;
+    _recordingMode = SharedPreferencesUtil().offlineRecordingMode;
   }
 
   void _saveSettings() {
@@ -38,6 +40,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     SharedPreferencesUtil().offlinePreSpeechSeconds = _preSpeechSeconds;
     SharedPreferencesUtil().offlineGapSeconds = _gapSeconds;
     SharedPreferencesUtil().offlineAdjustmentMode = _adjustmentMode;
+    SharedPreferencesUtil().offlineRecordingMode = _recordingMode;
   }
 
   String _formatSeconds(double seconds) {
@@ -82,6 +85,50 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            const Text(
+              'Recording Mode',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                _ModeOption(
+                  label: 'Automatic',
+                  selected: _recordingMode == 'automatic',
+                  onTap: () {
+                    setState(() => _recordingMode = 'automatic');
+                    _saveSettings();
+                  },
+                ),
+                const SizedBox(width: 12),
+                _ModeOption(
+                  label: 'Manual',
+                  selected: _recordingMode == 'manual',
+                  onTap: () {
+                    setState(() => _recordingMode = 'manual');
+                    _saveSettings();
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (_recordingMode == 'automatic')
+              Text(
+                'All audio is continuously processed and split by silence detection.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              )
+            else ...[
+              Text(
+                'Only conversations you marked with a double-press on your Omi will be saved.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'The Conversation Split Threshold below controls how much silence is used to find the edges of your marked conversation.',
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              ),
+            ],
+            const SizedBox(height: 32),
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
@@ -296,6 +343,41 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ModeOption extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _ModeOption({required this.label, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1C1C1E),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: selected ? Colors.deepPurpleAccent : Colors.transparent, width: 1.5),
+          ),
+          child: Center(
+            child: Text(
+              label,
+              style: TextStyle(
+                color: selected ? Colors.deepPurpleAccent : Colors.grey.shade400,
+                fontSize: 14,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ),
         ),
       ),
     );
