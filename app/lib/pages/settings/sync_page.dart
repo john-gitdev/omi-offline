@@ -237,24 +237,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   child: const Text('Cancel Download', style: TextStyle(color: Colors.white)),
                 ),
               ] else ...[
-                ElevatedButton(
-                  onPressed: _startSync,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepPurpleAccent,
-                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                  ),
-                  child: const Text('Sync from Device', style: TextStyle(color: Colors.white, fontSize: 16)),
+                _DebugButton(
+                  label: 'Sync from Device',
+                  description: 'Download raw recordings from your Omi via Bluetooth/WiFi.',
+                  icon: FontAwesomeIcons.arrowDown,
+                  onTap: _startSync,
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  'Download raw recordings from your Omi via Bluetooth/WiFi.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-                ),
-                const SizedBox(height: 20),
-                ElevatedButton(
-                  onPressed: _isProcessing
+                const SizedBox(height: 12),
+                _DebugButton(
+                  label: 'Force Process All',
+                  description: 'Process all raw chunks immediately, including the newest (may be incomplete).',
+                  icon: FontAwesomeIcons.gears,
+                  onTap: _isProcessing
                       ? null
                       : () async {
                           if (RecordingsManager.isProcessingAny) {
@@ -269,45 +263,76 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                             if (mounted) setState(() => _statusMessage = 'Force process error: $e');
                           }
                         },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepPurple.shade900,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                  ),
-                  child: const Text('Force Process All', style: TextStyle(fontSize: 16)),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Process all raw chunks immediately, including the newest (may be incomplete).',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-                ),
-                const SizedBox(height: 20),
-                TextButton.icon(
-                  onPressed: _forceSync,
-                  icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 14, color: Colors.grey),
-                  label: const Text('Force Re-scan Device', style: TextStyle(color: Colors.grey, fontSize: 14)),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Re-scans the SD card from the beginning and downloads any missing recordings.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey.shade700, fontSize: 11),
                 ),
                 const SizedBox(height: 12),
-                TextButton.icon(
-                  onPressed: _deleteAllPending,
-                  icon: const FaIcon(FontAwesomeIcons.trashCan, size: 14, color: Colors.redAccent),
-                  label: const Text('Delete All from Device', style: TextStyle(color: Colors.redAccent, fontSize: 14)),
+                _DebugButton(
+                  label: 'Force Re-scan Device',
+                  description: 'Re-scans the SD card from the beginning and downloads any missing recordings.',
+                  icon: FontAwesomeIcons.arrowsRotate,
+                  onTap: _forceSync,
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  'Permanently deletes all raw recordings from the Omi SD card.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey.shade700, fontSize: 11),
+                const SizedBox(height: 12),
+                _DebugButton(
+                  label: 'Delete All from Device',
+                  description: 'Permanently deletes all raw recordings from the Omi SD card.',
+                  icon: FontAwesomeIcons.trashCan,
+                  color: Colors.redAccent,
+                  onTap: _deleteAllPending,
                 ),
               ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DebugButton extends StatelessWidget {
+  final String label;
+  final String description;
+  final IconData icon;
+  final Color color;
+  final VoidCallback? onTap;
+
+  const _DebugButton({
+    required this.label,
+    required this.description,
+    required this.icon,
+    this.color = Colors.deepPurpleAccent,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bool disabled = onTap == null;
+    return Opacity(
+      opacity: disabled ? 0.4 : 1.0,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1C1C1E),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: color.withValues(alpha: 0.35), width: 1),
+          ),
+          child: Row(
+            children: [
+              FaIcon(icon, size: 16, color: color),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(label, style: TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 2),
+                    Text(description, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                  ],
+                ),
+              ),
+              const FaIcon(FontAwesomeIcons.chevronRight, size: 12, color: Color(0xFF3C3C43)),
             ],
           ),
         ),
