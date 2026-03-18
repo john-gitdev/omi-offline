@@ -32,9 +32,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   bool _isLoading = true;
   bool _isSyncing = false;
   bool _syncUserTriggered = false;
+  bool _syncCancelPending = false;
   double _syncProgress = 0.0;
   double _syncSpeed = 0.0;
   int _syncRecordingsCount = 0;
+  int _pendingDeviceChunks = 0;
 
   final _prefs = SharedPreferencesUtil();
 
@@ -86,7 +88,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         _isSyncing = false;
         _syncProgress = 0.0;
         _syncSpeed = 0.0;
+        _syncRecordingsCount = 0;
       });
+    }
+
+    // Update pending device chunks estimate
+    final pending = ServiceManager.instance().wal.getSyncs().estimatedTotalChunks;
+    if (pending != _pendingDeviceChunks) {
+      setState(() => _pendingDeviceChunks = pending);
     }
 
     // Track background processing state and reload when it finishes
@@ -95,6 +104,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       setState(() => _isAnyProcessing = isProcessing);
     }
     if (_wasProcessing && !isProcessing && !_isLoading) {
+      if (_cancelPending) setState(() => _cancelPending = false);
       _loadBatches();
     }
     _wasProcessing = isProcessing;
@@ -168,13 +178,13 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       result = await syncService.syncAll(progress: this, force: force);
 
       if (mounted) {
-        if (result != null && (result.newConversationIds.isNotEmpty || result.updatedConversationIds.isNotEmpty)) {
+        if (result != null) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Sync complete! New recordings found.")),
+            const SnackBar(content: Text("Sync complete!")),
           );
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Sync complete. No new data.")),
+            const SnackBar(content: Text("Nothing to sync — less than 60s of audio buffered on device.")),
           );
         }
       }
@@ -190,21 +200,20 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         setState(() {
           _isSyncing = false;
           _syncUserTriggered = false;
+          _syncCancelPending = false;
+          _syncRecordingsCount = 0;
+          _syncProgress = 0.0;
+          _syncSpeed = 0.0;
         });
         await _loadBatches();
 
-        // Auto-process after sync — background mode (flush only completed, keep open recording).
-        // _processBatch handles the large-batch dialog and skips if another process is running.
-        for (var batch in _batches) {
-          if (batch.rawChunks.isNotEmpty) {
-            await _processBatch(batch, backgroundMode: true);
-          }
-        }
+        // Auto-process after sync — all batches as one continuous stream.
+        await _processAll(_batches, backgroundMode: true);
       }
     }
   }
 
-  Future<void> _processBatch(DailyBatch batch, {bool backgroundMode = false}) async {
+  Future<void> _processAll(List<DailyBatch> batches, {bool backgroundMode = false}) async {
     if (RecordingsManager.isProcessingAny || _isSyncing) {
       if (_isSyncing) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -214,7 +223,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       return;
     }
 
-    if (batch.rawChunks.length > 60) {
+    final activeBatches = batches.where((b) => b.rawChunks.isNotEmpty).toList();
+    if (activeBatches.isEmpty) return;
+
+    final totalChunks = activeBatches.fold(0, (sum, b) => sum + b.rawChunks.length);
+    if (totalChunks > 60) {
       bool? confirm = await showDialog<bool>(
         context: context,
         builder: (c) => getDialog(
@@ -222,45 +235,46 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           () => Navigator.of(context).pop(false),
           () => Navigator.of(context).pop(true),
           "Large Batch",
-          "This day has over ${batch.rawChunks.length} minutes of unprocessed audio. Processing might take a few minutes. Continue?",
+          "There are over $totalChunks minutes of unprocessed audio across ${activeBatches.length} day(s). Processing might take a few minutes. Continue?",
           confirmText: "Start",
         ),
       );
       if (confirm != true) return;
     }
 
+    // Show the oldest date being processed (batches sorted newest-first, so last = oldest).
+    final oldestDate = activeBatches.last.dateString;
+    final label = activeBatches.length == 1 ? oldestDate : '$oldestDate +${activeBatches.length - 1}';
+
     setState(() {
-      _processingDateString = batch.dateString;
+      _processingDateString = label;
       _processingProgress = 0.0;
       _cancelPending = false;
-      // In adjustment mode, wipe existing recordings from view immediately
-      // so the user sees them gone rather than zeroed-out placeholders.
       if (SharedPreferencesUtil().offlineAdjustmentMode) {
-        final idx = _batches.indexWhere((b) => b.dateString == batch.dateString);
-        if (idx >= 0) {
+        for (int idx = 0; idx < _batches.length; idx++) {
           final b = _batches[idx];
-          _batches[idx] = DailyBatch(
-            dateString: b.dateString,
-            date: b.date,
-            rawChunks: b.rawChunks,
-            processedRecordings: [],
-            starredTimestamps: b.starredTimestamps,
-          );
+          if (activeBatches.any((ab) => ab.dateString == b.dateString)) {
+            _batches[idx] = DailyBatch(
+              dateString: b.dateString,
+              date: b.date,
+              rawChunks: b.rawChunks,
+              processedRecordings: [],
+              starredTimestamps: b.starredTimestamps,
+            );
+          }
         }
       }
     });
     WakelockPlus.enable();
 
     try {
-      await _manager.processDay(batch, (progress) {
-        // Cap at 95% — the final flush/save/move can take significant time
-        // after the frame loop completes. The spinner clearing signals "done".
+      await _manager.processAll(activeBatches, (progress) {
         if (mounted) setState(() => _processingProgress = (progress * 0.95).clamp(0.0, 0.95));
       }, backgroundMode: backgroundMode);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error processing day: $e')),
+          SnackBar(content: Text('Error processing recordings: $e')),
         );
       }
     } finally {
@@ -341,7 +355,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     children: [
                       Text('Min duration:', style: TextStyle(color: Colors.grey.shade400)),
                       const Spacer(),
-                      Text('$_filterMinutes min', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      Text('$_filterMinutes min',
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ),
@@ -388,21 +403,18 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         _autoUploadActive++;
         if (mounted) setState(() {});
         unawaited(
-          HeyPocketService.uploadRecording(apiKey, rec)
-              .then((_) {
-                _prefs.markUploadedToHeypocket(uploadKey);
-              })
-              .catchError((e) {
-                debugPrint('HeyPocket auto-upload failed: $e');
-              })
-              .whenComplete(() {
-                _uploadingFiles.remove(uploadKey);
-                _autoUploadActive--;
-                if (mounted) {
-                  setState(() {});
-                  WidgetsBinding.instance.addPostFrameCallback((_) => _tryAutoUploadNext());
-                }
-              }),
+          HeyPocketService.uploadRecording(apiKey, rec).then((_) {
+            _prefs.markUploadedToHeypocket(uploadKey);
+          }).catchError((e) {
+            debugPrint('HeyPocket auto-upload failed: $e');
+          }).whenComplete(() {
+            _uploadingFiles.remove(uploadKey);
+            _autoUploadActive--;
+            if (mounted) {
+              setState(() {});
+              WidgetsBinding.instance.addPostFrameCallback((_) => _tryAutoUploadNext());
+            }
+          }),
         );
       }
     }
@@ -441,24 +453,21 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _uploadingFiles.add(uploadKey);
     setState(() {});
     unawaited(
-      HeyPocketService.uploadRecording(apiKey, rec)
-          .then((_) {
-            _prefs.markUploadedToHeypocket(uploadKey);
-          })
-          .catchError((e) {
-            if (e is HeyPocketException) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('HeyPocket ${e.statusCode}: ${e.message}')),
-                );
-              }
-            }
-            debugPrint('HeyPocket upload failed: $e');
-          })
-          .whenComplete(() {
-            _uploadingFiles.remove(uploadKey);
-            if (mounted) setState(() {});
-          }),
+      HeyPocketService.uploadRecording(apiKey, rec).then((_) {
+        _prefs.markUploadedToHeypocket(uploadKey);
+      }).catchError((e) {
+        if (e is HeyPocketException) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('HeyPocket ${e.statusCode}: ${e.message}')),
+            );
+          }
+        }
+        debugPrint('HeyPocket upload failed: $e');
+      }).whenComplete(() {
+        _uploadingFiles.remove(uploadKey);
+        if (mounted) setState(() {});
+      }),
     );
   }
 
@@ -503,21 +512,64 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     );
   }
 
-  Widget _buildStatusBanner() {
-    if (!_isSyncing && !_isAnyProcessing) return const SizedBox.shrink();
-
+  Widget _buildBanner(Widget content) {
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: _isSyncing ? _buildSyncContent() : _buildProcessingContent(),
+      child: content,
+    );
+  }
+
+  Widget _buildStatusBanners() {
+    return Column(
+      children: [
+        _buildBanner(_buildSyncContent()),
+        _buildBanner(_buildProcessingContent()),
+      ],
     );
   }
 
   Widget _buildSyncContent() {
+    final String mainText;
+    final String subText;
+    final Color iconBg;
+    final Widget iconChild;
+    final VoidCallback? onIconTap;
+
+    if (!_isSyncing) {
+      mainText = 'Sync Recordings';
+      subText = '';
+      iconBg = Colors.deepPurpleAccent;
+      iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
+      onIconTap = _isSyncing ? null : _handleSync;
+    } else if (_syncCancelPending) {
+      mainText = 'Syncing Cancelled...';
+      subText = _syncRecordingsCount > 0 ? '$_syncRecordingsCount Unsynced Minutes' : '';
+      iconBg = Colors.redAccent;
+      iconChild = const SizedBox(
+        width: 16,
+        height: 16,
+        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+      );
+      onIconTap = null;
+    } else {
+      mainText = 'Syncing in Progress...';
+      subText = [
+        if (_syncRecordingsCount > 0) '$_syncRecordingsCount Unsynced Minutes',
+        '${_syncSpeed.toStringAsFixed(1)} KB/s',
+      ].join('  ·  ');
+      iconBg = Colors.redAccent;
+      iconChild = const FaIcon(FontAwesomeIcons.xmark, color: Colors.white, size: 16);
+      onIconTap = () {
+        setState(() => _syncCancelPending = true);
+        ServiceManager.instance().wal.getSyncs().cancelSync();
+      };
+    }
+
     return Column(
       children: [
         Row(
@@ -526,44 +578,94 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Syncing recordings...', style: TextStyle(color: Colors.grey.shade400)),
+                Text(mainText, style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
                 const SizedBox(height: 2),
-                Text('${_syncSpeed.toStringAsFixed(1)} KB/s · $_syncRecordingsCount chunks',
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                Text(subText.isNotEmpty ? subText : ' ', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
               ],
             ),
-            ElevatedButton(
-              onPressed: () => ServiceManager.instance().wal.getSyncs().cancelSync(),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.redAccent,
-                foregroundColor: Colors.white,
-                minimumSize: const Size(40, 40),
-                padding: const EdgeInsets.all(10),
-              ),
-              child: const FaIcon(FontAwesomeIcons.circleXmark, size: 16),
+            Column(
+              children: [
+                GestureDetector(
+                  onTap: onIconTap,
+                  child: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(color: iconBg, shape: BoxShape.circle),
+                    child: Center(child: iconChild),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: LinearProgressIndicator(
-                value: _syncProgress,
-                backgroundColor: Colors.grey.shade800,
-                color: Colors.deepPurpleAccent,
+        if (_isSyncing) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: LinearProgressIndicator(
+                  value: _syncCancelPending ? 0.0 : (_syncRecordingsCount > 0 ? _syncProgress : null),
+                  backgroundColor: Colors.grey.shade800,
+                  color: _syncCancelPending ? Colors.grey.shade800 : Colors.deepPurpleAccent,
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Text('${(_syncProgress * 100).toInt()}%',
-                style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold)),
-          ],
-        ),
+              if (!_syncCancelPending) ...[
+                const SizedBox(width: 12),
+                Text(
+                  '${(_syncProgress * 100).toInt()}%',
+                  style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ],
+          ),
+        ],
       ],
     );
   }
 
   Widget _buildProcessingContent() {
+    final rawCount = _batches.fold(0, (sum, b) => sum + b.rawChunks.length);
+    final totalStars = _batches.fold(0, (sum, b) => sum + b.starredTimestamps.length);
+
+    final String mainText;
+    final String subText;
+    final Color iconBg;
+    final Widget iconChild;
+    final VoidCallback? onIconTap;
+
+    if (!_isAnyProcessing) {
+      mainText = 'Process Recordings';
+      subText = [
+        if (rawCount > 0) '~$rawCount min unprocessed',
+        if (totalStars > 0) '★ $totalStars',
+      ].join('  ·  ');
+      iconBg = Colors.deepPurpleAccent;
+      iconChild = const FaIcon(FontAwesomeIcons.gears, color: Colors.white, size: 16);
+      onIconTap = rawCount > 0 ? () => _processAll(_batches) : null;
+    } else if (_cancelPending) {
+      mainText = 'Processing Cancelled...';
+      subText = [
+        if (rawCount > 0) '~$rawCount min unprocessed',
+        if (totalStars > 0) '★ $totalStars',
+      ].join('  ·  ');
+      iconBg = Colors.redAccent;
+      iconChild =
+          const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2));
+      onIconTap = null;
+    } else {
+      mainText = _processingDateString != null ? 'Processing $_processingDateString' : 'Processing recordings...';
+      subText = [
+        if (rawCount > 0) '~$rawCount min unprocessed',
+        if (totalStars > 0) '★ $totalStars',
+      ].join('  ·  ');
+      iconBg = Colors.redAccent;
+      iconChild = const FaIcon(FontAwesomeIcons.xmark, color: Colors.white, size: 16);
+      onIconTap = () {
+        setState(() => _cancelPending = true);
+        RecordingsManager.cancelProcessing();
+      };
+    }
+
     return Column(
       children: [
         Row(
@@ -572,58 +674,51 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  _processingDateString != null ? 'Processing $_processingDateString...' : 'Processing recordings...',
-                  style: TextStyle(color: Colors.grey.shade400),
-                ),
+                Text(mainText, style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
                 const SizedBox(height: 2),
-                Text('Processing in progress', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                Text(
+                  subText.isNotEmpty ? subText : ' ',
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
+                ),
               ],
             ),
-            ElevatedButton(
-              onPressed: _cancelPending
-                  ? null
-                  : () {
-                      setState(() => _cancelPending = true);
-                      RecordingsManager.cancelProcessing();
-                    },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.redAccent,
-                foregroundColor: Colors.white,
-                minimumSize: const Size(40, 40),
-                padding: const EdgeInsets.all(10),
+            GestureDetector(
+              onTap: onIconTap,
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(color: iconBg, shape: BoxShape.circle),
+                child: Center(child: iconChild),
               ),
-              child: _cancelPending
-                  ? const SizedBox(
-                      width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                  : const FaIcon(FontAwesomeIcons.circleXmark, size: 16),
             ),
           ],
         ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: LinearProgressIndicator(
-                value: _processingDateString != null ? _processingProgress : null,
-                backgroundColor: Colors.grey.shade800,
-                color: Colors.deepPurpleAccent,
+        if (_isAnyProcessing) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: LinearProgressIndicator(
+                  value: _cancelPending ? 0.0 : _processingProgress,
+                  backgroundColor: Colors.grey.shade800,
+                  color: _cancelPending ? Colors.grey.shade800 : Colors.deepPurpleAccent,
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Text(
-              _processingDateString != null ? '${(_processingProgress * 100).toInt()}%' : '...',
-              style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
+              if (!_cancelPending) ...[
+                const SizedBox(width: 12),
+                Text(
+                  '${(_processingProgress * 100).toInt()}%',
+                  style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ],
+          ),
+        ],
       ],
     );
   }
 
   Widget _buildBatchCard(DailyBatch batch) {
-    final isProcessingThisBatch = _processingDateString == batch.dateString;
-    final isButtonDisabled = _isAnyProcessing || isProcessingThisBatch;
     final allRecordings = batch.processedRecordings.map(RecordingInfo.fromFile).toList()
       ..sort((a, b) => b.startTime.compareTo(a.startTime));
     final minDuration = Duration(minutes: _filterMinutes);
@@ -662,85 +757,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               ],
             ),
             const SizedBox(height: 12),
-
-            // Raw chunks / process button
-            if (batch.rawChunks.isNotEmpty) ...[
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.05),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Column(
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '~${batch.rawChunks.length} min open recording',
-                              style: TextStyle(color: Colors.grey.shade400),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              'Tap \u2699 to save and close',
-                              style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
-                            ),
-                          ],
-                        ),
-                        ElevatedButton(
-                          onPressed: isProcessingThisBatch
-                              ? (_cancelPending
-                                  ? null
-                                  : () {
-                                      setState(() => _cancelPending = true);
-                                      RecordingsManager.cancelProcessing();
-                                    })
-                              : (isButtonDisabled ? null : () => _processBatch(batch)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: isProcessingThisBatch ? Colors.redAccent : Colors.deepPurpleAccent,
-                            foregroundColor: Colors.white,
-                            minimumSize: const Size(40, 40),
-                            padding: const EdgeInsets.all(10),
-                          ),
-                          child: isProcessingThisBatch
-                              ? (_cancelPending
-                                  ? const SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                                    )
-                                  : const FaIcon(FontAwesomeIcons.circleXmark, size: 16))
-                              : const FaIcon(FontAwesomeIcons.gears, size: 16),
-                        ),
-                      ],
-                    ),
-                    if (isProcessingThisBatch) ...[
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: LinearProgressIndicator(
-                              value: _processingProgress,
-                              backgroundColor: Colors.grey.shade800,
-                              color: Colors.deepPurpleAccent,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Text(
-                            '${(_processingProgress * 100).toInt()}%',
-                            style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
 
             // Processed recordings list
             if (recordings.isEmpty)
@@ -892,7 +908,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           body: Column(
             children: [
               _buildStorageWarning(deviceProvider.storageFullPercentage),
-              _buildStatusBanner(),
+              _buildStatusBanners(),
               if (_filterEnabled && _filterMinutes > 0)
                 Container(
                   width: double.infinity,
@@ -916,57 +932,57 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                               }).toList()
                             : _batches;
                         return RefreshIndicator(
-                        color: Colors.deepPurpleAccent,
-                        onRefresh: _handleSync,
-                        child: visibleBatches.isEmpty
-                            ? ListView(
-                                physics: const AlwaysScrollableScrollPhysics(),
-                                children: [
-                                  const SizedBox(height: 100),
-                                  Center(
-                                    child: Column(
-                                      children: [
-                                        const Text(
-                                          'No recordings found.\nSwipe down to sync device.',
-                                          textAlign: TextAlign.center,
-                                          style: TextStyle(color: Colors.grey, fontSize: 16),
-                                        ),
-                                        if (deviceProvider.isConnected) ...[
-                                          const SizedBox(height: 32),
-                                          ElevatedButton.icon(
-                                            onPressed: _isSyncing ? null : _handleForceSync,
-                                            icon: const FaIcon(FontAwesomeIcons.rotate, size: 16),
-                                            label: const Text("Sync All From Device"),
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor: Colors.deepPurpleAccent,
-                                              foregroundColor: Colors.white,
-                                            ),
+                          color: Colors.deepPurpleAccent,
+                          onRefresh: _handleSync,
+                          child: visibleBatches.isEmpty
+                              ? ListView(
+                                  physics: const AlwaysScrollableScrollPhysics(),
+                                  children: [
+                                    const SizedBox(height: 100),
+                                    Center(
+                                      child: Column(
+                                        children: [
+                                          const Text(
+                                            'No recordings found.\nSwipe down to sync device.',
+                                            textAlign: TextAlign.center,
+                                            style: TextStyle(color: Colors.grey, fontSize: 16),
                                           ),
-                                        ] else ...[
-                                          const SizedBox(height: 32),
-                                          ElevatedButton(
-                                            onPressed: () => Navigator.of(context).push(
-                                              MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                                          if (deviceProvider.isConnected) ...[
+                                            const SizedBox(height: 32),
+                                            ElevatedButton.icon(
+                                              onPressed: _isSyncing ? null : _handleForceSync,
+                                              icon: const FaIcon(FontAwesomeIcons.rotate, size: 16),
+                                              label: const Text("Sync All From Device"),
+                                              style: ElevatedButton.styleFrom(
+                                                backgroundColor: Colors.deepPurpleAccent,
+                                                foregroundColor: Colors.white,
+                                              ),
                                             ),
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor: Colors.deepPurpleAccent,
-                                              foregroundColor: Colors.white,
+                                          ] else ...[
+                                            const SizedBox(height: 32),
+                                            ElevatedButton(
+                                              onPressed: () => Navigator.of(context).push(
+                                                MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                                              ),
+                                              style: ElevatedButton.styleFrom(
+                                                backgroundColor: Colors.deepPurpleAccent,
+                                                foregroundColor: Colors.white,
+                                              ),
+                                              child: const Text("Connect Omi"),
                                             ),
-                                            child: const Text("Connect Omi"),
-                                          ),
+                                          ],
                                         ],
-                                      ],
+                                      ),
                                     ),
-                                  ),
-                                ],
-                              )
-                            : ListView.builder(
-                                physics: const AlwaysScrollableScrollPhysics(),
-                                padding: const EdgeInsets.all(16),
-                                itemCount: visibleBatches.length,
-                                itemBuilder: (context, index) => _buildBatchCard(visibleBatches[index]),
-                              ),
-                      );
+                                  ],
+                                )
+                              : ListView.builder(
+                                  physics: const AlwaysScrollableScrollPhysics(),
+                                  padding: const EdgeInsets.all(16),
+                                  itemCount: visibleBatches.length,
+                                  itemBuilder: (context, index) => _buildBatchCard(visibleBatches[index]),
+                                ),
+                        );
                       }),
               ),
             ],
