@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' show max;
 
 import 'package:flutter/material.dart';
 import 'package:omi/utils/logger.dart';
@@ -18,6 +19,10 @@ import 'package:omi/pages/recordings/recording_player_page.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+// ─── State machine ──────────────────────────────────────────────────────────
+enum SyncProcessState { idle, syncing, processing, stopping, resume, error, successUi }
+
+// ─── Page ───────────────────────────────────────────────────────────────────
 class RecordingsPage extends StatefulWidget {
   const RecordingsPage({super.key});
 
@@ -27,89 +32,156 @@ class RecordingsPage extends StatefulWidget {
 
 class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProgressListener {
   final RecordingsManager _manager = RecordingsManager();
-
-  List<DailyBatch> _batches = [];
-  bool _isLoading = true;
-  bool _isSyncing = false;
-  bool _syncUserTriggered = false;
-  bool _syncCancelPending = false;
-  double _syncProgress = 0.0;
-  double _syncSpeed = 0.0;
-  int _syncRecordingsCount = 0;
-  int _pendingDeviceChunks = 0;
-
   final _prefs = SharedPreferencesUtil();
 
-  // Filter state
+  // ─── Batch data ────────────────────────────────────────────────────────────
+  List<DailyBatch> _batches = [];
+  bool _isLoading = true;
+
+  // ─── Unified sync+process state ────────────────────────────────────────────
+  SyncProcessState _spState = SyncProcessState.idle;
+  int _syncedCount = 0;
+  int _totalCount = 0;
+  double _minutesRemaining = 0.0;
+  double _totalMinutes = 0.0;
+  int _starCount = 0;
+  double _syncSpeed = 0.0;
+  String _lastCompletedStage = 'none'; // "none" | "syncing" | "processing"
+  String _lastActiveStage = 'syncing'; // "syncing" | "processing"
+  // ─── Filter state ──────────────────────────────────────────────────────────
   bool _filterEnabled = SharedPreferencesUtil().recordingsFilterEnabled;
   int _filterMinutes = SharedPreferencesUtil().recordingsFilterMinutes;
 
-  // HeyPocket upload state
+  // ─── HeyPocket upload state ────────────────────────────────────────────────
   final Set<String> _uploadingFiles = {};
   int _autoUploadActive = 0;
   String _lastHpKey = '';
 
-  // Processing state
-  String? _processingDateString;
-  double _processingProgress = 0.0;
-  bool _cancelPending = false;
+  Timer? _pollTimer;
+  bool _isUserTriggered = false; // true while user-initiated pipeline is running
 
-  Timer? _syncPollTimer;
-  bool _wasProcessing = false;
-  bool _isAnyProcessing = false;
+  // ─── Persistence keys ──────────────────────────────────────────────────────
+  static const _kSpState = 'sp_state';
+  static const _kSpSyncedCount = 'sp_synced_count';
+  static const _kSpTotalCount = 'sp_total_count';
+  static const _kSpMinutesRemaining = 'sp_minutes_remaining';
+  static const _kSpStarCount = 'sp_star_count';
+  static const _kSpLastCompleted = 'sp_last_completed_stage';
+  static const _kSpLastActive = 'sp_last_active_stage';
 
+  // ─── Lifecycle ─────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
     _lastHpKey = _prefs.heypocketApiKey;
+    _restoreState();
     _loadBatches();
-    final syncService = ServiceManager.instance().wal.getSyncs();
-    syncService.setGlobalProgressListener(this);
-    _syncPollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _pollSyncState());
+    ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(this);
+    _pollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _poll());
+  }
+
+  void _restoreState() {
+    final saved = _prefs.getString(_kSpState, defaultValue: 'idle');
+    const incompleteStates = {'syncing', 'processing', 'stopping'};
+    if (incompleteStates.contains(saved)) {
+      _spState = SyncProcessState.resume;
+      _prefs.saveString(_kSpState, 'resume');
+    } else if (saved == 'error') {
+      _spState = SyncProcessState.error;
+    }
+    _syncedCount = _prefs.getInt(_kSpSyncedCount);
+    _totalCount = _prefs.getInt(_kSpTotalCount);
+    _minutesRemaining = _prefs.getDouble(_kSpMinutesRemaining);
+    _starCount = _prefs.getInt(_kSpStarCount);
+    _lastCompletedStage = _prefs.getString(_kSpLastCompleted, defaultValue: 'none');
+    _lastActiveStage = _prefs.getString(_kSpLastActive, defaultValue: 'syncing');
   }
 
   @override
   void dispose() {
-    _syncPollTimer?.cancel();
+    _pollTimer?.cancel();
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(null);
     super.dispose();
   }
 
-  void _pollSyncState() {
+  // ─── Poll ──────────────────────────────────────────────────────────────────
+  void _poll() {
     if (!mounted) return;
+
     final syncs = ServiceManager.instance().wal.getSyncs();
     final serviceIsSyncing = syncs.isSyncing;
-    if (serviceIsSyncing && !_isSyncing) {
-      // External sync started (DeviceProvider triggered it)
-      setState(() => _isSyncing = true);
-    } else if (!serviceIsSyncing && _isSyncing && !_syncUserTriggered) {
-      // External sync finished — don't reload yet, processing may follow
-      setState(() {
-        _isSyncing = false;
-        _syncProgress = 0.0;
-        _syncSpeed = 0.0;
-        _syncRecordingsCount = 0;
-      });
+    final serviceIsProcessing = RecordingsManager.isProcessingAny;
+
+    // Safety net: STOPPING → IDLE once underlying ops stop.
+    if (_spState == SyncProcessState.stopping) {
+      if (!serviceIsSyncing && !serviceIsProcessing) {
+        _transitionTo(SyncProcessState.idle);
+        unawaited(_reloadBatchesSilently());
+      }
+      _pollHeyPocket();
+      return;
     }
 
-    // Update pending device chunks estimate
-    final pending = ServiceManager.instance().wal.getSyncs().estimatedTotalChunks;
-    if (pending != _pendingDeviceChunks) {
-      setState(() => _pendingDeviceChunks = pending);
+    if (!_isUserTriggered) {
+      // ── Background sync started ──────────────────────────────────────────
+      if (serviceIsSyncing && _spState == SyncProcessState.idle) {
+        setState(() {
+          _spState = SyncProcessState.syncing;
+          _totalCount = max(1, syncs.estimatedTotalChunks);
+          _syncedCount = 0;
+          _syncSpeed = 0.0;
+        });
+      }
+
+      // ── Background sync finished ─────────────────────────────────────────
+      if (!serviceIsSyncing && _spState == SyncProcessState.syncing) {
+        if (serviceIsProcessing) {
+          // Background processing auto-started after sync — show it.
+          unawaited(_reloadBatchesSilently().then((_) {
+            if (!mounted) return;
+            final allRaw = _batches.expand((b) => b.rawChunks).toList();
+            final processable = RecordingsManager.excludeNewestChunkPerSession(allRaw);
+            final totalBytes = processable.fold(0, (s, f) {
+              try {
+                return s + f.lengthSync();
+              } catch (_) {
+                return s;
+              }
+            });
+            setState(() {
+              _spState = SyncProcessState.processing;
+              _totalMinutes = totalBytes / 120000.0;
+              _minutesRemaining = _totalMinutes;
+              _syncedCount = 0;
+              _syncSpeed = 0.0;
+            });
+          }));
+        } else {
+          setState(() {
+            _spState = SyncProcessState.idle;
+            _syncedCount = 0;
+            _totalCount = 0;
+            _syncSpeed = 0.0;
+          });
+          unawaited(_reloadBatchesSilently());
+        }
+      }
+
+      // ── Background processing finished ───────────────────────────────────
+      if (!serviceIsProcessing && _spState == SyncProcessState.processing) {
+        setState(() {
+          _spState = SyncProcessState.idle;
+          _minutesRemaining = 0;
+          _totalMinutes = 0;
+        });
+        _loadBatches();
+      }
     }
 
-    // Track background processing state and reload when it finishes
-    final isProcessing = RecordingsManager.isProcessingAny;
-    if (isProcessing != _isAnyProcessing) {
-      setState(() => _isAnyProcessing = isProcessing);
-    }
-    if (_wasProcessing && !isProcessing && !_isLoading) {
-      if (_cancelPending) setState(() => _cancelPending = false);
-      _loadBatches();
-    }
-    _wasProcessing = isProcessing;
+    _pollHeyPocket();
+  }
 
-    // Refresh upload icons if HeyPocket key was set from integrations page
+  void _pollHeyPocket() {
     final currentKey = _prefs.heypocketApiKey;
     if (currentKey != _lastHpKey) {
       _lastHpKey = currentKey;
@@ -118,6 +190,229 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     }
   }
 
+  // ─── State transitions ─────────────────────────────────────────────────────
+  void _transitionTo(SyncProcessState newState) {
+    if (!mounted) return;
+    setState(() => _spState = newState);
+    // Don't persist transient SUCCESS_UI; it reverts to idle automatically.
+    if (newState != SyncProcessState.successUi) {
+      _prefs.saveString(_kSpState, newState.name);
+    }
+    _prefs.saveString(_kSpLastCompleted, _lastCompletedStage);
+    _prefs.saveString(_kSpLastActive, _lastActiveStage);
+  }
+
+  void _transitionToError(String activeStage, String message) {
+    if (!mounted) return;
+    _lastActiveStage = activeStage;
+    Logger.error('RecordingsPage: Pipeline error [$activeStage]: $message');
+    setState(() => _spState = SyncProcessState.error);
+    _prefs.saveString(_kSpState, 'error');
+    _prefs.saveString(_kSpLastActive, activeStage);
+  }
+
+  void _persistProgress() {
+    _prefs.saveInt(_kSpSyncedCount, _syncedCount);
+    _prefs.saveInt(_kSpTotalCount, _totalCount);
+    _prefs.saveDouble(_kSpMinutesRemaining, _minutesRemaining);
+    _prefs.saveInt(_kSpStarCount, _starCount);
+  }
+
+  // ─── IWalSyncProgressListener ──────────────────────────────────────────────
+  @override
+  void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
+    if (!mounted) return;
+    setState(() {
+      _syncSpeed = speedKBps ?? 0.0;
+      if (_totalCount > 0) {
+        _syncedCount = (percentage * _totalCount).round().clamp(0, _totalCount);
+      } else {
+        _syncedCount++;
+      }
+    });
+  }
+
+  // ─── Pipeline entry points ─────────────────────────────────────────────────
+  void _startPipeline() {
+    if (_spState != SyncProcessState.idle) return;
+    unawaited(_runPipeline());
+  }
+
+  void _resumePipeline() {
+    if (_spState != SyncProcessState.resume) return;
+    if (_lastCompletedStage == 'syncing') {
+      unawaited(_runProcessing());
+    } else {
+      unawaited(_runPipeline());
+    }
+  }
+
+  void _retryFromError() {
+    if (_spState != SyncProcessState.error) return;
+    if (_lastActiveStage == 'processing' && _lastCompletedStage == 'syncing') {
+      unawaited(_runProcessing());
+    } else {
+      unawaited(_runPipeline());
+    }
+  }
+
+  // ─── Pipeline stages ───────────────────────────────────────────────────────
+  Future<void> _runPipeline() async {
+    _isUserTriggered = true;
+    _lastActiveStage = 'syncing';
+    _transitionTo(SyncProcessState.syncing);
+
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    setState(() {
+      _totalCount = max(1, syncs.estimatedTotalChunks);
+      _syncedCount = 0;
+      _syncSpeed = 0.0;
+    });
+    _persistProgress();
+    WakelockPlus.enable();
+
+    try {
+      await syncs.syncAll(progress: this);
+    } catch (e) {
+      WakelockPlus.disable();
+      if (_spState == SyncProcessState.stopping) {
+        _transitionTo(SyncProcessState.idle);
+        unawaited(_reloadBatchesSilently());
+      } else {
+        _transitionToError('syncing', e.toString());
+      }
+      return;
+    }
+    WakelockPlus.disable();
+
+    if (_spState == SyncProcessState.stopping) {
+      _transitionTo(SyncProcessState.idle);
+      unawaited(_reloadBatchesSilently());
+      return;
+    }
+
+    // Sync complete — mark and gather stars
+    setState(() {
+      _syncedCount = _totalCount;
+      _lastCompletedStage = 'syncing';
+    });
+    _prefs.saveString(_kSpLastCompleted, 'syncing');
+    await _reloadBatchesSilently();
+    setState(() {
+      _starCount = _batches.fold(0, (sum, b) => sum + b.starredTimestamps.length);
+    });
+    _persistProgress();
+
+    await _runProcessing();
+    _isUserTriggered = false;
+  }
+
+  Future<void> _runProcessing() async {
+    _lastActiveStage = 'processing';
+    _transitionTo(SyncProcessState.processing);
+
+    final activeBatches = _batches.where((b) => b.rawChunks.isNotEmpty).toList();
+    if (activeBatches.isEmpty) {
+      await _finishSuccess();
+      return;
+    }
+
+    // Compute total audio minutes from processable (non-live) chunks
+    final allRaw = activeBatches.expand((b) => b.rawChunks).toList();
+    final processable = RecordingsManager.excludeNewestChunkPerSession(allRaw);
+    final totalBytes = processable.fold(0, (sum, f) {
+      try {
+        return sum + f.lengthSync();
+      } catch (_) {
+        return sum;
+      }
+    });
+    final totalMin = totalBytes / 120000.0; // opusFS320: 2000 B/s × 60 s
+    setState(() {
+      _totalMinutes = totalMin;
+      _minutesRemaining = totalMin;
+    });
+    _persistProgress();
+
+    WakelockPlus.enable();
+    try {
+      await _manager.processAll(activeBatches, (progress) {
+        if (mounted) {
+          setState(() {
+            _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
+          });
+        }
+      });
+    } catch (e) {
+      WakelockPlus.disable();
+      if (_spState == SyncProcessState.stopping) {
+        _transitionTo(SyncProcessState.idle);
+        unawaited(_reloadBatchesSilently());
+      } else {
+        _transitionToError('processing', e.toString());
+      }
+      return;
+    }
+    WakelockPlus.disable();
+
+    if (_spState == SyncProcessState.stopping) {
+      _transitionTo(SyncProcessState.idle);
+      unawaited(_reloadBatchesSilently());
+      return;
+    }
+
+    setState(() {
+      _minutesRemaining = 0;
+      _lastCompletedStage = 'processing';
+    });
+    _persistProgress();
+    await _reloadBatchesSilently();
+    await _finishSuccess();
+  }
+
+  Future<void> _finishSuccess() async {
+    _transitionTo(SyncProcessState.successUi);
+    await Future.delayed(const Duration(milliseconds: 1600));
+    if (!mounted) return;
+    setState(() {
+      _lastCompletedStage = 'none';
+      _syncedCount = 0;
+      _totalCount = 0;
+      _starCount = 0;
+      _minutesRemaining = 0;
+      _totalMinutes = 0;
+    });
+    _prefs.saveString(_kSpLastCompleted, 'none');
+    _persistProgress();
+    _transitionTo(SyncProcessState.idle);
+    _loadBatches();
+  }
+
+  // ─── Cancel modal ──────────────────────────────────────────────────────────
+  Future<void> _showCancelModal() async {
+    if (_spState != SyncProcessState.syncing && _spState != SyncProcessState.processing) return;
+    final wasState = _spState;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        'Cancel sync and processing?',
+        'Progress will pause and can be resumed later.',
+        confirmText: 'Stop',
+      ),
+    );
+    if (confirm != true) return;
+    _transitionTo(SyncProcessState.stopping);
+    if (wasState == SyncProcessState.syncing) {
+      ServiceManager.instance().wal.getSyncs().cancelSync();
+    } else {
+      RecordingsManager.cancelProcessing();
+    }
+  }
+
+  // ─── Batch loading ─────────────────────────────────────────────────────────
   Future<void> _loadBatches() async {
     setState(() => _isLoading = true);
     try {
@@ -135,161 +430,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     }
   }
 
-  @override
-  void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
-    if (mounted) {
-      setState(() {
-        _syncProgress = percentage.clamp(0.0, 0.99);
-        _syncSpeed = speedKBps ?? 0.0;
-        _syncRecordingsCount = ServiceManager.instance().wal.getSyncs().estimatedTotalChunks;
-      });
-    }
-  }
-
-  Future<void> _handleSync() async {
-    if (RecordingsManager.isProcessingAny) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Processing in progress — sync will be available when done.')),
-      );
-      return;
-    }
-    await _performSync(force: false);
-  }
-
-  Future<void> _handleForceSync() async {
-    await _performSync(force: true);
-  }
-
-  Future<void> _performSync({bool force = false}) async {
-    if (_isSyncing || RecordingsManager.isProcessingAny) return;
-
-    setState(() {
-      _isSyncing = true;
-      _syncUserTriggered = true;
-      _syncProgress = 0.0;
-      _syncSpeed = 0.0;
-      _syncRecordingsCount = ServiceManager.instance().wal.getSyncs().estimatedTotalChunks;
-    });
-    WakelockPlus.enable();
-
-    SyncLocalFilesResponse? result;
+  Future<void> _reloadBatchesSilently() async {
     try {
-      final syncService = ServiceManager.instance().wal.getSyncs();
-      result = await syncService.syncAll(progress: this, force: force);
-
-      if (mounted) {
-        if (result != null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Sync complete!")),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Nothing to sync — less than 60s of audio buffered on device.")),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Sync failed: $e")),
-        );
-      }
-    } finally {
-      WakelockPlus.disable();
-      if (mounted) {
-        setState(() {
-          _isSyncing = false;
-          _syncUserTriggered = false;
-          _syncCancelPending = false;
-          _syncRecordingsCount = 0;
-          _syncProgress = 0.0;
-          _syncSpeed = 0.0;
-        });
-        await _loadBatches();
-
-        // Auto-process after sync — all batches as one continuous stream.
-        await _processAll(_batches, backgroundMode: true);
-      }
-    }
+      final batches = await _manager.getDailyBatches();
+      if (mounted) setState(() => _batches = batches);
+    } catch (_) {}
   }
 
-  Future<void> _processAll(List<DailyBatch> batches, {bool backgroundMode = false}) async {
-    if (RecordingsManager.isProcessingAny || _isSyncing) {
-      if (_isSyncing) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Sync in progress — processing will be available when sync finishes.')),
-        );
-      }
-      return;
-    }
-
-    final activeBatches = batches.where((b) => b.rawChunks.isNotEmpty).toList();
-    if (activeBatches.isEmpty) return;
-
-    final totalChunks = activeBatches.fold(0, (sum, b) => sum + b.rawChunks.length);
-    if (totalChunks > 60) {
-      bool? confirm = await showDialog<bool>(
-        context: context,
-        builder: (c) => getDialog(
-          context,
-          () => Navigator.of(context).pop(false),
-          () => Navigator.of(context).pop(true),
-          "Large Batch",
-          "There are over $totalChunks minutes of unprocessed audio across ${activeBatches.length} day(s). Processing might take a few minutes. Continue?",
-          confirmText: "Start",
-        ),
-      );
-      if (confirm != true) return;
-    }
-
-    // Show the oldest date being processed (batches sorted newest-first, so last = oldest).
-    final oldestDate = activeBatches.last.dateString;
-    final label = activeBatches.length == 1 ? oldestDate : '$oldestDate +${activeBatches.length - 1}';
-
-    setState(() {
-      _processingDateString = label;
-      _processingProgress = 0.0;
-      _cancelPending = false;
-      if (SharedPreferencesUtil().offlineAdjustmentMode) {
-        for (int idx = 0; idx < _batches.length; idx++) {
-          final b = _batches[idx];
-          if (activeBatches.any((ab) => ab.dateString == b.dateString)) {
-            _batches[idx] = DailyBatch(
-              dateString: b.dateString,
-              date: b.date,
-              rawChunks: b.rawChunks,
-              processedRecordings: [],
-              starredTimestamps: b.starredTimestamps,
-            );
-          }
-        }
-      }
-    });
-    WakelockPlus.enable();
-
-    try {
-      await _manager.processAll(activeBatches, (progress) {
-        if (mounted) setState(() => _processingProgress = (progress * 0.95).clamp(0.0, 0.95));
-      }, backgroundMode: backgroundMode);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error processing recordings: $e')),
-        );
-      }
-    } finally {
-      WakelockPlus.disable();
-      if (mounted) {
-        setState(() {
-          _processingDateString = null;
-          _processingProgress = 0.0;
-          _cancelPending = false;
-        });
-        _loadBatches();
-      }
-    }
-  }
-
+  // ─── Delete / export ───────────────────────────────────────────────────────
   Future<void> _deleteDay(DailyBatch batch) async {
     final messenger = ScaffoldMessenger.of(context);
     bool? confirm = await showDialog<bool>(
@@ -304,7 +452,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       ),
     );
     if (confirm != true) return;
-
     try {
       await _manager.deleteDay(batch);
       await _loadBatches();
@@ -321,6 +468,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     await SharePlus.instance.share(ShareParams(files: files, subject: 'Recordings – ${batch.dateString}'));
   }
 
+  // ─── Filter sheet ──────────────────────────────────────────────────────────
   void _showFilterSheet() {
     showModalBottomSheet(
       context: context,
@@ -383,6 +531,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     );
   }
 
+  // ─── HeyPocket ─────────────────────────────────────────────────────────────
   void _tryAutoUploadNext() {
     if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty) return;
     final apiKey = _prefs.heypocketApiKey;
@@ -392,7 +541,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       for (final file in batch.processedRecordings) {
         if (_autoUploadActive >= 2) return;
         final rec = RecordingInfo.fromFile(file);
-        // Only auto-upload recordings created after the API key was configured.
         if (keySetTime != null && rec.startTime.isBefore(keySetTime)) continue;
         if (_filterEnabled && rec.duration < Duration(minutes: _filterMinutes)) continue;
         final uploadKey = rec.uploadKey;
@@ -512,7 +660,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     );
   }
 
-  Widget _buildBanner(Widget content) {
+  // ─── Unified status card ───────────────────────────────────────────────────
+  Widget _buildSyncProcessCard() {
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
       padding: const EdgeInsets.all(12),
@@ -520,168 +669,112 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         color: Colors.white.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: content,
+      child: _buildCardContent(),
     );
   }
 
-  Widget _buildStatusBanners() {
-    return Column(
-      children: [
-        _buildBanner(_buildSyncContent()),
-        _buildBanner(_buildProcessingContent()),
-      ],
-    );
-  }
-
-  Widget _buildSyncContent() {
+  Widget _buildCardContent() {
     final String mainText;
     final String subText;
     final Color iconBg;
     final Widget iconChild;
-    final VoidCallback? onIconTap;
+    VoidCallback? onIconTap;
+    bool showProgress = false;
+    double? progressValue;
+    Color progressColor = Colors.deepPurpleAccent;
 
-    if (!_isSyncing) {
-      mainText = 'Sync Recordings';
-      subText = '';
-      iconBg = Colors.deepPurpleAccent;
-      iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
-      onIconTap = _isSyncing ? null : _handleSync;
-    } else if (_syncCancelPending) {
-      mainText = 'Syncing Cancelled...';
-      subText = _syncRecordingsCount > 0 ? '$_syncRecordingsCount Unsynced Minutes' : '';
-      iconBg = Colors.redAccent;
-      iconChild = const SizedBox(
-        width: 16,
-        height: 16,
-        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-      );
-      onIconTap = null;
-    } else {
-      mainText = 'Syncing in Progress...';
-      subText = [
-        if (_syncRecordingsCount > 0) '$_syncRecordingsCount Unsynced Minutes',
-        '${_syncSpeed.toStringAsFixed(1)} KB/s',
-      ].join('  ·  ');
-      iconBg = Colors.redAccent;
-      iconChild = const FaIcon(FontAwesomeIcons.xmark, color: Colors.white, size: 16);
-      onIconTap = () {
-        setState(() => _syncCancelPending = true);
-        ServiceManager.instance().wal.getSyncs().cancelSync();
-      };
+    switch (_spState) {
+      case SyncProcessState.idle:
+        mainText = 'Sync and Process Now';
+        subText = 'Stops recording, syncs files, and prepares conversations';
+        iconBg = Colors.deepPurpleAccent;
+        iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
+        onIconTap = _startPipeline;
+
+      case SyncProcessState.syncing:
+        mainText = 'Syncing recordings';
+        final speedStr = _syncSpeed > 0 ? '  ·  ${_syncSpeed.toStringAsFixed(1)} KB/s' : '';
+        subText = '$_syncedCount of $_totalCount recordings synced$speedStr';
+        iconBg = Colors.deepPurpleAccent;
+        iconChild = const SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+        );
+        onIconTap = () => unawaited(_showCancelModal());
+        showProgress = true;
+        progressValue = _totalCount > 0 ? (_syncedCount / _totalCount).clamp(0.0, 1.0) : null;
+
+      case SyncProcessState.processing:
+        mainText = 'Preparing conversations';
+        final minStr =
+            _minutesRemaining >= 1 ? '${_minutesRemaining.ceil()} min of audio remaining' : '< 1 min of audio remaining';
+        subText = '$minStr  ·  $_starCount starred moment${_starCount != 1 ? 's' : ''}';
+        iconBg = Colors.deepPurpleAccent;
+        iconChild = const SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+        );
+        onIconTap = () => unawaited(_showCancelModal());
+        showProgress = true;
+        progressValue = _totalMinutes > 0 ? (1.0 - _minutesRemaining / _totalMinutes).clamp(0.0, 1.0) : null;
+
+      case SyncProcessState.stopping:
+        mainText = 'Stopping…';
+        subText = 'Finishing current step';
+        iconBg = Colors.grey.shade700;
+        iconChild = const SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+        );
+        onIconTap = null;
+        showProgress = true;
+        progressValue = null;
+        progressColor = Colors.grey.shade600;
+
+      case SyncProcessState.resume:
+        mainText = 'Resume Sync and Processing';
+        subText = 'Last run didn\'t finish';
+        iconBg = Colors.amber.shade700;
+        iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
+        onIconTap = _resumePipeline;
+
+      case SyncProcessState.error:
+        mainText = _lastActiveStage == 'processing' ? 'Processing failed' : 'Sync failed';
+        subText = 'Tap to retry';
+        iconBg = Colors.redAccent;
+        iconChild = const FaIcon(FontAwesomeIcons.circleExclamation, color: Colors.white, size: 16);
+        onIconTap = _retryFromError;
+
+      case SyncProcessState.successUi:
+        mainText = 'Conversations ready';
+        subText = 'Sync and processing complete';
+        iconBg = Colors.green.shade600;
+        iconChild = const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.white, size: 16);
+        onIconTap = null;
+        showProgress = true;
+        progressValue = 1.0;
+        progressColor = Colors.green;
     }
 
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(mainText, style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
-                const SizedBox(height: 2),
-                Text(subText.isNotEmpty ? subText : ' ', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
-              ],
-            ),
-            Column(
-              children: [
-                GestureDetector(
-                  onTap: onIconTap,
-                  child: Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(color: iconBg, shape: BoxShape.circle),
-                    child: Center(child: iconChild),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-        if (_isSyncing) ...[
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: LinearProgressIndicator(
-                  value: _syncCancelPending ? 0.0 : (_syncRecordingsCount > 0 ? _syncProgress : null),
-                  backgroundColor: Colors.grey.shade800,
-                  color: _syncCancelPending ? Colors.grey.shade800 : Colors.deepPurpleAccent,
-                ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(mainText, style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
+                  const SizedBox(height: 2),
+                  Text(subText, style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                ],
               ),
-              if (!_syncCancelPending) ...[
-                const SizedBox(width: 12),
-                Text(
-                  '${(_syncProgress * 100).toInt()}%',
-                  style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
-                ),
-              ],
-            ],
-          ),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildProcessingContent() {
-    final rawCount = _batches.fold(0, (sum, b) => sum + b.rawChunks.length);
-    final totalStars = _batches.fold(0, (sum, b) => sum + b.starredTimestamps.length);
-
-    final String mainText;
-    final String subText;
-    final Color iconBg;
-    final Widget iconChild;
-    final VoidCallback? onIconTap;
-
-    if (!_isAnyProcessing) {
-      mainText = 'Process Recordings';
-      subText = [
-        if (rawCount > 0) '~$rawCount min unprocessed',
-        if (totalStars > 0) '★ $totalStars',
-      ].join('  ·  ');
-      iconBg = Colors.deepPurpleAccent;
-      iconChild = const FaIcon(FontAwesomeIcons.gears, color: Colors.white, size: 16);
-      onIconTap = rawCount > 0 ? () => _processAll(_batches) : null;
-    } else if (_cancelPending) {
-      mainText = 'Processing Cancelled...';
-      subText = [
-        if (rawCount > 0) '~$rawCount min unprocessed',
-        if (totalStars > 0) '★ $totalStars',
-      ].join('  ·  ');
-      iconBg = Colors.redAccent;
-      iconChild =
-          const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2));
-      onIconTap = null;
-    } else {
-      mainText = _processingDateString != null ? 'Processing $_processingDateString' : 'Processing recordings...';
-      subText = [
-        if (rawCount > 0) '~$rawCount min unprocessed',
-        if (totalStars > 0) '★ $totalStars',
-      ].join('  ·  ');
-      iconBg = Colors.redAccent;
-      iconChild = const FaIcon(FontAwesomeIcons.xmark, color: Colors.white, size: 16);
-      onIconTap = () {
-        setState(() => _cancelPending = true);
-        RecordingsManager.cancelProcessing();
-      };
-    }
-
-    return Column(
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(mainText, style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
-                const SizedBox(height: 2),
-                Text(
-                  subText.isNotEmpty ? subText : ' ',
-                  style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
-                ),
-              ],
             ),
+            const SizedBox(width: 12),
             GestureDetector(
               onTap: onIconTap,
               child: Container(
@@ -693,31 +786,19 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
             ),
           ],
         ),
-        if (_isAnyProcessing) ...[
+        if (showProgress) ...[
           const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: LinearProgressIndicator(
-                  value: _cancelPending ? 0.0 : _processingProgress,
-                  backgroundColor: Colors.grey.shade800,
-                  color: _cancelPending ? Colors.grey.shade800 : Colors.deepPurpleAccent,
-                ),
-              ),
-              if (!_cancelPending) ...[
-                const SizedBox(width: 12),
-                Text(
-                  '${(_processingProgress * 100).toInt()}%',
-                  style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
-                ),
-              ],
-            ],
+          LinearProgressIndicator(
+            value: progressValue,
+            backgroundColor: Colors.grey.shade800,
+            color: progressColor,
           ),
         ],
       ],
     );
   }
 
+  // ─── Batch card ────────────────────────────────────────────────────────────
   Widget _buildBatchCard(DailyBatch batch) {
     final allRecordings = batch.processedRecordings.map(RecordingInfo.fromFile).toList()
       ..sort((a, b) => b.startTime.compareTo(a.startTime));
@@ -735,7 +816,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header row
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -757,8 +837,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               ],
             ),
             const SizedBox(height: 12),
-
-            // Processed recordings list
             if (recordings.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8.0),
@@ -769,8 +847,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               const SizedBox(height: 4),
               const Divider(color: Color(0xFF2C2C2E), height: 1),
               const SizedBox(height: 4),
-
-              // Action row: Export All + Delete Day
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -847,7 +923,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   Widget _buildStorageWarning(int percentage) {
     if (percentage < 90) return const SizedBox.shrink();
-
     return Container(
       width: double.infinity,
       color: Colors.red.shade900,
@@ -867,6 +942,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     );
   }
 
+  // ─── Build ─────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Consumer<DeviceProvider>(
@@ -908,7 +984,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           body: Column(
             children: [
               _buildStorageWarning(deviceProvider.storageFullPercentage),
-              _buildStatusBanners(),
+              _buildSyncProcessCard(),
               if (_filterEnabled && _filterMinutes > 0)
                 Container(
                   width: double.infinity,
@@ -933,7 +1009,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                             : _batches;
                         return RefreshIndicator(
                           color: Colors.deepPurpleAccent,
-                          onRefresh: _handleSync,
+                          onRefresh: () async => _startPipeline(),
                           child: visibleBatches.isEmpty
                               ? ListView(
                                   physics: const AlwaysScrollableScrollPhysics(),
@@ -950,9 +1026,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                                           if (deviceProvider.isConnected) ...[
                                             const SizedBox(height: 32),
                                             ElevatedButton.icon(
-                                              onPressed: _isSyncing ? null : _handleForceSync,
+                                              onPressed: _spState == SyncProcessState.idle ? _startPipeline : null,
                                               icon: const FaIcon(FontAwesomeIcons.rotate, size: 16),
-                                              label: const Text("Sync All From Device"),
+                                              label: const Text('Sync and Process'),
                                               style: ElevatedButton.styleFrom(
                                                 backgroundColor: Colors.deepPurpleAccent,
                                                 foregroundColor: Colors.white,
@@ -968,7 +1044,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                                                 backgroundColor: Colors.deepPurpleAccent,
                                                 foregroundColor: Colors.white,
                                               ),
-                                              child: const Text("Connect Omi"),
+                                              child: const Text('Connect Omi'),
                                             ),
                                           ],
                                         ],
