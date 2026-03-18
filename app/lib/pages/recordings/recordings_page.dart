@@ -263,8 +263,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _transitionTo(SyncProcessState.syncing);
 
     final syncs = ServiceManager.instance().wal.getSyncs();
+    final estimatedTotal = syncs.estimatedTotalChunks;
+    Logger.debug('RecordingsPage: _runPipeline start — estimatedTotalChunks=$estimatedTotal '
+        '(will be shown as totalCount=${max(1, estimatedTotal)})');
     setState(() {
-      _totalCount = max(1, syncs.estimatedTotalChunks);
+      _totalCount = max(1, estimatedTotal);
       _syncedCount = 0;
       _syncSpeed = 0.0;
     });
@@ -707,8 +710,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
       case SyncProcessState.processing:
         mainText = 'Preparing conversations';
-        final minStr =
-            _minutesRemaining >= 1 ? '${_minutesRemaining.ceil()} min of audio remaining' : '< 1 min of audio remaining';
+        final minStr = _minutesRemaining >= 1
+            ? '${_minutesRemaining.ceil()} min of audio remaining'
+            : '< 1 min of audio remaining';
         subText = '$minStr  ·  $_starCount starred moment${_starCount != 1 ? 's' : ''}';
         iconBg = Colors.deepPurpleAccent;
         iconChild = const SizedBox(
