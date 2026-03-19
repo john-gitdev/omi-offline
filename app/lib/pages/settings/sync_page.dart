@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
@@ -168,6 +170,103 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
+  Future<void> _deleteAllChunks() async {
+    Logger.debug('DebugTools: Delete All Phone Chunks tapped');
+    if (RecordingsManager.isProcessingAny) {
+      Logger.debug('DebugTools: Delete All Phone Chunks blocked — processing running');
+      _showProcessingSnackbar();
+      return;
+    }
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        'Delete All Phone Chunks',
+        'This will permanently delete all raw chunk files stored on this phone. This action cannot be undone. Continue?',
+        confirmText: 'Delete',
+      ),
+    );
+    if (confirm != true) {
+      Logger.debug('DebugTools: Delete Phone Chunks cancelled by user');
+      return;
+    }
+    setState(() {
+      _isSyncing = true;
+      _statusMessage = 'Deleting all phone chunks...';
+    });
+    try {
+      Logger.debug('DebugTools: Deleting raw_chunks directory');
+      final directory = await getApplicationDocumentsDirectory();
+      final chunksDir = Directory('${directory.path}/raw_chunks');
+      if (await chunksDir.exists()) {
+        await chunksDir.delete(recursive: true);
+      }
+      Logger.debug('DebugTools: raw_chunks deleted');
+      setState(() {
+        _statusMessage = 'Delete Complete. Phone chunks cleared.';
+        _isSyncing = false;
+      });
+    } catch (e) {
+      Logger.error('DebugTools: deleteAllChunks error — $e');
+      setState(() {
+        _statusMessage = 'Delete Error: $e';
+        _isSyncing = false;
+      });
+    }
+  }
+
+  Future<void> _deleteAllConversations() async {
+    Logger.debug('DebugTools: Delete All Conversations tapped');
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        'Delete All Conversations',
+        'This will permanently delete all stitched recordings on this phone, including any open conversation in progress. This action cannot be undone. Continue?',
+        confirmText: 'Delete',
+      ),
+    );
+    if (confirm != true) {
+      Logger.debug('DebugTools: Delete All Conversations cancelled by user');
+      return;
+    }
+    setState(() {
+      _isSyncing = true;
+      _statusMessage = 'Deleting all conversations...';
+    });
+    try {
+      if (RecordingsManager.isProcessingAny) {
+        Logger.debug('DebugTools: Cancelling in-progress processing before delete');
+        RecordingsManager.cancelProcessing();
+      }
+      final directory = await getApplicationDocumentsDirectory();
+      final recordingsDir = Directory('${directory.path}/recordings');
+      if (await recordingsDir.exists()) {
+        await recordingsDir.delete(recursive: true);
+        Logger.debug('DebugTools: recordings directory deleted');
+      }
+      final tempDir = Directory('${directory.path}/processing_temp');
+      if (await tempDir.exists()) {
+        await tempDir.delete(recursive: true);
+        Logger.debug('DebugTools: processing_temp directory deleted');
+      }
+      setState(() {
+        _statusMessage = 'Delete Complete. All conversations cleared.';
+        _isSyncing = false;
+      });
+    } catch (e) {
+      Logger.error('DebugTools: deleteAllConversations error — $e');
+      setState(() {
+        _statusMessage = 'Delete Error: $e';
+        _isSyncing = false;
+      });
+    }
+  }
+
   Future<void> _cancelSync() async {
     Logger.debug('DebugTools: Cancel Download tapped');
     ServiceManager.instance().wal.getSyncs().cancelSync();
@@ -308,6 +407,22 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllPending,
+                ),
+                const SizedBox(height: 12),
+                _DebugButton(
+                  label: 'Delete All Phone Chunks',
+                  description: 'Permanently deletes all raw chunk files stored on this phone.',
+                  icon: FontAwesomeIcons.trashCan,
+                  color: Colors.redAccent,
+                  onTap: _deleteAllChunks,
+                ),
+                const SizedBox(height: 12),
+                _DebugButton(
+                  label: 'Delete All Conversations',
+                  description: 'Permanently deletes all stitched recordings, including any open conversation in progress.',
+                  icon: FontAwesomeIcons.trashCan,
+                  color: Colors.redAccent,
+                  onTap: _deleteAllConversations,
                 ),
               ],
             ],
