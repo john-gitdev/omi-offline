@@ -152,10 +152,10 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
         const SizedBox(width: 4),
         GestureDetector(
           onTap: () async {
-             await Clipboard.setData(ClipboardData(text: displayText));
-             if (mounted) {
-               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
-             }
+            await Clipboard.setData(ClipboardData(text: displayText));
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
+            }
           },
           child: const Icon(
             Icons.copy,
@@ -267,18 +267,6 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                       ),
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
                       _buildSettingsItem(
-                        title: 'Sync Device',
-                        icon: const FaIcon(FontAwesomeIcons.solidCloud, color: Color(0xFF8E8E93), size: 20),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => const SyncPage(),
-                            ),
-                          );
-                        },
-                      ),
-                      const Divider(height: 1, color: Color(0xFF3C3C43)),
-                      _buildSettingsItem(
                         title: 'Recording Settings',
                         icon: const FaIcon(FontAwesomeIcons.microphoneLines, color: Color(0xFF8E8E93), size: 20),
                         onTap: () {
@@ -297,6 +285,18 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => const IntegrationsPage(),
+                            ),
+                          );
+                        },
+                      ),
+                      const Divider(height: 1, color: Color(0xFF3C3C43)),
+                      _buildSettingsItem(
+                        title: 'Debug Tools',
+                        icon: const FaIcon(FontAwesomeIcons.bug, color: Color(0xFF8E8E93), size: 20),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => const SyncPage(),
                             ),
                           );
                         },

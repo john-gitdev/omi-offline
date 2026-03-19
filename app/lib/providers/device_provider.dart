@@ -358,7 +358,13 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _backgroundSyncTimer?.cancel();
     _backgroundSyncTimer = Timer.periodic(const Duration(minutes: _backgroundSyncMinutes), (_) async {
       if (!isConnected) {
-        if (!isConnecting) await scanAndConnectToDevice();
+        if (!isConnecting) {
+          for (int attempt = 0; attempt < 3 && !isConnected; attempt++) {
+            if (attempt > 0) await Future.delayed(const Duration(seconds: 10));
+            Logger.debug('DeviceProvider: Background sync connect attempt ${attempt + 1}/3');
+            await scanAndConnectToDevice();
+          }
+        }
         // sync triggers in _onDeviceConnected if connection succeeds
       } else {
         _doBackgroundSync();
@@ -367,6 +373,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   Future<void> _doBackgroundSync() async {
+    if (!SharedPreferencesUtil().autoSyncEnabled) return;
     final walSync = ServiceManager.instance().wal.getSyncs();
     if (walSync.isSyncing) return;
     if (RecordingsManager.isProcessingAny) return;
