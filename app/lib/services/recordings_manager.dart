@@ -107,16 +107,16 @@ class RecordingInfo {
 class DailyBatch {
   final String dateString;
   final DateTime date;
-  final List<File> rawChunks;
-  final List<File> processedRecordings;
-  final List<DateTime> starredTimestamps;
+  final List<File> rawSegments;
+  final List<File> finalizedRecordings;
+  final List<DateTime> markerTimestamps;
 
   DailyBatch({
     required this.dateString,
     required this.date,
-    required this.rawChunks,
-    required this.processedRecordings,
-    this.starredTimestamps = const [],
+    required this.rawSegments,
+    required this.finalizedRecordings,
+    this.markerTimestamps = const [],
   });
 }
 
@@ -133,16 +133,16 @@ class RecordingsManager {
 
   Future<List<DailyBatch>> getDailyBatches() async {
     final directory = await getApplicationDocumentsDirectory();
-    final rawChunksDir = Directory('${directory.path}/raw_chunks');
+    final rawSegmentsDir = Directory('${directory.path}/raw_segments');
     final recordingsDir = Directory('${directory.path}/recordings');
 
-    Map<String, List<File>> rawChunksByDate = {};
+    Map<String, List<File>> rawSegmentsByDate = {};
     Map<String, List<File>> processedByDate = {};
-    Map<String, List<DateTime>> starsByDate = {};
+    Map<String, List<DateTime>> markersByDate = {};
 
-    // Process raw chunks (Now they are in Session Folders!)
-    if (await rawChunksDir.exists()) {
-      final sessionFolders = rawChunksDir.listSync().whereType<Directory>().toList();
+    // Process raw segments (now they are in DeviceSession folders)
+    if (await rawSegmentsDir.exists()) {
+      final sessionFolders = rawSegmentsDir.listSync().whereType<Directory>().toList();
 
       // Sort session folders by ID (e.g. "100", "101")
       sessionFolders.sort((a, b) {
@@ -152,27 +152,27 @@ class RecordingsManager {
       });
 
       for (var folder in sessionFolders) {
-        final sessionIdStr = folder.path.split('/').last;
+        final deviceSessionIdStr = folder.path.split('/').last;
 
         // Skip hidden folders or system folders if any
-        if (sessionIdStr.startsWith('.')) continue;
+        if (deviceSessionIdStr.startsWith('.')) continue;
 
-        // 1. Process Stars
-        final starFile = File('${folder.path}/stars.txt');
-        if (await starFile.exists()) {
+        // 1. Process markers
+        final markerFile = File('${folder.path}/markers.txt');
+        if (await markerFile.exists()) {
           try {
-            final content = await starFile.readAsLines();
+            final content = await markerFile.readAsLines();
             for (var line in content) {
               final utc = int.tryParse(line.trim());
               if (utc != null) {
                 final date = DateTime.fromMillisecondsSinceEpoch(utc * 1000);
                 final dateString =
                     '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
-                starsByDate.putIfAbsent(dateString, () => []).add(date);
+                markersByDate.putIfAbsent(dateString, () => []).add(date);
               }
             }
           } catch (e) {
-            Logger.error("RecordingsManager: Failed to read stars for session $sessionIdStr: $e");
+            Logger.error("RecordingsManager: Failed to read markers for session $deviceSessionIdStr: $e");
           }
         }
 
@@ -183,7 +183,7 @@ class RecordingsManager {
           final date = file.lastModifiedSync();
           final dateString =
               '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
-          rawChunksByDate.putIfAbsent(dateString, () => []).add(file);
+          rawSegmentsByDate.putIfAbsent(dateString, () => []).add(file);
         }
       }
     }
@@ -203,23 +203,23 @@ class RecordingsManager {
     }
 
     // Merge keys
-    final allDates = {...rawChunksByDate.keys, ...processedByDate.keys}.toList();
+    final allDates = {...rawSegmentsByDate.keys, ...processedByDate.keys}.toList();
     List<DailyBatch> batches = [];
 
     for (var dateStr in allDates) {
       final parts = dateStr.split('-');
       final date = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
 
-      final raw = rawChunksByDate[dateStr] ?? [];
-      // Sort raw chunks by name (which is chunkIndex)
+      final raw = rawSegmentsByDate[dateStr] ?? [];
+      // Sort raw segments by name (which is segmentIndex)
       raw.sort((a, b) => a.path.split('/').last.compareTo(b.path.split('/').last));
 
       batches.add(DailyBatch(
         dateString: dateStr,
         date: date,
-        rawChunks: raw,
-        processedRecordings: processedByDate[dateStr] ?? [],
-        starredTimestamps: starsByDate[dateStr] ?? [],
+        rawSegments: raw,
+        finalizedRecordings: processedByDate[dateStr] ?? [],
+        markerTimestamps: markersByDate[dateStr] ?? [],
       ));
     }
 
@@ -227,7 +227,7 @@ class RecordingsManager {
     return batches;
   }
 
-  /// Reprocesses or processes a specific day's raw chunks.
+  /// Reprocesses or processes a specific day's raw segments.
   /// Uses a temporary folder to ensure processing is atomic.
   ///
   /// In [backgroundMode]:
@@ -235,7 +235,7 @@ class RecordingsManager {
   /// - Deletes only chunks whose conversations closed cleanly (up to [lastSafeToDeleteIndex]).
   /// - Skips the 50 ms UI-yield delay.
   Future<void> processDay(DailyBatch batch, Function(double progress) onProgress, {bool backgroundMode = false}) async {
-    if (batch.rawChunks.isEmpty) return;
+    if (batch.rawSegments.isEmpty) return;
     if (_isProcessingAny) {
       throw Exception("Another processing task is already in progress.");
     }
@@ -276,11 +276,11 @@ class RecordingsManager {
         if (isManualMode) {
           // Manual mode: star-marker extraction via ManualRecordingExtractor.
           // Produces recordings only for conversations the user explicitly starred.
-          // Always keeps a 2hr rolling buffer of raw chunks for future star markers.
+          // Always keeps a 2hr rolling buffer of raw segments for future markers.
           final extractor = ManualRecordingExtractor();
           try {
             final result = await extractor.process(batch, tempProcessingPath, forceFlush: !backgroundMode);
-            lastSafeToDeleteIndex = result.lastSafeChunkIndex;
+            lastSafeToDeleteIndex = result.lastSafeSegmentIndex;
             Logger.debug(
                 'RecordingsManager: Manual mode extracted ${result.savedPaths.length} conversations for $dateString');
           } finally {
@@ -290,56 +290,57 @@ class RecordingsManager {
           // Automatic mode: continuous VAD via OfflineAudioProcessor.
           final processor = OfflineAudioProcessor(outputDir: tempProcessingPath);
           try {
-            // 3. Process each raw chunk sequentially
-            for (int i = 0; i < batch.rawChunks.length; i++) {
-              final file = batch.rawChunks[i];
-              // Get session ID from folder name
-              final sessionIdStr = file.parent.path.split('/').last;
-              int? sessionId = int.tryParse(sessionIdStr);
+            // 3. Process each raw segment sequentially
+            for (int i = 0; i < batch.rawSegments.length; i++) {
+              final file = batch.rawSegments[i];
+              // Get device session ID from folder name
+              final deviceSessionIdStr = file.parent.path.split('/').last;
+              int? deviceSessionId = int.tryParse(deviceSessionIdStr);
 
-              // Parse chunkIndex from filename: stored as {sessionId}_{chunkIndex}.bin
-              final chunkFileName = file.path.split('/').last.replaceAll('.bin', '');
-              final chunkIndexStr = chunkFileName.contains('_') ? chunkFileName.split('_').last : null;
-              final chunkIndex = chunkIndexStr != null ? int.tryParse(chunkIndexStr) : null;
+              // Parse segmentIndex from filename: stored as {deviceSessionId}_{segmentIndex}.bin
+              final segmentFileName = file.path.split('/').last.replaceAll('.bin', '');
+              final segmentIndexStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
+              final segmentIndex = segmentIndexStr != null ? int.tryParse(segmentIndexStr) : null;
 
-              DateTime chunkStartTime;
-              if (sessionId != null && chunkIndex != null) {
-                final anchorUtc =
-                    SharedPreferencesUtil().getInt('anchor_utc_${sessionId}_$chunkIndex', defaultValue: 0);
-                final anchorUptime =
-                    SharedPreferencesUtil().getInt('anchor_uptime_${sessionId}_$chunkIndex', defaultValue: 0);
+              DateTime segmentStartTime;
+              if (deviceSessionId != null && segmentIndex != null) {
+                final anchorUtc = SharedPreferencesUtil()
+                    .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
+                final anchorUptime = SharedPreferencesUtil()
+                    .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
                 if (anchorUtc > 0) {
-                  chunkStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
+                  segmentStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
                 } else if (anchorUptime > 0) {
                   // No RTC lock at record time — back-calculate from session-level anchor
-                  final sessionAnchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
-                  final sessionAnchorUptime =
-                      SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
+                  final sessionAnchorUtc = SharedPreferencesUtil()
+                      .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
+                  final sessionAnchorUptime = SharedPreferencesUtil()
+                      .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
                   if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
                     final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
-                    chunkStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+                    segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
                   } else {
-                    chunkStartTime = file.lastModifiedSync();
+                    segmentStartTime = file.lastModifiedSync();
                   }
                 } else {
-                  chunkStartTime = file.lastModifiedSync();
+                  segmentStartTime = file.lastModifiedSync();
                 }
               } else {
-                chunkStartTime = file.lastModifiedSync();
+                segmentStartTime = file.lastModifiedSync();
               }
 
               if (_cancelRequested) {
-                Logger.debug("RecordingsManager: Processing cancelled by user at chunk $i.");
+                Logger.debug("RecordingsManager: Processing cancelled by user at segment $i.");
                 break;
               }
 
-              await processor.processChunkFile(file, chunkStartTime, sessionId: sessionId);
+              await processor.processSegmentFile(file, segmentStartTime, deviceSessionId: deviceSessionId);
 
-              if (backgroundMode && !processor.hasOngoingRecording) {
+              if (backgroundMode && !processor.isCapturing) {
                 lastSafeToDeleteIndex = i;
               }
 
-              onProgress((i + 1) / batch.rawChunks.length);
+              onProgress((i + 1) / batch.rawSegments.length);
               // Yield to the UI to keep it responsive (skipped in background mode)
               if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
             }
@@ -399,7 +400,7 @@ class RecordingsManager {
         rethrow;
       }
 
-      // 6. Raw chunk deletion
+      // 6. Raw segment deletion
       // Manual mode always uses lastSafeToDeleteIndex (same as background mode path)
       // because the extractor manages its own rolling buffer and returns a precise boundary.
       if (backgroundMode || isManualMode) {
@@ -408,15 +409,15 @@ class RecordingsManager {
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
           Set<String> sessionFoldersToDelete = {};
           for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
-            final file = batch.rawChunks[i];
+            final file = batch.rawSegments[i];
             if (await file.exists()) {
-              final sessionIdStr = file.parent.path.split('/').last;
-              final sessionId = int.tryParse(sessionIdStr) ?? -1;
-              Logger.debug("RecordingsManager: [bg] Deleting completed raw chunk: ${file.path}");
+              final deviceSessionIdStr = file.parent.path.split('/').last;
+              final deviceSessionId = int.tryParse(deviceSessionIdStr) ?? -1;
+              Logger.debug("RecordingsManager: [bg] Deleting completed raw segment: ${file.path}");
               await file.delete();
               sessionFoldersToDelete.add(file.parent.path);
-              SharedPreferencesUtil().remove('anchor_utc_$sessionId');
-              SharedPreferencesUtil().remove('anchor_uptime_$sessionId');
+              SharedPreferencesUtil().remove('anchor_utc_device_session_$deviceSessionId');
+              SharedPreferencesUtil().remove('anchor_uptime_device_session_$deviceSessionId');
             }
           }
           for (var folderPath in sessionFoldersToDelete) {
@@ -433,31 +434,31 @@ class RecordingsManager {
           }
         }
       } else {
-        // 6. Check adjustment mode. If OFF, delete the raw chunks.
-        // Note: processed recordings (.wav) are kept until the user explicitly deletes
-        // the day via deleteDay(). Raw chunks are separate from processed recordings.
+        // 6. Check adjustment mode. If OFF, delete the raw segments.
+        // Note: finalized recordings (.wav) are kept until the user explicitly deletes
+        // the day via deleteDay(). Raw segments are separate from finalized recordings.
         if (!SharedPreferencesUtil().offlineAdjustmentMode) {
           Set<String> sessionFoldersToDelete = {};
-          final latestSyncedSessionId = SharedPreferencesUtil().latestSyncedSessionId;
+          final latestSyncedDeviceSessionId = SharedPreferencesUtil().latestSyncedDeviceSessionId;
 
-          for (var file in batch.rawChunks) {
+          for (var file in batch.rawSegments) {
             if (await file.exists()) {
-              final sessionIdStr = file.parent.path.split('/').last;
-              final sessionId = int.tryParse(sessionIdStr) ?? -1;
+              final deviceSessionIdStr = file.parent.path.split('/').last;
+              final deviceSessionId = int.tryParse(deviceSessionIdStr) ?? -1;
 
               // Delete if it's an old session OR if it's the latest session but we've successfully processed it.
-              // We only keep it if sessionId > latestSyncedSessionId (which shouldn't happen for synced chunks).
-              if (sessionId <= latestSyncedSessionId) {
-                Logger.debug("RecordingsManager: Deleting successfully processed raw chunk: ${file.path}");
+              // We only keep it if deviceSessionId > latestSyncedDeviceSessionId (which shouldn't happen for synced segments).
+              if (deviceSessionId <= latestSyncedDeviceSessionId) {
+                Logger.debug("RecordingsManager: Deleting successfully processed raw segment: ${file.path}");
                 await file.delete();
                 sessionFoldersToDelete.add(file.parent.path);
 
                 // Cleanup SharedPreferences anchors
-                SharedPreferencesUtil().remove('anchor_utc_$sessionId');
-                SharedPreferencesUtil().remove('anchor_uptime_$sessionId');
+                SharedPreferencesUtil().remove('anchor_utc_device_session_$deviceSessionId');
+                SharedPreferencesUtil().remove('anchor_uptime_device_session_$deviceSessionId');
               } else {
-                Logger.debug("RecordingsManager: Keeping raw chunk for session $sessionId as it might be ongoing.");
-              }
+                Logger.debug(
+                    "RecordingsManager: Keeping raw segment for session $deviceSessionId as it might be ongoing.");
             }
           }
 
@@ -482,13 +483,13 @@ class RecordingsManager {
 
   /// Processes all batches as one continuous audio stream.
   ///
-  /// Chunks are sorted by (sessionId, chunkIndex) across all batches so a
+  /// Segments are sorted by (deviceSessionId, segmentIndex) across all batches so a
   /// recording that spans midnight is never artificially cut. Output files are
   /// moved into `recordings/<date>/` based on each recording's actual start
   /// timestamp, not the batch date they were grouped under.
   Future<void> processAll(List<DailyBatch> batches, Function(double progress) onProgress,
       {bool backgroundMode = false}) async {
-    final activeBatches = batches.where((b) => b.rawChunks.isNotEmpty).toList();
+    final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
     if (activeBatches.isEmpty) return;
     if (_isProcessingAny) throw Exception("Another processing task is already in progress.");
 
@@ -502,8 +503,8 @@ class RecordingsManager {
       if (await tempDir.exists()) await tempDir.delete(recursive: true);
       await tempDir.create(recursive: true);
 
-      // Combine chunks from all batches, sorted by (sessionId, chunkIndex).
-      final allChunks = activeBatches.expand((b) => b.rawChunks).toList();
+      // Combine segments from all batches, sorted by (deviceSessionId, segmentIndex).
+      final allChunks = activeBatches.expand((b) => b.rawSegments).toList();
       allChunks.sort((a, b) {
         final ap = a.path.split('/').last.replaceAll('.bin', '').split('_');
         final bp = b.path.split('/').last.replaceAll('.bin', '').split('_');
@@ -532,14 +533,14 @@ class RecordingsManager {
           final combinedBatch = DailyBatch(
             dateString: activeBatches.last.dateString, // oldest date
             date: activeBatches.last.date,
-            rawChunks: allChunks,
-            processedRecordings: const [],
-            starredTimestamps: (activeBatches.expand((b) => b.starredTimestamps).toList()..sort()),
+            rawSegments: allChunks,
+            finalizedRecordings: const [],
+            markerTimestamps: (activeBatches.expand((b) => b.markerTimestamps).toList()..sort()),
           );
           final extractor = ManualRecordingExtractor();
           try {
             final result = await extractor.process(combinedBatch, tempProcessingPath, forceFlush: !backgroundMode);
-            lastSafeToDeleteIndex = result.lastSafeChunkIndex;
+            lastSafeToDeleteIndex = result.lastSafeSegmentIndex;
             Logger.debug(
                 'RecordingsManager: Manual mode extracted ${result.savedPaths.length} conversations (combined)');
           } finally {
@@ -550,45 +551,46 @@ class RecordingsManager {
           try {
             for (int i = 0; i < allChunks.length; i++) {
               final file = allChunks[i];
-              final sessionIdStr = file.parent.path.split('/').last;
-              final sessionId = int.tryParse(sessionIdStr);
-              final chunkFileName = file.path.split('/').last.replaceAll('.bin', '');
-              final chunkIndexStr = chunkFileName.contains('_') ? chunkFileName.split('_').last : null;
-              final chunkIndex = chunkIndexStr != null ? int.tryParse(chunkIndexStr) : null;
+              final deviceSessionIdStr = file.parent.path.split('/').last;
+              final deviceSessionId = int.tryParse(deviceSessionIdStr);
+              final segmentFileName = file.path.split('/').last.replaceAll('.bin', '');
+              final segmentIndexStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
+              final segmentIndex = segmentIndexStr != null ? int.tryParse(segmentIndexStr) : null;
 
-              DateTime chunkStartTime;
-              if (sessionId != null && chunkIndex != null) {
-                final anchorUtc =
-                    SharedPreferencesUtil().getInt('anchor_utc_${sessionId}_$chunkIndex', defaultValue: 0);
-                final anchorUptime =
-                    SharedPreferencesUtil().getInt('anchor_uptime_${sessionId}_$chunkIndex', defaultValue: 0);
+              DateTime segmentStartTime;
+              if (deviceSessionId != null && segmentIndex != null) {
+                final anchorUtc = SharedPreferencesUtil()
+                    .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
+                final anchorUptime = SharedPreferencesUtil()
+                    .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
                 if (anchorUtc > 0) {
-                  chunkStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
+                  segmentStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
                 } else if (anchorUptime > 0) {
-                  final sessionAnchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
-                  final sessionAnchorUptime =
-                      SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
+                  final sessionAnchorUtc = SharedPreferencesUtil()
+                      .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
+                  final sessionAnchorUptime = SharedPreferencesUtil()
+                      .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
                   if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
                     final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
-                    chunkStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+                    segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
                   } else {
-                    chunkStartTime = file.lastModifiedSync();
+                    segmentStartTime = file.lastModifiedSync();
                   }
                 } else {
-                  chunkStartTime = file.lastModifiedSync();
+                  segmentStartTime = file.lastModifiedSync();
                 }
               } else {
-                chunkStartTime = file.lastModifiedSync();
+                segmentStartTime = file.lastModifiedSync();
               }
 
               if (_cancelRequested) {
-                Logger.debug("RecordingsManager: Processing cancelled at chunk $i.");
+                Logger.debug("RecordingsManager: Processing cancelled at segment $i.");
                 break;
               }
 
-              await processor.processChunkFile(file, chunkStartTime, sessionId: sessionId);
+              await processor.processSegmentFile(file, segmentStartTime, deviceSessionId: deviceSessionId);
 
-              if (backgroundMode && !processor.hasOngoingRecording) {
+              if (backgroundMode && !processor.isCapturing) {
                 lastSafeToDeleteIndex = i;
               }
 
@@ -634,19 +636,19 @@ class RecordingsManager {
         rethrow;
       }
 
-      // Raw chunk deletion — same rules as processDay.
+      // Raw segment deletion — same rules as processDay.
       if (backgroundMode || isManualMode) {
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
           final sessionFolders = <String>{};
           for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
             final file = allChunks[i];
             if (await file.exists()) {
-              final sessionId = int.tryParse(file.parent.path.split('/').last) ?? -1;
-              Logger.debug("RecordingsManager: [bg] Deleting completed raw chunk: ${file.path}");
+              final deviceSessionId = int.tryParse(file.parent.path.split('/').last) ?? -1;
+              Logger.debug("RecordingsManager: [bg] Deleting completed raw segment: ${file.path}");
               await file.delete();
               sessionFolders.add(file.parent.path);
-              SharedPreferencesUtil().remove('anchor_utc_$sessionId');
-              SharedPreferencesUtil().remove('anchor_uptime_$sessionId');
+              SharedPreferencesUtil().remove('anchor_utc_device_session_$deviceSessionId');
+              SharedPreferencesUtil().remove('anchor_uptime_device_session_$deviceSessionId');
             }
           }
           for (final folderPath in sessionFolders) {
@@ -661,18 +663,19 @@ class RecordingsManager {
       } else {
         if (!SharedPreferencesUtil().offlineAdjustmentMode) {
           final sessionFolders = <String>{};
-          final latestSyncedSessionId = SharedPreferencesUtil().latestSyncedSessionId;
+          final latestSyncedDeviceSessionId = SharedPreferencesUtil().latestSyncedDeviceSessionId;
           for (final file in allChunks) {
             if (await file.exists()) {
-              final sessionId = int.tryParse(file.parent.path.split('/').last) ?? -1;
-              if (sessionId <= latestSyncedSessionId) {
-                Logger.debug("RecordingsManager: Deleting successfully processed raw chunk: ${file.path}");
+              final deviceSessionId = int.tryParse(file.parent.path.split('/').last) ?? -1;
+              if (deviceSessionId <= latestSyncedDeviceSessionId) {
+                Logger.debug("RecordingsManager: Deleting successfully processed raw segment: ${file.path}");
                 await file.delete();
                 sessionFolders.add(file.parent.path);
-                SharedPreferencesUtil().remove('anchor_utc_$sessionId');
-                SharedPreferencesUtil().remove('anchor_uptime_$sessionId');
+                SharedPreferencesUtil().remove('anchor_utc_device_session_$deviceSessionId');
+                SharedPreferencesUtil().remove('anchor_uptime_device_session_$deviceSessionId');
               } else {
-                Logger.debug("RecordingsManager: Keeping raw chunk for session $sessionId (may be ongoing).");
+                Logger.debug(
+                    "RecordingsManager: Keeping raw segment for session $deviceSessionId (may be ongoing).");
               }
             }
           }
@@ -705,17 +708,17 @@ class RecordingsManager {
     final batches = await manager.getDailyBatches();
     final safeBatches = batches
         .map((batch) {
-          if (batch.rawChunks.isEmpty) return batch;
-          final safeChunks = excludeNewestChunkPerSession(batch.rawChunks);
+          if (batch.rawSegments.isEmpty) return batch;
+          final safeChunks = excludeNewestSegmentPerSession(batch.rawSegments);
           return DailyBatch(
             dateString: batch.dateString,
             date: batch.date,
-            rawChunks: safeChunks,
-            processedRecordings: batch.processedRecordings,
-            starredTimestamps: batch.starredTimestamps,
+            rawSegments: safeChunks,
+            finalizedRecordings: batch.finalizedRecordings,
+            markerTimestamps: batch.markerTimestamps,
           );
         })
-        .where((b) => b.rawChunks.isNotEmpty)
+        .where((b) => b.rawSegments.isNotEmpty)
         .toList();
     if (safeBatches.isEmpty) return;
     try {
@@ -733,7 +736,7 @@ class RecordingsManager {
     if (_isProcessingAny) return;
     final manager = RecordingsManager();
     final batches = await manager.getDailyBatches();
-    final activeBatches = batches.where((b) => b.rawChunks.isNotEmpty).toList();
+    final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
     if (activeBatches.isEmpty) return;
     try {
       await manager.processAll(activeBatches, (_) {}, backgroundMode: false);
@@ -742,38 +745,38 @@ class RecordingsManager {
     }
   }
 
-  /// Returns [chunks] with the highest chunkIndex file excluded per session.
-  /// Files are named `{sessionId}_{chunkIndex}.bin`; the last chunk per session
+  /// Returns [segments] with the highest segmentIndex file excluded per device session.
+  /// Files are named `{deviceSessionId}_{segmentIndex}.bin`; the last segment per session
   /// may still be actively written by the firmware, so we skip it.
-  static List<File> excludeNewestChunkPerSession(List<File> chunks) {
+  static List<File> excludeNewestSegmentPerSession(List<File> segments) {
     final Map<String, List<File>> bySession = {};
-    for (final f in chunks) {
+    for (final f in segments) {
       final name = f.path.split('/').last;
-      final sessionId = name.split('_').first;
-      bySession.putIfAbsent(sessionId, () => []).add(f);
+      final deviceSessionId = name.split('_').first;
+      bySession.putIfAbsent(deviceSessionId, () => []).add(f);
     }
     final result = <File>[];
-    for (final sessionChunks in bySession.values) {
-      // Sort by chunkIndex numerically, then drop the last (highest) one.
-      sessionChunks.sort((a, b) {
+    for (final sessionSegments in bySession.values) {
+      // Sort by segmentIndex numerically, then drop the last (highest) one.
+      sessionSegments.sort((a, b) {
         final aParts = a.path.split('/').last.replaceAll('.bin', '').split('_');
         final bParts = b.path.split('/').last.replaceAll('.bin', '').split('_');
-        final aChunk = int.tryParse(aParts.length > 1 ? aParts[1] : '0') ?? 0;
-        final bChunk = int.tryParse(bParts.length > 1 ? bParts[1] : '0') ?? 0;
-        return aChunk.compareTo(bChunk);
+        final aSegment = int.tryParse(aParts.length > 1 ? aParts[1] : '0') ?? 0;
+        final bSegment = int.tryParse(bParts.length > 1 ? bParts[1] : '0') ?? 0;
+        return aSegment.compareTo(bSegment);
       });
-      result.addAll(sessionChunks.take(sessionChunks.length - 1));
+      result.addAll(sessionSegments.take(sessionSegments.length - 1));
     }
-    // Re-sort numerically by (sessionId, chunkIndex).
+    // Re-sort numerically by (deviceSessionId, segmentIndex).
     result.sort((a, b) {
       final aParts = a.path.split('/').last.replaceAll('.bin', '').split('_');
       final bParts = b.path.split('/').last.replaceAll('.bin', '').split('_');
       final aSession = int.tryParse(aParts[0]) ?? 0;
       final bSession = int.tryParse(bParts[0]) ?? 0;
       if (aSession != bSession) return aSession.compareTo(bSession);
-      final aChunk = int.tryParse(aParts.length > 1 ? aParts[1] : '0') ?? 0;
-      final bChunk = int.tryParse(bParts.length > 1 ? bParts[1] : '0') ?? 0;
-      return aChunk.compareTo(bChunk);
+      final aSegment = int.tryParse(aParts.length > 1 ? aParts[1] : '0') ?? 0;
+      final bSegment = int.tryParse(bParts.length > 1 ? bParts[1] : '0') ?? 0;
+      return aSegment.compareTo(bSegment);
     });
     return result;
   }
@@ -797,7 +800,7 @@ class RecordingsManager {
   }
 
   /// Deletes all processed recordings (.m4a/.wav) and their .meta sidecars for a
-  /// day, plus any remaining raw chunks and their session folders.
+  /// day, plus any remaining raw segments and their device session folders.
   /// Safe to call while nothing is playing.
   Future<void> deleteDay(DailyBatch batch) async {
     final directory = await getApplicationDocumentsDirectory();
@@ -809,18 +812,18 @@ class RecordingsManager {
       Logger.debug('RecordingsManager: Deleted processed recordings for ${batch.dateString}');
     }
 
-    // 2. Delete raw chunks only when adjustment mode is OFF.
-    //    In adjustment mode the user may want to re-process, so keep the chunks.
+    // 2. Delete raw segments only when adjustment mode is OFF.
+    //    In adjustment mode the user may want to re-process, so keep the segments.
     if (!SharedPreferencesUtil().offlineAdjustmentMode) {
       final Set<String> sessionFolderPaths = {};
-      for (var file in batch.rawChunks) {
+      for (var file in batch.rawSegments) {
         if (await file.exists()) {
-          final sessionIdStr = file.parent.path.split('/').last;
-          final sessionId = int.tryParse(sessionIdStr) ?? -1;
+          final deviceSessionIdStr = file.parent.path.split('/').last;
+          final deviceSessionId = int.tryParse(deviceSessionIdStr) ?? -1;
           await file.delete();
           sessionFolderPaths.add(file.parent.path);
-          SharedPreferencesUtil().remove('anchor_utc_$sessionId');
-          SharedPreferencesUtil().remove('anchor_uptime_$sessionId');
+          SharedPreferencesUtil().remove('anchor_utc_device_session_$deviceSessionId');
+          SharedPreferencesUtil().remove('anchor_uptime_device_session_$deviceSessionId');
         }
       }
 

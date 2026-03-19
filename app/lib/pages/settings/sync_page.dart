@@ -66,7 +66,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         if (result == null) {
           _statusMessage = 'All synced! No new recordings found.';
         } else {
-          _statusMessage = 'Sync Complete. Raw chunks downloaded.';
+          _statusMessage = 'Sync Complete. Raw segments downloaded.';
         }
         _isSyncing = false;
       });
@@ -170,10 +170,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
-  Future<void> _deleteAllChunks() async {
-    Logger.debug('DebugTools: Delete All Phone Chunks tapped');
+  Future<void> _deleteAllSegments() async {
+    Logger.debug('DebugTools: Delete All Phone Segments tapped');
     if (RecordingsManager.isProcessingAny) {
-      Logger.debug('DebugTools: Delete All Phone Chunks blocked — processing running');
+      Logger.debug('DebugTools: Delete All Phone Segments blocked — processing running');
       _showProcessingSnackbar();
       return;
     }
@@ -183,29 +183,29 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         context,
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
-        'Delete All Phone Chunks',
-        'This will permanently delete all raw chunk files stored on this phone. This action cannot be undone. Continue?',
+        'Delete All Phone Segments',
+        'This will permanently delete all raw segment files stored on this phone. This action cannot be undone. Continue?',
         confirmText: 'Delete',
       ),
     );
     if (confirm != true) {
-      Logger.debug('DebugTools: Delete Phone Chunks cancelled by user');
+      Logger.debug('DebugTools: Delete Phone Segments cancelled by user');
       return;
     }
     setState(() {
       _isSyncing = true;
-      _statusMessage = 'Deleting all phone chunks...';
+      _statusMessage = 'Deleting all phone segments...';
     });
     try {
-      Logger.debug('DebugTools: Deleting raw_chunks directory');
+      Logger.debug('DebugTools: Deleting raw_segments directory');
       final directory = await getApplicationDocumentsDirectory();
-      final chunksDir = Directory('${directory.path}/raw_chunks');
+      final chunksDir = Directory('${directory.path}/raw_segments');
       if (await chunksDir.exists()) {
         await chunksDir.delete(recursive: true);
       }
-      Logger.debug('DebugTools: raw_chunks deleted');
+      Logger.debug('DebugTools: raw_segments deleted');
       setState(() {
-        _statusMessage = 'Delete Complete. Phone chunks cleared.';
+        _statusMessage = 'Delete Complete. Phone segments cleared.';
         _isSyncing = false;
       });
     } catch (e) {
@@ -287,7 +287,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (mounted) {
       setState(() {
         _progress = percentage;
-        _statusMessage = 'Downloading chunks: ${(percentage * 100).toStringAsFixed(1)}% '
+        _statusMessage = 'Downloading segments: ${(percentage * 100).toStringAsFixed(1)}% '
             '${speedKBps != null && speedKBps > 0 ? '(${speedKBps.toStringAsFixed(1)} KB/s)' : ''}';
       });
     }
@@ -370,7 +370,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 const SizedBox(height: 12),
                 _DebugButton(
                   label: 'Force Process All',
-                  description: 'Process all raw chunks immediately, including the newest (may be incomplete).',
+                  description: 'Process all raw segments immediately, including the newest (may be incomplete).',
                   icon: FontAwesomeIcons.gears,
                   onTap: _isProcessing
                       ? null
@@ -381,7 +381,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                             _showProcessingSnackbar();
                             return;
                           }
-                          setState(() => _statusMessage = 'Force processing all chunks...');
+                          setState(() => _statusMessage = 'Force processing all segments...');
                           try {
                             Logger.debug('DebugTools: Calling RecordingsManager.forceProcessAll()');
                             await RecordingsManager.forceProcessAll();
@@ -410,11 +410,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 ),
                 const SizedBox(height: 12),
                 _DebugButton(
-                  label: 'Delete All Phone Chunks',
-                  description: 'Permanently deletes all raw chunk files stored on this phone.',
+                  label: 'Delete All Phone Segments',
+                  description: 'Permanently deletes all raw segment files stored on this phone.',
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
-                  onTap: _deleteAllChunks,
+                  onTap: _deleteAllSegments,
                 ),
                 const SizedBox(height: 12),
                 _DebugButton(

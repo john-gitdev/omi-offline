@@ -69,10 +69,10 @@ class OfflineAudioProcessor {
   /// Checking _speechFrameCount > 0 is critical: after the silence threshold
   /// fires, _currentRecordingRefs is refilled with trailing silence frames
   /// as a pre-speech buffer for the next conversation, but _speechFrameCount
-  /// is reset to 0. Without this guard, hasOngoingRecording would return true
+  /// is reset to 0. Without this guard, isCapturing would return true
   /// for those silence-only frames, preventing lastSafeToDeleteIndex from
   /// advancing and causing background deletion to stall.
-  bool get hasOngoingRecording => _currentRecordingRefs.isNotEmpty && _speechFrameCount > 0;
+  bool get isCapturing => _currentRecordingRefs.isNotEmpty && _speechFrameCount > 0;
 
   double _calculateDecibels(Int16List pcmData) {
     if (pcmData.isEmpty) return -100.0; // Minimum representable dBFS
@@ -98,14 +98,15 @@ class OfflineAudioProcessor {
   /// Completed conversations are encoded to M4A immediately.
   ///
   /// Returns a list of saved file paths for any recordings completed during
-  /// this chunk.
-  Future<List<String>> processChunkFile(File chunkFile, DateTime fallbackStartTime, {int? sessionId}) async {
+  /// this segment.
+  Future<List<String>> processSegmentFile(File segmentFile, DateTime fallbackStartTime,
+      {int? deviceSessionId}) async {
     final List<String> savedFiles = [];
-    DateTime chunkStartTime = fallbackStartTime;
+    DateTime segmentStartTime = fallbackStartTime;
 
-    // Read file bytes (one chunk at a time, ~240 KB — GC'd after this call returns).
+    // Read file bytes (one segment at a time, ~240 KB — GC'd after this call returns).
     // Bytes are used for VAD decoding; only lightweight FrameRef structs persist.
-    final bytes = await chunkFile.readAsBytes();
+    final bytes = await segmentFile.readAsBytes();
     if (bytes.isEmpty) return savedFiles;
 
     final byteData = ByteData.sublistView(bytes);
@@ -116,18 +117,20 @@ class OfflineAudioProcessor {
       while (off + 4 <= bytes.length) {
         final len = byteData.getUint32(off, Endian.little);
         if (off + 4 + len > bytes.length) break;
-        if (len == 255 && sessionId != null) {
+        if (len == 255 && deviceSessionId != null) {
           try {
             final utcTime = byteData.getUint32(off + 4, Endian.little);
             final uptimeMs = byteData.getUint32(off + 8, Endian.little);
             if (utcTime > 0) {
-              chunkStartTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
+              segmentStartTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
             } else {
-              final anchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
-              final anchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
+              final anchorUtc = SharedPreferencesUtil()
+                  .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
+              final anchorUptime = SharedPreferencesUtil()
+                  .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
               if (anchorUtc > 0 && anchorUptime > 0) {
                 final realUtcSecs = anchorUtc - ((anchorUptime - uptimeMs) ~/ 1000);
-                chunkStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+                segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
               }
             }
           } catch (e) {
@@ -139,11 +142,11 @@ class OfflineAudioProcessor {
       }
     }
 
-    // 2. Gap detection — force-split if device was off between chunks
+    // 2. Gap detection — force-split if device was off between segments
     if (_currentRecordingRefs.isNotEmpty && _recordingStartTime != null) {
       final expectedStartTime =
           _recordingStartTime!.add(Duration(milliseconds: _currentRecordingRefs.length * frameDurationMs));
-      final gapMs = chunkStartTime.difference(expectedStartTime).inMilliseconds.abs();
+      final gapMs = segmentStartTime.difference(expectedStartTime).inMilliseconds.abs();
       if (gapMs > _gapThresholdMs) {
         final filePath = await flushRemaining();
         if (filePath != null) savedFiles.add(filePath);
@@ -151,7 +154,7 @@ class OfflineAudioProcessor {
     }
 
     if (_currentRecordingRefs.isEmpty) {
-      _recordingStartTime = chunkStartTime;
+      _recordingStartTime = segmentStartTime;
     }
 
     // 3. Process audio frames — store FrameRefs, run VAD on decoded PCM
@@ -224,7 +227,7 @@ class OfflineAudioProcessor {
       }
 
       // Store disk pointer — no Opus bytes held in memory
-      _currentRecordingRefs.add(FrameRef(chunkFile: chunkFile, byteOffset: byteOffset, frameLength: len));
+      _currentRecordingRefs.add(FrameRef(segmentFile: segmentFile, byteOffset: byteOffset, frameLength: len));
 
       final silenceDurationMs = _consecutiveSilenceFrames * frameDurationMs;
 
@@ -246,7 +249,7 @@ class OfflineAudioProcessor {
           final int elapsedMs = (_currentRecordingRefs.length - bufferToKeep) * frameDurationMs;
           _recordingStartTime = _recordingStartTime!.add(Duration(milliseconds: elapsedMs));
         } else {
-          _recordingStartTime = chunkStartTime;
+          _recordingStartTime = segmentStartTime;
         }
 
         _currentRecordingRefs = _currentRecordingRefs.sublist(_currentRecordingRefs.length - bufferToKeep);
@@ -264,7 +267,7 @@ class OfflineAudioProcessor {
     return savedFiles;
   }
 
-  /// No-op: completed conversations are already written by [processChunkFile].
+  /// No-op: completed conversations are already written by [processSegmentFile].
   /// Background callers use this instead of [flushRemaining] to avoid
   /// force-writing the in-progress tail.
   Future<List<String>> flushOnlyCompleted() async => [];
@@ -366,10 +369,10 @@ class OfflineAudioProcessor {
         final ref = refs[i];
 
         // Open new file if different from current
-        if (ref.chunkFile.path != currentFilePath) {
+        if (ref.segmentFile.path != currentFilePath) {
           await currentRaf?.close();
-          currentRaf = await ref.chunkFile.open(mode: FileMode.read);
-          currentFilePath = ref.chunkFile.path;
+          currentRaf = await ref.segmentFile.open(mode: FileMode.read);
+          currentFilePath = ref.segmentFile.path;
           nextExpectedOffset = -1;
         }
 
@@ -477,10 +480,10 @@ class OfflineAudioProcessor {
 
           final ref = refs[i];
 
-          if (ref.chunkFile.path != currentFilePath) {
+          if (ref.segmentFile.path != currentFilePath) {
             await currentRaf?.close();
-            currentRaf = await ref.chunkFile.open(mode: FileMode.read);
-            currentFilePath = ref.chunkFile.path;
+            currentRaf = await ref.segmentFile.open(mode: FileMode.read);
+            currentFilePath = ref.segmentFile.path;
             nextExpectedOffset = -1;
           }
 
