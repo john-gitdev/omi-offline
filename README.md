@@ -4,19 +4,19 @@ Welcome to the Omi Offline system documentation. This document deeply explains t
 
 ## The Evolution: From Streaming to Offline-First
 
-Originally, the Omi wearable operated as a **streaming audio system**. It continuously streamed live audio over BLE to the companion app, where Voice Activity Detection (VAD) was applied on the fly. This approach proved insufficient:
-1. **Battery & Bandwidth Drain:** Constant BLE streaming exhausted the wearable's battery quickly and saturated the BLE channel.
-2. **Context Loss & Latency:** Real-time "streaming VAD" on the phone struggled with dropouts and latency. It lacked the ability to reliably maintain substantial backward and forward lookahead buffers across an unstable live BLE stream, causing missed sentence starts (clipping), truncated context, and false negatives in noisy environments.
+Originally, the Omi wearable operated as a **streaming audio system**. It continuously streamed live audio packets over BLE to the connected phone, which then had to immediately receive and upload that audio to the cloud. There was no Voice Activity Detection (VAD) gating on either the device or the phone. This approach proved insufficient primarily due to battery drain:
+1. **Phone Battery Drain:** The constant BLE connection combined with the phone's requirement to continuously wake up, process audio packets, and use its cellular radio to upload them caused severe, unsustainable battery drain on the user's phone.
+2. **Wearable Battery & Bandwidth:** Constant BLE streaming also exhausted the wearable's battery quickly and saturated the BLE channel, leaving no room for dropouts or network instability.
 
 To solve this, the architecture was transformed into an **offline-first, batch-processing system**. 
 
-Today, the firmware acts as a dumb, reliable pipe: it continuously records all audio, chunks it into segments, and writes it directly to a local SD card without any VAD gating. The companion app later synchronizes these segments over BLE (or WiFi) using a Write-Ahead Log (WAL) approach, and processes the audio locally on the phone. This allows the app to use a highly sophisticated, bidirectional VAD algorithm with rich context windows, preserving battery life on the wearable while drastically improving transcription accuracy.
+Today, the firmware acts as a dumb, reliable pipe: it continuously records all audio, chunks it into segments, and writes it directly to a local SD card. The companion app later synchronizes these segments over BLE (or WiFi) using a Write-Ahead Log (WAL) approach, and processes the audio locally on the phone. This allows the app to use a highly sophisticated, bidirectional VAD algorithm with rich context windows, preserving battery life on both the phone and the wearable while drastically improving transcription accuracy.
 
 ---
 
 ## 1. Local VAD Gating
 
-Because the firmware no longer performs VAD, the "Local VAD" runs strictly on the **app side (Flutter/Dart)** during the processing phase. 
+Because the firmware acts as a simple storage pipe, all "Local VAD" runs strictly on the **app side (Flutter/Dart)** during the offline processing phase. 
 
 ### How it works (`OfflineAudioProcessor`)
 When the app processes synchronized `.bin` segments, it doesn't load the entire file into memory. Instead:
