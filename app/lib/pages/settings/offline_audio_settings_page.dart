@@ -17,6 +17,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late double _preSpeechSeconds;
   late int _gapSeconds;
   late bool _adjustmentMode;
+  late String _recordingMode;
+  late bool _autoSyncEnabled;
 
   @override
   void initState() {
@@ -28,6 +30,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _preSpeechSeconds = SharedPreferencesUtil().offlinePreSpeechSeconds;
     _gapSeconds = SharedPreferencesUtil().offlineGapSeconds;
     _adjustmentMode = SharedPreferencesUtil().offlineAdjustmentMode;
+    _recordingMode = SharedPreferencesUtil().offlineRecordingMode;
+    _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
   }
 
   void _saveSettings() {
@@ -38,6 +42,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     SharedPreferencesUtil().offlinePreSpeechSeconds = _preSpeechSeconds;
     SharedPreferencesUtil().offlineGapSeconds = _gapSeconds;
     SharedPreferencesUtil().offlineAdjustmentMode = _adjustmentMode;
+    SharedPreferencesUtil().offlineRecordingMode = _recordingMode;
+    SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
   }
 
   String _formatSeconds(double seconds) {
@@ -82,12 +88,55 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            const Text(
+              'Recording Mode',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                _ModeOption(
+                  label: 'Automatic',
+                  selected: _recordingMode == 'automatic',
+                  onTap: () {
+                    setState(() => _recordingMode = 'automatic');
+                    _saveSettings();
+                  },
+                ),
+                const SizedBox(width: 12),
+                _ModeOption(
+                  label: 'Manual',
+                  selected: _recordingMode == 'manual',
+                  onTap: () {
+                    setState(() => _recordingMode = 'manual');
+                    _saveSettings();
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (_recordingMode == 'automatic')
+              Text(
+                'All audio is continuously processed and split by silence detection.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              )
+            else ...[
+              Text(
+                'Only conversations you marked with a double-press on your Omi will be saved.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'The Conversation Split Threshold below controls how much silence is used to find the edges of your marked conversation.',
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              ),
+            ],
+            const SizedBox(height: 32),
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: const Color(0xFF1C1C1E),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: _adjustmentMode ? Colors.deepPurpleAccent : Colors.transparent),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -96,15 +145,15 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text(
-                        'Adjustment Mode',
+                        'Auto Sync',
                         style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                       ),
                       Switch(
-                        value: _adjustmentMode,
+                        value: _autoSyncEnabled,
                         activeThumbColor: Colors.deepPurpleAccent,
                         onChanged: (value) {
                           setState(() {
-                            _adjustmentMode = value;
+                            _autoSyncEnabled = value;
                           });
                           _saveSettings();
                         },
@@ -113,7 +162,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'When enabled, raw audio chunks are NOT deleted after processing. This allows you to fine-tune these sliders and reprocess your audio until you find the perfect settings. Turning this off will delete all raw chunks after they are processed.',
+                    'When enabled, your Omi will automatically try to connect, sync, and process recordings every hour.',
                     style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                   ),
                 ],
@@ -126,7 +175,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Minimum dB above ambient noise required to classify a frame as speech. Higher = less sensitive. Recommended: 8–12 dB. (Current: ${_snrMarginDb.toStringAsFixed(0)} dB)',
+              'How much louder than background noise your voice must be to count as speech. Higher = only loud, clear speech passes through. Lower = more sensitive, but may pick up background noise. Recommended: 8–12 dB. (Current: ${_snrMarginDb.toStringAsFixed(0)} dB)',
               style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
             ),
             const SizedBox(height: 12),
@@ -280,6 +329,44 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               decoration: BoxDecoration(
                 color: const Color(0xFF1C1C1E),
                 borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: _adjustmentMode ? Colors.deepPurpleAccent : Colors.transparent),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Adjustment Mode',
+                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                      ),
+                      Switch(
+                        value: _adjustmentMode,
+                        activeThumbColor: Colors.deepPurpleAccent,
+                        onChanged: (value) {
+                          setState(() {
+                            _adjustmentMode = value;
+                          });
+                          _saveSettings();
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'When enabled, raw audio chunks are NOT deleted after processing. This allows you to fine-tune these sliders and reprocess your audio until you find the perfect settings. Turning this off will delete all raw chunks after they are processed.',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 32),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1C1C1E),
+                borderRadius: BorderRadius.circular(16),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -296,6 +383,41 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ModeOption extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _ModeOption({required this.label, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1C1C1E),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: selected ? Colors.deepPurpleAccent : Colors.transparent, width: 1.5),
+          ),
+          child: Center(
+            child: Text(
+              label,
+              style: TextStyle(
+                color: selected ? Colors.deepPurpleAccent : Colors.grey.shade400,
+                fontSize: 14,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ),
         ),
       ),
     );

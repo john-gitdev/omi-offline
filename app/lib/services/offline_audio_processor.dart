@@ -6,6 +6,7 @@ import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/audio/aac_encoder.dart';
+import 'package:omi/services/frame_ref.dart';
 import 'package:omi/utils/logger.dart';
 
 class OfflineAudioProcessor {
@@ -20,11 +21,12 @@ class OfflineAudioProcessor {
   // slow to fall (preserve sensitivity after leaving a noisy environment).
   // Rise is intentionally conservative — biased toward keeping more audio.
   static const double _noiseFloorAlphaRise = 0.995; // ~10s to adapt upward
-  static const double _noiseFloorAlphaFall = 0.98;  // ~2s to adapt downward
+  static const double _noiseFloorAlphaFall = 0.98; // ~2s to adapt downward
 
   final SimpleOpusDecoder? _decoder;
 
-  List<Uint8List> _currentRecordingFrames = [];
+  // FrameRef disk-pointer accumulation — no Opus bytes held in memory.
+  List<FrameRef> _currentRecordingRefs = [];
   int _consecutiveSilenceFrames = 0;
 
   // SNR-based VAD state
@@ -52,7 +54,8 @@ class OfflineAudioProcessor {
                 : null),
         _outputDir = outputDir,
         _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb,
-        _hangoverFrameCount = max(0, (SharedPreferencesUtil().offlineHangoverSeconds * 1000).round() ~/ frameDurationMs),
+        _hangoverFrameCount =
+            max(0, (SharedPreferencesUtil().offlineHangoverSeconds * 1000).round() ~/ frameDurationMs),
         _silenceDurationToSplitMs = SharedPreferencesUtil().offlineSplitSeconds * 1000,
         _minSpeechMs = SharedPreferencesUtil().offlineMinSpeechSeconds * 1000,
         _preSpeechBufferMs = (SharedPreferencesUtil().offlinePreSpeechSeconds * 1000).round(),
@@ -64,12 +67,12 @@ class OfflineAudioProcessor {
 
   /// True when there is an in-progress conversation with accumulated speech.
   /// Checking _speechFrameCount > 0 is critical: after the silence threshold
-  /// fires, _currentRecordingFrames is refilled with trailing silence frames
+  /// fires, _currentRecordingRefs is refilled with trailing silence frames
   /// as a pre-speech buffer for the next conversation, but _speechFrameCount
   /// is reset to 0. Without this guard, hasOngoingRecording would return true
   /// for those silence-only frames, preventing lastSafeToDeleteIndex from
   /// advancing and causing background deletion to stall.
-  bool get hasOngoingRecording => _currentRecordingFrames.isNotEmpty && _speechFrameCount > 0;
+  bool get hasOngoingRecording => _currentRecordingRefs.isNotEmpty && _speechFrameCount > 0;
 
   double _calculateDecibels(Int16List pcmData) {
     if (pcmData.isEmpty) return -100.0; // Minimum representable dBFS
@@ -88,72 +91,93 @@ class OfflineAudioProcessor {
     return dbfs;
   }
 
-  /// Processes a list of Opus frames.
-  /// Returns a list of saved file paths if any recordings were completed during this chunk.
-  Future<List<String>> processFrames(List<Uint8List> opusFrames, DateTime fallbackStartTime, {int? sessionId}) async {
-    List<String> savedFiles = [];
-
-    // 1. Scan for the first 255 metadata packet to get exact timing
+  /// Processes a single .bin chunk file.
+  ///
+  /// Reads the file, parses frame offsets, runs SNR VAD on decoded PCM,
+  /// and stores [FrameRef] disk-pointers instead of Opus bytes.
+  /// Completed conversations are encoded to M4A immediately.
+  ///
+  /// Returns a list of saved file paths for any recordings completed during
+  /// this chunk.
+  Future<List<String>> processChunkFile(File chunkFile, DateTime fallbackStartTime, {int? sessionId}) async {
+    final List<String> savedFiles = [];
     DateTime chunkStartTime = fallbackStartTime;
 
-    if (sessionId != null) {
-      for (var frame in opusFrames) {
-        if (frame.length == 255) {
-          try {
-            var byteData = ByteData.sublistView(frame);
-            var utcTime = byteData.getUint32(0, Endian.little);
-            var uptimeMs = byteData.getUint32(4, Endian.little);
+    // Read file bytes (one chunk at a time, ~240 KB — GC'd after this call returns).
+    // Bytes are used for VAD decoding; only lightweight FrameRef structs persist.
+    final bytes = await chunkFile.readAsBytes();
+    if (bytes.isEmpty) return savedFiles;
 
+    final byteData = ByteData.sublistView(bytes);
+
+    // 1. Find timing from first metadata packet (0xFF, length == 255)
+    {
+      int off = 0;
+      while (off + 4 <= bytes.length) {
+        final len = byteData.getUint32(off, Endian.little);
+        if (off + 4 + len > bytes.length) break;
+        if (len == 255 && sessionId != null) {
+          try {
+            final utcTime = byteData.getUint32(off + 4, Endian.little);
+            final uptimeMs = byteData.getUint32(off + 8, Endian.little);
             if (utcTime > 0) {
               chunkStartTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
             } else {
-              // Lookup anchor
               final anchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
               final anchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
-
               if (anchorUtc > 0 && anchorUptime > 0) {
                 final realUtcSecs = anchorUtc - ((anchorUptime - uptimeMs) ~/ 1000);
                 chunkStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
               }
             }
-            break; // Found the precise time, stop scanning
           } catch (e) {
             Logger.error("OfflineAudioProcessor: Error parsing metadata packet: $e");
-            // skip corrupt
           }
+          break; // found precise time
         }
+        off += 4 + len;
       }
     }
 
-    if (_currentRecordingFrames.isNotEmpty && _recordingStartTime != null) {
+    // 2. Gap detection — force-split if device was off between chunks
+    if (_currentRecordingRefs.isNotEmpty && _recordingStartTime != null) {
       final expectedStartTime =
-          _recordingStartTime!.add(Duration(milliseconds: _currentRecordingFrames.length * frameDurationMs));
+          _recordingStartTime!.add(Duration(milliseconds: _currentRecordingRefs.length * frameDurationMs));
       final gapMs = chunkStartTime.difference(expectedStartTime).inMilliseconds.abs();
-
-      // If there is a gap, force a split (e.g., device was turned off)
       if (gapMs > _gapThresholdMs) {
         final filePath = await flushRemaining();
-        if (filePath != null) {
-          savedFiles.add(filePath);
-        }
+        if (filePath != null) savedFiles.add(filePath);
       }
     }
 
-    if (_currentRecordingFrames.isEmpty) {
+    if (_currentRecordingRefs.isEmpty) {
       _recordingStartTime = chunkStartTime;
     }
 
-    int _frameIndex = 0;
-    for (var frame in opusFrames) {
-      // Skip the metadata packets during actual audio processing
-      if (frame.length == 255) continue;
+    // 3. Process audio frames — store FrameRefs, run VAD on decoded PCM
+    int off = 0;
+    int frameIndex = 0;
+    while (off + 4 <= bytes.length) {
+      final len = byteData.getUint32(off, Endian.little);
+      if (off + 4 + len > bytes.length) break;
 
-      if (_frameIndex++ % 50 == 0) await Future.delayed(Duration.zero);
+      final byteOffset = off; // position of 4-byte length prefix — used in FrameRef
+      off += 4;
+
+      if (len == 255) {
+        off += len; // skip metadata packets
+        continue;
+      }
+
+      final opusFrame = bytes.sublist(off, off + len);
+      off += len;
+
+      if (frameIndex++ % 50 == 0) await Future.delayed(Duration.zero);
 
       Int16List pcmData;
       try {
         if (_decoder == null) continue;
-        pcmData = _decoder!.decode(input: frame);
+        pcmData = _decoder!.decode(input: Uint8List.fromList(opusFrame));
       } catch (e) {
         // Skip corrupt or invalid Opus frames
         continue;
@@ -161,19 +185,16 @@ class OfflineAudioProcessor {
 
       final dbfs = _calculateDecibels(pcmData);
 
-      // 1. Fast convergence during initial frames — clamps downward with a +3 dB guard
-      //    so early speech frames don't drive the floor too low
+      // Fast convergence during initial frames — clamps downward with a +3 dB guard
       if (_noiseFloorInitFrames > 0) {
         _noiseFloorDbfs = min(_noiseFloorDbfs, dbfs + 3);
         _noiseFloorInitFrames--;
       }
 
-      // 2. SNR speech test
+      // SNR speech test
       final bool rawSpeech = dbfs > _noiseFloorDbfs + _snrMarginDb;
 
-      // 3. Asymmetric noise floor adaptation during silence:
-      //    - Rise slowly on louder frames (conservative — avoids transients suppressing speech)
-      //    - Fall slowly on quieter frames (recovers sensitivity after leaving noisy environment)
+      // Asymmetric noise floor adaptation during silence
       if (!rawSpeech) {
         if (dbfs > _noiseFloorDbfs) {
           _noiseFloorDbfs = _noiseFloorAlphaRise * _noiseFloorDbfs + (1 - _noiseFloorAlphaRise) * dbfs;
@@ -182,7 +203,7 @@ class OfflineAudioProcessor {
         }
       }
 
-      // 4. Hangover smoothing
+      // Hangover smoothing
       bool activeSpeech;
       if (rawSpeech) {
         _hangoverFrames = _hangoverFrameCount;
@@ -194,7 +215,7 @@ class OfflineAudioProcessor {
         activeSpeech = false;
       }
 
-      // 5. Update counters
+      // Update counters
       if (!activeSpeech) {
         _consecutiveSilenceFrames++;
       } else {
@@ -202,19 +223,19 @@ class OfflineAudioProcessor {
         _speechFrameCount++;
       }
 
-      _currentRecordingFrames.add(frame);
+      // Store disk pointer — no Opus bytes held in memory
+      _currentRecordingRefs.add(FrameRef(chunkFile: chunkFile, byteOffset: byteOffset, frameLength: len));
 
       final silenceDurationMs = _consecutiveSilenceFrames * frameDurationMs;
 
       if (silenceDurationMs >= _silenceDurationToSplitMs) {
-        final framesToKeep = _currentRecordingFrames.length - _consecutiveSilenceFrames;
+        final framesToKeep = _currentRecordingRefs.length - _consecutiveSilenceFrames;
 
         if (framesToKeep > 0) {
-          final recordingFrames = _currentRecordingFrames.sublist(0, framesToKeep);
-
+          final recordingRefs = _currentRecordingRefs.sublist(0, framesToKeep);
           if (_speechFrameCount * frameDurationMs >= _minSpeechMs) {
-            final filePath = await _saveRecording(recordingFrames, _recordingStartTime!);
-            savedFiles.add(filePath);
+            final filePath = await _saveRecording(recordingRefs, _recordingStartTime!);
+            if (filePath != null) savedFiles.add(filePath);
           }
         }
 
@@ -222,55 +243,58 @@ class OfflineAudioProcessor {
         final bufferToKeep = min(preSpeechFramesCount, _consecutiveSilenceFrames);
 
         if (_recordingStartTime != null) {
-          final int elapsedMs = (_currentRecordingFrames.length - bufferToKeep) * frameDurationMs;
+          final int elapsedMs = (_currentRecordingRefs.length - bufferToKeep) * frameDurationMs;
           _recordingStartTime = _recordingStartTime!.add(Duration(milliseconds: elapsedMs));
         } else {
           _recordingStartTime = chunkStartTime;
         }
 
-        _currentRecordingFrames = _currentRecordingFrames.sublist(_currentRecordingFrames.length - bufferToKeep);
+        _currentRecordingRefs = _currentRecordingRefs.sublist(_currentRecordingRefs.length - bufferToKeep);
         _speechFrameCount = 0;
         _hangoverFrames = 0;
         _consecutiveSilenceFrames = bufferToKeep;
       }
     }
 
-    if (opusFrames.isNotEmpty) {
-      Logger.debug("OfflineAudioProcessor: Processed ${opusFrames.length} frames. "
+    if (bytes.isNotEmpty) {
+      Logger.debug("OfflineAudioProcessor: Processed chunk (${frameIndex} audio frames). "
           "Speech: $_speechFrameCount, NoiseFloor: ${_noiseFloorDbfs.toStringAsFixed(1)} dB, Margin: $_snrMarginDb dB");
     }
 
     return savedFiles;
   }
 
-  /// No-op: completed conversations are already written by [processFrames].
+  /// No-op: completed conversations are already written by [processChunkFile].
   /// Background callers use this instead of [flushRemaining] to avoid
   /// force-writing the in-progress tail.
   Future<List<String>> flushOnlyCompleted() async => [];
 
   Future<String?> flushRemaining() async {
-    if (_currentRecordingFrames.isEmpty) return null;
+    if (_currentRecordingRefs.isEmpty) return null;
 
-    final framesToKeep = max(0, _currentRecordingFrames.length - _consecutiveSilenceFrames);
+    final framesToKeep = max(0, _currentRecordingRefs.length - _consecutiveSilenceFrames);
 
     String? filePath;
     if (framesToKeep > 0) {
-      final recordingFrames = _currentRecordingFrames.sublist(0, framesToKeep);
-
+      final refs = _currentRecordingRefs.sublist(0, framesToKeep);
       if (_speechFrameCount * frameDurationMs >= _minSpeechMs) {
-        filePath = await _saveRecording(recordingFrames, _recordingStartTime ?? DateTime.now());
+        filePath = await _saveRecording(refs, _recordingStartTime ?? DateTime.now());
         Logger.debug("OfflineAudioProcessor: Flushed remaining buffer.");
       }
     }
 
-    _currentRecordingFrames.clear();
+    _currentRecordingRefs.clear();
     _consecutiveSilenceFrames = 0;
     _speechFrameCount = 0;
     _hangoverFrames = 0;
     return filePath;
   }
 
-  Future<String> _saveRecording(List<Uint8List> frames, DateTime startTime) async {
+  /// Encodes a list of [FrameRef]s to M4A (with WAV fallback).
+  ///
+  /// Reads Opus bytes sequentially from source .bin files via [RandomAccessFile].
+  /// Only one decoded PCM frame is held in memory at a time.
+  Future<String?> _saveRecording(List<FrameRef> refs, DateTime startTime) async {
     final directory = await getApplicationDocumentsDirectory();
     final timestamp = startTime.millisecondsSinceEpoch;
 
@@ -288,9 +312,9 @@ class OfflineAudioProcessor {
       await dateFolder.create(recursive: true);
     }
 
-    // Short recording (<100 ms) → write WAV fallback (AAC encoders may misbehave)
-    if (frames.length < 5) {
-      return await _saveWav(frames, dateFolderPath, timestamp);
+    // Short recording (<5 frames ~100ms) → write WAV fallback
+    if (refs.length < 5) {
+      return await _saveWav(refs, dateFolderPath, timestamp);
     }
 
     final m4aPath = '${dateFolder.path}/recording_$timestamp.m4a';
@@ -308,16 +332,17 @@ class OfflineAudioProcessor {
 
     String? sessionId;
     bool aacFailed = false;
+    bool hasEncodedAnyFrames = false;
 
     try {
       sessionId = await AacEncoder.startEncoder(sampleRate, m4aPath);
-    } on PlatformException catch (e) {
+    } on Exception catch (e) {
       Logger.error('OfflineAudioProcessor: AAC startEncoder failed, falling back to WAV: $e');
       aacFailed = true;
     }
 
     if (aacFailed) {
-      return await _saveWav(frames, dateFolderPath, timestamp);
+      return await _saveWav(refs, dateFolderPath, timestamp);
     }
 
     Future<void> flushBatch() async {
@@ -325,17 +350,42 @@ class OfflineAudioProcessor {
       final bytes = batchBuffer.toBytes();
       batchBuffer.clear();
       batchFrameCount = 0;
+      hasEncodedAnyFrames = true;
       await AacEncoder.encodeChunk(sessionId!, Uint8List.fromList(bytes));
     }
 
+    // Sequential file reads — open each source file once, seek only when needed
+    String? currentFilePath;
+    RandomAccessFile? currentRaf;
+    int nextExpectedOffset = -1;
+
     try {
-      for (var i = 0; i < frames.length; i++) {
+      for (var i = 0; i < refs.length; i++) {
         if (i % 50 == 0) await Future.delayed(Duration.zero);
+
+        final ref = refs[i];
+
+        // Open new file if different from current
+        if (ref.chunkFile.path != currentFilePath) {
+          await currentRaf?.close();
+          currentRaf = await ref.chunkFile.open(mode: FileMode.read);
+          currentFilePath = ref.chunkFile.path;
+          nextExpectedOffset = -1;
+        }
+
+        // Seek to frame payload — skip 4-byte length prefix
+        final frameDataOffset = ref.byteOffset + 4;
+        if (nextExpectedOffset != frameDataOffset) {
+          await currentRaf!.setPosition(frameDataOffset);
+        }
+
+        final opusBytes = Uint8List.fromList(await currentRaf!.read(ref.frameLength));
+        nextExpectedOffset = frameDataOffset + ref.frameLength;
 
         Int16List pcmData;
         try {
           if (_decoder == null) continue;
-          pcmData = _decoder!.decode(input: frames[i]);
+          pcmData = _decoder!.decode(input: opusBytes);
         } catch (e) {
           continue;
         }
@@ -350,7 +400,6 @@ class OfflineAudioProcessor {
         }
         totalSamples += pcmData.length;
 
-        // Accumulate raw PCM bytes into batch
         batchBuffer.add(pcmData.buffer.asUint8List(pcmData.offsetInBytes, pcmData.lengthInBytes));
         batchFrameCount++;
 
@@ -359,16 +408,27 @@ class OfflineAudioProcessor {
         }
       }
 
-      // Flush remaining batch
       await flushBatch();
 
+      if (!hasEncodedAnyFrames) {
+        // Encoder was started but no PCM data was decoded — calling finishEncoder
+        // would trigger "Stop() called but track not started" in MPEG4Writer.
+        // Abandon cleanly: delete the empty file and return null.
+        Logger.debug('OfflineAudioProcessor: No frames encoded — discarding empty segment.');
+        final emptyFile = File(m4aPath);
+        if (await emptyFile.exists()) await emptyFile.delete();
+        return null;
+      }
+
       await AacEncoder.finishEncoder(sessionId!);
-    } on PlatformException catch (e) {
+    } on Exception catch (e) {
       Logger.error('OfflineAudioProcessor: AAC encoding failed, falling back to WAV: $e');
-      // Clean up partial temp file
       final tmpFile = File('${dateFolder.path}/recording_$timestamp.tmp.m4a');
       if (await tmpFile.exists()) await tmpFile.delete();
-      return await _saveWav(frames, dateFolderPath, timestamp);
+      await currentRaf?.close();
+      return await _saveWav(refs, dateFolderPath, timestamp);
+    } finally {
+      await currentRaf?.close();
     }
 
     // Write .meta sidecar (408 bytes base + optional upload key)
@@ -395,26 +455,52 @@ class OfflineAudioProcessor {
     await File(metaPath).writeAsBytes(metaOut);
 
     Logger.debug(
-        "OfflineAudioProcessor: Saved recording (${frames.length} frames, ${durationMs}ms) starting at $startTime to $m4aPath");
+        "OfflineAudioProcessor: Saved recording (${refs.length} frames, ${durationMs}ms) starting at $startTime to $m4aPath");
     return m4aPath;
   }
 
   /// WAV fallback used for very short recordings or when AAC encoder fails.
-  Future<String> _saveWav(List<Uint8List> frames, String dateFolderPath, int timestamp) async {
+  Future<String> _saveWav(List<FrameRef> refs, String dateFolderPath, int timestamp) async {
     final wavPath = '$dateFolderPath/recording_$timestamp.wav';
     final wavFile = File(wavPath);
     final IOSink sink = wavFile.openWrite();
 
+    String? currentFilePath;
+    RandomAccessFile? currentRaf;
+    int nextExpectedOffset = -1;
+
     final List<Uint8List> decodedChunks = [];
     if (_decoder != null) {
-      for (var i = 0; i < frames.length; i++) {
-        if (i % 50 == 0) await Future.delayed(Duration.zero);
-        try {
-          final decoded = _decoder!.decode(input: frames[i]);
-          decodedChunks.add(decoded.buffer.asUint8List());
-        } catch (e) {
-          // Skip corrupt frame
+      try {
+        for (var i = 0; i < refs.length; i++) {
+          if (i % 50 == 0) await Future.delayed(Duration.zero);
+
+          final ref = refs[i];
+
+          if (ref.chunkFile.path != currentFilePath) {
+            await currentRaf?.close();
+            currentRaf = await ref.chunkFile.open(mode: FileMode.read);
+            currentFilePath = ref.chunkFile.path;
+            nextExpectedOffset = -1;
+          }
+
+          final frameDataOffset = ref.byteOffset + 4;
+          if (nextExpectedOffset != frameDataOffset) {
+            await currentRaf!.setPosition(frameDataOffset);
+          }
+
+          final opusBytes = Uint8List.fromList(await currentRaf!.read(ref.frameLength));
+          nextExpectedOffset = frameDataOffset + ref.frameLength;
+
+          try {
+            final decoded = _decoder!.decode(input: opusBytes);
+            decodedChunks.add(decoded.buffer.asUint8List());
+          } catch (e) {
+            // Skip corrupt frame
+          }
         }
+      } finally {
+        await currentRaf?.close();
       }
     }
 
@@ -452,7 +538,7 @@ class OfflineAudioProcessor {
       sink.add(pcm);
     }
     await sink.close();
-    Logger.debug("OfflineAudioProcessor: Saved WAV fallback (${frames.length} frames) to $wavPath");
+    Logger.debug("OfflineAudioProcessor: Saved WAV fallback (${refs.length} frames) to $wavPath");
     return wavPath;
   }
 }

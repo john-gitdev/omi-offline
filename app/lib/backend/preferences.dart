@@ -30,7 +30,7 @@ class SharedPreferencesUtil {
 
   set offlineSplitSeconds(int value) => saveInt('offlineSplitSeconds', value);
 
-  int get offlineMinSpeechSeconds => getInt('offlineMinSpeechSeconds', defaultValue: 0);
+  int get offlineMinSpeechSeconds => getInt('offlineMinSpeechSeconds', defaultValue: 5);
 
   set offlineMinSpeechSeconds(int value) => saveInt('offlineMinSpeechSeconds', value);
 
@@ -38,13 +38,22 @@ class SharedPreferencesUtil {
 
   set offlinePreSpeechSeconds(double value) => saveDouble('offlinePreSpeechSeconds', value);
 
-  int get offlineGapSeconds => getInt('offlineGapSeconds', defaultValue: 10);
+  int get offlineGapSeconds => getInt('offlineGapSeconds', defaultValue: 30);
 
   set offlineGapSeconds(int value) => saveInt('offlineGapSeconds', value);
 
   bool get offlineAdjustmentMode => getBool('offlineAdjustmentMode', defaultValue: false);
 
   set offlineAdjustmentMode(bool value) => saveBool('offlineAdjustmentMode', value);
+
+  // 'automatic' = continuous VAD, 'manual' = star-marker extraction
+  String get offlineRecordingMode => getString('offlineRecordingMode', defaultValue: 'automatic');
+
+  set offlineRecordingMode(String v) => saveString('offlineRecordingMode', v);
+
+  bool get autoSyncEnabled => getBool('autoSyncEnabled', defaultValue: true);
+
+  set autoSyncEnabled(bool value) => saveBool('autoSyncEnabled', value);
 
   bool get recordingsFilterEnabled => getBool('recordingsFilterEnabled', defaultValue: false);
 
@@ -93,16 +102,19 @@ class SharedPreferencesUtil {
       prefs.setInt('offlineSplitSeconds', 120); // 2 minutes default
     }
     if (!prefs.containsKey('offlineMinSpeechSeconds')) {
-      prefs.setInt('offlineMinSpeechSeconds', 0); // 0 seconds default
+      prefs.setInt('offlineMinSpeechSeconds', 5); // 5 seconds default
     }
     if (!prefs.containsKey('offlinePreSpeechSeconds')) {
       prefs.setDouble('offlinePreSpeechSeconds', 1.0);
     }
     if (!prefs.containsKey('offlineGapSeconds')) {
-      prefs.setInt('offlineGapSeconds', 10);
+      prefs.setInt('offlineGapSeconds', 30);
     }
     if (!prefs.containsKey('offlineAdjustmentMode')) {
       prefs.setBool('offlineAdjustmentMode', false);
+    }
+    if (!prefs.containsKey('offlineRecordingMode')) {
+      prefs.setString('offlineRecordingMode', 'automatic');
     }
   }
 

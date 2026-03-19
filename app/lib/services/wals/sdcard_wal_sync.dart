@@ -35,6 +35,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   void setGlobalProgressListener(IWalSyncProgressListener? listener) {
     _globalProgressListener = listener;
   }
+
   @override
   bool get isDeviceRecordingFailed => _isDeviceRecordingFailed;
 
@@ -51,11 +52,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   int get estimatedTotalChunks {
     int total = 0;
+    final pending = <String>[];
     for (var wal in _wals) {
       if (wal.status == WalStatus.miss && wal.storage == WalStorage.sdcard) {
         total += wal.estimatedChunks;
+        pending.add('  wal[${wal.id}] estimatedChunks=${wal.estimatedChunks} '
+            'totalBytes=${wal.storageTotalBytes} offset=${wal.storageOffset}');
       }
     }
+    Logger.debug(
+        'SDCardWalSync: estimatedTotalChunks=$total from ${pending.length} pending WALs:\n${pending.join('\n')}');
     return total;
   }
 
@@ -137,12 +143,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
 
     BleAudioCodec codec = await _getAudioCodec(deviceId);
-    int threshold = 10 * codec.getFramesLengthInBytes() * codec.getFramesPerSecond();
+    int threshold = 60 * codec.getFramesLengthInBytes() * codec.getFramesPerSecond();
+    final int newBytes = totalBytes - storageOffset;
     Logger.debug(
-        "SDCardWalSync: totalBytes=$totalBytes, storageOffset=$storageOffset, diff=${totalBytes - storageOffset}, threshold=$threshold");
+        "SDCardWalSync: totalBytes=$totalBytes, storageOffset=$storageOffset, diff=$newBytes, threshold=$threshold");
 
-    if (totalBytes > 0) {
-      var seconds = ((totalBytes - storageOffset) / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
+    if (totalBytes > 0 && newBytes >= threshold) {
+      var seconds = (newBytes / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
       int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
 
       // Ensure stable ID for existing entries by matching device and fileNum
@@ -169,9 +176,51 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal.syncStartedAt = existingWal.syncStartedAt;
       }
 
+      Logger.debug('SDCardWalSync: getMissingWals → WAL created: '
+          'seconds=$seconds estimatedChunks=${wal.estimatedChunks} '
+          'totalBytes=$totalBytes storageOffset=$storageOffset newBytes=$newBytes');
       wals.add(wal);
+    } else {
+      Logger.debug('SDCardWalSync: getMissingWals → skipped (newBytes=$newBytes < threshold=$threshold '
+          'OR totalBytes=0). totalBytes=$totalBytes storageOffset=$storageOffset');
     }
 
+    Logger.debug('SDCardWalSync: getMissingWals → returning ${wals.length} WAL(s)');
+    return wals;
+  }
+
+  /// Same as [getMissingWals] but ignores the 60-second threshold.
+  /// Used by [syncAll] with `force: true` so an explicit "Sync All" always works
+  /// even when the device has less than 60 seconds of audio buffered.
+  Future<List<Wal>> _getMissingWalsIgnoringThreshold() async {
+    final dev = _device;
+    if (dev == null) return [];
+    String deviceId = dev.id;
+    List<Wal> wals = [];
+    var storageFiles = await _getStorageList(deviceId);
+    if (storageFiles.isEmpty) return [];
+    var totalBytes = storageFiles[0];
+    var storageOffset = storageFiles.length >= 2 ? storageFiles[1] : 0;
+    if (storageOffset > totalBytes) storageOffset = 0;
+    BleAudioCodec codec = await _getAudioCodec(deviceId);
+    if (totalBytes > 0) {
+      var seconds = ((totalBytes - storageOffset) / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
+      int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
+      final existingWal =
+          _wals.firstWhereOrNull((w) => w.device == deviceId && w.fileNum == 1 && w.storage == WalStorage.sdcard);
+      if (existingWal != null) timerStart = existingWal.timerStart;
+      wals.add(Wal(
+        codec: codec,
+        channel: 1,
+        device: deviceId,
+        fileNum: 1,
+        storageOffset: storageOffset,
+        storageTotalBytes: totalBytes,
+        timerStart: timerStart,
+        storage: WalStorage.sdcard,
+        estimatedChunks: (seconds / 60).ceil(),
+      ));
+    }
     return wals;
   }
 
@@ -608,10 +657,22 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return null;
     }
 
-    // If our list is empty, refresh it before checking sync status
+    // If our list is empty, refresh it before checking sync status.
+    // force=true bypasses the 60-second threshold so an explicit "Sync All" always works.
     if (_wals.isEmpty) {
       Logger.debug("SDCardWalSync: File list empty, refreshing before sync...");
       _wals = await getMissingWals();
+      if (_wals.isEmpty && force) {
+        _wals = await _getMissingWalsIgnoringThreshold();
+      }
+    }
+
+    // Log full WAL state at sync start so we can audit what's being synced and why.
+    Logger.debug('SDCardWalSync: syncAll start — _wals total=${_wals.length} force=$force');
+    for (final w in _wals) {
+      Logger.debug('  WAL[${w.id}] status=${w.status} estimatedChunks=${w.estimatedChunks} '
+          'totalBytes=${w.storageTotalBytes} offset=${w.storageOffset} '
+          'isSyncing=${w.isSyncing}');
     }
 
     // NOTE: `force` controls WAL *selection* only (include already-synced wals vs. only
@@ -794,9 +855,18 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   @override
   Future<void> deleteAllPendingWals() async {
-    for (final wal in _wals.toList()) {
-      await deleteWal(wal);
+    final dev = _device;
+    if (dev == null) {
+      Logger.debug('SDCardWalSync: deleteAllPendingWals — no device connected, skipping');
+      return;
     }
+    // Always send DELETE directly to fileNum=1 regardless of _wals state.
+    // The old loop over _wals was a silent no-op when _wals was empty (e.g.
+    // called hours after the last sync when _wals had already been cleared).
+    Logger.debug('SDCardWalSync: deleteAllPendingWals — sending DELETE for fileNum=1 to ${dev.id}');
+    await _writeToStorage(dev.id, 1, 1, 0); // cmd=1 DELETE, fileNum=1, offset=0
+    _wals = _wals.where((w) => w.fileNum != 1).toList();
+    listener.onWalUpdated();
   }
 
   @override
