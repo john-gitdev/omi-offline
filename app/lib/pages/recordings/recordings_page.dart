@@ -161,7 +161,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
             });
             setState(() {
               _spState = SyncProcessState.processing;
-              _totalMinutes = totalBytes / 120000.0;
+              _totalMinutes = totalBytes / 252000.0; // .bin on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
               _minutesRemaining = _totalMinutes;
               _syncedCount = 0;
               _syncSpeed = 0.0;
@@ -345,7 +345,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         return sum;
       }
     });
-    final totalMin = totalBytes / 120000.0; // opusFS320: 2000 B/s × 60 s
+    final totalMin = totalBytes / 252000.0; // .bin on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
     setState(() {
       _totalMinutes = totalMin;
       _minutesRemaining = totalMin;

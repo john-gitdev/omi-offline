@@ -143,13 +143,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
 
     BleAudioCodec codec = await _getAudioCodec(deviceId);
-    int threshold = 60 * codec.getFramesLengthInBytes() * codec.getFramesPerSecond();
+    int threshold = codec.getStorageBytesPerMinute();
     final int newBytes = totalBytes - storageOffset;
     Logger.debug(
         "SDCardWalSync: totalBytes=$totalBytes, storageOffset=$storageOffset, diff=$newBytes, threshold=$threshold");
 
     if (totalBytes > 0 && newBytes >= threshold) {
-      var seconds = (newBytes / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
+      var seconds = (newBytes / (codec.getStorageBytesPerMinute() / 60.0)).truncate();
       int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
 
       // Ensure stable ID for existing entries by matching device and fileNum
@@ -204,7 +204,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     if (storageOffset > totalBytes) storageOffset = 0;
     BleAudioCodec codec = await _getAudioCodec(deviceId);
     if (totalBytes > 0) {
-      var seconds = ((totalBytes - storageOffset) / codec.getFramesLengthInBytes()) ~/ codec.getFramesPerSecond();
+      var seconds = ((totalBytes - storageOffset) / (codec.getStorageBytesPerMinute() / 60.0)).truncate();
       int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
       final existingWal =
           _wals.firstWhereOrNull((w) => w.device == deviceId && w.fileNum == 1 && w.storage == WalStorage.sdcard);
@@ -706,6 +706,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         await _checkDiskSpaceBeforeSync(totalBytesToDownload);
         _downloadStartTime = DateTime.now();
 
+        final List<File> syncedFiles = [];
         try {
           await _readStorageBytesToFile(
               wal,
@@ -714,6 +715,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                   throw Exception("Sync cancelled by user");
                 }
 
+                syncedFiles.add(file);
                 int bytesInChunk = offset - lastOffset;
                 _updateSpeed(bytesInChunk);
                 await _registerSingleChunk(wal, file, timerStart);
@@ -725,7 +727,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               onProgress: (offset) {
                 wal.storageOffset = offset;
                 final remainingBytes = wal.storageTotalBytes - offset;
-                final seconds = (remainingBytes / wal.codec.getFramesLengthInBytes()) ~/ wal.codec.getFramesPerSecond();
+                final seconds = (remainingBytes / (wal.codec.getStorageBytesPerMinute() / 60.0)).truncate();
                 wal.estimatedChunks = (seconds / 60).ceil();
 
                 final double progressPercent =
@@ -734,6 +736,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
                 _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
               });
+
+          // Update estimatedChunks from exact frame count now that we have the .bin files.
+          final uniqueFiles = {for (final f in syncedFiles) f.path: f}.values.toList();
+          if (uniqueFiles.isNotEmpty) {
+            final totalFrames = uniqueFiles.fold(0, (sum, f) => sum + _countFramesInFile(f));
+            final exactSeconds = totalFrames / wal.codec.getFramesPerSecond();
+            wal.estimatedChunks = (exactSeconds / 60).ceil();
+            Logger.debug('SDCardWalSync: syncAll post-sync frame count: '
+                'frames=$totalFrames exactSeconds=$exactSeconds estimatedChunks=${wal.estimatedChunks}');
+          }
 
           // Small delay to allow firmware buffers to clear before sending DELETE
           await Future.delayed(const Duration(milliseconds: 500));
@@ -788,6 +800,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     await _checkDiskSpaceBeforeSync(totalBytesToDownload);
     _downloadStartTime = DateTime.now();
 
+    final List<File> syncedFiles = [];
     try {
       await _readStorageBytesToFile(
           wal,
@@ -796,6 +809,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               throw Exception("Sync cancelled by user");
             }
 
+            syncedFiles.add(file);
             int bytesInChunk = offset - lastOffset;
             _updateSpeed(bytesInChunk);
             await _registerSingleChunk(wal, file, timerStart);
@@ -807,7 +821,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           onProgress: (offset) {
             wal.storageOffset = offset;
             final remainingBytes = wal.storageTotalBytes - offset;
-            final seconds = (remainingBytes / wal.codec.getFramesLengthInBytes()) ~/ wal.codec.getFramesPerSecond();
+            final seconds = (remainingBytes / (wal.codec.getStorageBytesPerMinute() / 60.0)).truncate();
             wal.estimatedChunks = (seconds / 60).ceil();
 
             final double progressPercent =
@@ -816,6 +830,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
             _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
           });
+
+      // Update estimatedChunks from exact frame count now that we have the .bin files.
+      final uniqueFiles = {for (final f in syncedFiles) f.path: f}.values.toList();
+      if (uniqueFiles.isNotEmpty) {
+        final totalFrames = uniqueFiles.fold(0, (sum, f) => sum + _countFramesInFile(f));
+        final exactSeconds = totalFrames / wal.codec.getFramesPerSecond();
+        wal.estimatedChunks = (exactSeconds / 60).ceil();
+        Logger.debug('SDCardWalSync: syncWal post-sync frame count: '
+            'frames=$totalFrames exactSeconds=$exactSeconds estimatedChunks=${wal.estimatedChunks}');
+      }
 
       // Small delay to allow firmware buffers to clear before sending DELETE
       await Future.delayed(const Duration(milliseconds: 500));
@@ -843,6 +867,27 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<void> _registerSingleChunk(Wal wal, File file, int timerStart) async {
     // Note: We no longer queue this for automatic processing in LocalWalSync.
     // The RecordingsManager will pick up the .bin files in raw_chunks/ session folders.
+  }
+
+  /// Counts Opus frames in a .bin chunk file (4-byte LE prefix per frame).
+  /// Uses streaming reads to avoid loading the entire file into memory.
+  /// Do not special-case len==255 — it is a valid Opus payload length.
+  int _countFramesInFile(File file) {
+    final raf = file.openSync();
+    int frameCount = 0;
+    try {
+      while (true) {
+        final header = raf.readSync(4);
+        if (header.length < 4) break;
+        final len = ByteData.sublistView(Uint8List.fromList(header)).getUint32(0, Endian.little);
+        if (len == 0) continue; // null padding, 0 payload bytes
+        raf.setPositionSync(raf.positionSync() + len);
+        frameCount++;
+      }
+    } finally {
+      raf.closeSync();
+    }
+    return frameCount;
   }
 
   @override
