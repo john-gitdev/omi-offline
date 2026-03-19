@@ -51,6 +51,24 @@ enum BleAudioCodec {
         return 80;
     }
   }
+
+  // SD card stores [1-byte length prefix][VBR Opus payload]. Average payload at
+  // 32 kbps is ~80 bytes; total per frame ≈ 81 bytes. This is separate from
+  // getFramesLengthInBytes() which models BLE transport (MTU-constrained chunks).
+  static const int _opusStorageAvgBytesPerFrame = 81; // ~80 B VBR payload + 1-byte prefix
+  static const int _opusFps = 50;
+
+  /// Estimated SD card bytes per minute of audio (pre-sync heuristic only).
+  /// Post-sync, exact frame count from .bin files is used instead.
+  int getStorageBytesPerMinute() {
+    switch (this) {
+      case BleAudioCodec.opus:
+      case BleAudioCodec.opusFS320:
+        return _opusStorageAvgBytesPerFrame * _opusFps * 60; // 243,000
+      default:
+        return getFramesLengthInBytes() * getFramesPerSecond() * 60;
+    }
+  }
 }
 
 class OmiFeatures {
