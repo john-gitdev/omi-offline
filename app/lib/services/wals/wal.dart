@@ -1,8 +1,8 @@
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 
-const chunkSizeInSeconds = 60;
+const segmentDurationSeconds = 60;
 const flushIntervalInSeconds = 90;
-const sdcardChunkSizeSecs = 60;
+const sdcardSegmentDurationSecs = 60;
 const newFrameSize = 80;
 
 enum WalStorage {
@@ -27,7 +27,7 @@ class Wal {
   final int channel;
   final String device;
   final int fileNum;
-  int storageOffset;
+  int walOffset;
   final int storageTotalBytes;
   final int timerStart;
   WalStorage storage;
@@ -45,14 +45,14 @@ class Wal {
   int? seconds;
   int? sampleRate;
   String? deviceModel;
-  int estimatedChunks;
+  int estimatedSegments;
 
   Wal({
     required this.codec,
     required this.channel,
     required this.device,
     required this.fileNum,
-    required this.storageOffset,
+    required this.walOffset,
     required this.storageTotalBytes,
     required this.timerStart,
     required this.storage,
@@ -64,7 +64,7 @@ class Wal {
     this.seconds,
     this.sampleRate,
     this.deviceModel,
-    this.estimatedChunks = 0,
+    this.estimatedSegments = 0,
   });
 
   // id is stable: storageOffset is always 0 at creation and must not be part of the key
@@ -72,12 +72,12 @@ class Wal {
   // break deleteWal / removeWhere lookups that rely on id equality.
   String get id => '$device-$fileNum';
 
-  String getFileNameByTimeStarts(int timerStart) {
-    return 'chunk_$timerStart.bin';
+  String getSegmentFileNameByTimestamp(int timerStart) {
+    return 'segment_$timerStart.bin';
   }
 
   String getFileName() {
-    return getFileNameByTimeStarts(timerStart);
+    return getSegmentFileNameByTimestamp(timerStart);
   }
 
   String? getFilePath() {
@@ -113,7 +113,7 @@ class Wal {
       'channel': channel,
       'device': device,
       'fileNum': fileNum,
-      'storageOffset': storageOffset,
+      'storageOffset': walOffset,
       'storageTotalBytes': storageTotalBytes,
       'timerStart': timerStart,
       'storage': storage.name,
@@ -122,7 +122,7 @@ class Wal {
       'seconds': seconds,
       'sampleRate': sampleRate,
       'deviceModel': deviceModel,
-      'estimatedChunks': estimatedChunks,
+      'estimatedChunks': estimatedSegments,
     };
   }
 
@@ -136,7 +136,7 @@ class Wal {
       channel: json['channel'] ?? 1,
       device: json['device'] ?? '',
       fileNum: json['fileNum'] ?? 0,
-      storageOffset: json['storageOffset'] ?? 0,
+      walOffset: json['storageOffset'] ?? 0,
       storageTotalBytes: json['storageTotalBytes'] ?? 0,
       timerStart: json['timerStart'] ?? 0,
       storage: WalStorage.values.firstWhere((e) => e.name == json['storage'], orElse: () => WalStorage.local),
@@ -145,7 +145,7 @@ class Wal {
       seconds: json['seconds'],
       sampleRate: json['sampleRate'],
       deviceModel: json['deviceModel'],
-      estimatedChunks: json['estimatedChunks'] ?? 0,
+      estimatedSegments: json['estimatedChunks'] ?? 0,
     );
   }
 
@@ -154,7 +154,7 @@ class Wal {
     int? channel,
     String? device,
     int? fileNum,
-    int? storageOffset,
+    int? walOffset,
     int? storageTotalBytes,
     int? timerStart,
     WalStorage? storage,
@@ -166,14 +166,14 @@ class Wal {
     int? seconds,
     int? sampleRate,
     String? deviceModel,
-    int? estimatedChunks,
+    int? estimatedSegments,
   }) {
     return Wal(
       codec: codec ?? this.codec,
       channel: channel ?? this.channel,
       device: device ?? this.device,
       fileNum: fileNum ?? this.fileNum,
-      storageOffset: storageOffset ?? this.storageOffset,
+      walOffset: walOffset ?? this.walOffset,
       storageTotalBytes: storageTotalBytes ?? this.storageTotalBytes,
       timerStart: timerStart ?? this.timerStart,
       storage: storage ?? this.storage,
@@ -185,7 +185,7 @@ class Wal {
       seconds: seconds ?? this.seconds,
       sampleRate: sampleRate ?? this.sampleRate,
       deviceModel: deviceModel ?? this.deviceModel,
-      estimatedChunks: estimatedChunks ?? this.estimatedChunks,
+      estimatedSegments: estimatedSegments ?? this.estimatedSegments,
     );
   }
 }
