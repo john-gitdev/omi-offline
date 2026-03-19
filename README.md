@@ -63,7 +63,7 @@ The app exposes a robust tuning system (`SharedPreferencesUtil`), which dictates
 
 ## 4. Sync & Process Pipeline
 
-The data lifecycle relies on strict ordering and physical boundaries to guarantee zero data loss.
+The data lifecycle relies on strict ordering and physical boundaries to be highly resilient against data loss.
 
 ### The Sync Pipeline (BLE Transport)
 - **Data Storage:** The wearable stores Opus audio frames into fixed-size `.bin` files (`Segments`). 
@@ -105,4 +105,4 @@ If you are contributing to this codebase, you must adhere to the semantic termin
 ### Performance Constraints
 - **BLE Bottlenecks:** Transferring raw segments over BLE is inherently slow. The system heavily relies on `0xFD` (EOT) markers and specific MTU sizes to maximize throughput.
 - **Memory Footprint:** The `FrameRef` architecture is a strict requirement. Mobile operating systems will kill the app if it attempts to load hours of PCM data into RAM simultaneously.
-- **Battery Optimization:** By moving VAD from the firmware to the mobile app's offline processing phase, the wearable's compute load is minimized, allowing the MCU to sleep between simple eMMC write operations.
+- **Battery Optimization:** By keeping VAD entirely on the mobile app's offline processing phase rather than running it locally on the hardware, the wearable's compute load is minimized, allowing the MCU to sleep between simple eMMC write operations.
