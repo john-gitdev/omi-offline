@@ -110,7 +110,7 @@ void main() {
     }
   });
 
-  test('processChunkFile splits and calculates timestamps accurately', () async {
+  test('processSegmentFile splits and calculates timestamps accurately', () async {
     final decoder = MockDecoder();
     final processor = OfflineAudioProcessor(decoder: decoder);
 
@@ -121,19 +121,19 @@ void main() {
     // 1. Process a chunk file with 10 speech frames
     decoder.pcmToReturn = speechPcm;
     final chunk1 = _buildChunkFile(tempDir, 'chunk1.bin', 10, 5);
-    await processor.processChunkFile(chunk1, startTime);
+    await processor.processSegmentFile(chunk1, startTime);
 
     // 2. Process a chunk file with 100 silence frames (triggers split)
     decoder.pcmToReturn = silencePcm;
     final chunk2 = _buildChunkFile(tempDir, 'chunk2.bin', 100, 5);
-    final savedFiles = await processor.processChunkFile(chunk2, startTime);
+    final savedFiles = await processor.processSegmentFile(chunk2, startTime);
 
     expect(savedFiles.length, 1);
 
     // 3. Process a chunk file with 10 speech frames again
     decoder.pcmToReturn = speechPcm;
     final chunk3 = _buildChunkFile(tempDir, 'chunk3.bin', 10, 5);
-    await processor.processChunkFile(chunk3, startTime);
+    await processor.processSegmentFile(chunk3, startTime);
 
     // 4. Flush remaining
     final finalFile = await processor.flushRemaining();
@@ -148,14 +148,14 @@ void main() {
     expect(result, isNull);
   });
 
-  test('hasOngoingRecording is false before any processing', () {
+  test('isCapturing is false before any processing', () {
     final decoder = MockDecoder();
     final processor = OfflineAudioProcessor(decoder: decoder);
 
-    expect(processor.hasOngoingRecording, isFalse);
+    expect(processor.isCapturing, isFalse);
   });
 
-  test('hasOngoingRecording is true after speech frames, false after split', () async {
+  test('isCapturing is true after speech frames, false after split', () async {
     final decoder = MockDecoder();
     final processor = OfflineAudioProcessor(decoder: decoder);
 
@@ -163,19 +163,19 @@ void main() {
     final speechPcm = Int16List.fromList(List.filled(320, 3000));
     final silencePcm = Int16List.fromList(List.filled(320, 0));
 
-    // Process speech — should trigger hasOngoingRecording = true
+    // Process speech — should trigger isCapturing = true
     decoder.pcmToReturn = speechPcm;
     final speechChunk = _buildChunkFile(tempDir, 'speech.bin', 10, 5);
-    await processor.processChunkFile(speechChunk, startTime);
-    expect(processor.hasOngoingRecording, isTrue);
+    await processor.processSegmentFile(speechChunk, startTime);
+    expect(processor.isCapturing, isTrue);
 
     // Process 100 silence frames — triggers split, resets speechFrameCount
     decoder.pcmToReturn = silencePcm;
     final silenceChunk = _buildChunkFile(tempDir, 'silence.bin', 100, 5);
-    await processor.processChunkFile(silenceChunk, startTime);
+    await processor.processSegmentFile(silenceChunk, startTime);
 
-    // After split, speechFrameCount is reset to 0, so hasOngoingRecording should be false
-    expect(processor.hasOngoingRecording, isFalse);
+    // After split, speechFrameCount is reset to 0, so isCapturing should be false
+    expect(processor.isCapturing, isFalse);
   });
 
   test('flushOnlyCompleted never saves in-progress recording', () async {
@@ -188,7 +188,7 @@ void main() {
     // Process 10 speech frames — not enough silence to split, still in-progress
     decoder.pcmToReturn = speechPcm;
     final speechChunk = _buildChunkFile(tempDir, 'speech.bin', 10, 5);
-    await processor.processChunkFile(speechChunk, startTime);
+    await processor.processSegmentFile(speechChunk, startTime);
 
     // flushOnlyCompleted must not save in-progress recording
     final result = await processor.flushOnlyCompleted();
@@ -216,12 +216,12 @@ void main() {
     // First chunk at T=0
     final t0 = DateTime(2026, 3, 11, 10, 0, 0);
     final chunk1 = _buildChunkFile(tempDir, 'chunk_gap1.bin', 10, 5);
-    final saved1 = await processor.processChunkFile(chunk1, t0);
+    final saved1 = await processor.processSegmentFile(chunk1, t0);
 
     // Second chunk at T+2hr — well beyond the 10s gap threshold
     final t2hr = t0.add(const Duration(hours: 2));
     final chunk2 = _buildChunkFile(tempDir, 'chunk_gap2.bin', 10, 5);
-    final saved2 = await processor.processChunkFile(chunk2, t2hr);
+    final saved2 = await processor.processSegmentFile(chunk2, t2hr);
 
     // The gap should have triggered a flushRemaining, producing at least 1 file
     final allSaved = [...saved1, ...saved2];
@@ -250,12 +250,12 @@ void main() {
     // Process only 10 speech frames (far below the 250 minimum)
     decoder.pcmToReturn = speechPcm;
     final speechChunk = _buildChunkFile(tempDir, 'short_speech.bin', 10, 5);
-    await processor.processChunkFile(speechChunk, startTime);
+    await processor.processSegmentFile(speechChunk, startTime);
 
     // Process 100 silence frames to trigger the split
     decoder.pcmToReturn = silencePcm;
     final silenceChunk = _buildChunkFile(tempDir, 'silence.bin', 100, 5);
-    final savedFiles = await processor.processChunkFile(silenceChunk, startTime);
+    final savedFiles = await processor.processSegmentFile(silenceChunk, startTime);
 
     // The split fired but recording should be discarded (too short)
     expect(savedFiles, isEmpty);
@@ -285,7 +285,7 @@ void main() {
 
     // Pass a wrong fallback time and sessionId=1 so metadata is read
     final wrongFallback = DateTime(2020, 1, 1);
-    await processor.processChunkFile(chunk, wrongFallback, sessionId: 1);
+    await processor.processSegmentFile(chunk, wrongFallback, deviceSessionId: 1);
 
     // Flush remaining to save the recording
     final savedPath = await processor.flushRemaining();

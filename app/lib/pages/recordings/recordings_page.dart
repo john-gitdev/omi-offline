@@ -151,7 +151,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           unawaited(_reloadBatchesSilently().then((_) {
             if (!mounted) return;
             final allRaw = _batches.expand((b) => b.rawSegments).toList();
-            final processable = RecordingsManager.excludeNewestChunkPerSession(allRaw);
+            final processable = RecordingsManager.excludeNewestSegmentPerSession(allRaw);
             final totalBytes = processable.fold(0, (s, f) {
               try {
                 return s + f.lengthSync();
@@ -337,7 +337,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     // Compute total audio minutes from processable (non-live) chunks
     final allRaw = activeBatches.expand((b) => b.rawSegments).toList();
-    final processable = RecordingsManager.excludeNewestChunkPerSession(allRaw);
+    final processable = RecordingsManager.excludeNewestSegmentPerSession(allRaw);
     final totalBytes = processable.fold(0, (sum, f) {
       try {
         return sum + f.lengthSync();

@@ -87,16 +87,16 @@ void main() {
       final batch = DailyBatch(
         dateString: '2026-03-17',
         date: DateTime(2026, 3, 17),
-        rawChunks: [],
-        processedRecordings: [],
-        starredTimestamps: [],
+        rawSegments: [],
+        finalizedRecordings: [],
+        markerTimestamps: [],
       );
 
       final tempOut = Directory('${tempDir.path}/out')..createSync();
       final result = await extractor.process(batch, tempOut.path);
 
       expect(result.savedPaths, isEmpty);
-      expect(result.lastSafeChunkIndex, equals(-1));
+      expect(result.lastSafeSegmentIndex, equals(-1));
 
       extractor.destroy();
     });
@@ -105,7 +105,7 @@ void main() {
       final extractor = ManualRecordingExtractor();
 
       // Create a session folder to hold the chunks
-      final sessionDir = Directory('${tempDir.path}/raw_chunks/100')..createSync(recursive: true);
+      final sessionDir = Directory('${tempDir.path}/raw_segments/100')..createSync(recursive: true);
       final tempOut = Directory('${tempDir.path}/out')..createSync();
 
       // Reference "now" is T. Chunks are placed from T-3hr to T-30min.
@@ -126,9 +126,9 @@ void main() {
       final batch = DailyBatch(
         dateString: '2026-03-17',
         date: DateTime(2026, 3, 17),
-        rawChunks: [c0, c1, c2, c3],
-        processedRecordings: [],
-        starredTimestamps: [],
+        rawSegments: [c0, c1, c2, c3],
+        finalizedRecordings: [],
+        markerTimestamps: [],
       );
 
       final result = await extractor.process(batch, tempOut.path);
@@ -136,7 +136,7 @@ void main() {
       expect(result.savedPaths, isEmpty);
       // c0 and c1 are outside 2hr window. lastChunkEndBefore returns index 1.
       // Apply safety margin of 2: max(-1, 1 - 2) = -1.
-      expect(result.lastSafeChunkIndex, equals(-1));
+      expect(result.lastSafeSegmentIndex, equals(-1));
 
       extractor.destroy();
     });
@@ -144,7 +144,7 @@ void main() {
     test('fast path — no stars, 5 chunks, 3 older than 2hr cutoff', () async {
       final extractor = ManualRecordingExtractor();
 
-      final sessionDir = Directory('${tempDir.path}/raw_chunks/101')..createSync(recursive: true);
+      final sessionDir = Directory('${tempDir.path}/raw_segments/101')..createSync(recursive: true);
       final tempOut = Directory('${tempDir.path}/out')..createSync();
 
       // newest chunk is T. Cutoff = T - 2hr.
@@ -169,9 +169,9 @@ void main() {
       final batch = DailyBatch(
         dateString: '2026-03-17',
         date: DateTime(2026, 3, 17),
-        rawChunks: chunks,
-        processedRecordings: [],
-        starredTimestamps: [],
+        rawSegments: chunks,
+        finalizedRecordings: [],
+        markerTimestamps: [],
       );
 
       final result = await extractor.process(batch, tempOut.path);
@@ -182,7 +182,7 @@ void main() {
       // Chunks at T-180min and T-150min have endTime before cutoff (since frames are few).
       // lastChunkEndBefore returns index 1.
       // After safety margin of 2: max(-1, 1 - 2) = -1.
-      expect(result.lastSafeChunkIndex, equals(-1));
+      expect(result.lastSafeSegmentIndex, equals(-1));
 
       extractor.destroy();
     });
@@ -190,7 +190,7 @@ void main() {
     test('fast path — all chunks within 2hr window, no stars returns -1', () async {
       final extractor = ManualRecordingExtractor();
 
-      final sessionDir = Directory('${tempDir.path}/raw_chunks/102')..createSync(recursive: true);
+      final sessionDir = Directory('${tempDir.path}/raw_segments/102')..createSync(recursive: true);
       final tempOut = Directory('${tempDir.path}/out')..createSync();
 
       final now = DateTime(2026, 3, 17, 14, 0, 0);
@@ -203,9 +203,9 @@ void main() {
       final batch = DailyBatch(
         dateString: '2026-03-17',
         date: DateTime(2026, 3, 17),
-        rawChunks: [c0, c1, c2],
-        processedRecordings: [],
-        starredTimestamps: [],
+        rawSegments: [c0, c1, c2],
+        finalizedRecordings: [],
+        markerTimestamps: [],
       );
 
       final result = await extractor.process(batch, tempOut.path);
@@ -213,7 +213,7 @@ void main() {
       expect(result.savedPaths, isEmpty);
       // No chunks are older than 2hr — lastChunkEndBefore returns -1.
       // max(-1, -1 - 2) = -1.
-      expect(result.lastSafeChunkIndex, equals(-1));
+      expect(result.lastSafeSegmentIndex, equals(-1));
 
       extractor.destroy();
     });
@@ -221,7 +221,7 @@ void main() {
     test('fast path — safety margin: 4 chunks outside 2hr window returns index respecting margin', () async {
       final extractor = ManualRecordingExtractor();
 
-      final sessionDir = Directory('${tempDir.path}/raw_chunks/103')..createSync(recursive: true);
+      final sessionDir = Directory('${tempDir.path}/raw_segments/103')..createSync(recursive: true);
       final tempOut = Directory('${tempDir.path}/out')..createSync();
 
       final now = DateTime(2026, 3, 17, 14, 0, 0);
@@ -244,9 +244,9 @@ void main() {
       final batch = DailyBatch(
         dateString: '2026-03-17',
         date: DateTime(2026, 3, 17),
-        rawChunks: chunks,
-        processedRecordings: [],
-        starredTimestamps: [],
+        rawSegments: chunks,
+        finalizedRecordings: [],
+        markerTimestamps: [],
       );
 
       final result = await extractor.process(batch, tempOut.path);
@@ -256,7 +256,7 @@ void main() {
       // First 4 chunks (indices 0-3) are outside the 2hr window.
       // lastChunkEndBefore returns 3.
       // After safety margin of 2: max(-1, 3 - 2) = 1.
-      expect(result.lastSafeChunkIndex, equals(1));
+      expect(result.lastSafeSegmentIndex, equals(1));
 
       extractor.destroy();
     });
@@ -265,18 +265,18 @@ void main() {
   // ─── RecordingsManager getDailyBatches star loading tests ──────────────────
 
   group('RecordingsManager getDailyBatches', () {
-    test('loads stars from stars.txt', () async {
+    test('loads stars from markers.txt', () async {
       final directory = tempDir;
       mockPathProvider.tempPath = directory.path;
 
-      // Create a session folder with a stars.txt file
-      final sessionDir = Directory('${directory.path}/raw_chunks/200')..createSync(recursive: true);
+      // Create a session folder with a markers.txt file
+      final sessionDir = Directory('${directory.path}/raw_segments/200')..createSync(recursive: true);
 
       // Star at 2026-03-17 10:00:00 UTC
       final starTime = DateTime.utc(2026, 3, 17, 10, 0, 0);
       final starEpochSec = starTime.millisecondsSinceEpoch ~/ 1000;
 
-      final starFile = File('${sessionDir.path}/stars.txt');
+      final starFile = File('${sessionDir.path}/markers.txt');
       starFile.writeAsStringSync('$starEpochSec\n');
 
       // Create at least one chunk so the date appears in batches
@@ -291,23 +291,23 @@ void main() {
       final batch = batches.where((b) => b.dateString == dateString).firstOrNull;
 
       expect(batch, isNotNull, reason: 'Batch for $dateString should exist');
-      expect(batch!.starredTimestamps.length, equals(1));
+      expect(batch!.markerTimestamps.length, equals(1));
 
       // The timestamp should match the UTC epoch second we wrote
-      final loadedStar = batch.starredTimestamps.first;
+      final loadedStar = batch.markerTimestamps.first;
       expect(loadedStar.millisecondsSinceEpoch, equals(starEpochSec * 1000));
     });
 
-    test('ignores malformed lines in stars.txt', () async {
+    test('ignores malformed lines in markers.txt', () async {
       final directory = tempDir;
       mockPathProvider.tempPath = directory.path;
 
-      final sessionDir = Directory('${directory.path}/raw_chunks/201')..createSync(recursive: true);
+      final sessionDir = Directory('${directory.path}/raw_segments/201')..createSync(recursive: true);
 
       final starTime = DateTime.utc(2026, 3, 17, 11, 0, 0);
       final starEpochSec = starTime.millisecondsSinceEpoch ~/ 1000;
 
-      final starFile = File('${sessionDir.path}/stars.txt');
+      final starFile = File('${sessionDir.path}/markers.txt');
       // Valid line, empty line, non-numeric line
       starFile.writeAsStringSync('$starEpochSec\n\nnot-a-number\n');
 
@@ -322,7 +322,7 @@ void main() {
 
       expect(batch, isNotNull, reason: 'Batch for $dateString should exist');
       // Only the valid line should produce a star; empty and non-numeric are ignored
-      expect(batch!.starredTimestamps.length, equals(1));
+      expect(batch!.markerTimestamps.length, equals(1));
     });
   });
 }

@@ -403,7 +403,7 @@ class ManualRecordingExtractor {
 
         if (!isWarmupChunk) {
           final vad = _SegmentVad(
-            chunk: chunk,
+            segment: chunk,
             speechFlags: speechFlags,
             byteOffsets: byteOffsets,
             frameLengths: frameLengths,
