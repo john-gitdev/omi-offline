@@ -18,15 +18,16 @@ The system follows a strict storage model to ensure consistent data alignment fr
 ### 🔄 Data Lifecycle
 ```mermaid
 graph TD
-    A[Omi Device Mic] -->|Opus Encoding| B(SD Card)
-    B -->|Segment .bin| C{BLE Connection}
-    C -->|WAL Sync| D[Phone raw_segments/]
-    D -->|Processing Pipeline| E{Mode Selection}
-    E -->|VAD| F[Automatic Processing]
-    E -->|Star Marker| G[Manual Processing]
-    F -->|Transcoding| H[Recording Artifact]
-    G -->|Transcoding| H
-    H -->|Entity Binding| I[Memory UI]
+    A[Mic] --> B[Device SD Card]
+    B --> C[Segments (.bin)]
+    C --> D[BLE Transport]
+    D --> E[raw_segments/]
+    E --> F[Processing Pipeline]
+    F --> G[Automatic Mode]
+    F --> H[Manual Mode]
+    G --> I[Recording]
+    H --> I
+    I --> J[Memory]
 ```
 
 ### 1. The Capture Pipeline
