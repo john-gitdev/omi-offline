@@ -19,9 +19,9 @@ The system follows a strict storage model to ensure consistent data alignment fr
 ```mermaid
 graph TD
     A[Mic] --> B[Device SD Card]
-    B --> C[Segments (.bin)]
-    C --> D[BLE Transport]
-    D --> E[raw_segments/]
+    B --> C[Segments bin files]
+    C --> D[BLE Sync]
+    D --> E[raw_segments]
     E --> F[Processing Pipeline]
     F --> G[Automatic Mode]
     F --> H[Manual Mode]
