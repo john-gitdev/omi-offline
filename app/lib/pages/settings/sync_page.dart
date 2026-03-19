@@ -5,6 +5,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
+import 'package:omi/utils/logger.dart';
 import 'package:omi/widgets/dialog.dart';
 
 class SyncPage extends StatefulWidget {
@@ -42,7 +43,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _startSync() async {
+    Logger.debug('DebugTools: Sync from Device tapped');
     if (RecordingsManager.isProcessingAny) {
+      Logger.debug('DebugTools: Sync blocked — processing already running');
       _showProcessingSnackbar();
       return;
     }
@@ -53,9 +56,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
 
     try {
-      // Call syncAll on the sync service (SdcardWalSync)
+      Logger.debug('DebugTools: Calling syncAll(force: false)');
       final result = await ServiceManager.instance().wal.getSyncs().syncAll(progress: this);
-
+      Logger.debug(
+          'DebugTools: syncAll complete — result=${result == null ? 'null (nothing to sync)' : 'SyncLocalFilesResponse'}');
       setState(() {
         if (result == null) {
           _statusMessage = 'All synced! No new recordings found.';
@@ -65,6 +69,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         _isSyncing = false;
       });
     } catch (e) {
+      Logger.error('DebugTools: syncAll error — $e');
       setState(() {
         _statusMessage = 'Sync Error: $e';
         _isSyncing = false;
@@ -73,7 +78,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _forceSync() async {
+    Logger.debug('DebugTools: Force Re-scan Device tapped');
     if (RecordingsManager.isProcessingAny) {
+      Logger.debug('DebugTools: Force re-scan blocked — processing already running');
       _showProcessingSnackbar();
       return;
     }
@@ -88,7 +95,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         confirmText: 'Start',
       ),
     );
-    if (confirm != true) return;
+    if (confirm != true) {
+      Logger.debug('DebugTools: Force re-scan cancelled by user');
+      return;
+    }
 
     setState(() {
       _isSyncing = true;
@@ -97,12 +107,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
 
     try {
+      Logger.debug('DebugTools: Calling syncAll(force: true)');
       await ServiceManager.instance().wal.getSyncs().syncAll(progress: this, force: true);
+      Logger.debug('DebugTools: Force re-scan complete');
       setState(() {
         _statusMessage = 'Re-sync Complete.';
         _isSyncing = false;
       });
     } catch (e) {
+      Logger.error('DebugTools: Force re-scan error — $e');
       setState(() {
         _statusMessage = 'Re-sync Error: $e';
         _isSyncing = false;
@@ -111,7 +124,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _deleteAllPending() async {
+    Logger.debug('DebugTools: Delete All from Device tapped');
     if (RecordingsManager.isProcessingAny) {
+      Logger.debug('DebugTools: Delete blocked — processing already running');
       _showProcessingSnackbar();
       return;
     }
@@ -126,7 +141,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         confirmText: 'Delete',
       ),
     );
-    if (confirm != true) return;
+    if (confirm != true) {
+      Logger.debug('DebugTools: Delete cancelled by user');
+      return;
+    }
 
     setState(() {
       _isSyncing = true;
@@ -134,12 +152,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
 
     try {
+      Logger.debug('DebugTools: Calling deleteAllPendingWals()');
       await ServiceManager.instance().wal.getSyncs().deleteAllPendingWals();
+      Logger.debug('DebugTools: deleteAllPendingWals complete');
       setState(() {
         _statusMessage = 'Delete Complete. Device storage cleared.';
         _isSyncing = false;
       });
     } catch (e) {
+      Logger.error('DebugTools: deleteAllPendingWals error — $e');
       setState(() {
         _statusMessage = 'Delete Error: $e';
         _isSyncing = false;
@@ -148,6 +169,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _cancelSync() async {
+    Logger.debug('DebugTools: Cancel Download tapped');
     ServiceManager.instance().wal.getSyncs().cancelSync();
     setState(() {
       _isSyncing = false;
@@ -207,7 +229,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 const Text('Processing recordings...', style: TextStyle(color: Colors.white70, fontSize: 14)),
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
-                  onPressed: RecordingsManager.cancelProcessing,
+                  onPressed: () {
+                    Logger.debug('DebugTools: Cancel Processing tapped');
+                    RecordingsManager.cancelProcessing();
+                  },
                   icon: const FaIcon(FontAwesomeIcons.circleXmark, size: 14),
                   label: const Text('Cancel Processing'),
                   style: ElevatedButton.styleFrom(
@@ -251,15 +276,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   onTap: _isProcessing
                       ? null
                       : () async {
+                          Logger.debug('DebugTools: Force Process All tapped');
                           if (RecordingsManager.isProcessingAny) {
+                            Logger.debug('DebugTools: Force Process All blocked — processing already running');
                             _showProcessingSnackbar();
                             return;
                           }
                           setState(() => _statusMessage = 'Force processing all chunks...');
                           try {
+                            Logger.debug('DebugTools: Calling RecordingsManager.forceProcessAll()');
                             await RecordingsManager.forceProcessAll();
+                            Logger.debug('DebugTools: forceProcessAll complete');
                             if (mounted) setState(() => _statusMessage = 'Force process complete.');
                           } catch (e) {
+                            Logger.error('DebugTools: forceProcessAll error — $e');
                             if (mounted) setState(() => _statusMessage = 'Force process error: $e');
                           }
                         },
