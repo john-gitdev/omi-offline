@@ -43,7 +43,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   int _totalCount = 0;
   double _minutesRemaining = 0.0;
   double _totalMinutes = 0.0;
-  int _starCount = 0;
+  int _markerCount = 0;
   double _syncSpeed = 0.0;
   String _lastCompletedStage = 'none'; // "none" | "syncing" | "processing"
   String _lastActiveStage = 'syncing'; // "syncing" | "processing"
@@ -64,7 +64,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   static const _kSpSyncedCount = 'sp_synced_count';
   static const _kSpTotalCount = 'sp_total_count';
   static const _kSpMinutesRemaining = 'sp_minutes_remaining';
-  static const _kSpStarCount = 'sp_star_count';
+  static const _kSpMarkerCount = 'sp_marker_count';
   static const _kSpLastCompleted = 'sp_last_completed_stage';
   static const _kSpLastActive = 'sp_last_active_stage';
 
@@ -91,7 +91,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _syncedCount = _prefs.getInt(_kSpSyncedCount);
     _totalCount = _prefs.getInt(_kSpTotalCount);
     _minutesRemaining = _prefs.getDouble(_kSpMinutesRemaining);
-    _starCount = _prefs.getInt(_kSpStarCount);
+    _markerCount = _prefs.getInt(_kSpMarkerCount);
     _lastCompletedStage = _prefs.getString(_kSpLastCompleted, defaultValue: 'none');
     _lastActiveStage = _prefs.getString(_kSpLastActive, defaultValue: 'syncing');
 
@@ -101,7 +101,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       final syncs = ServiceManager.instance().wal.getSyncs();
       if (syncs.isSyncing) {
         _spState = SyncProcessState.syncing;
-        _totalCount = syncs.estimatedTotalChunks;
+        _totalCount = syncs.estimatedTotalSegments;
       } else if (RecordingsManager.isProcessingAny) {
         _spState = SyncProcessState.processing;
       }
@@ -138,7 +138,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       if (serviceIsSyncing && _spState == SyncProcessState.idle) {
         setState(() {
           _spState = SyncProcessState.syncing;
-          _totalCount = syncs.estimatedTotalChunks;
+          _totalCount = syncs.estimatedTotalSegments;
           _syncedCount = 0;
           _syncSpeed = 0.0;
         });
@@ -150,7 +150,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           // Background processing auto-started after sync — show it.
           unawaited(_reloadBatchesSilently().then((_) {
             if (!mounted) return;
-            final allRaw = _batches.expand((b) => b.rawChunks).toList();
+            final allRaw = _batches.expand((b) => b.rawSegments).toList();
             final processable = RecordingsManager.excludeNewestChunkPerSession(allRaw);
             final totalBytes = processable.fold(0, (s, f) {
               try {
@@ -226,7 +226,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _prefs.saveInt(_kSpSyncedCount, _syncedCount);
     _prefs.saveInt(_kSpTotalCount, _totalCount);
     _prefs.saveDouble(_kSpMinutesRemaining, _minutesRemaining);
-    _prefs.saveInt(_kSpStarCount, _starCount);
+    _prefs.saveInt(_kSpMarkerCount, _markerCount);
   }
 
   // ─── IWalSyncProgressListener ──────────────────────────────────────────────
@@ -236,9 +236,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     setState(() {
       _syncSpeed = speedKBps ?? 0.0;
       // If _totalCount was 0 at pipeline start (WAL list wasn't populated yet),
-      // backfill it from estimatedTotalChunks now that syncAll has refreshed _wals.
+      // backfill it from estimatedTotalSegments now that syncAll has refreshed _wals.
       if (_totalCount == 0) {
-        _totalCount = ServiceManager.instance().wal.getSyncs().estimatedTotalChunks;
+        _totalCount = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
       }
       if (_totalCount > 0) {
         _syncedCount = (percentage * _totalCount).round().clamp(0, _totalCount);
@@ -279,8 +279,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _transitionTo(SyncProcessState.syncing);
 
     final syncs = ServiceManager.instance().wal.getSyncs();
-    final estimatedTotal = syncs.estimatedTotalChunks;
-    Logger.debug('RecordingsPage: _runPipeline start — estimatedTotalChunks=$estimatedTotal');
+    final estimatedTotal = syncs.estimatedTotalSegments;
+    Logger.debug('RecordingsPage: _runPipeline start — estimatedTotalSegments=$estimatedTotal');
     setState(() {
       _totalCount = estimatedTotal;
       _syncedCount = 0;
@@ -317,7 +317,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _prefs.saveString(_kSpLastCompleted, 'syncing');
     await _reloadBatchesSilently();
     setState(() {
-      _starCount = _batches.fold(0, (sum, b) => sum + b.starredTimestamps.length);
+      _markerCount = _batches.fold(0, (sum, b) => sum + b.markerTimestamps.length);
     });
     _persistProgress();
 
@@ -329,14 +329,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _lastActiveStage = 'processing';
     _transitionTo(SyncProcessState.processing);
 
-    final activeBatches = _batches.where((b) => b.rawChunks.isNotEmpty).toList();
+    final activeBatches = _batches.where((b) => b.rawSegments.isNotEmpty).toList();
     if (activeBatches.isEmpty) {
       await _finishSuccess();
       return;
     }
 
     // Compute total audio minutes from processable (non-live) chunks
-    final allRaw = activeBatches.expand((b) => b.rawChunks).toList();
+    final allRaw = activeBatches.expand((b) => b.rawSegments).toList();
     final processable = RecordingsManager.excludeNewestChunkPerSession(allRaw);
     final totalBytes = processable.fold(0, (sum, f) {
       try {
@@ -396,7 +396,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       _lastCompletedStage = 'none';
       _syncedCount = 0;
       _totalCount = 0;
-      _starCount = 0;
+      _markerCount = 0;
       _minutesRemaining = 0;
       _totalMinutes = 0;
     });
@@ -556,7 +556,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     final keySetAt = _prefs.heypocketKeySetAt;
     final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
     for (final batch in _batches) {
-      for (final file in batch.processedRecordings) {
+      for (final file in batch.finalizedRecordings) {
         if (_autoUploadActive >= 2) return;
         final rec = RecordingInfo.fromFile(file);
         if (keySetTime != null && rec.startTime.isBefore(keySetTime)) continue;
@@ -728,7 +728,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         final minStr = _minutesRemaining >= 1
             ? '${_minutesRemaining.ceil()} min of audio remaining'
             : '< 1 min of audio remaining';
-        subText = '$minStr  ·  $_starCount starred moment${_starCount != 1 ? 's' : ''}';
+        subText = '$minStr  ·  $_markerCount marker${_markerCount != 1 ? 's' : ''}';
         iconBg = Colors.deepPurpleAccent;
         iconChild = const SizedBox(
           width: 16,
@@ -819,7 +819,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   // ─── Batch card ────────────────────────────────────────────────────────────
   Widget _buildBatchCard(DailyBatch batch) {
-    final allRecordings = batch.processedRecordings.map(RecordingInfo.fromFile).toList()
+    final allRecordings = batch.finalizedRecordings.map(RecordingInfo.fromFile).toList()
       ..sort((a, b) => b.startTime.compareTo(a.startTime));
     final minDuration = Duration(minutes: _filterMinutes);
     final recordings = (_filterEnabled && _filterMinutes > 0)
@@ -842,13 +842,13 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                   batch.dateString,
                   style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
                 ),
-                if (batch.starredTimestamps.isNotEmpty)
+                if (batch.markerTimestamps.isNotEmpty)
                   Row(
                     children: [
                       const FaIcon(FontAwesomeIcons.solidStar, color: Colors.amber, size: 16),
                       const SizedBox(width: 4),
                       Text(
-                        '${batch.starredTimestamps.length}',
+                        '${batch.markerTimestamps.length}',
                         style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold),
                       ),
                     ],
@@ -1021,8 +1021,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                         final minDuration = Duration(minutes: _filterMinutes);
                         final visibleBatches = (_filterEnabled && _filterMinutes > 0)
                             ? _batches.where((b) {
-                                if (b.rawChunks.isNotEmpty) return true;
-                                return b.processedRecordings
+                                if (b.rawSegments.isNotEmpty) return true;
+                                return b.finalizedRecordings
                                     .any((f) => RecordingInfo.fromFile(f).duration >= minDuration);
                               }).toList()
                             : _batches;
