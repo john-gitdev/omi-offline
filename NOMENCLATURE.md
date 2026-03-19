@@ -113,7 +113,7 @@ The firmware (C / Zephyr RTOS on nRF52840) uses C snake_case conventions and pre
 | :--- | :--- | :--- | :--- |
 | `session_id` (static u32) | `transport.c` | `deviceSessionId` | Random u32 generated at boot via `sys_rand32_get()`; written into metadata packet bytes 8–11. |
 | `chunk_index` (static u32) | `transport.c` | `segmentIndex` | Monotonically incremented per segment written; written into metadata packet bytes 12–15. |
-| `ble_chunk_index` (static u32) | `storage.c` | *(no app equivalent)* | Counts 256-byte BLE MTU packets within a single file transfer. Internal to BLE transport; not a storage concept. |
+| `ble_chunk_index` (static u32) | `storage.c` | *(no app equivalent)* | Counts BLE notification packets within a single file transfer (payload = negotiated MTU − 3 bytes, max 256). Internal to BLE transport; not a storage concept. |
 | `0xFE` frame type / "STAR marker" | `storage.c`, `transport.h` | `Marker` | The `marker` parameter in `write_custom_packet_to_storage()` is a packet-type byte, not the user-facing Marker concept. |
 | `0xFD` frame type / "EOT marker" | `storage.c` | end-of-transfer signal | Signals end of file list to the app; consumed by `SDCardWalSyncImpl`, not stored. |
 
