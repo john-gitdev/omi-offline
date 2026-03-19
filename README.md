@@ -67,7 +67,6 @@ The Voice Activity Detection (VAD) is noise-adaptive and can be tuned via these 
 ## 🔌 Integrations
 
 - **HeyPocket:** First-class integration for automatic cloud synchronization. Final **Recordings** can be automatically uploaded to HeyPocket for advanced AI analysis and archival.
-- **BLE Transport:** A custom, robust Bluetooth Low Energy implementation designed for high-throughput, resumable data transfer.
 
 ## 📋 Standardized Nomenclature
 
