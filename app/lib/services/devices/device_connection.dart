@@ -119,6 +119,9 @@ abstract class DeviceConnection {
   DeviceConnectionState get connectionState => _connectionState;
   DeviceConnectionState get status => _connectionState;
 
+  /// Lightweight health check — returns true if the device is actually reachable.
+  Future<bool> ping() => transport.ping();
+
   Future<int> retrieveBatteryLevel() async {
     if (await isConnected()) {
       return await performRetrieveBatteryLevel();

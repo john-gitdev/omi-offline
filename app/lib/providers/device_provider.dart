@@ -31,6 +31,11 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   Timer? _backgroundSyncTimer;
   static const int _backgroundSyncMinutes = 60;
 
+  Timer? _healthCheckTimer;
+  static const int _healthCheckSeconds = 30;
+  int _consecutivePingFailures = 0;
+  static const int _maxPingFailures = 2;
+
   Timer? _disconnectNotificationTimer;
   final Debouncer _disconnectDebouncer = Debouncer(delay: const Duration(milliseconds: 500));
   final Debouncer _connectDebouncer = Debouncer(delay: const Duration(milliseconds: 100));
@@ -354,6 +359,43 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     notifyListeners();
   }
 
+  void _startHealthCheck() {
+    _healthCheckTimer?.cancel();
+    _consecutivePingFailures = 0;
+    _healthCheckTimer = Timer.periodic(Duration(seconds: _healthCheckSeconds), (_) => _performHealthCheck());
+  }
+
+  void _stopHealthCheck() {
+    _healthCheckTimer?.cancel();
+    _healthCheckTimer = null;
+    _consecutivePingFailures = 0;
+  }
+
+  Future<void> _performHealthCheck() async {
+    if (!isConnected || connectedDevice == null) {
+      _stopHealthCheck();
+      return;
+    }
+
+    final deviceService = ServiceManager.instance().device;
+    if (deviceService is! DeviceService) return;
+
+    final alive = await deviceService.ping();
+    if (alive) {
+      _consecutivePingFailures = 0;
+      return;
+    }
+
+    _consecutivePingFailures++;
+    Logger.debug('DeviceProvider: Health check ping failed ($_consecutivePingFailures/$_maxPingFailures)');
+
+    if (_consecutivePingFailures >= _maxPingFailures) {
+      Logger.debug('DeviceProvider: Device unreachable — forcing disconnect');
+      _stopHealthCheck();
+      await deviceService.disconnectDevice();
+    }
+  }
+
   void _startBackgroundSyncTimer() {
     _backgroundSyncTimer?.cancel();
     _backgroundSyncTimer = Timer.periodic(const Duration(minutes: _backgroundSyncMinutes), (_) async {
@@ -391,6 +433,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _bleButtonListener?.cancel();
     _reconnectionTimer?.cancel();
     _backgroundSyncTimer?.cancel();
+    _healthCheckTimer?.cancel();
     _disconnectDebouncer.cancel();
     _connectDebouncer.cancel();
     ServiceManager.instance().device.unsubscribe(this);
@@ -399,6 +442,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
   void onDeviceDisconnected() async {
     Logger.debug('onDisconnected inside: $connectedDevice');
+    _stopHealthCheck();
     setConnectedDevice(null);
     setisDeviceStorageSupport();
     setIsConnected(false);
@@ -452,6 +496,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     // if firmware revision was fetched successfully (early-exit guard inside it).
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
+
+    // Start periodic health check to detect stale connections
+    _startHealthCheck();
 
     // Wals
     ServiceManager.instance().wal.getSyncs().setDevice(device);
