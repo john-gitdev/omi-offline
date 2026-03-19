@@ -845,13 +845,15 @@ bool write_to_storage(void)
     return write_custom_packet_to_storage((uint8_t)tx_buffer_size, buffer, (uint8_t)tx_buffer_size);
 }
 
-static uint32_t session_id = 0;
-static uint32_t chunk_index = 0;
+static uint32_t device_session_id = 0;
+static uint32_t segment_index = 0;
 
 bool write_timestamp_to_storage(void)
 {
-    if (session_id == 0) {
-        session_id = sys_rand32_get();
+    if (device_session_id == 0) {
+        do {
+            device_session_id = sys_rand32_get();
+        } while (device_session_id == 0);
     }
 
     uint8_t temp_buffer[16];
@@ -860,19 +862,21 @@ bool write_timestamp_to_storage(void)
 
     memcpy(temp_buffer, &utc_time, 4);
     memcpy(temp_buffer + 4, &uptime_ms, 4);
-    memcpy(temp_buffer + 8, &session_id, 4);
-    memcpy(temp_buffer + 12, &chunk_index, 4);
+    memcpy(temp_buffer + 8, &device_session_id, 4);
+    memcpy(temp_buffer + 12, &segment_index, 4);
 
-    chunk_index++;
+    segment_index++;
 
     return write_custom_packet_to_storage(255, temp_buffer, 16);
 }
 
-bool write_star_to_storage(void)
+bool write_marker_to_storage(void)
 {
-    if (session_id == 0) {
+    if (device_session_id == 0) {
         // Should not really happen as we should be recording, but safety first
-        session_id = sys_rand32_get();
+        do {
+            device_session_id = sys_rand32_get();
+        } while (device_session_id == 0);
     }
 
     uint8_t temp_buffer[16];
@@ -881,11 +885,11 @@ bool write_star_to_storage(void)
 
     memcpy(temp_buffer, &utc_time, 4);
     memcpy(temp_buffer + 4, &uptime_ms, 4);
-    memcpy(temp_buffer + 8, &session_id, 4);
+    memcpy(temp_buffer + 8, &device_session_id, 4);
     // Padding for remaining 4 bytes
     memset(temp_buffer + 12, 0, 4);
 
-    LOG_INF("Writing STAR marker to storage (Session: %u)", session_id);
+    LOG_INF("Writing marker to storage (DeviceSession: %u)", device_session_id);
     return write_custom_packet_to_storage(254, temp_buffer, 16);
 }
 #endif
