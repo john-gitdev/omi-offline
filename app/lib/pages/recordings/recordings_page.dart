@@ -223,6 +223,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     if (!mounted) return;
     setState(() {
       _syncSpeed = speedKBps ?? 0.0;
+      // If _totalCount was 0 at pipeline start (WAL list wasn't populated yet),
+      // backfill it from estimatedTotalChunks now that syncAll has refreshed _wals.
+      if (_totalCount == 0) {
+        _totalCount = ServiceManager.instance().wal.getSyncs().estimatedTotalChunks;
+      }
       if (_totalCount > 0) {
         _syncedCount = (percentage * _totalCount).round().clamp(0, _totalCount);
       } else {
