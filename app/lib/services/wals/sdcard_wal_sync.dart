@@ -50,18 +50,18 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   int get recordingsCount => _sessionsSeen.length;
 
   @override
-  int get estimatedTotalChunks {
+  int get estimatedTotalSegments {
     int total = 0;
     final pending = <String>[];
     for (var wal in _wals) {
       if (wal.status == WalStatus.miss && wal.storage == WalStorage.sdcard) {
-        total += wal.estimatedChunks;
-        pending.add('  wal[${wal.id}] estimatedChunks=${wal.estimatedChunks} '
-            'totalBytes=${wal.storageTotalBytes} offset=${wal.storageOffset}');
+        total += wal.estimatedSegments;
+        pending.add('  wal[${wal.id}] estimatedSegments=${wal.estimatedSegments} '
+            'totalBytes=${wal.storageTotalBytes} walOffset=${wal.walOffset}');
       }
     }
     Logger.debug(
-        'SDCardWalSync: estimatedTotalChunks=$total from ${pending.length} pending WALs:\n${pending.join('\n')}');
+        'SDCardWalSync: estimatedTotalSegments=$total from ${pending.length} pending WALs:\n${pending.join('\n')}');
     return total;
   }
 
@@ -126,27 +126,27 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return [];
     }
     var totalBytes = storageFiles[0];
-    var storageOffset = storageFiles.length >= 2 ? storageFiles[1] : 0;
+    var walOffset = storageFiles.length >= 2 ? storageFiles[1] : 0;
 
-    if (storageOffset > totalBytes) {
-      Logger.debug("SDCard bad state, offset $storageOffset > total $totalBytes");
+    if (walOffset > totalBytes) {
+      Logger.debug("SDCard bad state, walOffset $walOffset > total $totalBytes");
       // totalBytes=0 with a stale offset means the firmware's SD worker failed to
       // reopen the data file after a DELETE — recording has stopped on the device.
-      final failed = totalBytes == 0 && storageOffset > 0;
+      final failed = totalBytes == 0 && walOffset > 0;
       if (failed != _isDeviceRecordingFailed) {
         _isDeviceRecordingFailed = failed;
         if (failed) listener.onDeviceRecordingFailed();
       }
-      storageOffset = 0;
+      walOffset = 0;
     } else if (_isDeviceRecordingFailed) {
       _isDeviceRecordingFailed = false;
     }
 
     BleAudioCodec codec = await _getAudioCodec(deviceId);
     int threshold = codec.getStorageBytesPerMinute();
-    final int newBytes = totalBytes - storageOffset;
+    final int newBytes = totalBytes - walOffset;
     Logger.debug(
-        "SDCardWalSync: totalBytes=$totalBytes, storageOffset=$storageOffset, diff=$newBytes, threshold=$threshold");
+        "SDCardWalSync: totalBytes=$totalBytes, walOffset=$walOffset, diff=$newBytes, threshold=$threshold");
 
     if (totalBytes > 0 && newBytes >= threshold) {
       var seconds = (newBytes / (codec.getStorageBytesPerMinute() / 60.0)).truncate();
@@ -164,11 +164,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         channel: 1,
         device: deviceId,
         fileNum: 1,
-        storageOffset: storageOffset,
+        walOffset: walOffset,
         storageTotalBytes: totalBytes,
         timerStart: timerStart,
         storage: WalStorage.sdcard,
-        estimatedChunks: (seconds / 60).ceil(),
+        estimatedSegments: (seconds / 60).ceil(),
       );
       // Keep status if already syncing
       if (existingWal != null && existingWal.isSyncing) {
@@ -177,12 +177,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       }
 
       Logger.debug('SDCardWalSync: getMissingWals → WAL created: '
-          'seconds=$seconds estimatedChunks=${wal.estimatedChunks} '
-          'totalBytes=$totalBytes storageOffset=$storageOffset newBytes=$newBytes');
+          'seconds=$seconds estimatedSegments=${wal.estimatedSegments} '
+          'totalBytes=$totalBytes walOffset=$walOffset newBytes=$newBytes');
       wals.add(wal);
     } else {
       Logger.debug('SDCardWalSync: getMissingWals → skipped (newBytes=$newBytes < threshold=$threshold '
-          'OR totalBytes=0). totalBytes=$totalBytes storageOffset=$storageOffset');
+          'OR totalBytes=0). totalBytes=$totalBytes walOffset=$walOffset');
     }
 
     Logger.debug('SDCardWalSync: getMissingWals → returning ${wals.length} WAL(s)');
@@ -200,11 +200,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     var storageFiles = await _getStorageList(deviceId);
     if (storageFiles.isEmpty) return [];
     var totalBytes = storageFiles[0];
-    var storageOffset = storageFiles.length >= 2 ? storageFiles[1] : 0;
-    if (storageOffset > totalBytes) storageOffset = 0;
+    var walOffset = storageFiles.length >= 2 ? storageFiles[1] : 0;
+    if (walOffset > totalBytes) walOffset = 0;
     BleAudioCodec codec = await _getAudioCodec(deviceId);
     if (totalBytes > 0) {
-      var seconds = ((totalBytes - storageOffset) / (codec.getStorageBytesPerMinute() / 60.0)).truncate();
+      var seconds = ((totalBytes - walOffset) / (codec.getStorageBytesPerMinute() / 60.0)).truncate();
       int timerStart = DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds;
       final existingWal =
           _wals.firstWhereOrNull((w) => w.device == deviceId && w.fileNum == 1 && w.storage == WalStorage.sdcard);
@@ -214,11 +214,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         channel: 1,
         device: deviceId,
         fileNum: 1,
-        storageOffset: storageOffset,
+        walOffset: walOffset,
         storageTotalBytes: totalBytes,
         timerStart: timerStart,
         storage: WalStorage.sdcard,
-        estimatedChunks: (seconds / 60).ceil(),
+        estimatedSegments: (seconds / 60).ceil(),
       ));
     }
     return wals;
@@ -252,11 +252,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     listener.onWalUpdated();
   }
 
-  Future<File> _flushToDisk(Wal wal, List<List<int>> chunk, int timerStart,
-      {String? subFolder, int? sessionId, int? chunkIndex, bool append = false}) async {
+  Future<File> _flushToDisk(Wal wal, List<List<int>> frames, int timerStart,
+      {String? subFolder, int? deviceSessionId, int? segmentIndex, bool append = false}) async {
     final directory = await getApplicationDocumentsDirectory();
-    final folderPath =
-        sessionId != null ? '${directory.path}/raw_chunks/$sessionId' : '${directory.path}/raw_chunks/$subFolder';
+    final folderPath = deviceSessionId != null
+        ? '${directory.path}/raw_segments/$deviceSessionId'
+        : '${directory.path}/raw_segments/$subFolder';
 
     final folder = Directory(folderPath);
     if (!await folder.exists()) {
@@ -264,15 +265,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
 
     String fileName;
-    if (sessionId != null && chunkIndex != null) {
-      fileName = '${sessionId}_$chunkIndex.bin';
+    if (deviceSessionId != null && segmentIndex != null) {
+      fileName = '${deviceSessionId}_$segmentIndex.bin';
     } else {
-      fileName = wal.getFileNameByTimeStarts(timerStart);
+      fileName = wal.getSegmentFileNameByTimestamp(timerStart);
     }
     String filePath = '${folder.path}/$fileName';
 
     final builder = BytesBuilder(copy: false);
-    for (var frame in chunk) {
+    for (var frame in frames) {
       final len = frame.length;
       builder.addByte(len & 0xFF);
       builder.addByte((len >> 8) & 0xFF);
@@ -290,20 +291,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     return file;
   }
 
-  Future<void> _saveStarMarker(int sessionId, int utcTime) async {
+  Future<void> _saveMarker(int deviceSessionId, int utcTime) async {
     try {
       final directory = await getApplicationDocumentsDirectory();
-      final folderPath = '${directory.path}/raw_chunks/$sessionId';
+      final folderPath = '${directory.path}/raw_segments/$deviceSessionId';
       final folder = Directory(folderPath);
       if (!await folder.exists()) {
         await folder.create(recursive: true);
       }
 
-      final starFile = File('${folder.path}/stars.txt');
-      await starFile.writeAsString('$utcTime\n', mode: FileMode.append);
-      Logger.debug("SDCardWalSync: Saved STAR marker at $utcTime for session $sessionId");
+      final markerFile = File('${folder.path}/markers.txt');
+      await markerFile.writeAsString('$utcTime\n', mode: FileMode.append);
+      Logger.debug("SDCardWalSync: Saved marker at $utcTime for session $deviceSessionId");
     } catch (e) {
-      Logger.error("SDCardWalSync: Failed to save star marker: $e");
+      Logger.error("SDCardWalSync: Failed to save marker: $e");
     }
   }
 
@@ -311,7 +312,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       {bool force = false, Function(int offset)? onProgress}) async {
     var deviceId = wal.device;
     int fileNum = wal.fileNum;
-    int offset = wal.storageOffset;
+    int offset = wal.walOffset;
     int timerStart = wal.timerStart;
 
     Logger.debug("_readStorageBytesToFile $offset");
@@ -329,29 +330,32 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     Timer? completionTimeout;
     DateTime lastWaitingLog = DateTime.now().subtract(const Duration(seconds: 10));
 
-    int? currentSessionId;
-    int? currentChunkIndex;
-    int? lastSessionId;
-    int? lastChunkIndex;
+    int? currentDeviceSessionId;
+    int? currentSegmentIndex;
+    int? lastDeviceSessionId;
+    int? lastSegmentIndex;
     final List<List<int>> frameBuffer = [];
     final List<int> streamBuffer = [];
 
-    // Track which (sessionId, chunkIndex) files have been created during this transfer.
+    // Track which (deviceSessionId, segmentIndex) files have been created during this transfer.
     // The FIRST write to a file must use FileMode.write (overwrite) to avoid appending to
     // leftover data from a prior sync or force-resync. Subsequent flushes within the same
     // transfer can append.
-    final Set<String> flushedChunksThisTransfer = {};
+    final Set<String> flushedSegmentsThisTransfer = {};
 
     Future<void> flushBuffer() async {
       if (frameBuffer.isEmpty) return;
 
-      String subFolder = lastSessionId?.toString() ?? 'unsynced';
-      final chunkKey = '${lastSessionId}_$lastChunkIndex';
-      final appendMode = flushedChunksThisTransfer.contains(chunkKey);
-      if (!appendMode) flushedChunksThisTransfer.add(chunkKey);
+      String subFolder = lastDeviceSessionId?.toString() ?? 'unsynced';
+      final segmentKey = '${lastDeviceSessionId}_$lastSegmentIndex';
+      final appendMode = flushedSegmentsThisTransfer.contains(segmentKey);
+      if (!appendMode) flushedSegmentsThisTransfer.add(segmentKey);
 
       var file = await _flushToDisk(wal, frameBuffer, timerStart,
-          subFolder: subFolder, sessionId: lastSessionId, chunkIndex: lastChunkIndex, append: appendMode);
+          subFolder: subFolder,
+          deviceSessionId: lastDeviceSessionId,
+          segmentIndex: lastSegmentIndex,
+          append: appendMode);
 
       try {
         await callback(file, offset, timerStart, subFolder: subFolder);
@@ -461,34 +465,38 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
               var utcTime = byteData.getUint32(0, Endian.little);
               var currentUptimeMs = byteData.getUint32(4, Endian.little);
-              currentSessionId = byteData.getUint32(8, Endian.little);
-              if (currentSessionId != null) {
-                _sessionsSeen.add(currentSessionId!);
+              currentDeviceSessionId = byteData.getUint32(8, Endian.little);
+              if (currentDeviceSessionId != null) {
+                _sessionsSeen.add(currentDeviceSessionId!);
               }
-              currentChunkIndex = byteData.getUint32(12, Endian.little);
+              currentSegmentIndex = byteData.getUint32(12, Endian.little);
 
-              if (currentSessionId != null) {
-                SharedPreferencesUtil().saveInt('anchor_utc_$currentSessionId', utcTime);
-                SharedPreferencesUtil().saveInt('anchor_uptime_$currentSessionId', currentUptimeMs);
-                // Per-chunk anchors so processDay can recover the exact start time of each chunk.
-                if (currentChunkIndex != null) {
-                  SharedPreferencesUtil().saveInt('anchor_utc_${currentSessionId}_$currentChunkIndex', utcTime);
-                  SharedPreferencesUtil()
-                      .saveInt('anchor_uptime_${currentSessionId}_$currentChunkIndex', currentUptimeMs);
+              if (currentDeviceSessionId != null) {
+                SharedPreferencesUtil()
+                    .saveInt('anchor_utc_device_session_$currentDeviceSessionId', utcTime);
+                SharedPreferencesUtil()
+                    .saveInt('anchor_uptime_device_session_$currentDeviceSessionId', currentUptimeMs);
+                // Per-segment anchors so processDay can recover the exact start time of each segment.
+                if (currentSegmentIndex != null) {
+                  SharedPreferencesUtil().saveInt(
+                      'anchor_utc_device_session_${currentDeviceSessionId}_$currentSegmentIndex', utcTime);
+                  SharedPreferencesUtil().saveInt(
+                      'anchor_uptime_device_session_${currentDeviceSessionId}_$currentSegmentIndex', currentUptimeMs);
                 }
               }
 
-              final sessionId = currentSessionId;
-              if (sessionId != null && sessionId > SharedPreferencesUtil().latestSyncedSessionId) {
-                SharedPreferencesUtil().latestSyncedSessionId = sessionId;
+              final deviceSessionId = currentDeviceSessionId;
+              if (deviceSessionId != null &&
+                  deviceSessionId > SharedPreferencesUtil().latestSyncedDeviceSessionId) {
+                SharedPreferencesUtil().latestSyncedDeviceSessionId = deviceSessionId;
               }
 
-              Logger.debug("SDCardWalSync BLE: Parsed metadata session $currentSessionId");
+              Logger.debug("SDCardWalSync BLE: Parsed metadata session $currentDeviceSessionId");
 
-              if (currentSessionId != lastSessionId || currentChunkIndex != lastChunkIndex) {
+              if (currentDeviceSessionId != lastDeviceSessionId || currentSegmentIndex != lastSegmentIndex) {
                 await flushBuffer();
-                lastSessionId = currentSessionId;
-                lastChunkIndex = currentChunkIndex;
+                lastDeviceSessionId = currentDeviceSessionId;
+                lastSegmentIndex = currentSegmentIndex;
               }
 
               streamBuffer.removeRange(0, 1 + 16);
@@ -499,33 +507,35 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           }
 
           if (packageSize == 254) {
-            // Star marker
+            // Marker (star)
             if (1 + 16 <= streamBuffer.length) {
               var metadata = streamBuffer.sublist(1, 1 + 16);
               var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
               var utcTime = byteData.getUint32(0, Endian.little);
-              var starUptimeMs = byteData.getUint32(4, Endian.little);
+              var markerUptimeMs = byteData.getUint32(4, Endian.little);
 
               // If device has no RTC lock, utcTime will be 0. Reconstruct UTC time from
               // the uptime anchor saved when we parsed the most recent metadata packet.
               int resolvedUtcTime = utcTime;
-              if (utcTime == 0 && currentSessionId != null) {
-                final anchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$currentSessionId');
-                final anchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_$currentSessionId');
+              if (utcTime == 0 && currentDeviceSessionId != null) {
+                final anchorUtc =
+                    SharedPreferencesUtil().getInt('anchor_utc_device_session_$currentDeviceSessionId');
+                final anchorUptime =
+                    SharedPreferencesUtil().getInt('anchor_uptime_device_session_$currentDeviceSessionId');
                 if (anchorUtc > 0 && anchorUptime > 0) {
-                  final uptimeDeltaSeconds = (starUptimeMs - anchorUptime) ~/ 1000;
+                  final uptimeDeltaSeconds = (markerUptimeMs - anchorUptime) ~/ 1000;
                   resolvedUtcTime = anchorUtc + uptimeDeltaSeconds;
                   Logger.debug(
-                      "SDCardWalSync: Star marker UTC resolved via anchor: $resolvedUtcTime (delta ${uptimeDeltaSeconds}s)");
+                      "SDCardWalSync: Marker UTC resolved via anchor: $resolvedUtcTime (delta ${uptimeDeltaSeconds}s)");
                 } else {
                   Logger.debug(
-                      "SDCardWalSync: Star marker utcTime=0 and no anchor available for session $currentSessionId");
+                      "SDCardWalSync: Marker utcTime=0 and no anchor available for session $currentDeviceSessionId");
                 }
               }
 
-              final sessionId = currentSessionId;
-              if (sessionId != null) {
-                await _saveStarMarker(sessionId, resolvedUtcTime);
+              final deviceSessionId = currentDeviceSessionId;
+              if (deviceSessionId != null) {
+                await _saveMarker(deviceSessionId, resolvedUtcTime);
               }
               streamBuffer.removeRange(0, 1 + 16);
               continue;
@@ -670,8 +680,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // Log full WAL state at sync start so we can audit what's being synced and why.
     Logger.debug('SDCardWalSync: syncAll start — _wals total=${_wals.length} force=$force');
     for (final w in _wals) {
-      Logger.debug('  WAL[${w.id}] status=${w.status} estimatedChunks=${w.estimatedChunks} '
-          'totalBytes=${w.storageTotalBytes} offset=${w.storageOffset} '
+      Logger.debug('  WAL[${w.id}] status=${w.status} estimatedSegments=${w.estimatedSegments} '
+          'totalBytes=${w.storageTotalBytes} walOffset=${w.walOffset} '
           'isSyncing=${w.isSyncing}');
     }
 
@@ -699,7 +709,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal.syncStartedAt = DateTime.now();
         listener.onWalUpdated();
 
-        final int initialOffset = wal.storageOffset;
+        final int initialOffset = wal.walOffset;
         int lastOffset = initialOffset;
         int totalBytesToDownload = wal.storageTotalBytes - initialOffset;
 
@@ -718,17 +728,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 syncedFiles.add(file);
                 int bytesInChunk = offset - lastOffset;
                 _updateSpeed(bytesInChunk);
-                await _registerSingleChunk(wal, file, timerStart);
+                await _registerSingleSegment(wal, file, timerStart);
                 lastOffset = offset;
 
                 listener.onWalUpdated();
               },
               force: true,
               onProgress: (offset) {
-                wal.storageOffset = offset;
+                wal.walOffset = offset;
                 final remainingBytes = wal.storageTotalBytes - offset;
                 final seconds = (remainingBytes / (wal.codec.getStorageBytesPerMinute() / 60.0)).truncate();
-                wal.estimatedChunks = (seconds / 60).ceil();
+                wal.estimatedSegments = (seconds / 60).ceil();
 
                 final double progressPercent =
                     totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
@@ -737,23 +747,23 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
               });
 
-          // Update estimatedChunks from exact frame count now that we have the .bin files.
+          // Update estimatedSegments from exact frame count now that we have the .bin files.
           final uniqueFiles = {for (final f in syncedFiles) f.path: f}.values.toList();
           if (uniqueFiles.isNotEmpty) {
             final totalFrames = uniqueFiles.fold(0, (sum, f) => sum + _countFramesInFile(f));
             final exactSeconds = totalFrames / wal.codec.getFramesPerSecond();
-            wal.estimatedChunks = (exactSeconds / 60).ceil();
+            wal.estimatedSegments = (exactSeconds / 60).ceil();
             Logger.debug('SDCardWalSync: syncAll post-sync frame count: '
-                'frames=$totalFrames exactSeconds=$exactSeconds estimatedChunks=${wal.estimatedChunks}');
+                'frames=$totalFrames exactSeconds=$exactSeconds estimatedSegments=${wal.estimatedSegments}');
           }
 
           // Small delay to allow firmware buffers to clear before sending DELETE
           await Future.delayed(const Duration(milliseconds: 500));
-          if (wal.storageOffset >= wal.storageTotalBytes) {
+          if (wal.walOffset >= wal.storageTotalBytes) {
             await deleteWal(wal);
           } else {
             Logger.debug(
-                "SDCardWalSync: Partial transfer (${wal.storageOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
+                "SDCardWalSync: Partial transfer (${wal.walOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
             anyPartial = true;
           }
           wal.status = WalStatus.synced;
@@ -793,7 +803,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     listener.onWalUpdated();
 
     var resp = SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
-    final int initialOffset = wal.storageOffset;
+    final int initialOffset = wal.walOffset;
     int lastOffset = initialOffset;
     int totalBytesToDownload = wal.storageTotalBytes - initialOffset;
 
@@ -812,17 +822,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             syncedFiles.add(file);
             int bytesInChunk = offset - lastOffset;
             _updateSpeed(bytesInChunk);
-            await _registerSingleChunk(wal, file, timerStart);
+            await _registerSingleSegment(wal, file, timerStart);
             lastOffset = offset;
 
             listener.onWalUpdated();
           },
           force: true,
           onProgress: (offset) {
-            wal.storageOffset = offset;
+            wal.walOffset = offset;
             final remainingBytes = wal.storageTotalBytes - offset;
             final seconds = (remainingBytes / (wal.codec.getStorageBytesPerMinute() / 60.0)).truncate();
-            wal.estimatedChunks = (seconds / 60).ceil();
+            wal.estimatedSegments = (seconds / 60).ceil();
 
             final double progressPercent =
                 totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
@@ -831,23 +841,23 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
           });
 
-      // Update estimatedChunks from exact frame count now that we have the .bin files.
+      // Update estimatedSegments from exact frame count now that we have the .bin files.
       final uniqueFiles = {for (final f in syncedFiles) f.path: f}.values.toList();
       if (uniqueFiles.isNotEmpty) {
         final totalFrames = uniqueFiles.fold(0, (sum, f) => sum + _countFramesInFile(f));
         final exactSeconds = totalFrames / wal.codec.getFramesPerSecond();
-        wal.estimatedChunks = (exactSeconds / 60).ceil();
+        wal.estimatedSegments = (exactSeconds / 60).ceil();
         Logger.debug('SDCardWalSync: syncWal post-sync frame count: '
-            'frames=$totalFrames exactSeconds=$exactSeconds estimatedChunks=${wal.estimatedChunks}');
+            'frames=$totalFrames exactSeconds=$exactSeconds estimatedSegments=${wal.estimatedSegments}');
       }
 
       // Small delay to allow firmware buffers to clear before sending DELETE
       await Future.delayed(const Duration(milliseconds: 500));
-      if (wal.storageOffset >= wal.storageTotalBytes) {
+      if (wal.walOffset >= wal.storageTotalBytes) {
         await deleteWal(wal);
       } else {
         Logger.debug(
-            "SDCardWalSync: Partial transfer (${wal.storageOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
+            "SDCardWalSync: Partial transfer (${wal.walOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
       }
       wal.status = WalStatus.synced;
       _wals.removeWhere((w) => w.id == wal.id);
@@ -864,9 +874,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     return resp;
   }
 
-  Future<void> _registerSingleChunk(Wal wal, File file, int timerStart) async {
+  Future<void> _registerSingleSegment(Wal wal, File file, int timerStart) async {
     // Note: We no longer queue this for automatic processing in LocalWalSync.
-    // The RecordingsManager will pick up the .bin files in raw_chunks/ session folders.
+    // The RecordingsManager will pick up the .bin files in raw_segments/ device session folders.
   }
 
   /// Counts Opus frames in a .bin chunk file (4-byte LE prefix per frame).
@@ -977,7 +987,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       listener.onWalUpdated();
 
       try {
-        final totalBytes = wal.storageTotalBytes - wal.storageOffset;
+        final totalBytes = wal.storageTotalBytes - wal.walOffset;
         await _checkDiskSpaceBeforeSync(totalBytes);
 
         // This is a simplified placeholder for the WiFi sync logic
