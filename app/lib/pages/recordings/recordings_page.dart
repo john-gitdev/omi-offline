@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' show max;
 
 import 'package:flutter/material.dart';
 import 'package:omi/utils/logger.dart';
@@ -127,7 +126,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       if (serviceIsSyncing && _spState == SyncProcessState.idle) {
         setState(() {
           _spState = SyncProcessState.syncing;
-          _totalCount = max(1, syncs.estimatedTotalChunks);
+          _totalCount = syncs.estimatedTotalChunks;
           _syncedCount = 0;
           _syncSpeed = 0.0;
         });
@@ -264,10 +263,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     final syncs = ServiceManager.instance().wal.getSyncs();
     final estimatedTotal = syncs.estimatedTotalChunks;
-    Logger.debug('RecordingsPage: _runPipeline start — estimatedTotalChunks=$estimatedTotal '
-        '(will be shown as totalCount=${max(1, estimatedTotal)})');
+    Logger.debug('RecordingsPage: _runPipeline start — estimatedTotalChunks=$estimatedTotal');
     setState(() {
-      _totalCount = max(1, estimatedTotal);
+      _totalCount = estimatedTotal;
       _syncedCount = 0;
       _syncSpeed = 0.0;
     });
@@ -697,7 +695,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       case SyncProcessState.syncing:
         mainText = 'Syncing recordings';
         final speedStr = _syncSpeed > 0 ? '  ·  ${_syncSpeed.toStringAsFixed(1)} KB/s' : '';
-        subText = '$_syncedCount of $_totalCount recordings synced$speedStr';
+        subText = _totalCount > 0 ? '$_syncedCount of $_totalCount recordings synced$speedStr' : 'Scanning device…';
         iconBg = Colors.deepPurpleAccent;
         iconChild = const SizedBox(
           width: 16,
