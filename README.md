@@ -1,108 +1,364 @@
-# Omi Offline Naming Standard & System Architecture
+# Omi Offline: Architecture & Naming Standard
 
-Welcome to the Omi Offline system documentation. This document deeply explains the core architecture, data lifecycle, and implementation details of the wearable system, which has evolved significantly from its original design.
+## What is Omi Offline?
+
+Omi Offline is an **offline-first audio capture and processing system** for a wearable device.
+
+Instead of streaming audio in real time, the system:
+
+* Records continuously on-device
+* Stores audio locally in structured segments
+* Syncs data to the phone in batches over BLE
+* Processes audio **offline on the phone** using VAD and contextual analysis
+
+**Key properties:**
+
+* No continuous BLE streaming
+* No real-time cloud dependency
+* Significantly improved battery life (phone + wearable)
+* Higher-quality speech segmentation via post-processing
+
+---
 
 ## The Evolution: From Streaming to Offline-First
 
-Originally, the Omi wearable operated as a **streaming audio system**. It continuously streamed live audio packets over BLE to the connected phone, which then had to immediately receive and upload that audio to the cloud. There was no Voice Activity Detection (VAD) gating on either the device or the phone. This approach proved insufficient primarily due to battery drain:
-1. **Phone Battery Drain:** The constant BLE connection combined with the phone's requirement to continuously wake up, process audio packets, and use its cellular radio to upload them caused severe, unsustainable battery drain on the user's phone.
-2. **Wearable Battery & Bandwidth:** Constant BLE streaming also exhausted the wearable's battery quickly and saturated the BLE channel, leaving no room for dropouts or network instability.
+Originally, the Omi wearable operated as a **live streaming system**:
 
-To solve this, the architecture was transformed into an **offline-first, batch-processing system**. 
+* Audio was continuously sent over BLE
+* The phone immediately uploaded it to the cloud
+* No VAD existed on-device or on-phone
 
-Today, the firmware acts as a dumb, reliable pipe: it continuously records all audio, chunks it into segments, and writes it directly to the onboard eMMC storage. The companion app later synchronizes these segments over BLE using a Write-Ahead Log (WAL) approach, and processes the audio locally on the phone. This allows the app to use a highly sophisticated, bidirectional VAD algorithm with rich context windows, preserving battery life on both the phone and the wearable while drastically improving transcription accuracy.
+### Problems with streaming
+
+**Phone battery drain**
+
+* Constant BLE activity
+* Continuous wakeups
+* Cellular uploads
+
+**Wearable constraints**
+
+* High BLE bandwidth usage
+* Rapid battery drain
+* No tolerance for connection instability
+
+### Solution: Offline-first architecture
+
+The system was redesigned to:
+
+* Record everything locally on-device
+* Defer all processing to the phone
+* Batch transfer data over BLE
+* Run VAD and segmentation offline
+
+### Result
+
+* Dramatically reduced battery usage
+* More reliable data transfer
+* Significantly better transcription accuracy
 
 ---
 
-## 1. Local VAD Gating
+## System Overview
 
-Because the firmware acts as a simple storage pipe, all "Local VAD" runs strictly on the **app side (Flutter/Dart)** during the offline processing phase. 
+```
+Wearable (MCU)
+  - Records audio
+  - Encodes Opus frames
+  - Writes to eMMC as .bin segments
+  - Inserts metadata + markers
 
-### How it works (`OfflineAudioProcessor`)
-When the app processes synchronized `.bin` segments, it doesn't load the entire file into memory. Instead:
-1. **Frame Decoding:** It iterates through the `.bin` file frame-by-frame, decoding the Opus payload into PCM data.
-2. **dBFS Calculation:** It calculates the RMS of the PCM data to determine the dBFS (decibels relative to full scale).
-3. **Asymmetric Noise Floor Tracking:** The system continuously tracks environmental noise using two exponential moving averages. It adapts slowly to loud transients (`alphaRise = 0.995`, ~10s) so it doesn't suppress speech, but adapts quickly downward (`alphaFall = 0.98`, ~2s) when leaving a noisy environment.
-4. **Speech Gating:** A frame is considered speech if its `dBFS > noiseFloor + snrMarginDb`.
-5. **Memory Efficiency:** Instead of caching audio bytes, the VAD algorithm accumulates `FrameRef` objects (disk pointers with byte offsets and lengths). Once a conversation completes, these pointers are sequentially read from the synchronized segments and transcoded into an `.m4a` or `.wav` file.
+        ↓ BLE (WAL-based sync)
+
+Mobile App (Flutter)
+  - Syncs segments incrementally
+  - Stores raw .bin files
+
+        ↓
+
+Offline Processing
+  - VAD (noise-aware, adaptive)
+  - Marker-based extraction (manual mode)
+
+        ↓
+
+Final Recordings
+  - .m4a / .wav files
+
+        ↓
+
+Optional Upload
+  - HeyPocket API
+```
 
 ---
 
-## 2. Automatic vs. Manual Modes
+## Sync Pipeline (BLE + WAL)
 
-The app supports two primary processing heuristics, defining how raw segments are converted into finalized recordings.
+### Data Storage (Firmware)
+
+* Audio is encoded into **Opus frames (~20ms)**
+* Frames are written into fixed-size `.bin` **Segments**
+* Each segment begins with a **0xFF metadata packet** containing:
+
+  * `deviceSessionId` (random u32 per boot)
+  * `segmentIndex`
+  * UTC timestamp
+  * Device uptime
+
+### Transfer Model
+
+* The app syncs using a **Write-Ahead Log (WAL)** offset
+* Firmware streams raw bytes over BLE:
+
+  * Packet size = negotiated MTU - 3 bytes
+* Sync is **append-only and resumable**
+
+### End of Transfer
+
+* Firmware sends a **0xFD (EOT marker)** when no more data is available
+* This is required for correct termination of sync loops
+
+---
+
+## Processing Pipeline
+
+### Chronological Merging
+
+* Segments are ordered by:
+
+  * `(deviceSessionId, segmentIndex)`
+* Processing is **continuous across boundaries**
+* Recordings are **never split by day or batch**
+
+### Timestamp Correction
+
+* The device may not have accurate RTC at boot
+* The app writes anchor mappings:
+
+```
+anchor_utc_device_session_{id}
+```
+
+* This maps device uptime → real-world timestamps
+
+### Cleanup
+
+* After processing:
+
+  * `.bin` segments are deleted
+  * Final recordings are stored as `.m4a` / `.wav`
+* Exception:
+
+  * Segments are retained if **Adjustment Mode** is enabled
+
+---
+
+## Recording Modes
 
 ### Automatic Mode
-In this mode, the `OfflineAudioProcessor` acts as a continuous, forward-scanning state machine. It evaluates every frame for speech.
-- **Splitting:** If continuous silence exceeds the split threshold, the recording is finalized. 
-- **Dropping:** If the accumulated speech duration is less than the minimum speech threshold, the recording is discarded.
-- **Context:** A predefined buffer of trailing silence is carried over to the next recording to serve as a pre-speech buffer.
 
-### Manual Mode (Marker / Star System)
-Instead of relying purely on voice activity, users can manually trigger a recording by double-tapping the wearable. 
-- **Firmware behavior:** The firmware immediately flashes the LED (`marker_flash_count`) and writes a `0xFE` packet into the storage stream. This is a point-in-time event.
-- **App behavior (`ManualRecordingExtractor`):** The app searches the synchronized segments for these marker timestamps. It then executes a **bidirectional scan**, moving up to 2 hours backward and forward from the marker. 
-- **VAD within Windows:** It runs the VAD pass *only* within these localized windows to extract the exact conversation surrounding the button press, saving battery and compute time.
+A continuous forward-scanning VAD system.
+
+* Evaluates every frame
+* Splits when silence exceeds threshold
+* Drops recordings below minimum speech duration
+* Carries trailing silence as pre-buffer for next segment
 
 ---
 
-## 3. VAD Sliders & Tuning System
+### Manual Mode (Marker System)
 
-The app exposes a robust tuning system (`SharedPreferencesUtil`), which dictates the exact thresholds used by the VAD state machine.
+User-triggered recording via double-tap.
 
-| Slider / Setting | Internal Variable | Implementation Detail & Tradeoffs |
-| :--- | :--- | :--- |
-| **SNR Margin** | `_snrMarginDb` | The dB threshold above the dynamically tracked noise floor required to trigger speech. *Tradeoff:* Lower values increase false positives (background noise recorded); higher values miss quiet speech. |
-| **Hangover Time** | `_hangoverFrameCount` | The number of frames to keep VAD "high" after the signal drops below the SNR threshold. Prevents mid-sentence stuttering or micro-cuts during natural pauses. |
-| **Split Duration** | `_silenceDurationToSplitMs` | The duration of continuous silence required to close a recording session and finalize the artifact. |
-| **Min Speech** | `_minSpeechMs` | The absolute minimum duration of active speech required to save a recording. Filters out transient noises like coughs, bumps, or throat clearing. |
-| **Pre-Speech Buffer** | `_preSpeechBufferMs` | The amount of silence to preserve *before* the VAD triggers. Captures the breath before a sentence and ensures the very first syllable is not clipped. |
-| **Gap Threshold** | `_gapThresholdMs` | A safety mechanism. If the absolute timestamp difference between two physical segments exceeds this value (e.g., the device was powered off), the system forces a split regardless of VAD state. |
+#### Firmware behavior
 
----
+* Writes a **0xFE marker packet**
+* Triggers LED feedback (`marker_flash_count`)
 
-## 4. Sync & Process Pipeline
+#### App behavior
 
-The data lifecycle relies on strict ordering and physical boundaries to be highly resilient against data loss.
+* Scans for marker timestamps
+* Performs **bidirectional extraction**:
 
-### The Sync Pipeline (BLE Transport)
-- **Data Storage:** The wearable stores Opus audio frames into fixed-size `.bin` files (`Segments`). 
-- **Metadata:** Each segment starts with a `0xFF` metadata packet (255 length) containing the `deviceSessionId` (a random u32 generated at boot), `segmentIndex`, UTC time, and uptime.
-- **Transfer Model:** The app requests data starting from a specific byte offset (WAL offset). The firmware streams packets over BLE (up to negotiated MTU - 3 bytes). 
-- **EOT Marker:** When the firmware exhausts its written data, it sends a `0xFD` marker byte. This explicitly signals the end-of-transfer to the app's `SDCardWalSyncImpl`.
+  * Up to 2 hours backward and forward
+* Runs VAD **only within this window**
 
-### The Process Pipeline
-- **Chronological Merging:** Crucially, the app organizes segments by `(deviceSessionId, segmentIndex)`. It **never artificially cuts** recordings at batch or calendar day boundaries. A conversation that spans midnight is processed contiguously.
-- **State Cleanup:** Once segments are processed and transcoded to final `.m4a` files (`Recordings`), the raw `.bin` segments are deleted from the phone to save space, unless the user has "Adjustment Mode" enabled.
-- **SharedPreferences Anchors:** Because the wearable might not have an immediate RTC lock, the app writes anchor timestamps (`anchor_utc_device_session_{id}`) correlating device uptime with the phone's wall-clock time. This ensures absolute timestamp accuracy during the processing phase.
+**Benefit:**
+
+* Precise conversation capture
+* Reduced compute and battery usage
 
 ---
 
-## 5. HeyPocket Integration
+## VAD System
 
-The app features a native integration with the HeyPocket API (`https://public.heypocketai.com/api/v1`).
+### High-Level Behavior
 
-- **API Model:** Uses a standard REST POST multipart upload of the finalized `.m4a` recording file alongside an API Key.
-- **Upload Flow:** 
-  - **Manual:** Triggered by the user via the UI.
-  - **Automatic:** If `autoSyncEnabled` and `heypocketEnabled` are true, the system runs a background poll (`_pollHeyPocket()`) evaluating the `finalizedRecordings` list.
-- **Idempotency & State:** The app maintains a registry of successfully uploaded files (`heypocketUploadedFiles` in SharedPreferences) using a unique upload key derived from the file path. This prevents duplicate uploads even if the system restarts.
-- **Error Handling:** Network timeouts or 4xx/5xx HTTP errors are wrapped in a `HeyPocketException`, allowing the UI to display precise SnackBar notifications and enabling the background loop to retry gracefully on subsequent passes.
+The system uses:
+
+* Adaptive noise floor tracking
+* Signal-to-noise ratio (SNR) gating
+* Frame-level analysis
+
+All VAD runs **on-device (phone), not firmware**.
+
+---
+
+### Implementation Details (OfflineAudioProcessor)
+
+**Streaming decode**
+
+* Iterates frame-by-frame (no full file load)
+
+**dBFS calculation**
+
+* RMS → dBFS per frame
+
+**Adaptive noise floor**
+
+* Two exponential moving averages:
+
+```
+alphaRise = 0.995  (~10s adaptation to louder environments)
+alphaFall = 0.98   (~2s adaptation to quieter environments)
+```
+
+**Speech condition**
+
+```
+frame_dbfs > noiseFloor + snrMarginDb
+```
+
+**Memory model (critical)**
+
+* Uses `FrameRef` (byte offsets + lengths)
+* Avoids loading PCM into RAM
+* Reads data only when finalizing recordings
+
+---
+
+## VAD Tuning System (Sliders)
+
+Backed by `SharedPreferencesUtil`.
+
+| Setting           | Internal Variable           | Description                                    |
+| ----------------- | --------------------------- | ---------------------------------------------- |
+| SNR Margin        | `_snrMarginDb`              | Required dB above noise floor to detect speech |
+| Hangover Time     | `_hangoverFrameCount`       | Keeps speech active briefly after drop         |
+| Split Duration    | `_silenceDurationToSplitMs` | Silence needed to finalize recording           |
+| Min Speech        | `_minSpeechMs`              | Minimum speech length to keep recording        |
+| Pre-Speech Buffer | `_preSpeechBufferMs`        | Preserves audio before speech start            |
+| Gap Threshold     | `_gapThresholdMs`           | Forces split on large timestamp gaps           |
+
+### Tradeoffs
+
+* Lower SNR → more false positives
+* Higher SNR → missed quiet speech
+* Longer hangover → smoother speech, less fragmentation
+* Short split duration → more aggressive segmentation
+
+---
+
+## HeyPocket Integration
+
+API:
+[https://public.heypocketai.com/api/v1](https://public.heypocketai.com/api/v1)
+
+### Upload Model
+
+* Multipart POST with `.m4a` file + API key
+
+### Trigger Modes
+
+* Manual (user initiated)
+* Automatic:
+
+  * Requires `autoSyncEnabled` + `heypocketEnabled`
+  * Background polling via `_pollHeyPocket()`
+
+### Idempotency
+
+* Stored in:
+
+```
+heypocketUploadedFiles (SharedPreferences)
+```
+
+* Prevents duplicate uploads across restarts
+
+### Error Handling
+
+* Wrapped in `HeyPocketException`
+* Supports retry on:
+
+  * Network failures
+  * 4xx / 5xx responses
 
 ---
 
 ## Core Invariants & Nomenclature
 
-If you are contributing to this codebase, you must adhere to the semantic terminology defined in `NOMENCLATURE.md`:
+All contributors must follow **NOMENCLATURE.md** strictly:
 
-- **Frame:** A single encoded Opus audio unit (~20ms).
-- **Segment:** A `.bin` file stored on the onboard eMMC storage containing multiple Frames. (Never refer to this as a "chunk").
-- **DeviceSession:** A stream of segments representing a single hardware boot lifecycle. (Variable: `deviceSessionId`).
-- **Marker:** A user-initiated event (double-tap) stored as a `0xFE` packet. (Never refer to this as a "star").
-- **WAL:** The append-only byte-offset state tracking synchronization progress.
-- **Recording:** The final, transcoded artifact (`.m4a` or `.wav`).
+| Term          | Definition                                        |
+| ------------- | ------------------------------------------------- |
+| Frame         | Single Opus unit (~20ms)                          |
+| Segment       | `.bin` file containing frames (**never "chunk"**) |
+| DeviceSession | One boot lifecycle (`deviceSessionId`)            |
+| Marker        | 0xFE user event (**never "star"**)                |
+| WAL           | Byte-offset sync state                            |
+| Recording     | Final `.m4a` / `.wav` output                      |
 
-### Performance Constraints
-- **BLE Bottlenecks:** Transferring raw segments over BLE is inherently slow. The system heavily relies on `0xFD` (EOT) markers and specific MTU sizes to maximize throughput.
-- **Memory Footprint:** The `FrameRef` architecture is a strict requirement. Mobile operating systems will kill the app if it attempts to load hours of PCM data into RAM simultaneously.
-- **Battery Optimization:** By keeping VAD entirely on the mobile app's offline processing phase rather than running it locally on the hardware, the wearable's compute load is minimized, allowing the MCU to sleep between simple eMMC write operations.
+---
+
+## Performance Constraints
+
+### BLE Bottlenecks
+
+* Limited throughput
+* Requires:
+
+  * Efficient MTU usage
+  * Explicit EOT (0xFD)
+
+### Memory Constraints
+
+* Loading full PCM is not allowed
+* `FrameRef` architecture is mandatory
+
+### Battery Optimization
+
+* Firmware does:
+
+  * Record
+  * Encode
+  * Store
+
+* Firmware does **not**:
+
+  * Run VAD
+  * Perform analysis
+
+This keeps:
+
+* MCU mostly idle
+* Power usage minimal
+* System predictable and reliable
+
+---
+
+## Repository Structure (Suggested)
+
+```
+/firmware   → Embedded recording + BLE transport
+/app        → Flutter app (sync, VAD, processing, UI)
+```
+
+### Key Components
+
+* `OfflineAudioProcessor` → VAD + segmentation engine
+* `ManualRecordingExtractor` → Marker-based extraction
+* `SDCardWalSyncImpl` → BLE sync implementation
+
+---
