@@ -199,6 +199,13 @@ class DeviceService implements IDeviceService {
     _isWifiSyncInProgress = value;
   }
 
+  /// Lightweight health check on the current connection.
+  Future<bool> ping() async {
+    final conn = _connection;
+    if (conn == null) return false;
+    return conn.ping();
+  }
+
   @override
   Future<void> disconnectDevice() async {
     final currentConnection = _connection;
