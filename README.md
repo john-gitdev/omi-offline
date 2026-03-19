@@ -55,7 +55,6 @@ The system was redesigned to:
 
 * Dramatically reduced battery usage
 * More reliable data transfer
-* Significantly better transcription accuracy
 
 ---
 
