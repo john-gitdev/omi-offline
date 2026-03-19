@@ -459,6 +459,7 @@ class RecordingsManager {
               } else {
                 Logger.debug(
                     "RecordingsManager: Keeping raw segment for session $deviceSessionId as it might be ongoing.");
+              }
             }
           }
 

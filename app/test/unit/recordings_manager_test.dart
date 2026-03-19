@@ -31,11 +31,11 @@ void main() {
 
   test('getDailyBatches identifies and groups chunks correctly', () async {
     // Create mock structure:
-    // raw_chunks/100/0.bin (modified 2026-03-11)
-    // raw_chunks/100/1.bin (modified 2026-03-11)
-    // raw_chunks/101/0.bin (modified 2026-03-12)
+    // raw_segments/100/0.bin (modified 2026-03-11)
+    // raw_segments/100/1.bin (modified 2026-03-11)
+    // raw_segments/101/0.bin (modified 2026-03-12)
     
-    final rawDir = Directory(p.join(tempDir.path, 'raw_chunks'));
+    final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
     final session100Dir = Directory(p.join(rawDir.path, '100'))..createSync(recursive: true);
     final session101Dir = Directory(p.join(rawDir.path, '101'))..createSync(recursive: true);
     
@@ -53,13 +53,13 @@ void main() {
     
     expect(batches.length, 2);
     expect(batches[0].dateString, '2026-03-12');
-    expect(batches[0].rawChunks.length, 1);
+    expect(batches[0].rawSegments.length, 1);
     expect(batches[1].dateString, '2026-03-11');
-    expect(batches[1].rawChunks.length, 2);
+    expect(batches[1].rawSegments.length, 2);
   });
 
   test('getDailyBatches sorts chunks by filename within a day', () async {
-    final rawDir = Directory(p.join(tempDir.path, 'raw_chunks'));
+    final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
     final session100Dir = Directory(p.join(rawDir.path, '100'))..createSync(recursive: true);
     
     // Create files in reverse order
@@ -72,7 +72,7 @@ void main() {
     final manager = RecordingsManager();
     final batches = await manager.getDailyBatches();
     
-    expect(batches[0].rawChunks[0].path.endsWith('chunk_0.bin'), true);
-    expect(batches[0].rawChunks[1].path.endsWith('chunk_1.bin'), true);
+    expect(batches[0].rawSegments[0].path.endsWith('chunk_0.bin'), true);
+    expect(batches[0].rawSegments[1].path.endsWith('chunk_1.bin'), true);
   });
 }
