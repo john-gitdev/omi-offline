@@ -336,7 +336,7 @@ class RecordingsManager {
 
               await processor.processSegmentFile(file, segmentStartTime, deviceSessionId: deviceSessionId);
 
-              if (backgroundMode && !processor.hasOngoingRecording) {
+              if (backgroundMode && !processor.isCapturing) {
                 lastSafeToDeleteIndex = i;
               }
 
@@ -590,7 +590,7 @@ class RecordingsManager {
 
               await processor.processSegmentFile(file, segmentStartTime, deviceSessionId: deviceSessionId);
 
-              if (backgroundMode && !processor.hasOngoingRecording) {
+              if (backgroundMode && !processor.isCapturing) {
                 lastSafeToDeleteIndex = i;
               }
 
