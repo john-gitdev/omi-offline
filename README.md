@@ -10,7 +10,7 @@ Originally, the Omi wearable operated as a **streaming audio system**. It contin
 
 To solve this, the architecture was transformed into an **offline-first, batch-processing system**. 
 
-Today, the firmware acts as a dumb, reliable pipe: it continuously records all audio, chunks it into segments, and writes it directly to a local SD card. The companion app later synchronizes these segments over BLE (or WiFi) using a Write-Ahead Log (WAL) approach, and processes the audio locally on the phone. This allows the app to use a highly sophisticated, bidirectional VAD algorithm with rich context windows, preserving battery life on both the phone and the wearable while drastically improving transcription accuracy.
+Today, the firmware acts as a dumb, reliable pipe: it continuously records all audio, chunks it into segments, and writes it directly to the onboard eMMC storage. The companion app later synchronizes these segments over BLE using a Write-Ahead Log (WAL) approach, and processes the audio locally on the phone. This allows the app to use a highly sophisticated, bidirectional VAD algorithm with rich context windows, preserving battery life on both the phone and the wearable while drastically improving transcription accuracy.
 
 ---
 
@@ -24,7 +24,7 @@ When the app processes synchronized `.bin` segments, it doesn't load the entire 
 2. **dBFS Calculation:** It calculates the RMS of the PCM data to determine the dBFS (decibels relative to full scale).
 3. **Asymmetric Noise Floor Tracking:** The system continuously tracks environmental noise using two exponential moving averages. It adapts slowly to loud transients (`alphaRise = 0.995`, ~10s) so it doesn't suppress speech, but adapts quickly downward (`alphaFall = 0.98`, ~2s) when leaving a noisy environment.
 4. **Speech Gating:** A frame is considered speech if its `dBFS > noiseFloor + snrMarginDb`.
-5. **Memory Efficiency:** Instead of caching audio bytes, the VAD algorithm accumulates `FrameRef` objects (disk pointers with byte offsets and lengths). Once a conversation completes, these pointers are sequentially read from the SD card segments and transcoded into an `.m4a` or `.wav` file.
+5. **Memory Efficiency:** Instead of caching audio bytes, the VAD algorithm accumulates `FrameRef` objects (disk pointers with byte offsets and lengths). Once a conversation completes, these pointers are sequentially read from the synchronized segments and transcoded into an `.m4a` or `.wav` file.
 
 ---
 
@@ -96,7 +96,7 @@ The app features a native integration with the HeyPocket API (`https://public.he
 If you are contributing to this codebase, you must adhere to the semantic terminology defined in `NOMENCLATURE.md`:
 
 - **Frame:** A single encoded Opus audio unit (~20ms).
-- **Segment:** A `.bin` file stored on the SD card containing multiple Frames. (Never refer to this as a "chunk").
+- **Segment:** A `.bin` file stored on the onboard eMMC storage containing multiple Frames. (Never refer to this as a "chunk").
 - **DeviceSession:** A stream of segments representing a single hardware boot lifecycle. (Variable: `deviceSessionId`).
 - **Marker:** A user-initiated event (double-tap) stored as a `0xFE` packet. (Never refer to this as a "star").
 - **WAL:** The append-only byte-offset state tracking synchronization progress.
@@ -105,4 +105,4 @@ If you are contributing to this codebase, you must adhere to the semantic termin
 ### Performance Constraints
 - **BLE Bottlenecks:** Transferring raw segments over BLE is inherently slow. The system heavily relies on `0xFD` (EOT) markers and specific MTU sizes to maximize throughput.
 - **Memory Footprint:** The `FrameRef` architecture is a strict requirement. Mobile operating systems will kill the app if it attempts to load hours of PCM data into RAM simultaneously.
-- **Battery Optimization:** By moving VAD from the firmware to the mobile app's offline processing phase, the wearable's compute load is minimized, allowing the MCU to sleep between simple SD card write operations.
+- **Battery Optimization:** By moving VAD from the firmware to the mobile app's offline processing phase, the wearable's compute load is minimized, allowing the MCU to sleep between simple eMMC write operations.
