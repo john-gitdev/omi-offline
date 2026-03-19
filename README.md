@@ -4,9 +4,9 @@ Welcome to the Omi Offline system documentation. This document deeply explains t
 
 ## The Evolution: From Streaming to Offline-First
 
-Originally, the Omi wearable operated as a **streaming audio system**. It either continuously streamed audio over BLE to the companion app, or it used an aggressive, hardware-level Voice Activity Detection (VAD) to gate speech. Both approaches proved insufficient:
-1. **Battery & Bandwidth Drain:** Constant BLE streaming exhausted the battery quickly and saturated the BLE channel.
-2. **Context Loss:** Hardware-level VAD lacked the memory and processing power to maintain substantial backward and forward lookahead buffers. This caused missed sentence starts (clipping), truncated context, and false negatives in noisy environments.
+Originally, the Omi wearable operated as a **streaming audio system**. It continuously streamed live audio over BLE to the companion app, where Voice Activity Detection (VAD) was applied on the fly. This approach proved insufficient:
+1. **Battery & Bandwidth Drain:** Constant BLE streaming exhausted the wearable's battery quickly and saturated the BLE channel.
+2. **Context Loss & Latency:** Real-time "streaming VAD" on the phone struggled with dropouts and latency. It lacked the ability to reliably maintain substantial backward and forward lookahead buffers across an unstable live BLE stream, causing missed sentence starts (clipping), truncated context, and false negatives in noisy environments.
 
 To solve this, the architecture was transformed into an **offline-first, batch-processing system**. 
 
