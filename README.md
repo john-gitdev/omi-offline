@@ -16,7 +16,7 @@ Instead of streaming audio in real time, the system:
 * No continuous BLE streaming
 * No real-time cloud dependency
 * Significantly improved battery life (phone + wearable)
-* Higher-quality speech segmentation via post-processing
+* High-quality speech segmentation via post-processing
 
 ---
 
