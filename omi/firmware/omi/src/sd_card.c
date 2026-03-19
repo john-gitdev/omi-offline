@@ -17,7 +17,7 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define DISK_DRIVE_NAME "SD"        // Disk drive name
 #define DISK_MOUNT_PT "/SD:"        // Mount point path
 #define SD_WRITE_QUEUE_MSGS 60      // Write queue: 50fps * ~1.2s headroom
-#define SD_READ_QUEUE_MSGS  10      // Read queue: BLE sync sends one chunk at a time
+#define SD_READ_QUEUE_MSGS  10      // Read queue: BLE sync sends one packet at a time
 #define SD_FSYNC_THRESHOLD 20000    // Threshold in bytes to trigger fsync
 #define WRITE_BATCH_COUNT 50        // Number of writes to batch before writing to SD card
                                     // Increased from 10 → 50 for battery savings (~5s flush interval vs ~1s).
