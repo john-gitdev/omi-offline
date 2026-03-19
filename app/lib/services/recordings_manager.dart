@@ -280,7 +280,7 @@ class RecordingsManager {
           final extractor = ManualRecordingExtractor();
           try {
             final result = await extractor.process(batch, tempProcessingPath, forceFlush: !backgroundMode);
-            lastSafeToDeleteIndex = result.lastSafeChunkIndex;
+            lastSafeToDeleteIndex = result.lastSafeSegmentIndex;
             Logger.debug(
                 'RecordingsManager: Manual mode extracted ${result.savedPaths.length} conversations for $dateString');
           } finally {
@@ -540,7 +540,7 @@ class RecordingsManager {
           final extractor = ManualRecordingExtractor();
           try {
             final result = await extractor.process(combinedBatch, tempProcessingPath, forceFlush: !backgroundMode);
-            lastSafeToDeleteIndex = result.lastSafeChunkIndex;
+            lastSafeToDeleteIndex = result.lastSafeSegmentIndex;
             Logger.debug(
                 'RecordingsManager: Manual mode extracted ${result.savedPaths.length} conversations (combined)');
           } finally {
