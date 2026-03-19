@@ -85,7 +85,7 @@ abstract class SDCardWalSync implements IWalSync {
   bool get isDeviceRecordingFailed;
   double get currentSpeedKBps;
   int get recordingsCount;
-  int get estimatedTotalChunks;
+  int get estimatedTotalSegments;
 
   Future<bool> isWifiSyncSupported();
   Future<bool> setWifiCredentials(String ssid, String password);
