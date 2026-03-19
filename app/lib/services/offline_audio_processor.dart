@@ -69,10 +69,10 @@ class OfflineAudioProcessor {
   /// Checking _speechFrameCount > 0 is critical: after the silence threshold
   /// fires, _currentRecordingRefs is refilled with trailing silence frames
   /// as a pre-speech buffer for the next conversation, but _speechFrameCount
-  /// is reset to 0. Without this guard, hasOngoingRecording would return true
+  /// is reset to 0. Without this guard, isCapturing would return true
   /// for those silence-only frames, preventing lastSafeToDeleteIndex from
   /// advancing and causing background deletion to stall.
-  bool get hasOngoingRecording => _currentRecordingRefs.isNotEmpty && _speechFrameCount > 0;
+  bool get isCapturing => _currentRecordingRefs.isNotEmpty && _speechFrameCount > 0;
 
   double _calculateDecibels(Int16List pcmData) {
     if (pcmData.isEmpty) return -100.0; // Minimum representable dBFS
@@ -267,7 +267,7 @@ class OfflineAudioProcessor {
     return savedFiles;
   }
 
-  /// No-op: completed conversations are already written by [processChunkFile].
+  /// No-op: completed conversations are already written by [processSegmentFile].
   /// Background callers use this instead of [flushRemaining] to avoid
   /// force-writing the in-progress tail.
   Future<List<String>> flushOnlyCompleted() async => [];
