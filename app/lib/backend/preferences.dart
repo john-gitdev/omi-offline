@@ -152,9 +152,9 @@ class SharedPreferencesUtil {
 
   set deviceIsV2(bool value) => saveBool('deviceIsV2', value);
 
-  int get latestSyncedSessionId => getInt('latestSyncedSessionId', defaultValue: 0);
+  int get latestSyncedDeviceSessionId => getInt('latestSyncedDeviceSessionId', defaultValue: 0);
 
-  set latestSyncedSessionId(int value) => saveInt('latestSyncedSessionId', value);
+  set latestSyncedDeviceSessionId(int value) => saveInt('latestSyncedDeviceSessionId', value);
 
   // Double tap behavior: 0 = end conversation (default), 1 = pause/mute, 2 = star ongoing conversation
   int get doubleTapAction => getInt('doubleTapAction');
