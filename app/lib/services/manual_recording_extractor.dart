@@ -16,16 +16,16 @@ class _MetaAnchor {
   const _MetaAnchor(this.frameIndex, this.utcMs);
 }
 
-class _ChunkMeta {
+class _SegmentMeta {
   final File file;
-  final int chunkIndex; // index in batch.rawChunks
+  final int segmentIndex; // index in batch.rawSegments
   final DateTime startTime;
   final int frameCount; // audio frames only (not metadata packets)
   final List<_MetaAnchor> metaAnchors;
 
-  const _ChunkMeta({
+  const _SegmentMeta({
     required this.file,
-    required this.chunkIndex,
+    required this.segmentIndex,
     required this.startTime,
     required this.frameCount,
     required this.metaAnchors,
@@ -34,15 +34,15 @@ class _ChunkMeta {
   DateTime get endTime => startTime.add(Duration(milliseconds: frameCount * 20));
 }
 
-class _ChunkVad {
-  final _ChunkMeta chunk;
+class _SegmentVad {
+  final _SegmentMeta segment;
   final Uint8List speechFlags; // 1=speech, 0=silence, one per audio frame
   final Int32List byteOffsets; // byte offset of each frame's 4-byte length prefix
   final Int16List frameLengths; // Opus payload length per frame
   final Int64List frameTimesMs; // epoch-ms per frame, monotonic
 
-  const _ChunkVad({
-    required this.chunk,
+  const _SegmentVad({
+    required this.segment,
     required this.speechFlags,
     required this.byteOffsets,
     required this.frameLengths,
@@ -59,22 +59,22 @@ class _VadState {
 }
 
 class _Window {
-  int startChunkIdx;
+  int startSegmentIdx;
   int startFrameIdx;
-  int endChunkIdx;
+  int endSegmentIdx;
   int endFrameIdx;
   DateTime startTime;
   bool isComplete;
-  List<DateTime> starTimes;
+  List<DateTime> markerTimes;
 
   _Window({
-    required this.startChunkIdx,
+    required this.startSegmentIdx,
     required this.startFrameIdx,
-    required this.endChunkIdx,
+    required this.endSegmentIdx,
     required this.endFrameIdx,
     required this.startTime,
     required this.isComplete,
-    required this.starTimes,
+    required this.markerTimes,
   });
 }
 
@@ -88,9 +88,9 @@ const int _bucketSize = 800;
 const double _noiseFloorAlphaRise = 0.995;
 const double _noiseFloorAlphaFall = 0.98;
 const int _warmupFrames = 1500; // 30 seconds
-const int _starToleranceFrames = 250; // ±5 seconds
+const int _markerToleranceFrames = 250; // ±5 seconds
 const int _maxWindowFrames = 2 * 3600 * 1000 ~/ _frameDurationMs; // 2hr cap
-const int _safetyMarginChunks = 2;
+const int _safetyMarginSegments = 2;
 const int _cacheMaxBytes = 5 * 1024 * 1024; // 5 MB
 
 // ─── ManualRecordingExtractor ─────────────────────────────────────────────────
@@ -108,32 +108,32 @@ class ManualRecordingExtractor {
 
   void destroy() {}
 
-  Future<({List<String> savedPaths, int lastSafeChunkIndex})> process(
+  Future<({List<String> savedPaths, int lastSafeSegmentIndex})> process(
     DailyBatch batch,
     String tempOutputDir, {
     bool forceFlush = false,
   }) async {
-    if (batch.rawChunks.isEmpty) {
-      return (savedPaths: <String>[], lastSafeChunkIndex: -1);
+    if (batch.rawSegments.isEmpty) {
+      return (savedPaths: <String>[], lastSafeSegmentIndex: -1);
     }
 
-    final chunks = await _buildChunkMeta(batch);
-    if (chunks.isEmpty) return (savedPaths: <String>[], lastSafeChunkIndex: -1);
+    final chunks = await _buildSegmentMeta(batch);
+    if (chunks.isEmpty) return (savedPaths: <String>[], lastSafeSegmentIndex: -1);
 
     final newestEnd = chunks.last.endTime;
     final twoHrCutoff = newestEnd.subtract(const Duration(hours: 2));
 
-    // Fast path — no stars
-    if (batch.starredTimestamps.isEmpty) {
+    // Fast path — no markers
+    if (batch.markerTimestamps.isEmpty) {
       final lastSafe = _cutoffIndex(chunks, twoHrCutoff);
-      return (savedPaths: <String>[], lastSafeChunkIndex: lastSafe);
+      return (savedPaths: <String>[], lastSafeSegmentIndex: lastSafe);
     }
 
-    // Full path — stars present
-    final mergedRanges = _computeMergedRanges(batch.starredTimestamps, chunks);
+    // Full path — markers present
+    final mergedRanges = _computeMergedRanges(batch.markerTimestamps, chunks);
     final vadCache = await _runVadPass(chunks, mergedRanges);
 
-    final windows = _findWindows(batch.starredTimestamps, chunks, vadCache);
+    final windows = _findWindows(batch.markerTimestamps, chunks, vadCache);
     final merged = _mergeWindows(windows, chunks);
 
     final savedPaths = <String>[];
@@ -143,38 +143,42 @@ class ManualRecordingExtractor {
     }
 
     final lastSafe = _computeLastSafe(chunks, merged, twoHrCutoff, forceFlush, newestEnd);
-    return (savedPaths: savedPaths, lastSafeChunkIndex: lastSafe);
+    return (savedPaths: savedPaths, lastSafeSegmentIndex: lastSafe);
   }
 
   // ─── Phase 1: Build chunk metadata ─────────────────────────────────────────
 
-  Future<List<_ChunkMeta>> _buildChunkMeta(DailyBatch batch) async {
-    final result = <_ChunkMeta>[];
-    for (int i = 0; i < batch.rawChunks.length; i++) {
-      final file = batch.rawChunks[i];
-      final meta = await _parseSingleChunkMeta(file, i);
+  Future<List<_SegmentMeta>> _buildSegmentMeta(DailyBatch batch) async {
+    final result = <_SegmentMeta>[];
+    for (int i = 0; i < batch.rawSegments.length; i++) {
+      final file = batch.rawSegments[i];
+      final meta = await _parseSingleSegmentMeta(file, i);
       result.add(meta);
     }
     return result;
   }
 
-  Future<_ChunkMeta> _parseSingleChunkMeta(File file, int chunkIndex) async {
+  Future<_SegmentMeta> _parseSingleSegmentMeta(File file, int segmentIndex) async {
     // Resolve startTime from SharedPreferences anchors
-    final sessionIdStr = file.parent.path.split('/').last;
-    final int? sessionId = int.tryParse(sessionIdStr);
-    final chunkFileName = file.path.split('/').last.replaceAll('.bin', '');
-    final chunkIdxStr = chunkFileName.contains('_') ? chunkFileName.split('_').last : null;
-    final chunkPrefsIdx = chunkIdxStr != null ? int.tryParse(chunkIdxStr) : null;
+    final deviceSessionIdStr = file.parent.path.split('/').last;
+    final int? deviceSessionId = int.tryParse(deviceSessionIdStr);
+    final segmentFileName = file.path.split('/').last.replaceAll('.bin', '');
+    final segmentIdxStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
+    final segmentPrefsIdx = segmentIdxStr != null ? int.tryParse(segmentIdxStr) : null;
 
     DateTime startTime;
-    if (sessionId != null && chunkPrefsIdx != null) {
-      final anchorUtc = SharedPreferencesUtil().getInt('anchor_utc_${sessionId}_$chunkPrefsIdx', defaultValue: 0);
-      final anchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_${sessionId}_$chunkPrefsIdx', defaultValue: 0);
+    if (deviceSessionId != null && segmentPrefsIdx != null) {
+      final anchorUtc = SharedPreferencesUtil()
+          .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentPrefsIdx', defaultValue: 0);
+      final anchorUptime = SharedPreferencesUtil()
+          .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentPrefsIdx', defaultValue: 0);
       if (anchorUtc > 0) {
         startTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
       } else if (anchorUptime > 0) {
-        final sessionAnchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
-        final sessionAnchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
+        final sessionAnchorUtc =
+            SharedPreferencesUtil().getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
+        final sessionAnchorUptime =
+            SharedPreferencesUtil().getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
         if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
           final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
           startTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
@@ -194,7 +198,7 @@ class ManualRecordingExtractor {
       bytes = await file.readAsBytes();
     } catch (e) {
       Logger.error('ManualRecordingExtractor: failed to read $file: $e');
-      return _ChunkMeta(file: file, chunkIndex: chunkIndex, startTime: startTime, frameCount: 0, metaAnchors: []);
+      return _SegmentMeta(file: file, segmentIndex: segmentIndex, startTime: startTime, frameCount: 0, metaAnchors: []);
     }
 
     final bd = ByteData.sublistView(bytes);
@@ -211,11 +215,13 @@ class ManualRecordingExtractor {
           final utcSecs = bd.getUint32(off + 4, Endian.little);
           if (utcSecs > 0) {
             anchors.add(_MetaAnchor(audioFrameCount, utcSecs * 1000));
-          } else if (sessionId != null) {
+          } else if (deviceSessionId != null) {
             // Fall back to uptime-relative computation
             final uptimeMs = bd.getUint32(off + 8, Endian.little);
-            final sessAnchorUtc = SharedPreferencesUtil().getInt('anchor_utc_$sessionId', defaultValue: 0);
-            final sessAnchorUptime = SharedPreferencesUtil().getInt('anchor_uptime_$sessionId', defaultValue: 0);
+            final sessAnchorUtc =
+                SharedPreferencesUtil().getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
+            final sessAnchorUptime =
+                SharedPreferencesUtil().getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
             if (sessAnchorUtc > 0 && sessAnchorUptime > 0) {
               final realUtcSecs = sessAnchorUtc - ((sessAnchorUptime - uptimeMs) ~/ 1000);
               anchors.add(_MetaAnchor(audioFrameCount, realUtcSecs * 1000));
@@ -233,9 +239,9 @@ class ManualRecordingExtractor {
       anchors.add(_MetaAnchor(0, startTime.millisecondsSinceEpoch));
     }
 
-    return _ChunkMeta(
+    return _SegmentMeta(
       file: file,
-      chunkIndex: chunkIndex,
+      segmentIndex: segmentIndex,
       startTime: startTime,
       frameCount: audioFrameCount,
       metaAnchors: anchors,
@@ -244,24 +250,24 @@ class ManualRecordingExtractor {
 
   // ─── Phase 2: Compute merged scan ranges ───────────────────────────────────
 
-  /// Returns list of `[startChunkIdx, endChunkIdx]` (inclusive, merged).
-  List<(int, int)> _computeMergedRanges(List<DateTime> stars, List<_ChunkMeta> chunks) {
+  /// Returns list of `[startSegmentIdx, endSegmentIdx]` (inclusive, merged).
+  List<(int, int)> _computeMergedRanges(List<DateTime> markers, List<_SegmentMeta> chunks) {
     if (chunks.isEmpty) return [];
 
     final raw = <(int, int)>[];
-    for (final star in stars) {
-      final centerChunk = _findChunkForTime(chunks, star);
+    for (final marker in markers) {
+      final centerSegment = _findSegmentForTime(chunks, marker);
       // Extend scan range back 2 hours and forward by maxWindowFrames * 20ms
       final backMs = 2 * 3600 * 1000;
       final fwdMs = _maxWindowFrames * _frameDurationMs;
-      final rangeStart = star.subtract(Duration(milliseconds: backMs));
-      final rangeEnd = star.add(Duration(milliseconds: fwdMs));
-      final startChunk = max(0, _findChunkForTime(chunks, rangeStart));
-      final endChunk = min(chunks.length - 1, _findChunkForTime(chunks, rangeEnd));
+      final rangeStart = marker.subtract(Duration(milliseconds: backMs));
+      final rangeEnd = marker.add(Duration(milliseconds: fwdMs));
+      final startChunk = max(0, _findSegmentForTime(chunks, rangeStart));
+      final endChunk = min(chunks.length - 1, _findSegmentForTime(chunks, rangeEnd));
       if (startChunk <= endChunk) {
         raw.add((startChunk, endChunk));
       } else {
-        raw.add((centerChunk, centerChunk));
+        raw.add((centerSegment, centerSegment));
       }
     }
 
@@ -285,8 +291,8 @@ class ManualRecordingExtractor {
 
   // ─── Phase 3: Single ordered VAD pass ─────────────────────────────────────
 
-  Future<Map<int, _ChunkVad>> _runVadPass(List<_ChunkMeta> chunks, List<(int, int)> ranges) async {
-    final cache = <int, _ChunkVad>{};
+  Future<Map<int, _SegmentVad>> _runVadPass(List<_SegmentMeta> chunks, List<(int, int)> ranges) async {
+    final cache = <int, _SegmentVad>{};
     int cacheBytes = 0;
 
     for (final range in ranges) {
@@ -338,7 +344,7 @@ class ManualRecordingExtractor {
             if (off + 4 + len > bytes.length) break;
             if (len == 255) {
               off += 4 + len;
-              continue; // metadata already processed in _buildChunkMeta
+              continue; // metadata already processed in _buildSegmentMeta
             }
 
             final byteOff = off;
@@ -396,7 +402,7 @@ class ManualRecordingExtractor {
         }
 
         if (!isWarmupChunk) {
-          final vad = _ChunkVad(
+          final vad = _SegmentVad(
             chunk: chunk,
             speechFlags: speechFlags,
             byteOffsets: byteOffsets,
@@ -456,7 +462,7 @@ class ManualRecordingExtractor {
     return 20 * log(rms / 32768) / ln10;
   }
 
-  int _evictCache(Map<int, _ChunkVad> cache, int activeRangeStart) {
+  int _evictCache(Map<int, _SegmentVad> cache, int activeRangeStart) {
     int freed = 0;
     final toEvict = cache.keys.where((k) => k < activeRangeStart).toList();
     for (final k in toEvict) {
@@ -466,13 +472,13 @@ class ManualRecordingExtractor {
     return freed;
   }
 
-  // ─── Phase 4: Find windows per star ────────────────────────────────────────
+  // ─── Phase 4: Find windows per marker ──────────────────────────────────────
 
-  List<_Window> _findWindows(List<DateTime> stars, List<_ChunkMeta> chunks, Map<int, _ChunkVad> vadCache) {
+  List<_Window> _findWindows(List<DateTime> markers, List<_SegmentMeta> chunks, Map<int, _SegmentVad> vadCache) {
     final windows = <_Window>[];
 
-    for (final star in stars) {
-      final (chunkIdx: ci, frameIdx: fi) = _locateStar(chunks, vadCache, star);
+    for (final marker in markers) {
+      final (chunkIdx: ci, frameIdx: fi) = _locateMarker(chunks, vadCache, marker);
       if (ci < 0 || ci >= chunks.length) continue;
 
       // Skip if already covered by a complete window
@@ -482,16 +488,16 @@ class ManualRecordingExtractor {
       final (speechChunk: speechCi, speechFrame: speechFi) = _findNearestSpeech(chunks, vadCache, ci, fi);
 
       if (speechCi < 0) {
-        // No speech found within tolerance — skip this star
+        // No speech found within tolerance — skip this marker
         continue;
       }
 
       // Backward scan from speech frame for conversation start
-      final (startChunkIdx: startCi, startFrameIdx: startFi, hitBoundary: _) =
+      final (startSegmentIdx: startCi, startFrameIdx: startFi, hitBoundary: _) =
           _scanBackward(chunks, vadCache, speechCi, speechFi);
 
-      // Forward scan from star frame for conversation end
-      final (endChunkIdx: endCi, endFrameIdx: endFi, isComplete: complete) =
+      // Forward scan from marker frame for conversation end
+      final (endSegmentIdx: endCi, endFrameIdx: endFi, isComplete: complete) =
           _scanForward(chunks, vadCache, ci, fi);
 
       // Derive start time from frameTimesMs if available
@@ -504,31 +510,31 @@ class ManualRecordingExtractor {
       }
 
       windows.add(_Window(
-        startChunkIdx: startCi,
+        startSegmentIdx: startCi,
         startFrameIdx: startFi,
-        endChunkIdx: endCi,
+        endSegmentIdx: endCi,
         endFrameIdx: endFi,
         startTime: startTime,
         isComplete: complete,
-        starTimes: [star],
+        markerTimes: [marker],
       ));
     }
 
     return windows;
   }
 
-  bool _coveredByComplete(List<_Window> windows, List<_ChunkMeta> chunks, int ci, int fi) {
+  bool _coveredByComplete(List<_Window> windows, List<_SegmentMeta> chunks, int ci, int fi) {
     for (final w in windows) {
       if (!w.isComplete) continue;
-      if (_globalFrame(chunks, ci, fi) >= _globalFrame(chunks, w.startChunkIdx, w.startFrameIdx) &&
-          _globalFrame(chunks, ci, fi) <= _globalFrame(chunks, w.endChunkIdx, w.endFrameIdx)) {
+      if (_globalFrame(chunks, ci, fi) >= _globalFrame(chunks, w.startSegmentIdx, w.startFrameIdx) &&
+          _globalFrame(chunks, ci, fi) <= _globalFrame(chunks, w.endSegmentIdx, w.endFrameIdx)) {
         return true;
       }
     }
     return false;
   }
 
-  int _globalFrame(List<_ChunkMeta> chunks, int ci, int fi) {
+  int _globalFrame(List<_SegmentMeta> chunks, int ci, int fi) {
     int total = 0;
     for (int i = 0; i < ci && i < chunks.length; i++) {
       total += chunks[i].frameCount;
@@ -536,21 +542,21 @@ class ManualRecordingExtractor {
     return total + fi;
   }
 
-  ({int chunkIdx, int frameIdx}) _locateStar(
-      List<_ChunkMeta> chunks, Map<int, _ChunkVad> vadCache, DateTime star) {
-    final ci = _findChunkForTime(chunks, star);
+  ({int chunkIdx, int frameIdx}) _locateMarker(
+      List<_SegmentMeta> chunks, Map<int, _SegmentVad> vadCache, DateTime marker) {
+    final ci = _findSegmentForTime(chunks, marker);
     if (ci < 0 || ci >= chunks.length) return (chunkIdx: -1, frameIdx: 0);
 
     final vad = vadCache[ci];
     if (vad == null || vad.frameTimesMs.isEmpty) {
       // Approximate
-      final ms = star.difference(chunks[ci].startTime).inMilliseconds;
+      final ms = marker.difference(chunks[ci].startTime).inMilliseconds;
       final fi = (ms ~/ _frameDurationMs).clamp(0, max(0, chunks[ci].frameCount - 1)).toInt();
       return (chunkIdx: ci, frameIdx: fi);
     }
 
     // Binary search in frameTimesMs
-    final tMs = star.millisecondsSinceEpoch;
+    final tMs = marker.millisecondsSinceEpoch;
     final times = vad.frameTimesMs;
     int lo = 0, hi = times.length - 1;
     while (lo < hi) {
@@ -567,9 +573,9 @@ class ManualRecordingExtractor {
   /// Backward-biased: scan [markerFrame-250, markerFrame] first;
   /// extend forward only if nothing found behind.
   ({int speechChunk, int speechFrame}) _findNearestSpeech(
-      List<_ChunkMeta> chunks, Map<int, _ChunkVad> vadCache, int ci, int fi) {
+      List<_SegmentMeta> chunks, Map<int, _SegmentVad> vadCache, int ci, int fi) {
     // Scan backward first
-    for (int delta = 0; delta <= _starToleranceFrames; delta++) {
+    for (int delta = 0; delta <= _markerToleranceFrames; delta++) {
       final (c, f) = _offsetFrame(chunks, ci, fi, -delta);
       if (c < 0) break;
       final vad = vadCache[c];
@@ -578,7 +584,7 @@ class ManualRecordingExtractor {
       }
     }
     // Extend forward
-    for (int delta = 1; delta <= _starToleranceFrames; delta++) {
+    for (int delta = 1; delta <= _markerToleranceFrames; delta++) {
       final (c, f) = _offsetFrame(chunks, ci, fi, delta);
       if (c < 0) break;
       final vad = vadCache[c];
@@ -590,8 +596,8 @@ class ManualRecordingExtractor {
   }
 
   /// Scan backward from (ci, fi) until [_splitFrames] consecutive silence or chunk 0/frame 0.
-  ({int startChunkIdx, int startFrameIdx, bool hitBoundary}) _scanBackward(
-      List<_ChunkMeta> chunks, Map<int, _ChunkVad> vadCache, int ci, int fi) {
+  ({int startSegmentIdx, int startFrameIdx, bool hitBoundary}) _scanBackward(
+      List<_SegmentMeta> chunks, Map<int, _SegmentVad> vadCache, int ci, int fi) {
     int consec = 0;
     int cur = -1; // current absolute frame (walking backward)
     var (scanCi, scanFi) = (ci, fi);
@@ -605,7 +611,7 @@ class ManualRecordingExtractor {
         if (consec >= _splitFrames) {
           // Found start boundary — return frame after the silence block
           final (bc, bf) = _offsetFrame(chunks, scanCi, scanFi, consec);
-          return (startChunkIdx: bc < 0 ? 0 : bc, startFrameIdx: bc < 0 ? 0 : bf, hitBoundary: true);
+          return (startSegmentIdx: bc < 0 ? 0 : bc, startFrameIdx: bc < 0 ? 0 : bf, hitBoundary: true);
         }
       } else {
         consec = 0;
@@ -619,18 +625,18 @@ class ManualRecordingExtractor {
         scanFi = max(0, chunks[scanCi].frameCount - 1);
       } else {
         // Hit beginning of all available data
-        return (startChunkIdx: 0, startFrameIdx: 0, hitBoundary: false);
+        return (startSegmentIdx: 0, startFrameIdx: 0, hitBoundary: false);
       }
 
       cur--;
       if (cur < -(chunks.fold(0, (s, c) => s + c.frameCount))) break;
     }
-    return (startChunkIdx: 0, startFrameIdx: 0, hitBoundary: false);
+    return (startSegmentIdx: 0, startFrameIdx: 0, hitBoundary: false);
   }
 
   /// Scan forward from (ci, fi) until [_splitFrames] consecutive silence or [_maxWindowFrames] total.
-  ({int endChunkIdx, int endFrameIdx, bool isComplete}) _scanForward(
-      List<_ChunkMeta> chunks, Map<int, _ChunkVad> vadCache, int ci, int fi) {
+  ({int endSegmentIdx, int endFrameIdx, bool isComplete}) _scanForward(
+      List<_SegmentMeta> chunks, Map<int, _SegmentVad> vadCache, int ci, int fi) {
     int consec = 0;
     int totalFrames = 0;
     var scanCi = ci;
@@ -646,11 +652,11 @@ class ManualRecordingExtractor {
           // End boundary found — return frame before the silence block
           final endFi = scanFi - consec + 1;
           if (endFi >= 0) {
-            return (endChunkIdx: scanCi, endFrameIdx: endFi, isComplete: true);
+            return (endSegmentIdx: scanCi, endFrameIdx: endFi, isComplete: true);
           } else {
             // Silence block started in previous chunk — backtrack
             final (bc, bf) = _offsetFrame(chunks, scanCi, 0, endFi);
-            return (endChunkIdx: bc < 0 ? 0 : bc, endFrameIdx: bc < 0 ? 0 : bf, isComplete: true);
+            return (endSegmentIdx: bc < 0 ? 0 : bc, endFrameIdx: bc < 0 ? 0 : bf, isComplete: true);
           }
         }
       } else {
@@ -668,23 +674,23 @@ class ManualRecordingExtractor {
         // consec intentionally NOT reset — silence count carries across chunk boundaries
       } else {
         // Hit end of all available data
-        return (endChunkIdx: scanCi, endFrameIdx: scanFi, isComplete: false);
+        return (endSegmentIdx: scanCi, endFrameIdx: scanFi, isComplete: false);
       }
     }
 
     // Hit maxWindowFrames cap
     Logger.debug('ManualRecordingExtractor: window truncated at maxWindowFrames cap');
-    return (endChunkIdx: scanCi, endFrameIdx: scanFi, isComplete: false);
+    return (endSegmentIdx: scanCi, endFrameIdx: scanFi, isComplete: false);
   }
 
   // ─── Phase 5: Merge overlapping windows ────────────────────────────────────
 
-  List<_Window> _mergeWindows(List<_Window> windows, List<_ChunkMeta> chunks) {
+  List<_Window> _mergeWindows(List<_Window> windows, List<_SegmentMeta> chunks) {
     if (windows.isEmpty) return [];
 
     windows.sort((a, b) =>
-        _globalFrame(chunks, a.startChunkIdx, a.startFrameIdx)
-            .compareTo(_globalFrame(chunks, b.startChunkIdx, b.startFrameIdx)));
+        _globalFrame(chunks, a.startSegmentIdx, a.startFrameIdx)
+            .compareTo(_globalFrame(chunks, b.startSegmentIdx, b.startFrameIdx)));
 
     final merged = <_Window>[];
     for (final w in windows) {
@@ -693,43 +699,43 @@ class ManualRecordingExtractor {
         continue;
       }
       final last = merged.last;
-      final lastEnd = _globalFrame(chunks, last.endChunkIdx, last.endFrameIdx);
-      final wStart = _globalFrame(chunks, w.startChunkIdx, w.startFrameIdx);
+      final lastEnd = _globalFrame(chunks, last.endSegmentIdx, last.endFrameIdx);
+      final wStart = _globalFrame(chunks, w.startSegmentIdx, w.startFrameIdx);
       if (wStart <= lastEnd) {
         // Overlapping — extend last
-        if (_globalFrame(chunks, w.endChunkIdx, w.endFrameIdx) > lastEnd) {
-          last.endChunkIdx = w.endChunkIdx;
+        if (_globalFrame(chunks, w.endSegmentIdx, w.endFrameIdx) > lastEnd) {
+          last.endSegmentIdx = w.endSegmentIdx;
           last.endFrameIdx = w.endFrameIdx;
           last.isComplete = last.isComplete || w.isComplete;
         }
-        last.starTimes.addAll(w.starTimes);
+        last.markerTimes.addAll(w.markerTimes);
       } else {
         merged.add(w);
       }
     }
 
-    // Re-apply maxWindowFrames cap per merged window using median star
+    // Re-apply maxWindowFrames cap per merged window using median marker
     for (final w in merged) {
       final windowFrames =
-          _globalFrame(chunks, w.endChunkIdx, w.endFrameIdx) - _globalFrame(chunks, w.startChunkIdx, w.startFrameIdx);
+          _globalFrame(chunks, w.endSegmentIdx, w.endFrameIdx) - _globalFrame(chunks, w.startSegmentIdx, w.startFrameIdx);
       if (windowFrames > _maxWindowFrames) {
-        final medianStar = _medianStar(w.starTimes);
-        final starLoc = _locateStar(chunks, {}, medianStar);
-        final medianGlobal = _globalFrame(chunks, starLoc.chunkIdx, starLoc.frameIdx);
-        final startGlobal = _globalFrame(chunks, w.startChunkIdx, w.startFrameIdx);
-        final endGlobal = _globalFrame(chunks, w.endChunkIdx, w.endFrameIdx);
+        final medianMarker = _medianMarker(w.markerTimes);
+        final markerLoc = _locateMarker(chunks, {}, medianMarker);
+        final medianGlobal = _globalFrame(chunks, markerLoc.chunkIdx, markerLoc.frameIdx);
+        final startGlobal = _globalFrame(chunks, w.startSegmentIdx, w.startFrameIdx);
+        final endGlobal = _globalFrame(chunks, w.endSegmentIdx, w.endFrameIdx);
         final midPoint = (startGlobal + endGlobal) ~/ 2;
         if (medianGlobal <= midPoint) {
           // Median is in first half — trim from end
           final newEnd = startGlobal + _maxWindowFrames;
           final (nc, nf) = _frameAt(chunks, newEnd);
-          w.endChunkIdx = nc;
+          w.endSegmentIdx = nc;
           w.endFrameIdx = nf;
         } else {
           // Median is in second half — trim from start
           final newStart = endGlobal - _maxWindowFrames;
           final (nc, nf) = _frameAt(chunks, max(0, newStart));
-          w.startChunkIdx = nc;
+          w.startSegmentIdx = nc;
           w.startFrameIdx = nf;
         }
       }
@@ -738,17 +744,17 @@ class ManualRecordingExtractor {
     return merged;
   }
 
-  DateTime _medianStar(List<DateTime> stars) {
-    if (stars.isEmpty) return DateTime.now();
-    final sorted = List<DateTime>.from(stars)..sort();
+  DateTime _medianMarker(List<DateTime> markers) {
+    if (markers.isEmpty) return DateTime.now();
+    final sorted = List<DateTime>.from(markers)..sort();
     return sorted[sorted.length ~/ 2];
   }
 
   // ─── Phase 6: Encode window ─────────────────────────────────────────────────
 
   Future<String?> _encodeWindow(
-      _Window w, List<_ChunkMeta> chunks, Map<int, _ChunkVad> vadCache, String outputDir) async {
-    final startVad = vadCache[w.startChunkIdx];
+      _Window w, List<_SegmentMeta> chunks, Map<int, _SegmentVad> vadCache, String outputDir) async {
+    final startVad = vadCache[w.startSegmentIdx];
     final timestamp = startVad != null && w.startFrameIdx < startVad.frameTimesMs.length
         ? startVad.frameTimesMs[w.startFrameIdx]
         : w.startTime.millisecondsSinceEpoch;
@@ -787,12 +793,12 @@ class ManualRecordingExtractor {
     int frameCount = 0;
 
     try {
-      for (int ci = w.startChunkIdx; ci <= w.endChunkIdx; ci++) {
+      for (int ci = w.startSegmentIdx; ci <= w.endSegmentIdx; ci++) {
         final vad = vadCache[ci];
         if (vad == null) continue;
 
-        final frameStart = ci == w.startChunkIdx ? w.startFrameIdx : 0;
-        final frameEnd = ci == w.endChunkIdx ? w.endFrameIdx : vad.speechFlags.length - 1;
+        final frameStart = ci == w.startSegmentIdx ? w.startFrameIdx : 0;
+        final frameEnd = ci == w.endSegmentIdx ? w.endFrameIdx : vad.speechFlags.length - 1;
 
         for (int fi = frameStart; fi <= frameEnd; fi++) {
           if (fi >= vad.byteOffsets.length) break;
@@ -874,15 +880,15 @@ class ManualRecordingExtractor {
     return m4aPath;
   }
 
-  // ─── Phase 7: Compute lastSafeChunkIndex ────────────────────────────────────
+  // ─── Phase 7: Compute lastSafeSegmentIndex ────────────────────────────────────
 
   int _computeLastSafe(
-      List<_ChunkMeta> chunks, List<_Window> mergedWindows, DateTime twoHrCutoff, bool forceFlush, DateTime newestEnd) {
+      List<_SegmentMeta> chunks, List<_Window> mergedWindows, DateTime twoHrCutoff, bool forceFlush, DateTime newestEnd) {
     if (forceFlush) {
       // Keep last 60s of chunks
       final keepFrom = newestEnd.subtract(const Duration(seconds: 60));
-      final boundary = _lastChunkEndBefore(chunks, keepFrom);
-      return max(-1, boundary - _safetyMarginChunks);
+      final boundary = _lastSegmentEndBefore(chunks, keepFrom);
+      return max(-1, boundary - _safetyMarginSegments);
     }
 
     final incompleteWindows = mergedWindows.where((w) => !w.isComplete).toList();
@@ -894,26 +900,26 @@ class ManualRecordingExtractor {
       for (final w in recoverableIncomplete) {
         if (w.startTime.isBefore(earliest)) earliest = w.startTime;
       }
-      final boundary = _lastChunkEndBefore(chunks, earliest);
-      return max(-1, boundary - _safetyMarginChunks);
+      final boundary = _lastSegmentEndBefore(chunks, earliest);
+      return max(-1, boundary - _safetyMarginSegments);
     }
 
     // No incomplete windows — delete up to max(twoHrCutoff, lastCompleteWindowEnd)
     DateTime deleteBefore = twoHrCutoff;
     for (final w in mergedWindows) {
       if (w.isComplete) {
-        final endTime = w.endChunkIdx < chunks.length
-            ? chunks[w.endChunkIdx].startTime.add(Duration(milliseconds: w.endFrameIdx * _frameDurationMs))
+        final endTime = w.endSegmentIdx < chunks.length
+            ? chunks[w.endSegmentIdx].startTime.add(Duration(milliseconds: w.endFrameIdx * _frameDurationMs))
             : twoHrCutoff;
         if (endTime.isAfter(deleteBefore)) deleteBefore = endTime;
       }
     }
 
-    final boundary = _lastChunkEndBefore(chunks, deleteBefore);
-    return max(-1, boundary - _safetyMarginChunks);
+    final boundary = _lastSegmentEndBefore(chunks, deleteBefore);
+    return max(-1, boundary - _safetyMarginSegments);
   }
 
-  int _lastChunkEndBefore(List<_ChunkMeta> chunks, DateTime boundary) {
+  int _lastSegmentEndBefore(List<_SegmentMeta> chunks, DateTime boundary) {
     int result = -1;
     for (int i = 0; i < chunks.length; i++) {
       if (!chunks[i].endTime.isAfter(boundary)) {
@@ -923,13 +929,13 @@ class ManualRecordingExtractor {
     return result;
   }
 
-  int _cutoffIndex(List<_ChunkMeta> chunks, DateTime twoHrCutoff) {
-    return max(-1, _lastChunkEndBefore(chunks, twoHrCutoff) - _safetyMarginChunks);
+  int _cutoffIndex(List<_SegmentMeta> chunks, DateTime twoHrCutoff) {
+    return max(-1, _lastSegmentEndBefore(chunks, twoHrCutoff) - _safetyMarginSegments);
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
-  int _findChunkForTime(List<_ChunkMeta> chunks, DateTime t) {
+  int _findSegmentForTime(List<_SegmentMeta> chunks, DateTime t) {
     if (chunks.isEmpty) return 0;
     int result = 0;
     for (int i = 0; i < chunks.length; i++) {
@@ -951,7 +957,7 @@ class ManualRecordingExtractor {
   }
 
   /// Returns (chunkIdx, frameIdx) for a global frame offset from (ci, fi).
-  (int, int) _offsetFrame(List<_ChunkMeta> chunks, int ci, int fi, int delta) {
+  (int, int) _offsetFrame(List<_SegmentMeta> chunks, int ci, int fi, int delta) {
     var c = ci;
     var f = fi + delta;
 
@@ -969,7 +975,7 @@ class ManualRecordingExtractor {
   }
 
   /// Returns (chunkIdx, frameIdx) for an absolute global frame index.
-  (int, int) _frameAt(List<_ChunkMeta> chunks, int globalFrame) {
+  (int, int) _frameAt(List<_SegmentMeta> chunks, int globalFrame) {
     int remaining = globalFrame;
     for (int i = 0; i < chunks.length; i++) {
       if (remaining < chunks[i].frameCount) return (i, remaining);
