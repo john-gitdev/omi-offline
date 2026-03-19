@@ -62,7 +62,6 @@ The Voice Activity Detection (VAD) is noise-adaptive and can be tuned via these 
 - **Split Threshold (`offlineSplitSeconds`):** The duration of silence required to consider an interaction finished and trigger a split.
 - **Gap Threshold (`offlineGapSeconds`):** The maximum allowed time gap between consecutive **Segments** before the pipeline forces a new **Recording**.
 - **SNR Margin (`offlineSnrMarginDb`):** The Signal-to-Noise Ratio threshold used to distinguish speech from background noise.
-- **Hangover (`offlineHangoverSeconds`):** The amount of silence "padding" preserved at the end of a speech interaction to prevent unnatural clipping.
 
 ## 🔌 Integrations
 
