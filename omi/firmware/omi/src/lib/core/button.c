@@ -28,7 +28,7 @@ LOG_MODULE_REGISTER(button, CONFIG_LOG_DEFAULT_LEVEL);
 extern bool is_off;
 volatile bool is_muted = false;
 volatile bool is_led_enabled = true;
-volatile uint8_t star_flash_count = 0;
+volatile uint8_t marker_flash_count = 0;
 
 static const struct device *const buttons = DEVICE_DT_GET(DT_ALIAS(buttons));
 static const struct gpio_dt_spec usr_btn = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(usr_btn), gpios, {0});
@@ -120,14 +120,14 @@ void check_button_level(struct k_work *work_item)
             // Released.
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
             if (duration_ms < POWER_OFF_HOLD_TIME) {
-                // Double tap (release happened before 3s) -> Star
+                // Double tap (release happened before 3s) -> Marker
                 if (!is_muted) {
-                    LOG_INF("Double tap (Star) detected");
+                    LOG_INF("Double tap (Marker) detected");
                     play_haptic_milli(300);
-                    star_flash_count = 2; // Trigger 1s white flash (2 cycles of 500ms)
+                    marker_flash_count = 2; // Trigger 1s white flash (2 cycles of 500ms)
                     
                     #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-                    write_star_to_storage();
+                    write_marker_to_storage();
                     #endif
                 } else {
                     LOG_INF("Double tap ignored (muted)");

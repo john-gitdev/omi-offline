@@ -81,8 +81,8 @@ void set_led_state()
         is_led_enabled = true;
     }
 
-    // Priority 1: Star Flash (Transient, overrides stealth)
-    if (star_flash_count > 0) {
+    // Priority 1: Marker Flash (Transient, overrides stealth)
+    if (marker_flash_count > 0) {
         set_led_red(true);
         set_led_green(true);
         set_led_blue(true);
@@ -210,8 +210,8 @@ int main(void)
         set_led_state();
         
         // Transient effect handling
-        if (star_flash_count > 0) {
-            star_flash_count--;
+        if (marker_flash_count > 0) {
+            marker_flash_count--;
         }
 
         k_msleep(500); // More responsive loop for blinking

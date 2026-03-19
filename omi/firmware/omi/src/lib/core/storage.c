@@ -41,7 +41,7 @@ LOG_MODULE_REGISTER(storage, CONFIG_LOG_DEFAULT_LEVEL);
 // End-of-Transfer marker sent as a single notification once all audio data has been sent.
 // Chosen as 0xFD to extend the existing reserved-byte hierarchy:
 //   0xFF = metadata packet (16-byte payload follows)
-//   0xFE = star marker    (16-byte payload follows)
+//   0xFE = marker packet  (16-byte payload follows)
 //   0xFD = end of transfer (no payload — this byte alone signals completion)
 // Values 0x01–0xFC are audio frame length prefixes; 0xFD will never appear as a
 // legitimate Opus frame size (OPUS_ENTRY_LENGTH = 80). This is purely a storage
@@ -175,7 +175,7 @@ static uint32_t offset = 0;
 static uint8_t stop_started = 0;
 static uint8_t delete_started = 0;
 uint32_t remaining_length = 0;
-static uint32_t ble_chunk_index = 0;
+static uint32_t ble_packet_index = 0;
 
 static int setup_storage_tx()
 {
@@ -196,7 +196,7 @@ static int setup_storage_tx()
     }
 
     remaining_length = file_size - offset;
-    ble_chunk_index = 0;
+    ble_packet_index = 0;
 
     LOG_INF("remaining length: %d", remaining_length);
     LOG_INF("offset: %d", offset);
@@ -384,16 +384,16 @@ static void write_to_gatt(struct bt_conn *conn)
 
     if (packet_size == 0) return;
 
-    LOG_INF("[BLE_TX] chunk=%u offset=%u remaining=%u", (unsigned)ble_chunk_index, (unsigned)offset, (unsigned)remaining_length);
+    LOG_INF("[BLE_TX] packet=%u offset=%u remaining=%u", (unsigned)ble_packet_index, (unsigned)offset, (unsigned)remaining_length);
 
     int r = read_audio_data(storage_write_buffer, packet_size, offset);
     if (r < 0) {
-        LOG_ERR("[BLE_TX] read_audio_data failed at chunk=%u offset=%u: %d", (unsigned)ble_chunk_index, (unsigned)offset, r);
+        LOG_ERR("[BLE_TX] read_audio_data failed at packet=%u offset=%u: %d", (unsigned)ble_packet_index, (unsigned)offset, r);
         remaining_length = 0; // Stop transfer on error
         return;
     }
 
-    ble_chunk_index++;
+    ble_packet_index++;
 
     int err = bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], &storage_write_buffer, packet_size);
     if (err) {

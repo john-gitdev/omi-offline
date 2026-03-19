@@ -24,11 +24,11 @@ int transport_start();
 int transport_off();
 
 /**
- * @brief Write a star marker packet to storage
- * 
+ * @brief Write a marker packet to storage
+ *
  * @return true if successful
  */
-bool write_star_to_storage(void);
+bool write_marker_to_storage(void);
 
 /**
  * @brief Broadcast audio packets over BLE
