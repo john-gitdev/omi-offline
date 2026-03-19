@@ -94,6 +94,18 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _starCount = _prefs.getInt(_kSpStarCount);
     _lastCompletedStage = _prefs.getString(_kSpLastCompleted, defaultValue: 'none');
     _lastActiveStage = _prefs.getString(_kSpLastActive, defaultValue: 'syncing');
+
+    // Cold-start: if a background job is already running when the page opens,
+    // reflect it immediately rather than waiting for the first poll tick.
+    if (_spState == SyncProcessState.idle) {
+      final syncs = ServiceManager.instance().wal.getSyncs();
+      if (syncs.isSyncing) {
+        _spState = SyncProcessState.syncing;
+        _totalCount = syncs.estimatedTotalChunks;
+      } else if (RecordingsManager.isProcessingAny) {
+        _spState = SyncProcessState.processing;
+      }
+    }
   }
 
   @override
