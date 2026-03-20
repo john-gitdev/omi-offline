@@ -38,15 +38,14 @@ LOG_MODULE_REGISTER(storage, CONFIG_LOG_DEFAULT_LEVEL);
 #define MAX_HEARTBEAT_FRAMES 100
 #define HEARTBEAT 50
 
-// End-of-Transfer marker sent as a single notification once all audio data has been sent.
-// Chosen as 0xFD to extend the existing reserved-byte hierarchy:
-//   0xFF = metadata packet (16-byte payload follows)
-//   0xFE = marker packet  (16-byte payload follows)
-//   0xFD = end of transfer (no payload — this byte alone signals completion)
-// Values 0x01–0xFC are audio frame length prefixes; 0xFD will never appear as a
-// legitimate Opus frame size (OPUS_ENTRY_LENGTH = 80). This is purely a storage
-// protocol marker and has no interaction with MCUboot or the SMP OTA service.
-#define EOT_MARKER 0xFD
+#define PACKET_DATA 0x01
+#define PACKET_EOT  0x02
+#define PACKET_ACK  0x03
+
+#define ACK_RESULT_OK    0x00
+#define ACK_RESULT_ERROR 0x01
+#define ACK_RESULT_BUSY  0x02
+
 static void storage_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
 static ssize_t storage_write_handler(struct bt_conn *conn,
                                      const struct bt_gatt_attr *attr,
@@ -266,18 +265,14 @@ static ssize_t storage_write_handler(struct bt_conn *conn,
                                      uint16_t offset,
                                      uint8_t flags)
 {
-    LOG_INF("about to schedule the storage");
-    LOG_INF("was sent %d  ", ((uint8_t *) buf)[0]);
+    LOG_INF("storage_write_handler: received %d bytes", len);
 
-    uint8_t result_buffer[1] = {0};
     uint8_t result = parse_storage_command(buf, len);
-    result_buffer[0] = result;
-    LOG_INF("length of storage write: %d", len);
-    LOG_INF("result: %d ", result);
-    bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], &result_buffer, 1);
-    // NOTE: do NOT sleep here. This handler runs in the Bluetooth host stack's cooperative
-    // thread. Sleeping would block ALL BLE operations (connection events, supervision
-    // timeouts, etc.). The storage thread handles its own startup delay in setup_storage_tx().
+    
+    // Send Framed ACK: [PACKET_ACK][Result]
+    uint8_t ack_buffer[2] = {PACKET_ACK, result};
+    bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], ack_buffer, sizeof(ack_buffer));
+    
     return len;
 }
 
@@ -375,39 +370,57 @@ static ssize_t storage_wifi_handler(struct bt_conn *conn,
 
 static void write_to_gatt(struct bt_conn *conn)
 {
-    // Use the negotiated MTU minus 3 bytes for GATT overhead
-    uint32_t max_payload = (current_mtu > 3) ? (current_mtu - 3) : 20;
+    // 1. Calculate safe payload size based on current MTU
+    // mtu = negotiated_mtu (default 23 if not negotiated yet)
+    // max_payload = mtu - 3 (ATT header) - 1 (Type) - 4 (Offset)
+    uint16_t mtu = MAX(current_mtu, 23);
+    int32_t max_payload = (int32_t)mtu - 3 - 1 - 4;
 
-    // Cap the payload at SD_BLE_SIZE to ensure we don't exceed our buffer
-    uint32_t effective_packet_size = MIN(max_payload, SD_BLE_SIZE);
-    uint32_t packet_size = MIN(remaining_length, effective_packet_size);
-
-    if (packet_size == 0) return;
-
-    LOG_INF("[BLE_TX] packet=%u offset=%u remaining=%u", (unsigned)ble_packet_index, (unsigned)offset, (unsigned)remaining_length);
-
-    int r = read_audio_data(storage_write_buffer, packet_size, offset);
-    if (r < 0) {
-        LOG_ERR("[BLE_TX] read_audio_data failed at packet=%u offset=%u: %d", (unsigned)ble_packet_index, (unsigned)offset, r);
-        remaining_length = 0; // Stop transfer on error
+    if (max_payload <= 0) {
+        LOG_WRN("MTU too small for framed protocol: %u", mtu);
         return;
     }
 
-    ble_packet_index++;
+    uint32_t packet_payload_size = MIN((uint32_t)max_payload, remaining_length);
+    if (packet_payload_size == 0) return;
 
-    int err = bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], &storage_write_buffer, packet_size);
-    if (err) {
-        if (err == -ENOMEM || err == -EAGAIN) {
-            // Buffer full, try again in next loop without advancing offset
-            k_yield();
-        } else {
-            LOG_WRN("error writing to gatt: %d, packet_size: %u, MTU: %u", err, packet_size, current_mtu);
-            // For other errors, maybe try to advance slightly or just yield
-            k_msleep(10);
+    // 2. Prepare the framed packet: [TYPE][OFFSET][PAYLOAD]
+    // Invariant: offset must exactly match the file position of the first byte.
+    storage_write_buffer[0] = PACKET_DATA;
+    storage_write_buffer[1] = offset & 0xFF;
+    storage_write_buffer[2] = (offset >> 8) & 0xFF;
+    storage_write_buffer[3] = (offset >> 16) & 0xFF;
+    storage_write_buffer[4] = (offset >> 24) & 0xFF;
+
+    int r = read_audio_data(storage_write_buffer + 5, packet_payload_size, offset);
+    if (r < 0) {
+        LOG_ERR("[BLE_TX] SD read failed at offset %u: %d", offset, r);
+        remaining_length = 0; // Abort transfer on SD error
+        return;
+    }
+
+    // 3. Attempt transmission
+    // Buffer stability: storage_write_buffer is not mutated until this call returns.
+    int err = bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], storage_write_buffer, packet_payload_size + 5);
+
+    if (err == 0) {
+        // 4. Success: Advance state
+        ble_packet_index++;
+        offset += packet_payload_size;
+        remaining_length -= packet_payload_size;
+        
+        if (ble_packet_index % 100 == 0) {
+            LOG_INF("[BLE_TX] Sent packet %u, next offset %u", ble_packet_index, offset);
         }
     } else {
-        offset = offset + packet_size;
-        remaining_length = remaining_length - packet_size;
+        // 5. Retryable Error: Backoff and return to exit pusher iteration
+        if (err == -ENOMEM || err == -EAGAIN) {
+            k_sleep(K_MSEC(2));
+            return;
+        } else {
+            LOG_WRN("GATT notify failed: %d, MTU: %u", err, mtu);
+            k_msleep(10);
+        }
     }
 }
 
@@ -461,11 +474,15 @@ void storage_write(void)
 
             if (err) {
                 LOG_PRINTK("error clearing\n");
+                uint8_t ack_buffer[2] = {PACKET_ACK, ACK_RESULT_ERROR};
+                if (conn) {
+                    bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], ack_buffer, sizeof(ack_buffer));
+                }
             } else {
                 offset = 0;
-                uint8_t result_buffer[1] = {200};
+                uint8_t ack_buffer[2] = {PACKET_ACK, ACK_RESULT_OK};
                 if (conn) {
-                    bt_gatt_notify(get_current_connection(), &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], &result_buffer, 1);
+                    bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], ack_buffer, sizeof(ack_buffer));
                 }
             }
             delete_started = 0;
@@ -522,12 +539,12 @@ void storage_write(void)
                     stop_started = 0;
                 } else {
                     save_offset(offset);
-                    LOG_INF("Storage transfer done. Sending EOT marker (0xFD).");
-                    uint8_t stop_result[1] = {EOT_MARKER};
+                    LOG_INF("Storage transfer done. Sending framed EOT marker.");
+                    uint8_t eot_buffer[1] = {PACKET_EOT};
 
-                    int err = bt_gatt_notify(get_current_connection(), &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], &stop_result, 1);
+                    int err = bt_gatt_notify(get_current_connection(), &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], eot_buffer, sizeof(eot_buffer));
                     if (err) {
-                        LOG_ERR("Failed to send completion marker: %d", err);
+                        LOG_ERR("Failed to send EOT marker: %d", err);
                     }
                     k_msleep(10);
                 }
