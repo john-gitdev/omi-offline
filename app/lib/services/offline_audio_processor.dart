@@ -322,10 +322,12 @@ class OfflineAudioProcessor {
 
     final m4aPath = '${dateFolder.path}/recording_$timestamp.m4a';
 
-    // Waveform: 200 fixed-size buckets of 800 samples (~50 ms at 16 kHz)
+    // Waveform: Accumulate peaks in small windows, downsample at the end
     const waveformBuckets = 200;
-    const bucketSize = 800;
-    final peakAmplitudes = List<double>.filled(waveformBuckets, 0.0);
+    const windowSize = 800; // ~50ms windows
+    final dynamicPeaks = <double>[];
+    double currentWindowMax = 0.0;
+    int currentWindowSamples = 0;
 
     // Batch size: 15 Opus frames × 320 samples × 2 bytes = 9600 bytes
     const batchFrames = 15;
@@ -393,12 +395,18 @@ class OfflineAudioProcessor {
           continue;
         }
 
-        // Update waveform buckets
+        // Update dynamic waveform peaks
         for (int s = 0; s < pcmData.length; s++) {
-          final bucketIndex = min(waveformBuckets - 1, (totalSamples + s) ~/ bucketSize);
           final amplitude = pcmData[s].abs() / 32768.0;
-          if (amplitude > peakAmplitudes[bucketIndex]) {
-            peakAmplitudes[bucketIndex] = amplitude;
+          if (amplitude > currentWindowMax) {
+            currentWindowMax = amplitude;
+          }
+          currentWindowSamples++;
+
+          if (currentWindowSamples >= windowSize) {
+            dynamicPeaks.add(currentWindowMax);
+            currentWindowMax = 0.0;
+            currentWindowSamples = 0;
           }
         }
         totalSamples += pcmData.length;
@@ -412,6 +420,10 @@ class OfflineAudioProcessor {
       }
 
       await flushBatch();
+      
+      if (currentWindowSamples > 0) {
+        dynamicPeaks.add(currentWindowMax);
+      }
 
       if (!hasEncodedAnyFrames) {
         // Encoder was started but no PCM data was decoded — calling finishEncoder
@@ -434,13 +446,28 @@ class OfflineAudioProcessor {
       await currentRaf?.close();
     }
 
+    // Downsample dynamic peaks to exactly 200 buckets
+    final finalAmplitudes = List<double>.filled(waveformBuckets, 0.0);
+    if (dynamicPeaks.isNotEmpty) {
+      final double ratio = dynamicPeaks.length / waveformBuckets;
+      for (int i = 0; i < waveformBuckets; i++) {
+        final startIdx = (i * ratio).floor();
+        final endIdx = ((i + 1) * ratio).ceil().clamp(0, dynamicPeaks.length);
+        double peak = 0.0;
+        for (int j = startIdx; j < endIdx; j++) {
+          if (dynamicPeaks[j] > peak) peak = dynamicPeaks[j];
+        }
+        finalAmplitudes[i] = peak;
+      }
+    }
+
     // Write .meta sidecar (408 bytes base + optional upload key)
     final durationMs = (totalSamples * 1000) ~/ sampleRate;
     final metaBytes = ByteData(408);
     metaBytes.setUint32(0, totalSamples, Endian.little);
     metaBytes.setUint32(4, durationMs, Endian.little);
     for (int i = 0; i < waveformBuckets; i++) {
-      final peak16 = (peakAmplitudes[i] * 65535.0).round().clamp(0, 65535);
+      final peak16 = (finalAmplitudes[i] * 65535.0).round().clamp(0, 65535);
       metaBytes.setUint16(8 + i * 2, peak16, Endian.little);
     }
     final metaPath = '${dateFolder.path}/recording_$timestamp.meta';

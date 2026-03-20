@@ -705,10 +705,12 @@ class ManualRecordingExtractor {
 
     final m4aPath = '$outputDir/recording_$timestamp.m4a';
     final decoder = _providedDecoder ??
-        ((Platform.isIOS || Platform.isAndroid)
-            ? SimpleOpusDecoder(sampleRate: _sampleRate, channels: _channels)
-            : null);
-    final peakAmplitudes = List<double>.filled(_waveformBuckets, 0.0);
+        ((Platform.isIOS || Platform.isAndroid) ? SimpleOpusDecoder(sampleRate: _sampleRate, channels: _channels) : null);
+
+    final dynamicPeaks = <double>[];
+    double currentWindowMax = 0.0;
+    int currentWindowSamples = 0;
+
     final batchBuffer = BytesBuilder(copy: false);
     int batchFrameCount = 0;
     int totalSamples = 0;
@@ -774,9 +776,15 @@ class ManualRecordingExtractor {
           }
 
           for (int s = 0; s < pcm.length; s++) {
-            final bucket = min(_waveformBuckets - 1, (totalSamples + s) ~/ _bucketSize);
             final amp = pcm[s].abs() / 32768.0;
-            if (amp > peakAmplitudes[bucket]) peakAmplitudes[bucket] = amp;
+            if (amp > currentWindowMax) currentWindowMax = amp;
+            currentWindowSamples++;
+
+            if (currentWindowSamples >= _bucketSize) {
+              dynamicPeaks.add(currentWindowMax);
+              currentWindowMax = 0.0;
+              currentWindowSamples = 0;
+            }
           }
           totalSamples += pcm.length;
 
@@ -787,6 +795,11 @@ class ManualRecordingExtractor {
       }
 
       await flushBatch();
+
+      if (currentWindowSamples > 0) {
+        dynamicPeaks.add(currentWindowMax);
+      }
+
       await AacEncoder.finishEncoder(aacSession!);
     } on Exception catch (e) {
       Logger.error('ManualRecordingExtractor: AAC encoding failed: $e');
@@ -798,15 +811,30 @@ class ManualRecordingExtractor {
       decoder?.destroy();
     }
 
+    final finalAmplitudes = List<double>.filled(_waveformBuckets, 0.0);
+    if (dynamicPeaks.isNotEmpty) {
+      final double ratio = dynamicPeaks.length / _waveformBuckets;
+      for (int i = 0; i < _waveformBuckets; i++) {
+        final startIdx = (i * ratio).floor();
+        final endIdx = ((i + 1) * ratio).ceil().clamp(0, dynamicPeaks.length);
+        double peak = 0.0;
+        for (int j = startIdx; j < endIdx; j++) {
+          if (dynamicPeaks[j] > peak) peak = dynamicPeaks[j];
+        }
+        finalAmplitudes[i] = peak;
+      }
+    }
+
     // Write .meta sidecar
     final durationMs = (totalSamples * 1000) ~/ _sampleRate;
     final metaBytes = ByteData(408);
     metaBytes.setUint32(0, totalSamples, Endian.little);
     metaBytes.setUint32(4, durationMs, Endian.little);
     for (int i = 0; i < _waveformBuckets; i++) {
-      final peak16 = (peakAmplitudes[i] * 65535.0).round().clamp(0, 65535);
+      final peak16 = (finalAmplitudes[i] * 65535.0).round().clamp(0, 65535);
       metaBytes.setUint16(8 + i * 2, peak16, Endian.little);
     }
+
     final metaOut = List<int>.from(metaBytes.buffer.asUint8List());
     final deviceId = SharedPreferencesUtil().btDevice.id.replaceAll(':', '').toUpperCase();
     if (deviceId.length >= 6) {
