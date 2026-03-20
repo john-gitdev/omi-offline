@@ -29,7 +29,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   final int _connectionCheckSeconds = 15; // 10s periods, 5s for each scan
 
   Timer? _backgroundSyncTimer;
-  static const int _backgroundSyncMinutes = 60;
+  static const int _backgroundSyncMinutes = 30;
 
   Timer? _healthCheckTimer;
   static const int _healthCheckSeconds = 30;

@@ -64,7 +64,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           'DebugTools: syncAll complete — result=${result == null ? 'null (nothing to sync)' : 'SyncLocalFilesResponse'}');
       setState(() {
         if (result == null) {
-          _statusMessage = 'All synced! No new recordings found.';
+          _statusMessage = 'All synced! No new segments found.';
         } else {
           _statusMessage = 'Sync Complete. Raw segments downloaded.';
         }
@@ -157,6 +157,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       Logger.debug('DebugTools: Calling deleteAllPendingWals()');
       await ServiceManager.instance().wal.getSyncs().deleteAllPendingWals();
       Logger.debug('DebugTools: deleteAllPendingWals complete');
+
+      // Reset sync/processing progress state in preferences
+      final prefs = SharedPreferencesUtil();
+      await prefs.remove('sp_state');
+      await prefs.remove('sp_synced_count');
+      await prefs.remove('sp_total_count');
+      await prefs.remove('sp_minutes_remaining');
+      await prefs.remove('sp_marker_count');
+      await prefs.remove('sp_last_completed_stage');
+      await prefs.remove('sp_last_active_stage');
+
+      // Notify UI listeners (like RecordingsPage) to refresh
+      RecordingsManager.notifyRecordingsChanged();
+
       setState(() {
         _statusMessage = 'Delete Complete. Device storage cleared.';
         _isSyncing = false;
@@ -204,12 +218,26 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         await chunksDir.delete(recursive: true);
       }
       Logger.debug('DebugTools: raw_segments deleted');
+
+      // Reset sync/processing progress state in preferences
+      final prefs = SharedPreferencesUtil();
+      await prefs.remove('sp_state');
+      await prefs.remove('sp_synced_count');
+      await prefs.remove('sp_total_count');
+      await prefs.remove('sp_minutes_remaining');
+      await prefs.remove('sp_marker_count');
+      await prefs.remove('sp_last_completed_stage');
+      await prefs.remove('sp_last_active_stage');
+
+      // Notify UI listeners (like RecordingsPage) to refresh
+      RecordingsManager.notifyRecordingsChanged();
+
       setState(() {
         _statusMessage = 'Delete Complete. Phone segments cleared.';
         _isSyncing = false;
       });
     } catch (e) {
-      Logger.error('DebugTools: deleteAllChunks error — $e');
+      Logger.error('DebugTools: _deleteAllSegments error — $e');
       setState(() {
         _statusMessage = 'Delete Error: $e';
         _isSyncing = false;
@@ -218,31 +246,32 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _deleteAllConversations() async {
-    Logger.debug('DebugTools: Delete All Conversations tapped');
+    Logger.debug('DebugTools: Delete All Memories tapped');
+    if (RecordingsManager.isProcessingAny) {
+      Logger.debug('DebugTools: Delete All Memories blocked — processing running');
+      _showProcessingSnackbar();
+      return;
+    }
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
         context,
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
-        'Delete All Conversations',
-        'This will permanently delete all stitched recordings on this phone, including any open conversation in progress. This action cannot be undone. Continue?',
+        'Delete All Memories',
+        'This will permanently delete all finalized recordings and memories on this phone, including any open conversation in progress. This action cannot be undone. Continue?',
         confirmText: 'Delete',
       ),
     );
     if (confirm != true) {
-      Logger.debug('DebugTools: Delete All Conversations cancelled by user');
+      Logger.debug('DebugTools: Delete All Memories cancelled by user');
       return;
     }
     setState(() {
       _isSyncing = true;
-      _statusMessage = 'Deleting all conversations...';
+      _statusMessage = 'Deleting all memories...';
     });
     try {
-      if (RecordingsManager.isProcessingAny) {
-        Logger.debug('DebugTools: Cancelling in-progress processing before delete');
-        RecordingsManager.cancelProcessing();
-      }
       final directory = await getApplicationDocumentsDirectory();
       final recordingsDir = Directory('${directory.path}/recordings');
       if (await recordingsDir.exists()) {
@@ -254,12 +283,29 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         await tempDir.delete(recursive: true);
         Logger.debug('DebugTools: processing_temp directory deleted');
       }
+
+      // Reset sync/processing progress state in preferences
+      final prefs = SharedPreferencesUtil();
+      await prefs.remove('sp_state');
+      await prefs.remove('sp_synced_count');
+      await prefs.remove('sp_total_count');
+      await prefs.remove('sp_minutes_remaining');
+      await prefs.remove('sp_marker_count');
+      await prefs.remove('sp_last_completed_stage');
+      await prefs.remove('sp_last_active_stage');
+
+      // Clear HeyPocket upload history to allow re-upload if re-processed
+      prefs.heypocketUploadedFiles = [];
+
+      // Notify UI listeners (like RecordingsPage) to refresh
+      RecordingsManager.notifyRecordingsChanged();
+
       setState(() {
-        _statusMessage = 'Delete Complete. All conversations cleared.';
+        _statusMessage = 'Delete Complete. All memories cleared.';
         _isSyncing = false;
       });
     } catch (e) {
-      Logger.error('DebugTools: deleteAllConversations error — $e');
+      Logger.error('DebugTools: _deleteAllMemories error — $e');
       setState(() {
         _statusMessage = 'Delete Error: $e';
         _isSyncing = false;
@@ -362,14 +408,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 ),
               ] else ...[
                 _DebugButton(
-                  label: 'Sync from Device',
-                  description: 'Download raw recordings from your Omi via Bluetooth/WiFi.',
+                  label: 'Sync Segments',
+                  description: 'Download any pending raw segments from your Omi.',
                   icon: FontAwesomeIcons.arrowDown,
                   onTap: _startSync,
                 ),
                 const SizedBox(height: 12),
                 _DebugButton(
-                  label: 'Force Process All',
+                  label: 'Force Process All Segments',
                   description: 'Process all raw segments immediately, including the newest (may be incomplete).',
                   icon: FontAwesomeIcons.gears,
                   onTap: _isProcessing
@@ -395,15 +441,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 ),
                 const SizedBox(height: 12),
                 _DebugButton(
-                  label: 'Force Re-scan Device',
-                  description: 'Re-scans the SD card from the beginning and downloads any missing recordings.',
+                  label: 'Force Sync All',
+                  description: 'Syncs all pending segments immediately, ignoring the minimum buffer threshold.',
                   icon: FontAwesomeIcons.arrowsRotate,
                   onTap: _forceSync,
                 ),
                 const SizedBox(height: 12),
                 _DebugButton(
-                  label: 'Delete All from Device',
-                  description: 'Permanently deletes all raw recordings from the Omi SD card.',
+                  label: 'Delete All Segments from Device',
+                  description: 'Permanently deletes all raw segments from the Omi device.',
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllPending,
@@ -418,8 +464,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 ),
                 const SizedBox(height: 12),
                 _DebugButton(
-                  label: 'Delete All Conversations',
-                  description: 'Permanently deletes all stitched recordings, including any open conversation in progress.',
+                  label: 'Delete All Memories',
+                  description: 'Permanently deletes all finalized recordings and memories.',
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllConversations,

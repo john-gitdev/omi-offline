@@ -131,6 +131,11 @@ class RecordingsManager {
   static bool _cancelRequested = false;
   static void cancelProcessing() => _cancelRequested = true;
 
+  /// Global notification system to alert UI pages when the recordings folder
+  /// has been modified (deleted, reprocessed, etc.).
+  static final ValueNotifier<int> recordingsChangeNotifier = ValueNotifier(0);
+  static void notifyRecordingsChanged() => recordingsChangeNotifier.value++;
+
   Future<List<DailyBatch>> getDailyBatches() async {
     final directory = await getApplicationDocumentsDirectory();
     final rawSegmentsDir = Directory('${directory.path}/raw_segments');

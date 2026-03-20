@@ -76,7 +76,15 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _restoreState();
     _loadBatches();
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(this);
+    RecordingsManager.recordingsChangeNotifier.addListener(_onRecordingsChanged);
     _pollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _poll());
+  }
+
+  void _onRecordingsChanged() {
+    if (mounted) {
+      _restoreState();
+      _loadBatches();
+    }
   }
 
   void _restoreState() {
@@ -112,6 +120,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   void dispose() {
     _pollTimer?.cancel();
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(null);
+    RecordingsManager.recordingsChangeNotifier.removeListener(_onRecordingsChanged);
     super.dispose();
   }
 
