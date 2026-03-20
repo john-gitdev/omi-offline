@@ -7,6 +7,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/widgets/dialog.dart';
 
@@ -273,13 +274,17 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
     try {
       final directory = await getApplicationDocumentsDirectory();
+      
       final recordingsDir = Directory('${directory.path}/recordings');
       if (await recordingsDir.exists()) {
+        Logger.debug('DebugTools: Deleting recordings directory');
         await recordingsDir.delete(recursive: true);
         Logger.debug('DebugTools: recordings directory deleted');
       }
+      
       final tempDir = Directory('${directory.path}/processing_temp');
       if (await tempDir.exists()) {
+        Logger.debug('DebugTools: Deleting processing_temp directory');
         await tempDir.delete(recursive: true);
         Logger.debug('DebugTools: processing_temp directory deleted');
       }
