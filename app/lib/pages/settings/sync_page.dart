@@ -126,7 +126,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _deleteAllPending() async {
-    Logger.debug('DebugTools: Delete All from Device tapped');
+    Logger.debug('DebugTools: Delete Omi Segments tapped');
     if (RecordingsManager.isProcessingAny) {
       Logger.debug('DebugTools: Delete blocked — processing already running');
       _showProcessingSnackbar();
@@ -138,8 +138,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         context,
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
-        'Delete All Data',
-        'This will permanently delete all raw recordings from your Omi device SD card. This action cannot be undone. Continue?',
+        'Delete Omi Segments',
+        'This will permanently delete raw recordings from your Omi device SD card. This action cannot be undone. Continue?',
         confirmText: 'Delete',
       ),
     );
@@ -150,7 +150,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
     setState(() {
       _isSyncing = true;
-      _statusMessage = 'Deleting all data from device...';
+      _statusMessage = 'Deleting segments from device...';
     });
 
     try {
@@ -185,9 +185,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _deleteAllSegments() async {
-    Logger.debug('DebugTools: Delete All Phone Segments tapped');
+    Logger.debug('DebugTools: Delete Phone Segments tapped');
     if (RecordingsManager.isProcessingAny) {
-      Logger.debug('DebugTools: Delete All Phone Segments blocked — processing running');
+      Logger.debug('DebugTools: Delete Phone Segments blocked — processing running');
       _showProcessingSnackbar();
       return;
     }
@@ -197,8 +197,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         context,
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
-        'Delete All Phone Segments',
-        'This will permanently delete all raw segment files stored on this phone. This action cannot be undone. Continue?',
+        'Delete Phone Segments',
+        'This will permanently delete raw segment files stored on this phone. This action cannot be undone. Continue?',
         confirmText: 'Delete',
       ),
     );
@@ -208,7 +208,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
     setState(() {
       _isSyncing = true;
-      _statusMessage = 'Deleting all phone segments...';
+      _statusMessage = 'Deleting phone segments...';
     });
     try {
       Logger.debug('DebugTools: Deleting raw_segments directory');
@@ -246,9 +246,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _deleteAllConversations() async {
-    Logger.debug('DebugTools: Delete All Memories tapped');
+    Logger.debug('DebugTools: Delete Phone Conversations tapped');
     if (RecordingsManager.isProcessingAny) {
-      Logger.debug('DebugTools: Delete All Memories blocked — processing running');
+      Logger.debug('DebugTools: Delete Phone Conversations blocked — processing running');
       _showProcessingSnackbar();
       return;
     }
@@ -258,18 +258,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         context,
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
-        'Delete All Memories',
-        'This will permanently delete all finalized recordings and memories on this phone, including any open conversation in progress. This action cannot be undone. Continue?',
+        'Delete Phone Conversations',
+        'This will permanently delete finalized recordings and conversations on this phone, including any open conversation in progress. This action cannot be undone. Continue?',
         confirmText: 'Delete',
       ),
     );
     if (confirm != true) {
-      Logger.debug('DebugTools: Delete All Memories cancelled by user');
+      Logger.debug('DebugTools: Delete Phone Conversations cancelled by user');
       return;
     }
     setState(() {
       _isSyncing = true;
-      _statusMessage = 'Deleting all memories...';
+      _statusMessage = 'Deleting phone conversations...';
     });
     try {
       final directory = await getApplicationDocumentsDirectory();
@@ -301,11 +301,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       RecordingsManager.notifyRecordingsChanged();
 
       setState(() {
-        _statusMessage = 'Delete Complete. All memories cleared.';
+        _statusMessage = 'Delete Complete. Phone conversations cleared.';
         _isSyncing = false;
       });
     } catch (e) {
-      Logger.error('DebugTools: _deleteAllMemories error — $e');
+      Logger.error('DebugTools: _deleteAllConversations error — $e');
       setState(() {
         _statusMessage = 'Delete Error: $e';
         _isSyncing = false;
@@ -408,26 +408,33 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 ),
               ] else ...[
                 _DebugButton(
-                  label: 'Sync Segments',
+                  label: 'Sync Omi Segments',
                   description: 'Download any pending raw segments from your Omi.',
                   icon: FontAwesomeIcons.arrowDown,
                   onTap: _startSync,
                 ),
                 const SizedBox(height: 12),
                 _DebugButton(
-                  label: 'Force Process All Segments',
-                  description: 'Process all raw segments immediately, including the newest (may be incomplete).',
+                  label: 'Force Sync Omi',
+                  description: 'Syncs all pending segments immediately, ignoring the minimum buffer threshold.',
+                  icon: FontAwesomeIcons.arrowsRotate,
+                  onTap: _forceSync,
+                ),
+                const SizedBox(height: 12),
+                _DebugButton(
+                  label: 'Force Process Omi',
+                  description: 'Process raw segments immediately, including the newest (may be incomplete).',
                   icon: FontAwesomeIcons.gears,
                   onTap: _isProcessing
                       ? null
                       : () async {
-                          Logger.debug('DebugTools: Force Process All tapped');
+                          Logger.debug('DebugTools: Force Process Omi tapped');
                           if (RecordingsManager.isProcessingAny) {
-                            Logger.debug('DebugTools: Force Process All blocked — processing already running');
+                            Logger.debug('DebugTools: Force Process Omi blocked — processing already running');
                             _showProcessingSnackbar();
                             return;
                           }
-                          setState(() => _statusMessage = 'Force processing all segments...');
+                          setState(() => _statusMessage = 'Force processing segments...');
                           try {
                             Logger.debug('DebugTools: Calling RecordingsManager.forceProcessAll()');
                             await RecordingsManager.forceProcessAll();
@@ -441,31 +448,24 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 ),
                 const SizedBox(height: 12),
                 _DebugButton(
-                  label: 'Force Sync All',
-                  description: 'Syncs all pending segments immediately, ignoring the minimum buffer threshold.',
-                  icon: FontAwesomeIcons.arrowsRotate,
-                  onTap: _forceSync,
-                ),
-                const SizedBox(height: 12),
-                _DebugButton(
-                  label: 'Delete All Segments from Device',
-                  description: 'Permanently deletes all raw segments from the Omi device.',
+                  label: 'Delete Omi Segments',
+                  description: 'Permanently deletes raw segments from the Omi device.',
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllPending,
                 ),
                 const SizedBox(height: 12),
                 _DebugButton(
-                  label: 'Delete All Phone Segments',
-                  description: 'Permanently deletes all raw segment files stored on this phone.',
+                  label: 'Delete Phone Segments',
+                  description: 'Permanently deletes raw segment files stored on this phone.',
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllSegments,
                 ),
                 const SizedBox(height: 12),
                 _DebugButton(
-                  label: 'Delete All Memories',
-                  description: 'Permanently deletes all finalized recordings and memories.',
+                  label: 'Delete Phone Conversations',
+                  description: 'Permanently deletes finalized recordings and conversations.',
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllConversations,
