@@ -122,7 +122,7 @@ class Wal {
       'seconds': seconds,
       'sampleRate': sampleRate,
       'deviceModel': deviceModel,
-      'estimatedChunks': estimatedSegments,
+      'estimatedSegments': estimatedSegments,
     };
   }
 
@@ -145,7 +145,7 @@ class Wal {
       seconds: json['seconds'],
       sampleRate: json['sampleRate'],
       deviceModel: json['deviceModel'],
-      estimatedSegments: json['estimatedChunks'] ?? 0,
+      estimatedSegments: json['estimatedSegments'] ?? 0,
     );
   }
 

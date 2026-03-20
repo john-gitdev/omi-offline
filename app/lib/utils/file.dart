@@ -7,12 +7,12 @@ import 'package:omi/utils/audio/wav_bytes.dart';
 import 'package:omi/utils/logger.dart';
 
 class FileUtils {
-  static Future<File> saveAudioBytesToTempFile(List<List<int>> chunk, int timerStart, int frameSize) async {
+  static Future<File> saveAudioBytesToTempFile(List<List<int>> segment, int timerStart, int frameSize) async {
     final directory = await getTemporaryDirectory();
     String filePath = '${directory.path}/audio_fs${frameSize}_$timerStart.bin';
     List<int> data = [];
-    for (int i = 0; i < chunk.length; i++) {
-      var frame = chunk[i];
+    for (int i = 0; i < segment.length; i++) {
+      var frame = segment[i];
 
       // Format: <length>|<data> ; bytes: 4 | n
       final byteFrame = ByteData(frame.length);

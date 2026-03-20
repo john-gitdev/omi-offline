@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/offline_audio_processor.dart';
+import 'package:omi/services/recordings_manager.dart';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
@@ -25,9 +26,18 @@ class MockDecoder extends Fake implements SimpleOpusDecoder {
   void destroy() {}
 }
 
+class FailingDecoderWithSpeech extends MockDecoder {
+  int count = 0;
+  @override
+  Int16List decode({Uint8List? input, bool fec = false, int? loss}) {
+    if (count++ == 2) throw Exception('Corrupt frame');
+    return Int16List.fromList(List.filled(320, 3000));
+  }
+}
+
 /// Writes [count] length-prefixed frames of [frameSize] bytes to a .bin file.
 /// Frame size must not be 255 (reserved for metadata packets).
-File _buildChunkFile(Directory dir, String name, int count, int frameSize) {
+File _buildSegmentFile(Directory dir, String name, int count, int frameSize) {
   assert(frameSize != 255, 'Use a frame size other than 255 to avoid metadata packet handling');
   final file = File('${dir.path}/$name');
   final builder = BytesBuilder();
@@ -42,9 +52,9 @@ File _buildChunkFile(Directory dir, String name, int count, int frameSize) {
   return file;
 }
 
-/// Builds a chunk file that starts with ONE metadata packet (utcSecs, uptimeMs)
+/// Builds a segment file that starts with ONE metadata packet (utcSecs, uptimeMs)
 /// followed by [audioFrameCount] audio frames of [frameSize] bytes.
-File _buildChunkFileWithMeta(Directory dir, String name, int utcSecs, int uptimeMs, int audioFrameCount, int frameSize) {
+File _buildSegmentFileWithMeta(Directory dir, String name, int utcSecs, int uptimeMs, int audioFrameCount, int frameSize) {
   assert(frameSize != 255, 'Use a frame size other than 255 to avoid metadata packet handling');
   final file = File('${dir.path}/$name');
   final builder = BytesBuilder();
@@ -84,7 +94,7 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       aacChannel,
       (call) async {
-        if (call.method == 'startEncoder') return 'test-session';
+        if (call.method == 'startEncoder') return 'test-device-session';
         return null;
       },
     );
@@ -118,22 +128,22 @@ void main() {
     final speechPcm = Int16List.fromList(List.filled(320, 3000)); // ~-20.8 dBFS, above -30 dBFS threshold
     final silencePcm = Int16List.fromList(List.filled(320, 0));
 
-    // 1. Process a chunk file with 10 speech frames
+    // 1. Process a segment file with 10 speech frames
     decoder.pcmToReturn = speechPcm;
-    final chunk1 = _buildChunkFile(tempDir, 'chunk1.bin', 10, 5);
-    await processor.processSegmentFile(chunk1, startTime);
+    final segment1 = _buildSegmentFile(tempDir, 'segment1.bin', 10, 5);
+    await processor.processSegmentFile(segment1, startTime);
 
-    // 2. Process a chunk file with 100 silence frames (triggers split)
+    // 2. Process a segment file with 100 silence frames (triggers split)
     decoder.pcmToReturn = silencePcm;
-    final chunk2 = _buildChunkFile(tempDir, 'chunk2.bin', 100, 5);
-    final savedFiles = await processor.processSegmentFile(chunk2, startTime);
+    final segment2 = _buildSegmentFile(tempDir, 'segment2.bin', 100, 5);
+    final savedFiles = await processor.processSegmentFile(segment2, startTime);
 
     expect(savedFiles.length, 1);
 
-    // 3. Process a chunk file with 10 speech frames again
+    // 3. Process a segment file with 10 speech frames again
     decoder.pcmToReturn = speechPcm;
-    final chunk3 = _buildChunkFile(tempDir, 'chunk3.bin', 10, 5);
-    await processor.processSegmentFile(chunk3, startTime);
+    final segment3 = _buildSegmentFile(tempDir, 'segment3.bin', 10, 5);
+    await processor.processSegmentFile(segment3, startTime);
 
     // 4. Flush remaining
     final finalFile = await processor.flushRemaining();
@@ -165,14 +175,14 @@ void main() {
 
     // Process speech — should trigger isCapturing = true
     decoder.pcmToReturn = speechPcm;
-    final speechChunk = _buildChunkFile(tempDir, 'speech.bin', 10, 5);
-    await processor.processSegmentFile(speechChunk, startTime);
+    final speechSegment = _buildSegmentFile(tempDir, 'speech.bin', 10, 5);
+    await processor.processSegmentFile(speechSegment, startTime);
     expect(processor.isCapturing, isTrue);
 
     // Process 100 silence frames — triggers split, resets speechFrameCount
     decoder.pcmToReturn = silencePcm;
-    final silenceChunk = _buildChunkFile(tempDir, 'silence.bin', 100, 5);
-    await processor.processSegmentFile(silenceChunk, startTime);
+    final silenceSegment = _buildSegmentFile(tempDir, 'silence.bin', 100, 5);
+    await processor.processSegmentFile(silenceSegment, startTime);
 
     // After split, speechFrameCount is reset to 0, so isCapturing should be false
     expect(processor.isCapturing, isFalse);
@@ -187,20 +197,20 @@ void main() {
 
     // Process 10 speech frames — not enough silence to split, still in-progress
     decoder.pcmToReturn = speechPcm;
-    final speechChunk = _buildChunkFile(tempDir, 'speech.bin', 10, 5);
-    await processor.processSegmentFile(speechChunk, startTime);
+    final speechSegment = _buildSegmentFile(tempDir, 'speech.bin', 10, 5);
+    await processor.processSegmentFile(speechSegment, startTime);
 
     // flushOnlyCompleted must not save in-progress recording
     final result = await processor.flushOnlyCompleted();
     expect(result, isEmpty);
   });
 
-  test('gap detection force-splits on large time gap between chunks', () async {
+  test('gap detection force-splits on large time gap between segments', () async {
     final decoder = MockDecoder();
     // Use a very small gap threshold: 10 seconds
     SharedPreferences.setMockInitialValues({
       'offlineSnrMarginDb': 10.0,
-      'offlineHangoverSeconds': 0.0,
+      'offlineHangoverSeconds': 0.0, // disabled for determinism
       'offlineSplitSeconds': 2,
       'offlineMinSpeechSeconds': 0,
       'offlinePreSpeechSeconds': 1.0,
@@ -213,15 +223,15 @@ void main() {
     final speechPcm = Int16List.fromList(List.filled(320, 3000));
     decoder.pcmToReturn = speechPcm;
 
-    // First chunk at T=0
+    // First segment at T=0
     final t0 = DateTime(2026, 3, 11, 10, 0, 0);
-    final chunk1 = _buildChunkFile(tempDir, 'chunk_gap1.bin', 10, 5);
-    final saved1 = await processor.processSegmentFile(chunk1, t0);
+    final segment1 = _buildSegmentFile(tempDir, 'segment_gap1.bin', 10, 5);
+    final saved1 = await processor.processSegmentFile(segment1, t0);
 
-    // Second chunk at T+2hr — well beyond the 10s gap threshold
+    // Second segment at T+2hr — well beyond the 10s gap threshold
     final t2hr = t0.add(const Duration(hours: 2));
-    final chunk2 = _buildChunkFile(tempDir, 'chunk_gap2.bin', 10, 5);
-    final saved2 = await processor.processSegmentFile(chunk2, t2hr);
+    final segment2 = _buildSegmentFile(tempDir, 'segment_gap2.bin', 10, 5);
+    final saved2 = await processor.processSegmentFile(segment2, t2hr);
 
     // The gap should have triggered a flushRemaining, producing at least 1 file
     final allSaved = [...saved1, ...saved2];
@@ -232,7 +242,7 @@ void main() {
     // Set minimum speech to 5 seconds (250 frames at 20ms each)
     SharedPreferences.setMockInitialValues({
       'offlineSnrMarginDb': 10.0,
-      'offlineHangoverSeconds': 0.0,
+      'offlineHangoverSeconds': 0.0, // disabled for determinism
       'offlineSplitSeconds': 2,
       'offlineMinSpeechSeconds': 5, // 250 frames required
       'offlinePreSpeechSeconds': 1.0,
@@ -249,43 +259,43 @@ void main() {
 
     // Process only 10 speech frames (far below the 250 minimum)
     decoder.pcmToReturn = speechPcm;
-    final speechChunk = _buildChunkFile(tempDir, 'short_speech.bin', 10, 5);
-    await processor.processSegmentFile(speechChunk, startTime);
+    final speechSegment = _buildSegmentFile(tempDir, 'short_speech.bin', 10, 5);
+    await processor.processSegmentFile(speechSegment, startTime);
 
     // Process 100 silence frames to trigger the split
     decoder.pcmToReturn = silencePcm;
-    final silenceChunk = _buildChunkFile(tempDir, 'silence.bin', 100, 5);
-    final savedFiles = await processor.processSegmentFile(silenceChunk, startTime);
+    final silenceSegment = _buildSegmentFile(tempDir, 'silence.bin', 100, 5);
+    final savedFiles = await processor.processSegmentFile(silenceSegment, startTime);
 
     // The split fired but recording should be discarded (too short)
     expect(savedFiles, isEmpty);
   });
 
-  test('metadata packet in chunk updates chunk start time', () async {
-    // The processor reads metadata only when sessionId is passed.
-    // Use sessionId=1 so the metadata packet is parsed.
+  test('metadata packet in segment updates segment start time', () async {
+    // The processor reads metadata only when deviceSessionId is passed.
+    // Use deviceSessionId=1 so the metadata packet is parsed.
     final decoder = MockDecoder();
     final processor = OfflineAudioProcessor(decoder: decoder);
 
     // UTC epoch for a specific known time: 2026-01-15 12:00:00 UTC
     final metaEpochSec = DateTime.utc(2026, 1, 15, 12, 0, 0).millisecondsSinceEpoch ~/ 1000;
 
-    // Build a chunk with one metadata packet followed by 10 speech frames
+    // Build a segment with one metadata packet followed by 10 speech frames
     final speechPcm = Int16List.fromList(List.filled(320, 3000));
     decoder.pcmToReturn = speechPcm;
 
-    final chunk = _buildChunkFileWithMeta(
+    final segment = _buildSegmentFileWithMeta(
       tempDir,
-      'meta_chunk.bin',
+      'meta_segment.bin',
       metaEpochSec,
       0, // uptimeMs=0; utcSecs > 0 so it takes the direct UTC path
       10,
       5,
     );
 
-    // Pass a wrong fallback time and sessionId=1 so metadata is read
+    // Pass a wrong fallback time and deviceSessionId=1 so metadata is read
     final wrongFallback = DateTime(2020, 1, 1);
-    await processor.processSegmentFile(chunk, wrongFallback, deviceSessionId: 1);
+    await processor.processSegmentFile(segment, wrongFallback, deviceSessionId: 1);
 
     // Flush remaining to save the recording
     final savedPath = await processor.flushRemaining();
@@ -296,5 +306,49 @@ void main() {
     final filename = savedPath!.split('/').last;
     expect(filename, contains(expectedMs.toString()),
         reason: 'Recording filename should reflect the metadata UTC timestamp, not the wrong fallback');
+  });
+
+  test('monotonicity clamping ensures time never moves backward', () async {
+    final decoder = MockDecoder();
+    final processor = OfflineAudioProcessor(decoder: decoder);
+    
+    final speechPcm = Int16List.fromList(List.filled(320, 3000));
+    decoder.pcmToReturn = speechPcm;
+
+    // Initial time: T=1000
+    final t1000 = DateTime.fromMillisecondsSinceEpoch(1000);
+    final segment1 = _buildSegmentFile(tempDir, 'mono1.bin', 5, 5);
+    await processor.processSegmentFile(segment1, t1000);
+
+    // Second segment reported as T=500 (backward jump in metadata)
+    final t500 = DateTime.fromMillisecondsSinceEpoch(500);
+    final segment2 = _buildSegmentFile(tempDir, 'mono2.bin', 5, 5);
+    await processor.processSegmentFile(segment2, t500);
+
+    final savedPath = await processor.flushRemaining();
+    expect(savedPath, isNotNull);
+
+    // Duration should be at least 10 frames * 20ms = 200ms
+    // Start time should be the first reported time (1000)
+    final conv = Conversation.fromFile(File(savedPath!));
+    expect(conv.startTime.millisecondsSinceEpoch, equals(1000));
+    expect(conv.duration.inMilliseconds, greaterThanOrEqualTo(200));
+  });
+
+  test('skips corrupt Opus frames without crashing', () async {
+    final decoder = FailingDecoderWithSpeech();
+    final processor = OfflineAudioProcessor(decoder: decoder);
+
+    final startTime = DateTime(2026, 3, 11, 10);
+    // Process 5 frames, the 3rd one (index 2) will fail
+    final segment = _buildSegmentFile(tempDir, 'corrupt.bin', 5, 5);
+    await processor.processSegmentFile(segment, startTime);
+
+    final savedPath = await processor.flushRemaining();
+    expect(savedPath, isNotNull);
+    
+    // Should have saved 4 valid frames
+    final conv = Conversation.fromFile(File(savedPath!));
+    expect(conv.duration.inMilliseconds, equals(80)); // 4 * 20ms
   });
 }

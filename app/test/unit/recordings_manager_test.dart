@@ -29,19 +29,19 @@ void main() {
     }
   });
 
-  test('getDailyBatches identifies and groups chunks correctly', () async {
+  test('getBatches identifies and groups segments correctly', () async {
     // Create mock structure:
-    // raw_segments/100/0.bin (modified 2026-03-11)
-    // raw_segments/100/1.bin (modified 2026-03-11)
-    // raw_segments/101/0.bin (modified 2026-03-12)
+    // raw_segments/100/100_0.bin (modified 2026-03-11)
+    // raw_segments/100/100_1.bin (modified 2026-03-11)
+    // raw_segments/101/101_0.bin (modified 2026-03-12)
     
     final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
-    final session100Dir = Directory(p.join(rawDir.path, '100'))..createSync(recursive: true);
-    final session101Dir = Directory(p.join(rawDir.path, '101'))..createSync(recursive: true);
+    final deviceSession100Dir = Directory(p.join(rawDir.path, '100'))..createSync(recursive: true);
+    final deviceSession101Dir = Directory(p.join(rawDir.path, '101'))..createSync(recursive: true);
     
-    final file1 = File(p.join(session100Dir.path, '0.bin'))..writeAsBytesSync([0]);
-    final file2 = File(p.join(session100Dir.path, '1.bin'))..writeAsBytesSync([0]);
-    final file3 = File(p.join(session101Dir.path, '0.bin'))..writeAsBytesSync([0]);
+    final file1 = File(p.join(deviceSession100Dir.path, '100_0.bin'))..writeAsBytesSync([0]);
+    final file2 = File(p.join(deviceSession100Dir.path, '100_1.bin'))..writeAsBytesSync([0]);
+    final file3 = File(p.join(deviceSession101Dir.path, '101_0.bin'))..writeAsBytesSync([0]);
     
     // Set modification times
     file1.setLastModifiedSync(DateTime(2026, 3, 11, 10));
@@ -49,7 +49,7 @@ void main() {
     file3.setLastModifiedSync(DateTime(2026, 3, 12, 10));
     
     final manager = RecordingsManager();
-    final batches = await manager.getDailyBatches();
+    final batches = await manager.getBatches();
     
     expect(batches.length, 2);
     expect(batches[0].dateString, '2026-03-12');
@@ -58,21 +58,21 @@ void main() {
     expect(batches[1].rawSegments.length, 2);
   });
 
-  test('getDailyBatches sorts chunks by filename within a day', () async {
+  test('getBatches sorts segments by filename within a day', () async {
     final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
-    final session100Dir = Directory(p.join(rawDir.path, '100'))..createSync(recursive: true);
+    final deviceSession100Dir = Directory(p.join(rawDir.path, '100'))..createSync(recursive: true);
     
     // Create files in reverse order
-    final file2 = File(p.join(session100Dir.path, 'chunk_1.bin'))..writeAsBytesSync([0]);
-    final file1 = File(p.join(session100Dir.path, 'chunk_0.bin'))..writeAsBytesSync([0]);
+    final file2 = File(p.join(deviceSession100Dir.path, '100_1.bin'))..writeAsBytesSync([0]);
+    final file1 = File(p.join(deviceSession100Dir.path, '100_0.bin'))..writeAsBytesSync([0]);
     
     file1.setLastModifiedSync(DateTime(2026, 3, 11, 10));
     file2.setLastModifiedSync(DateTime(2026, 3, 11, 10));
     
     final manager = RecordingsManager();
-    final batches = await manager.getDailyBatches();
+    final batches = await manager.getBatches();
     
-    expect(batches[0].rawSegments[0].path.endsWith('chunk_0.bin'), true);
-    expect(batches[0].rawSegments[1].path.endsWith('chunk_1.bin'), true);
+    expect(batches[0].rawSegments[0].path.endsWith('100_0.bin'), true);
+    expect(batches[0].rawSegments[1].path.endsWith('100_1.bin'), true);
   });
 }

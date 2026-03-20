@@ -15,8 +15,8 @@ abstract class WatchRecorderHostAPI {
   void stopRecording();
   @SwiftFunction('sendAudioData(audioData:)')
   void sendAudioData(Uint8List audioData);
-  @SwiftFunction('sendAudioChunk(audioChunk:chunkIndex:isLast:sampleRate:)')
-  void sendAudioChunk(Uint8List audioChunk, int chunkIndex, bool isLast, double sampleRate);
+  @SwiftFunction('sendAudioSegment(audioSegment:segmentIndex:isLast:sampleRate:)')
+  void sendAudioSegment(Uint8List audioSegment, int segmentIndex, bool isLast, double sampleRate);
   @SwiftFunction('isWatchPaired()')
   bool isWatchPaired();
   @SwiftFunction('isWatchReachable()')
@@ -46,7 +46,7 @@ abstract class WatchRecorderFlutterAPI {
   void onRecordingStarted();
   void onRecordingStopped();
   void onAudioData(Uint8List audioData);
-  void onAudioChunk(Uint8List audioChunk, int chunkIndex, bool isLast, double sampleRate);
+  void onAudioSegment(Uint8List audioSegment, int segmentIndex, bool isLast, double sampleRate);
   void onRecordingError(String error);
   void onMicrophonePermissionResult(bool granted);
   void onMainAppMicrophonePermissionResult(bool granted);

@@ -54,7 +54,7 @@ enum BleAudioCodec {
 
   // SD card stores [1-byte length prefix][VBR Opus payload]. Average payload at
   // 32 kbps is ~80 bytes; total per frame ≈ 81 bytes. This is separate from
-  // getFramesLengthInBytes() which models BLE transport (MTU-constrained chunks).
+  // getFramesLengthInBytes() which models BLE transport (MTU-constrained packets).
   static const int _opusStorageAvgBytesPerFrame = 81; // ~80 B VBR payload + 1-byte prefix
   static const int _opusFps = 50;
 

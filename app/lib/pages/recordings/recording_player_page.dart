@@ -10,16 +10,16 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/recordings_manager.dart';
 
-class RecordingPlayerPage extends StatefulWidget {
-  final RecordingInfo recording;
+class ConversationPlayerPage extends StatefulWidget {
+  final Conversation conversation;
 
-  const RecordingPlayerPage({super.key, required this.recording});
+  const ConversationPlayerPage({super.key, required this.conversation});
 
   @override
-  State<RecordingPlayerPage> createState() => _RecordingPlayerPageState();
+  State<ConversationPlayerPage> createState() => _ConversationPlayerPageState();
 }
 
-class _RecordingPlayerPageState extends State<RecordingPlayerPage> {
+class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   final AudioPlayer _player = AudioPlayer();
   final _prefs = SharedPreferencesUtil();
   List<double> _waveform = [];
@@ -36,11 +36,11 @@ class _RecordingPlayerPageState extends State<RecordingPlayerPage> {
   }
 
   Future<void> _init() async {
-    _waveform = await _computeWaveform(widget.recording.file);
+    _waveform = await _computeWaveform(widget.conversation.file);
     if (mounted) setState(() => _loadingWaveform = false);
 
-    await _player.setFilePath(widget.recording.file.path);
-    final dur = _player.duration ?? widget.recording.duration;
+    await _player.setFilePath(widget.conversation.file.path);
+    final dur = _player.duration ?? widget.conversation.duration;
     if (mounted) setState(() => _total = dur);
 
     _player.positionStream.listen((pos) {
@@ -132,8 +132,8 @@ class _RecordingPlayerPageState extends State<RecordingPlayerPage> {
   Future<void> _export() async {
     await SharePlus.instance.share(
       ShareParams(
-        files: [XFile(widget.recording.file.path)],
-        subject: 'Recording ${widget.recording.timeRangeLabel}',
+        files: [XFile(widget.conversation.file.path)],
+        subject: 'Conversation ${widget.conversation.timeRangeLabel}',
       ),
     );
   }
@@ -141,11 +141,11 @@ class _RecordingPlayerPageState extends State<RecordingPlayerPage> {
   Future<void> _handleUpload() async {
     final apiKey = _prefs.heypocketApiKey;
     if (apiKey.isEmpty || _isUploading) return;
-    final uploadKey = widget.recording.uploadKey;
+    final uploadKey = widget.conversation.uploadKey;
     if (uploadKey == null) return;
     setState(() => _isUploading = true);
     try {
-      await HeyPocketService.uploadRecording(apiKey, widget.recording);
+      await HeyPocketService.uploadRecording(apiKey, widget.conversation);
       _prefs.markUploadedToHeypocket(uploadKey);
       if (mounted) setState(() {});
     } on HeyPocketException catch (e) {
@@ -160,7 +160,7 @@ class _RecordingPlayerPageState extends State<RecordingPlayerPage> {
   Widget _buildUploadAction() {
     final apiKey = _prefs.heypocketApiKey;
     if (apiKey.isEmpty) return const SizedBox.shrink();
-    final uploadKey = widget.recording.uploadKey;
+    final uploadKey = widget.conversation.uploadKey;
     if (uploadKey == null) return const SizedBox.shrink();
     if (_isUploading) {
       return const Padding(
@@ -200,7 +200,7 @@ class _RecordingPlayerPageState extends State<RecordingPlayerPage> {
         backgroundColor: const Color(0xFF0D0D0D),
         elevation: 0,
         title: Text(
-          widget.recording.timeRangeLabel,
+          widget.conversation.timeRangeLabel,
           style: const TextStyle(color: Colors.white, fontSize: 18),
         ),
         actions: [
@@ -221,11 +221,11 @@ class _RecordingPlayerPageState extends State<RecordingPlayerPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Text(widget.recording.durationLabel, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
+                Text(widget.conversation.durationLabel, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
                 const SizedBox(width: 16),
                 Container(width: 1, height: 14, color: Colors.grey.shade700),
                 const SizedBox(width: 16),
-                Text(widget.recording.sizeLabel, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
+                Text(widget.conversation.sizeLabel, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
               ],
             ),
             const SizedBox(height: 48),

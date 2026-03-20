@@ -91,7 +91,7 @@ class OfflineAudioProcessor {
     return dbfs;
   }
 
-  /// Processes a single .bin chunk file.
+  /// Processes a single .bin segment file.
   ///
   /// Reads the file, parses frame offsets, runs SNR VAD on decoded PCM,
   /// and stores [FrameRef] disk-pointers instead of Opus bytes.
@@ -260,7 +260,7 @@ class OfflineAudioProcessor {
     }
 
     if (bytes.isNotEmpty) {
-      Logger.debug("OfflineAudioProcessor: Processed chunk (${frameIndex} audio frames). "
+      Logger.debug("OfflineAudioProcessor: Processed segment (${frameIndex} audio frames). "
           "Speech: $_speechFrameCount, NoiseFloor: ${_noiseFloorDbfs.toStringAsFixed(1)} dB, Margin: $_snrMarginDb dB");
     }
 
@@ -472,7 +472,7 @@ class OfflineAudioProcessor {
     RandomAccessFile? currentRaf;
     int nextExpectedOffset = -1;
 
-    final List<Uint8List> decodedChunks = [];
+    final List<Uint8List> decodedSegments = [];
     if (_decoder != null) {
       try {
         for (var i = 0; i < refs.length; i++) {
@@ -497,7 +497,7 @@ class OfflineAudioProcessor {
 
           try {
             final decoded = _decoder!.decode(input: opusBytes);
-            decodedChunks.add(decoded.buffer.asUint8List());
+            decodedSegments.add(decoded.buffer.asUint8List());
           } catch (e) {
             // Skip corrupt frame
           }
@@ -507,7 +507,7 @@ class OfflineAudioProcessor {
       }
     }
 
-    final int totalPcmBytes = decodedChunks.fold(0, (sum, chunk) => sum + chunk.length);
+    final int totalPcmBytes = decodedSegments.fold(0, (sum, segment) => sum + segment.length);
 
     final header = ByteData(44);
     header.setUint8(0, 0x52); // R
@@ -537,7 +537,7 @@ class OfflineAudioProcessor {
     header.setUint32(40, totalPcmBytes, Endian.little);
 
     sink.add(header.buffer.asUint8List());
-    for (var pcm in decodedChunks) {
+    for (var pcm in decodedSegments) {
       sink.add(pcm);
     }
     await sink.close();

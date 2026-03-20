@@ -46,7 +46,7 @@ class SharedPreferencesUtil {
 
   set offlineAdjustmentMode(bool value) => saveBool('offlineAdjustmentMode', value);
 
-  // 'automatic' = continuous VAD, 'manual' = star-marker extraction
+  // 'automatic' = continuous VAD, 'manual' = marker-based extraction
   String get offlineRecordingMode => getString('offlineRecordingMode', defaultValue: 'automatic');
 
   set offlineRecordingMode(String v) => saveString('offlineRecordingMode', v);
@@ -156,7 +156,7 @@ class SharedPreferencesUtil {
 
   set latestSyncedDeviceSessionId(int value) => saveInt('latestSyncedDeviceSessionId', value);
 
-  // Double tap behavior: 0 = end conversation (default), 1 = pause/mute, 2 = star ongoing conversation
+  // Double tap behavior: 0 = end conversation (default), 1 = pause/mute, 2 = bookmark ongoing conversation
   int get doubleTapAction => getInt('doubleTapAction');
 
   set doubleTapAction(int value) => saveInt('doubleTapAction', value);

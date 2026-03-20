@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/manual_recording_extractor.dart';
@@ -7,13 +8,13 @@ import 'package:omi/services/offline_audio_processor.dart';
 import 'package:omi/utils/logger.dart';
 
 /// Parsed metadata for a single processed recording (M4A or WAV).
-class RecordingInfo {
+class Conversation {
   final File file;
   final DateTime startTime;
   final Duration duration;
   final String? uploadKey;
 
-  const RecordingInfo({required this.file, required this.startTime, required this.duration, this.uploadKey});
+  const Conversation({required this.file, required this.startTime, required this.duration, this.uploadKey});
 
   DateTime get endTime => startTime.add(duration);
   int get fileSizeBytes {
@@ -27,7 +28,7 @@ class RecordingInfo {
   /// Parses start time from the filename (`recording_<millis>.m4a` or `.wav`) and
   /// reads duration from the `.meta` sidecar if present, otherwise falls back to
   /// WAV file size calculation.
-  static RecordingInfo fromFile(File file) {
+  static Conversation fromFile(File file) {
     final name = file.path.split('/').last;
     final millisStr = name.contains('_') ? name.split('_').last.split('.').first : null;
     final millis = millisStr != null ? int.tryParse(millisStr) : null;
@@ -65,7 +66,7 @@ class RecordingInfo {
           // Fall back to filename (without extension) as upload key for recordings
           // processed before the upload key was written to the .meta sidecar.
           final effectiveKey = uploadKey ?? file.path.split('/').last.split('.').first;
-          return RecordingInfo(
+          return Conversation(
               file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: effectiveKey);
         }
       } catch (_) {
@@ -81,7 +82,7 @@ class RecordingInfo {
     final pcmBytes = fileSize > 44 ? fileSize - 44 : 0;
     final durationMs = (pcmBytes / 32000.0 * 1000).round();
     final fallbackKey = file.path.split('/').last.split('.').first;
-    return RecordingInfo(
+    return Conversation(
         file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: fallbackKey);
   }
 
@@ -104,14 +105,14 @@ class RecordingInfo {
   }
 }
 
-class DailyBatch {
+class Batch {
   final String dateString;
   final DateTime date;
   final List<File> rawSegments;
   final List<File> finalizedRecordings;
   final List<DateTime> markerTimestamps;
 
-  DailyBatch({
+  Batch({
     required this.dateString,
     required this.date,
     required this.rawSegments,
@@ -136,7 +137,7 @@ class RecordingsManager {
   static final ValueNotifier<int> recordingsChangeNotifier = ValueNotifier(0);
   static void notifyRecordingsChanged() => recordingsChangeNotifier.value++;
 
-  Future<List<DailyBatch>> getDailyBatches() async {
+  Future<List<Batch>> getBatches() async {
     final directory = await getApplicationDocumentsDirectory();
     final rawSegmentsDir = Directory('${directory.path}/raw_segments');
     final recordingsDir = Directory('${directory.path}/recordings');
@@ -181,7 +182,7 @@ class RecordingsManager {
           }
         }
 
-        // 2. Process chunks
+        // 2. Process segments
         final files = folder.listSync().whereType<File>().where((f) => f.path.endsWith('.bin')).toList();
 
         for (var file in files) {
@@ -209,7 +210,7 @@ class RecordingsManager {
 
     // Merge keys
     final allDates = {...rawSegmentsByDate.keys, ...processedByDate.keys}.toList();
-    List<DailyBatch> batches = [];
+    List<Batch> batches = [];
 
     for (var dateStr in allDates) {
       final parts = dateStr.split('-');
@@ -219,7 +220,7 @@ class RecordingsManager {
       // Sort raw segments by name (which is segmentIndex)
       raw.sort((a, b) => a.path.split('/').last.compareTo(b.path.split('/').last));
 
-      batches.add(DailyBatch(
+      batches.add(Batch(
         dateString: dateStr,
         date: date,
         rawSegments: raw,
@@ -237,9 +238,9 @@ class RecordingsManager {
   ///
   /// In [backgroundMode]:
   /// - Does not call [flushRemaining]; only fully-completed conversations are written.
-  /// - Deletes only chunks whose conversations closed cleanly (up to [lastSafeToDeleteIndex]).
+  /// - Deletes only segments whose conversations closed cleanly (up to [lastSafeToDeleteIndex]).
   /// - Skips the 50 ms UI-yield delay.
-  Future<void> processDay(DailyBatch batch, Function(double progress) onProgress, {bool backgroundMode = false}) async {
+  Future<void> processDay(Batch batch, Function(double progress) onProgress, {bool backgroundMode = false}) async {
     if (batch.rawSegments.isEmpty) return;
     if (_isProcessingAny) {
       throw Exception("Another processing task is already in progress.");
@@ -271,7 +272,7 @@ class RecordingsManager {
         }
       }
 
-      // 2. Route to automatic (VAD) or manual (star-marker) processing.
+      // 2. Route to automatic (VAD) or manual (marker) processing.
       // Both paths write output files to tempProcessingPath; the move-to-live
       // block below runs for both.
       int lastSafeToDeleteIndex = -1;
@@ -279,7 +280,7 @@ class RecordingsManager {
 
       try {
         if (isManualMode) {
-          // Manual mode: star-marker extraction via ManualRecordingExtractor.
+          // Manual mode: marker extraction via ManualRecordingExtractor.
           // Produces recordings only for conversations the user explicitly starred.
           // Always keeps a 2hr rolling buffer of raw segments for future markers.
           final extractor = ManualRecordingExtractor();
@@ -409,7 +410,7 @@ class RecordingsManager {
       // Manual mode always uses lastSafeToDeleteIndex (same as background mode path)
       // because the extractor manages its own rolling buffer and returns a precise boundary.
       if (backgroundMode || isManualMode) {
-        // Delete only chunks belonging to fully-completed conversations.
+        // Delete only segments belonging to fully-completed conversations.
         // If adjustment mode is ON, keep everything for re-processing.
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
           Set<String> sessionFoldersToDelete = {};
@@ -493,7 +494,7 @@ class RecordingsManager {
   /// recording that spans midnight is never artificially cut. Output files are
   /// moved into `recordings/<date>/` based on each recording's actual start
   /// timestamp, not the batch date they were grouped under.
-  Future<void> processAll(List<DailyBatch> batches, Function(double progress) onProgress,
+  Future<void> processAll(List<Batch> batches, Function(double progress) onProgress,
       {bool backgroundMode = false}) async {
     final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
     if (activeBatches.isEmpty) return;
@@ -510,8 +511,8 @@ class RecordingsManager {
       await tempDir.create(recursive: true);
 
       // Combine segments from all batches, sorted by (deviceSessionId, segmentIndex).
-      final allChunks = activeBatches.expand((b) => b.rawSegments).toList();
-      allChunks.sort((a, b) {
+      final allSegments = activeBatches.expand((b) => b.rawSegments).toList();
+      allSegments.sort((a, b) {
         final ap = a.path.split('/').last.replaceAll('.bin', '').split('_');
         final bp = b.path.split('/').last.replaceAll('.bin', '').split('_');
         final as_ = int.tryParse(ap[0]) ?? 0;
@@ -536,10 +537,10 @@ class RecordingsManager {
 
       try {
         if (isManualMode) {
-          final combinedBatch = DailyBatch(
+          final combinedBatch = Batch(
             dateString: activeBatches.last.dateString, // oldest date
             date: activeBatches.last.date,
-            rawSegments: allChunks,
+            rawSegments: allSegments,
             finalizedRecordings: const [],
             markerTimestamps: (activeBatches.expand((b) => b.markerTimestamps).toList()..sort()),
           );
@@ -555,8 +556,8 @@ class RecordingsManager {
         } else {
           final processor = OfflineAudioProcessor(outputDir: tempProcessingPath);
           try {
-            for (int i = 0; i < allChunks.length; i++) {
-              final file = allChunks[i];
+            for (int i = 0; i < allSegments.length; i++) {
+              final file = allSegments[i];
               final deviceSessionIdStr = file.parent.path.split('/').last;
               final deviceSessionId = int.tryParse(deviceSessionIdStr);
               final segmentFileName = file.path.split('/').last.replaceAll('.bin', '');
@@ -572,10 +573,10 @@ class RecordingsManager {
                 if (anchorUtc > 0) {
                   segmentStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
                 } else if (anchorUptime > 0) {
-                  final sessionAnchorUtc = SharedPreferencesUtil()
-                      .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
-                  final sessionAnchorUptime = SharedPreferencesUtil()
-                      .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
+                  final sessionAnchorUtc =
+                      SharedPreferencesUtil().getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
+                  final sessionAnchorUptime =
+                      SharedPreferencesUtil().getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
                   if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
                     final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
                     segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
@@ -600,9 +601,10 @@ class RecordingsManager {
                 lastSafeToDeleteIndex = i;
               }
 
-              onProgress((i + 1) / allChunks.length);
+              onProgress((i + 1) / allSegments.length);
               if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
             }
+
 
             if (backgroundMode) {
               await processor.flushOnlyCompleted();
@@ -647,7 +649,7 @@ class RecordingsManager {
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
           final sessionFolders = <String>{};
           for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
-            final file = allChunks[i];
+            final file = allSegments[i];
             if (await file.exists()) {
               final deviceSessionId = int.tryParse(file.parent.path.split('/').last) ?? -1;
               Logger.debug("RecordingsManager: [bg] Deleting completed raw segment: ${file.path}");
@@ -670,7 +672,7 @@ class RecordingsManager {
         if (!SharedPreferencesUtil().offlineAdjustmentMode) {
           final sessionFolders = <String>{};
           final latestSyncedDeviceSessionId = SharedPreferencesUtil().latestSyncedDeviceSessionId;
-          for (final file in allChunks) {
+          for (final file in allSegments) {
             if (await file.exists()) {
               final deviceSessionId = int.tryParse(file.parent.path.split('/').last) ?? -1;
               if (deviceSessionId <= latestSyncedDeviceSessionId) {
@@ -706,20 +708,20 @@ class RecordingsManager {
   }
 
   /// Background auto-process: processes all batches as one continuous stream.
-  /// Skips the newest chunk per session (may still be written by firmware).
+  /// Skips the newest segment per session (may still be written by firmware).
   /// Safe to call from a background timer; no-op if a manual process is running.
   static Future<void> processAllCompletedSessions() async {
     if (_isProcessingAny) return;
     final manager = RecordingsManager();
-    final batches = await manager.getDailyBatches();
+    final batches = await manager.getBatches();
     final safeBatches = batches
         .map((batch) {
           if (batch.rawSegments.isEmpty) return batch;
-          final safeChunks = excludeNewestSegmentPerSession(batch.rawSegments);
-          return DailyBatch(
+          final safeSegments = excludeNewestSegmentPerSession(batch.rawSegments);
+          return Batch(
             dateString: batch.dateString,
             date: batch.date,
-            rawSegments: safeChunks,
+            rawSegments: safeSegments,
             finalizedRecordings: batch.finalizedRecordings,
             markerTimestamps: batch.markerTimestamps,
           );
@@ -734,14 +736,14 @@ class RecordingsManager {
     }
   }
 
-  /// Force-process all batches including the newest chunk per session.
+  /// Force-process all batches including the newest segment per session.
   /// Used by the debug Force Process button — same as pressing the Process button
   /// on each batch but operates across all days at once.
   /// No-op if a process is already running.
   static Future<void> forceProcessAll() async {
     if (_isProcessingAny) return;
     final manager = RecordingsManager();
-    final batches = await manager.getDailyBatches();
+    final batches = await manager.getBatches();
     final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
     if (activeBatches.isEmpty) return;
     try {
@@ -808,7 +810,7 @@ class RecordingsManager {
   /// Deletes all processed recordings (.m4a/.wav) and their .meta sidecars for a
   /// day, plus any remaining raw segments and their device session folders.
   /// Safe to call while nothing is playing.
-  Future<void> deleteDay(DailyBatch batch) async {
+  Future<void> deleteDay(Batch batch) async {
     final directory = await getApplicationDocumentsDirectory();
 
     // 1. Delete processed recordings folder (contains .m4a, .wav, .meta files)

@@ -45,7 +45,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _startSync() async {
-    Logger.debug('DebugTools: Sync from Device tapped');
+    Logger.debug('DebugTools: Sync Omi Segments tapped');
     if (RecordingsManager.isProcessingAny) {
       Logger.debug('DebugTools: Sync blocked — processing already running');
       _showProcessingSnackbar();
@@ -80,9 +80,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _forceSync() async {
-    Logger.debug('DebugTools: Force Re-scan Device tapped');
+    Logger.debug('DebugTools: Force Sync Omi tapped');
     if (RecordingsManager.isProcessingAny) {
-      Logger.debug('DebugTools: Force re-scan blocked — processing already running');
+      Logger.debug('DebugTools: Force sync blocked — processing already running');
       _showProcessingSnackbar();
       return;
     }
@@ -92,34 +92,34 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         context,
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
-        'Force Re-scan Device',
-        'This will re-scan the device SD card from the beginning and download any recordings not yet on your phone. This may take a long time and use significant battery. Continue?',
+        'Force Sync Omi',
+        'This will re-sync pending segments from the device immediately, bypassing the minimum buffer threshold. This may use significant battery. Continue?',
         confirmText: 'Start',
       ),
     );
     if (confirm != true) {
-      Logger.debug('DebugTools: Force re-scan cancelled by user');
+      Logger.debug('DebugTools: Force sync cancelled by user');
       return;
     }
 
     setState(() {
       _isSyncing = true;
       _progress = 0.0;
-      _statusMessage = 'Forcing re-sync from beginning...';
+      _statusMessage = 'Forcing sync from device...';
     });
 
     try {
       Logger.debug('DebugTools: Calling syncAll(force: true)');
       await ServiceManager.instance().wal.getSyncs().syncAll(progress: this, force: true);
-      Logger.debug('DebugTools: Force re-scan complete');
+      Logger.debug('DebugTools: Force sync complete');
       setState(() {
-        _statusMessage = 'Re-sync Complete.';
+        _statusMessage = 'Force Sync Complete.';
         _isSyncing = false;
       });
     } catch (e) {
-      Logger.error('DebugTools: Force re-scan error — $e');
+      Logger.error('DebugTools: Force sync error — $e');
       setState(() {
-        _statusMessage = 'Re-sync Error: $e';
+        _statusMessage = 'Force Sync Error: $e';
         _isSyncing = false;
       });
     }
@@ -139,7 +139,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
         'Delete Omi Segments',
-        'This will permanently delete raw recordings from your Omi device SD card. This action cannot be undone. Continue?',
+        'This will permanently delete raw segments from your Omi device. This action cannot be undone. Continue?',
         confirmText: 'Delete',
       ),
     );
@@ -213,9 +213,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     try {
       Logger.debug('DebugTools: Deleting raw_segments directory');
       final directory = await getApplicationDocumentsDirectory();
-      final chunksDir = Directory('${directory.path}/raw_segments');
-      if (await chunksDir.exists()) {
-        await chunksDir.delete(recursive: true);
+      final segmentsDir = Directory('${directory.path}/raw_segments');
+      if (await segmentsDir.exists()) {
+        await segmentsDir.delete(recursive: true);
       }
       Logger.debug('DebugTools: raw_segments deleted');
 

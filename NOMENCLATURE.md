@@ -7,15 +7,16 @@ This document defines the official terminology for all audio-related data struct
 | Term | Category | Level | Description | Old/Overloaded Terms |
 | :--- | :--- | :--- | :--- | :--- |
 | **Frame** | Data | Atomic | A single encoded Opus audio unit (~20ms). May include transport-specific prefix metadata. | `packet`, `byte_block` |
-| **Segment** | Physical | Storage | A `.bin` file containing a fixed target number of **Frames**; the final **Segment** in a sequence may be partial. | `chunk`, `bin`, `file` |
-| **DeviceSession** | Hardware | Stream | An internal hardware-bound concept representing a continuous stream from boot to disconnect. Assigned by firmware as a random u32 at boot. | `session`, `wal_session`, `sessionId` |
-| **Marker** | Metadata | Event | A point-in-time event (e.g. Star) stored as a timestamp associated with a **DeviceSession**. | `star`, `event`, `stars.txt` |
-| **WAL** | Metadata | Progress | A monotonic, append-only source of truth tracking ingestion progress of **Segments** via a monotonic byte offset. | `offset_log`, `sync_state`, `storageOffset` |
-| **Capture** | State | Process | The active state in which **Frames** are being received from the device. (Verb: *to capture*) | `isRecording`, `active_session`, `hasOngoingRecording` |
+| **Segment** | Physical | Storage | A `.bin` file containing a sequence of **Frames**. | `chunk`, `bin`, `file` |
+| **DeviceSession** | Hardware | Stream | An internal hardware-bound concept representing a continuous stream from boot to disconnect. | `session`, `wal_session`, `sessionId` |
+| **Marker** | Metadata | Event | A point-in-time event (e.g. Star) stored as a timestamp. | `star`, `event`, `stars.txt` |
+| **WAL** | Metadata | Progress | A monotonic, append-only source of truth tracking ingestion progress of **Segments**. | `offset_log`, `sync_state`, `storageOffset` |
+| **Capture** | State | Process | The active state in which **Frames** are being received from the device. | `isRecording`, `active_session` |
 | **Processing** | Pipeline | Internal | The background task of merging and transcoding **Segments** into a **Recording**. | `finalizing`, `transcoding` |
-| **Batch** | Logical | Grouping | A collection of **Segments** and **Recordings** grouped by the UTC calendar date of **captureStartTime**. | `DailyBatch` |
-| **Recording** | Artifact | Storage | The final, re-encoded audio file (`.m4a` or `.wav`) stored on disk. | `processed_file`, `recording` |
-| **Memory** | Entity | UI | The top-level user object (**Recording** + Transcript + AI Summary). | `conversation`, `memory_info` |
+| **Batch** | Logical | Grouping | A collection of **Segments** and **Conversations** grouped by UTC date. | `DailyBatch` |
+| **Recording** | Artifact | Storage | The final transcoded audio file (`.m4a` or `.wav`) stored on disk. | `processed_file` |
+| **Conversation** | Entity | Local | The local-only logical container (Recording + Timestamps) before AI enrichment. | `RecordingInfo`, `recording` |
+| **Memory** | Entity | Unified | The top-level user object (**Conversation** + Transcript + AI Summary). | `memory_info` |
 
 ---
 
