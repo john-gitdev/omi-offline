@@ -128,11 +128,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
   Future<void> _deleteAllPending() async {
     Logger.debug('DebugTools: Delete Omi Segments tapped');
-    if (RecordingsManager.isProcessingAny) {
-      Logger.debug('DebugTools: Delete blocked — processing already running');
-      _showProcessingSnackbar();
-      return;
-    }
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -140,7 +135,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
         'Delete Omi Segments',
-        'This will permanently delete raw segments from your Omi device. This action cannot be undone. Continue?',
+        'This will permanently delete raw segments from your Omi. If a sync is running, it will be cancelled. This action cannot be undone. Continue?',
         confirmText: 'Delete',
       ),
     );
@@ -155,8 +150,16 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
 
     try {
+      final syncs = ServiceManager.instance().wal.getSyncs();
+      if (syncs.isSyncing) {
+        Logger.debug('DebugTools: Cancelling active sync before deleting from device');
+        syncs.cancelSync();
+        // Wait briefly for the stream to tear down
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+
       Logger.debug('DebugTools: Calling deleteAllPendingWals()');
-      await ServiceManager.instance().wal.getSyncs().deleteAllPendingWals();
+      await syncs.deleteAllPendingWals();
       Logger.debug('DebugTools: deleteAllPendingWals complete');
 
       // Reset sync/processing progress state in preferences
