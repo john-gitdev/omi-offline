@@ -30,10 +30,18 @@ uint8_t codec_ring_buffer_data[AUDIO_BUFFER_SAMPLES * 2]; // 2 bytes per sample
 struct ring_buf codec_ring_buf;
 int codec_receive_pcm(int16_t *data, size_t len) // this gets called after mic data is finished
 {
+    // Invariant: Only accept writes where (incoming_bytes % sample_size == 0)
+    // Here, each sample is 2 bytes (int16_t). 'len' is the number of samples.
+    size_t bytes_to_write = len * 2;
 
-    int written = ring_buf_put(&codec_ring_buf, (uint8_t *) data, len * 2);
-    if (written != len * 2) {
-        LOG_ERR("Failed to write %d bytes to codec ring buffer", len * 2);
+    if (ring_buf_space_get(&codec_ring_buf) < bytes_to_write) {
+        LOG_WRN("Codec ring buffer full, dropping %u bytes", (unsigned)bytes_to_write);
+        return -1;
+    }
+
+    int written = ring_buf_put(&codec_ring_buf, (uint8_t *) data, bytes_to_write);
+    if (written != bytes_to_write) {
+        LOG_ERR("Failed to write %u bytes to codec ring buffer (written %d)", (unsigned)bytes_to_write, written);
         return -1;
     }
 

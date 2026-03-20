@@ -325,7 +325,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final completer = Completer<void>();
     _activeTransferCompleter = completer;
     bool hasError = false;
-    bool isFirstPacket = true;
     bool isProcessing = false;
     Timer? completionTimeout;
     DateTime lastWaitingLog = DateTime.now().subtract(const Duration(seconds: 10));
@@ -367,77 +366,107 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     _storageStream?.cancel();
     int packetsReceived = 0;
+    int expectedOffset = offset;
+    bool hasReceivedStartAck = false;
+    bool isStreamLocked = false;
+
     _storageStream = (await connection.getBleStorageBytesListener(onStorageBytesReceived: (List<int> value) async {
-      if (_isCancelled || hasError) return;
+      if (_isCancelled || hasError || isStreamLocked) return;
 
       packetsReceived++;
       // Log only every 100 packets to reduce noise, unless it's near the end
-      if (packetsReceived % 100 == 0 || offset >= wal.storageTotalBytes - 512) {
+      if (packetsReceived % 100 == 0 || expectedOffset >= wal.storageTotalBytes - 512) {
         Logger.debug(
             "SDCardWalSync: Received ${value.length} bytes (Buffer: ${streamBuffer.length}, Packet #$packetsReceived)");
       }
 
-      // Handle the initial ACK byte separately to avoid offset desync.
-      // Firmware sends a single-byte ACK immediately after receiving the READ command:
-      //   0x00 = success (start streaming)
-      //   0x03 = INVALID_FILE_SIZE
-      //   0x04 = ZERO_FILE_SIZE
-      //   0x06 = INVALID_COMMAND
-      // All error codes are small integers (< 16). Any other single-byte first packet
-      // is unexpected and falls through to be treated as the start of audio data.
-      if (isFirstPacket && value.length == 1) {
-        isFirstPacket = false;
-        if (value[0] == 0) {
-          Logger.debug("SDCardWalSync: Received initial success ACK");
-          return;
-        } else if (value[0] < 16) {
-          Logger.debug("SDCardWalSync: Received firmware error ACK: ${value[0]}");
-          hasError = true;
-          if (!completer.isCompleted) completer.completeError(Exception('Firmware error code: ${value[0]}'));
-          return;
-        }
-        // else: unexpected first packet — fall through and process as data
-      }
-      isFirstPacket = false;
-
-      // Add to buffer synchronously
-      streamBuffer.addAll(value);
-      offset += value.length;
-
-      // Diagnostic logging near the end
-      if (offset >= wal.storageTotalBytes - 512) {
-        if (offset >= wal.storageTotalBytes - 64) {
-          Logger.debug("SDCardWalSync: End bytes (Total $offset/${wal.storageTotalBytes}): $value");
-        }
+      if (value.isEmpty) {
+        Logger.debug("SDCardWalSync: Received empty BLE packet, ignoring.");
+        return;
       }
 
-      if (onProgress != null) {
-        onProgress(offset);
-      }
+      int packetType = value[0];
 
-      // Timeout/Overrun completion logic
-      completionTimeout?.cancel();
-      if (offset >= wal.storageTotalBytes) {
-        if (offset >= wal.storageTotalBytes + 1024) {
-          Logger.debug(
-              "SDCardWalSync: Overrun threshold reached ($offset/${wal.storageTotalBytes}). Forcing completion.");
+      // 1. Dispatch based on Packet Type
+      switch (packetType) {
+        case 0x01: // PACKET_DATA: [0x01][Offset(4B)][Payload(NB)]
+          if (!hasReceivedStartAck) {
+            Logger.debug("SDCardWalSync: Ignoring DATA packet received before ACK.");
+            return;
+          }
+          if (value.length < 5) {
+            Logger.error("SDCardWalSync: Malformed DATA packet (length ${value.length})");
+            return;
+          }
+
+          // Parse Little-Endian Offset: bytes[1] | (bytes[2] << 8) | (bytes[3] << 16) | (bytes[4] << 24)
+          int incomingOffset = value[1] | (value[2] << 8) | (value[3] << 16) | (value[4] << 24);
+          List<int> payload = value.sublist(5);
+
+          if (incomingOffset < expectedOffset) {
+            // Duplicate/Retry from firmware: Discard
+            Logger.debug(
+                "SDCardWalSync: Discarding duplicate packet (incoming $incomingOffset < expected $expectedOffset)");
+            return;
+          } else if (incomingOffset > expectedOffset) {
+            // Gap detected: Critical Error, Abort
+            Logger.error(
+                "SDCardWalSync: Gap detected in stream (incoming $incomingOffset > expected $expectedOffset). Aborting.");
+            isStreamLocked = true;
+            hasError = true;
+            if (!completer.isCompleted) {
+              completer.completeError(
+                  Exception("Protocol gap detected: incoming $incomingOffset, expected $expectedOffset"));
+            }
+            return;
+          }
+
+          // Exact match: Process payload
+          streamBuffer.addAll(payload);
+          expectedOffset += payload.length;
+
+          // Report progress based on file offset
+          if (onProgress != null) {
+            onProgress(expectedOffset);
+          }
+          break;
+
+        case 0x02: // PACKET_EOT: [0x02]
+          Logger.debug("SDCardWalSync: Received EOT marker. offset=$expectedOffset, bufferLen=${streamBuffer.length}");
+          isStreamLocked = true;
+          completionTimeout?.cancel();
           await flushBuffer();
           if (!completer.isCompleted) completer.complete();
+          streamBuffer.clear();
           return;
-        }
 
-        completionTimeout = Timer(const Duration(seconds: 5), () async {
-          if (!completer.isCompleted) {
-            Logger.debug("SDCardWalSync: Progress at 100% and 5s idle. Forcing completion.");
-            await flushBuffer();
-            completer.complete();
+        case 0x03: // PACKET_ACK: [0x03][Result(1B)]
+          if (value.length < 2) {
+            Logger.error("SDCardWalSync: Malformed ACK packet");
+            return;
           }
-        });
+          int result = value[1];
+          if (result == 0x00) {
+            Logger.debug("SDCardWalSync: Received start ACK(OK). Beginning download.");
+            hasReceivedStartAck = true;
+          } else {
+            Logger.error("SDCardWalSync: Received error ACK ($result). Aborting.");
+            isStreamLocked = true;
+            hasError = true;
+            if (!completer.isCompleted) {
+              completer.completeError(Exception("Firmware reported error ACK: $result"));
+            }
+            return;
+          }
+          break;
+
+        default:
+          Logger.error("SDCardWalSync: Received unknown packet type: $packetType");
+          return;
       }
 
-      // Serial processing loop to prevent concurrent buffer access
+      // 2. Serial processing loop for the streamBuffer (raw WAL data)
       if (isProcessing) {
-        // Silent buffering while processing is active
         return;
       }
       isProcessing = true;
@@ -446,17 +475,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         while (streamBuffer.isNotEmpty) {
           int packageSize = streamBuffer[0];
 
-          // 0xFD = End-of-Transfer marker. Single byte, no payload.
-          // Mirrors the firmware constant EOT_MARKER = 0xFD. Unambiguous: Opus frames
-          // are always 80 bytes (0x50), so 0xFD will never appear as a valid length prefix.
-          if (packageSize == 0xFD) {
-            Logger.debug("SDCardWalSync: Received EOT marker (0xFD). offset=$offset, bufferLen=${streamBuffer.length}");
-            completionTimeout?.cancel();
-            await flushBuffer();
-            if (!completer.isCompleted) completer.complete();
-            streamBuffer.clear();
-            break;
-          }
+          // Legacy markers (0xFD, 0xFF, 0xFE) are now embedded in the WAL payload
+          // if they appeared there, but the firmware refactoring ensures
+          // they only appear as payloads of PACKET_DATA.
 
           if (packageSize == 255) {
             // Metadata
@@ -563,7 +584,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             final now = DateTime.now();
             if (now.difference(lastWaitingLog).inSeconds >= 5) {
               Logger.debug(
-                  "SDCardWalSync: Waiting for more data (Frame size $packageSize, Buffer ${streamBuffer.length}, Total $offset/${wal.storageTotalBytes})");
+                  "SDCardWalSync: Waiting for more data (Frame size $packageSize, Buffer ${streamBuffer.length}, Total $expectedOffset/${wal.storageTotalBytes})");
               lastWaitingLog = now;
             }
             break;
