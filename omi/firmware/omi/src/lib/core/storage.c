@@ -484,6 +484,20 @@ void storage_write(void)
                 if (conn) {
                     bt_gatt_notify(conn, &storage_service.attrs[STORAGE_ATTR_WRITE_CHAR], ack_buffer, sizeof(ack_buffer));
                 }
+                
+                // Inject a fresh metadata packet at the start of the new file
+                // so the audio recorded immediately after wipe isn't orphaned.
+                segment_index = 0;
+                uint8_t temp_buffer[16] = {0};
+                uint32_t current_time = rtc_get_utc_time_ms() / 1000;
+                uint32_t current_uptime = k_uptime_get_32();
+                
+                memcpy(temp_buffer, &current_time, 4);
+                memcpy(temp_buffer + 4, &current_uptime, 4);
+                memcpy(temp_buffer + 8, &device_session_id, 4);
+                memcpy(temp_buffer + 12, &segment_index, 4);
+                
+                write_custom_packet_to_storage(255, temp_buffer, 16);
             }
             delete_started = 0;
             k_msleep(10);
