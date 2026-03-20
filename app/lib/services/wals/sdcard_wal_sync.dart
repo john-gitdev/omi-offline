@@ -528,7 +528,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           }
 
           if (packageSize == 254) {
-            // Marker (star)
+            // Marker
             if (1 + 16 <= streamBuffer.length) {
               var metadata = streamBuffer.sublist(1, 1 + 16);
               var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
@@ -561,7 +561,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               streamBuffer.removeRange(0, 1 + 16);
               continue;
             } else {
-              break; // Need more bytes for star marker
+              break; // Need more bytes for marker
             }
           }
 
@@ -747,11 +747,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 }
 
                 syncedFiles.add(file);
-                int bytesInChunk = offset - lastOffset;
-                _updateSpeed(bytesInChunk);
+                int bytesInSegment = offset - lastOffset;
+                _updateSpeed(bytesInSegment);
                 await _registerSingleSegment(wal, file, timerStart);
                 lastOffset = offset;
-
                 listener.onWalUpdated();
               },
               force: true,
@@ -841,8 +840,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             }
 
             syncedFiles.add(file);
-            int bytesInChunk = offset - lastOffset;
-            _updateSpeed(bytesInChunk);
+            int bytesInSegment = offset - lastOffset;
+            _updateSpeed(bytesInSegment);
             await _registerSingleSegment(wal, file, timerStart);
             lastOffset = offset;
 
@@ -900,7 +899,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // The RecordingsManager will pick up the .bin files in raw_segments/ device session folders.
   }
 
-  /// Counts Opus frames in a .bin chunk file (4-byte LE prefix per frame).
+  /// Counts Opus frames in a .bin segment file (4-byte LE prefix per frame).
   /// Uses streaming reads to avoid loading the entire file into memory.
   /// Do not special-case len==255 — it is a valid Opus payload length.
   int _countFramesInFile(File file) {

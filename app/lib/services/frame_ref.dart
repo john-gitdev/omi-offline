@@ -1,6 +1,6 @@
 import 'dart:io';
 
-/// Lightweight pointer to an Opus frame stored in a .bin segment file.
+/// Lightweight pointer to an Opus frame stored in a segment file.
 /// No Opus bytes are held in memory — they are read from disk at encode time.
 class FrameRef {
   final File segmentFile;

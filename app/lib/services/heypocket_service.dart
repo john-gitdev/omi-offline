@@ -49,7 +49,7 @@ class HeyPocketService {
   /// Two-step upload:
   ///   1. POST /public/recordings/upload-url → extract upload_url from response data
   ///   2. PUT presigned URL streaming file bytes
-  static Future<void> uploadRecording(String apiKey, RecordingInfo rec) async {
+  static Future<void> uploadRecording(String apiKey, Conversation rec) async {
     try {
       final contentType = _mimeType(rec.file.path);
 

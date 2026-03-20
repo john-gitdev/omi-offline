@@ -20,9 +20,9 @@ extension FlutterError: Error {}
 
   var session: WCSession?
     var flutterWatchAPI: WatchRecorderFlutterAPI?
-  private var audioChunks: [Int: (Data, Double)] = [:] // (audioData, sampleRate)
+  private var audioSegments: [Int: (Data, Double)] = [:] // (audioData, sampleRate)
   fileprivate var aacEncoderSessions: [String: AacEncoderSession] = [:]
-  private var nextExpectedChunkIndex: Int = 0
+  private var nextExpectedSegmentIndex: Int = 0
   private var isRecordingActive: Bool = false // Track recording state to handle app restarts
 
   override func application(
@@ -222,49 +222,49 @@ extension FlutterError: Error {}
     }
     }
 
-    private func handleAudioChunk(_ message: [String: Any]) {
+    private func handleAudioSegment(_ message: [String: Any]) {
         guard isRecordingActive else {
-            print("Ignoring audio chunk - recording not active") // probably started recording with main omi app closed
+            print("Ignoring audio segment - recording not active") // probably started recording with main omi app closed
             return
         }
 
-        guard let audioChunk = message["audioChunk"] as? Data,
-              let chunkIndex = message["chunkIndex"] as? Int,
+        guard let audioSegment = message["audioSegment"] as? Data,
+              let segmentIndex = message["segmentIndex"] as? Int,
               let isLast = message["isLast"] as? Bool,
               let sampleRate = message["sampleRate"] as? Double else {
             return
         }
 
-        audioChunks[chunkIndex] = (audioChunk, sampleRate)
+        audioSegments[segmentIndex] = (audioSegment, sampleRate)
 
         if isLast {
             reassembleAndSendAudioData()
         } else {
             // Prepend 3 dummy bytes so downstream can uniformly strip headers
-            var prefixedChunk = Data([0x00, 0x00, 0x00])
-            prefixedChunk.append(audioChunk)
-            let flutterData = FlutterStandardTypedData(bytes: prefixedChunk)
-            self.flutterWatchAPI?.onAudioChunk(audioChunk: flutterData, chunkIndex: Int64(chunkIndex), isLast: isLast, sampleRate: sampleRate) { result in
+            var prefixedSegment = Data([0x00, 0x00, 0x00])
+            prefixedSegment.append(audioSegment)
+            let flutterData = FlutterStandardTypedData(bytes: prefixedSegment)
+            self.flutterWatchAPI?.onAudioSegment(audioSegment: flutterData, segmentIndex: Int64(segmentIndex), isLast: isLast, sampleRate: sampleRate) { result in
                 switch result {
                 case .success:
                     break
                 case .failure(let error):
-                    print("Audio chunk \(chunkIndex) sent to Flutter - Error: \(error.message)")
+                    print("Audio segment \(segmentIndex) sent to Flutter - Error: \(error.message)")
                 }
             }
         }
     }
 
     private func reassembleAndSendAudioData() {
-        // Sort chunks by index and combine them
-        let sortedChunks = audioChunks.sorted(by: { $0.key < $1.key })
+        // Sort segments by index and combine them
+        let sortedSegments = audioSegments.sorted(by: { $0.key < $1.key })
         var combinedData = Data()
         var sampleRate: Double = 48000.0 // Default fallback
 
-        for (_, chunkTuple) in sortedChunks {
-            let (chunkData, chunkSampleRate) = chunkTuple
-            combinedData.append(chunkData)
-            sampleRate = chunkSampleRate
+        for (_, segmentTuple) in sortedSegments {
+            let (segmentData, segmentSampleRate) = segmentTuple
+            combinedData.append(segmentData)
+            sampleRate = segmentSampleRate
         }
 
         // Prepend 3 dummy bytes for full buffer as well
@@ -280,8 +280,8 @@ extension FlutterError: Error {}
             }
         }
 
-        audioChunks.removeAll()
-        nextExpectedChunkIndex = 0
+        audioSegments.removeAll()
+        nextExpectedSegmentIndex = 0
     }
 }
 
@@ -513,8 +513,8 @@ extension AppDelegate: WCSessionDelegate {
                 } else {
                     print("Failed to cast audioData as Data - received type: \(type(of: message["audioData"]))")
                 }
-            case "sendAudioChunk":
-                self.handleAudioChunk(message)
+            case "sendAudioSegment":
+                self.handleAudioSegment(message)
             case "recordingError":
                 if let error = message["error"] as? String {
                     self.flutterWatchAPI?.onRecordingError(error: error) { result in
@@ -583,8 +583,8 @@ extension AppDelegate: WCSessionDelegate {
             }
             
             switch method {
-            case "sendAudioChunk":
-                self.handleAudioChunk(userInfo)
+            case "sendAudioSegment":
+                self.handleAudioSegment(userInfo)
             case "stopRecording":
                 self.isRecordingActive = false
                     self.flutterWatchAPI?.onRecordingStopped() { result in

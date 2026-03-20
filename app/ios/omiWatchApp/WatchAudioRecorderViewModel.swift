@@ -10,17 +10,17 @@ class WatchAudioRecorderViewModel: NSObject, ObservableObject {
     private var audioEngine: AVAudioEngine?
     private var inputNode: AVAudioInputNode?
     private var audioBuffer: AVAudioPCMBuffer?
-    private var chunkIndex: Int = 0
+    private var segmentIndex: Int = 0
     private var isStreaming: Bool = false
     private var inputFormat: AVAudioFormat?
     private var audioConverter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
     private var detectedSampleRate: Double = 0.0
     
-    // Audio buffering for multi-second chunks
-    private var chunkBuffer: Data = Data()
+    // Audio buffering for multi-second segments
+    private var segmentBuffer: Data = Data()
     private var bufferStartTime: Date?
-    private let bufferDuration: TimeInterval = 1.5 // 1.5 second chunks
+    private let bufferDuration: TimeInterval = 1.5 // 1.5 second segments
     
     init(session: WCSession = .default) {
         self.session = session
@@ -72,11 +72,11 @@ class WatchAudioRecorderViewModel: NSObject, ObservableObject {
         targetFormat = nil
         detectedSampleRate = 0.0
 
-        // Send any remaining buffered data and final chunk
-        sendFinalAudioChunk()
+        // Send any remaining buffered data and final segment
+        sendFinalAudioSegment()
         
         // Reset buffer state
-        chunkBuffer = Data()
+        segmentBuffer = Data()
         bufferStartTime = nil
 
         session.sendMessage(["method": "stopRecording"], replyHandler: nil)
@@ -89,7 +89,7 @@ class WatchAudioRecorderViewModel: NSObject, ObservableObject {
         }
         
         // Add data to buffer
-        chunkBuffer.append(audioData)
+        segmentBuffer.append(audioData)
         
         // Check if we've buffered for target duration
         let currentTime = Date()
@@ -97,21 +97,21 @@ class WatchAudioRecorderViewModel: NSObject, ObservableObject {
         
         if elapsedTime >= bufferDuration {
             // Send the accumulated buffer
-            sendBufferedAudioChunk()
+            sendBufferedAudioSegment()
             
             // Reset buffer for next window
-            chunkBuffer = Data()
+            segmentBuffer = Data()
             bufferStartTime = currentTime
         }
     }
     
-    private func sendBufferedAudioChunk() {
-        guard !chunkBuffer.isEmpty else { return }
+    private func sendBufferedAudioSegment() {
+        guard !segmentBuffer.isEmpty else { return }
         
         let messageData: [String: Any] = [
-            "method": "sendAudioChunk",
-            "audioChunk": chunkBuffer,
-            "chunkIndex": chunkIndex,
+            "method": "sendAudioSegment",
+            "audioSegment": segmentBuffer,
+            "segmentIndex": segmentIndex,
             "isLast": false,
             "sampleRate": 16000.0
         ]
@@ -126,18 +126,18 @@ class WatchAudioRecorderViewModel: NSObject, ObservableObject {
             session.transferUserInfo(messageData)
         }
         
-        chunkIndex += 1
+        segmentIndex += 1
     }
     
-    private func sendFinalAudioChunk() {
-        if !chunkBuffer.isEmpty {
-            sendBufferedAudioChunk()
+    private func sendFinalAudioSegment() {
+        if !segmentBuffer.isEmpty {
+            sendBufferedAudioSegment()
         }
         
         let finalMessageData: [String: Any] = [
-            "method": "sendAudioChunk",
-            "audioChunk": Data(),
-            "chunkIndex": chunkIndex,
+            "method": "sendAudioSegment",
+            "audioSegment": Data(),
+            "segmentIndex": segmentIndex,
             "isLast": true,
             "sampleRate": 16000.0
         ]
@@ -267,7 +267,7 @@ class WatchAudioRecorderViewModel: NSObject, ObservableObject {
 
             try audioEngine?.start()
             isStreaming = true
-            chunkIndex = 0
+            segmentIndex = 0
 
         } catch {
             print("Error details: \(error.localizedDescription)")
@@ -336,7 +336,7 @@ class WatchAudioRecorderViewModel: NSObject, ObservableObject {
             return Data(buffer: buffer)
         }
 
-        // Buffer audio data for target-duration chunks
+        // Buffer audio data for target-duration segments
         bufferAndSendAudioData(byteData)
     }
 }

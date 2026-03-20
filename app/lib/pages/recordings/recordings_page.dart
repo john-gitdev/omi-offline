@@ -34,7 +34,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   final _prefs = SharedPreferencesUtil();
 
   // ─── Batch data ────────────────────────────────────────────────────────────
-  List<DailyBatch> _batches = [];
+  List<Batch> _batches = [];
   bool _isLoading = true;
 
   // ─── Unified sync+process state ────────────────────────────────────────────
@@ -170,7 +170,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
             });
             setState(() {
               _spState = SyncProcessState.processing;
-              _totalMinutes = totalBytes / 252000.0; // .bin on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
+              _totalMinutes = totalBytes / 252000.0; // segment on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
               _minutesRemaining = _totalMinutes;
               _syncedCount = 0;
               _syncSpeed = 0.0;
@@ -318,7 +318,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       return;
     }
 
-    // Sync complete — mark and gather stars
+    // Sync complete — mark and gather markers
     setState(() {
       _syncedCount = _totalCount;
       _lastCompletedStage = 'syncing';
@@ -344,7 +344,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       return;
     }
 
-    // Compute total audio minutes from processable (non-live) chunks
+    // Compute total audio minutes from processable (non-live) segments
     final allRaw = activeBatches.expand((b) => b.rawSegments).toList();
     final processable = RecordingsManager.excludeNewestSegmentPerSession(allRaw);
     final totalBytes = processable.fold(0, (sum, f) {
@@ -354,7 +354,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         return sum;
       }
     });
-    final totalMin = totalBytes / 252000.0; // .bin on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
+    final totalMin = totalBytes / 252000.0; // segment on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
     setState(() {
       _totalMinutes = totalMin;
       _minutesRemaining = totalMin;
@@ -443,7 +443,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   Future<void> _loadBatches() async {
     setState(() => _isLoading = true);
     try {
-      final batches = await _manager.getDailyBatches();
+      final batches = await _manager.getBatches();
       if (mounted) {
         setState(() {
           _batches = batches;
@@ -459,13 +459,13 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   Future<void> _reloadBatchesSilently() async {
     try {
-      final batches = await _manager.getDailyBatches();
+      final batches = await _manager.getBatches();
       if (mounted) setState(() => _batches = batches);
     } catch (_) {}
   }
 
   // ─── Delete / export ───────────────────────────────────────────────────────
-  Future<void> _deleteDay(DailyBatch batch) async {
+  Future<void> _deleteDay(Batch batch) async {
     final messenger = ScaffoldMessenger.of(context);
     bool? confirm = await showDialog<bool>(
       context: context,
@@ -474,7 +474,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
         'Delete Day',
-        'This will permanently delete all processed recordings for ${batch.dateString}. This cannot be undone.',
+        'This will permanently delete all processed conversations for ${batch.dateString}. This cannot be undone.',
         confirmText: 'Delete',
       ),
     );
@@ -489,10 +489,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     }
   }
 
-  Future<void> _exportAll(DailyBatch batch, List<RecordingInfo> visibleRecordings) async {
-    if (visibleRecordings.isEmpty) return;
-    final files = visibleRecordings.map((r) => XFile(r.file.path)).toList();
-    await SharePlus.instance.share(ShareParams(files: files, subject: 'Recordings – ${batch.dateString}'));
+  Future<void> _exportAll(Batch batch, List<Conversation> conversations) async {
+    if (conversations.isEmpty) return;
+    final files = conversations.map((r) => XFile(r.file.path)).toList();
+    await SharePlus.instance.share(ShareParams(files: files, subject: 'Conversations – ${batch.dateString}'));
   }
 
   // ─── Filter sheet ──────────────────────────────────────────────────────────
@@ -567,10 +567,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     for (final batch in _batches) {
       for (final file in batch.finalizedRecordings) {
         if (_autoUploadActive >= 2) return;
-        final rec = RecordingInfo.fromFile(file);
-        if (keySetTime != null && rec.startTime.isBefore(keySetTime)) continue;
-        if (_filterEnabled && rec.duration < Duration(minutes: _filterMinutes)) continue;
-        final uploadKey = rec.uploadKey;
+        final conversation = Conversation.fromFile(file);
+        if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
+        if (_filterEnabled && conversation.duration < Duration(minutes: _filterMinutes)) continue;
+        final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
         if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
         if (_uploadingFiles.contains(uploadKey)) continue;
@@ -578,7 +578,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         _autoUploadActive++;
         if (mounted) setState(() {});
         unawaited(
-          HeyPocketService.uploadRecording(apiKey, rec).then((_) {
+          HeyPocketService.uploadRecording(apiKey, conversation).then((_) {
             _prefs.markUploadedToHeypocket(uploadKey);
           }).catchError((e) {
             debugPrint('HeyPocket auto-upload failed: $e');
@@ -595,8 +595,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     }
   }
 
-  Future<void> _handleUploadTap(RecordingInfo rec) async {
-    final uploadKey = rec.uploadKey;
+  Future<void> _handleUploadTap(Conversation conversation) async {
+    final uploadKey = conversation.uploadKey;
     if (uploadKey == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Upload key unavailable — please reconnect your device and try again.')),
@@ -606,10 +606,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     if (_uploadingFiles.contains(uploadKey)) return;
 
     final alreadyUploaded = _prefs.isUploadedToHeypocket(uploadKey);
-    final title = alreadyUploaded ? 'Re-upload Recording' : 'Upload Recording';
+    final title = alreadyUploaded ? 'Re-upload Conversation' : 'Upload Conversation';
     final content = alreadyUploaded
-        ? 'This recording was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)'
-        : 'Upload this recording to HeyPocket?';
+        ? 'This conversation was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)'
+        : 'Upload this conversation to HeyPocket?';
 
     final confirm = await showDialog<bool>(
       context: context,
@@ -628,7 +628,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _uploadingFiles.add(uploadKey);
     setState(() {});
     unawaited(
-      HeyPocketService.uploadRecording(apiKey, rec).then((_) {
+      HeyPocketService.uploadRecording(apiKey, conversation).then((_) {
         _prefs.markUploadedToHeypocket(uploadKey);
       }).catchError((e) {
         if (e is HeyPocketException) {
@@ -646,9 +646,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     );
   }
 
-  Widget _buildUploadIcon(RecordingInfo rec) {
+  Widget _buildUploadIcon(Conversation conversation) {
     if (_prefs.heypocketApiKey.isEmpty) return const SizedBox.shrink();
-    final uploadKey = rec.uploadKey;
+    final uploadKey = conversation.uploadKey;
     if (uploadKey == null) {
       return IconButton(
         padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -676,14 +676,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         padding: const EdgeInsets.symmetric(horizontal: 6),
         constraints: const BoxConstraints(),
         icon: const Icon(Icons.cloud_done, color: Colors.green, size: 18),
-        onPressed: () => _handleUploadTap(rec),
+        onPressed: () => _handleUploadTap(conversation),
       );
     }
     return IconButton(
       padding: const EdgeInsets.symmetric(horizontal: 6),
       constraints: const BoxConstraints(),
       icon: const Icon(Icons.cloud_upload, color: Colors.redAccent, size: 18),
-      onPressed: () => _handleUploadTap(rec),
+      onPressed: () => _handleUploadTap(conversation),
     );
   }
 
@@ -719,9 +719,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         onIconTap = _startPipeline;
 
       case SyncProcessState.syncing:
-        mainText = 'Syncing recordings';
+        mainText = 'Syncing segments';
         final speedStr = _syncSpeed > 0 ? '  ·  ${_syncSpeed.toStringAsFixed(1)} KB/s' : '';
-        subText = _totalCount > 0 ? '$_syncedCount of $_totalCount recordings synced$speedStr' : 'Scanning device…';
+        subText = _totalCount > 0 ? '$_syncedCount of $_totalCount segments synced$speedStr' : 'Scanning device…';
         iconBg = Colors.deepPurpleAccent;
         iconChild = const SizedBox(
           width: 16,
@@ -827,13 +827,13 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   }
 
   // ─── Batch card ────────────────────────────────────────────────────────────
-  Widget _buildBatchCard(DailyBatch batch) {
-    final allRecordings = batch.finalizedRecordings.map(RecordingInfo.fromFile).toList()
+  Widget _buildBatchCard(Batch batch) {
+    final allConversations = batch.finalizedRecordings.map(Conversation.fromFile).toList()
       ..sort((a, b) => b.startTime.compareTo(a.startTime));
     final minDuration = Duration(minutes: _filterMinutes);
-    final recordings = (_filterEnabled && _filterMinutes > 0)
-        ? allRecordings.where((r) => r.duration >= minDuration).toList()
-        : allRecordings;
+    final conversations = (_filterEnabled && _filterMinutes > 0)
+        ? allConversations.where((r) => r.duration >= minDuration).toList()
+        : allConversations;
 
     return Card(
       color: const Color(0xFF1C1C1E),
@@ -854,7 +854,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 if (batch.markerTimestamps.isNotEmpty)
                   Row(
                     children: [
-                      const FaIcon(FontAwesomeIcons.solidStar, color: Colors.amber, size: 16),
+                      const FaIcon(FontAwesomeIcons.solidBookmark, color: Colors.amber, size: 16),
                       const SizedBox(width: 4),
                       Text(
                         '${batch.markerTimestamps.length}',
@@ -865,13 +865,13 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               ],
             ),
             const SizedBox(height: 12),
-            if (recordings.isEmpty)
+            if (conversations.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8.0),
-                child: Text('No processed recordings yet.', style: TextStyle(color: Colors.grey.shade500)),
+                child: Text('No processed conversations yet.', style: TextStyle(color: Colors.grey.shade500)),
               )
             else ...[
-              ...recordings.map((rec) => _buildRecordingTile(rec)),
+              ...conversations.map((conversation) => _buildConversationTile(conversation)),
               const SizedBox(height: 4),
               const Divider(color: Color(0xFF2C2C2E), height: 1),
               const SizedBox(height: 4),
@@ -880,7 +880,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 children: [
                   TextButton.icon(
                     key: Key('export_all_${batch.dateString}'),
-                    onPressed: () => _exportAll(batch, recordings),
+                    onPressed: () => _exportAll(batch, conversations),
                     icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 13, color: Colors.grey.shade400),
                     label: Text('Export All', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
                   ),
@@ -915,10 +915,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     );
   }
 
-  Widget _buildRecordingTile(RecordingInfo rec) {
+  Widget _buildConversationTile(Conversation conversation) {
     return InkWell(
       onTap: () => Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => RecordingPlayerPage(recording: rec)),
+        MaterialPageRoute(builder: (_) => ConversationPlayerPage(conversation: conversation)),
       ),
       borderRadius: BorderRadius.circular(8),
       child: Padding(
@@ -930,18 +930,18 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    rec.timeRangeLabel,
+                    conversation.timeRangeLabel,
                     style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    '${rec.durationLabel}  ·  ${rec.sizeLabel}',
+                    '${conversation.durationLabel}  ·  ${conversation.sizeLabel}',
                     style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
                   ),
                 ],
               ),
             ),
-            _buildUploadIcon(rec),
+            _buildUploadIcon(conversation),
             FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
           ],
         ),
@@ -978,7 +978,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         return Scaffold(
           backgroundColor: const Color(0xFF0D0D0D),
           appBar: AppBar(
-            title: const Text('Daily Recordings', style: TextStyle(color: Colors.white)),
+            title: const Text('Daily Conversations', style: TextStyle(color: Colors.white)),
             backgroundColor: const Color(0xFF0D0D0D),
             actions: [
               if (!deviceProvider.isConnected)
@@ -1019,7 +1019,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                   color: Colors.deepPurpleAccent.withValues(alpha: 0.15),
                   padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
                   child: Text(
-                    'Showing recordings \u2265 $_filterMinutes min',
+                    'Showing conversations \u2265 $_filterMinutes min',
                     style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 12),
                   ),
                 ),
@@ -1032,7 +1032,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                             ? _batches.where((b) {
                                 if (b.rawSegments.isNotEmpty) return true;
                                 return b.finalizedRecordings
-                                    .any((f) => RecordingInfo.fromFile(f).duration >= minDuration);
+                                    .any((f) => Conversation.fromFile(f).duration >= minDuration);
                               }).toList()
                             : _batches;
                         return RefreshIndicator(
@@ -1047,7 +1047,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                                       child: Column(
                                         children: [
                                           const Text(
-                                            'No recordings found.\nSwipe down to sync device.',
+                                            'No conversations found.\nSwipe down to sync device.',
                                             textAlign: TextAlign.center,
                                             style: TextStyle(color: Colors.grey, fontSize: 16),
                                           ),

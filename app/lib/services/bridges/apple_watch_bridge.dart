@@ -4,7 +4,7 @@ import 'package:omi/gen/flutter_communicator.g.dart';
 
 /// Public bridge that implements Pigeon callbacks and forwards them to Dart-side listeners.
 class AppleWatchFlutterBridge implements WatchRecorderFlutterAPI {
-  final void Function(Uint8List bytes, int chunkIndex, bool isLast, double sampleRate)? onChunk;
+  final void Function(Uint8List bytes, int segmentIndex, bool isLast, double sampleRate)? onSegment;
   final void Function()? onRecordingStartedCb;
   final void Function()? onRecordingStoppedCb;
   final void Function(String error)? onRecordingErrorCb;
@@ -13,7 +13,7 @@ class AppleWatchFlutterBridge implements WatchRecorderFlutterAPI {
   final void Function(double batteryLevel, int batteryState)? onBatteryUpdateCb;
 
   AppleWatchFlutterBridge({
-    this.onChunk,
+    this.onSegment,
     this.onRecordingStartedCb,
     this.onRecordingStoppedCb,
     this.onRecordingErrorCb,
@@ -26,8 +26,8 @@ class AppleWatchFlutterBridge implements WatchRecorderFlutterAPI {
   void onAudioData(Uint8List audioData) {}
 
   @override
-  void onAudioChunk(Uint8List audioChunk, int chunkIndex, bool isLast, double sampleRate) {
-    onChunk?.call(audioChunk, chunkIndex, isLast, sampleRate);
+  void onAudioSegment(Uint8List audioSegment, int segmentIndex, bool isLast, double sampleRate) {
+    onSegment?.call(audioSegment, segmentIndex, isLast, sampleRate);
   }
 
   @override

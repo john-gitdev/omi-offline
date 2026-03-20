@@ -60,7 +60,7 @@ class SttResponseSchema {
   );
 
   static const falAI = SttResponseSchema(
-    segmentsPath: 'chunks',
+    segmentsPath: 'segments',
     segmentsTextField: 'text',
     segmentsStartField: 'timestamp[0]',
     segmentsEndField: 'timestamp[1]',

@@ -39,12 +39,12 @@ class RecorderHostApiImpl: WatchRecorderHostAPI {
         session.sendMessage(["method": "sendAudioData", "audioData": data], replyHandler: nil, errorHandler: nil)
     }
 
-    func sendAudioChunk(audioChunk: FlutterStandardTypedData, chunkIndex: Int64, isLast: Bool, sampleRate: Double) {
-        let data = audioChunk.data as Data
+    func sendAudioSegment(audioSegment: FlutterStandardTypedData, segmentIndex: Int64, isLast: Bool, sampleRate: Double) {
+        let data = audioSegment.data as Data
         session.sendMessage([
-            "method": "sendAudioChunk",
-            "audioChunk": data,
-            "chunkIndex": chunkIndex,
+            "method": "sendAudioSegment",
+            "audioSegment": data,
+            "segmentIndex": segmentIndex,
             "isLast": isLast,
             "sampleRate": sampleRate
         ], replyHandler: nil, errorHandler: nil)

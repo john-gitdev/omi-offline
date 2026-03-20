@@ -162,7 +162,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'When enabled, your Omi will automatically try to connect, sync, and process recordings every hour.',
+                    'When enabled, your Omi will automatically try to connect, sync, and process segments every 30 minutes.',
                     style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                   ),
                 ],
@@ -305,7 +305,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              'If a time gap between chunks exceeds this duration, recordings are force-split (e.g. device was off). (Current: ${_formatTime(_gapSeconds)})',
+              'If a time gap between segments exceeds this duration, recordings are force-split (e.g. device was off). (Current: ${_formatTime(_gapSeconds)})',
               style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
             ),
             const SizedBox(height: 12),
@@ -355,7 +355,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'When enabled, raw audio chunks are NOT deleted after processing. This allows you to fine-tune these sliders and reprocess your audio until you find the perfect settings. Turning this off will delete all raw chunks after they are processed.',
+                    'When enabled, raw audio segments are NOT deleted after processing. This allows you to fine-tune these sliders and reprocess your audio until you find the perfect settings. Turning this off will delete all raw segments after they are processed.',
                     style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                   ),
                 ],
