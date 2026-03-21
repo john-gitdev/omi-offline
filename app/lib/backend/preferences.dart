@@ -56,6 +56,14 @@ class SharedPreferencesUtil {
 
   set offlineFixedIntervalMinutes(int value) => saveInt('offlineFixedIntervalMinutes', value);
 
+  // Epoch ms of the next pending boundary for fixed mode.
+  // Persisted so a fresh processor on the next sync knows which frames in the
+  // boundary-crossing segment were already included in the previous clip.
+  // 0 = no active boundary (no in-progress interval).
+  int get fixedModeNextBoundaryMs => getInt('fixedModeNextBoundaryMs', defaultValue: 0);
+
+  set fixedModeNextBoundaryMs(int value) => saveInt('fixedModeNextBoundaryMs', value);
+
   bool get autoSyncEnabled => getBool('autoSyncEnabled', defaultValue: true);
 
   set autoSyncEnabled(bool value) => saveBool('autoSyncEnabled', value);
