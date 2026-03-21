@@ -105,6 +105,13 @@ abstract class DeviceConnection {
   }
 
   Future<void> disconnect() async {
+    // Cancel state subscriptions to prevent stale callbacks firing between
+    // disconnect and a subsequent connect() call.
+    await _internalStateSubscription?.cancel();
+    _internalStateSubscription = null;
+    await _externalStateSubscription?.cancel();
+    _externalStateSubscription = null;
+
     try {
       await transport.disconnect();
     } catch (e) {
@@ -217,7 +224,21 @@ abstract class DeviceConnection {
     required void Function(BleAudioCodec) onAudioCodecReceived,
   }) async {
     final stream = transport.getCharacteristicStream(audioServiceUuid, audioCharacteristicFormatUuid);
-    return stream.map((value) => BleAudioCodec.values[value[0]]).listen(onAudioCodecReceived);
+    return stream.map((value) {
+      if (value.isEmpty) return BleAudioCodec.pcm8;
+      // Firmware sends codec IDs (1=pcm8, 20=opus, 21=opusFS320), NOT enum indices.
+      // Using BleAudioCodec.values[id] would throw RangeError for IDs >= enum length.
+      switch (value[0]) {
+        case 1:
+          return BleAudioCodec.pcm8;
+        case 20:
+          return BleAudioCodec.opus;
+        case 21:
+          return BleAudioCodec.opusFS320;
+        default:
+          return BleAudioCodec.pcm8;
+      }
+    }).listen(onAudioCodecReceived);
   }
 
   Future<List<int>> getStorageList() async {
