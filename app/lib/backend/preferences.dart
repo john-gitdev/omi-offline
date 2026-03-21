@@ -46,7 +46,7 @@ class SharedPreferencesUtil {
 
   set offlineAdjustmentMode(bool value) => saveBool('offlineAdjustmentMode', value);
 
-  // 'automatic' = continuous VAD, 'manual' = marker-based extraction
+  // 'automatic' = continuous VAD, 'marker' = marker-based extraction
   String get offlineRecordingMode => getString('offlineRecordingMode', defaultValue: 'automatic');
 
   set offlineRecordingMode(String v) => saveString('offlineRecordingMode', v);

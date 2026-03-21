@@ -105,10 +105,10 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 ),
                 const SizedBox(width: 12),
                 _ModeOption(
-                  label: 'Manual',
-                  selected: _recordingMode == 'manual',
+                  label: 'Marker',
+                  selected: _recordingMode == 'marker',
                   onTap: () {
-                    setState(() => _recordingMode = 'manual');
+                    setState(() => _recordingMode = 'marker');
                     _saveSettings();
                   },
                 ),
