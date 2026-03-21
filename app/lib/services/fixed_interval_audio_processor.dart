@@ -11,24 +11,24 @@ import 'package:omi/utils/logger.dart';
 
 /// Processor for fixed-interval recording mode.
 ///
-/// Cuts recordings at wall-clock boundaries that fall 1 minute before each
-/// interval multiple (i.e. :29/:59 for 30-min, :59 for 1hr, :59 every 2hrs).
-/// The -1 minute offset ensures the last cut of any day lands at 23:59 and
+/// Cuts recordings at wall-clock boundaries that fall 1 second before each
+/// interval multiple (i.e. :29:59/:59:59 for 30-min, :59:59 for 1hr, etc.).
+/// The -1 second offset ensures the last cut of any day lands at 23:59:59 and
 /// never spills into the following day.
 ///
 /// Boundary formula (where _intervalMs = intervalMinutes * 60000):
-///   nextBoundary = ceil((epochMs + 60000) / _intervalMs) * _intervalMs - 60000
+///   nextBoundary = ceil((epochMs + 1000) / _intervalMs) * _intervalMs - 1000
 ///
 /// Example — 30-min, recording started 10:15am:
-///   first cut  → 10:29
-///   subsequent → 10:59, 11:29, 11:59, …
+///   first cut  → 10:29:59
+///   subsequent → 10:59:59, 11:29:59, 11:59:59, …
 class FixedIntervalAudioProcessor {
   static const int sampleRate = 16000;
   static const int channels = 1;
   static const int frameDurationMs = 20; // each Opus frame is 20 ms
 
-  // 1 minute before each interval boundary so 23:59 is always the last cut.
-  static const int _boundaryOffsetMs = 60 * 1000;
+  // 1 second before each interval boundary so 23:59:59 is always the last cut.
+  static const int _boundaryOffsetMs = 1000;
 
   final SimpleOpusDecoder? _decoder;
   final String? _outputDir;
