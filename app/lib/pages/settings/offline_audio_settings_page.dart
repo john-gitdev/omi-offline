@@ -309,6 +309,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 ],
               ),
             ),
+            if (_recordingMode == 'automatic' || _recordingMode == 'marker') ...[
             const SizedBox(height: 32),
             const Text(
               'Speech Sensitivity (SNR Margin)',
@@ -334,6 +335,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 _saveSettings();
               },
             ),
+            ],
             // Hangover Duration slider hidden — hardcoded to 0.5s default (offlineHangoverSeconds).
             // Users found it confusing alongside the conversation split threshold.
             // To restore: uncomment this block and the _hangoverSeconds field/init/save above.
@@ -362,6 +364,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
             //     _saveSettings();
             //   },
             // ),
+            if (_recordingMode == 'automatic' || _recordingMode == 'marker') ...[
             const SizedBox(height: 32),
             const Text(
               'Conversation Split Threshold',
@@ -387,6 +390,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 _saveSettings();
               },
             ),
+            ],
+            if (_recordingMode == 'automatic') ...[
             const SizedBox(height: 32),
             const Text(
               'Minimum Speech Threshold',
@@ -412,6 +417,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 _saveSettings();
               },
             ),
+            ],
             // Pre-Speech Buffer slider hidden — hardcoded to 1.0s default (offlinePreSpeechSeconds).
             // To restore: uncomment this block and the _preSpeechSeconds field/init/save above.
             // const SizedBox(height: 32),
@@ -439,6 +445,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
             //     _saveSettings();
             //   },
             // ),
+            if (_recordingMode == 'automatic' || _recordingMode == 'fixed') ...[
             const SizedBox(height: 32),
             const Text(
               'Gap Threshold',
@@ -464,6 +471,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 _saveSettings();
               },
             ),
+            ],
             const SizedBox(height: 32),
             Container(
               padding: const EdgeInsets.all(16),
