@@ -703,7 +703,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   Future<SyncLocalFilesResponse?> syncAll({
     IWalSyncProgressListener? progress,
-    IWifiConnectionListener? connectionListener,
     bool force = false,
   }) async {
     if (_isSyncing) {
@@ -844,7 +843,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   // Future<SyncLocalFilesResponse?> syncWal({
   //   required Wal wal,
   //   IWalSyncProgressListener? progress,
-  //   IWifiConnectionListener? connectionListener,
   // }) async {
   //   _resetSyncState();
   //   _isSyncing = true;
@@ -991,38 +989,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     listener.onWalUpdated();
   }
 
-  @override
-  Future<bool> isWifiSyncSupported() async {
-    final dev = _device;
-    if (dev == null) {
-      return false;
-    }
-    var connection = await ServiceManager.instance().device.ensureConnection(dev.id);
-    if (connection == null) return false;
-    return await connection.isWifiSyncSupported();
-  }
-
-  @override
-  Future<bool> setWifiCredentials(String ssid, String password) async {
-    return true;
-  }
-
-  @override
-  Future<void> clearWifiCredentials() async {}
-
-  @override
-  Future<void> loadWifiCredentials() async {}
-
-  @override
-  Map<String, String?>? getWifiCredentials() {
-    return null;
-  }
-
-  // WiFi sync disabled — commented out until WiFi is re-enabled.
+  // WiFi sync disabled.
+  // @override
+  // Future<bool> isWifiSyncSupported() async { ... }
+  // @override
+  // Future<bool> setWifiCredentials(String ssid, String password) async { ... }
+  // @override
+  // Future<void> clearWifiCredentials() async {}
+  // @override
+  // Future<void> loadWifiCredentials() async {}
+  // @override
+  // Map<String, String?>? getWifiCredentials() => null;
   // @override
   // Future<SyncLocalFilesResponse?> syncWithWifi({
   //   IWalSyncProgressListener? progress,
-  //   IWifiConnectionListener? connectionListener,
   // }) async {
   //   var wals = _wals.where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard).toList();
   //   if (wals.isEmpty) {
