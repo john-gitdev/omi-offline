@@ -98,10 +98,9 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     try {
       await ServiceManager.instance().device.ensureConnection(device.id);
 
-      // Save paired device
+      // Save paired device — state transitions (setConnectedDevice, setIsConnected, WAL sync, etc.)
+      // are handled by DeviceProvider._onDeviceConnected via the onDeviceConnectionStateChanged callback.
       SharedPreferencesUtil().btDevice = device;
-      deviceProvider.setConnectedDevice(device);
-      deviceProvider.setIsConnected(true);
 
       if (mounted) {
         Navigator.of(context).pop(); // Close loading dialog
