@@ -19,6 +19,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late bool _adjustmentMode;
   late String _recordingMode;
   late bool _autoSyncEnabled;
+  late int _fixedIntervalMinutes;
+  late int _markerLookbackMinutes;
 
   @override
   void initState() {
@@ -32,6 +34,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _adjustmentMode = SharedPreferencesUtil().offlineAdjustmentMode;
     _recordingMode = SharedPreferencesUtil().offlineRecordingMode;
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
+    _fixedIntervalMinutes = SharedPreferencesUtil().offlineFixedIntervalMinutes;
+    _markerLookbackMinutes = SharedPreferencesUtil().markerLookbackMinutes;
   }
 
   void _saveSettings() {
@@ -44,6 +48,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     SharedPreferencesUtil().offlineAdjustmentMode = _adjustmentMode;
     SharedPreferencesUtil().offlineRecordingMode = _recordingMode;
     SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
+    SharedPreferencesUtil().offlineFixedIntervalMinutes = _fixedIntervalMinutes;
+    SharedPreferencesUtil().markerLookbackMinutes = _markerLookbackMinutes;
   }
 
   String _formatSeconds(double seconds) {
@@ -103,7 +109,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     _saveSettings();
                   },
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 8),
                 _ModeOption(
                   label: 'Marker',
                   selected: _recordingMode == 'marker',
@@ -112,15 +118,52 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     _saveSettings();
                   },
                 ),
+                const SizedBox(width: 8),
+                _ModeOption(
+                  label: 'Fixed',
+                  selected: _recordingMode == 'fixed',
+                  onTap: () {
+                    setState(() => _recordingMode = 'fixed');
+                    _saveSettings();
+                  },
+                ),
               ],
             ),
             const SizedBox(height: 10),
-            if (_recordingMode == 'automatic')
+            if (_recordingMode == 'automatic') ...[
               Text(
                 'All audio is continuously processed and split by silence detection.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              )
-            else ...[
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Adjustment Mode',
+                        style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Keep raw segments so you can reprocess\nwith different settings.',
+                        style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                  Switch(
+                    value: _adjustmentMode,
+                    activeThumbColor: Colors.deepPurpleAccent,
+                    onChanged: (value) {
+                      setState(() => _adjustmentMode = value);
+                      _saveSettings();
+                    },
+                  ),
+                ],
+              ),
+            ] else if (_recordingMode == 'marker') ...[
               Text(
                 'Only conversations you marked with a double-press on your Omi will be saved.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
@@ -129,6 +172,104 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               Text(
                 'The Conversation Split Threshold below controls how much silence is used to find the edges of your marked conversation.',
                 style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Lookback Window',
+                style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'How far back before a marker to search for the conversation start.',
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  _IntervalOption(
+                    label: '15 min',
+                    value: 15,
+                    selected: _markerLookbackMinutes == 15,
+                    onTap: () {
+                      setState(() => _markerLookbackMinutes = 15);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  _IntervalOption(
+                    label: '30 min',
+                    value: 30,
+                    selected: _markerLookbackMinutes == 30,
+                    onTap: () {
+                      setState(() => _markerLookbackMinutes = 30);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  _IntervalOption(
+                    label: '1 hour',
+                    value: 60,
+                    selected: _markerLookbackMinutes == 60,
+                    onTap: () {
+                      setState(() => _markerLookbackMinutes = 60);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  _IntervalOption(
+                    label: '2 hours',
+                    value: 120,
+                    selected: _markerLookbackMinutes == 120,
+                    onTap: () {
+                      setState(() => _markerLookbackMinutes = 120);
+                      _saveSettings();
+                    },
+                  ),
+                ],
+              ),
+            ] else ...[
+              Text(
+                'Audio is saved at fixed wall-clock intervals. The first clip runs from when recording starts to the next boundary, then cuts repeat at the selected interval.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Interval',
+                style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  _IntervalOption(
+                    label: '30 min',
+                    value: 30,
+                    selected: _fixedIntervalMinutes == 30,
+                    onTap: () {
+                      setState(() => _fixedIntervalMinutes = 30);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 10),
+                  _IntervalOption(
+                    label: '1 hour',
+                    value: 60,
+                    selected: _fixedIntervalMinutes == 60,
+                    onTap: () {
+                      setState(() => _fixedIntervalMinutes = 60);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 10),
+                  _IntervalOption(
+                    label: '2 hours',
+                    value: 120,
+                    selected: _fixedIntervalMinutes == 120,
+                    onTap: () {
+                      setState(() => _fixedIntervalMinutes = 120);
+                      _saveSettings();
+                    },
+                  ),
+                ],
               ),
             ],
             const SizedBox(height: 32),
@@ -168,6 +309,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 ],
               ),
             ),
+            if (_recordingMode == 'automatic' || _recordingMode == 'marker') ...[
             const SizedBox(height: 32),
             const Text(
               'Speech Sensitivity (SNR Margin)',
@@ -193,6 +335,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 _saveSettings();
               },
             ),
+            ],
             // Hangover Duration slider hidden — hardcoded to 0.5s default (offlineHangoverSeconds).
             // Users found it confusing alongside the conversation split threshold.
             // To restore: uncomment this block and the _hangoverSeconds field/init/save above.
@@ -221,6 +364,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
             //     _saveSettings();
             //   },
             // ),
+            if (_recordingMode == 'automatic' || _recordingMode == 'marker') ...[
             const SizedBox(height: 32),
             const Text(
               'Conversation Split Threshold',
@@ -246,6 +390,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 _saveSettings();
               },
             ),
+            ],
+            if (_recordingMode == 'automatic') ...[
             const SizedBox(height: 32),
             const Text(
               'Minimum Speech Threshold',
@@ -271,6 +417,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 _saveSettings();
               },
             ),
+            ],
             // Pre-Speech Buffer slider hidden — hardcoded to 1.0s default (offlinePreSpeechSeconds).
             // To restore: uncomment this block and the _preSpeechSeconds field/init/save above.
             // const SizedBox(height: 32),
@@ -298,6 +445,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
             //     _saveSettings();
             //   },
             // ),
+            if (_recordingMode == 'automatic' || _recordingMode == 'fixed') ...[
             const SizedBox(height: 32),
             const Text(
               'Gap Threshold',
@@ -323,44 +471,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 _saveSettings();
               },
             ),
-            const SizedBox(height: 32),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1C1C1E),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: _adjustmentMode ? Colors.deepPurpleAccent : Colors.transparent),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Adjustment Mode',
-                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                      ),
-                      Switch(
-                        value: _adjustmentMode,
-                        activeThumbColor: Colors.deepPurpleAccent,
-                        onChanged: (value) {
-                          setState(() {
-                            _adjustmentMode = value;
-                          });
-                          _saveSettings();
-                        },
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'When enabled, raw audio segments are NOT deleted after processing. This allows you to fine-tune these sliders and reprocess your audio until you find the perfect settings. Turning this off will delete all raw segments after they are processed.',
-                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                  ),
-                ],
-              ),
-            ),
+            ],
             const SizedBox(height: 32),
             Container(
               padding: const EdgeInsets.all(16),
@@ -395,6 +506,42 @@ class _ModeOption extends StatelessWidget {
   final VoidCallback onTap;
 
   const _ModeOption({required this.label, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1C1C1E),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: selected ? Colors.deepPurpleAccent : Colors.transparent, width: 1.5),
+          ),
+          child: Center(
+            child: Text(
+              label,
+              style: TextStyle(
+                color: selected ? Colors.deepPurpleAccent : Colors.grey.shade400,
+                fontSize: 14,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _IntervalOption extends StatelessWidget {
+  final String label;
+  final int value;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _IntervalOption({required this.label, required this.value, required this.selected, required this.onTap});
 
   @override
   Widget build(BuildContext context) {

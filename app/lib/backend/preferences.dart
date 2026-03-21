@@ -46,10 +46,29 @@ class SharedPreferencesUtil {
 
   set offlineAdjustmentMode(bool value) => saveBool('offlineAdjustmentMode', value);
 
-  // 'automatic' = continuous VAD, 'marker' = marker-based extraction
+  // 'automatic' = continuous VAD, 'marker' = marker-based extraction, 'fixed' = fixed wall-clock intervals
   String get offlineRecordingMode => getString('offlineRecordingMode', defaultValue: 'automatic');
 
   set offlineRecordingMode(String v) => saveString('offlineRecordingMode', v);
+
+  // Interval in minutes for fixed recording mode: 15, 30, 60, or 120
+  int get offlineFixedIntervalMinutes => getInt('offlineFixedIntervalMinutes', defaultValue: 60);
+
+  set offlineFixedIntervalMinutes(int value) => saveInt('offlineFixedIntervalMinutes', value);
+
+  // Lookback window in minutes for marker mode: how far before a marker to scan for conversation start.
+  // Options: 15, 30, 60, 120. Default: 120 (2 hours).
+  int get markerLookbackMinutes => getInt('markerLookbackMinutes', defaultValue: 120);
+
+  set markerLookbackMinutes(int value) => saveInt('markerLookbackMinutes', value);
+
+  // Epoch ms of the next pending boundary for fixed mode.
+  // Persisted so a fresh processor on the next sync knows which frames in the
+  // boundary-crossing segment were already included in the previous clip.
+  // 0 = no active boundary (no in-progress interval).
+  int get fixedModeNextBoundaryMs => getInt('fixedModeNextBoundaryMs', defaultValue: 0);
+
+  set fixedModeNextBoundaryMs(int value) => saveInt('fixedModeNextBoundaryMs', value);
 
   bool get autoSyncEnabled => getBool('autoSyncEnabled', defaultValue: true);
 
@@ -115,6 +134,15 @@ class SharedPreferencesUtil {
     }
     if (!prefs.containsKey('offlineRecordingMode')) {
       prefs.setString('offlineRecordingMode', 'automatic');
+    }
+    if (!prefs.containsKey('offlineFixedIntervalMinutes')) {
+      prefs.setInt('offlineFixedIntervalMinutes', 60);
+    }
+    if (!prefs.containsKey('markerLookbackMinutes')) {
+      prefs.setInt('markerLookbackMinutes', 120);
+    }
+    if (!prefs.containsKey('fixedModeNextBoundaryMs')) {
+      prefs.setInt('fixedModeNextBoundaryMs', 0);
     }
   }
 
