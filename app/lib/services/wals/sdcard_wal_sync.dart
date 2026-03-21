@@ -30,6 +30,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   List<Wal> _wals = <Wal>[];
   BtDevice? _device;
 
+  /// Optional override for obtaining a [DeviceConnection] in tests.
+  /// When null, falls back to [ServiceManager.instance().device.ensureConnection].
+  final Future<DeviceConnection?> Function(String deviceId)? _connectionProvider;
+
   StreamSubscription? _storageStream;
 
   IWalSyncListener listener;
@@ -79,7 +83,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     return total;
   }
 
-  SDCardWalSyncImpl(this.listener);
+  SDCardWalSyncImpl(this.listener, {Future<DeviceConnection?> Function(String deviceId)? connectionProvider})
+      : _connectionProvider = connectionProvider;
   @override
   void cancelSync() {
     if (_isSyncing) {
@@ -252,7 +257,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   Future<bool> _writeToStorage(String deviceId, int numFile, int command, int offset) async {
-    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
+    var connection = _connectionProvider != null
+        ? await _connectionProvider!(deviceId)
+        : await ServiceManager.instance().device.ensureConnection(deviceId);
     if (connection == null) return false;
     return await connection.writeToStorage(numFile, command, offset);
   }
@@ -332,7 +339,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     Logger.debug("_readStorageBytesToFile $offset");
 
-    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
+    var connection = _connectionProvider != null
+        ? await _connectionProvider!(deviceId)
+        : await ServiceManager.instance().device.ensureConnection(deviceId);
     if (connection == null) {
       throw Exception('Device connection lost during SD card read');
     }
