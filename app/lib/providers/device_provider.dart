@@ -445,6 +445,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   void onDeviceDisconnected() async {
     Logger.debug('onDisconnected inside: $connectedDevice');
     _stopHealthCheck();
+    storageFullPercentage = -1;
     setConnectedDevice(null);
     setisDeviceStorageSupport();
     setIsConnected(false);
@@ -511,11 +512,16 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   void _handleDeviceConnected(String deviceId) async {
-    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null) {
-      return;
+    try {
+      var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
+      if (connection == null) {
+        return;
+      }
+      _onDeviceConnected(connection.device);
+    } catch (e) {
+      Logger.error('DeviceProvider: _handleDeviceConnected error: $e');
+      updateConnectingStatus(false);
     }
-    _onDeviceConnected(connection.device);
   }
 
   Future setisDeviceStorageSupport() async {
