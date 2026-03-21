@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/preferences.dart';
-import 'package:omi/services/manual_recording_extractor.dart';
+import 'package:omi/services/marker_recording_extractor.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -27,7 +27,7 @@ File _buildSegmentFile(Directory dir, String name, int count, int frameSize, Dat
   
   // Fill payload with oscillating values to ensure high energy for VAD
   // Each Opus frame will be decoded by the mock decoder during tests.
-  // Wait, ManualRecordingExtractor actually uses its own internal VAD logic!
+  // Wait, MarkerRecordingExtractor actually uses its own internal VAD logic!
   // It calls `_vadStep` which computes RMS of the decoded PCM.
   // In our tests, we are mocking the Opus decoder to return non-zero PCM.
   // So the bytes in the .bin file don't strictly matter as long as they are valid Opus lengths.
@@ -99,11 +99,11 @@ void main() {
     }
   });
 
-  // ─── ManualRecordingExtractor tests ────────────────────────────────────────
+  // ─── MarkerRecordingExtractor tests ────────────────────────────────────────
 
-  group('ManualRecordingExtractor', () {
+  group('MarkerRecordingExtractor', () {
     test('no segments returns empty result', () async {
-      final extractor = ManualRecordingExtractor();
+      final extractor = MarkerRecordingExtractor();
 
       final batch = Batch(
         dateString: '2026-03-17',
@@ -123,7 +123,7 @@ void main() {
     });
 
     test('fast path — no markers returns empty and correct deletion index (all segments beyond 2hr)', () async {
-      final extractor = ManualRecordingExtractor();
+      final extractor = MarkerRecordingExtractor();
 
       // Create a deviceSession folder to hold the segments
       final deviceSessionDir = Directory('${tempDir.path}/raw_segments/100')..createSync(recursive: true);
@@ -154,7 +154,7 @@ void main() {
     });
 
     test('full path — overlapping markers are merged into one conversation', () async {
-      final extractor = ManualRecordingExtractor(decoder: mockDecoder);
+      final extractor = MarkerRecordingExtractor(decoder: mockDecoder);
       final deviceSessionDir = Directory('${tempDir.path}/raw_segments/104')..createSync(recursive: true);
       final tempOut = Directory('${tempDir.path}/out')..createSync();
 
@@ -181,7 +181,7 @@ void main() {
     });
 
     test('full path — window truncated at maxWindowFrames cap', () async {
-      final extractor = ManualRecordingExtractor(decoder: mockDecoder);
+      final extractor = MarkerRecordingExtractor(decoder: mockDecoder);
       final deviceSessionDir = Directory('${tempDir.path}/raw_segments/105')..createSync(recursive: true);
       final tempOut = Directory('${tempDir.path}/out')..createSync();
 
