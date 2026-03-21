@@ -51,6 +51,9 @@ class DeviceService implements IDeviceService {
   final Map<int, IDeviceServiceSubsciption> _subscriptions = {};
   DeviceServiceStatus _serviceStatus = DeviceServiceStatus.init;
 
+  final StreamController<DeviceConnectionState> _connectionStateController =
+      StreamController<DeviceConnectionState>.broadcast();
+
   DeviceConnection? _connection;
   // bool _isWifiSyncInProgress = false; // WiFi sync disabled
   // Tracks the active BLE scan so concurrent calls to discover() can cancel the
@@ -172,6 +175,7 @@ class DeviceService implements IDeviceService {
     final existingConnection = _connection;
     if (existingConnection != null) {
       await existingConnection.disconnect();
+      await existingConnection.transport.dispose();
     }
 
     final device = BtDevice(id: deviceId, name: 'Omi', type: DeviceType.omi, rssi: 0);
@@ -180,6 +184,7 @@ class DeviceService implements IDeviceService {
     final newConnection = _connection;
     if (newConnection != null) {
       await newConnection.connect(onConnectionStateChanged: (id, state) {
+        _connectionStateController.add(state);
         for (var s in _subscriptions.values) {
           s.onDeviceConnectionStateChanged(id, state);
         }
@@ -190,9 +195,7 @@ class DeviceService implements IDeviceService {
   }
 
   @override
-  Stream<DeviceConnectionState> get connectionStateStream {
-    return Stream.value(connectionState);
-  }
+  Stream<DeviceConnectionState> get connectionStateStream => _connectionStateController.stream;
 
   // @override
   // void setWifiSyncInProgress(bool value) { // WiFi sync disabled
