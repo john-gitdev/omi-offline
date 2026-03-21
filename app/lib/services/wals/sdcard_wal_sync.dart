@@ -15,6 +15,17 @@ import 'package:omi/services/services.dart';
 import 'package:omi/services/wals/wal.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
 
+/// Thrown when the framed BLE protocol detects a gap in the offset sequence.
+/// Caught by [SDCardWalSyncImpl.syncWal] for inline retry before surfacing
+/// as a hard failure.
+class _ProtocolGapException implements Exception {
+  final int incoming;
+  final int expected;
+  const _ProtocolGapException(this.incoming, this.expected);
+  @override
+  String toString() => 'Protocol gap: incoming=$incoming expected=$expected';
+}
+
 class SDCardWalSyncImpl implements SDCardWalSync {
   List<Wal> _wals = <Wal>[];
   BtDevice? _device;
@@ -419,8 +430,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             isStreamLocked = true;
             hasError = true;
             if (!completer.isCompleted) {
-              completer.completeError(
-                  Exception("Protocol gap detected: incoming $incomingOffset, expected $expectedOffset"));
+              completer.completeError(_ProtocolGapException(incomingOffset, expectedOffset));
             }
             return;
           }
@@ -841,35 +851,50 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _downloadStartTime = DateTime.now();
 
     final List<File> syncedFiles = [];
+    const int maxGapRetries = 3;
+    int gapRetries = 0;
     try {
-      await _readStorageBytesToFile(
-          wal,
-          (File file, int offset, int timerStart, {String? subFolder}) async {
-            if (_isCancelled) {
-              throw Exception("Sync cancelled by user");
-            }
+      while (true) {
+        try {
+          await _readStorageBytesToFile(
+              wal,
+              (File file, int offset, int timerStart, {String? subFolder}) async {
+                if (_isCancelled) {
+                  throw Exception("Sync cancelled by user");
+                }
 
-            syncedFiles.add(file);
-            int bytesInSegment = offset - lastOffset;
-            _updateSpeed(bytesInSegment);
-            await _registerSingleSegment(wal, file, timerStart);
-            lastOffset = offset;
+                syncedFiles.add(file);
+                int bytesInSegment = offset - lastOffset;
+                _updateSpeed(bytesInSegment);
+                await _registerSingleSegment(wal, file, timerStart);
+                lastOffset = offset;
 
-            listener.onWalUpdated();
-          },
-          force: true,
-          onProgress: (offset) {
-            wal.walOffset = offset;
-            final remainingBytes = wal.storageTotalBytes - offset;
-            final seconds = (remainingBytes / (wal.codec.getStorageBytesPerMinute() / 60.0)).truncate();
-            wal.estimatedSegments = (seconds / 60).ceil();
+                listener.onWalUpdated();
+              },
+              force: true,
+              onProgress: (offset) {
+                wal.walOffset = offset;
+                final remainingBytes = wal.storageTotalBytes - offset;
+                final seconds = (remainingBytes / (wal.codec.getStorageBytesPerMinute() / 60.0)).truncate();
+                wal.estimatedSegments = (seconds / 60).ceil();
 
-            final double progressPercent =
-                totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
-            final double clamped = progressPercent.clamp(0.0, 1.0);
-            progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
-            _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
-          });
+                final double progressPercent =
+                    totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
+                final double clamped = progressPercent.clamp(0.0, 1.0);
+                progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+                _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+              });
+          break; // transfer completed successfully
+        } on _ProtocolGapException catch (e) {
+          gapRetries++;
+          if (gapRetries > maxGapRetries) {
+            Logger.error('SDCardWalSync: Gap retry limit ($maxGapRetries) exceeded. Aborting. $e');
+            rethrow;
+          }
+          Logger.debug('SDCardWalSync: Gap detected — retry $gapRetries/$maxGapRetries from offset ${wal.walOffset}. $e');
+          await Future.delayed(const Duration(milliseconds: 100));
+        }
+      }
 
       // Update estimatedSegments from exact frame count now that we have the .bin files.
       final uniqueFiles = {for (final f in syncedFiles) f.path: f}.values.toList();
