@@ -127,17 +127,20 @@ class OfflineAudioProcessor {
             final sessionAnchorUptime = SharedPreferencesUtil()
                 .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
 
-            if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
+            const kMinValidEpoch = 946684800; // Jan 1 2000 — reject unsynced Omi clocks
+            if (sessionAnchorUtc > kMinValidEpoch && sessionAnchorUptime > 0) {
               // Retroactive Correction: Back-calculate segment start time using the session's BEST anchor.
               // This handles 'stale' timestamps from periods where the Omi was unsynced (e.g. after battery death).
               final uptimeDeltaMs = sessionAnchorUptime - uptimeMs;
               final realUtcSecs = sessionAnchorUtc - (uptimeDeltaMs ~/ 1000);
               final calculatedTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
 
-              if (utcTime > 0) {
+              if (calculatedTime.year < 2000) {
+                // Anchor + uptime delta produced a nonsensical result — fall through to raw Omi time or null.
+              } else if (utcTime > kMinValidEpoch) {
                 final omiTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
                 final driftMs = calculatedTime.difference(omiTime).inMilliseconds.abs();
-                
+
                 // If Omi time is stale (year < 2000) or significantly drifted (>60s), trust the calculated time.
                 if (omiTime.year < 2000 || driftMs > 60000) {
                   segmentStartTime = calculatedTime;
@@ -149,7 +152,7 @@ class OfflineAudioProcessor {
               } else {
                 segmentStartTime = calculatedTime;
               }
-            } else if (utcTime > 0) {
+            } else if (utcTime > kMinValidEpoch) {
               segmentStartTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
             }
           } catch (e) {
