@@ -60,11 +60,17 @@ class BleTransport extends DeviceTransport {
 
     try {
       // Wait for Bluetooth adapter to be ready
-      await BluetoothAdapter.adapterState.where((val) => val == BluetoothAdapterStateHelper.on).first;
+      await BluetoothAdapter.adapterState
+          .where((val) => val == BluetoothAdapterStateHelper.on)
+          .first
+          .timeout(const Duration(seconds: 15), onTimeout: () => throw TimeoutException('Bluetooth adapter did not turn on'));
 
       // Connect to device
       await _bleDevice.connect(license: License.free);
-      await _bleDevice.connectionState.where((val) => val == BluetoothConnectionState.connected).first;
+      await _bleDevice.connectionState
+          .where((val) => val == BluetoothConnectionState.connected)
+          .first
+          .timeout(const Duration(seconds: 15), onTimeout: () => throw TimeoutException('Device did not connect in time'));
 
       // Request larger MTU for better performance on Android
       if (Platform.isAndroid && _bleDevice.mtuNow < 512) {

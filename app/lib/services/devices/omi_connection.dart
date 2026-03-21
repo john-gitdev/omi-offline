@@ -123,7 +123,7 @@ class OmiDeviceConnection extends DeviceConnection {
       Logger.debug('OmiDeviceConnection: Raw storage characteristic value: $storageValue');
 
       List<int> storageLengths = [];
-      for (int i = 0; i < (storageValue.length / 4); i++) {
+      for (int i = 0; i < (storageValue.length ~/ 4); i++) {
         int baseIndex = i * 4;
         int result = ((storageValue[baseIndex] |
                     (storageValue[baseIndex + 1] << 8) |
@@ -143,11 +143,12 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<bool> performWriteToStorage(int numFile, int command, int offset) async {
     try {
+      // Offset in little-endian to match the rest of the BLE protocol.
       var offsetBytes = [
-        (offset >> 24) & 0xFF,
-        (offset >> 16) & 0xFF,
-        (offset >> 8) & 0xFF,
         offset & 0xFF,
+        (offset >> 8) & 0xFF,
+        (offset >> 16) & 0xFF,
+        (offset >> 24) & 0xFF,
       ];
 
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid,

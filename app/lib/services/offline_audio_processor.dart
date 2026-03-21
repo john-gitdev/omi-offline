@@ -278,6 +278,8 @@ class OfflineAudioProcessor {
         _speechFrameCount = 0;
         _hangoverFrames = 0;
         _consecutiveSilenceFrames = bufferToKeep;
+        // Reset fast-convergence so the new recording re-anchors to the current noise floor.
+        _noiseFloorInitFrames = 50;
       }
     }
 
@@ -385,6 +387,10 @@ class OfflineAudioProcessor {
     String? currentFilePath;
     RandomAccessFile? currentRaf;
     int nextExpectedOffset = -1;
+    // Fresh decoder for the save pass — avoids stale state from the VAD pass.
+    final saveDecoder = Platform.isIOS || Platform.isAndroid
+        ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
+        : null;
 
     try {
       for (var i = 0; i < refs.length; i++) {
@@ -411,8 +417,8 @@ class OfflineAudioProcessor {
 
         Int16List pcmData;
         try {
-          if (_decoder == null) continue;
-          pcmData = _decoder!.decode(input: opusBytes);
+          if (saveDecoder == null) continue;
+          pcmData = saveDecoder.decode(input: opusBytes);
         } catch (e) {
           continue;
         }
@@ -462,10 +468,11 @@ class OfflineAudioProcessor {
       Logger.error('OfflineAudioProcessor: AAC encoding failed, falling back to WAV: $e');
       final tmpFile = File('${dateFolder.path}/recording_$timestamp.tmp.m4a');
       if (await tmpFile.exists()) await tmpFile.delete();
-      await currentRaf?.close();
+      // Do not close currentRaf here — the finally block handles it.
       return await _saveWav(refs, dateFolderPath, timestamp);
     } finally {
       await currentRaf?.close();
+      saveDecoder?.destroy();
     }
 
     // Downsample dynamic peaks to exactly 200 buckets
@@ -522,7 +529,11 @@ class OfflineAudioProcessor {
     int nextExpectedOffset = -1;
 
     final List<Uint8List> decodedSegments = [];
-    if (_decoder != null) {
+    // Fresh decoder for the WAV save pass — avoids stale state from the VAD pass.
+    final wavDecoder = Platform.isIOS || Platform.isAndroid
+        ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
+        : null;
+    if (wavDecoder != null) {
       try {
         for (var i = 0; i < refs.length; i++) {
           if (i % 50 == 0) await Future.delayed(Duration.zero);
@@ -545,7 +556,7 @@ class OfflineAudioProcessor {
           nextExpectedOffset = frameDataOffset + ref.frameLength;
 
           try {
-            final decoded = _decoder!.decode(input: opusBytes);
+            final decoded = wavDecoder.decode(input: opusBytes);
             decodedSegments.add(decoded.buffer.asUint8List());
           } catch (e) {
             // Skip corrupt frame
@@ -553,6 +564,7 @@ class OfflineAudioProcessor {
         }
       } finally {
         await currentRaf?.close();
+        wavDecoder.destroy();
       }
     }
 

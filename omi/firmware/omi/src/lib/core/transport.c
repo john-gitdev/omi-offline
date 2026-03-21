@@ -760,17 +760,14 @@ static bool push_to_gatt(struct bt_conn *conn)
             monitor_inc_gatt_notify();
 #endif
 
-            // Log failure
-            if (err) {
-                LOG_DBG("bt_gatt_notify failed (err %d)", err);
-                LOG_DBG("MTU: %d, packet_size: %d", current_mtu, packet_size + NET_BUFFER_HEADER_SIZE);
+            // Retry on transient resource errors; treat other failures as fatal.
+            if (err == -EAGAIN || err == -ENOMEM) {
                 k_sleep(K_MSEC(1));
                 retry_count++;
                 continue;
-            }
-
-            // Try to send more data if possible
-            if (err == -EAGAIN || err == -ENOMEM) {
+            } else if (err) {
+                LOG_DBG("bt_gatt_notify failed (err %d)", err);
+                LOG_DBG("MTU: %d, packet_size: %d", current_mtu, packet_size + NET_BUFFER_HEADER_SIZE);
                 retry_count++;
                 continue;
             }
@@ -858,7 +855,8 @@ bool write_timestamp_to_storage(void)
 
     uint8_t temp_buffer[16];
     uint32_t utc_time = get_utc_time();
-    uint32_t uptime_ms = k_uptime_get_32();
+    /* Use 64-bit uptime to avoid the ~49-day rollover of k_uptime_get_32(). */
+    uint64_t uptime_ms = (uint64_t)k_uptime_get();
 
     memcpy(temp_buffer, &utc_time, 4);
     memcpy(temp_buffer + 4, &uptime_ms, 4);
@@ -881,7 +879,8 @@ bool write_marker_to_storage(void)
 
     uint8_t temp_buffer[16];
     uint32_t utc_time = get_utc_time();
-    uint32_t uptime_ms = k_uptime_get_32();
+    /* Use 64-bit uptime to avoid the ~49-day rollover of k_uptime_get_32(). */
+    uint64_t uptime_ms = (uint64_t)k_uptime_get();
 
     memcpy(temp_buffer, &utc_time, 4);
     memcpy(temp_buffer + 4, &uptime_ms, 4);

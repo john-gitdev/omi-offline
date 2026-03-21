@@ -268,6 +268,12 @@ class ManualRecordingExtractor {
       final decodeStart = warmupSegment;
       final decodeEnd = range.$2;
 
+      // Create one decoder for the entire range so its state carries across segment boundaries.
+      final rangeDecoder = _providedDecoder ??
+          ((Platform.isIOS || Platform.isAndroid)
+              ? SimpleOpusDecoder(sampleRate: _sampleRate, channels: _channels)
+              : null);
+      try {
       for (int ci = decodeStart; ci <= decodeEnd; ci++) {
         final segment = segments[ci];
         if (segment.frameCount == 0) continue;
@@ -290,12 +296,9 @@ class ManualRecordingExtractor {
 
         int off = 0;
         int audioIdx = 0;
-        final decoder = _providedDecoder ??
-            ((Platform.isIOS || Platform.isAndroid)
-                ? SimpleOpusDecoder(sampleRate: _sampleRate, channels: _channels)
-                : null);
+        final decoder = rangeDecoder;
 
-        try {
+        {
           while (off + 4 <= bytes.length) {
             final len = bd.getUint32(off, Endian.little);
             if (off + 4 + len > bytes.length) break;
@@ -354,8 +357,6 @@ class ManualRecordingExtractor {
 
             audioIdx++;
           }
-        } finally {
-          decoder?.destroy();
         }
 
         if (!isWarmupSegment) {
@@ -374,6 +375,10 @@ class ManualRecordingExtractor {
             cacheBytes -= _evictCache(cache, range.$1);
           }
         }
+      }
+      } finally {
+        // Destroy the per-range decoder unless it was provided externally.
+        if (_providedDecoder == null) rangeDecoder?.destroy();
       }
     }
 

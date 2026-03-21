@@ -74,12 +74,14 @@ class Conversation {
       }
     }
 
-    // WAV fallback: duration from file size (44-byte header + PCM at 16 kHz mono 16-bit)
+    // Size-based duration estimate — only valid for WAV files.
+    // For M4A/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
+    final isWav = file.path.endsWith('.wav');
     int fileSize = 0;
     try {
       fileSize = file.lengthSync();
     } catch (_) {}
-    final pcmBytes = fileSize > 44 ? fileSize - 44 : 0;
+    final pcmBytes = isWav && fileSize > 44 ? fileSize - 44 : 0;
     final durationMs = (pcmBytes / 32000.0 * 1000).round();
     final fallbackKey = file.path.split('/').last.split('.').first;
     return Conversation(
@@ -217,8 +219,16 @@ class RecordingsManager {
       final date = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
 
       final raw = rawSegmentsByDate[dateStr] ?? [];
-      // Sort raw segments by name (which is segmentIndex)
-      raw.sort((a, b) => a.path.split('/').last.compareTo(b.path.split('/').last));
+      // Sort raw segments numerically by their filename (segmentIndex) to avoid
+      // string-order bugs like "100_10.bin" sorting before "100_2.bin".
+      raw.sort((a, b) {
+        final nameA = a.path.split('/').last.split('.').first;
+        final nameB = b.path.split('/').last.split('.').first;
+        final numA = int.tryParse(nameA.split('_').last) ?? 0;
+        final numB = int.tryParse(nameB.split('_').last) ?? 0;
+        final prefixCmp = nameA.split('_').first.compareTo(nameB.split('_').first);
+        return prefixCmp != 0 ? prefixCmp : numA.compareTo(numB);
+      });
 
       batches.add(Batch(
         dateString: dateStr,
