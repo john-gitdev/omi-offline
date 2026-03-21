@@ -493,11 +493,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               currentSegmentIndex = byteData.getUint32(12, Endian.little);
 
               if (currentDeviceSessionId != null) {
-                SharedPreferencesUtil()
-                    .saveInt('anchor_utc_device_session_$currentDeviceSessionId', utcTime);
-                SharedPreferencesUtil()
-                    .saveInt('anchor_uptime_device_session_$currentDeviceSessionId', currentUptimeMs);
-                // Per-segment anchors so processDay can recover the exact start time of each segment.
+                final existingUtc = SharedPreferencesUtil()
+                    .getInt('anchor_utc_device_session_$currentDeviceSessionId', defaultValue: 0);
+                // Only overwrite if new utcTime is significantly more recent (meaning Omi was corrected)
+                if (utcTime > existingUtc + 60) {
+                  SharedPreferencesUtil()
+                      .saveInt('anchor_utc_device_session_$currentDeviceSessionId', utcTime);
+                  SharedPreferencesUtil()
+                      .saveInt('anchor_uptime_device_session_$currentDeviceSessionId', currentUptimeMs);
+                }
+                
+                // Per-segment anchors (keep these as precise markers for local calculation)
                 if (currentSegmentIndex != null) {
                   SharedPreferencesUtil().saveInt(
                       'anchor_utc_device_session_${currentDeviceSessionId}_$currentSegmentIndex', utcTime);
