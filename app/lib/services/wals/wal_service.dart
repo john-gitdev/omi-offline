@@ -16,15 +16,16 @@ class WalService implements IWalService, IWalSyncListener {
 
   @override
   void subscribe(IWalServiceListener subscription, Object context) {
-    _subscriptions.remove(context.hashCode);
-    _subscriptions.putIfAbsent(context.hashCode, () => subscription);
+    final key = identityHashCode(context);
+    _subscriptions.remove(key);
+    _subscriptions.putIfAbsent(key, () => subscription);
 
     subscription.onStatusChanged(_status);
   }
 
   @override
   void unsubscribe(Object context) {
-    _subscriptions.remove(context.hashCode);
+    _subscriptions.remove(identityHashCode(context));
   }
 
   @override
