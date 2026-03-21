@@ -25,9 +25,9 @@ abstract interface class IDeviceService {
   DeviceConnection? get connection;
   Stream<DeviceConnectionState> get connectionStateStream;
 
-  // WiFi sync support
-  bool get isWifiSyncInProgress;
-  void setWifiSyncInProgress(bool value);
+  // WiFi sync disabled.
+  // bool get isWifiSyncInProgress;
+  // void setWifiSyncInProgress(bool value);
   Future<void> disconnectDevice();
 
   DeviceServiceStatus get status;
@@ -52,7 +52,7 @@ class DeviceService implements IDeviceService {
   DeviceServiceStatus _serviceStatus = DeviceServiceStatus.init;
 
   DeviceConnection? _connection;
-  bool _isWifiSyncInProgress = false;
+  // bool _isWifiSyncInProgress = false; // WiFi sync disabled
   // Tracks the active BLE scan so concurrent calls to discover() can cancel the
   // prior scan before starting a new one. Without this, two scans would run in
   // parallel, and most BLE stacks silently fail or throw on concurrent scans.
@@ -67,8 +67,8 @@ class DeviceService implements IDeviceService {
   @override
   DeviceConnection? get connection => _connection;
 
-  @override
-  bool get isWifiSyncInProgress => _isWifiSyncInProgress;
+  // @override
+  // bool get isWifiSyncInProgress => _isWifiSyncInProgress; // WiFi sync disabled
 
   @override
   DeviceServiceStatus get status => _serviceStatus;
@@ -194,10 +194,10 @@ class DeviceService implements IDeviceService {
     return Stream.value(connectionState);
   }
 
-  @override
-  void setWifiSyncInProgress(bool value) {
-    _isWifiSyncInProgress = value;
-  }
+  // @override
+  // void setWifiSyncInProgress(bool value) { // WiFi sync disabled
+  //   _isWifiSyncInProgress = value;
+  // }
 
   /// Lightweight health check on the current connection.
   Future<bool> ping() async {

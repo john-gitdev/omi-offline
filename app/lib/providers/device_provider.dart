@@ -252,10 +252,11 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       Logger.debug("Period connect seconds: $_connectionCheckSeconds, triggered timer at ${DateTime.now()}");
 
       final deviceService = ServiceManager.instance().device;
-      if (deviceService is DeviceService && deviceService.isWifiSyncInProgress) {
-        Logger.debug("Skipping BLE reconnect - WiFi sync in progress");
-        return;
-      }
+      // WiFi sync disabled.
+      // if (deviceService is DeviceService && deviceService.isWifiSyncInProgress) {
+      //   Logger.debug("Skipping BLE reconnect - WiFi sync in progress");
+      //   return;
+      // }
       final reconnectAt = _reconnectAt;
       if (reconnectAt != null && reconnectAt.isAfter(DateTime.now())) {
         return;
