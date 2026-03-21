@@ -839,106 +839,107 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     );
   }
 
-  @override
-  Future<SyncLocalFilesResponse?> syncWal({
-    required Wal wal,
-    IWalSyncProgressListener? progress,
-    IWifiConnectionListener? connectionListener,
-  }) async {
-    _resetSyncState();
-    _isSyncing = true;
-    wal.isSyncing = true;
-    wal.syncStartedAt = DateTime.now();
-    listener.onWalUpdated();
-
-    var resp = SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
-    final int initialOffset = wal.walOffset;
-    int lastOffset = initialOffset;
-    int totalBytesToDownload = wal.storageTotalBytes - initialOffset;
-
-    await _checkDiskSpaceBeforeSync(totalBytesToDownload);
-    _downloadStartTime = DateTime.now();
-
-    final List<File> syncedFiles = [];
-    const int maxGapRetries = 3;
-    int gapRetries = 0;
-    try {
-      while (true) {
-        try {
-          await _readStorageBytesToFile(
-              wal,
-              (File file, int offset, int timerStart, {String? subFolder}) async {
-                if (_isCancelled) {
-                  throw Exception("Sync cancelled by user");
-                }
-
-                syncedFiles.add(file);
-                int bytesInSegment = offset - lastOffset;
-                _updateSpeed(bytesInSegment);
-                await _registerSingleSegment(wal, file, timerStart);
-                lastOffset = offset;
-
-                listener.onWalUpdated();
-              },
-              force: true,
-              onProgress: (offset) {
-                wal.walOffset = offset;
-                final remainingBytes = wal.storageTotalBytes - offset;
-                final seconds = (remainingBytes / (wal.codec.getStorageBytesPerMinute() / 60.0)).truncate();
-                wal.estimatedSegments = (seconds / 60).ceil();
-
-                final double progressPercent =
-                    totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
-                final double clamped = progressPercent.clamp(0.0, 1.0);
-                progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
-                _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
-              });
-          break; // transfer completed successfully
-        } on _ProtocolGapException catch (e) {
-          gapRetries++;
-          if (gapRetries > maxGapRetries) {
-            Logger.error('SDCardWalSync: Gap retry limit ($maxGapRetries) exceeded. Aborting. $e');
-            rethrow;
-          }
-          Logger.debug('SDCardWalSync: Gap detected — retry $gapRetries/$maxGapRetries from offset ${wal.walOffset}. $e');
-          await Future.delayed(const Duration(milliseconds: 100));
-        }
-      }
-
-      // Update estimatedSegments from exact frame count now that we have the .bin files.
-      final uniqueFiles = {for (final f in syncedFiles) f.path: f}.values.toList();
-      if (uniqueFiles.isNotEmpty) {
-        final totalFrames = uniqueFiles.fold(0, (sum, f) => sum + _countFramesInFile(f));
-        final exactSeconds = totalFrames / wal.codec.getFramesPerSecond();
-        wal.estimatedSegments = (exactSeconds / 60).ceil();
-        Logger.debug('SDCardWalSync: syncWal post-sync frame count: '
-            'frames=$totalFrames exactSeconds=$exactSeconds estimatedSegments=${wal.estimatedSegments}');
-      }
-
-      // Small delay to allow firmware buffers to clear before sending DELETE
-      await Future.delayed(const Duration(milliseconds: 500));
-      if (wal.walOffset >= wal.storageTotalBytes) {
-        await deleteWal(wal);
-      } else {
-        Logger.debug(
-            "SDCardWalSync: Partial transfer (${wal.walOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
-      }
-      wal.status = WalStatus.synced;
-      _wals.removeWhere((w) => w.id == wal.id);
-      listener.onWalUpdated();
-    } catch (e) {
-      Logger.debug("SDCardWalSync: Error syncing WAL ${wal.id}: $e");
-      wal.isSyncing = false;
-      wal.syncStartedAt = null;
-      listener.onWalUpdated();
-      rethrow;
-    } finally {
-      _isSyncing = false;
-      _completeCancelIfPending();
-    }
-
-    return resp;
-  }
+  // Unused — syncWal is never called; commented out to avoid accidental use.
+  // @override
+  // Future<SyncLocalFilesResponse?> syncWal({
+  //   required Wal wal,
+  //   IWalSyncProgressListener? progress,
+  //   IWifiConnectionListener? connectionListener,
+  // }) async {
+  //   _resetSyncState();
+  //   _isSyncing = true;
+  //   wal.isSyncing = true;
+  //   wal.syncStartedAt = DateTime.now();
+  //   listener.onWalUpdated();
+  //
+  //   var resp = SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
+  //   final int initialOffset = wal.walOffset;
+  //   int lastOffset = initialOffset;
+  //   int totalBytesToDownload = wal.storageTotalBytes - initialOffset;
+  //
+  //   await _checkDiskSpaceBeforeSync(totalBytesToDownload);
+  //   _downloadStartTime = DateTime.now();
+  //
+  //   final List<File> syncedFiles = [];
+  //   const int maxGapRetries = 3;
+  //   int gapRetries = 0;
+  //   try {
+  //     while (true) {
+  //       try {
+  //         await _readStorageBytesToFile(
+  //             wal,
+  //             (File file, int offset, int timerStart, {String? subFolder}) async {
+  //               if (_isCancelled) {
+  //                 throw Exception("Sync cancelled by user");
+  //               }
+  //
+  //               syncedFiles.add(file);
+  //               int bytesInSegment = offset - lastOffset;
+  //               _updateSpeed(bytesInSegment);
+  //               await _registerSingleSegment(wal, file, timerStart);
+  //               lastOffset = offset;
+  //
+  //               listener.onWalUpdated();
+  //             },
+  //             force: true,
+  //             onProgress: (offset) {
+  //               wal.walOffset = offset;
+  //               final remainingBytes = wal.storageTotalBytes - offset;
+  //               final seconds = (remainingBytes / (wal.codec.getStorageBytesPerMinute() / 60.0)).truncate();
+  //               wal.estimatedSegments = (seconds / 60).ceil();
+  //
+  //               final double progressPercent =
+  //                   totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
+  //               final double clamped = progressPercent.clamp(0.0, 1.0);
+  //               progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+  //               _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+  //             });
+  //         break; // transfer completed successfully
+  //       } on _ProtocolGapException catch (e) {
+  //         gapRetries++;
+  //         if (gapRetries > maxGapRetries) {
+  //           Logger.error('SDCardWalSync: Gap retry limit ($maxGapRetries) exceeded. Aborting. $e');
+  //           rethrow;
+  //         }
+  //         Logger.debug('SDCardWalSync: Gap detected — retry $gapRetries/$maxGapRetries from offset ${wal.walOffset}. $e');
+  //         await Future.delayed(const Duration(milliseconds: 100));
+  //       }
+  //     }
+  //
+  //     // Update estimatedSegments from exact frame count now that we have the .bin files.
+  //     final uniqueFiles = {for (final f in syncedFiles) f.path: f}.values.toList();
+  //     if (uniqueFiles.isNotEmpty) {
+  //       final totalFrames = uniqueFiles.fold(0, (sum, f) => sum + _countFramesInFile(f));
+  //       final exactSeconds = totalFrames / wal.codec.getFramesPerSecond();
+  //       wal.estimatedSegments = (exactSeconds / 60).ceil();
+  //       Logger.debug('SDCardWalSync: syncWal post-sync frame count: '
+  //           'frames=$totalFrames exactSeconds=$exactSeconds estimatedSegments=${wal.estimatedSegments}');
+  //     }
+  //
+  //     // Small delay to allow firmware buffers to clear before sending DELETE
+  //     await Future.delayed(const Duration(milliseconds: 500));
+  //     if (wal.walOffset >= wal.storageTotalBytes) {
+  //       await deleteWal(wal);
+  //     } else {
+  //       Logger.debug(
+  //           "SDCardWalSync: Partial transfer (${wal.walOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
+  //     }
+  //     wal.status = WalStatus.synced;
+  //     _wals.removeWhere((w) => w.id == wal.id);
+  //     listener.onWalUpdated();
+  //   } catch (e) {
+  //     Logger.debug("SDCardWalSync: Error syncing WAL ${wal.id}: $e");
+  //     wal.isSyncing = false;
+  //     wal.syncStartedAt = null;
+  //     listener.onWalUpdated();
+  //     rethrow;
+  //   } finally {
+  //     _isSyncing = false;
+  //     _completeCancelIfPending();
+  //   }
+  //
+  //   return resp;
+  // }
 
   Future<void> _registerSingleSegment(Wal wal, File file, int timerStart) async {
     // Note: We no longer queue this for automatic processing in LocalWalSync.
@@ -1017,64 +1018,65 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     return null;
   }
 
-  @override
-  Future<SyncLocalFilesResponse?> syncWithWifi({
-    IWalSyncProgressListener? progress,
-    IWifiConnectionListener? connectionListener,
-  }) async {
-    var wals = _wals.where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard).toList();
-    if (wals.isEmpty) {
-      Logger.debug("SDCardWalSync WiFi: All synced!");
-      return null;
-    }
-
-    final dev = _device;
-    if (dev == null) {
-      Logger.debug("SDCardWalSync WiFi: No device connected");
-      return null;
-    }
-
-    final deviceId = dev.id;
-    var bleConnection = await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (bleConnection == null) {
-      Logger.debug("SDCardWalSync WiFi: BLE connection lost");
-      return null;
-    }
-
-    _resetSyncState();
-    _isSyncing = true;
-
-    for (var wal in wals) {
-      if (_isCancelled) break;
-
-      wal.isSyncing = true;
-      wal.syncStartedAt = DateTime.now();
-      wal.syncMethod = SyncMethod.wifi;
-      listener.onWalUpdated();
-
-      try {
-        final totalBytes = wal.storageTotalBytes - wal.walOffset;
-        await _checkDiskSpaceBeforeSync(totalBytes);
-
-        // This is a simplified placeholder for the WiFi sync logic
-        // In a real implementation, this would involve connecting to the device's AP
-        // and streaming data over TCP.
-
-        await deleteWal(wal);
-        wal.status = WalStatus.synced;
-        _wals.removeWhere((w) => w.id == wal.id);
-        listener.onWalUpdated();
-      } catch (e) {
-        Logger.error("SDCardWalSync WiFi error: $e");
-        wal.isSyncing = false;
-        wal.syncStartedAt = null;
-        listener.onWalUpdated();
-        rethrow;
-      }
-    }
-
-    _isSyncing = false;
-    _completeCancelIfPending();
-    return SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
-  }
+  // WiFi sync disabled — commented out until WiFi is re-enabled.
+  // @override
+  // Future<SyncLocalFilesResponse?> syncWithWifi({
+  //   IWalSyncProgressListener? progress,
+  //   IWifiConnectionListener? connectionListener,
+  // }) async {
+  //   var wals = _wals.where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard).toList();
+  //   if (wals.isEmpty) {
+  //     Logger.debug("SDCardWalSync WiFi: All synced!");
+  //     return null;
+  //   }
+  //
+  //   final dev = _device;
+  //   if (dev == null) {
+  //     Logger.debug("SDCardWalSync WiFi: No device connected");
+  //     return null;
+  //   }
+  //
+  //   final deviceId = dev.id;
+  //   var bleConnection = await ServiceManager.instance().device.ensureConnection(deviceId);
+  //   if (bleConnection == null) {
+  //     Logger.debug("SDCardWalSync WiFi: BLE connection lost");
+  //     return null;
+  //   }
+  //
+  //   _resetSyncState();
+  //   _isSyncing = true;
+  //
+  //   for (var wal in wals) {
+  //     if (_isCancelled) break;
+  //
+  //     wal.isSyncing = true;
+  //     wal.syncStartedAt = DateTime.now();
+  //     wal.syncMethod = SyncMethod.wifi;
+  //     listener.onWalUpdated();
+  //
+  //     try {
+  //       final totalBytes = wal.storageTotalBytes - wal.walOffset;
+  //       await _checkDiskSpaceBeforeSync(totalBytes);
+  //
+  //       // This is a simplified placeholder for the WiFi sync logic
+  //       // In a real implementation, this would involve connecting to the device's AP
+  //       // and streaming data over TCP.
+  //
+  //       await deleteWal(wal);
+  //       wal.status = WalStatus.synced;
+  //       _wals.removeWhere((w) => w.id == wal.id);
+  //       listener.onWalUpdated();
+  //     } catch (e) {
+  //       Logger.error("SDCardWalSync WiFi error: $e");
+  //       wal.isSyncing = false;
+  //       wal.syncStartedAt = null;
+  //       listener.onWalUpdated();
+  //       rethrow;
+  //     }
+  //   }
+  //
+  //   _isSyncing = false;
+  //   _completeCancelIfPending();
+  //   return SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
+  // }
 }
