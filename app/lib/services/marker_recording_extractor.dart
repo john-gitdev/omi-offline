@@ -97,13 +97,13 @@ const int _cacheMaxBytes = 5 * 1024 * 1024; // 5 MB
 class MarkerRecordingExtractor {
   final int _splitFrames;
   final double _snrMarginDb;
-  final int _lookbackHours;
+  final int _lookbackMs;
   final SimpleOpusDecoder? _providedDecoder;
 
   MarkerRecordingExtractor({SimpleOpusDecoder? decoder})
       : _splitFrames = (SharedPreferencesUtil().offlineSplitSeconds * 1000) ~/ _frameDurationMs,
         _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb,
-        _lookbackHours = SharedPreferencesUtil().markerLookbackHours,
+        _lookbackMs = SharedPreferencesUtil().markerLookbackMinutes * 60 * 1000,
         _providedDecoder = decoder;
 
   void destroy() {}
@@ -118,7 +118,7 @@ class MarkerRecordingExtractor {
     if (segments.isEmpty) return (savedPaths: <String>[], lastSafeSegmentIndex: -1);
 
     final newestEnd = segments.last.endTime;
-    final twoHrCutoff = newestEnd.subtract(Duration(hours: _lookbackHours));
+    final twoHrCutoff = newestEnd.subtract(Duration(milliseconds: _lookbackMs));
 
     // Fast path — no markers
     if (batch.markerTimestamps.isEmpty) {
@@ -216,7 +216,7 @@ class MarkerRecordingExtractor {
     for (final marker in markers) {
       final centerSegment = _findSegmentForTime(segments, marker);
       // Extend scan range back by the user's lookback setting and forward by maxWindowFrames * 20ms
-      final backMs = _lookbackHours * 3600 * 1000;
+      final backMs = _lookbackMs;
       final fwdMs = _maxWindowFrames * _frameDurationMs;
       final rangeStart = marker.subtract(Duration(milliseconds: backMs));
       final rangeEnd = marker.add(Duration(milliseconds: fwdMs));

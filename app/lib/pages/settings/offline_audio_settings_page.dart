@@ -20,7 +20,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late String _recordingMode;
   late bool _autoSyncEnabled;
   late int _fixedIntervalMinutes;
-  late int _markerLookbackHours;
+  late int _markerLookbackMinutes;
 
   @override
   void initState() {
@@ -35,7 +35,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _recordingMode = SharedPreferencesUtil().offlineRecordingMode;
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
     _fixedIntervalMinutes = SharedPreferencesUtil().offlineFixedIntervalMinutes;
-    _markerLookbackHours = SharedPreferencesUtil().markerLookbackHours;
+    _markerLookbackMinutes = SharedPreferencesUtil().markerLookbackMinutes;
   }
 
   void _saveSettings() {
@@ -49,7 +49,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     SharedPreferencesUtil().offlineRecordingMode = _recordingMode;
     SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
     SharedPreferencesUtil().offlineFixedIntervalMinutes = _fixedIntervalMinutes;
-    SharedPreferencesUtil().markerLookbackHours = _markerLookbackHours;
+    SharedPreferencesUtil().markerLookbackMinutes = _markerLookbackMinutes;
   }
 
   String _formatSeconds(double seconds) {
@@ -187,31 +187,41 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               Row(
                 children: [
                   _IntervalOption(
-                    label: '1 hour',
-                    value: 1,
-                    selected: _markerLookbackHours == 1,
+                    label: '15 min',
+                    value: 15,
+                    selected: _markerLookbackMinutes == 15,
                     onTap: () {
-                      setState(() => _markerLookbackHours = 1);
+                      setState(() => _markerLookbackMinutes = 15);
                       _saveSettings();
                     },
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
+                  _IntervalOption(
+                    label: '30 min',
+                    value: 30,
+                    selected: _markerLookbackMinutes == 30,
+                    onTap: () {
+                      setState(() => _markerLookbackMinutes = 30);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  _IntervalOption(
+                    label: '1 hour',
+                    value: 60,
+                    selected: _markerLookbackMinutes == 60,
+                    onTap: () {
+                      setState(() => _markerLookbackMinutes = 60);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 8),
                   _IntervalOption(
                     label: '2 hours',
-                    value: 2,
-                    selected: _markerLookbackHours == 2,
+                    value: 120,
+                    selected: _markerLookbackMinutes == 120,
                     onTap: () {
-                      setState(() => _markerLookbackHours = 2);
-                      _saveSettings();
-                    },
-                  ),
-                  const SizedBox(width: 10),
-                  _IntervalOption(
-                    label: '3 hours',
-                    value: 3,
-                    selected: _markerLookbackHours == 3,
-                    onTap: () {
-                      setState(() => _markerLookbackHours = 3);
+                      setState(() => _markerLookbackMinutes = 120);
                       _saveSettings();
                     },
                   ),
