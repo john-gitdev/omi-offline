@@ -28,9 +28,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   bool _isDeviceRecordingFailed = false;
   TcpTransport? _activeTcpTransport;
   Completer<void>? _activeTransferCompleter;
+  Completer<void>? _cancelCompleter;
   IWalSyncProgressListener? _globalProgressListener;
   @override
   bool get isSyncing => _isSyncing;
+  @override
+  Future<void>? get cancelFuture => _cancelCompleter?.future;
   @override
   void setGlobalProgressListener(IWalSyncProgressListener? listener) {
     _globalProgressListener = listener;
@@ -69,6 +72,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   void cancelSync() {
     if (_isSyncing) {
+      _cancelCompleter ??= Completer<void>();
       _isCancelled = true;
       Logger.debug("SDCardWalSync: Cancel requested, actively tearing down connections");
 
@@ -631,6 +635,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
   }
 
+  void _completeCancelIfPending() {
+    _cancelCompleter?.complete();
+    _cancelCompleter = null;
+  }
+
   void _resetSyncState() {
     _isCancelled = false;
     _isSyncing = false;
@@ -801,6 +810,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       }
     } finally {
       _isSyncing = false;
+      _completeCancelIfPending();
     }
 
     return SyncLocalFilesResponse(
@@ -888,9 +898,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       wal.syncStartedAt = null;
       listener.onWalUpdated();
       rethrow;
+    } finally {
+      _isSyncing = false;
+      _completeCancelIfPending();
     }
 
-    _isSyncing = false;
     return resp;
   }
 
@@ -1028,6 +1040,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
 
     _isSyncing = false;
+    _completeCancelIfPending();
     return SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
   }
 }
