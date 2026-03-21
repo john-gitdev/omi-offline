@@ -48,11 +48,12 @@ abstract class IWalSync {
     IWifiConnectionListener? connectionListener,
     bool force = false,
   });
-  Future<SyncLocalFilesResponse?> syncWal({
-    required Wal wal,
-    IWalSyncProgressListener? progress,
-    IWifiConnectionListener? connectionListener,
-  });
+  // Unused — syncWal is never called; commented out to avoid accidental use.
+  // Future<SyncLocalFilesResponse?> syncWal({
+  //   required Wal wal,
+  //   IWalSyncProgressListener? progress,
+  //   IWifiConnectionListener? connectionListener,
+  // });
   void cancelSync();
 
   void start();
@@ -93,8 +94,9 @@ abstract class SDCardWalSync implements IWalSync {
   Future<void> clearWifiCredentials();
   Future<void> loadWifiCredentials();
   Map<String, String?>? getWifiCredentials();
-  Future<SyncLocalFilesResponse?> syncWithWifi({
-    IWalSyncProgressListener? progress,
-    IWifiConnectionListener? connectionListener,
-  });
+  // WiFi sync disabled — commented out until WiFi is re-enabled.
+  // Future<SyncLocalFilesResponse?> syncWithWifi({
+  //   IWalSyncProgressListener? progress,
+  //   IWifiConnectionListener? connectionListener,
+  // });
 }
