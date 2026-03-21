@@ -22,14 +22,6 @@ abstract class IWalSyncProgressListener {
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase});
 }
 
-/// Listener for WiFi connection progress — disabled, WiFi sync not used.
-// abstract class IWifiConnectionListener {
-//   void onEnablingDeviceWifi();
-//   void onConnectingToDevice();
-//   void onConnected();
-//   void onConnectionFailed(String error);
-// }
-
 abstract class IWalServiceListener extends IWalSyncListener {
   void onStatusChanged(WalServiceStatus status);
 }
@@ -47,11 +39,10 @@ abstract class IWalSync {
     IWalSyncProgressListener? progress,
     bool force = false,
   });
-  // Unused — syncWal is never called; commented out to avoid accidental use.
-  // Future<SyncLocalFilesResponse?> syncWal({
-  //   required Wal wal,
-  //   IWalSyncProgressListener? progress,
-  // });
+  Future<SyncLocalFilesResponse?> syncWal({
+    required Wal wal,
+    IWalSyncProgressListener? progress,
+  });
   void cancelSync();
 
   void start();
@@ -87,13 +78,4 @@ abstract class SDCardWalSync implements IWalSync {
   int get recordingsCount;
   int get estimatedTotalSegments;
 
-  // WiFi sync disabled.
-  // Future<bool> isWifiSyncSupported();
-  // Future<bool> setWifiCredentials(String ssid, String password);
-  // Future<void> clearWifiCredentials();
-  // Future<void> loadWifiCredentials();
-  // Map<String, String?>? getWifiCredentials();
-  // Future<SyncLocalFilesResponse?> syncWithWifi({
-  //   IWalSyncProgressListener? progress,
-  // });
 }
