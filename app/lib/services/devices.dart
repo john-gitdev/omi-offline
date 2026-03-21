@@ -48,7 +48,7 @@ abstract interface class IDeviceServiceSubsciption {
 }
 
 class DeviceService implements IDeviceService {
-  final Map<Object, IDeviceServiceSubsciption> _subscriptions = {};
+  final Map<int, IDeviceServiceSubsciption> _subscriptions = {};
   DeviceServiceStatus _serviceStatus = DeviceServiceStatus.init;
 
   DeviceConnection? _connection;
@@ -95,13 +95,13 @@ class DeviceService implements IDeviceService {
 
   @override
   void subscribe(IDeviceServiceSubsciption subscription, Object context) {
-    _subscriptions[context.hashCode] = subscription;
+    _subscriptions[identityHashCode(context)] = subscription;
     subscription.onStatusChanged(_serviceStatus);
   }
 
   @override
   void unsubscribe(Object context) {
-    _subscriptions.remove(context.hashCode);
+    _subscriptions.remove(identityHashCode(context));
   }
 
   @override
