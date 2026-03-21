@@ -22,13 +22,13 @@ abstract class IWalSyncProgressListener {
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase});
 }
 
-/// Listener for WiFi connection progress
-abstract class IWifiConnectionListener {
-  void onEnablingDeviceWifi();
-  void onConnectingToDevice();
-  void onConnected();
-  void onConnectionFailed(String error);
-}
+/// Listener for WiFi connection progress — disabled, WiFi sync not used.
+// abstract class IWifiConnectionListener {
+//   void onEnablingDeviceWifi();
+//   void onConnectingToDevice();
+//   void onConnected();
+//   void onConnectionFailed(String error);
+// }
 
 abstract class IWalServiceListener extends IWalSyncListener {
   void onStatusChanged(WalServiceStatus status);
@@ -45,14 +45,13 @@ abstract class IWalSync {
   Future deleteWal(Wal wal);
   Future<SyncLocalFilesResponse?> syncAll({
     IWalSyncProgressListener? progress,
-    IWifiConnectionListener? connectionListener,
     bool force = false,
   });
-  Future<SyncLocalFilesResponse?> syncWal({
-    required Wal wal,
-    IWalSyncProgressListener? progress,
-    IWifiConnectionListener? connectionListener,
-  });
+  // Unused — syncWal is never called; commented out to avoid accidental use.
+  // Future<SyncLocalFilesResponse?> syncWal({
+  //   required Wal wal,
+  //   IWalSyncProgressListener? progress,
+  // });
   void cancelSync();
 
   void start();
@@ -81,19 +80,20 @@ abstract class SDCardWalSync implements IWalSync {
   Future<void> deleteAllSyncedWals();
   Future<void> deleteAllPendingWals();
   bool get isSyncing;
+  Future<void>? get cancelFuture;
   void setGlobalProgressListener(IWalSyncProgressListener? listener);
   bool get isDeviceRecordingFailed;
   double get currentSpeedKBps;
   int get recordingsCount;
   int get estimatedTotalSegments;
 
-  Future<bool> isWifiSyncSupported();
-  Future<bool> setWifiCredentials(String ssid, String password);
-  Future<void> clearWifiCredentials();
-  Future<void> loadWifiCredentials();
-  Map<String, String?>? getWifiCredentials();
-  Future<SyncLocalFilesResponse?> syncWithWifi({
-    IWalSyncProgressListener? progress,
-    IWifiConnectionListener? connectionListener,
-  });
+  // WiFi sync disabled.
+  // Future<bool> isWifiSyncSupported();
+  // Future<bool> setWifiCredentials(String ssid, String password);
+  // Future<void> clearWifiCredentials();
+  // Future<void> loadWifiCredentials();
+  // Map<String, String?>? getWifiCredentials();
+  // Future<SyncLocalFilesResponse?> syncWithWifi({
+  //   IWalSyncProgressListener? progress,
+  // });
 }
