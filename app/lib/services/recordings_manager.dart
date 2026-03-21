@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/services/fixed_interval_audio_processor.dart';
 import 'package:omi/services/marker_recording_extractor.dart';
 import 'package:omi/services/offline_audio_processor.dart';
 import 'package:omi/utils/logger.dart';
@@ -282,11 +283,13 @@ class RecordingsManager {
         }
       }
 
-      // 2. Route to automatic (VAD) or marker processing.
-      // Both paths write output files to tempProcessingPath; the move-to-live
-      // block below runs for both.
+      // 2. Route to automatic (VAD), marker, or fixed-interval processing.
+      // All paths write output files to tempProcessingPath; the move-to-live
+      // block below runs for all.
       int lastSafeToDeleteIndex = -1;
-      final isMarkerMode = SharedPreferencesUtil().offlineRecordingMode == 'marker';
+      final mode = SharedPreferencesUtil().offlineRecordingMode;
+      final isMarkerMode = mode == 'marker';
+      final isFixedMode = mode == 'fixed';
 
       try {
         if (isMarkerMode) {
@@ -301,6 +304,72 @@ class RecordingsManager {
                 'RecordingsManager: Marker mode extracted ${result.savedPaths.length} conversations for $dateString');
           } finally {
             extractor.destroy();
+          }
+        } else if (isFixedMode) {
+          // Fixed-interval mode: cuts at wall-clock boundaries (:29/:59 pattern).
+          final processor = FixedIntervalAudioProcessor(outputDir: tempProcessingPath);
+          try {
+            for (int i = 0; i < batch.rawSegments.length; i++) {
+              final file = batch.rawSegments[i];
+              final deviceSessionIdStr = file.parent.path.split('/').last;
+              int? deviceSessionId = int.tryParse(deviceSessionIdStr);
+
+              final segmentFileName = file.path.split('/').last.replaceAll('.bin', '');
+              final segmentIndexStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
+              final segmentIndex = segmentIndexStr != null ? int.tryParse(segmentIndexStr) : null;
+
+              DateTime segmentStartTime;
+              if (deviceSessionId != null && segmentIndex != null) {
+                final sessionAnchorUtc = SharedPreferencesUtil()
+                    .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
+                final sessionAnchorUptime = SharedPreferencesUtil()
+                    .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
+                final segmentAnchorUptime = SharedPreferencesUtil()
+                    .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
+
+                const kMinValidEpoch = 946684800;
+                if (sessionAnchorUtc > kMinValidEpoch && sessionAnchorUptime > 0 && segmentAnchorUptime > 0) {
+                  final uptimeDeltaMs = sessionAnchorUptime - segmentAnchorUptime;
+                  final realUtcSecs = sessionAnchorUtc - (uptimeDeltaMs ~/ 1000);
+                  segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+                  if (segmentStartTime.year < 2000) {
+                    segmentStartTime = file.lastModifiedSync();
+                  }
+                } else {
+                  final segmentAnchorUtc = SharedPreferencesUtil()
+                      .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
+                  if (segmentAnchorUtc > kMinValidEpoch) {
+                    segmentStartTime = DateTime.fromMillisecondsSinceEpoch(segmentAnchorUtc * 1000);
+                  } else {
+                    segmentStartTime = file.lastModifiedSync();
+                  }
+                }
+              } else {
+                segmentStartTime = file.lastModifiedSync();
+              }
+
+              if (_cancelRequested) {
+                Logger.debug("RecordingsManager: Processing cancelled by user at segment $i.");
+                break;
+              }
+
+              await processor.processSegmentFile(file, segmentStartTime, deviceSessionId: deviceSessionId);
+
+              if (backgroundMode && !processor.isCapturing) {
+                lastSafeToDeleteIndex = i;
+              }
+
+              onProgress((i + 1) / batch.rawSegments.length);
+              if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
+            }
+
+            if (backgroundMode) {
+              await processor.flushOnlyCompleted();
+            } else {
+              await processor.flushRemaining();
+            }
+          } finally {
+            processor.destroy();
           }
         } else {
           // Automatic mode: continuous VAD via OfflineAudioProcessor.
@@ -425,9 +494,9 @@ class RecordingsManager {
       }
 
       // 6. Raw segment deletion
-      // Marker mode always uses lastSafeToDeleteIndex (same as background mode path)
-      // because the extractor manages its own rolling buffer and returns a precise boundary.
-      if (backgroundMode || isMarkerMode) {
+      // Marker and fixed modes always use lastSafeToDeleteIndex because both manage
+      // their own buffer state and only advance the index when a full interval/clip completes.
+      if (backgroundMode || isMarkerMode || isFixedMode) {
         // Delete only segments belonging to fully-completed conversations.
         // If adjustment mode is ON, keep everything for re-processing.
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
@@ -551,7 +620,9 @@ class RecordingsManager {
       }
 
       int lastSafeToDeleteIndex = -1;
-      final isMarkerMode = SharedPreferencesUtil().offlineRecordingMode == 'marker';
+      final mode = SharedPreferencesUtil().offlineRecordingMode;
+      final isMarkerMode = mode == 'marker';
+      final isFixedMode = mode == 'fixed';
 
       try {
         if (isMarkerMode) {
@@ -570,6 +641,67 @@ class RecordingsManager {
                 'RecordingsManager: Marker mode extracted ${result.savedPaths.length} conversations (combined)');
           } finally {
             extractor.destroy();
+          }
+        } else if (isFixedMode) {
+          // Fixed-interval mode: cuts at wall-clock boundaries (:29/:59 pattern).
+          final processor = FixedIntervalAudioProcessor(outputDir: tempProcessingPath);
+          try {
+            for (int i = 0; i < allSegments.length; i++) {
+              final file = allSegments[i];
+              final deviceSessionIdStr = file.parent.path.split('/').last;
+              final deviceSessionId = int.tryParse(deviceSessionIdStr);
+              final segmentFileName = file.path.split('/').last.replaceAll('.bin', '');
+              final segmentIndexStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
+              final segmentIndex = segmentIndexStr != null ? int.tryParse(segmentIndexStr) : null;
+
+              DateTime segmentStartTime;
+              if (deviceSessionId != null && segmentIndex != null) {
+                final anchorUtc = SharedPreferencesUtil()
+                    .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
+                final anchorUptime = SharedPreferencesUtil()
+                    .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
+                if (anchorUtc > 0) {
+                  segmentStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
+                } else if (anchorUptime > 0) {
+                  final sessionAnchorUtc = SharedPreferencesUtil()
+                      .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
+                  final sessionAnchorUptime = SharedPreferencesUtil()
+                      .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
+                  if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
+                    final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
+                    segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+                  } else {
+                    segmentStartTime = file.lastModifiedSync();
+                  }
+                } else {
+                  segmentStartTime = file.lastModifiedSync();
+                }
+              } else {
+                segmentStartTime = file.lastModifiedSync();
+              }
+
+              if (_cancelRequested) {
+                Logger.debug("RecordingsManager: Processing cancelled at segment $i.");
+                break;
+              }
+
+              await processor.processSegmentFile(file, segmentStartTime, deviceSessionId: deviceSessionId);
+
+              if (backgroundMode && !processor.isCapturing) {
+                lastSafeToDeleteIndex = i;
+              }
+
+              onProgress((i + 1) / allSegments.length);
+              if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
+            }
+
+            if (backgroundMode) {
+              await processor.flushOnlyCompleted();
+            } else {
+              await processor.flushRemaining();
+            }
+          } finally {
+            processor.destroy();
           }
         } else {
           final processor = OfflineAudioProcessor(outputDir: tempProcessingPath);
@@ -663,7 +795,7 @@ class RecordingsManager {
       }
 
       // Raw segment deletion — same rules as processDay.
-      if (backgroundMode || isMarkerMode) {
+      if (backgroundMode || isMarkerMode || isFixedMode) {
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
           final sessionFolders = <String>{};
           for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
