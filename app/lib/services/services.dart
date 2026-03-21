@@ -209,20 +209,23 @@ class BackgroundService {
     Function()? onInitializing,
   }) {
     StreamSubscription? recordAudioByteStream = _service.on('recorder.ui.audioBytes').listen((event) {
-      Uint8List bytes = Uint8List.fromList(event!['data'].cast<int>());
+      final data = event?['data'];
+      if (data == null) return;
+      Uint8List bytes = Uint8List.fromList((data as List).cast<int>());
       onByteReceived(bytes);
     });
     StreamSubscription? recordStateStream;
     recordStateStream = _service.on('recorder.ui.stateUpdate').listen((event) {
-      if (event!['state'] == 'recording') {
+      final state = event?['state'];
+      if (state == 'recording') {
         if (onRecording != null) {
           onRecording();
         }
-      } else if (event['state'] == 'initializing') {
+      } else if (state == 'initializing') {
         if (onInitializing != null) {
           onInitializing();
         }
-      } else if (event['state'] == 'stopped') {
+      } else if (state == 'stopped') {
         // Close streams
         recordAudioByteStream.cancel();
         recordStateStream?.cancel();
@@ -335,16 +338,28 @@ class MicRecorderService implements IMicRecorderService {
     }
 
     // new record
-    await _recorder.openRecorder(isBGService: _isInBG);
+    try {
+      await _recorder.openRecorder(isBGService: _isInBG);
+    } catch (e) {
+      _status = RecorderServiceStatus.stop;
+      rethrow;
+    }
     _controller = StreamController<Uint8List>();
 
-    await _recorder.startRecorder(
-      toStream: _controller.sink,
-      codec: Codec.pcm16,
-      numChannels: 1,
-      sampleRate: 16000,
-      bufferSize: 8192,
-    );
+    try {
+      await _recorder.startRecorder(
+        toStream: _controller.sink,
+        codec: Codec.pcm16,
+        numChannels: 1,
+        sampleRate: 16000,
+        bufferSize: 8192,
+      );
+    } catch (e) {
+      await _recorder.closeRecorder();
+      await _controller.close();
+      _status = RecorderServiceStatus.stop;
+      rethrow;
+    }
     _controller.stream.listen((buffer) {
       Uint8List audioBytes = buffer;
       if (_onByteReceived != null) {
