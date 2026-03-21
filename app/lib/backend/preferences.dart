@@ -51,7 +51,7 @@ class SharedPreferencesUtil {
 
   set offlineRecordingMode(String v) => saveString('offlineRecordingMode', v);
 
-  // Interval in minutes for fixed recording mode: 30, 60, or 120
+  // Interval in minutes for fixed recording mode: 15, 30, 60, or 120
   int get offlineFixedIntervalMinutes => getInt('offlineFixedIntervalMinutes', defaultValue: 60);
 
   set offlineFixedIntervalMinutes(int value) => saveInt('offlineFixedIntervalMinutes', value);
@@ -137,6 +137,12 @@ class SharedPreferencesUtil {
     }
     if (!prefs.containsKey('offlineFixedIntervalMinutes')) {
       prefs.setInt('offlineFixedIntervalMinutes', 60);
+    }
+    if (!prefs.containsKey('markerLookbackMinutes')) {
+      prefs.setInt('markerLookbackMinutes', 120);
+    }
+    if (!prefs.containsKey('fixedModeNextBoundaryMs')) {
+      prefs.setInt('fixedModeNextBoundaryMs', 0);
     }
   }
 

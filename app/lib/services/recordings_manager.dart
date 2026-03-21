@@ -281,6 +281,9 @@ class RecordingsManager {
           await liveDir.delete(recursive: true);
           Logger.debug('RecordingsManager: Cleared existing recordings for $dateString (adjustment mode)');
         }
+        // Also reset the persisted fixed-mode boundary so reprocessing starts fresh
+        // and doesn't incorrectly skip frames based on the previous run's state.
+        SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
       }
 
       // 2. Route to automatic (VAD), marker, or fixed-interval processing.
@@ -617,6 +620,9 @@ class RecordingsManager {
             Logger.debug('RecordingsManager: Cleared existing recordings for ${batch.dateString} (adjustment mode)');
           }
         }
+        // Also reset the persisted fixed-mode boundary so reprocessing starts fresh
+        // and doesn't incorrectly skip frames based on the previous run's state.
+        SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
       }
 
       int lastSafeToDeleteIndex = -1;

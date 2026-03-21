@@ -51,11 +51,23 @@ class FixedIntervalAudioProcessor {
     // Restore the boundary that was active when the previous session ended.
     // If nonzero, the next call to processSegmentFile will skip frames that
     // were already included in the last completed clip.
+    // Sanity check: discard the persisted value if it is unreasonably old
+    // (> 2× interval in the past) or in the future — both indicate stale/corrupt
+    // state. Gap detection will handle a genuine long offline period correctly.
     final persisted = SharedPreferencesUtil().fixedModeNextBoundaryMs;
     if (persisted > 0) {
-      _nextBoundaryMs = persisted;
-      Logger.debug('FixedIntervalAudioProcessor: Restored persisted boundary '
-          '${DateTime.fromMillisecondsSinceEpoch(persisted)}');
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final tooOld = persisted < nowMs - 2 * _intervalMs;
+      final tooFuture = persisted > nowMs + _intervalMs;
+      if (tooOld || tooFuture) {
+        Logger.debug('FixedIntervalAudioProcessor: Discarding stale/corrupt persisted boundary '
+            '${DateTime.fromMillisecondsSinceEpoch(persisted)} (now=${DateTime.fromMillisecondsSinceEpoch(nowMs)})');
+        SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
+      } else {
+        _nextBoundaryMs = persisted;
+        Logger.debug('FixedIntervalAudioProcessor: Restored persisted boundary '
+            '${DateTime.fromMillisecondsSinceEpoch(persisted)}');
+      }
     }
   }
 
@@ -67,7 +79,7 @@ class FixedIntervalAudioProcessor {
   bool get isCapturing => _currentRefs.isNotEmpty;
 
   /// Computes the next boundary epoch (ms) at or after [epochMs].
-  /// Boundaries sit 1 minute before each interval multiple.
+  /// Boundaries sit 1 second before each interval multiple.
   int _computeNextBoundary(int epochMs) {
     final shifted = epochMs + _boundaryOffsetMs;
     final boundary = ((shifted / _intervalMs).ceil() * _intervalMs).toInt() - _boundaryOffsetMs;
