@@ -361,11 +361,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                           setState(() {
                             _dimRatio = value;
                           });
-                          if (!(_debounce?.isActive ?? false)) {
-                            _debounce = Timer(const Duration(milliseconds: 300), () {
-                              _updateDimRatio(value);
-                            });
-                          }
+                          _debounce?.cancel();
+                          _debounce = Timer(const Duration(milliseconds: 300), () {
+                            _updateDimRatio(value);
+                          });
                         },
                         onChangeEnd: (double value) {
                           _debounce?.cancel();
@@ -470,11 +469,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                           setState(() {
                             _micGain = value;
                           });
-                          if (!(_micGainDebounce?.isActive ?? false)) {
-                            _micGainDebounce = Timer(const Duration(milliseconds: 300), () {
-                              _updateMicGain(value);
-                            });
-                          }
+                          _micGainDebounce?.cancel();
+                          _micGainDebounce = Timer(const Duration(milliseconds: 300), () {
+                            _updateMicGain(value);
+                          });
                         },
                         onChangeEnd: (double value) {
                           _micGainDebounce?.cancel();

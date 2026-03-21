@@ -88,10 +88,11 @@ class TcpTransport extends DeviceTransport {
         onError: (error) {
           Logger.debug('TcpTransport: Socket error: $error');
           _dataStreamController?.addError(error);
-          disconnect();
+          // Schedule on next microtask to avoid cancelling the subscription from within its own listener.
+          Future.microtask(() => disconnect());
         },
         onDone: () {
-          disconnect();
+          Future.microtask(() => disconnect());
         },
         cancelOnError: false,
       );
