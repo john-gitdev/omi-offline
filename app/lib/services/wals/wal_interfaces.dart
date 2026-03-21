@@ -67,7 +67,7 @@ enum WalServiceStatus {
 }
 
 abstract class SDCardWalSync implements IWalSync {
-  void setDevice(BtDevice? device);
+  Future<void> setDevice(BtDevice? device);
   Future<void> deleteAllSyncedWals();
   Future<void> deleteAllPendingWals();
   bool get isSyncing;
