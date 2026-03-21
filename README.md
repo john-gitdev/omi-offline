@@ -200,6 +200,28 @@ User-triggered recording via double-tap.
 
 ---
 
+### Fixed Interval Mode
+
+Cuts recordings at fixed wall-clock boundaries regardless of speech content.
+
+* Boundaries fall **1 second before each interval multiple** (e.g. :29:59 / :59:59 for 30-min, :59:59 for 1hr)
+* The −1 second offset ensures the last cut of any day always lands at 23:59:59 and never spills into the next day
+* Boundary state is **persisted across restarts** (`fixedModeNextBoundaryMs` in SharedPreferences) so the processor resumes mid-interval cleanly after an app restart
+
+#### Staleness guard
+
+On startup, the persisted boundary is validated before use:
+
+* If it is more than **2× the interval in the past** (device was offline for over 2 intervals) → discard
+* If it is more than **1× the interval in the future** (corrupt data) → discard
+* On discard, `fixedModeNextBoundaryMs` is reset to 0; the boundary is computed fresh from the first segment's timestamp when `processSegmentFile` runs
+
+The sentinel value 0 means "wait for real audio data before committing to a boundary." This avoids anchoring to wall-clock `now()` in the constructor, which could cause an off-by-a-few-seconds boundary mismatch relative to the actual audio timestamps arriving over BLE.
+
+Gap detection handles genuine long offline periods correctly once processing begins.
+
+---
+
 ## VAD System
 
 ### High-Level Behavior
@@ -378,6 +400,7 @@ Key correctness fixes applied since initial implementation:
 | WAL sync async safety | `sdcard_wal_sync` prevents double-complete, async-void fire-and-forget, and stream cancel races |
 | `ServiceManager` | `deinit()` is `async`; callers must await it to avoid torn-down services |
 | Noise floor | Reset correctly on segment boundaries in `OfflineAudioProcessor` |
+| Fixed interval boundary | Staleness guard discards persisted boundary if > 2× interval old or in future; resets to 0 so boundary is anchored to first real audio timestamp |
 | Recordings page | Sync state and dialog lifecycle fixed to reflect true sync status |
 | Low battery alert | Alert now fires correctly during an active session |
 | Connection pipeline | `FindDevicesPage` routes through `DeviceService.ensureConnection()` — never bypasses it |
@@ -398,5 +421,6 @@ Key correctness fixes applied since initial implementation:
 * `OfflineAudioProcessor` → VAD + segmentation engine; applies Golden Anchor timestamp correction
 * `MarkerRecordingExtractor` → Marker-based extraction; uses per-range Opus decoder for clean cross-segment decoding
 * `SDCardWalSyncImpl` → Framed BLE sync with ACK gating, gap detection, and Golden Anchor management
+* `FixedIntervalAudioProcessor` → Fixed wall-clock boundary cutting with cross-restart boundary persistence and staleness guard
 
 ---
