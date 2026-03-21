@@ -4,7 +4,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/omi_connection.dart';
-// import 'package:omi/services/devices/wifi_sync_error.dart'; // WiFi sync disabled
+
 import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:omi/services/devices/transports/ble_transport.dart';
 import 'package:omi/utils/logger.dart';
@@ -266,22 +266,6 @@ abstract class DeviceConnection {
 
   Future<bool> performWriteToStorage(int numFile, int command, int offset);
 
-
-  // WiFi sync disabled.
-  // Future<bool> isWifiSyncSupported() async { ... }
-  // Future<bool> performIsWifiSyncSupported() async => false;
-  // Future<WifiSyncError> setupWifiSync(String ssid, String password) async { ... }
-  // Future<WifiSyncError> performSetupWifiSync(String ssid, String password) async { ... }
-  // Future<void> clearWifiSync() async { ... }
-  // Future<void> performClearWifiSync() async {}
-  // Future<int?> getWifiSyncStatus() async { ... }
-  // Future<int?> performGetWifiSyncStatus() async => null;
-  // Future<StreamSubscription<int>?> getWifiSyncStatusListener({...}) async { ... }
-  // Future<StreamSubscription<int>?> performGetWifiSyncStatusListener({...}) async => null;
-  // Future<bool> startWifiSync() async { ... }
-  // Future<bool> performStartWifiSync() async => false;
-  // Future<bool> stopWifiSync() async { ... }
-  // Future<bool> performStopWifiSync() async => false;
 
   // Feature support and Settings
   Future<int> getFeatures() async {

@@ -317,22 +317,23 @@ class RecordingsManager {
                 final segmentAnchorUptime = SharedPreferencesUtil()
                     .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
 
-                if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0 && segmentAnchorUptime > 0) {
+                const kMinValidEpoch = 946684800; // Jan 1 2000 — reject unsynced Omi clocks
+                if (sessionAnchorUtc > kMinValidEpoch && sessionAnchorUptime > 0 && segmentAnchorUptime > 0) {
                   // Retroactive Correction: Back-calculate segment start time using the session's BEST anchor.
                   // This fixes 'stale' timestamps from periods where the Omi was unsynced (e.g. after battery death).
                   final uptimeDeltaMs = sessionAnchorUptime - segmentAnchorUptime;
                   final realUtcSecs = sessionAnchorUtc - (uptimeDeltaMs ~/ 1000);
                   segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
-                  
-                  // If the result is December 1969/January 1970, it's a failed anchor. Fall back.
+
+                  // If the result is pre-2000, the anchor + uptime delta is nonsensical. Fall back.
                   if (segmentStartTime.year < 2000) {
                     segmentStartTime = file.lastModifiedSync();
                   }
                 } else {
-                  // Fallback: If no session anchor exists, try segment-specific or modification time
+                  // Fallback: If no valid session anchor exists, try segment-specific UTC or modification time.
                   final segmentAnchorUtc = SharedPreferencesUtil()
                       .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
-                  if (segmentAnchorUtc > 0) {
+                  if (segmentAnchorUtc > kMinValidEpoch) {
                     segmentStartTime = DateTime.fromMillisecondsSinceEpoch(segmentAnchorUtc * 1000);
                   } else {
                     segmentStartTime = file.lastModifiedSync();
