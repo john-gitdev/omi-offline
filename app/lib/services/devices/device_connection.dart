@@ -4,7 +4,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/omi_connection.dart';
-import 'package:omi/services/devices/wifi_sync_error.dart';
+// import 'package:omi/services/devices/wifi_sync_error.dart'; // WiFi sync disabled
 import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:omi/services/devices/transports/ble_transport.dart';
 import 'package:omi/utils/logger.dart';
@@ -267,77 +267,21 @@ abstract class DeviceConnection {
   Future<bool> performWriteToStorage(int numFile, int command, int offset);
 
 
-  Future<bool> isWifiSyncSupported() async {
-    if (await isConnected()) {
-      return await performIsWifiSyncSupported();
-    }
-    return false;
-  }
-
-  Future<bool> performIsWifiSyncSupported() async => false;
-
-  Future<WifiSyncError> setupWifiSync(String ssid, String password) async {
-    if (await isConnected()) {
-      return await performSetupWifiSync(ssid, password);
-    }
-    return WifiSyncError(success: false, errorCode: 1);
-  }
-
-  Future<WifiSyncError> performSetupWifiSync(String ssid, String password) async {
-    return WifiSyncError(success: false, errorCode: 1);
-  }
-
-  Future<void> clearWifiSync() async {
-    if (await isConnected()) {
-      await performClearWifiSync();
-    }
-  }
-
-  Future<void> performClearWifiSync() async {}
-
-  Future<int?> getWifiSyncStatus() async {
-    if (await isConnected()) {
-      return await performGetWifiSyncStatus();
-    }
-    return null;
-  }
-
-  Future<int?> performGetWifiSyncStatus() async {
-    return null;
-  }
-
-  Future<StreamSubscription<int>?> getWifiSyncStatusListener({
-    required void Function(int status) onStatusReceived,
-  }) async {
-    if (await isConnected()) {
-      return await performGetWifiSyncStatusListener(onStatusReceived: onStatusReceived);
-    }
-    return null;
-  }
-
-  Future<StreamSubscription<int>?> performGetWifiSyncStatusListener({
-    required void Function(int status) onStatusReceived,
-  }) async {
-    return null;
-  }
-
-  Future<bool> startWifiSync() async {
-    if (await isConnected()) {
-      return await performStartWifiSync();
-    }
-    return false;
-  }
-
-  Future<bool> performStartWifiSync() async => false;
-
-  Future<bool> stopWifiSync() async {
-    if (await isConnected()) {
-      return await performStopWifiSync();
-    }
-    return false;
-  }
-
-  Future<bool> performStopWifiSync() async => false;
+  // WiFi sync disabled.
+  // Future<bool> isWifiSyncSupported() async { ... }
+  // Future<bool> performIsWifiSyncSupported() async => false;
+  // Future<WifiSyncError> setupWifiSync(String ssid, String password) async { ... }
+  // Future<WifiSyncError> performSetupWifiSync(String ssid, String password) async { ... }
+  // Future<void> clearWifiSync() async { ... }
+  // Future<void> performClearWifiSync() async {}
+  // Future<int?> getWifiSyncStatus() async { ... }
+  // Future<int?> performGetWifiSyncStatus() async => null;
+  // Future<StreamSubscription<int>?> getWifiSyncStatusListener({...}) async { ... }
+  // Future<StreamSubscription<int>?> performGetWifiSyncStatusListener({...}) async => null;
+  // Future<bool> startWifiSync() async { ... }
+  // Future<bool> performStartWifiSync() async => false;
+  // Future<bool> stopWifiSync() async { ... }
+  // Future<bool> performStopWifiSync() async => false;
 
   // Feature support and Settings
   Future<int> getFeatures() async {
