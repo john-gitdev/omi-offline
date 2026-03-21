@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
-import 'package:omi/services/manual_recording_extractor.dart';
+import 'package:omi/services/marker_recording_extractor.dart';
 import 'package:omi/services/offline_audio_processor.dart';
 import 'package:omi/utils/logger.dart';
 
@@ -282,23 +282,23 @@ class RecordingsManager {
         }
       }
 
-      // 2. Route to automatic (VAD) or manual (marker) processing.
+      // 2. Route to automatic (VAD) or marker processing.
       // Both paths write output files to tempProcessingPath; the move-to-live
       // block below runs for both.
       int lastSafeToDeleteIndex = -1;
-      final isManualMode = SharedPreferencesUtil().offlineRecordingMode == 'manual';
+      final isMarkerMode = SharedPreferencesUtil().offlineRecordingMode == 'marker';
 
       try {
-        if (isManualMode) {
-          // Manual mode: marker extraction via ManualRecordingExtractor.
+        if (isMarkerMode) {
+          // Marker mode: marker extraction via MarkerRecordingExtractor.
           // Produces recordings only for conversations the user explicitly starred.
           // Always keeps a 2hr rolling buffer of raw segments for future markers.
-          final extractor = ManualRecordingExtractor();
+          final extractor = MarkerRecordingExtractor();
           try {
             final result = await extractor.process(batch, tempProcessingPath, forceFlush: !backgroundMode);
             lastSafeToDeleteIndex = result.lastSafeSegmentIndex;
             Logger.debug(
-                'RecordingsManager: Manual mode extracted ${result.savedPaths.length} conversations for $dateString');
+                'RecordingsManager: Marker mode extracted ${result.savedPaths.length} conversations for $dateString');
           } finally {
             extractor.destroy();
           }
@@ -425,9 +425,9 @@ class RecordingsManager {
       }
 
       // 6. Raw segment deletion
-      // Manual mode always uses lastSafeToDeleteIndex (same as background mode path)
+      // Marker mode always uses lastSafeToDeleteIndex (same as background mode path)
       // because the extractor manages its own rolling buffer and returns a precise boundary.
-      if (backgroundMode || isManualMode) {
+      if (backgroundMode || isMarkerMode) {
         // Delete only segments belonging to fully-completed conversations.
         // If adjustment mode is ON, keep everything for re-processing.
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
@@ -551,10 +551,10 @@ class RecordingsManager {
       }
 
       int lastSafeToDeleteIndex = -1;
-      final isManualMode = SharedPreferencesUtil().offlineRecordingMode == 'manual';
+      final isMarkerMode = SharedPreferencesUtil().offlineRecordingMode == 'marker';
 
       try {
-        if (isManualMode) {
+        if (isMarkerMode) {
           final combinedBatch = Batch(
             dateString: activeBatches.last.dateString, // oldest date
             date: activeBatches.last.date,
@@ -562,12 +562,12 @@ class RecordingsManager {
             finalizedRecordings: const [],
             markerTimestamps: (activeBatches.expand((b) => b.markerTimestamps).toList()..sort()),
           );
-          final extractor = ManualRecordingExtractor();
+          final extractor = MarkerRecordingExtractor();
           try {
             final result = await extractor.process(combinedBatch, tempProcessingPath, forceFlush: !backgroundMode);
             lastSafeToDeleteIndex = result.lastSafeSegmentIndex;
             Logger.debug(
-                'RecordingsManager: Manual mode extracted ${result.savedPaths.length} conversations (combined)');
+                'RecordingsManager: Marker mode extracted ${result.savedPaths.length} conversations (combined)');
           } finally {
             extractor.destroy();
           }
@@ -663,7 +663,7 @@ class RecordingsManager {
       }
 
       // Raw segment deletion — same rules as processDay.
-      if (backgroundMode || isManualMode) {
+      if (backgroundMode || isMarkerMode) {
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
           final sessionFolders = <String>{};
           for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
@@ -727,7 +727,7 @@ class RecordingsManager {
 
   /// Background auto-process: processes all batches as one continuous stream.
   /// Skips the newest segment per session (may still be written by firmware).
-  /// Safe to call from a background timer; no-op if a manual process is running.
+  /// Safe to call from a background timer; no-op if a marker process is running.
   static Future<void> processAllCompletedSessions() async {
     if (_isProcessingAny) return;
     final manager = RecordingsManager();
