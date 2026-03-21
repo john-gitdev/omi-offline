@@ -108,15 +108,19 @@ Optional Upload
 ### Transfer Model
 
 * The app syncs using a **Write-Ahead Log (WAL)** offset
-* Firmware streams raw bytes over BLE:
-
-  * Packet size = negotiated MTU - 3 bytes
 * Sync is **append-only and resumable**
 
-### End of Transfer
+#### Framed BLE Protocol
 
-* Firmware sends a **0xFD (EOT marker)** when no more data is available
-* This is required for correct termination of sync loops
+The sync layer uses an explicit framing protocol to prevent audio repetition and corruption:
+
+* **PACKET_DATA**: carries file offset in header — app checks for gaps and duplicates
+* **PACKET_EOT**: signals end of file data
+* **PACKET_ACK**: app acknowledges each packet; firmware only advances its offset on success and backs off on BLE errors
+
+This ensures idempotent delivery: re-connections mid-sync resume cleanly without re-downloading or duplicating data.
+
+> **Note:** WiFi/TCP sync (port 8080) is currently disabled. All sync runs over BLE only.
 
 ---
 
@@ -130,16 +134,22 @@ Optional Upload
 * Processing is **continuous across boundaries**
 * Recordings are **never split by day or batch**
 
-### Timestamp Correction
+### Timestamp Correction (Golden Anchor)
 
-* The device may not have accurate RTC at boot
-* The app writes anchor mappings:
+* The device may not have accurate RTC at boot (e.g. after battery death)
+* As the app receives packets that carry a phone-synced UTC time, it stores the most accurate anchor per session:
 
 ```
 anchor_utc_device_session_{id}
 ```
 
 * This maps device uptime → real-world timestamps
+
+#### Golden Anchor Guards
+
+* Anchors are only written when `utcTime > kMinValidEpoch` (Jan 1 2000 = 946684800)
+* This prevents unsynced Omi clocks (year < 2000) from poisoning per-segment anchors
+* `RecordingsManager` and `OfflineAudioProcessor` use the best available anchor to **retroactively correct** timestamps for all segments in a session, overriding stale device clocks
 
 ### Cleanup
 
@@ -228,6 +238,11 @@ alphaFall = 0.98   (~2s adaptation to quieter environments)
 ```
 frame_dbfs > noiseFloor + snrMarginDb
 ```
+
+**Opus decoder lifetime**
+
+* One decoder is created per extraction range (not per segment)
+* Decoder state carries across segment boundaries, ensuring the first frames of each segment decode cleanly
 
 **Memory model (critical)**
 
@@ -347,6 +362,30 @@ This keeps:
 
 ---
 
+## Reliability & Stability
+
+Key correctness fixes applied since initial implementation:
+
+| Area | Fix |
+| ---- | --- |
+| BLE connection | 15-second timeout on adapter and connection waits prevents indefinite hangs |
+| BLE sync | Framed protocol with ACK gating eliminates duplicate/gap audio |
+| Firmware storage | Storage offset parsing aligned to little-endian (matches firmware write order) |
+| Firmware uptime | `last_timestamp_uptime` reset on wipe; uptime rollover handled correctly |
+| Opus decode | One decoder per extraction range — state preserved across segment boundaries |
+| Timestamp anchoring | Golden Anchor guards (`kMinValidEpoch`) prevent stale Omi clocks from corrupting timestamps |
+| Subscription lifecycle | Subscriptions stored and cancelled in all providers, services, and transport layers |
+| WAL sync async safety | `sdcard_wal_sync` prevents double-complete, async-void fire-and-forget, and stream cancel races |
+| `ServiceManager` | `deinit()` is `async`; callers must await it to avoid torn-down services |
+| Noise floor | Reset correctly on segment boundaries in `OfflineAudioProcessor` |
+| Recordings page | Sync state and dialog lifecycle fixed to reflect true sync status |
+| Low battery alert | Alert now fires correctly during an active session |
+| Connection pipeline | `FindDevicesPage` routes through `DeviceService.ensureConnection()` — never bypasses it |
+| VAD slider | Debounce cancels and restarts on every change (no stale previous timer) |
+| `TcpTransport` | Recursive disconnect loop prevented in error handler |
+
+---
+
 ## Repository Structure (Suggested)
 
 ```
@@ -356,8 +395,8 @@ This keeps:
 
 ### Key Components
 
-* `OfflineAudioProcessor` → VAD + segmentation engine
-* `ManualRecordingExtractor` → Marker-based extraction
-* `SDCardWalSyncImpl` → BLE sync implementation
+* `OfflineAudioProcessor` → VAD + segmentation engine; applies Golden Anchor timestamp correction
+* `ManualRecordingExtractor` → Marker-based extraction; uses per-range Opus decoder for clean cross-segment decoding
+* `SDCardWalSyncImpl` → Framed BLE sync with ACK gating, gap detection, and Golden Anchor management
 
 ---
