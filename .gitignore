@@ -60,6 +60,7 @@ dist/
 **/ios/Config/*
 **/ios/Config/**/*
 **/ios/Flutter/Custom.xcconfig
+**/ios/Flutter/ephemeral/
 
 # macOS specific
 **/macos/**/Pods/

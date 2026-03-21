@@ -32,8 +32,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   bool _isMicGainLoaded = false;
   bool? _hasMicGainFeature;
 
-  // WiFi sync state
-  bool _isWifiSupported = false;
+  // WiFi sync disabled.
+  // bool _isWifiSupported = false;
 
   Timer? _debounce;
   Timer? _micGainDebounce;
@@ -116,12 +116,13 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           }
         }
 
-        final wifiSupported = await connection.isWifiSyncSupported();
-        if (mounted) {
-          setState(() {
-            _isWifiSupported = wifiSupported;
-          });
-        }
+        // WiFi sync disabled.
+        // final wifiSupported = await connection.isWifiSyncSupported();
+        // if (mounted) {
+        //   setState(() {
+        //     _isWifiSupported = wifiSupported;
+        //   });
+        // }
       }
     }
   }
@@ -582,16 +583,16 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               onTap: _showMicGainSheet,
             ),
           ],
-          // WiFi Sync
-          if (_isWifiSupported) ...[
-            const Divider(height: 1, color: Color(0xFF3C3C43)),
-            _buildProfileStyleItem(
-              icon: FontAwesomeIcons.wifi,
-              title: 'WiFi Sync',
-              chipValue: 'Available',
-              showChevron: false,
-            ),
-          ],
+          // WiFi sync disabled.
+          // if (_isWifiSupported) ...[
+          //   const Divider(height: 1, color: Color(0xFF3C3C43)),
+          //   _buildProfileStyleItem(
+          //     icon: FontAwesomeIcons.wifi,
+          //     title: 'WiFi Sync',
+          //     chipValue: 'Available',
+          //     showChevron: false,
+          //   ),
+          // ],
         ],
       ),
     );
