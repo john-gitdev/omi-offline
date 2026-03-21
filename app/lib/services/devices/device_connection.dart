@@ -105,6 +105,13 @@ abstract class DeviceConnection {
   }
 
   Future<void> disconnect() async {
+    // Cancel state subscriptions to prevent stale callbacks firing between
+    // disconnect and a subsequent connect() call.
+    await _internalStateSubscription?.cancel();
+    _internalStateSubscription = null;
+    await _externalStateSubscription?.cancel();
+    _externalStateSubscription = null;
+
     try {
       await transport.disconnect();
     } catch (e) {
