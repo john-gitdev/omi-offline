@@ -56,6 +56,11 @@ class SharedPreferencesUtil {
 
   set offlineFixedIntervalMinutes(int value) => saveInt('offlineFixedIntervalMinutes', value);
 
+  // Lookback window in hours for marker mode: how far before a marker to scan for conversation start.
+  int get markerLookbackHours => getInt('markerLookbackHours', defaultValue: 2);
+
+  set markerLookbackHours(int value) => saveInt('markerLookbackHours', value);
+
   // Epoch ms of the next pending boundary for fixed mode.
   // Persisted so a fresh processor on the next sync knows which frames in the
   // boundary-crossing segment were already included in the previous clip.
