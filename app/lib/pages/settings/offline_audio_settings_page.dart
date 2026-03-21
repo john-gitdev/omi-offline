@@ -19,6 +19,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late bool _adjustmentMode;
   late String _recordingMode;
   late bool _autoSyncEnabled;
+  late int _fixedIntervalMinutes;
 
   @override
   void initState() {
@@ -32,6 +33,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _adjustmentMode = SharedPreferencesUtil().offlineAdjustmentMode;
     _recordingMode = SharedPreferencesUtil().offlineRecordingMode;
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
+    _fixedIntervalMinutes = SharedPreferencesUtil().offlineFixedIntervalMinutes;
   }
 
   void _saveSettings() {
@@ -44,6 +46,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     SharedPreferencesUtil().offlineAdjustmentMode = _adjustmentMode;
     SharedPreferencesUtil().offlineRecordingMode = _recordingMode;
     SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
+    SharedPreferencesUtil().offlineFixedIntervalMinutes = _fixedIntervalMinutes;
   }
 
   String _formatSeconds(double seconds) {
@@ -103,12 +106,21 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     _saveSettings();
                   },
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 8),
                 _ModeOption(
                   label: 'Marker',
                   selected: _recordingMode == 'marker',
                   onTap: () {
                     setState(() => _recordingMode = 'marker');
+                    _saveSettings();
+                  },
+                ),
+                const SizedBox(width: 8),
+                _ModeOption(
+                  label: 'Fixed',
+                  selected: _recordingMode == 'fixed',
+                  onTap: () {
+                    setState(() => _recordingMode = 'fixed');
                     _saveSettings();
                   },
                 ),
@@ -120,7 +132,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 'All audio is continuously processed and split by silence detection.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
               )
-            else ...[
+            else if (_recordingMode == 'marker') ...[
               Text(
                 'Only conversations you marked with a double-press on your Omi will be saved.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
@@ -129,6 +141,50 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               Text(
                 'The Conversation Split Threshold below controls how much silence is used to find the edges of your marked conversation.',
                 style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              ),
+            ] else ...[
+              Text(
+                'Audio is saved at fixed wall-clock intervals. The first clip runs from when recording starts to the next boundary, then cuts repeat at the selected interval.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Interval',
+                style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  _IntervalOption(
+                    label: '30 min',
+                    value: 30,
+                    selected: _fixedIntervalMinutes == 30,
+                    onTap: () {
+                      setState(() => _fixedIntervalMinutes = 30);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 10),
+                  _IntervalOption(
+                    label: '1 hour',
+                    value: 60,
+                    selected: _fixedIntervalMinutes == 60,
+                    onTap: () {
+                      setState(() => _fixedIntervalMinutes = 60);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 10),
+                  _IntervalOption(
+                    label: '2 hours',
+                    value: 120,
+                    selected: _fixedIntervalMinutes == 120,
+                    onTap: () {
+                      setState(() => _fixedIntervalMinutes = 120);
+                      _saveSettings();
+                    },
+                  ),
+                ],
               ),
             ],
             const SizedBox(height: 32),
@@ -395,6 +451,42 @@ class _ModeOption extends StatelessWidget {
   final VoidCallback onTap;
 
   const _ModeOption({required this.label, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1C1C1E),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: selected ? Colors.deepPurpleAccent : Colors.transparent, width: 1.5),
+          ),
+          child: Center(
+            child: Text(
+              label,
+              style: TextStyle(
+                color: selected ? Colors.deepPurpleAccent : Colors.grey.shade400,
+                fontSize: 14,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _IntervalOption extends StatelessWidget {
+  final String label;
+  final int value;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _IntervalOption({required this.label, required this.value, required this.selected, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
