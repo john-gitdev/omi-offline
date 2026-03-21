@@ -77,7 +77,7 @@ Mobile App (Flutter)
 
 Offline Processing
   - VAD (noise-aware, adaptive)
-  - Marker-based extraction (manual mode)
+  - Marker-based extraction (marker mode)
 
         ↓
 
@@ -176,7 +176,7 @@ A continuous forward-scanning VAD system.
 
 ---
 
-### Manual Mode (Marker System)
+### Marker Mode (Marker System)
 
 User-triggered recording via double-tap.
 
@@ -285,7 +285,7 @@ API:
 
 ### Trigger Modes
 
-* Manual (user initiated)
+* Marker (user initiated)
 * Automatic:
 
   * Requires `autoSyncEnabled` + `heypocketEnabled`
@@ -396,7 +396,7 @@ Key correctness fixes applied since initial implementation:
 ### Key Components
 
 * `OfflineAudioProcessor` → VAD + segmentation engine; applies Golden Anchor timestamp correction
-* `ManualRecordingExtractor` → Marker-based extraction; uses per-range Opus decoder for clean cross-segment decoding
+* `MarkerRecordingExtractor` → Marker-based extraction; uses per-range Opus decoder for clean cross-segment decoding
 * `SDCardWalSyncImpl` → Framed BLE sync with ACK gating, gap detection, and Golden Anchor management
 
 ---
