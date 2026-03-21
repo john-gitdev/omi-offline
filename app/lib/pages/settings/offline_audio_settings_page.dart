@@ -20,6 +20,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late String _recordingMode;
   late bool _autoSyncEnabled;
   late int _fixedIntervalMinutes;
+  late int _markerLookbackHours;
 
   @override
   void initState() {
@@ -34,6 +35,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _recordingMode = SharedPreferencesUtil().offlineRecordingMode;
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
     _fixedIntervalMinutes = SharedPreferencesUtil().offlineFixedIntervalMinutes;
+    _markerLookbackHours = SharedPreferencesUtil().markerLookbackHours;
   }
 
   void _saveSettings() {
@@ -47,6 +49,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     SharedPreferencesUtil().offlineRecordingMode = _recordingMode;
     SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
     SharedPreferencesUtil().offlineFixedIntervalMinutes = _fixedIntervalMinutes;
+    SharedPreferencesUtil().markerLookbackHours = _markerLookbackHours;
   }
 
   String _formatSeconds(double seconds) {
@@ -169,6 +172,50 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               Text(
                 'The Conversation Split Threshold below controls how much silence is used to find the edges of your marked conversation.',
                 style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Lookback Window',
+                style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'How far back before a marker to search for the conversation start.',
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  _IntervalOption(
+                    label: '1 hour',
+                    value: 1,
+                    selected: _markerLookbackHours == 1,
+                    onTap: () {
+                      setState(() => _markerLookbackHours = 1);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 10),
+                  _IntervalOption(
+                    label: '2 hours',
+                    value: 2,
+                    selected: _markerLookbackHours == 2,
+                    onTap: () {
+                      setState(() => _markerLookbackHours = 2);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 10),
+                  _IntervalOption(
+                    label: '3 hours',
+                    value: 3,
+                    selected: _markerLookbackHours == 3,
+                    onTap: () {
+                      setState(() => _markerLookbackHours = 3);
+                      _saveSettings();
+                    },
+                  ),
+                ],
               ),
             ] else ...[
               Text(
