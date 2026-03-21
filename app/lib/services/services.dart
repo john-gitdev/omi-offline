@@ -73,7 +73,7 @@ class ServiceManager {
     }
   }
 
-  void deinit() async {
+  Future<void> deinit() async {
     ConnectivityService().dispose();
     await _wal.stop();
     _mic.stop();
