@@ -47,7 +47,17 @@ class FixedIntervalAudioProcessor {
                 : null),
         _outputDir = outputDir,
         _intervalMs = SharedPreferencesUtil().offlineFixedIntervalMinutes * 60 * 1000,
-        _gapThresholdMs = SharedPreferencesUtil().offlineGapSeconds * 1000;
+        _gapThresholdMs = SharedPreferencesUtil().offlineGapSeconds * 1000 {
+    // Restore the boundary that was active when the previous session ended.
+    // If nonzero, the next call to processSegmentFile will skip frames that
+    // were already included in the last completed clip.
+    final persisted = SharedPreferencesUtil().fixedModeNextBoundaryMs;
+    if (persisted > 0) {
+      _nextBoundaryMs = persisted;
+      Logger.debug('FixedIntervalAudioProcessor: Restored persisted boundary '
+          '${DateTime.fromMillisecondsSinceEpoch(persisted)}');
+    }
+  }
 
   void destroy() {
     _decoder?.destroy();
@@ -138,11 +148,31 @@ class FixedIntervalAudioProcessor {
         _currentRefs = [];
         _nextBoundaryMs = 0;
         _recordingStartTime = null;
+        SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
       }
     }
 
-    // Initialise start time and first boundary on first frame of a new interval.
-    if (_currentRefs.isEmpty) {
+    // If we have a persisted boundary from a previous session and no frames
+    // accumulated yet, this segment may straddle the already-completed boundary.
+    // Compute how many leading frames to skip so we don't re-include audio that
+    // was already saved in the previous clip.
+    int framesToSkip = 0;
+    if (_currentRefs.isEmpty && _nextBoundaryMs > 0) {
+      final segmentStartMs = segmentStartTime.millisecondsSinceEpoch;
+      if (segmentStartMs < _nextBoundaryMs) {
+        framesToSkip = ((_nextBoundaryMs - segmentStartMs) / frameDurationMs).ceil();
+        _recordingStartTime = DateTime.fromMillisecondsSinceEpoch(_nextBoundaryMs);
+        Logger.debug('FixedIntervalAudioProcessor: Skipping $framesToSkip leading frames '
+            '(already in previous clip). New interval starts at $_recordingStartTime');
+      } else {
+        // Segment starts at or after the boundary — no skip needed, compute fresh boundary.
+        _recordingStartTime = segmentStartTime;
+        _nextBoundaryMs = _computeNextBoundary(segmentStartMs);
+      }
+    }
+
+    // Initialise start time and first boundary on first frame of a truly new interval.
+    if (_currentRefs.isEmpty && _nextBoundaryMs == 0) {
       _recordingStartTime = segmentStartTime;
       _nextBoundaryMs = _computeNextBoundary(segmentStartTime.millisecondsSinceEpoch);
       Logger.debug(
@@ -167,6 +197,13 @@ class FixedIntervalAudioProcessor {
 
       off += len;
 
+      // Skip leading frames that were already included in the previous session's
+      // last completed clip. frameIndex counts only non-metadata frames.
+      if (frameIndex < framesToSkip) {
+        frameIndex++;
+        continue;
+      }
+
       if (frameIndex++ % 50 == 0) await Future.delayed(Duration.zero);
 
       // Check boundary before accumulating this frame.
@@ -186,6 +223,8 @@ class FixedIntervalAudioProcessor {
         _recordingStartTime = DateTime.fromMillisecondsSinceEpoch(_nextBoundaryMs);
         _currentRefs = [];
         _nextBoundaryMs += _intervalMs;
+        // Persist the new boundary so the next session can resume correctly.
+        SharedPreferencesUtil().fixedModeNextBoundaryMs = _nextBoundaryMs;
       }
 
       _currentRefs.add(FrameRef(segmentFile: segmentFile, byteOffset: byteOffset, frameLength: len));
@@ -217,6 +256,8 @@ class FixedIntervalAudioProcessor {
     _nextBoundaryMs = 0;
     _recordingStartTime = null;
     _lastSegmentEndTime = null;
+    // Partial interval fully written — no boundary to resume from next session.
+    SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
     Logger.debug('FixedIntervalAudioProcessor: Flushed remaining buffer.');
     return filePath;
   }
