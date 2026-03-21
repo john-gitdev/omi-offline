@@ -154,8 +154,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       if (syncs.isSyncing) {
         Logger.debug('DebugTools: Cancelling active sync before deleting from device');
         syncs.cancelSync();
-        // Wait briefly for the stream to tear down
-        await Future.delayed(const Duration(milliseconds: 500));
+        await syncs.cancelFuture?.timeout(const Duration(seconds: 2), onTimeout: () {});
       }
 
       Logger.debug('DebugTools: Calling deleteAllPendingWals()');
