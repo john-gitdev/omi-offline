@@ -171,7 +171,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
           _hasLowBatteryAlerted = true;
           Logger.debug('Low Battery Alert');
         } else if (batteryLevel > 20) {
-          _hasLowBatteryAlerted = true;
+          // Reset when battery recovers so the alert can fire again if it drops below 20
+          _hasLowBatteryAlerted = false;
         }
 
         final delta = (_lastNotifiedBatteryLevel - value).abs();
