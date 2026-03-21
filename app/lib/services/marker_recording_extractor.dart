@@ -92,14 +92,14 @@ const int _bucketSize = 800; // samples per bucket
 const int _safetyMarginSegments = 2;
 const int _cacheMaxBytes = 5 * 1024 * 1024; // 5 MB
 
-// ─── ManualRecordingExtractor ─────────────────────────────────────────────────
+// ─── MarkerRecordingExtractor ─────────────────────────────────────────────────
 
-class ManualRecordingExtractor {
+class MarkerRecordingExtractor {
   final int _splitFrames;
   final double _snrMarginDb;
   final SimpleOpusDecoder? _providedDecoder;
 
-  ManualRecordingExtractor({SimpleOpusDecoder? decoder})
+  MarkerRecordingExtractor({SimpleOpusDecoder? decoder})
       : _splitFrames = (SharedPreferencesUtil().offlineSplitSeconds * 1000) ~/ _frameDurationMs,
         _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb,
         _providedDecoder = decoder;
@@ -628,7 +628,7 @@ class ManualRecordingExtractor {
     }
 
     // Hit maxWindowFrames cap
-    Logger.debug('ManualRecordingExtractor: window truncated at maxWindowFrames cap');
+    Logger.debug('MarkerRecordingExtractor: window truncated at maxWindowFrames cap');
     return (endSegmentIdx: scanCi, endFrameIdx: scanFi, isComplete: false);
   }
 
@@ -725,7 +725,7 @@ class ManualRecordingExtractor {
     try {
       aacSession = await AacEncoder.startEncoder(_sampleRate, m4aPath);
     } on Exception catch (e) {
-      Logger.error('ManualRecordingExtractor: AAC startEncoder failed: $e');
+      Logger.error('MarkerRecordingExtractor: AAC startEncoder failed: $e');
       decoder?.destroy();
       return null;
     }
@@ -807,7 +807,7 @@ class ManualRecordingExtractor {
 
       await AacEncoder.finishEncoder(aacSession!);
     } on Exception catch (e) {
-      Logger.error('ManualRecordingExtractor: AAC encoding failed: $e');
+      Logger.error('MarkerRecordingExtractor: AAC encoding failed: $e');
       await currentRaf?.close();
       decoder?.destroy();
       return null;
@@ -853,7 +853,7 @@ class ManualRecordingExtractor {
     }
     await File('$outputDir/recording_$timestamp.meta').writeAsBytes(metaOut);
 
-    Logger.debug('ManualRecordingExtractor: saved recording_$timestamp.m4a (${durationMs}ms)');
+    Logger.debug('MarkerRecordingExtractor: saved recording_$timestamp.m4a (${durationMs}ms)');
     return m4aPath;
   }
 
