@@ -898,6 +898,11 @@ bool write_marker_to_storage(void)
 #define MAX_AUDIO_FILE_SIZE 300000
 static uint32_t last_timestamp_uptime = 0;
 
+void reset_last_timestamp_uptime(void)
+{
+    last_timestamp_uptime = 0;
+}
+
 void test_pusher(void)
 {
     uint32_t runs_count = 0;
