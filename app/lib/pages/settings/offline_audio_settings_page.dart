@@ -34,7 +34,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _adjustmentMode = SharedPreferencesUtil().offlineAdjustmentMode;
     _recordingMode = SharedPreferencesUtil().offlineRecordingMode;
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
-    _fixedIntervalMinutes = SharedPreferencesUtil().offlineFixedIntervalMinutes;
+    _fixedIntervalMinutes = SharedPreferencesUtil().offlineFixedIntervalMinutes; // default 120
     _markerLookbackHours = SharedPreferencesUtil().markerLookbackHours;
   }
 
@@ -231,6 +231,16 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               Row(
                 children: [
                   _IntervalOption(
+                    label: '15 min',
+                    value: 15,
+                    selected: _fixedIntervalMinutes == 15,
+                    onTap: () {
+                      setState(() => _fixedIntervalMinutes = 15);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  _IntervalOption(
                     label: '30 min',
                     value: 30,
                     selected: _fixedIntervalMinutes == 30,
@@ -239,7 +249,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                       _saveSettings();
                     },
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   _IntervalOption(
                     label: '1 hour',
                     value: 60,
@@ -249,7 +259,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                       _saveSettings();
                     },
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   _IntervalOption(
                     label: '2 hours',
                     value: 120,
