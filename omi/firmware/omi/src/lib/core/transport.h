@@ -46,4 +46,10 @@ int broadcast_audio_packets(uint8_t *buffer, size_t size);
  */
 struct bt_conn *get_current_connection();
 
+extern uint32_t device_session_id;
+extern uint32_t segment_index;
+
+bool write_custom_packet_to_storage(uint8_t marker, uint8_t *data, uint8_t data_size);
+void reset_last_timestamp_uptime(void);
+
 #endif // TRANSPORT_H

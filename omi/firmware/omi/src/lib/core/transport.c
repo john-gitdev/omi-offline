@@ -845,8 +845,8 @@ bool write_to_storage(void)
     return write_custom_packet_to_storage((uint8_t)tx_buffer_size, buffer, (uint8_t)tx_buffer_size);
 }
 
-static uint32_t device_session_id = 0;
-static uint32_t segment_index = 0;
+uint32_t device_session_id = 0;
+uint32_t segment_index = 0;
 
 bool write_timestamp_to_storage(void)
 {

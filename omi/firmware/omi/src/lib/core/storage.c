@@ -16,6 +16,7 @@
 #include "transport.h"
 #include "utils.h"
 #include "mic.h"
+#include "rtc.h"
 #ifdef CONFIG_OMI_ENABLE_WIFI
 #include "wifi.h"
 #endif
@@ -488,6 +489,7 @@ void storage_write(void)
                 // Inject a fresh metadata packet at the start of the new file
                 // so the audio recorded immediately after wipe isn't orphaned.
                 segment_index = 0;
+                reset_last_timestamp_uptime();
                 uint8_t temp_buffer[16] = {0};
                 uint32_t current_time = rtc_get_utc_time_ms() / 1000;
                 uint32_t current_uptime = k_uptime_get_32();
