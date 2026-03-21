@@ -46,10 +46,15 @@ class SharedPreferencesUtil {
 
   set offlineAdjustmentMode(bool value) => saveBool('offlineAdjustmentMode', value);
 
-  // 'automatic' = continuous VAD, 'marker' = marker-based extraction
+  // 'automatic' = continuous VAD, 'marker' = marker-based extraction, 'fixed' = fixed wall-clock intervals
   String get offlineRecordingMode => getString('offlineRecordingMode', defaultValue: 'automatic');
 
   set offlineRecordingMode(String v) => saveString('offlineRecordingMode', v);
+
+  // Interval in minutes for fixed recording mode: 30, 60, or 120
+  int get offlineFixedIntervalMinutes => getInt('offlineFixedIntervalMinutes', defaultValue: 60);
+
+  set offlineFixedIntervalMinutes(int value) => saveInt('offlineFixedIntervalMinutes', value);
 
   bool get autoSyncEnabled => getBool('autoSyncEnabled', defaultValue: true);
 
@@ -115,6 +120,9 @@ class SharedPreferencesUtil {
     }
     if (!prefs.containsKey('offlineRecordingMode')) {
       prefs.setString('offlineRecordingMode', 'automatic');
+    }
+    if (!prefs.containsKey('offlineFixedIntervalMinutes')) {
+      prefs.setInt('offlineFixedIntervalMinutes', 60);
     }
   }
 
