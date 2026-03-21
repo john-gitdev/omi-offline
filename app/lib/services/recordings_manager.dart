@@ -310,26 +310,33 @@ class RecordingsManager {
 
               DateTime segmentStartTime;
               if (deviceSessionId != null && segmentIndex != null) {
-                final anchorUtc = SharedPreferencesUtil()
-                    .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
-                final anchorUptime = SharedPreferencesUtil()
+                final sessionAnchorUtc = SharedPreferencesUtil()
+                    .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
+                final sessionAnchorUptime = SharedPreferencesUtil()
+                    .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
+                final segmentAnchorUptime = SharedPreferencesUtil()
                     .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
-                if (anchorUtc > 0) {
-                  segmentStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
-                } else if (anchorUptime > 0) {
-                  // No RTC lock at record time — back-calculate from session-level anchor
-                  final sessionAnchorUtc = SharedPreferencesUtil()
-                      .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
-                  final sessionAnchorUptime = SharedPreferencesUtil()
-                      .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
-                  if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
-                    final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
-                    segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
-                  } else {
+
+                if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0 && segmentAnchorUptime > 0) {
+                  // Retroactive Correction: Back-calculate segment start time using the session's BEST anchor.
+                  // This fixes 'stale' timestamps from periods where the Omi was unsynced (e.g. after battery death).
+                  final uptimeDeltaMs = sessionAnchorUptime - segmentAnchorUptime;
+                  final realUtcSecs = sessionAnchorUtc - (uptimeDeltaMs ~/ 1000);
+                  segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+                  
+                  // If the result is December 1969/January 1970, it's a failed anchor. Fall back.
+                  if (segmentStartTime.year < 2000) {
                     segmentStartTime = file.lastModifiedSync();
                   }
                 } else {
-                  segmentStartTime = file.lastModifiedSync();
+                  // Fallback: If no session anchor exists, try segment-specific or modification time
+                  final segmentAnchorUtc = SharedPreferencesUtil()
+                      .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
+                  if (segmentAnchorUtc > 0) {
+                    segmentStartTime = DateTime.fromMillisecondsSinceEpoch(segmentAnchorUtc * 1000);
+                  } else {
+                    segmentStartTime = file.lastModifiedSync();
+                  }
                 }
               } else {
                 segmentStartTime = file.lastModifiedSync();

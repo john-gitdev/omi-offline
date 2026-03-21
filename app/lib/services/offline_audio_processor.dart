@@ -121,22 +121,41 @@ class OfflineAudioProcessor {
           try {
             final utcTime = byteData.getUint32(off + 4, Endian.little);
             final uptimeMs = byteData.getUint32(off + 8, Endian.little);
-            if (utcTime > 0) {
-              segmentStartTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
-            } else {
-              final anchorUtc = SharedPreferencesUtil()
-                  .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
-              final anchorUptime = SharedPreferencesUtil()
-                  .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
-              if (anchorUtc > 0 && anchorUptime > 0) {
-                final realUtcSecs = anchorUtc - ((anchorUptime - uptimeMs) ~/ 1000);
-                segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+
+            final sessionAnchorUtc = SharedPreferencesUtil()
+                .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
+            final sessionAnchorUptime = SharedPreferencesUtil()
+                .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
+
+            if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
+              // Retroactive Correction: Back-calculate segment start time using the session's BEST anchor.
+              // This handles 'stale' timestamps from periods where the Omi was unsynced (e.g. after battery death).
+              final uptimeDeltaMs = sessionAnchorUptime - uptimeMs;
+              final realUtcSecs = sessionAnchorUtc - (uptimeDeltaMs ~/ 1000);
+              final calculatedTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+
+              if (utcTime > 0) {
+                final omiTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
+                final driftMs = calculatedTime.difference(omiTime).inMilliseconds.abs();
+                
+                // If Omi time is stale (year < 2000) or significantly drifted (>60s), trust the calculated time.
+                if (omiTime.year < 2000 || driftMs > 60000) {
+                  segmentStartTime = calculatedTime;
+                  Logger.debug("OfflineAudioProcessor: Retroactively correcting stale metadata "
+                      "(Omi: $omiTime, Corrected: $calculatedTime, Session: $deviceSessionId)");
+                } else {
+                  segmentStartTime = omiTime; // Omi clock is already accurate
+                }
+              } else {
+                segmentStartTime = calculatedTime;
               }
+            } else if (utcTime > 0) {
+              segmentStartTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
             }
           } catch (e) {
             Logger.error("OfflineAudioProcessor: Error parsing metadata packet: $e");
           }
-          break; // found precise time
+          break; // found timing information
         }
         off += 4 + len;
       }
