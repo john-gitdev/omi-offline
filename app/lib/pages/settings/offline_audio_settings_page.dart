@@ -132,33 +132,29 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 'All audio is continuously processed and split by silence detection.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
               ),
-              const SizedBox(height: 20),
-              const Text(
-                'Adjustment Mode',
-                style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Keep raw segments after processing so you can reprocess with different settings.',
-                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-              ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 16),
               Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  _ModeOption(
-                    label: 'Off',
-                    selected: !_adjustmentMode,
-                    onTap: () {
-                      setState(() => _adjustmentMode = false);
-                      _saveSettings();
-                    },
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Adjustment Mode',
+                        style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Keep raw segments so you can reprocess\nwith different settings.',
+                        style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 10),
-                  _ModeOption(
-                    label: 'On',
-                    selected: _adjustmentMode,
-                    onTap: () {
-                      setState(() => _adjustmentMode = true);
+                  Switch(
+                    value: _adjustmentMode,
+                    activeThumbColor: Colors.deepPurpleAccent,
+                    onChanged: (value) {
+                      setState(() => _adjustmentMode = value);
                       _saveSettings();
                     },
                   ),
