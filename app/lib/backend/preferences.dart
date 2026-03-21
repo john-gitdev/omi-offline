@@ -56,10 +56,11 @@ class SharedPreferencesUtil {
 
   set offlineFixedIntervalMinutes(int value) => saveInt('offlineFixedIntervalMinutes', value);
 
-  // Lookback window in hours for marker mode: how far before a marker to scan for conversation start.
-  int get markerLookbackHours => getInt('markerLookbackHours', defaultValue: 2);
+  // Lookback window in minutes for marker mode: how far before a marker to scan for conversation start.
+  // Options: 15, 30, 60, 120. Default: 120 (2 hours).
+  int get markerLookbackMinutes => getInt('markerLookbackMinutes', defaultValue: 120);
 
-  set markerLookbackHours(int value) => saveInt('markerLookbackHours', value);
+  set markerLookbackMinutes(int value) => saveInt('markerLookbackMinutes', value);
 
   // Epoch ms of the next pending boundary for fixed mode.
   // Persisted so a fresh processor on the next sync knows which frames in the
