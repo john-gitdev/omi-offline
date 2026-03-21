@@ -127,12 +127,44 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               ],
             ),
             const SizedBox(height: 10),
-            if (_recordingMode == 'automatic')
+            if (_recordingMode == 'automatic') ...[
               Text(
                 'All audio is continuously processed and split by silence detection.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              )
-            else if (_recordingMode == 'marker') ...[
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Adjustment Mode',
+                style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Keep raw segments after processing so you can reprocess with different settings.',
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  _ModeOption(
+                    label: 'Off',
+                    selected: !_adjustmentMode,
+                    onTap: () {
+                      setState(() => _adjustmentMode = false);
+                      _saveSettings();
+                    },
+                  ),
+                  const SizedBox(width: 10),
+                  _ModeOption(
+                    label: 'On',
+                    selected: _adjustmentMode,
+                    onTap: () {
+                      setState(() => _adjustmentMode = true);
+                      _saveSettings();
+                    },
+                  ),
+                ],
+              ),
+            ] else if (_recordingMode == 'marker') ...[
               Text(
                 'Only conversations you marked with a double-press on your Omi will be saved.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
@@ -378,44 +410,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 });
                 _saveSettings();
               },
-            ),
-            const SizedBox(height: 32),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1C1C1E),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: _adjustmentMode ? Colors.deepPurpleAccent : Colors.transparent),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Adjustment Mode',
-                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                      ),
-                      Switch(
-                        value: _adjustmentMode,
-                        activeThumbColor: Colors.deepPurpleAccent,
-                        onChanged: (value) {
-                          setState(() {
-                            _adjustmentMode = value;
-                          });
-                          _saveSettings();
-                        },
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'When enabled, raw audio segments are NOT deleted after processing. This allows you to fine-tune these sliders and reprocess your audio until you find the perfect settings. Turning this off will delete all raw segments after they are processed.',
-                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                  ),
-                ],
-              ),
             ),
             const SizedBox(height: 32),
             Container(
