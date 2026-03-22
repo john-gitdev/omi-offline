@@ -840,34 +840,52 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         _downloadStartTime = DateTime.now();
 
         final List<File> syncedFiles = [];
+        const int maxGapRetries = 3;
+        int gapRetries = 0;
         try {
-          await _readStorageBytesToFile(
-              wal,
-              (File file, int offset, int timerStart, {String? subFolder}) async {
-                if (_isCancelled) {
-                  throw Exception("Sync cancelled by user");
-                }
+          while (true) {
+            try {
+              await _readStorageBytesToFile(
+                  wal,
+                  (File file, int offset, int timerStart, {String? subFolder}) async {
+                    if (_isCancelled) {
+                      throw Exception("Sync cancelled by user");
+                    }
 
-                syncedFiles.add(file);
-                int bytesInSegment = offset - lastOffset;
-                _updateSpeed(bytesInSegment);
-                await _registerSingleSegment(wal, file, timerStart);
-                lastOffset = offset;
-                listener.onWalUpdated();
-              },
-              force: true,
-              onProgress: (offset) {
-                wal.walOffset = offset;
-                final remainingBytes = wal.storageTotalBytes - offset;
-                final seconds = (remainingBytes / (wal.codec.getStorageBytesPerMinute() / 60.0)).truncate();
-                wal.estimatedSegments = (seconds / 60).ceil();
+                    syncedFiles.add(file);
+                    int bytesInSegment = offset - lastOffset;
+                    _updateSpeed(bytesInSegment);
+                    await _registerSingleSegment(wal, file, timerStart);
+                    lastOffset = offset;
+                    listener.onWalUpdated();
+                  },
+                  force: true,
+                  onProgress: (offset) {
+                    wal.walOffset = offset;
+                    final remainingBytes = wal.storageTotalBytes - offset;
+                    final seconds = (remainingBytes / (wal.codec.getStorageBytesPerMinute() / 60.0)).truncate();
+                    wal.estimatedSegments = (seconds / 60).ceil();
 
-                final double progressPercent =
-                    totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
-                final double clamped = progressPercent.clamp(0.0, 1.0);
-                progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
-                _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
-              });
+                    final double progressPercent =
+                        totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
+                    final double clamped = progressPercent.clamp(0.0, 1.0);
+                    progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+                    _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+                  });
+              break; // transfer completed successfully
+            } on _ProtocolGapException catch (e) {
+              gapRetries++;
+              if (gapRetries > maxGapRetries) {
+                Logger.error('SDCardWalSync: Gap retry limit ($maxGapRetries) exceeded. Aborting. $e');
+                rethrow;
+              }
+              Logger.debug(
+                  'SDCardWalSync: Gap detected — retry $gapRetries/$maxGapRetries from offset ${e.incoming}. $e');
+              wal.walOffset = e.incoming;
+              lastOffset = e.incoming;
+              await Future.delayed(const Duration(milliseconds: 100));
+            }
+          }
 
           // Update estimatedSegments from exact frame count now that we have the .bin files.
           final uniqueFiles = {for (final f in syncedFiles) f.path: f}.values.toList();
