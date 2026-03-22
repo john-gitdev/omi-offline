@@ -9,14 +9,14 @@ Instead of streaming audio in real time, the system:
 * Records continuously on-device
 * Stores audio locally in structured segments
 * Syncs data to the phone in batches over BLE
-* Processes audio **offline on the phone** using VAD and contextual analysis
+* Processes audio **offline on the phone** using VAD (RMS-based silence detection)
 
 **Key properties:**
 
 * No continuous BLE streaming
 * No real-time cloud dependency
-* Significantly improved battery life (phone + wearable)
-* High-quality speech segmentation via post-processing
+* Improved battery life (phone + wearable)
+* Speech segmentation via post-processing
 
 ---
 
@@ -53,7 +53,7 @@ The system was redesigned to:
 
 ### Result
 
-* Dramatically reduced battery usage
+* Reduced battery usage
 * More reliable data transfer
 
 ---
