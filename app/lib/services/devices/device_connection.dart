@@ -33,6 +33,10 @@ const String featuresCharacteristicUuid = '19b10021-e8f2-537e-4f6c-d104768a1214'
 const String timeSyncServiceUuid = '19b10030-e8f2-537e-4f6c-d104768a1214';
 const String timeSyncWriteCharacteristicUuid = '19b10031-e8f2-537e-4f6c-d104768a1214';
 
+const String batteryDetailServiceUuid = '19b10050-e8f2-537e-4f6c-d104768a1214';
+// 4-byte notify payload: [mv_lo, mv_hi, percentage (0-100), charging (0/1)]
+const String batteryDetailCharacteristicUuid = '19b10051-e8f2-537e-4f6c-d104768a1214';
+
 
 const String storageDataStreamServiceUuid = '30295780-4301-eabd-2904-2849adfeae43';
 const String storageReadControlCharacteristicUuid = '30295782-4301-eabd-2904-2849adfeae43';
