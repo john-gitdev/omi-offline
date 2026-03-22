@@ -12,7 +12,7 @@
 #include "lib/core/mic.h"
 #include "lib/core/haptic.h"
 #include "lib/core/utils.h"
-#include "lib/core/lib/battery/battery.h"
+#include "battery.h"
 #include "lib/core/sd_card.h"
 #include "lib/core/storage.h"
 #include "lib/core/settings.h"
