@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:disk_space_2/disk_space_2.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/transports/tcp_transport.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals/wal.dart';
@@ -39,8 +40,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   IWalSyncListener listener;
 
   bool _isCancelled = false;
+  bool _cancelPending = false;
   bool _isSyncing = false;
   bool _isDeviceRecordingFailed = false;
+  bool _intentionalWipe = false;
   TcpTransport? _activeTcpTransport;
   Completer<void>? _activeTransferCompleter;
   Completer<void>? _cancelCompleter;
@@ -89,18 +92,32 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   void cancelSync() {
     if (_isSyncing) {
       _cancelCompleter ??= Completer<void>();
-      _isCancelled = true;
-      Logger.debug("SDCardWalSync: Cancel requested, actively tearing down connections");
+      _cancelPending = true;
+      Logger.debug("SDCardWalSync: Cancel requested — will stop at next segment boundary");
 
+      // TCP has no segment granularity — disconnect immediately.
       final tcpTransport = _activeTcpTransport;
       if (tcpTransport != null) {
+        _isCancelled = true;
         tcpTransport.disconnect();
+        final transferCompleter = _activeTransferCompleter;
+        if (transferCompleter != null && !transferCompleter.isCompleted) {
+          transferCompleter.completeError(Exception('Sync cancelled by user'));
+        }
       }
 
-      final transferCompleter = _activeTransferCompleter;
-      if (transferCompleter != null && !transferCompleter.isCompleted) {
-        transferCompleter.completeError(Exception('Sync cancelled by user'));
-      }
+      // Hard-cancel fallback: if no segment boundary arrives within 10 seconds
+      // (e.g. connection dropped while waiting), abort immediately.
+      Future.delayed(const Duration(seconds: 10), () {
+        if (_cancelPending && !_isCancelled) {
+          Logger.debug("SDCardWalSync: Hard cancel — no segment boundary in 10s");
+          _isCancelled = true;
+          final transferCompleter = _activeTransferCompleter;
+          if (transferCompleter != null && !transferCompleter.isCompleted) {
+            transferCompleter.completeError(Exception('Sync cancelled by user'));
+          }
+        }
+      });
     }
   }
 
@@ -152,8 +169,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       Logger.debug("SDCard bad state, walOffset $walOffset > total $totalBytes");
       // totalBytes=0 with a stale offset means the firmware's SD worker failed to
       // reopen the data file after a DELETE — recording has stopped on the device.
+      // Suppress the alert if the wipe was intentional (user triggered delete/wipe).
       final failed = totalBytes == 0 && walOffset > 0;
-      if (failed != _isDeviceRecordingFailed) {
+      if (_intentionalWipe) {
+        _intentionalWipe = false;
+        _isDeviceRecordingFailed = false;
+        Logger.debug("SDCard: suppressing recording-failed alert after intentional wipe");
+      } else if (failed != _isDeviceRecordingFailed) {
         _isDeviceRecordingFailed = failed;
         if (failed) listener.onDeviceRecordingFailed();
       }
@@ -179,12 +201,18 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         timerStart = existingWal.timerStart;
       }
 
+      // Preserve in-memory walOffset if it's ahead of the device-committed offset.
+      // This happens after a mid-sync cancel: the device hasn't committed the new
+      // position yet, but we've already written those bytes and set walOffset further.
+      final effectiveWalOffset =
+          (existingWal != null && existingWal.walOffset > walOffset) ? existingWal.walOffset : walOffset;
+
       var wal = Wal(
         codec: codec,
         channel: 1,
         device: deviceId,
         fileNum: 1,
-        walOffset: walOffset,
+        walOffset: effectiveWalOffset,
         storageTotalBytes: totalBytes,
         timerStart: timerStart,
         storage: WalStorage.sdcard,
@@ -229,12 +257,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       final existingWal =
           _wals.firstWhereOrNull((w) => w.device == deviceId && w.fileNum == 1 && w.storage == WalStorage.sdcard);
       if (existingWal != null) timerStart = existingWal.timerStart;
+      final effectiveWalOffset =
+          (existingWal != null && existingWal.walOffset > walOffset) ? existingWal.walOffset : walOffset;
       wals.add(Wal(
         codec: codec,
         channel: 1,
         device: deviceId,
         fileNum: 1,
-        walOffset: walOffset,
+        walOffset: effectiveWalOffset,
         storageTotalBytes: totalBytes,
         timerStart: timerStart,
         storage: WalStorage.sdcard,
@@ -350,7 +380,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _activeTransferCompleter = completer;
     bool hasError = false;
     bool isProcessing = false;
-    Timer? completionTimeout;
+
     DateTime lastWaitingLog = DateTime.now().subtract(const Duration(seconds: 10));
 
     int? currentDeviceSessionId;
@@ -428,10 +458,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           List<int> payload = value.sublist(5);
 
           if (incomingOffset < expectedOffset) {
-            // Duplicate/Retry from firmware: Discard
+            final packetEnd = incomingOffset + payload.length;
+            if (packetEnd <= expectedOffset) {
+              // Fully duplicate — all bytes already received, discard.
+              Logger.debug(
+                  "SDCardWalSync: Discarding fully duplicate packet (incoming $incomingOffset..$packetEnd <= expected $expectedOffset)");
+              return;
+            }
+            // Partial overlap — firmware re-sent bytes we already have due to alignment.
+            // Trim the leading duplicate bytes and keep only the new tail.
+            final trimBytes = expectedOffset - incomingOffset;
             Logger.debug(
-                "SDCardWalSync: Discarding duplicate packet (incoming $incomingOffset < expected $expectedOffset)");
-            return;
+                "SDCardWalSync: Partial overlap — trimming $trimBytes leading bytes (incoming $incomingOffset, expected $expectedOffset)");
+            payload = payload.sublist(trimBytes);
+            incomingOffset = expectedOffset;
           } else if (incomingOffset > expectedOffset) {
             // Gap detected: Critical Error, Abort
             Logger.error(
@@ -457,7 +497,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         case 0x02: // PACKET_EOT: [0x02]
           Logger.debug("SDCardWalSync: Received EOT marker. offset=$expectedOffset, bufferLen=${streamBuffer.length}");
           isStreamLocked = true;
-          completionTimeout?.cancel();
           await flushBuffer();
           if (!completer.isCompleted) completer.complete();
           streamBuffer.clear();
@@ -517,7 +556,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
               if (currentDeviceSessionId != null) {
                 // 946684800 = Jan 1 2000 00:00:00 UTC — reject stale/unsynced Omi clocks.
-                final kMinValidEpoch = 946684800;
+                const kMinValidEpoch = 946684800;
                 if (utcTime > kMinValidEpoch) {
                   final existingUtc = SharedPreferencesUtil()
                       .getInt('anchor_utc_device_session_$currentDeviceSessionId', defaultValue: 0);
@@ -552,6 +591,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 await flushBuffer();
                 lastDeviceSessionId = currentDeviceSessionId;
                 lastSegmentIndex = currentSegmentIndex;
+
+                if (_cancelPending) {
+                  // Segment is fully written. Rewind walOffset to the start of this
+                  // metadata packet so the next sync resumes at a clean record boundary.
+                  wal.walOffset = expectedOffset - streamBuffer.length;
+                  Logger.debug(
+                      'SDCardWalSync: Cancel — stopped at segment boundary, walOffset → ${wal.walOffset}');
+                  isStreamLocked = true;
+                  if (!completer.isCompleted) {
+                    completer.completeError(Exception('Sync cancelled by user'));
+                  }
+                  return;
+                }
               }
 
               streamBuffer.removeRange(0, 1 + 16);
@@ -659,7 +711,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     try {
       await completer.future;
     } finally {
-      completionTimeout?.cancel();
       _storageStream?.cancel();
       _storageStream = null;
     }
@@ -673,6 +724,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   void _resetSyncState() {
     _isCancelled = false;
+    _cancelPending = false;
     _isSyncing = false;
     _totalBytesDownloaded = 0;
     _downloadStartTime = null;
@@ -995,6 +1047,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // The old loop over _wals was a silent no-op when _wals was empty (e.g.
     // called hours after the last sync when _wals had already been cleared).
     Logger.debug('SDCardWalSync: deleteAllPendingWals — sending DELETE for fileNum=1 to ${dev.id}');
+    _intentionalWipe = true;
     await _writeToStorage(dev.id, 1, 1, 0); // cmd=1 DELETE, fileNum=1, offset=0
     _wals = _wals.where((w) => w.fileNum != 1).toList();
     listener.onWalUpdated();
