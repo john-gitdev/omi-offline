@@ -31,30 +31,44 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<int> performRetrieveBatteryLevel() async {
+    // Try richer detail characteristic first (4-byte: mv_lo, mv_hi, pct, charging)
+    try {
+      final detail = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      if (detail.length >= 4) return detail[2];
+    } catch (_) {}
+    // Fall back to standard BAS
     try {
       final data = await transport.readCharacteristic(batteryServiceUuid, batteryLevelCharacteristicUuid);
       if (data.isNotEmpty) return data[0];
-      return -1;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error reading battery level: $e');
-      return -1;
     }
+    return -1;
   }
 
   @override
   Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({
     void Function(int)? onBatteryLevelChange,
   }) async {
+    // Prefer the detail characteristic — 4-byte payload: [mv_lo, mv_hi, percentage, charging]
+    try {
+      final stream = transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      final subscription = stream.listen((value) {
+        if (value.length >= 4 && onBatteryLevelChange != null) {
+          onBatteryLevelChange(value[2]); // byte 2 = percentage
+        }
+      });
+      return subscription;
+    } catch (_) {}
+    // Fall back to standard BAS
     try {
       final stream = transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
-
       final subscription = stream.listen((value) {
         if (value.isNotEmpty && onBatteryLevelChange != null) {
           onBatteryLevelChange(value[0]);
         }
       });
-
-      return subscription ;
+      return subscription;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error setting up battery listener: $e');
       return null;

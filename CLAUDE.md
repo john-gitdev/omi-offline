@@ -73,6 +73,7 @@ All Omi services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`:
 | Features | `0020` / `0021` | Capability flags |
 | Time sync | `0030` / `0031` | Write epoch seconds (u32 LE) |
 | Speaker/haptic | `0040` / `0041` | Playback commands |
+| Battery detail | `0050` / `0051` | Notify 4 bytes: uint16 LE millivolts (bytes 0–1), uint8 percentage 0–100 (byte 2), uint8 charging 0/1 (byte 3) |
 | Storage | `30295780-…` | File list + read/delete |
 | Button | `23ba7924-…` | Tap events (1=single, 2=double, 3=long, 4=press, 5=release) |
 
