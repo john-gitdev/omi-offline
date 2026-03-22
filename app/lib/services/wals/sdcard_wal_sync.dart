@@ -44,6 +44,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   bool _isSyncing = false;
   bool _isDeviceRecordingFailed = false;
   bool _intentionalWipe = false;
+  int _lastSegmentBoundaryOffset = 0;
   TcpTransport? _activeTcpTransport;
   Completer<void>? _activeTransferCompleter;
   Completer<void>? _cancelCompleter;
@@ -421,6 +422,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _storageStream?.cancel();
     int packetsReceived = 0;
     int expectedOffset = offset;
+    _lastSegmentBoundaryOffset = offset;
     bool hasReceivedStartAck = false;
     bool isStreamLocked = false;
 
@@ -591,6 +593,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 await flushBuffer();
                 lastDeviceSessionId = currentDeviceSessionId;
                 lastSegmentIndex = currentSegmentIndex;
+                _lastSegmentBoundaryOffset = expectedOffset - streamBuffer.length;
 
                 if (_cancelPending) {
                   // Segment is fully written. Rewind walOffset to the start of this
@@ -873,15 +876,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           if (wal.walOffset >= wal.storageTotalBytes) {
             await deleteWal(wal);
           } else {
+            wal.walOffset = _lastSegmentBoundaryOffset;
             Logger.debug(
-                "SDCardWalSync: Partial transfer (${wal.walOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
+                "SDCardWalSync: Partial transfer — rewound walOffset to last segment boundary $_lastSegmentBoundaryOffset (total ${wal.storageTotalBytes} bytes)");
             anyPartial = true;
           }
           wal.status = WalStatus.synced;
           _wals.removeWhere((w) => w.id == wal.id);
           listener.onWalUpdated();
         } catch (e) {
-          Logger.debug("SDCardWalSync: Error syncing WAL ${wal.id}: $e");
+          wal.walOffset = _lastSegmentBoundaryOffset;
+          Logger.debug("SDCardWalSync: Error syncing WAL ${wal.id}: $e — rewound walOffset to $_lastSegmentBoundaryOffset");
           wal.isSyncing = false;
           wal.syncStartedAt = null;
           wal.syncEtaSeconds = null;
@@ -982,14 +987,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (wal.walOffset >= wal.storageTotalBytes) {
         await deleteWal(wal);
       } else {
+        wal.walOffset = _lastSegmentBoundaryOffset;
         Logger.debug(
-            "SDCardWalSync: Partial transfer (${wal.walOffset}/${wal.storageTotalBytes} bytes) — skipping DELETE to preserve remaining data");
+            "SDCardWalSync: Partial transfer — rewound walOffset to last segment boundary $_lastSegmentBoundaryOffset (total ${wal.storageTotalBytes} bytes)");
       }
       wal.status = WalStatus.synced;
       _wals.removeWhere((w) => w.id == wal.id);
       listener.onWalUpdated();
     } catch (e) {
-      Logger.debug("SDCardWalSync: Error syncing WAL ${wal.id}: $e");
+      wal.walOffset = _lastSegmentBoundaryOffset;
+      Logger.debug("SDCardWalSync: Error syncing WAL ${wal.id}: $e — rewound walOffset to $_lastSegmentBoundaryOffset");
       wal.isSyncing = false;
       wal.syncStartedAt = null;
       listener.onWalUpdated();
