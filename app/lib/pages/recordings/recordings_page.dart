@@ -1041,11 +1041,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                         final minDuration = Duration(minutes: _filterMinutes);
                         final visibleBatches = (_filterEnabled && _filterMinutes > 0)
                             ? _batches.where((b) {
-                                if (b.rawSegments.isNotEmpty) return true;
                                 return b.finalizedRecordings
                                     .any((f) => Conversation.fromFile(f).duration >= minDuration);
                               }).toList()
-                            : _batches;
+                            : _batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
                         return RefreshIndicator(
                           color: Colors.deepPurpleAccent,
                           onRefresh: () {
