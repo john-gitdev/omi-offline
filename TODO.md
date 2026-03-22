@@ -1,5 +1,9 @@
 # TODO
 
+## User-configurable sync interval [minor]
+
+Currently sync runs on a fixed 30-minute interval. Let the user choose the interval (e.g. 15 min, 30 min, 1 hr, manual only) via a settings screen. Shorter intervals reduce data loss window but increase BLE radio usage and battery drain on both devices; surface this tradeoff in the UI.
+
 ## Apple Watch Integration [minor]
 
 The platform layer (watchOS app, iOS AppDelegate, Pigeon-generated Swift/Dart code) is complete and functional. The Dart side is never wired up.
