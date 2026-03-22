@@ -145,15 +145,20 @@ abstract class DeviceConnection {
 
   Future<StreamSubscription<List<int>>?> getBleBatteryLevelListener({
     void Function(int)? onBatteryLevelChange,
+    void Function(bool)? onChargingStateChange,
   }) async {
     if (await isConnected()) {
-      return await performGetBleBatteryLevelListener(onBatteryLevelChange: onBatteryLevelChange);
+      return await performGetBleBatteryLevelListener(
+        onBatteryLevelChange: onBatteryLevelChange,
+        onChargingStateChange: onChargingStateChange,
+      );
     }
     return null;
   }
 
   Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({
     void Function(int)? onBatteryLevelChange,
+    void Function(bool)? onChargingStateChange,
   }) async {
     final stream = transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
     return stream.listen((value) {
