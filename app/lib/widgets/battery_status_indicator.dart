@@ -72,7 +72,8 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
     return GestureDetector(
       onTap: widget.onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8.0),
+        // Vertical padding to match IconButton's 48-px minimum tap target.
+        padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 14.0),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
