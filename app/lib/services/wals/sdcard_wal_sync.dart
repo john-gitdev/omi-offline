@@ -404,6 +404,29 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // transfer can append.
     final Set<String> flushedSegmentsThisTransfer = {};
 
+    // Seed the last known session/segment so frames arriving before the first metadata
+    // packet go into the correct named folder instead of 'unsynced/'.
+    // Only seed if walOffset > 0 (not a fresh start) and we have a stored session.
+    final seededSessionId = SharedPreferencesUtil().latestSyncedDeviceSessionId;
+    final seededSegmentIndex = SharedPreferencesUtil().latestSyncedSegmentIndex;
+    if (offset > 0 && seededSessionId > 0 && seededSegmentIndex >= 0) {
+      lastDeviceSessionId = seededSessionId;
+      lastSegmentIndex = seededSegmentIndex;
+      // If the file from a previous partial sync already exists, mark it as already
+      // flushed so the first write uses append mode instead of overwriting it.
+      final directory = await getApplicationDocumentsDirectory();
+      final existingFile = File(
+          '${directory.path}/raw_segments/$seededSessionId/${seededSessionId}_$seededSegmentIndex.bin');
+      if (await existingFile.exists()) {
+        flushedSegmentsThisTransfer.add('${seededSessionId}_$seededSegmentIndex');
+        Logger.debug(
+            'SDCardWalSync: Seeded session=$seededSessionId segment=$seededSegmentIndex (append — file exists)');
+      } else {
+        Logger.debug(
+            'SDCardWalSync: Seeded session=$seededSessionId segment=$seededSegmentIndex (write — no existing file)');
+      }
+    }
+
     Future<void> flushBuffer() async {
       if (frameBuffer.isEmpty) return;
 
@@ -590,9 +613,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               }
 
               final deviceSessionId = currentDeviceSessionId;
+              final segmentIndex = currentSegmentIndex;
               if (deviceSessionId != null &&
                   deviceSessionId > SharedPreferencesUtil().latestSyncedDeviceSessionId) {
                 SharedPreferencesUtil().latestSyncedDeviceSessionId = deviceSessionId;
+              }
+              if (deviceSessionId != null && segmentIndex != null) {
+                if (deviceSessionId > SharedPreferencesUtil().latestSyncedDeviceSessionId ||
+                    (deviceSessionId == SharedPreferencesUtil().latestSyncedDeviceSessionId &&
+                        segmentIndex > SharedPreferencesUtil().latestSyncedSegmentIndex)) {
+                  SharedPreferencesUtil().latestSyncedSegmentIndex = segmentIndex;
+                }
               }
 
               Logger.debug("SDCardWalSync BLE: Parsed metadata session $currentDeviceSessionId");
