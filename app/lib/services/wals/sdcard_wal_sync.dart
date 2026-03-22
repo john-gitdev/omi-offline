@@ -206,7 +206,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       // This happens after a mid-sync cancel: the device hasn't committed the new
       // position yet, but we've already written those bytes and set walOffset further.
       final effectiveWalOffset =
-          (existingWal != null && existingWal.walOffset > walOffset) ? existingWal.walOffset : walOffset;
+          (existingWal != null && existingWal.walOffset > walOffset && existingWal.walOffset <= totalBytes)
+              ? existingWal.walOffset
+              : walOffset;
 
       var wal = Wal(
         codec: codec,
@@ -259,7 +261,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           _wals.firstWhereOrNull((w) => w.device == deviceId && w.fileNum == 1 && w.storage == WalStorage.sdcard);
       if (existingWal != null) timerStart = existingWal.timerStart;
       final effectiveWalOffset =
-          (existingWal != null && existingWal.walOffset > walOffset) ? existingWal.walOffset : walOffset;
+          (existingWal != null && existingWal.walOffset > walOffset && existingWal.walOffset <= totalBytes)
+              ? existingWal.walOffset
+              : walOffset;
       wals.add(Wal(
         codec: codec,
         channel: 1,
@@ -912,6 +916,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     required Wal wal,
     IWalSyncProgressListener? progress,
   }) async {
+    if (_isSyncing) {
+      Logger.debug("SDCardWalSync: Sync already in progress, ignoring duplicate syncWal request");
+      return null;
+    }
     _resetSyncState();
     _isSyncing = true;
     wal.isSyncing = true;
