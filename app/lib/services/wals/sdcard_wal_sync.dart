@@ -614,14 +614,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
               final deviceSessionId = currentDeviceSessionId;
               final segmentIndex = currentSegmentIndex;
-              if (deviceSessionId != null &&
-                  deviceSessionId > SharedPreferencesUtil().latestSyncedDeviceSessionId) {
-                SharedPreferencesUtil().latestSyncedDeviceSessionId = deviceSessionId;
-              }
               if (deviceSessionId != null && segmentIndex != null) {
-                if (deviceSessionId > SharedPreferencesUtil().latestSyncedDeviceSessionId ||
-                    (deviceSessionId == SharedPreferencesUtil().latestSyncedDeviceSessionId &&
-                        segmentIndex > SharedPreferencesUtil().latestSyncedSegmentIndex)) {
+                final storedSessionId = SharedPreferencesUtil().latestSyncedDeviceSessionId;
+                final storedSegmentIndex = SharedPreferencesUtil().latestSyncedSegmentIndex;
+                if (deviceSessionId > storedSessionId) {
+                  // New session — always update both; segment index resets regardless of value.
+                  SharedPreferencesUtil().latestSyncedDeviceSessionId = deviceSessionId;
+                  SharedPreferencesUtil().latestSyncedSegmentIndex = segmentIndex;
+                } else if (deviceSessionId == storedSessionId && segmentIndex > storedSegmentIndex) {
                   SharedPreferencesUtil().latestSyncedSegmentIndex = segmentIndex;
                 }
               }
