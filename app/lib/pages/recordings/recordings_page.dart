@@ -16,6 +16,7 @@ import 'package:omi/pages/settings/find_devices_page.dart';
 import 'package:omi/pages/settings/device_settings.dart';
 import 'package:omi/pages/recordings/recording_player_page.dart';
 import 'package:omi/widgets/dialog.dart';
+import 'package:omi/widgets/battery_status_indicator.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 // ─── State machine ──────────────────────────────────────────────────────────
@@ -1000,9 +1001,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                   ),
                 )
               else
-                IconButton(
-                  icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Colors.blueAccent, size: 20),
-                  onPressed: () => Navigator.of(context).push(
+                BatteryStatusIndicator(
+                  batteryLevel: deviceProvider.batteryLevel,
+                  isCharging: deviceProvider.isCharging,
+                  onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(builder: (c) => const DeviceSettings()),
                   ),
                 ),

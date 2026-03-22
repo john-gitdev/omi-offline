@@ -20,6 +20,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   StreamSubscription<List<int>>? _bleBatteryLevelListener;
   StreamSubscription<List<int>>? _bleButtonListener;
   int batteryLevel = -1;
+  bool isCharging = false;
   int storageFullPercentage = -1;
   int _lastNotifiedBatteryLevel = -1;
   DateTime? _lastBatteryNotifyTime;
@@ -98,6 +99,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     return connection.retrieveBatteryLevel();
   }
 
+  Future<bool> _retrieveChargingState(String deviceId) async {
+    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
+    if (connection == null) return false;
+    return connection.retrieveChargingState();
+  }
+
   Future<int> _retrieveStorageFullPercentage(String deviceId) async {
     var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
     if (connection == null) return -1;
@@ -110,12 +117,16 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   Future<StreamSubscription<List<int>>?> _getBleBatteryLevelListener(
     String deviceId, {
     void Function(int)? onBatteryLevelChange,
+    void Function(bool)? onChargingStateChange,
   }) async {
     var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
     if (connection == null) {
       return Future.value(null);
     }
-    return connection.getBleBatteryLevelListener(onBatteryLevelChange: onBatteryLevelChange);
+    return connection.getBleBatteryLevelListener(
+      onBatteryLevelChange: onBatteryLevelChange,
+      onChargingStateChange: onChargingStateChange,
+    );
   }
 
   Future<StreamSubscription<List<int>>?> _getBleButtonListener(
@@ -186,6 +197,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
         if (shouldNotify) {
           _lastNotifiedBatteryLevel = value;
           _lastBatteryNotifyTime = DateTime.now();
+          notifyListeners();
+        }
+      },
+      onChargingStateChange: (bool charging) {
+        if (isCharging != charging) {
+          isCharging = charging;
           notifyListeners();
         }
       },
@@ -446,6 +463,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     Logger.debug('onDisconnected inside: $connectedDevice');
     _stopHealthCheck();
     storageFullPercentage = -1;
+    isCharging = false;
     setConnectedDevice(null);
     setisDeviceStorageSupport();
     setIsConnected(false);
@@ -478,6 +496,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     await setisDeviceStorageSupport();
     setIsConnected(true);
 
+    isCharging = await _retrieveChargingState(device.id);
     int currentLevel = await _retrieveBatteryLevel(device.id);
     if (currentLevel != -1) {
       batteryLevel = currentLevel;
