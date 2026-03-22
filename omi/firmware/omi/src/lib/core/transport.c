@@ -25,7 +25,7 @@
 #include "features.h"
 #include "haptic.h"
 #include "mic.h"
-#include "lib/battery/battery.h"
+#include "battery.h"
 #ifdef CONFIG_OMI_ENABLE_MONITOR
 #include "monitor.h"
 #endif
