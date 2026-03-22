@@ -186,31 +186,49 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
         return err;
     }
 
-    // Calculate median of valid samples, discarding the first one (post-calibration)
-    // Copy samples to a temporary array for sorting
-    int16_t sorted_samples[ADC_TOTAL_SAMPLES];
+    // Copy samples to a working array, discarding the first post-calibration sample
+    int16_t work[ADC_TOTAL_SAMPLES];
     for (int i = 0; i < ADC_TOTAL_SAMPLES; i++) {
-        sorted_samples[i] = sample_buffer[i + 1];
+        work[i] = sample_buffer[i + 1];
     }
 
-    // Simple bubble sort for median calculation
-    for (int i = 0; i < ADC_TOTAL_SAMPLES - 1; i++) {
-        for (int j = 0; j < ADC_TOTAL_SAMPLES - i - 1; j++) {
-            if (sorted_samples[j] > sorted_samples[j + 1]) {
-                int16_t temp = sorted_samples[j];
-                sorted_samples[j] = sorted_samples[j + 1];
-                sorted_samples[j + 1] = temp;
-            }
-        }
-    }
-
-    // Calculate median
+    // Quickselect to find median in O(n) average time
+    // Hoare partition with defensive bounds guards on inner loops
+#define QS_SWAP(a, b) do { int16_t _t = (a); (a) = (b); (b) = _t; } while (0)
     int32_t adc_raw_val;
-    if (ADC_TOTAL_SAMPLES % 2 == 0) {
-        adc_raw_val = (sorted_samples[ADC_TOTAL_SAMPLES / 2 - 1] + sorted_samples[ADC_TOTAL_SAMPLES / 2]) / 2;
-    } else {
-        adc_raw_val = sorted_samples[ADC_TOTAL_SAMPLES / 2];
+    {
+        int lo = 0, hi = ADC_TOTAL_SAMPLES - 1;
+        int k = ADC_TOTAL_SAMPLES / 2; // upper-median index
+
+        // First pass: place work[k] (upper median)
+        int lo2 = 0, hi2 = ADC_TOTAL_SAMPLES - 1;
+        while (lo2 < hi2) {
+            int16_t pivot = work[(lo2 + hi2) / 2];
+            int i = lo2, j = hi2;
+            while (i <= j) {
+                while (i <= hi2 && work[i] < pivot) i++;
+                while (j >= lo2 && work[j] > pivot) j--;
+                if (i <= j) { QS_SWAP(work[i], work[j]); i++; j--; }
+            }
+            if (k <= j)      hi2 = j;
+            else if (k >= i) lo2 = i;
+            else             break;
+        }
+        int16_t upper = work[k];
+
+        if (ADC_TOTAL_SAMPLES % 2 != 0) {
+            adc_raw_val = upper;
+        } else {
+            // Lower median = max of work[0..k-1]
+            int16_t lower = work[0];
+            for (int i = 1; i < k; i++) {
+                if (work[i] > lower) lower = work[i];
+            }
+            adc_raw_val = ((int32_t)lower + upper) / 2;
+        }
+        (void)lo; (void)hi; // suppress unused warnings
     }
+#undef QS_SWAP
 
     LOG_INF("Median ADC raw (after discarding 1st of %d total): %d", ADC_TOTAL_SAMPLES + 1, adc_raw_val);
 
@@ -272,9 +290,13 @@ int battery_get_percentage(uint8_t *battery_percentage, uint16_t battery_millivo
     
                 // Linear interpolation between the two closest points
                 uint16_t voltage_range = battery_states[i].millivolts - battery_states[i + 1].millivolts;
+                if (voltage_range == 0) {
+                    raw_percentage = battery_states[i].percentage;
+                    break;
+                }
                 uint8_t percentage_range = battery_states[i].percentage - battery_states[i + 1].percentage;
                 uint16_t voltage_diff = battery_states[i].millivolts - battery_millivolt;
-    
+
                 raw_percentage = battery_states[i].percentage - (voltage_diff * percentage_range) / voltage_range;
                 break;
             }
