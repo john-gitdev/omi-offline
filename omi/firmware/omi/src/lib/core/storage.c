@@ -240,6 +240,7 @@ static uint8_t parse_storage_command(const void *buf, uint16_t len)
             LOG_WRN("file size is 0");
             return ZERO_FILE_SIZE;
         } else {
+            remaining_length = 0; // Stop any in-progress stream immediately before setting new offset
             offset = request_offset - (request_offset % SD_BLE_SIZE);
             transport_started = 1;
         }
