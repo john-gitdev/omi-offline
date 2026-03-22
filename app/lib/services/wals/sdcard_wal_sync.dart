@@ -42,6 +42,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   bool _isCancelled = false;
   bool _cancelPending = false;
   bool _isSyncing = false;
+  int _cancelGeneration = 0;
   bool _isDeviceRecordingFailed = false;
   bool _intentionalWipe = false;
   int _lastSegmentBoundaryOffset = 0;
@@ -109,8 +110,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       // Hard-cancel fallback: if no segment boundary arrives within 10 seconds
       // (e.g. connection dropped while waiting), abort immediately.
+      // Capture the generation so a stale timer from a previous cancel cannot
+      // fire against a new sync's completer.
+      final int generation = ++_cancelGeneration;
       Future.delayed(const Duration(seconds: 10), () {
-        if (_cancelPending && !_isCancelled) {
+        if (_cancelPending && !_isCancelled && _cancelGeneration == generation) {
           Logger.debug("SDCardWalSync: Hard cancel — no segment boundary in 10s");
           _isCancelled = true;
           final transferCompleter = _activeTransferCompleter;
@@ -183,6 +187,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       walOffset = 0;
     } else if (_isDeviceRecordingFailed) {
       _isDeviceRecordingFailed = false;
+      _intentionalWipe = false;
     }
 
     BleAudioCodec codec = await _getAudioCodec(deviceId);
@@ -407,9 +412,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // Seed the last known session/segment so frames arriving before the first metadata
     // packet go into the correct named folder instead of 'unsynced/'.
     // Only seed if walOffset > 0 (not a fresh start) and we have a stored session.
+    final seededDeviceId = SharedPreferencesUtil().latestSyncedDeviceId;
     final seededSessionId = SharedPreferencesUtil().latestSyncedDeviceSessionId;
     final seededSegmentIndex = SharedPreferencesUtil().latestSyncedSegmentIndex;
-    if (offset > 0 && seededSessionId > 0 && seededSegmentIndex >= 0) {
+    if (offset > 0 && seededDeviceId == deviceId && seededSessionId > 0 && seededSegmentIndex >= 0) {
       lastDeviceSessionId = seededSessionId;
       lastSegmentIndex = seededSegmentIndex;
       // If the file from a previous partial sync already exists, mark it as already
@@ -615,10 +621,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               final deviceSessionId = currentDeviceSessionId;
               final segmentIndex = currentSegmentIndex;
               if (deviceSessionId != null && segmentIndex != null) {
+                final storedDeviceId = SharedPreferencesUtil().latestSyncedDeviceId;
                 final storedSessionId = SharedPreferencesUtil().latestSyncedDeviceSessionId;
                 final storedSegmentIndex = SharedPreferencesUtil().latestSyncedSegmentIndex;
-                if (deviceSessionId > storedSessionId) {
-                  // New session — always update both; segment index resets regardless of value.
+                if (deviceId != storedDeviceId || deviceSessionId > storedSessionId) {
+                  // Different device or new session — update all three.
+                  SharedPreferencesUtil().latestSyncedDeviceId = deviceId;
                   SharedPreferencesUtil().latestSyncedDeviceSessionId = deviceSessionId;
                   SharedPreferencesUtil().latestSyncedSegmentIndex = segmentIndex;
                 } else if (deviceSessionId == storedSessionId && segmentIndex > storedSegmentIndex) {
@@ -767,6 +775,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   void _resetSyncState() {
     _isCancelled = false;
     _cancelPending = false;
+    _cancelGeneration++;
     _isSyncing = false;
     _totalBytesDownloaded = 0;
     _downloadStartTime = null;
