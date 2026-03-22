@@ -269,6 +269,30 @@ static struct bt_gatt_attr time_sync_service_attr[] = {
 
 static struct bt_gatt_service time_sync_service = BT_GATT_SERVICE(time_sync_service_attr);
 
+// --- Battery Detail Service ---
+// Service UUID: 19B10050-E8F2-537E-4F6C-D104768A1214
+// Characteristics:
+//   - Battery Detail (19B10051): Notify 4 bytes [mv_lo, mv_hi, percentage, charging]
+#ifdef CONFIG_OMI_ENABLE_BATTERY
+static struct bt_uuid_128 battery_detail_service_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10050, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+static struct bt_uuid_128 battery_detail_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10051, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+
+static struct bt_gatt_attr battery_detail_service_attr[] = {
+    BT_GATT_PRIMARY_SERVICE(&battery_detail_service_uuid),
+    BT_GATT_CHARACTERISTIC(&battery_detail_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_READ,
+                           NULL,
+                           NULL,
+                           NULL),
+    BT_GATT_CCC(NULL, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+};
+
+static struct bt_gatt_service battery_detail_service = BT_GATT_SERVICE(battery_detail_service_attr);
+#endif
+
 // Advertisement data
 static const struct bt_data bt_ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
@@ -488,6 +512,18 @@ void broadcast_battery_level(struct k_work *work_item)
         if (err) {
             LOG_ERR("Error updating battery level: %d", err);
         }
+
+        // Notify detailed battery info (millivolts + percentage + charging state)
+        // Only send if a client is connected — avoids wasted BLE stack work
+        if (get_current_connection() != NULL) {
+            uint8_t buf[4];
+            buf[0] = (uint8_t)(battery_millivolt & 0xFF);
+            buf[1] = (uint8_t)(battery_millivolt >> 8);
+            buf[2] = battery_percentage;
+            buf[3] = (uint8_t)is_charging;
+            bt_gatt_notify(NULL, &battery_detail_service_attr[1], buf, sizeof(buf));
+        }
+
         if (battery_millivolt < CONFIG_OMI_BATTERY_CRITICAL_MV) {
             LOG_WRN("Battery critical level reached (%d mV). Initiating shutdown.", battery_millivolt);
             turnoff_all();
@@ -1087,6 +1123,9 @@ int transport_start()
     bt_gatt_service_register(&settings_service);
     bt_gatt_service_register(&features_service);
     bt_gatt_service_register(&time_sync_service);
+#ifdef CONFIG_OMI_ENABLE_BATTERY
+    bt_gatt_service_register(&battery_detail_service);
+#endif
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     // Register storage service for offline audio
