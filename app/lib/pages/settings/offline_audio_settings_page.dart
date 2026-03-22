@@ -148,6 +148,41 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Auto Sync',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        Switch(
+                          value: _autoSyncEnabled,
+                          activeThumbColor: Colors.deepPurpleAccent,
+                          onChanged: (value) {
+                            setState(() => _autoSyncEnabled = value);
+                            _markDirty();
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'When enabled, your Omi will automatically try to connect, sync, and process segments every 30 minutes.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 32),
               const Text(
                 'Recording Mode',
                 style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
@@ -326,41 +361,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   ],
                 ),
               ],
-              const SizedBox(height: 32),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Auto Sync',
-                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                        ),
-                        Switch(
-                          value: _autoSyncEnabled,
-                          activeThumbColor: Colors.deepPurpleAccent,
-                          onChanged: (value) {
-                            setState(() => _autoSyncEnabled = value);
-                            _markDirty();
-                          },
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'When enabled, your Omi will automatically try to connect, sync, and process segments every 30 minutes.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    ),
-                  ],
-                ),
-              ),
               if (_recordingMode == 'automatic' || _recordingMode == 'marker') ...[
                 const SizedBox(height: 32),
                 const Text(
