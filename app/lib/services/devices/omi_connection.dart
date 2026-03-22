@@ -49,13 +49,15 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({
     void Function(int)? onBatteryLevelChange,
+    void Function(bool)? onChargingStateChange,
   }) async {
     // Prefer the detail characteristic — 4-byte payload: [mv_lo, mv_hi, percentage, charging]
     try {
       final stream = transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
       final subscription = stream.listen((value) {
-        if (value.length >= 4 && onBatteryLevelChange != null) {
-          onBatteryLevelChange(value[2]); // byte 2 = percentage
+        if (value.length >= 4) {
+          if (onBatteryLevelChange != null) onBatteryLevelChange(value[2]); // byte 2 = percentage
+          if (onChargingStateChange != null) onChargingStateChange(value[3] != 0); // byte 3 = charging
         }
       });
       return subscription;
