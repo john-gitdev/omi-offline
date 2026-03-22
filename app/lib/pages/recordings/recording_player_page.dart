@@ -28,6 +28,9 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   Duration _total = Duration.zero;
   bool _isPlaying = false;
   bool _isUploading = false;
+  StreamSubscription? _positionSub;
+  StreamSubscription? _durationSub;
+  StreamSubscription? _playerStateSub;
 
   @override
   void initState() {
@@ -43,13 +46,13 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
     final dur = _player.duration ?? widget.conversation.duration;
     if (mounted) setState(() => _total = dur);
 
-    _player.positionStream.listen((pos) {
+    _positionSub = _player.positionStream.listen((pos) {
       if (mounted) setState(() => _position = pos);
     });
-    _player.durationStream.listen((dur) {
+    _durationSub = _player.durationStream.listen((dur) {
       if (dur != null && mounted) setState(() => _total = dur);
     });
-    _player.playerStateStream.listen((state) {
+    _playerStateSub = _player.playerStateStream.listen((state) {
       if (mounted) {
         setState(() {
           _isPlaying = state.playing && state.processingState != ProcessingState.completed;
@@ -179,6 +182,9 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
 
   @override
   void dispose() {
+    _positionSub?.cancel();
+    _durationSub?.cancel();
+    _playerStateSub?.cancel();
     _player.dispose();
     super.dispose();
   }

@@ -57,6 +57,7 @@ class ConnectivityService {
     _connectivitySubscription?.cancel();
     _internetSubscription?.cancel();
     _connectionChangeController.close();
+    _isInitialized = false;
   }
 
   void _handleConnectivityChange(List<ConnectivityResult> result) {
