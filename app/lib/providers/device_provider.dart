@@ -99,6 +99,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     return connection.retrieveBatteryLevel();
   }
 
+  Future<bool> _retrieveChargingState(String deviceId) async {
+    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
+    if (connection == null) return false;
+    return connection.retrieveChargingState();
+  }
+
   Future<int> _retrieveStorageFullPercentage(String deviceId) async {
     var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
     if (connection == null) return -1;
@@ -490,7 +496,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     await setisDeviceStorageSupport();
     setIsConnected(true);
 
-    isCharging = false;
+    isCharging = await _retrieveChargingState(device.id);
     int currentLevel = await _retrieveBatteryLevel(device.id);
     if (currentLevel != -1) {
       batteryLevel = currentLevel;
