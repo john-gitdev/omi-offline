@@ -47,6 +47,15 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
+  Future<bool> performRetrieveChargingState() async {
+    try {
+      final detail = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      if (detail.length >= 4) return detail[3] != 0;
+    } catch (_) {}
+    return false;
+  }
+
+  @override
   Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({
     void Function(int)? onBatteryLevelChange,
     void Function(bool)? onChargingStateChange,

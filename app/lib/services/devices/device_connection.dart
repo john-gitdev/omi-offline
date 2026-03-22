@@ -142,6 +142,15 @@ abstract class DeviceConnection {
 
   Future<int> performRetrieveBatteryLevel();
 
+  Future<bool> retrieveChargingState() async {
+    if (await isConnected()) {
+      return performRetrieveChargingState();
+    }
+    return false;
+  }
+
+  Future<bool> performRetrieveChargingState() async => false;
+
 
   Future<StreamSubscription<List<int>>?> getBleBatteryLevelListener({
     void Function(int)? onBatteryLevelChange,
