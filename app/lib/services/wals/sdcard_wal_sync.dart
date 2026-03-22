@@ -371,6 +371,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     int fileNum = wal.fileNum;
     int offset = wal.walOffset;
     int timerStart = wal.timerStart;
+    // Tracks the current stream position so flushBuffer can pass it to the
+    // callback. Updated to match expectedOffset after each packet is processed.
+    int currentStreamOffset = offset;
 
     Logger.debug("_readStorageBytesToFile $offset");
 
@@ -416,7 +419,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           append: appendMode);
 
       try {
-        await callback(file, offset, timerStart, subFolder: subFolder);
+        await callback(file, currentStreamOffset, timerStart, subFolder: subFolder);
       } catch (e) {
         Logger.debug("SDCardWalSync: Callback failed: $e");
       }
@@ -493,6 +496,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           // Exact match: Process payload
           streamBuffer.addAll(payload);
           expectedOffset += payload.length;
+          currentStreamOffset = expectedOffset;
 
           // Report progress based on file offset
           if (onProgress != null) {
