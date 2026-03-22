@@ -120,11 +120,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   Future stop() async {
     _wals = [];
-    _storageStream?.cancel();
+    await _storageStream?.cancel();
   }
 
   @override
-  void setDevice(BtDevice? device) async {
+  Future<void> setDevice(BtDevice? device) async {
     _device = device;
     if (_device != null) {
       _wals = await getMissingWals();
@@ -666,7 +666,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   void _completeCancelIfPending() {
-    _cancelCompleter?.complete();
+    final c = _cancelCompleter;
+    if (c != null && !c.isCompleted) c.complete();
     _cancelCompleter = null;
   }
 

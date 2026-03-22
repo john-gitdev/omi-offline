@@ -58,6 +58,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   Timer? _pollTimer;
   bool _isUserTriggered = false; // true while user-initiated pipeline is running
+  Completer<void>? _pipelineCompleter; // completed when the pipeline reaches a terminal state
 
   // ─── Persistence keys ──────────────────────────────────────────────────────
   static const _kSpState = 'sp_state';
@@ -220,6 +221,13 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     }
     _prefs.saveString(_kSpLastCompleted, _lastCompletedStage);
     _prefs.saveString(_kSpLastActive, _lastActiveStage);
+    // Complete the refresh-indicator future when the pipeline reaches a terminal state.
+    if (newState == SyncProcessState.idle ||
+        newState == SyncProcessState.error ||
+        newState == SyncProcessState.successUi) {
+      _pipelineCompleter?.complete();
+      _pipelineCompleter = null;
+    }
   }
 
   void _transitionToError(String activeStage, String message) {
@@ -229,6 +237,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     setState(() => _spState = SyncProcessState.error);
     _prefs.saveString(_kSpState, 'error');
     _prefs.saveString(_kSpLastActive, activeStage);
+    _pipelineCompleter?.complete();
+    _pipelineCompleter = null;
   }
 
   void _persistProgress() {
@@ -301,6 +311,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     try {
       await syncs.syncAll(progress: this);
     } catch (e) {
+      _isUserTriggered = false;
       WakelockPlus.disable();
       if (_spState == SyncProcessState.stopping) {
         _transitionTo(SyncProcessState.idle);
@@ -422,9 +433,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     final confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
-        context,
-        () => Navigator.of(context).pop(false),
-        () => Navigator.of(context).pop(true),
+        c,
+        () => Navigator.of(c).pop(false),
+        () => Navigator.of(c).pop(true),
         'Cancel sync and processing?',
         'Progress will pause and can be resumed later.',
         confirmText: 'Stop',
@@ -1037,7 +1048,18 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                             : _batches;
                         return RefreshIndicator(
                           color: Colors.deepPurpleAccent,
-                          onRefresh: () async => _startPipeline(),
+                          onRefresh: () {
+                            if (_spState != SyncProcessState.idle) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Sync already in progress')),
+                              );
+                              return Future.value();
+                            }
+                            final completer = Completer<void>();
+                            _pipelineCompleter = completer;
+                            _startPipeline();
+                            return completer.future;
+                          },
                           child: visibleBatches.isEmpty
                               ? ListView(
                                   physics: const AlwaysScrollableScrollPhysics(),

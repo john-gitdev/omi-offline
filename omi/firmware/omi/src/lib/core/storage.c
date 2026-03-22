@@ -218,8 +218,9 @@ static uint8_t parse_storage_command(const void *buf, uint16_t len)
     const uint8_t file_num = ((uint8_t *) buf)[1];
     uint32_t request_offset = 0;
     if (len == 6) {
+        /* Offset is little-endian to match the rest of the BLE protocol. */
         request_offset =
-            ((uint8_t *) buf)[2] << 24 | ((uint8_t *) buf)[3] << 16 | ((uint8_t *) buf)[4] << 8 | ((uint8_t *) buf)[5];
+            ((uint8_t *) buf)[2] | ((uint8_t *) buf)[3] << 8 | ((uint8_t *) buf)[4] << 16 | (uint32_t)((uint8_t *) buf)[5] << 24;
     }
     LOG_INF("command successful: command: %d file: %d offset: %d \n", command, file_num, request_offset);
 

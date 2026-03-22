@@ -92,16 +92,18 @@ const int _bucketSize = 800; // samples per bucket
 const int _safetyMarginSegments = 2;
 const int _cacheMaxBytes = 5 * 1024 * 1024; // 5 MB
 
-// ─── ManualRecordingExtractor ─────────────────────────────────────────────────
+// ─── MarkerRecordingExtractor ─────────────────────────────────────────────────
 
-class ManualRecordingExtractor {
+class MarkerRecordingExtractor {
   final int _splitFrames;
   final double _snrMarginDb;
+  final int _lookbackMs;
   final SimpleOpusDecoder? _providedDecoder;
 
-  ManualRecordingExtractor({SimpleOpusDecoder? decoder})
+  MarkerRecordingExtractor({SimpleOpusDecoder? decoder})
       : _splitFrames = (SharedPreferencesUtil().offlineSplitSeconds * 1000) ~/ _frameDurationMs,
         _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb,
+        _lookbackMs = SharedPreferencesUtil().markerLookbackMinutes * 60 * 1000,
         _providedDecoder = decoder;
 
   void destroy() {}
@@ -116,7 +118,7 @@ class ManualRecordingExtractor {
     if (segments.isEmpty) return (savedPaths: <String>[], lastSafeSegmentIndex: -1);
 
     final newestEnd = segments.last.endTime;
-    final twoHrCutoff = newestEnd.subtract(const Duration(hours: 2));
+    final twoHrCutoff = newestEnd.subtract(Duration(milliseconds: _lookbackMs));
 
     // Fast path — no markers
     if (batch.markerTimestamps.isEmpty) {
@@ -213,8 +215,8 @@ class ManualRecordingExtractor {
     final raw = <(int, int)>[];
     for (final marker in markers) {
       final centerSegment = _findSegmentForTime(segments, marker);
-      // Extend scan range back 2 hours and forward by maxWindowFrames * 20ms
-      final backMs = 2 * 3600 * 1000;
+      // Extend scan range back by the user's lookback setting and forward by maxWindowFrames * 20ms
+      final backMs = _lookbackMs;
       final fwdMs = _maxWindowFrames * _frameDurationMs;
       final rangeStart = marker.subtract(Duration(milliseconds: backMs));
       final rangeEnd = marker.add(Duration(milliseconds: fwdMs));
@@ -268,6 +270,12 @@ class ManualRecordingExtractor {
       final decodeStart = warmupSegment;
       final decodeEnd = range.$2;
 
+      // Create one decoder for the entire range so its state carries across segment boundaries.
+      final rangeDecoder = _providedDecoder ??
+          ((Platform.isIOS || Platform.isAndroid)
+              ? SimpleOpusDecoder(sampleRate: _sampleRate, channels: _channels)
+              : null);
+      try {
       for (int ci = decodeStart; ci <= decodeEnd; ci++) {
         final segment = segments[ci];
         if (segment.frameCount == 0) continue;
@@ -290,12 +298,9 @@ class ManualRecordingExtractor {
 
         int off = 0;
         int audioIdx = 0;
-        final decoder = _providedDecoder ??
-            ((Platform.isIOS || Platform.isAndroid)
-                ? SimpleOpusDecoder(sampleRate: _sampleRate, channels: _channels)
-                : null);
+        final decoder = rangeDecoder;
 
-        try {
+        {
           while (off + 4 <= bytes.length) {
             final len = bd.getUint32(off, Endian.little);
             if (off + 4 + len > bytes.length) break;
@@ -354,8 +359,6 @@ class ManualRecordingExtractor {
 
             audioIdx++;
           }
-        } finally {
-          decoder?.destroy();
         }
 
         if (!isWarmupSegment) {
@@ -374,6 +377,10 @@ class ManualRecordingExtractor {
             cacheBytes -= _evictCache(cache, range.$1);
           }
         }
+      }
+      } finally {
+        // Destroy the per-range decoder unless it was provided externally.
+        if (_providedDecoder == null) rangeDecoder?.destroy();
       }
     }
 
@@ -623,7 +630,7 @@ class ManualRecordingExtractor {
     }
 
     // Hit maxWindowFrames cap
-    Logger.debug('ManualRecordingExtractor: window truncated at maxWindowFrames cap');
+    Logger.debug('MarkerRecordingExtractor: window truncated at maxWindowFrames cap');
     return (endSegmentIdx: scanCi, endFrameIdx: scanFi, isComplete: false);
   }
 
@@ -720,7 +727,7 @@ class ManualRecordingExtractor {
     try {
       aacSession = await AacEncoder.startEncoder(_sampleRate, m4aPath);
     } on Exception catch (e) {
-      Logger.error('ManualRecordingExtractor: AAC startEncoder failed: $e');
+      Logger.error('MarkerRecordingExtractor: AAC startEncoder failed: $e');
       decoder?.destroy();
       return null;
     }
@@ -802,7 +809,7 @@ class ManualRecordingExtractor {
 
       await AacEncoder.finishEncoder(aacSession!);
     } on Exception catch (e) {
-      Logger.error('ManualRecordingExtractor: AAC encoding failed: $e');
+      Logger.error('MarkerRecordingExtractor: AAC encoding failed: $e');
       await currentRaf?.close();
       decoder?.destroy();
       return null;
@@ -848,7 +855,7 @@ class ManualRecordingExtractor {
     }
     await File('$outputDir/recording_$timestamp.meta').writeAsBytes(metaOut);
 
-    Logger.debug('ManualRecordingExtractor: saved recording_$timestamp.m4a (${durationMs}ms)');
+    Logger.debug('MarkerRecordingExtractor: saved recording_$timestamp.m4a (${durationMs}ms)');
     return m4aPath;
   }
 

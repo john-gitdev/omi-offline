@@ -3,7 +3,8 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
-import 'package:omi/services/manual_recording_extractor.dart';
+import 'package:omi/services/fixed_interval_audio_processor.dart';
+import 'package:omi/services/marker_recording_extractor.dart';
 import 'package:omi/services/offline_audio_processor.dart';
 import 'package:omi/utils/logger.dart';
 
@@ -74,12 +75,14 @@ class Conversation {
       }
     }
 
-    // WAV fallback: duration from file size (44-byte header + PCM at 16 kHz mono 16-bit)
+    // Size-based duration estimate — only valid for WAV files.
+    // For M4A/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
+    final isWav = file.path.endsWith('.wav');
     int fileSize = 0;
     try {
       fileSize = file.lengthSync();
     } catch (_) {}
-    final pcmBytes = fileSize > 44 ? fileSize - 44 : 0;
+    final pcmBytes = isWav && fileSize > 44 ? fileSize - 44 : 0;
     final durationMs = (pcmBytes / 32000.0 * 1000).round();
     final fallbackKey = file.path.split('/').last.split('.').first;
     return Conversation(
@@ -217,8 +220,16 @@ class RecordingsManager {
       final date = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
 
       final raw = rawSegmentsByDate[dateStr] ?? [];
-      // Sort raw segments by name (which is segmentIndex)
-      raw.sort((a, b) => a.path.split('/').last.compareTo(b.path.split('/').last));
+      // Sort raw segments numerically by their filename (segmentIndex) to avoid
+      // string-order bugs like "100_10.bin" sorting before "100_2.bin".
+      raw.sort((a, b) {
+        final nameA = a.path.split('/').last.split('.').first;
+        final nameB = b.path.split('/').last.split('.').first;
+        final numA = int.tryParse(nameA.split('_').last) ?? 0;
+        final numB = int.tryParse(nameB.split('_').last) ?? 0;
+        final prefixCmp = nameA.split('_').first.compareTo(nameB.split('_').first);
+        return prefixCmp != 0 ? prefixCmp : numA.compareTo(numB);
+      });
 
       batches.add(Batch(
         dateString: dateStr,
@@ -270,27 +281,98 @@ class RecordingsManager {
           await liveDir.delete(recursive: true);
           Logger.debug('RecordingsManager: Cleared existing recordings for $dateString (adjustment mode)');
         }
+        // Also reset the persisted fixed-mode boundary so reprocessing starts fresh
+        // and doesn't incorrectly skip frames based on the previous run's state.
+        SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
       }
 
-      // 2. Route to automatic (VAD) or manual (marker) processing.
-      // Both paths write output files to tempProcessingPath; the move-to-live
-      // block below runs for both.
+      // 2. Route to automatic (VAD), marker, or fixed-interval processing.
+      // All paths write output files to tempProcessingPath; the move-to-live
+      // block below runs for all.
       int lastSafeToDeleteIndex = -1;
-      final isManualMode = SharedPreferencesUtil().offlineRecordingMode == 'manual';
+      final mode = SharedPreferencesUtil().offlineRecordingMode;
+      final isMarkerMode = mode == 'marker';
+      final isFixedMode = mode == 'fixed';
 
       try {
-        if (isManualMode) {
-          // Manual mode: marker extraction via ManualRecordingExtractor.
+        if (isMarkerMode) {
+          // Marker mode: marker extraction via MarkerRecordingExtractor.
           // Produces recordings only for conversations the user explicitly starred.
           // Always keeps a 2hr rolling buffer of raw segments for future markers.
-          final extractor = ManualRecordingExtractor();
+          final extractor = MarkerRecordingExtractor();
           try {
             final result = await extractor.process(batch, tempProcessingPath, forceFlush: !backgroundMode);
             lastSafeToDeleteIndex = result.lastSafeSegmentIndex;
             Logger.debug(
-                'RecordingsManager: Manual mode extracted ${result.savedPaths.length} conversations for $dateString');
+                'RecordingsManager: Marker mode extracted ${result.savedPaths.length} conversations for $dateString');
           } finally {
             extractor.destroy();
+          }
+        } else if (isFixedMode) {
+          // Fixed-interval mode: cuts at wall-clock boundaries (:29/:59 pattern).
+          final processor = FixedIntervalAudioProcessor(outputDir: tempProcessingPath);
+          try {
+            for (int i = 0; i < batch.rawSegments.length; i++) {
+              final file = batch.rawSegments[i];
+              final deviceSessionIdStr = file.parent.path.split('/').last;
+              int? deviceSessionId = int.tryParse(deviceSessionIdStr);
+
+              final segmentFileName = file.path.split('/').last.replaceAll('.bin', '');
+              final segmentIndexStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
+              final segmentIndex = segmentIndexStr != null ? int.tryParse(segmentIndexStr) : null;
+
+              DateTime segmentStartTime;
+              if (deviceSessionId != null && segmentIndex != null) {
+                final sessionAnchorUtc = SharedPreferencesUtil()
+                    .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
+                final sessionAnchorUptime = SharedPreferencesUtil()
+                    .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
+                final segmentAnchorUptime = SharedPreferencesUtil()
+                    .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
+
+                const kMinValidEpoch = 946684800;
+                if (sessionAnchorUtc > kMinValidEpoch && sessionAnchorUptime > 0 && segmentAnchorUptime > 0) {
+                  final uptimeDeltaMs = sessionAnchorUptime - segmentAnchorUptime;
+                  final realUtcSecs = sessionAnchorUtc - (uptimeDeltaMs ~/ 1000);
+                  segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+                  if (segmentStartTime.year < 2000) {
+                    segmentStartTime = file.lastModifiedSync();
+                  }
+                } else {
+                  final segmentAnchorUtc = SharedPreferencesUtil()
+                      .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
+                  if (segmentAnchorUtc > kMinValidEpoch) {
+                    segmentStartTime = DateTime.fromMillisecondsSinceEpoch(segmentAnchorUtc * 1000);
+                  } else {
+                    segmentStartTime = file.lastModifiedSync();
+                  }
+                }
+              } else {
+                segmentStartTime = file.lastModifiedSync();
+              }
+
+              if (_cancelRequested) {
+                Logger.debug("RecordingsManager: Processing cancelled by user at segment $i.");
+                break;
+              }
+
+              await processor.processSegmentFile(file, segmentStartTime, deviceSessionId: deviceSessionId);
+
+              if (backgroundMode && !processor.isCapturing) {
+                lastSafeToDeleteIndex = i;
+              }
+
+              onProgress((i + 1) / batch.rawSegments.length);
+              if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
+            }
+
+            if (backgroundMode) {
+              await processor.flushOnlyCompleted();
+            } else {
+              await processor.flushRemaining();
+            }
+          } finally {
+            processor.destroy();
           }
         } else {
           // Automatic mode: continuous VAD via OfflineAudioProcessor.
@@ -415,9 +497,9 @@ class RecordingsManager {
       }
 
       // 6. Raw segment deletion
-      // Manual mode always uses lastSafeToDeleteIndex (same as background mode path)
-      // because the extractor manages its own rolling buffer and returns a precise boundary.
-      if (backgroundMode || isManualMode) {
+      // Marker and fixed modes always use lastSafeToDeleteIndex because both manage
+      // their own buffer state and only advance the index when a full interval/clip completes.
+      if (backgroundMode || isMarkerMode || isFixedMode) {
         // Delete only segments belonging to fully-completed conversations.
         // If adjustment mode is ON, keep everything for re-processing.
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
@@ -538,13 +620,18 @@ class RecordingsManager {
             Logger.debug('RecordingsManager: Cleared existing recordings for ${batch.dateString} (adjustment mode)');
           }
         }
+        // Also reset the persisted fixed-mode boundary so reprocessing starts fresh
+        // and doesn't incorrectly skip frames based on the previous run's state.
+        SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
       }
 
       int lastSafeToDeleteIndex = -1;
-      final isManualMode = SharedPreferencesUtil().offlineRecordingMode == 'manual';
+      final mode = SharedPreferencesUtil().offlineRecordingMode;
+      final isMarkerMode = mode == 'marker';
+      final isFixedMode = mode == 'fixed';
 
       try {
-        if (isManualMode) {
+        if (isMarkerMode) {
           final combinedBatch = Batch(
             dateString: activeBatches.last.dateString, // oldest date
             date: activeBatches.last.date,
@@ -552,14 +639,75 @@ class RecordingsManager {
             finalizedRecordings: const [],
             markerTimestamps: (activeBatches.expand((b) => b.markerTimestamps).toList()..sort()),
           );
-          final extractor = ManualRecordingExtractor();
+          final extractor = MarkerRecordingExtractor();
           try {
             final result = await extractor.process(combinedBatch, tempProcessingPath, forceFlush: !backgroundMode);
             lastSafeToDeleteIndex = result.lastSafeSegmentIndex;
             Logger.debug(
-                'RecordingsManager: Manual mode extracted ${result.savedPaths.length} conversations (combined)');
+                'RecordingsManager: Marker mode extracted ${result.savedPaths.length} conversations (combined)');
           } finally {
             extractor.destroy();
+          }
+        } else if (isFixedMode) {
+          // Fixed-interval mode: cuts at wall-clock boundaries (:29/:59 pattern).
+          final processor = FixedIntervalAudioProcessor(outputDir: tempProcessingPath);
+          try {
+            for (int i = 0; i < allSegments.length; i++) {
+              final file = allSegments[i];
+              final deviceSessionIdStr = file.parent.path.split('/').last;
+              final deviceSessionId = int.tryParse(deviceSessionIdStr);
+              final segmentFileName = file.path.split('/').last.replaceAll('.bin', '');
+              final segmentIndexStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
+              final segmentIndex = segmentIndexStr != null ? int.tryParse(segmentIndexStr) : null;
+
+              DateTime segmentStartTime;
+              if (deviceSessionId != null && segmentIndex != null) {
+                final anchorUtc = SharedPreferencesUtil()
+                    .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
+                final anchorUptime = SharedPreferencesUtil()
+                    .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
+                if (anchorUtc > 0) {
+                  segmentStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
+                } else if (anchorUptime > 0) {
+                  final sessionAnchorUtc = SharedPreferencesUtil()
+                      .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
+                  final sessionAnchorUptime = SharedPreferencesUtil()
+                      .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
+                  if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
+                    final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
+                    segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
+                  } else {
+                    segmentStartTime = file.lastModifiedSync();
+                  }
+                } else {
+                  segmentStartTime = file.lastModifiedSync();
+                }
+              } else {
+                segmentStartTime = file.lastModifiedSync();
+              }
+
+              if (_cancelRequested) {
+                Logger.debug("RecordingsManager: Processing cancelled at segment $i.");
+                break;
+              }
+
+              await processor.processSegmentFile(file, segmentStartTime, deviceSessionId: deviceSessionId);
+
+              if (backgroundMode && !processor.isCapturing) {
+                lastSafeToDeleteIndex = i;
+              }
+
+              onProgress((i + 1) / allSegments.length);
+              if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
+            }
+
+            if (backgroundMode) {
+              await processor.flushOnlyCompleted();
+            } else {
+              await processor.flushRemaining();
+            }
+          } finally {
+            processor.destroy();
           }
         } else {
           final processor = OfflineAudioProcessor(outputDir: tempProcessingPath);
@@ -653,7 +801,7 @@ class RecordingsManager {
       }
 
       // Raw segment deletion — same rules as processDay.
-      if (backgroundMode || isManualMode) {
+      if (backgroundMode || isMarkerMode || isFixedMode) {
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
           final sessionFolders = <String>{};
           for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
@@ -717,7 +865,7 @@ class RecordingsManager {
 
   /// Background auto-process: processes all batches as one continuous stream.
   /// Skips the newest segment per session (may still be written by firmware).
-  /// Safe to call from a background timer; no-op if a manual process is running.
+  /// Safe to call from a background timer; no-op if a marker process is running.
   static Future<void> processAllCompletedSessions() async {
     if (_isProcessingAny) return;
     final manager = RecordingsManager();
