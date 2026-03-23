@@ -314,49 +314,18 @@ class RecordingsManager {
           try {
             for (int i = 0; i < batch.rawSegments.length; i++) {
               final file = batch.rawSegments[i];
-              final deviceSessionIdStr = file.parent.path.split('/').last;
-              int? deviceSessionId = int.tryParse(deviceSessionIdStr);
-
-              final segmentFileName = file.path.split('/').last.replaceAll('.bin', '');
-              final segmentIndexStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
-              final segmentIndex = segmentIndexStr != null ? int.tryParse(segmentIndexStr) : null;
-
-              DateTime segmentStartTime;
-              if (deviceSessionId != null && segmentIndex != null) {
-                final sessionAnchorUtc = SharedPreferencesUtil()
-                    .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
-                final sessionAnchorUptime = SharedPreferencesUtil()
-                    .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
-                final segmentAnchorUptime = SharedPreferencesUtil()
-                    .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
-
-                const kMinValidEpoch = 946684800;
-                if (sessionAnchorUtc > kMinValidEpoch && sessionAnchorUptime > 0 && segmentAnchorUptime > 0) {
-                  final uptimeDeltaMs = sessionAnchorUptime - segmentAnchorUptime;
-                  final realUtcSecs = sessionAnchorUtc - (uptimeDeltaMs ~/ 1000);
-                  segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
-                  if (segmentStartTime.year < 2000) {
-                    segmentStartTime = file.lastModifiedSync();
-                  }
-                } else {
-                  final segmentAnchorUtc = SharedPreferencesUtil()
-                      .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
-                  if (segmentAnchorUtc > kMinValidEpoch) {
-                    segmentStartTime = DateTime.fromMillisecondsSinceEpoch(segmentAnchorUtc * 1000);
-                  } else {
-                    segmentStartTime = file.lastModifiedSync();
-                  }
-                }
-              } else {
-                segmentStartTime = file.lastModifiedSync();
-              }
+              final deviceSessionId = int.tryParse(file.parent.path.split('/').last);
+              const kMinValidEpoch = 946684800;
+              final segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
+                  ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                  : file.lastModifiedSync();
 
               if (_cancelRequested) {
                 Logger.debug("RecordingsManager: Processing cancelled by user at segment $i.");
                 break;
               }
 
-              await processor.processSegmentFile(file, segmentStartTime, deviceSessionId: deviceSessionId);
+              await processor.processSegmentFile(file, segmentStartTime);
 
               if (backgroundMode && !processor.isCapturing) {
                 lastSafeToDeleteIndex = i;
@@ -381,56 +350,18 @@ class RecordingsManager {
             // 3. Process each raw segment sequentially
             for (int i = 0; i < batch.rawSegments.length; i++) {
               final file = batch.rawSegments[i];
-              // Get device session ID from folder name
-              final deviceSessionIdStr = file.parent.path.split('/').last;
-              int? deviceSessionId = int.tryParse(deviceSessionIdStr);
-
-              // Parse segmentIndex from filename: stored as {deviceSessionId}_{segmentIndex}.bin
-              final segmentFileName = file.path.split('/').last.replaceAll('.bin', '');
-              final segmentIndexStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
-              final segmentIndex = segmentIndexStr != null ? int.tryParse(segmentIndexStr) : null;
-
-              DateTime segmentStartTime;
-              if (deviceSessionId != null && segmentIndex != null) {
-                final sessionAnchorUtc = SharedPreferencesUtil()
-                    .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
-                final sessionAnchorUptime = SharedPreferencesUtil()
-                    .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
-                final segmentAnchorUptime = SharedPreferencesUtil()
-                    .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
-
-                const kMinValidEpoch = 946684800; // Jan 1 2000 — reject unsynced Omi clocks
-                if (sessionAnchorUtc > kMinValidEpoch && sessionAnchorUptime > 0 && segmentAnchorUptime > 0) {
-                  // Retroactive Correction: Back-calculate segment start time using the session's BEST anchor.
-                  // This fixes 'stale' timestamps from periods where the Omi was unsynced (e.g. after battery death).
-                  final uptimeDeltaMs = sessionAnchorUptime - segmentAnchorUptime;
-                  final realUtcSecs = sessionAnchorUtc - (uptimeDeltaMs ~/ 1000);
-                  segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
-
-                  // If the result is pre-2000, the anchor + uptime delta is nonsensical. Fall back.
-                  if (segmentStartTime.year < 2000) {
-                    segmentStartTime = file.lastModifiedSync();
-                  }
-                } else {
-                  // Fallback: If no valid session anchor exists, try segment-specific UTC or modification time.
-                  final segmentAnchorUtc = SharedPreferencesUtil()
-                      .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
-                  if (segmentAnchorUtc > kMinValidEpoch) {
-                    segmentStartTime = DateTime.fromMillisecondsSinceEpoch(segmentAnchorUtc * 1000);
-                  } else {
-                    segmentStartTime = file.lastModifiedSync();
-                  }
-                }
-              } else {
-                segmentStartTime = file.lastModifiedSync();
-              }
+              final deviceSessionId = int.tryParse(file.parent.path.split('/').last);
+              const kMinValidEpoch = 946684800;
+              final segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
+                  ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                  : file.lastModifiedSync();
 
               if (_cancelRequested) {
                 Logger.debug("RecordingsManager: Processing cancelled by user at segment $i.");
                 break;
               }
 
-              await processor.processSegmentFile(file, segmentStartTime, deviceSessionId: deviceSessionId);
+              await processor.processSegmentFile(file, segmentStartTime);
 
               if (backgroundMode && !processor.isCapturing) {
                 lastSafeToDeleteIndex = i;
@@ -507,13 +438,9 @@ class RecordingsManager {
           for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
             final file = batch.rawSegments[i];
             if (await file.exists()) {
-              final deviceSessionIdStr = file.parent.path.split('/').last;
-              final deviceSessionId = int.tryParse(deviceSessionIdStr) ?? -1;
               Logger.debug("RecordingsManager: [bg] Deleting completed raw segment: ${file.path}");
               await file.delete();
               sessionFoldersToDelete.add(file.parent.path);
-              SharedPreferencesUtil().remove('anchor_utc_device_session_$deviceSessionId');
-              SharedPreferencesUtil().remove('anchor_uptime_device_session_$deviceSessionId');
             }
           }
           for (var folderPath in sessionFoldersToDelete) {
@@ -535,27 +462,12 @@ class RecordingsManager {
         // the day via deleteDay(). Raw segments are separate from finalized recordings.
         if (!SharedPreferencesUtil().offlineAdjustmentMode) {
           Set<String> sessionFoldersToDelete = {};
-          final latestSyncedDeviceSessionId = SharedPreferencesUtil().latestSyncedDeviceSessionId;
 
           for (var file in batch.rawSegments) {
             if (await file.exists()) {
-              final deviceSessionIdStr = file.parent.path.split('/').last;
-              final deviceSessionId = int.tryParse(deviceSessionIdStr) ?? -1;
-
-              // Delete if it's an old session OR if it's the latest session but we've successfully processed it.
-              // We only keep it if deviceSessionId > latestSyncedDeviceSessionId (which shouldn't happen for synced segments).
-              if (deviceSessionId <= latestSyncedDeviceSessionId) {
-                Logger.debug("RecordingsManager: Deleting successfully processed raw segment: ${file.path}");
-                await file.delete();
-                sessionFoldersToDelete.add(file.parent.path);
-
-                // Cleanup SharedPreferences anchors
-                SharedPreferencesUtil().remove('anchor_utc_device_session_$deviceSessionId');
-                SharedPreferencesUtil().remove('anchor_uptime_device_session_$deviceSessionId');
-              } else {
-                Logger.debug(
-                    "RecordingsManager: Keeping raw segment for session $deviceSessionId as it might be ongoing.");
-              }
+              Logger.debug("RecordingsManager: Deleting successfully processed raw segment: ${file.path}");
+              await file.delete();
+              sessionFoldersToDelete.add(file.parent.path);
             }
           }
 
@@ -654,44 +566,18 @@ class RecordingsManager {
           try {
             for (int i = 0; i < allSegments.length; i++) {
               final file = allSegments[i];
-              final deviceSessionIdStr = file.parent.path.split('/').last;
-              final deviceSessionId = int.tryParse(deviceSessionIdStr);
-              final segmentFileName = file.path.split('/').last.replaceAll('.bin', '');
-              final segmentIndexStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
-              final segmentIndex = segmentIndexStr != null ? int.tryParse(segmentIndexStr) : null;
-
-              DateTime segmentStartTime;
-              if (deviceSessionId != null && segmentIndex != null) {
-                final anchorUtc = SharedPreferencesUtil()
-                    .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
-                final anchorUptime = SharedPreferencesUtil()
-                    .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
-                if (anchorUtc > 0) {
-                  segmentStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
-                } else if (anchorUptime > 0) {
-                  final sessionAnchorUtc = SharedPreferencesUtil()
-                      .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
-                  final sessionAnchorUptime = SharedPreferencesUtil()
-                      .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
-                  if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
-                    final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
-                    segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
-                  } else {
-                    segmentStartTime = file.lastModifiedSync();
-                  }
-                } else {
-                  segmentStartTime = file.lastModifiedSync();
-                }
-              } else {
-                segmentStartTime = file.lastModifiedSync();
-              }
+              final deviceSessionId = int.tryParse(file.parent.path.split('/').last);
+              const kMinValidEpoch = 946684800;
+              final segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
+                  ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                  : file.lastModifiedSync();
 
               if (_cancelRequested) {
                 Logger.debug("RecordingsManager: Processing cancelled at segment $i.");
                 break;
               }
 
-              await processor.processSegmentFile(file, segmentStartTime, deviceSessionId: deviceSessionId);
+              await processor.processSegmentFile(file, segmentStartTime);
 
               if (backgroundMode && !processor.isCapturing) {
                 lastSafeToDeleteIndex = i;
@@ -714,44 +600,18 @@ class RecordingsManager {
           try {
             for (int i = 0; i < allSegments.length; i++) {
               final file = allSegments[i];
-              final deviceSessionIdStr = file.parent.path.split('/').last;
-              final deviceSessionId = int.tryParse(deviceSessionIdStr);
-              final segmentFileName = file.path.split('/').last.replaceAll('.bin', '');
-              final segmentIndexStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
-              final segmentIndex = segmentIndexStr != null ? int.tryParse(segmentIndexStr) : null;
-
-              DateTime segmentStartTime;
-              if (deviceSessionId != null && segmentIndex != null) {
-                final anchorUtc = SharedPreferencesUtil()
-                    .getInt('anchor_utc_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
-                final anchorUptime = SharedPreferencesUtil()
-                    .getInt('anchor_uptime_device_session_${deviceSessionId}_$segmentIndex', defaultValue: 0);
-                if (anchorUtc > 0) {
-                  segmentStartTime = DateTime.fromMillisecondsSinceEpoch(anchorUtc * 1000);
-                } else if (anchorUptime > 0) {
-                  final sessionAnchorUtc =
-                      SharedPreferencesUtil().getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
-                  final sessionAnchorUptime =
-                      SharedPreferencesUtil().getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
-                  if (sessionAnchorUtc > 0 && sessionAnchorUptime > 0) {
-                    final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
-                    segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
-                  } else {
-                    segmentStartTime = file.lastModifiedSync();
-                  }
-                } else {
-                  segmentStartTime = file.lastModifiedSync();
-                }
-              } else {
-                segmentStartTime = file.lastModifiedSync();
-              }
+              final deviceSessionId = int.tryParse(file.parent.path.split('/').last);
+              const kMinValidEpoch = 946684800;
+              final segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
+                  ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                  : file.lastModifiedSync();
 
               if (_cancelRequested) {
                 Logger.debug("RecordingsManager: Processing cancelled at segment $i.");
                 break;
               }
 
-              await processor.processSegmentFile(file, segmentStartTime, deviceSessionId: deviceSessionId);
+              await processor.processSegmentFile(file, segmentStartTime);
 
               if (backgroundMode && !processor.isCapturing) {
                 lastSafeToDeleteIndex = i;
@@ -807,12 +667,9 @@ class RecordingsManager {
           for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
             final file = allSegments[i];
             if (await file.exists()) {
-              final deviceSessionId = int.tryParse(file.parent.path.split('/').last) ?? -1;
               Logger.debug("RecordingsManager: [bg] Deleting completed raw segment: ${file.path}");
               await file.delete();
               sessionFolders.add(file.parent.path);
-              SharedPreferencesUtil().remove('anchor_utc_device_session_$deviceSessionId');
-              SharedPreferencesUtil().remove('anchor_uptime_device_session_$deviceSessionId');
             }
           }
           for (final folderPath in sessionFolders) {
@@ -827,20 +684,11 @@ class RecordingsManager {
       } else {
         if (!SharedPreferencesUtil().offlineAdjustmentMode) {
           final sessionFolders = <String>{};
-          final latestSyncedDeviceSessionId = SharedPreferencesUtil().latestSyncedDeviceSessionId;
           for (final file in allSegments) {
             if (await file.exists()) {
-              final deviceSessionId = int.tryParse(file.parent.path.split('/').last) ?? -1;
-              if (deviceSessionId <= latestSyncedDeviceSessionId) {
-                Logger.debug("RecordingsManager: Deleting successfully processed raw segment: ${file.path}");
-                await file.delete();
-                sessionFolders.add(file.parent.path);
-                SharedPreferencesUtil().remove('anchor_utc_device_session_$deviceSessionId');
-                SharedPreferencesUtil().remove('anchor_uptime_device_session_$deviceSessionId');
-              } else {
-                Logger.debug(
-                    "RecordingsManager: Keeping raw segment for session $deviceSessionId (may be ongoing).");
-              }
+              Logger.debug("RecordingsManager: Deleting successfully processed raw segment: ${file.path}");
+              await file.delete();
+              sessionFolders.add(file.parent.path);
             }
           }
           for (final folderPath in sessionFolders) {
@@ -982,12 +830,8 @@ class RecordingsManager {
       final Set<String> sessionFolderPaths = {};
       for (var file in batch.rawSegments) {
         if (await file.exists()) {
-          final deviceSessionIdStr = file.parent.path.split('/').last;
-          final deviceSessionId = int.tryParse(deviceSessionIdStr) ?? -1;
           await file.delete();
           sessionFolderPaths.add(file.parent.path);
-          SharedPreferencesUtil().remove('anchor_utc_device_session_$deviceSessionId');
-          SharedPreferencesUtil().remove('anchor_uptime_device_session_$deviceSessionId');
         }
       }
 
