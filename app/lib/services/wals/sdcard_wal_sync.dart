@@ -503,8 +503,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           // The firmware's raw SD format uses a 1-byte length prefix per frame.
           // If a future codec produces frames > 253 bytes, this parser MUST be updated
           // to use a multi-byte length prefix (and the firmware format must change too).
-          // Values 254 and 255 are reserved: 254 = marker, 255 = metadata.
-          assert(packageSize <= 253 || packageSize == 254,
+          // 254 = marker (16-byte payload). 255 is a valid Opus frame length (not reserved).
+          assert(packageSize <= 254 || packageSize == 255,
               'Frame length $packageSize exceeds single-byte protocol limit');
 
           if (packageSize == 254) {
