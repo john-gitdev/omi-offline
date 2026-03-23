@@ -336,8 +336,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     int? currentDeviceSessionId;
     int? currentSegmentIndex;
-    int? lastDeviceSessionId;
-    int? lastSegmentIndex;
+    // Default to wal.timerStart so frames arriving before any metadata packet
+    // (or from firmware that no longer emits frame-255 metadata) go into the
+    // correct named folder rather than 'unsynced/'.
+    int? lastDeviceSessionId = wal.timerStart > 0 ? wal.timerStart : null;
+    int? lastSegmentIndex = 0;
     final List<List<int>> frameBuffer = [];
     final List<int> streamBuffer = [];
 
@@ -347,27 +350,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // transfer can append.
     final Set<String> flushedSegmentsThisTransfer = {};
 
-    // Seed the last known session/segment so frames arriving before the first metadata
-    // packet go into the correct named folder instead of 'unsynced/'.
-    // Only seed if walOffset > 0 (not a fresh start) and we have a stored session.
-    final seededDeviceId = SharedPreferencesUtil().latestSyncedDeviceId;
-    final seededSessionId = SharedPreferencesUtil().latestSyncedDeviceSessionId;
-    final seededSegmentIndex = SharedPreferencesUtil().latestSyncedSegmentIndex;
-    if (offset > 0 && seededDeviceId == deviceId && seededSessionId > 0 && seededSegmentIndex >= 0) {
-      lastDeviceSessionId = seededSessionId;
-      lastSegmentIndex = seededSegmentIndex;
-      // If the file from a previous partial sync already exists, mark it as already
-      // flushed so the first write uses append mode instead of overwriting it.
+    // For partial resume (walOffset > 0), the file we're continuing is always
+    // {timerStart}_0.bin.  Mark it as already flushed so subsequent writes append.
+    if (offset > 0 && lastDeviceSessionId != null) {
       final directory = await getApplicationDocumentsDirectory();
       final existingFile = File(
-          '${directory.path}/raw_segments/$seededSessionId/${seededSessionId}_$seededSegmentIndex.bin');
+          '${directory.path}/raw_segments/$lastDeviceSessionId/${lastDeviceSessionId}_0.bin');
       if (await existingFile.exists()) {
-        flushedSegmentsThisTransfer.add('${seededSessionId}_$seededSegmentIndex');
-        Logger.debug(
-            'SDCardWalSync: Seeded session=$seededSessionId segment=$seededSegmentIndex (append — file exists)');
-      } else {
-        Logger.debug(
-            'SDCardWalSync: Seeded session=$seededSessionId segment=$seededSegmentIndex (write — no existing file)');
+        flushedSegmentsThisTransfer.add('${lastDeviceSessionId}_0');
+        Logger.debug('SDCardWalSync: Partial resume — will append to ${lastDeviceSessionId}_0.bin');
       }
     }
 
@@ -815,6 +806,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         await _checkDiskSpaceBeforeSync(totalBytesToDownload);
         _downloadStartTime = DateTime.now();
+        _sessionsSeen.add(wal.timerStart);
 
         final List<File> syncedFiles = [];
         const int maxGapRetries = 3;

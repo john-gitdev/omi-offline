@@ -183,10 +183,19 @@ class MarkerRecordingExtractor {
       }
 
       if (startTime == null) {
-        try {
-          startTime = file.lastModifiedSync();
-        } catch (_) {
-          startTime = DateTime.now();
+        // New protocol: session folder name IS the UTC file creation timestamp.
+        // Filename is {timerStart}_{segIdx}.bin — parse timerStart from the stem.
+        final stem = file.path.split('/').last.split('.').first;
+        final utcSecs = int.tryParse(stem.split('_').first);
+        const kMinValidEpoch = 946684800;
+        if (utcSecs != null && utcSecs > kMinValidEpoch) {
+          startTime = DateTime.fromMillisecondsSinceEpoch(utcSecs * 1000);
+        } else {
+          try {
+            startTime = file.lastModifiedSync();
+          } catch (_) {
+            startTime = DateTime.now();
+          }
         }
       }
 

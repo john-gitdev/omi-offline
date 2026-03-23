@@ -336,7 +336,9 @@ class RecordingsManager {
                   final realUtcSecs = sessionAnchorUtc - (uptimeDeltaMs ~/ 1000);
                   segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
                   if (segmentStartTime.year < 2000) {
-                    segmentStartTime = file.lastModifiedSync();
+                    segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
+                        ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                        : file.lastModifiedSync();
                   }
                 } else {
                   final segmentAnchorUtc = SharedPreferencesUtil()
@@ -344,11 +346,15 @@ class RecordingsManager {
                   if (segmentAnchorUtc > kMinValidEpoch) {
                     segmentStartTime = DateTime.fromMillisecondsSinceEpoch(segmentAnchorUtc * 1000);
                   } else {
-                    segmentStartTime = file.lastModifiedSync();
+                    segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
+                        ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                        : file.lastModifiedSync();
                   }
                 }
               } else {
-                segmentStartTime = file.lastModifiedSync();
+                segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
+                    ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                    : file.lastModifiedSync();
               }
 
               if (_cancelRequested) {
@@ -409,7 +415,9 @@ class RecordingsManager {
 
                   // If the result is pre-2000, the anchor + uptime delta is nonsensical. Fall back.
                   if (segmentStartTime.year < 2000) {
-                    segmentStartTime = file.lastModifiedSync();
+                    segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
+                        ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                        : file.lastModifiedSync();
                   }
                 } else {
                   // Fallback: If no valid session anchor exists, try segment-specific UTC or modification time.
@@ -418,11 +426,15 @@ class RecordingsManager {
                   if (segmentAnchorUtc > kMinValidEpoch) {
                     segmentStartTime = DateTime.fromMillisecondsSinceEpoch(segmentAnchorUtc * 1000);
                   } else {
-                    segmentStartTime = file.lastModifiedSync();
+                    segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
+                        ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                        : file.lastModifiedSync();
                   }
                 }
               } else {
-                segmentStartTime = file.lastModifiedSync();
+                segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
+                    ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                    : file.lastModifiedSync();
               }
 
               if (_cancelRequested) {
@@ -660,6 +672,7 @@ class RecordingsManager {
               final segmentIndexStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
               final segmentIndex = segmentIndexStr != null ? int.tryParse(segmentIndexStr) : null;
 
+              const kMinValidEpoch = 946684800;
               DateTime segmentStartTime;
               if (deviceSessionId != null && segmentIndex != null) {
                 final anchorUtc = SharedPreferencesUtil()
@@ -677,13 +690,19 @@ class RecordingsManager {
                     final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
                     segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
                   } else {
-                    segmentStartTime = file.lastModifiedSync();
+                    segmentStartTime = deviceSessionId > kMinValidEpoch
+                        ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                        : file.lastModifiedSync();
                   }
                 } else {
-                  segmentStartTime = file.lastModifiedSync();
+                  segmentStartTime = deviceSessionId > kMinValidEpoch
+                      ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                      : file.lastModifiedSync();
                 }
               } else {
-                segmentStartTime = file.lastModifiedSync();
+                segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
+                    ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                    : file.lastModifiedSync();
               }
 
               if (_cancelRequested) {
@@ -720,6 +739,7 @@ class RecordingsManager {
               final segmentIndexStr = segmentFileName.contains('_') ? segmentFileName.split('_').last : null;
               final segmentIndex = segmentIndexStr != null ? int.tryParse(segmentIndexStr) : null;
 
+              const kMinValidEpoch = 946684800;
               DateTime segmentStartTime;
               if (deviceSessionId != null && segmentIndex != null) {
                 final anchorUtc = SharedPreferencesUtil()
@@ -737,13 +757,19 @@ class RecordingsManager {
                     final realUtcSecs = sessionAnchorUtc - ((sessionAnchorUptime - anchorUptime) ~/ 1000);
                     segmentStartTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
                   } else {
-                    segmentStartTime = file.lastModifiedSync();
+                    segmentStartTime = deviceSessionId > kMinValidEpoch
+                        ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                        : file.lastModifiedSync();
                   }
                 } else {
-                  segmentStartTime = file.lastModifiedSync();
+                  segmentStartTime = deviceSessionId > kMinValidEpoch
+                      ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                      : file.lastModifiedSync();
                 }
               } else {
-                segmentStartTime = file.lastModifiedSync();
+                segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
+                    ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
+                    : file.lastModifiedSync();
               }
 
               if (_cancelRequested) {
