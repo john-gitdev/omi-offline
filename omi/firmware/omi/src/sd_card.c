@@ -219,6 +219,11 @@ static uint32_t write_drop_bytes = 0;
  * queue from filling up while lfs_fs_gc() is running on the worker thread. */
 static atomic_t sd_boot_ready;
 
+/* Protects current_filename / current_file_path across threads.
+ * The SD worker updates these during file creation and TMP→hex rename;
+ * the storage thread reads them via sd_is_current_recording_file(). */
+static K_MUTEX_DEFINE(current_filename_lock);
+
 /* Deferred control requests when prio queue is temporarily saturated */
 static atomic_t pending_flush_on_ble_connect;
 static atomic_t pending_time_synced;
@@ -622,16 +627,68 @@ static void print_audio_files_at_boot(void)
 
 #define FILE_CONTINUE_THRESHOLD_SEC (30 * 60)
 
-static int try_continue_latest_file(void)
+/* Helper: open a file and set the common state variables for continuation. */
+static int _open_file_for_continuation(const char *filename, bool needs_rename)
 {
-    uint32_t current_time = get_utc_time();
-    if (current_time == 0 || current_time < 1700000000U) {
-        LOG_INF("[SD_BOOT] RTC not valid, will create new file");
+    strncpy(current_filename, filename, sizeof(current_filename) - 1);
+    current_filename[sizeof(current_filename) - 1] = '\0';
+    build_file_path(current_filename, current_file_path, sizeof(current_file_path));
+
+    int ret = lfs_file_opencfg(&lfs_fs, &lfs_fil_data, current_file_path, LFS_O_RDWR | LFS_O_APPEND, &lfs_fdata_cfg);
+    if (ret < 0) {
+        LOG_ERR("[SD_BOOT] open file for continuation failed: %d", ret);
+        current_filename[0] = '\0';
+        current_file_path[0] = '\0';
         return -1;
     }
 
+    current_file_size = (uint32_t) lfs_file_size(&lfs_fs, &lfs_fil_data);
+    bytes_since_sync = 0;
+    write_batch_offset = 0;
+    write_batch_counter = 0;
+    last_file_sync_uptime_ms = k_uptime_get();
+    current_file_created_uptime_ms = k_uptime_get();
+    current_file_needs_rename = needs_rename;
+    return 0;
+}
+
+static int try_continue_latest_file(void)
+{
     lfs_dir_t dir;
     struct lfs_info info;
+
+    uint32_t current_time = get_utc_time();
+    bool rtc_valid = (current_time != 0 && current_time >= 1700000000U);
+
+    if (!rtc_valid) {
+        /* No RTC: scan for an existing TMP_ file and continue it rather than
+         * creating a new one on every reboot (which causes unbounded TMP
+         * accumulation). Pick the first TMP_ file found; any one is equivalent
+         * since we cannot order them by creation time without RTC. */
+        if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) < 0) {
+            return -1;
+        }
+
+        char tmp_filename[MAX_FILENAME_LEN] = {0};
+        while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
+            if (info.type != LFS_TYPE_REG || tmp_filename[0] != '\0')
+                continue;
+            if (strncmp(info.name, "TMP_", 4) == 0) {
+                strncpy(tmp_filename, info.name, MAX_FILENAME_LEN - 1);
+            }
+        }
+        lfs_dir_close(&lfs_fs, &dir);
+
+        if (tmp_filename[0] == '\0') {
+            LOG_INF("[SD_BOOT] No existing TMP file, will create new");
+            return -1;
+        }
+
+        LOG_INF("[SD_BOOT] Continuing TMP file: %s", tmp_filename);
+        return _open_file_for_continuation(tmp_filename, /*needs_rename=*/true);
+    }
+
+    /* RTC valid: find the most recent timestamped file within the continuation window. */
     if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) < 0) {
         return -1;
     }
@@ -662,26 +719,8 @@ static int try_continue_latest_file(void)
     if (diff < 0 || diff > FILE_CONTINUE_THRESHOLD_SEC)
         return -1;
 
-    strncpy(current_filename, latest_filename, sizeof(current_filename) - 1);
-    build_file_path(current_filename, current_file_path, sizeof(current_file_path));
-
-    int ret = lfs_file_opencfg(&lfs_fs, &lfs_fil_data, current_file_path, LFS_O_RDWR | LFS_O_APPEND, &lfs_fdata_cfg);
-    if (ret < 0) {
-        LOG_ERR("[SD_BOOT] open existing file failed: %d", ret);
-        current_filename[0] = '\0';
-        return -1;
-    }
-
-    current_file_size = (uint32_t) lfs_file_size(&lfs_fs, &lfs_fil_data);
-    bytes_since_sync = 0;
-    write_batch_offset = 0;
-    write_batch_counter = 0;
-    last_file_sync_uptime_ms = k_uptime_get();
-    current_file_created_uptime_ms = k_uptime_get();
-    current_file_needs_rename = false;
-
-    LOG_INF("[SD_BOOT] Continuing file: %s (%u bytes)", current_filename, current_file_size);
-    return 0;
+    LOG_INF("[SD_BOOT] Continuing file: %s", latest_filename);
+    return _open_file_for_continuation(latest_filename, /*needs_rename=*/false);
 }
 
 static int create_audio_file_with_timestamp(void)
@@ -974,8 +1013,11 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
         return;
 
     int64_t now_ms = k_uptime_get();
-    uint32_t elapsed = (uint32_t) (now_ms - current_file_created_uptime_ms);
-    uint32_t correct_ts = synced_utc_time - (elapsed / 1000U);
+    int64_t elapsed_ms = now_ms - current_file_created_uptime_ms;
+    if (elapsed_ms < 0) elapsed_ms = 0;
+    uint32_t elapsed_s = (uint32_t)(elapsed_ms / 1000LL);
+    /* Clamp so we never underflow synced_utc_time into the distant past. */
+    uint32_t correct_ts = (elapsed_s < synced_utc_time) ? (synced_utc_time - elapsed_s) : synced_utc_time;
 
     char new_filename[MAX_FILENAME_LEN];
     snprintf(new_filename, sizeof(new_filename), "%08X.txt", correct_ts);
@@ -999,9 +1041,11 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
         return;
     }
 
+    k_mutex_lock(&current_filename_lock, K_FOREVER);
     strncpy(current_filename, new_filename, sizeof(current_filename) - 1);
     strncpy(current_file_path, new_path, sizeof(current_file_path) - 1);
     current_file_needs_rename = false;
+    k_mutex_unlock(&current_filename_lock);
 
     lfs_file_opencfg(&lfs_fs, &lfs_fil_data, current_file_path, LFS_O_RDWR | LFS_O_APPEND, &lfs_fdata_cfg);
     LOG_INF("File renamed OK: %s", current_filename);
@@ -1552,9 +1596,21 @@ int get_current_filename(char *buf, size_t buf_size)
 {
     if (!buf || buf_size < MAX_FILENAME_LEN)
         return -EINVAL;
+    k_mutex_lock(&current_filename_lock, K_FOREVER);
     strncpy(buf, current_filename, buf_size - 1);
     buf[buf_size - 1] = '\0';
+    k_mutex_unlock(&current_filename_lock);
     return 0;
+}
+
+bool sd_is_current_recording_file(const char *filename)
+{
+    if (!filename || filename[0] == '\0')
+        return false;
+    k_mutex_lock(&current_filename_lock, K_FOREVER);
+    bool match = (current_filename[0] != '\0' && strcmp(filename, current_filename) == 0);
+    k_mutex_unlock(&current_filename_lock);
+    return match;
 }
 
 void sd_notify_time_synced(uint32_t utc_time)

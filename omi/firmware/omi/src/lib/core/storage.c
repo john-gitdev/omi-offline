@@ -15,8 +15,6 @@
 #include "sd_card.h"
 #include "transport.h"
 #include "utils.h"
-#include "mic.h"
-#include "rtc.h"
 
 /* Framed packet types (firmware → app) */
 #define PACKET_DATA 0x01  /* [0x01][offset:4LE][payload] */
@@ -500,6 +498,9 @@ static void write_to_gatt(struct bt_conn *conn)
         if (r <= 0) {
             LOG_ERR("Failed to read audio data: %d", r);
             remaining_length = 0;
+            /* Notify app so it aborts immediately instead of waiting for timeout. */
+            uint8_t err_ack[2] = {PACKET_ACK, FILE_NOT_FOUND};
+            storage_notify(conn, err_ack, sizeof(err_ack));
             return;
         }
         uint32_t bytes_read = (uint32_t)r;
@@ -640,10 +641,7 @@ void storage_write(void)
 
                     /* Auto-delete after successful multi-file sync. */
                     {
-                        char recording_name[MAX_FILENAME_LEN] = {0};
-                        get_current_filename(recording_name, sizeof(recording_name));
-                        bool is_recording_file = (recording_name[0] != '\0' &&
-                            strcmp(current_read_filename, recording_name) == 0);
+                        bool is_recording_file = sd_is_current_recording_file(current_read_filename);
 
                         if (!is_recording_file && current_read_filename[0] != '\0') {
                             LOG_INF("Auto-delete synced file: %s", current_read_filename);

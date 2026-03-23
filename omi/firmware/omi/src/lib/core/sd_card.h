@@ -151,6 +151,18 @@ uint32_t get_file_size(void);
 int get_current_filename(char *buf, size_t buf_size);
 
 /**
+ * @brief Check whether filename matches the currently-recording file.
+ *
+ * Thread-safe snapshot check used by the storage thread to decide
+ * whether to auto-delete a just-synced file. Returns false if either
+ * name is empty or no file is currently open for recording.
+ *
+ * @param filename Filename to compare (basename only, e.g. "67890abc.txt")
+ * @return true if filename == current recording file
+ */
+bool sd_is_current_recording_file(const char *filename);
+
+/**
  * @brief Clear the audio directory.
  *
  * This deletes all audio files in the audio directory.
