@@ -83,3 +83,47 @@ Reviewed diff at `BasedHardware/omi/compare/main...feat/auto-offline-sync`.
 **Claim:** Time sync uses u32 epoch seconds with no millisecond component, introducing up to 999ms of timestamp drift.
 
 **Reality:** True. The sync writes `(uint32_t)(DateTime.now().millisecondsSinceEpoch / 1000)` — second-level precision only. For voice recording where sessions last minutes and are segmented by silence detection, sub-second alignment doesn't matter. Only relevant if precise sub-second cross-device alignment becomes a requirement.
+
+---
+
+## Firmware: `WRITE_BATCH_COUNT` and `WRITE_DRAIN_BURST` tuning
+
+**Location:** `omi/firmware/devkit/src/` (SD card write queue config)
+
+**Current values (this repo):**
+```c
+#define WRITE_BATCH_COUNT  32
+#define WRITE_DRAIN_BURST  16
+```
+
+**Upstream values (`BasedHardware/omi`):**
+```c
+#define WRITE_BATCH_COUNT  200
+#define WRITE_DRAIN_BURST  16
+```
+
+### Analysis
+
+`WRITE_BATCH_COUNT` sets the static queue depth. Each slot holds one audio frame (440 bytes for Opus at 20 ms / 50 fps).
+
+| Metric | 32 (this repo) | 200 (upstream) |
+|--------|---------------|----------------|
+| Static RAM used | 14 KB | 86 KB (33% of nRF52840's 256 KB) |
+| SD flush frequency | ~every 3.5 s of audio | ~every 22 s |
+| SD write cycles | Higher | Lower |
+| Avg power draw | Slightly higher | Lower |
+| Data loss on hard power-off | ≤14 KB (~3.5 s) | ≤88 KB (~22 s) |
+
+`WRITE_DRAIN_BURST 16` is identical in both — no difference.
+
+### Verdict
+
+**32 is the right value for the nRF52840.** 86 KB as a single static buffer on a 256 KB device is aggressive and leaves little headroom for the BLE stack, Zephyr kernel, and other subsystems.
+
+The queue-pressure early-flush (triggered at 8 queued messages) is the effective ceiling in practice — if audio arrives faster than the SD can drain, the flush fires long before reaching 32 anyway. And since `fsync` only runs every 60 seconds regardless, batching beyond a few seconds provides no durability benefit.
+
+Going higher would marginally reduce `fs_write()` call frequency, but those calls are cheap (filesystem cache, not physical SD writes) and already amortized by the 60 s fsync cadence.
+
+**The 6× smaller data-loss window on hard power-off (3.5 s vs 22 s) is a genuine safety improvement.**
+
+The upstream value of 200 likely targets a device with more RAM or was set without accounting for the nRF52840's memory constraints.
