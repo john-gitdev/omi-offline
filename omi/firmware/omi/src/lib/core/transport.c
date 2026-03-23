@@ -47,6 +47,7 @@ static bool storage_full_warned = false;
 #endif
 
 extern bool is_connected;
+extern bool is_charging;
 static atomic_t pusher_stop_flag;
 
 struct bt_conn *current_connection = NULL;
