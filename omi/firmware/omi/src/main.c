@@ -37,35 +37,39 @@ static bool blink_toggle = false;
 
 static void boot_led_sequence(void)
 {
-    // Simplified boot blink
-    set_led_blue(true);
-    k_msleep(500);
-    led_off();
 }
 
-static void boot_ready_sequence(void)
+static void boot_warming_sequence(void)
 {
-    const int steps = 50;
+    const int steps = 30;
     const int delay_ms = 10;
 
-    // Smooth green fade in/out 2 times = "Ready!"
-    for (int cycle = 0; cycle < 2; cycle++) {
-        for (int i = 0; i <= steps; i++) {
+    // Breathe yellow (Red + Green) while SD pre-warm (lfs_fs_gc) is running,
+    // then fade up to full yellow so the main loop takes over solid yellow.
+    while (!sd_is_boot_ready()) {
+        for (int i = 0; i <= steps && !sd_is_boot_ready(); i++) {
             float t = (float) i / steps;
-            float eased = t < 0.5f ? 2.0f * t * t : 1.0f - 2.0f * (1.0f - t) * (1.0f - t);
-            uint8_t level = (uint8_t) (eased * 50.0f);
+            uint8_t level = (uint8_t) (t * 40.0f);
+            set_led_pwm(LED_RED, level);
             set_led_pwm(LED_GREEN, level);
             k_msleep(delay_ms);
         }
-        for (int i = 0; i <= steps; i++) {
+        for (int i = steps; i >= 0 && !sd_is_boot_ready(); i--) {
             float t = (float) i / steps;
-            float eased = t < 0.5f ? 2.0f * t * t : 1.0f - 2.0f * (1.0f - t) * (1.0f - t);
-            uint8_t level = (uint8_t) ((1.0f - eased) * 70.0f);
+            uint8_t level = (uint8_t) (t * 40.0f);
+            set_led_pwm(LED_RED, level);
             set_led_pwm(LED_GREEN, level);
             k_msleep(delay_ms);
         }
     }
-    led_off();
+    // Fade up to full yellow — main loop set_led_state() takes over from here
+    for (int i = 0; i <= steps; i++) {
+        float t = (float) i / steps;
+        uint8_t level = (uint8_t) (t * 100.0f);
+        set_led_pwm(LED_RED, level);
+        set_led_pwm(LED_GREEN, level);
+        k_msleep(delay_ms);
+    }
 }
 
 void set_led_state()
@@ -156,6 +160,7 @@ int main(void)
     lsm6dsl_time_boot_adjust_rtc();
 
     haptic_init();
+    play_haptic_milli(200);
 
     flash_init();
 
@@ -187,13 +192,14 @@ int main(void)
     ret = transport_start();
     if (ret) LOG_ERR("BLE failed %d", ret);
 
+    boot_warming_sequence();
+
     ret = mic_start();
     if (ret) {
         LOG_ERR("Mic failed %d", ret);
         return ret;
     }
 
-    boot_ready_sequence();
     LOG_INF("Ready\n");
 
     while (1) {

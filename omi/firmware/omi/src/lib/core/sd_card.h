@@ -109,6 +109,13 @@ typedef struct {
 int app_sd_init(void);
 
 /**
+ * @brief Check if the SD card has completed boot init (mount + lfs_fs_gc pre-warm + file open).
+ *
+ * Returns true once the SD worker has set sd_boot_ready. Safe to poll from any thread.
+ */
+bool sd_is_boot_ready(void);
+
+/**
  * @brief Put the SD card interface (controller) into a low-power (suspend) state.
  *        Note: This typically suspends the SPI controller managing the SD card slot.
  *
