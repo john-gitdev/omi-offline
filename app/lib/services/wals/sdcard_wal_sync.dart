@@ -137,6 +137,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   Future stop() async {
     _wals = [];
+    final dev = _device;
+    if (dev != null) {
+      final connFuture = _connectionProvider != null
+          ? _connectionProvider!(dev.id)
+          : ServiceManager.instance().device.ensureConnection(dev.id);
+      connFuture.then((conn) => conn?.stopStorageSync()).catchError((_) {});
+    }
     await _storageStream?.cancel();
   }
 
