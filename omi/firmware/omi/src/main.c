@@ -48,7 +48,8 @@ static void boot_warming_sequence(void)
     const int steps = 30;
     const int delay_ms = 10;
 
-    // Pulse yellow (Red + Green) while SD pre-warm (lfs_fs_gc) is running
+    // Breathe yellow (Red + Green) while SD pre-warm (lfs_fs_gc) is running,
+    // then fade up to full yellow so the main loop takes over solid yellow.
     while (!sd_is_boot_ready()) {
         for (int i = 0; i <= steps && !sd_is_boot_ready(); i++) {
             float t = (float) i / steps;
@@ -65,32 +66,14 @@ static void boot_warming_sequence(void)
             k_msleep(delay_ms);
         }
     }
-    led_off();
-}
-
-static void boot_ready_sequence(void)
-{
-    const int steps = 50;
-    const int delay_ms = 10;
-
-    // Smooth green fade in/out 2 times = "Ready!"
-    for (int cycle = 0; cycle < 2; cycle++) {
-        for (int i = 0; i <= steps; i++) {
-            float t = (float) i / steps;
-            float eased = t < 0.5f ? 2.0f * t * t : 1.0f - 2.0f * (1.0f - t) * (1.0f - t);
-            uint8_t level = (uint8_t) (eased * 50.0f);
-            set_led_pwm(LED_GREEN, level);
-            k_msleep(delay_ms);
-        }
-        for (int i = 0; i <= steps; i++) {
-            float t = (float) i / steps;
-            float eased = t < 0.5f ? 2.0f * t * t : 1.0f - 2.0f * (1.0f - t) * (1.0f - t);
-            uint8_t level = (uint8_t) ((1.0f - eased) * 70.0f);
-            set_led_pwm(LED_GREEN, level);
-            k_msleep(delay_ms);
-        }
+    // Fade up to full yellow — main loop set_led_state() takes over from here
+    for (int i = 0; i <= steps; i++) {
+        float t = (float) i / steps;
+        uint8_t level = (uint8_t) (t * 100.0f);
+        set_led_pwm(LED_RED, level);
+        set_led_pwm(LED_GREEN, level);
+        k_msleep(delay_ms);
     }
-    led_off();
 }
 
 void set_led_state()
@@ -181,6 +164,7 @@ int main(void)
     lsm6dsl_time_boot_adjust_rtc();
 
     haptic_init();
+    play_haptic_milli(200);
 
     flash_init();
 
@@ -220,7 +204,6 @@ int main(void)
         return ret;
     }
 
-    boot_ready_sequence();
     LOG_INF("Ready\n");
 
     while (1) {
