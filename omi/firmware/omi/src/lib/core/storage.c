@@ -642,12 +642,8 @@ void storage_write(void)
                     save_offset(current_read_filename, current_read_offset);
                     LOG_INF("File done: %s", current_read_filename);
 
-                    /* Clear saved offset since deleted file is gone */
-                            save_offset("", 0);
-                        } else if (is_recording_file) {
-                            LOG_INF("Skipping delete of active recording file: %s", current_read_filename);
-                        }
-                    }
+                    /* Clear saved offset since file sync is complete */
+                    save_offset("", 0);
 
                     /* Notify app: file transfer complete (PACKET_EOT) */
                     LOG_INF("File sync complete, sending EOT: %s", current_read_filename);
