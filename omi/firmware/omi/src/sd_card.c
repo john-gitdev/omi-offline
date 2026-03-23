@@ -1574,6 +1574,11 @@ void sd_worker_thread(void)
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
 
+bool sd_is_boot_ready(void)
+{
+    return atomic_get(&sd_boot_ready);
+}
+
 int app_sd_init(void)
 {
     sd_shutdown_in_progress = false;
