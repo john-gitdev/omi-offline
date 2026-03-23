@@ -303,9 +303,12 @@ class OmiDeviceConnection extends DeviceConnection {
           .listen((data) {
         if (completer.isCompleted) return;
         // The file-list response has no type prefix — first byte is count (0..128).
-        // Reject framed protocol packets (DATA=0x01, EOT=0x02, ACK=0x03) that may
-        // be stale in the BLE notification queue from a previous transfer.
-        if (data.isEmpty || data[0] == 0x01 || data[0] == 0x02 || data[0] == 0x03) return;
+        // Reject stale framed packets by structural validity: a valid response is
+        // exactly 1 + count * 8 bytes. Framed packets (DATA/EOT/ACK) never fit this
+        // shape, so this correctly rejects them even when count == 1, 2, or 3.
+        if (data.isEmpty) return;
+        final expectedLen = 1 + data[0] * 8;
+        if (data[0] > 128 || data.length != expectedLen) return;
         completer.complete(data);
         sub?.cancel();
       }, onError: (e) {
