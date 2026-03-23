@@ -268,12 +268,6 @@ static const struct gpio_dt_spec sd_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(sdcard
 
 K_MSGQ_DEFINE(sd_msgq, sizeof(sd_req_t), SD_REQ_QUEUE_MSGS, 4);
 
-/* Priority queue for reads, flushes, and control operations.
- * The worker checks this BEFORE the regular write queue, so reads
- * never wait behind 100 pending audio writes. */
-#define SD_PRIO_QUEUE_MSGS 10
-K_MSGQ_DEFINE(sd_prio_msgq, sizeof(sd_req_t), SD_PRIO_QUEUE_MSGS, 4);
-
 /* Persistent read file handle — kept open between read_audio_data calls
  * so we avoid the expensive LFS open/seek/close on every read.
  * With 512-byte blocks and a 1 MB+ file, an open+seek costs O(sqrt(N/512))
@@ -1254,12 +1248,6 @@ void sd_worker_thread(void)
             goto handle_req;
         }
 
-        /* Priority queue first: reads, flush, file-list, delete, etc.
-         * These never wait behind pending audio writes. */
-        if (k_msgq_get(&sd_prio_msgq, &req, K_NO_WAIT) == 0) {
-            goto handle_req;
-        }
-
         /* Regular write queue timeout: short when BLE connected (keep read/sync responsive),
          * long when offline (save power). */
         k_timeout_t write_wait = ble_connected ? K_MSEC(50) : K_MSEC(2000);
@@ -1276,9 +1264,6 @@ void sd_worker_thread(void)
             /* Drain additional queued write/save_offset messages in one pass.
              * This reduces queue churn and improves effective SD throughput. */
             for (int i = 0; i < WRITE_DRAIN_BURST; i++) {
-                if (k_msgq_num_used_get(&sd_prio_msgq) > 0) {
-                    break;
-                }
                 sd_req_t next_req;
                 if (k_msgq_get(&sd_msgq, &next_req, K_NO_WAIT) != 0) {
                     break;
@@ -1622,7 +1607,7 @@ int app_sd_off(void)
         req.type = REQ_UNMOUNT;
         req.u.create_file.resp = &resp;
 
-        int qret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
+        int qret = k_msgq_put(&sd_msgq, &req, K_MSEC(2000));
         if (qret == 0) {
             if (k_sem_take(&resp.sem, K_MSEC(45000)) != 0) {
                 LOG_ERR("Timeout waiting for sd_worker unmount; skip force SD power-off");
@@ -1696,8 +1681,7 @@ void sd_notify_time_synced(uint32_t utc_time)
     sd_req_t req = {0};
     req.type = REQ_TIME_SYNCED;
     req.u.time_synced.utc_time = utc_time;
-    /* Use priority queue if possible; otherwise worker will handle deferred flag. */
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
+    int ret = k_msgq_put(&sd_msgq, &req, K_NO_WAIT);
     if (ret == 0) {
         atomic_set(&pending_time_synced, 0);
     }
@@ -1716,7 +1700,7 @@ void sd_notify_ble_state(bool connected)
         sd_req_t req = {0};
         req.type = REQ_FLUSH_FILE;
         req.u.create_file.resp = NULL; /* no response needed */
-        int ret = k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
+        int ret = k_msgq_put(&sd_msgq, &req, K_NO_WAIT);
         if (ret) {
             atomic_set(&pending_flush_on_ble_connect, 1);
             LOG_WRN("Flush on BLE connect deferred (%d)", ret);
@@ -1826,7 +1810,7 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
     req.u.read.offset = offset;
     req.u.read.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
+    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue read: %d", ret);
         read_in_flight = false;
@@ -1867,7 +1851,7 @@ int sd_flush_current_file(void)
     req.type = REQ_FLUSH_FILE;
     req.u.create_file.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
+    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue flush: %d", ret);
         flush_in_flight = false;
@@ -1906,7 +1890,7 @@ int delete_audio_file(const char *filename)
     strncpy(req.u.delete_file.filename, filename, MAX_FILENAME_LEN - 1);
     req.u.delete_file.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
+    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue delete: %d", ret);
         delete_in_flight = false;
@@ -1945,7 +1929,7 @@ int clear_audio_directory(void)
     req.type = REQ_CLEAR_AUDIO_DIR;
     req.u.clear_dir.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
+    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue clear_dir: %d", ret);
         clear_in_flight = false;
@@ -2009,7 +1993,7 @@ int create_new_audio_file(void)
     req.type = REQ_CREATE_NEW_FILE;
     req.u.create_file.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
+    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue create_new_audio_file: %d", ret);
         create_in_flight = false;
@@ -2076,7 +2060,7 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
     req.type = REQ_GET_FILE_STATS;
     req.u.file_stats.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
+    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue get_file_stats: %d", ret);
         stats_in_flight = false;
@@ -2122,9 +2106,8 @@ int get_audio_file_list(char filenames[][MAX_FILENAME_LEN], int max_files, int *
         return -ECANCELED;
     }
 
-    /* Fast path: during boot the worker is blocked in lfs_fs_gc(),
-     * so it cannot service the priority queue.  Return the file list
-     * that was cached during print_audio_files_at_boot() instead. */
+    /* Fast path: during boot the worker is blocked in lfs_fs_gc().
+     * Return the file list cached during print_audio_files_at_boot() instead. */
     if (!atomic_get(&sd_boot_ready) && file_cache_valid) {
         int n = cached_file_list_count < max_files ? cached_file_list_count : max_files;
         for (int i = 0; i < n; i++) {
@@ -2157,7 +2140,7 @@ int get_audio_file_list(char filenames[][MAX_FILENAME_LEN], int max_files, int *
     req.u.file_list.max_files = max_files;
     req.u.file_list.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
+    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue get_file_list: %d", ret);
         list_in_flight = false;
@@ -2188,9 +2171,8 @@ int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t 
         return -ECANCELED;
     }
 
-    /* Fast path: during boot the worker is blocked in lfs_fs_gc(),
-     * so it cannot service the priority queue.  Return the file list
-     * that was cached during print_audio_files_at_boot() instead. */
+    /* Fast path: during boot the worker is blocked in lfs_fs_gc().
+     * Return the file list cached during print_audio_files_at_boot() instead. */
     if (!atomic_get(&sd_boot_ready) && file_cache_valid) {
         int n = cached_file_list_count < max_files ? cached_file_list_count : max_files;
         for (int i = 0; i < n; i++) {
@@ -2226,7 +2208,7 @@ int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t 
     req.u.file_list.max_files = max_files;
     req.u.file_list.resp = &resp;
 
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
+    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue get_file_list: %d", ret);
         list_sizes_in_flight = false;
