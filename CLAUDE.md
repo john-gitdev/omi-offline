@@ -48,8 +48,8 @@ Omi is an offline-first wearable audio recorder. The nRF52840 firmware captures 
 - On connect: time sync writes UTC as little-endian u32 to `timeSyncWriteCharacteristicUuid` so the device can anchor recording timestamps.
 
 **Audio pipeline** (`services/`):
-- `RecordingsManager` stores raw BLE frames in `raw_chunks/<sessionId>/<chunk>.bin`
-- `OfflineAudioProcessor` decodes Opus → 16 kHz mono 16-bit PCM, applies RMS silence detection (-55 dBFS threshold), splits into `recordings/<YYYY-MM-DD>/<recording_<millis>>.wav`
+- `RecordingsManager` stores raw BLE frames in `raw_segments/<sessionId>/<sessionId>_<segmentIndex>.bin`
+- `OfflineAudioProcessor` decodes Opus → 16 kHz mono 16-bit PCM, applies RMS silence detection (-55 dBFS threshold), splits into `recordings/<YYYY-MM-DD>/<recording_<millis>>.m4a`
 - Metadata packets (255-byte frames) carry UTC + device uptime for timestamp anchoring when device clock was reset
 
 **Sync** (`services/wals/`):
