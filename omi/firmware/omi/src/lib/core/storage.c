@@ -281,6 +281,10 @@ static int send_file_list_response(struct bt_conn *conn)
     /* Each file: ts(4) + size(4) = 8 bytes, max ~550 files */
     int resp_len = 0;
 
+    /* Protocol cap: 1-byte count field limits response to 255 files.
+     * Currently safe because MAX_AUDIO_FILES == 100 (sd_card.h).
+     * If MAX_AUDIO_FILES is ever raised above 255, files beyond 255 become
+     * invisible to the app and will accumulate on the SD card unsynced. */
     uint8_t reported_count = (sync_file_count > 255) ? 255 : (uint8_t)sync_file_count;
     storage_buffer[resp_len++] = reported_count;
     if (sync_file_count > 255) {

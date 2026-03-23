@@ -9,7 +9,9 @@
 #define MAX_STORAGE_BYTES 0x1E000000 // 480MB
 #define MAX_WRITE_SIZE 440
 #define MAX_FILENAME_LEN 64
-#define MAX_AUDIO_FILES 100
+#define MAX_AUDIO_FILES 100  /* NOTE: CMD_LIST_FILES protocol uses a 1-byte count field (max 255).
+                              * If this is raised above 255, the send_file_list_response() cap in
+                              * storage.c will silently hide the excess files from the app. */
 #define FILE_ROTATION_INTERVAL_MS (30 * 60 * 1000) // 30 minutes in milliseconds
 
 /* Request types for the SD worker */
