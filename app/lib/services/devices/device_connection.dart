@@ -325,6 +325,15 @@ abstract class DeviceConnection {
 
   Future<bool> performDeleteFile(int fileIndex) async => false;
 
+  /// Send CMD_STOP (0x03) to halt an in-progress BLE transfer on the firmware side.
+  Future<bool> stopStorageSync() async {
+    if (await isConnected()) {
+      return await performStopStorageSync();
+    }
+    return false;
+  }
+
+  Future<bool> performStopStorageSync() async => false;
 
   // Feature support and Settings
   Future<int> getFeatures() async {
