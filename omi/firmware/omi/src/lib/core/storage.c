@@ -52,7 +52,7 @@ static uint32_t sync_file_sizes[MAX_AUDIO_FILES];
 static int sync_file_count = 0;
 static int current_sync_file_index = -1;
 static uint8_t list_files_requested = 0;  /* Deferred to storage thread */
-static int8_t delete_file_index = -1;     /* -1 = no delete, >=0 = file index to delete */
+static int16_t delete_file_index = -1;     /* -1 = no delete, >=0 = file index to delete */
 
 static void storage_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
 static ssize_t storage_write_handler(struct bt_conn *conn,
@@ -175,8 +175,8 @@ static ssize_t storage_read_characteristic(struct bt_conn *conn,
 
 uint8_t transport_started = 0;
 #define SD_BLE_SIZE 440
-#define STORAGE_CHUNK_COUNT 20
-#define STORAGE_BUFFER_SIZE (SD_BLE_SIZE * STORAGE_CHUNK_COUNT + 5 * STORAGE_CHUNK_COUNT)  /* ~8.9KB */
+#define STORAGE_READ_BATCH_SIZE 20
+#define STORAGE_BUFFER_SIZE (SD_BLE_SIZE * STORAGE_READ_BATCH_SIZE + 5 * STORAGE_READ_BATCH_SIZE)  /* ~8.9KB */
 static uint8_t storage_buffer[STORAGE_BUFFER_SIZE];
 static uint8_t stop_started = 0;
 uint32_t remaining_length = 0;
@@ -280,22 +280,25 @@ static int send_file_list_response(struct bt_conn *conn)
     /* Use storage_buffer to build response (max 4440 bytes) */
     /* Each file: ts(4) + size(4) = 8 bytes, max ~550 files */
     int resp_len = 0;
-    
-    storage_buffer[resp_len++] = (uint8_t)sync_file_count;
-    
-    for (int i = 0; i < sync_file_count && resp_len + 8 <= STORAGE_BUFFER_SIZE; i++) {
-        uint32_t timestamp = (uint32_t)strtoul(sync_file_list[i], NULL, 16);
+
+    uint8_t reported_count = (sync_file_count > 255) ? 255 : (uint8_t)sync_file_count;
+    storage_buffer[resp_len++] = reported_count;
+    if (sync_file_count > 255) {
+        LOG_WRN("File count %d exceeds protocol limit (255), reporting 255", sync_file_count);
+    }
+
+    for (int i = 0; i < sync_file_count && resp_len + 8 <= STORAGE_BUFFER_SIZE; i++) {        uint32_t timestamp = (uint32_t)strtoul(sync_file_list[i], NULL, 16);
         uint32_t size = sync_file_sizes[i];
         
-        storage_buffer[resp_len++] = (timestamp >> 24) & 0xFF;
-        storage_buffer[resp_len++] = (timestamp >> 16) & 0xFF;
-        storage_buffer[resp_len++] = (timestamp >> 8) & 0xFF;
         storage_buffer[resp_len++] = timestamp & 0xFF;
+        storage_buffer[resp_len++] = (timestamp >> 8) & 0xFF;
+        storage_buffer[resp_len++] = (timestamp >> 16) & 0xFF;
+        storage_buffer[resp_len++] = (timestamp >> 24) & 0xFF;
         
-        storage_buffer[resp_len++] = (size >> 24) & 0xFF;
-        storage_buffer[resp_len++] = (size >> 16) & 0xFF;
-        storage_buffer[resp_len++] = (size >> 8) & 0xFF;
         storage_buffer[resp_len++] = size & 0xFF;
+        storage_buffer[resp_len++] = (size >> 8) & 0xFF;
+        storage_buffer[resp_len++] = (size >> 16) & 0xFF;
+        storage_buffer[resp_len++] = (size >> 24) & 0xFF;
     }
     
     LOG_INF("Sending file list: %d files, %d bytes", sync_file_count, resp_len);
@@ -585,7 +588,7 @@ void storage_write(void)
             }
         }
         if (delete_file_index >= 0) {
-            int8_t idx = delete_file_index;
+            int16_t idx = delete_file_index;
             delete_file_index = -1;
             
             /* Ensure file list is cached */
@@ -639,17 +642,7 @@ void storage_write(void)
                     save_offset(current_read_filename, current_read_offset);
                     LOG_INF("File done: %s", current_read_filename);
 
-                    /* Auto-delete after successful multi-file sync. */
-                    {
-                        bool is_recording_file = sd_is_current_recording_file(current_read_filename);
-
-                        if (!is_recording_file && current_read_filename[0] != '\0') {
-                            LOG_INF("Auto-delete synced file: %s", current_read_filename);
-                            int del_ret = delete_audio_file(current_read_filename);
-                            if (del_ret < 0) {
-                                LOG_ERR("Failed to auto-delete %s: %d", current_read_filename, del_ret);
-                            }
-                            /* Clear saved offset since deleted file is gone */
+                    /* Clear saved offset since deleted file is gone */
                             save_offset("", 0);
                         } else if (is_recording_file) {
                             LOG_INF("Skipping delete of active recording file: %s", current_read_filename);

@@ -289,7 +289,7 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   /// Send CMD_LIST_FILES (0x10) and parse the response:
-  ///   [count:1][ts:4BE][size:4BE] × count
+  ///   [count:1][ts:4LE][size:4LE] × count
   /// Uses a dedicated one-shot listener so it doesn't interfere with the
   /// ongoing sync data stream.
   @override
@@ -326,7 +326,7 @@ class OmiDeviceConnection extends DeviceConnection {
         return [];
       }
 
-      // Each entry: 4-byte BE timestamp + 4-byte BE size = 8 bytes
+      // Each entry: 4-byte LE timestamp + 4-byte LE size = 8 bytes
       if (data.length < 1 + count * 8) {
         Logger.debug('performListFiles: truncated response (got ${data.length}, need ${1 + count * 8})');
         return [];
@@ -335,8 +335,8 @@ class OmiDeviceConnection extends DeviceConnection {
       final files = <StorageFile>[];
       for (int i = 0; i < count; i++) {
         final base = 1 + i * 8;
-        final ts = (data[base] << 24) | (data[base + 1] << 16) | (data[base + 2] << 8) | data[base + 3];
-        final sz = (data[base + 4] << 24) | (data[base + 5] << 16) | (data[base + 6] << 8) | data[base + 7];
+        final ts = data[base] | (data[base + 1] << 8) | (data[base + 2] << 16) | (data[base + 3] << 24);
+        final sz = data[base + 4] | (data[base + 5] << 8) | (data[base + 6] << 16) | (data[base + 7] << 24);
         files.add(StorageFile(index: i, timestamp: ts, size: sz));
       }
 

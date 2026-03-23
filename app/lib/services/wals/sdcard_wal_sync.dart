@@ -499,6 +499,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         while (streamBuffer.isNotEmpty) {
           int packageSize = streamBuffer[0];
 
+          // INVARIANT: Opus frames are ≤ 80 bytes (codec 20) or ≤ 40 bytes (codec 21).
+          // The firmware's raw SD format uses a 1-byte length prefix per frame.
+          // If a future codec produces frames > 253 bytes, this parser MUST be updated
+          // to use a multi-byte length prefix (and the firmware format must change too).
+          // Values 254 and 255 are reserved: 254 = marker, 255 = metadata.
+          assert(packageSize <= 253 || packageSize == 254,
+              'Frame length $packageSize exceeds single-byte protocol limit');
+
           if (packageSize == 254) {
             // Button-press marker — 16-byte payload: utcTime (4B LE), uptimeMs (4B LE), padding (8B)
             if (1 + 16 <= streamBuffer.length) {
