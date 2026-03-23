@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
+import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/utils/logger.dart';
 
 class OmiDeviceConnection extends DeviceConnection {
@@ -284,6 +285,98 @@ class OmiDeviceConnection extends DeviceConnection {
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error getting device info: $e');
       return device;
+    }
+  }
+
+  /// Send CMD_LIST_FILES (0x10) and parse the response:
+  ///   [count:1][ts:4BE][size:4BE] × count
+  /// Uses a dedicated one-shot listener so it doesn't interfere with the
+  /// ongoing sync data stream.
+  @override
+  Future<List<StorageFile>> performListFiles() async {
+    try {
+      final completer = Completer<List<int>>();
+      StreamSubscription? sub;
+
+      sub = transport
+          .getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid)
+          .listen((data) {
+        if (!completer.isCompleted) {
+          completer.complete(data);
+        }
+        sub?.cancel();
+      }, onError: (e) {
+        if (!completer.isCompleted) completer.completeError(e);
+        sub?.cancel();
+      });
+
+      await transport.writeCharacteristic(
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
+
+      final data = await completer.future.timeout(const Duration(seconds: 10));
+
+      if (data.isEmpty) return [];
+
+      final count = data[0];
+      if (count == 0 || count > 128) {
+        Logger.debug('performListFiles: count=$count — returning empty');
+        return [];
+      }
+
+      // Each entry: 4-byte BE timestamp + 4-byte BE size = 8 bytes
+      if (data.length < 1 + count * 8) {
+        Logger.debug('performListFiles: truncated response (got ${data.length}, need ${1 + count * 8})');
+        return [];
+      }
+
+      final files = <StorageFile>[];
+      for (int i = 0; i < count; i++) {
+        final base = 1 + i * 8;
+        final ts = (data[base] << 24) | (data[base + 1] << 16) | (data[base + 2] << 8) | data[base + 3];
+        final sz = (data[base + 4] << 24) | (data[base + 5] << 16) | (data[base + 6] << 8) | data[base + 7];
+        files.add(StorageFile(index: i, timestamp: ts, size: sz));
+      }
+
+      Logger.debug('performListFiles: $count files');
+      return files;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: performListFiles error: $e');
+      return [];
+    }
+  }
+
+  /// Send CMD_DELETE_FILE (0x12, fileIndex) and wait for PACKET_ACK (0x03, result).
+  @override
+  Future<bool> performDeleteFile(int fileIndex) async {
+    try {
+      final completer = Completer<bool>();
+      StreamSubscription? sub;
+
+      sub = transport
+          .getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid)
+          .listen((data) {
+        if (completer.isCompleted) return;
+        // Expect [PACKET_ACK=0x03][result:1]
+        if (data.length >= 2 && data[0] == 0x03) {
+          completer.complete(data[1] == 0);
+        } else if (data.length == 1 && data[0] == 0x03) {
+          completer.complete(true); // ACK with no result byte = success
+        }
+        sub?.cancel();
+      }, onError: (e) {
+        if (!completer.isCompleted) completer.completeError(e);
+        sub?.cancel();
+      });
+
+      await transport.writeCharacteristic(
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x12, fileIndex & 0xFF]);
+
+      final success = await completer.future.timeout(const Duration(seconds: 5));
+      Logger.debug('performDeleteFile($fileIndex): success=$success');
+      return success;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: performDeleteFile error: $e');
+      return false;
     }
   }
 }
