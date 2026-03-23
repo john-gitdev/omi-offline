@@ -1,23 +1,20 @@
 #include "lib/core/feedback.h"
 
-#include "feedback.h"
-
 #include <zephyr/logging/log.h>
 #include "lib/core/led.h"
 
 LOG_MODULE_REGISTER(feedback, CONFIG_LOG_DEFAULT_LEVEL);
 
 /**
- * @brief Log error and optionally set a universal generic error LED state.
+ * Error reporting for production builds.
  *
- * @param component The name of the failing component.
+ * LED blink patterns were removed for production (callers are currently
+ * unwired). Errors are reported via UART/RTT only. If you need to re-enable
+ * visual feedback, see git history for the original show_error() LED patterns.
  */
 static void log_error_event(const char *component)
 {
     LOG_ERR("Hardware Error Detected: %s", component);
-
-    // Optional UX: If you want a universal "Something is wrong" red flash, 
-    // we can do a brief pulse. For now, we will just log it.
 }
 
 void error_settings(void)
