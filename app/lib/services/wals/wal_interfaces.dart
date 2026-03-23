@@ -78,4 +78,8 @@ abstract class SDCardWalSync implements IWalSync {
   int get recordingsCount;
   int get estimatedTotalSegments;
 
+  /// Lightweight check — returns true if the device has at least one file
+  /// exceeding the sync threshold. Avoids building full WAL objects.
+  /// Fast path: uses in-memory WAL list if already populated by [setDevice].
+  Future<bool> hasFilesToSync();
 }

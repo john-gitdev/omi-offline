@@ -163,6 +163,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     return _buildWalsFromFiles(dev.id, ignoreThreshold: false);
   }
 
+  @override
+  Future<bool> hasFilesToSync() async {
+    if (_device == null) return false;
+    // Fast path: WAL list already built by setDevice() — no BLE round-trip needed.
+    if (_wals.isNotEmpty) return true;
+    // Slow path: query device file list and apply threshold filter.
+    final files = await _listFiles(_device!.id);
+    if (files.isEmpty) return false;
+    final codec = await _getAudioCodec(_device!.id);
+    final threshold = codec.getStorageBytesPerMinute();
+    return files.any((f) => f.size >= threshold);
+  }
+
   /// Same as [getMissingWals] but ignores the 60-second threshold.
   /// Used by [syncAll] with `force: true`.
   Future<List<Wal>> _getMissingWalsIgnoringThreshold() async {
