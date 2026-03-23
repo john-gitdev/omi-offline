@@ -21,7 +21,6 @@
 
 #include "spi_flash.h"
 #include "wdog_facade.h"
-#include "wifi.h"
 
 LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -193,10 +192,6 @@ int main(void)
         LOG_ERR("Mic failed %d", ret);
         return ret;
     }
-
-#ifdef CONFIG_OMI_ENABLE_WIFI
-    wifi_init();
-#endif
 
     boot_ready_sequence();
     LOG_INF("Ready\n");
