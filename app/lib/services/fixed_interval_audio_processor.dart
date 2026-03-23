@@ -92,64 +92,16 @@ class FixedIntervalAudioProcessor {
   /// Decodes the segment, emits a saved file each time a wall-clock boundary
   /// is crossed, and accumulates remaining frames for the next boundary.
   /// Returns a list of paths for any recordings saved during this call.
-  Future<List<String>> processSegmentFile(File segmentFile, DateTime fallbackStartTime,
-      {int? deviceSessionId}) async {
+  Future<List<String>> processSegmentFile(File segmentFile, DateTime fallbackStartTime) async {
     final List<String> savedFiles = [];
-    DateTime segmentStartTime = fallbackStartTime;
+    final DateTime segmentStartTime = fallbackStartTime;
 
     final bytes = await segmentFile.readAsBytes();
     if (bytes.isEmpty) return savedFiles;
 
     final byteData = ByteData.sublistView(bytes);
 
-    // 1. Refine segment start time from first metadata packet (same as OfflineAudioProcessor).
-    {
-      int off = 0;
-      while (off + 4 <= bytes.length) {
-        final len = byteData.getUint32(off, Endian.little);
-        if (off + 4 + len > bytes.length) break;
-        if (len == 255 && deviceSessionId != null) {
-          try {
-            final utcTime = byteData.getUint32(off + 4, Endian.little);
-            final uptimeMs = byteData.getUint32(off + 8, Endian.little);
-
-            final sessionAnchorUtc =
-                SharedPreferencesUtil().getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
-            final sessionAnchorUptime =
-                SharedPreferencesUtil().getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
-
-            const kMinValidEpoch = 946684800; // Jan 1 2000
-            if (sessionAnchorUtc > kMinValidEpoch && sessionAnchorUptime > 0) {
-              final uptimeDeltaMs = sessionAnchorUptime - uptimeMs;
-              final realUtcSecs = sessionAnchorUtc - (uptimeDeltaMs ~/ 1000);
-              final calculatedTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
-
-              if (calculatedTime.year >= 2000) {
-                if (utcTime > kMinValidEpoch) {
-                  final omiTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
-                  final driftMs = calculatedTime.difference(omiTime).inMilliseconds.abs();
-                  if (omiTime.year < 2000 || driftMs > 60000) {
-                    segmentStartTime = calculatedTime;
-                  } else {
-                    segmentStartTime = omiTime;
-                  }
-                } else {
-                  segmentStartTime = calculatedTime;
-                }
-              }
-            } else if (utcTime > kMinValidEpoch) {
-              segmentStartTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
-            }
-          } catch (e) {
-            Logger.error('FixedIntervalAudioProcessor: Error parsing metadata packet: $e');
-          }
-          break;
-        }
-        off += 4 + len;
-      }
-    }
-
-    // 2. Gap detection — if the device was offline long enough, flush the
+    // 1. Gap detection — if the device was offline long enough, flush the
     // current buffer as a partial interval and restart boundary tracking.
     if (_currentRefs.isNotEmpty && _lastSegmentEndTime != null) {
       final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds.abs();
@@ -201,11 +153,6 @@ class FixedIntervalAudioProcessor {
 
       final byteOffset = off;
       off += 4;
-
-      if (len == 255) {
-        off += len; // skip metadata packets
-        continue;
-      }
 
       off += len;
 

@@ -65,9 +65,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   double get currentSpeedKBps => _currentSpeedKBps;
 
-  final Set<int> _sessionsSeen = {};
   @override
-  int get recordingsCount => _sessionsSeen.length;
+  int get recordingsCount => _wals.length;
 
   @override
   int get estimatedTotalSegments {
@@ -334,11 +333,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     DateTime lastWaitingLog = DateTime.now().subtract(const Duration(seconds: 10));
 
-    int? currentDeviceSessionId;
-    int? currentSegmentIndex;
-    // Default to wal.timerStart so frames arriving before any metadata packet
-    // (or from firmware that no longer emits frame-255 metadata) go into the
-    // correct named folder rather than 'unsynced/'.
     int? lastDeviceSessionId = wal.timerStart > 0 ? wal.timerStart : null;
     int? lastSegmentIndex = 0;
     final List<List<int>> frameBuffer = [];
@@ -505,123 +499,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         while (streamBuffer.isNotEmpty) {
           int packageSize = streamBuffer[0];
 
-          // Legacy markers (0xFD, 0xFF, 0xFE) are now embedded in the WAL payload
-          // if they appeared there, but the firmware refactoring ensures
-          // they only appear as payloads of PACKET_DATA.
-
-          if (packageSize == 255) {
-            // Metadata
-            if (1 + 16 <= streamBuffer.length) {
-              var metadata = streamBuffer.sublist(1, 1 + 16);
-              var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
-              var utcTime = byteData.getUint32(0, Endian.little);
-              var currentUptimeMs = byteData.getUint32(4, Endian.little);
-              currentDeviceSessionId = byteData.getUint32(8, Endian.little);
-              if (currentDeviceSessionId != null) {
-                _sessionsSeen.add(currentDeviceSessionId!);
-              }
-              currentSegmentIndex = byteData.getUint32(12, Endian.little);
-
-              if (currentDeviceSessionId != null) {
-                // 946684800 = Jan 1 2000 00:00:00 UTC — reject stale/unsynced Omi clocks.
-                const kMinValidEpoch = 946684800;
-                if (utcTime > kMinValidEpoch) {
-                  final existingUtc = SharedPreferencesUtil()
-                      .getInt('anchor_utc_device_session_$currentDeviceSessionId', defaultValue: 0);
-                  // Only overwrite if new utcTime is significantly more recent (meaning Omi was re-synced).
-                  if (utcTime > existingUtc + 60) {
-                    SharedPreferencesUtil()
-                        .saveInt('anchor_utc_device_session_$currentDeviceSessionId', utcTime);
-                    SharedPreferencesUtil()
-                        .saveInt('anchor_uptime_device_session_$currentDeviceSessionId', currentUptimeMs);
-                  }
-                }
-
-                // Per-segment anchors (keep these as precise markers for local calculation).
-                // Only store if utcTime is valid — stale per-segment anchors poison back-calculation.
-                if (currentSegmentIndex != null && utcTime > 946684800) {
-                  SharedPreferencesUtil().saveInt(
-                      'anchor_utc_device_session_${currentDeviceSessionId}_$currentSegmentIndex', utcTime);
-                  SharedPreferencesUtil().saveInt(
-                      'anchor_uptime_device_session_${currentDeviceSessionId}_$currentSegmentIndex', currentUptimeMs);
-                }
-              }
-
-              final deviceSessionId = currentDeviceSessionId;
-              final segmentIndex = currentSegmentIndex;
-              if (deviceSessionId != null && segmentIndex != null) {
-                final storedDeviceId = SharedPreferencesUtil().latestSyncedDeviceId;
-                final storedSessionId = SharedPreferencesUtil().latestSyncedDeviceSessionId;
-                final storedSegmentIndex = SharedPreferencesUtil().latestSyncedSegmentIndex;
-                if (deviceId != storedDeviceId || deviceSessionId > storedSessionId) {
-                  // Different device or new session — update all three.
-                  SharedPreferencesUtil().latestSyncedDeviceId = deviceId;
-                  SharedPreferencesUtil().latestSyncedDeviceSessionId = deviceSessionId;
-                  SharedPreferencesUtil().latestSyncedSegmentIndex = segmentIndex;
-                } else if (deviceSessionId == storedSessionId && segmentIndex > storedSegmentIndex) {
-                  SharedPreferencesUtil().latestSyncedSegmentIndex = segmentIndex;
-                }
-              }
-
-              Logger.debug("SDCardWalSync BLE: Parsed metadata session $currentDeviceSessionId");
-
-              if (currentDeviceSessionId != lastDeviceSessionId || currentSegmentIndex != lastSegmentIndex) {
-                await flushBuffer();
-                lastDeviceSessionId = currentDeviceSessionId;
-                lastSegmentIndex = currentSegmentIndex;
-                _lastSegmentBoundaryOffset = expectedOffset - streamBuffer.length;
-
-                if (_cancelPending) {
-                  // Segment is fully written. Rewind walOffset to the start of this
-                  // metadata packet so the next sync resumes at a clean record boundary.
-                  wal.walOffset = expectedOffset - streamBuffer.length;
-                  Logger.debug(
-                      'SDCardWalSync: Cancel — stopped at segment boundary, walOffset → ${wal.walOffset}');
-                  isStreamLocked = true;
-                  if (!completer.isCompleted) {
-                    completer.completeError(Exception('Sync cancelled by user'));
-                  }
-                  return;
-                }
-              }
-
-              streamBuffer.removeRange(0, 1 + 16);
-              continue;
-            } else {
-              break; // Need more bytes for metadata
-            }
-          }
-
           if (packageSize == 254) {
-            // Marker
+            // Button-press marker — 16-byte payload: utcTime (4B LE), uptimeMs (4B LE), padding (8B)
             if (1 + 16 <= streamBuffer.length) {
               var metadata = streamBuffer.sublist(1, 1 + 16);
               var byteData = ByteData.sublistView(Uint8List.fromList(metadata));
               var utcTime = byteData.getUint32(0, Endian.little);
-              var markerUptimeMs = byteData.getUint32(4, Endian.little);
-
-              // If device has no RTC lock, utcTime will be 0. Reconstruct UTC time from
-              // the uptime anchor saved when we parsed the most recent metadata packet.
-              int resolvedUtcTime = utcTime;
-              if (utcTime == 0 && currentDeviceSessionId != null) {
-                final anchorUtc =
-                    SharedPreferencesUtil().getInt('anchor_utc_device_session_$currentDeviceSessionId');
-                final anchorUptime =
-                    SharedPreferencesUtil().getInt('anchor_uptime_device_session_$currentDeviceSessionId');
-                if (anchorUtc > 0 && anchorUptime > 0) {
-                  final uptimeDeltaSeconds = (markerUptimeMs - anchorUptime) ~/ 1000;
-                  resolvedUtcTime = anchorUtc + uptimeDeltaSeconds;
-                  Logger.debug(
-                      "SDCardWalSync: Marker UTC resolved via anchor: $resolvedUtcTime (delta ${uptimeDeltaSeconds}s)");
-                } else {
-                  Logger.debug(
-                      "SDCardWalSync: Marker utcTime=0 and no anchor available for session $currentDeviceSessionId");
-                }
-              }
-
-              final deviceSessionId = currentDeviceSessionId;
-              if (deviceSessionId != null) {
-                await _saveMarker(deviceSessionId, resolvedUtcTime);
+              if (lastDeviceSessionId != null) {
+                await _saveMarker(lastDeviceSessionId!, utcTime);
               }
               streamBuffer.removeRange(0, 1 + 16);
               continue;
@@ -710,7 +595,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _downloadStartTime = null;
     _currentSpeedKBps = 0.0;
     _activeTransferCompleter = null;
-    _sessionsSeen.clear();
   }
 
   Future<void> _checkDiskSpaceBeforeSync(int totalBytesToDownload) async {
@@ -806,7 +690,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         await _checkDiskSpaceBeforeSync(totalBytesToDownload);
         _downloadStartTime = DateTime.now();
-        _sessionsSeen.add(wal.timerStart);
 
         final List<File> syncedFiles = [];
         const int maxGapRetries = 3;
