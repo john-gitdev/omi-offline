@@ -605,12 +605,6 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
 
     k_work_cancel_delayable(&mtu_recheck_work);
 
-    /* Reset audio TX semaphore so slots aren't permanently consumed if
-     * on_audio_tx_done wasn't called for in-flight packets at disconnect. */
-    k_sem_init(&audio_tx_sem,
-               CONFIG_BT_CONN_TX_MAX - AUDIO_TX_RESERVED_SLOTS,
-               CONFIG_BT_CONN_TX_MAX - AUDIO_TX_RESERVED_SLOTS);
-
     LOG_INF("Transport disconnected");
 
     if (current_connection != NULL) {
@@ -778,19 +772,6 @@ static struct ring_buf ring_buf;
 /* Wakes pusher() when a frame is queued — replaces 10 ms sleep polling. */
 K_SEM_DEFINE(tx_queue_sem, 0, NETWORK_RING_BUF_SIZE);
 
-/* Audio TX throttle: reserves 2 ATT TX slots for battery/status notifications.
- * pusher takes one slot per packet; on_audio_tx_done returns it when BLE completes. */
-#define AUDIO_TX_RESERVED_SLOTS 2
-K_SEM_DEFINE(audio_tx_sem,
-             CONFIG_BT_CONN_TX_MAX - AUDIO_TX_RESERVED_SLOTS,
-             CONFIG_BT_CONN_TX_MAX - AUDIO_TX_RESERVED_SLOTS);
-
-static void on_audio_tx_done(struct bt_conn *conn, void *user_data)
-{
-    ARG_UNUSED(conn);
-    ARG_UNUSED(user_data);
-    k_sem_give(&audio_tx_sem);
-}
 
 static bool write_to_tx_queue(uint8_t *data, size_t size)
 {
@@ -845,69 +826,6 @@ static bool read_from_tx_queue()
 // Thread
 K_THREAD_STACK_DEFINE(pusher_stack, 4096);
 static struct k_thread pusher_thread;
-static uint16_t packet_next_index = 0;
-
-// Define buffer sizes based on configuration and potential MTU
-#define MAX_POSSIBLE_MTU 517
-static uint8_t pusher_temp_data[MAX_POSSIBLE_MTU];
-
-static bool push_to_gatt(struct bt_conn *conn)
-{
-    uint8_t *buffer = tx_buffer + RING_BUFFER_HEADER_SIZE;
-    uint32_t offset = 0;
-    uint8_t index = 0;
-    int retry_count = 0;
-    const int max_retries = 3;
-
-    while (offset < tx_buffer_size) {
-        uint32_t id = packet_next_index++;
-        uint32_t packet_size = MIN(current_mtu - NET_BUFFER_HEADER_SIZE, tx_buffer_size - offset);
-        pusher_temp_data[0] = id & 0xFF;
-        pusher_temp_data[1] = (id >> 8) & 0xFF;
-        pusher_temp_data[2] = index;
-        memcpy(pusher_temp_data + NET_BUFFER_HEADER_SIZE, buffer + offset, packet_size);
-
-        offset += packet_size;
-        index++;
-
-        /* Acquire a TX slot before sending — reserves slots for battery/status. */
-        k_sem_take(&audio_tx_sem, K_FOREVER);
-
-        struct bt_gatt_notify_params notify_params = {
-            .attr = &audio_service.attrs[1],
-            .data = pusher_temp_data,
-            .len = packet_size + NET_BUFFER_HEADER_SIZE,
-            .func = on_audio_tx_done,
-        };
-
-        retry_count = 0;
-        while (retry_count < max_retries) {
-            int err = bt_gatt_notify_cb(conn, &notify_params);
-#ifdef CONFIG_OMI_ENABLE_MONITOR
-            monitor_inc_gatt_notify();
-#endif
-            if (err == -EAGAIN || err == -ENOMEM) {
-                k_sleep(K_MSEC(1));
-                retry_count++;
-                continue;
-            } else if (err) {
-                LOG_DBG("bt_gatt_notify_cb failed (err %d)", err);
-                retry_count++;
-                continue;
-            }
-            break;
-        }
-
-        if (retry_count >= max_retries) {
-            /* Return the slot we took since on_audio_tx_done won't be called. */
-            k_sem_give(&audio_tx_sem);
-            LOG_ERR("Failed to send packet after %d retries", max_retries);
-            return false;
-        }
-    }
-
-    return true;
-}
 
 #define OPUS_PREFIX_LENGTH 1
 #define OPUS_PADDED_LENGTH 80
@@ -993,41 +911,6 @@ bool write_marker_to_storage(void)
     return write_custom_packet_to_storage(254, temp_buffer, 16);
 }
 #endif
-
-#define MAX_FILES 10
-#define MAX_AUDIO_FILE_SIZE 300000
-
-void test_pusher(void)
-{
-    uint32_t runs_count = 0;
-    while (1) {
-        k_sleep(K_MSEC(1));
-        struct bt_conn *conn = current_connection;
-        if (conn) {
-            conn = bt_conn_ref(conn);
-        }
-        bool valid = true;
-        if (current_mtu < MINIMAL_PACKET_SIZE) {
-            valid = false;
-        } else if (!conn) {
-            valid = false;
-        } else if (runs_count % 100 == 0) {
-            valid = bt_gatt_is_subscribed(conn, &audio_service.attrs[1], BT_GATT_CCC_NOTIFY); // Check if subscribed
-        }
-        if (valid) {
-            // Expected 100 packages per seconds
-            bool sent = push_to_gatt(conn);
-            if (!sent) {
-                // k_sleep(K_MSEC(50));
-            }
-        }
-        if (conn) {
-            bt_conn_unref(conn);
-        }
-        runs_count++;
-        k_yield();
-    }
-}
 
 void pusher(void)
 {
