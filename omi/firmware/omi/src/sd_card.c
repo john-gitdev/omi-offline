@@ -245,6 +245,7 @@ static bool deferred_timesync_rename_pending = false;
 static uint32_t deferred_timesync_utc_time = 0;
 static uint32_t cached_stats_file_count = 0;
 static uint64_t cached_stats_total_size = 0;
+static uint32_t cached_free_bytes = 0;
 static int64_t cached_stats_valid_until_ms = 0;
 static bool file_cache_valid = false;
 static int cached_file_list_count = 0;
@@ -434,8 +435,10 @@ static void lfs_close_files(void)
 {
     lfs_file_close(&lfs_fs, &lfs_fil_data);
     lfs_file_close(&lfs_fs, &lfs_fil_info);
+    k_mutex_lock(&current_filename_lock, K_FOREVER);
     current_filename[0] = '\0';
     current_file_path[0] = '\0';
+    k_mutex_unlock(&current_filename_lock);
 }
 
 /*
@@ -739,7 +742,9 @@ static int create_audio_file_with_timestamp(void)
         if (write_batch_offset > 0)
             flush_batch_buffer();
         lfs_file_close(&lfs_fs, &lfs_fil_data);
+        k_mutex_lock(&current_filename_lock, K_FOREVER);
         current_filename[0] = '\0';
+        k_mutex_unlock(&current_filename_lock);
     }
 
     /* Ensure audio directory exists */
@@ -752,6 +757,7 @@ static int create_audio_file_with_timestamp(void)
         }
     }
 
+    k_mutex_lock(&current_filename_lock, K_FOREVER);
     if (rtc_valid) {
         snprintf(current_filename, sizeof(current_filename), "%08X.txt", timestamp);
         current_file_needs_rename = false;
@@ -760,18 +766,22 @@ static int create_audio_file_with_timestamp(void)
         uint32_t cycle_tag = (uint32_t) k_cycle_get_32();
         snprintf(current_filename, sizeof(current_filename), "TMP_%08X_%04X.txt", boot_tag, cycle_tag & 0xFFFFU);
         current_file_needs_rename = true;
-        LOG_WRN("RTC not synced, temp file: %s", current_filename);
     }
-
     build_file_path(current_filename, current_file_path, sizeof(current_file_path));
+    k_mutex_unlock(&current_filename_lock);
+
     LOG_INF("Creating audio file: %s", current_file_path);
+    if (!rtc_valid)
+        LOG_WRN("RTC not synced, temp file: %s", current_filename);
 
     int ret = lfs_file_opencfg(
         &lfs_fs, &lfs_fil_data, current_file_path, LFS_O_CREAT | LFS_O_RDWR | LFS_O_APPEND, &lfs_fdata_cfg);
     if (ret < 0) {
         LOG_ERR("Failed to create %s: %d", current_file_path, ret);
+        k_mutex_lock(&current_filename_lock, K_FOREVER);
         current_filename[0] = '\0';
         current_file_path[0] = '\0';
+        k_mutex_unlock(&current_filename_lock);
         return ret;
     }
 
@@ -989,6 +999,17 @@ static int refresh_file_cache(void)
     cached_total_file_size = total_size;
     cached_stats_file_count = total_count;
     cached_stats_total_size = total_size;
+
+    /* Compute free space: lfs_fs_size() returns number of blocks in use. */
+    lfs_ssize_t used_blocks = lfs_fs_size(&lfs_fs);
+    if (used_blocks >= 0 && lfs_cfg.block_count > 0) {
+        uint64_t total_cap = (uint64_t)lfs_cfg.block_count * lfs_cfg.block_size;
+        uint64_t used_cap  = (uint64_t)used_blocks          * lfs_cfg.block_size;
+        cached_free_bytes  = (used_cap < total_cap) ? (uint32_t)(total_cap - used_cap) : 0;
+    } else {
+        cached_free_bytes = 0;
+    }
+
     cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
     file_cache_valid = true;
 
@@ -1348,7 +1369,9 @@ void sd_worker_thread(void)
             flush_batch_buffer();
             close_read_handle();
             lfs_file_close(&lfs_fs, &lfs_fil_data);
+            k_mutex_lock(&current_filename_lock, K_FOREVER);
             current_filename[0] = '\0';
+            k_mutex_unlock(&current_filename_lock);
 
             lfs_dir_t dir;
             struct lfs_info info;
@@ -1471,8 +1494,10 @@ void sd_worker_thread(void)
                 LOG_INF("[SD_WORK] Deleting active recording file");
                 flush_batch_buffer();
                 lfs_file_close(&lfs_fs, &lfs_fil_data);
+                k_mutex_lock(&current_filename_lock, K_FOREVER);
                 current_filename[0] = '\0';
                 current_file_path[0] = '\0';
+                k_mutex_unlock(&current_filename_lock);
                 current_file_size = 0;
                 bytes_since_sync = 0;
                 last_file_sync_uptime_ms = 0;
@@ -1611,6 +1636,11 @@ bool sd_is_current_recording_file(const char *filename)
     bool match = (current_filename[0] != '\0' && strcmp(filename, current_filename) == 0);
     k_mutex_unlock(&current_filename_lock);
     return match;
+}
+
+uint32_t sd_get_cached_free_bytes(void)
+{
+    return cached_free_bytes;
 }
 
 void sd_notify_time_synced(uint32_t utc_time)
