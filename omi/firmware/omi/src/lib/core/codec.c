@@ -83,6 +83,11 @@ void codec_entry()
          * the entire ring buffer in one pass before sleeping again.
          * Eliminates the 10 ms polling delay of the old k_sleep loop. */
         k_sem_take(&codec_data_sem, K_FOREVER);
+        /* Reset any extra counts accumulated while we were processing the last
+         * batch.  Without this, rapid back-to-back sem_give() calls leave a
+         * non-zero count that causes the next N iterations of the outer loop
+         * to wake immediately and spin on an empty ring buffer. */
+        k_sem_reset(&codec_data_sem);
 
         while (ring_buf_size_get(&codec_ring_buf) >= CODEC_PACKAGE_SAMPLES * 2) {
             ring_buf_get(&codec_ring_buf, (uint8_t *) codec_input_samples, CODEC_PACKAGE_SAMPLES * 2);
