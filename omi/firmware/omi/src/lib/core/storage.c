@@ -634,7 +634,6 @@ void storage_write(void)
             write_to_gatt(conn);
             heartbeat_count = (heartbeat_count + 1) % (MAX_HEARTBEAT_FRAMES + 1);
 
-            transport_started = 0;
             if (remaining_length == 0) {
                 if (stop_started) {
                     stop_started = 0;
