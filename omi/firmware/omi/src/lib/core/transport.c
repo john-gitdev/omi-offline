@@ -462,9 +462,6 @@ features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, voi
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     features |= OMI_FEATURE_OFFLINE_STORAGE;
 #endif
-#ifdef CONFIG_OMI_ENABLE_WIFI
-    features |= OMI_FEATURE_WIFI;
-#endif
     // LED dimming is always enabled now with PWM.
     features |= OMI_FEATURE_LED_DIMMING;
     // Mic gain control is always enabled.
@@ -882,29 +879,6 @@ bool write_to_storage(void)
 uint32_t device_session_id = 0;
 uint32_t segment_index = 0;
 
-bool write_timestamp_to_storage(void)
-{
-    if (device_session_id == 0) {
-        do {
-            device_session_id = sys_rand32_get();
-        } while (device_session_id == 0);
-    }
-
-    uint8_t temp_buffer[16];
-    uint32_t utc_time = get_utc_time();
-    /* Use 64-bit uptime to avoid the ~49-day rollover of k_uptime_get_32(). */
-    uint64_t uptime_ms = (uint64_t)k_uptime_get();
-
-    memcpy(temp_buffer, &utc_time, 4);
-    memcpy(temp_buffer + 4, &uptime_ms, 4);
-    memcpy(temp_buffer + 8, &device_session_id, 4);
-    memcpy(temp_buffer + 12, &segment_index, 4);
-
-    segment_index++;
-
-    return write_custom_packet_to_storage(255, temp_buffer, 16);
-}
-
 bool write_marker_to_storage(void)
 {
     if (device_session_id == 0) {
@@ -932,12 +906,6 @@ bool write_marker_to_storage(void)
 
 #define MAX_FILES 10
 #define MAX_AUDIO_FILE_SIZE 300000
-static uint32_t last_timestamp_uptime = 0;
-
-void reset_last_timestamp_uptime(void)
-{
-    last_timestamp_uptime = 0;
-}
 
 void test_pusher(void)
 {
@@ -985,13 +953,6 @@ void pusher(void)
         // Always write to storage for offline-only recording
         if (!is_muted && get_file_size() < MAX_STORAGE_BYTES && is_sd_on()) {
             storage_full_warned = false;
-            
-            // Inject timestamp every 60 seconds
-            uint32_t now = k_uptime_get_32();
-            if (now - last_timestamp_uptime > 60000 || last_timestamp_uptime == 0) {
-                write_timestamp_to_storage();
-                last_timestamp_uptime = now;
-            }
             
             write_to_storage();
         } else {
