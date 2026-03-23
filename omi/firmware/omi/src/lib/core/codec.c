@@ -28,6 +28,11 @@ void set_codec_callback(codec_callback callback)
 
 uint8_t codec_ring_buffer_data[AUDIO_BUFFER_SAMPLES * 2]; // 2 bytes per sample
 struct ring_buf codec_ring_buf;
+
+/* Signaled by codec_receive_pcm() each time a PCM block arrives.
+ * codec_entry() blocks here instead of polling every 10 ms. */
+K_SEM_DEFINE(codec_data_sem, 0, NETWORK_RING_BUF_SIZE);
+
 int codec_receive_pcm(int16_t *data, size_t len) // this gets called after mic data is finished
 {
     // Invariant: Only accept writes where (incoming_bytes % sample_size == 0)
@@ -45,6 +50,7 @@ int codec_receive_pcm(int16_t *data, size_t len) // this gets called after mic d
         return -1;
     }
 
+    k_sem_give(&codec_data_sem);
     return 0;
 }
 
@@ -71,29 +77,20 @@ static OpusEncoder *const m_opus_state = (OpusEncoder *) m_opus_encoder;
 
 void codec_entry()
 {
-
     uint16_t output_size;
     while (1) {
+        /* Block until mic delivers at least one PCM block, then drain
+         * the entire ring buffer in one pass before sleeping again.
+         * Eliminates the 10 ms polling delay of the old k_sleep loop. */
+        k_sem_take(&codec_data_sem, K_FOREVER);
 
-        // Check if we have enough data
-        if (ring_buf_size_get(&codec_ring_buf) < CODEC_PACKAGE_SAMPLES * 2) {
-            // LOG_PRINTK("waiting on data....\n");
-            k_sleep(K_MSEC(10));
-            continue;
+        while (ring_buf_size_get(&codec_ring_buf) >= CODEC_PACKAGE_SAMPLES * 2) {
+            ring_buf_get(&codec_ring_buf, (uint8_t *) codec_input_samples, CODEC_PACKAGE_SAMPLES * 2);
+            output_size = execute_codec();
+            if (_callback) {
+                _callback(codec_output_bytes, output_size);
+            }
         }
-        // Read package
-        ring_buf_get(&codec_ring_buf, (uint8_t *) codec_input_samples, CODEC_PACKAGE_SAMPLES * 2);
-
-        // Run Codec
-        output_size = execute_codec();
-
-        // Notify
-        if (_callback) {
-            _callback(codec_output_bytes, output_size);
-        }
-
-        // Yield
-        k_yield();
     }
 }
 
