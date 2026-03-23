@@ -43,7 +43,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   bool _cancelPending = false;
   bool _isSyncing = false;
   int _cancelGeneration = 0;
-  bool _intentionalWipe = false;
   int _lastSegmentBoundaryOffset = 0;
   Completer<void>? _activeTransferCompleter;
   Completer<void>? _cancelCompleter;
@@ -680,14 +679,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return null;
     }
 
-    // If our list is empty, refresh it before checking sync status.
-    // force=true bypasses the 60-second threshold so an explicit "Sync All" always works.
-    if (_wals.isEmpty) {
+    // Refresh the WAL list before syncing.
+    // force=true always rebuilds without the 60-second threshold so short recordings are included.
+    if (force) {
+      Logger.debug("SDCardWalSync: Force sync — refreshing WAL list without threshold...");
+      _wals = await _getMissingWalsIgnoringThreshold();
+    } else if (_wals.isEmpty) {
       Logger.debug("SDCardWalSync: File list empty, refreshing before sync...");
       _wals = await getMissingWals();
-      if (_wals.isEmpty && force) {
-        _wals = await _getMissingWalsIgnoringThreshold();
-      }
     }
 
     // Log full WAL state at sync start so we can audit what's being synced and why.
@@ -970,7 +969,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       Logger.debug('SDCardWalSync: deleteAllPendingWals — no device connected, skipping');
       return;
     }
-    _intentionalWipe = true;
     Logger.debug('SDCardWalSync: deleteAllPendingWals — listing all files on ${dev.id}');
     final files = await _listFiles(dev.id);
     if (files.isEmpty) {
