@@ -301,9 +301,12 @@ class OmiDeviceConnection extends DeviceConnection {
       sub = transport
           .getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid)
           .listen((data) {
-        if (!completer.isCompleted) {
-          completer.complete(data);
-        }
+        if (completer.isCompleted) return;
+        // The file-list response has no type prefix — first byte is count (0..128).
+        // Reject framed protocol packets (DATA=0x01, EOT=0x02, ACK=0x03) that may
+        // be stale in the BLE notification queue from a previous transfer.
+        if (data.isEmpty || data[0] == 0x01 || data[0] == 0x02 || data[0] == 0x03) return;
+        completer.complete(data);
         sub?.cancel();
       }, onError: (e) {
         if (!completer.isCompleted) completer.completeError(e);
