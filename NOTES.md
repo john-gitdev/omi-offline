@@ -4,6 +4,52 @@ Running log of investigated bugs, deferred decisions, and findings that don't fi
 
 ---
 
+## Firmware: LED Behavior
+
+### Boot Sequence
+1. **Haptic buzz** (200ms) — only power-on signal, no LED
+2. **Pulsing yellow** (Red + Green breathing, 0→40%→0, repeating) — SD card pre-warming (`lfs_fs_gc`). Mic is NOT started yet; no audio is dropped.
+3. **Fade to solid yellow** (0→100%) — pre-warm complete, mic starts, main loop takes over
+
+### LED State Machine (`set_led_state()`, runs every 500ms)
+
+Priority order (highest first):
+
+| Priority | Condition | LED |
+|----------|-----------|-----|
+| 1 | Device off | Off |
+| 2 | Double-tap marker (`marker_flash_count > 0`) | White (R+G+B) — overrides stealth |
+| 3 | Stealth mode (`is_led_enabled == false`) | Off |
+| 4 | Muted (long press) | Solid Red |
+| 5 | Low battery (< 10%) | Solid Purple (R+B) |
+| 6 | BLE connected | Solid Blue |
+| 7 | Default / recording | Solid Yellow (R+G) |
+
+### Charging Override
+Applied on top of the base state above:
+- **Fully charged (≥ 98%):** Solid Green
+- **Charging:** Blinks every 500ms between Green and the current base color (e.g. Green ↔ Blue if connected, Green ↔ Yellow if recording)
+- Plugging in charger automatically disables Stealth Mode (`is_led_enabled = true`)
+
+### Button Controls
+| Action | Effect |
+|--------|--------|
+| Single tap | Toggle Stealth Mode (LED on/off) |
+| Long press (1s) | Toggle Mute — LED goes Red when muted |
+| Double tap | White flash ~1s (marker recorded) — ignored if muted |
+| Double tap + hold (3s) | Power off |
+
+### Hardware Error LEDs
+**Removed in production.** The `feedback.c` error functions (`error_sd_card()`, `error_transport()`, etc.) only log to UART/RTT. No visual LED feedback on errors. Color codes are documented in `feedback.h` comments for reference only.
+
+### Stealth Mode Notes
+- Single tap toggles `is_led_enabled`
+- Stealth suppresses all base state LEDs
+- Stealth does **not** suppress: double-tap white flash
+- Charging always overrides stealth back on
+
+---
+
 ## Upstream Comparison: `BasedHardware/omi` feat/auto-offline-sync
 
 Reviewed diff at `BasedHardware/omi/compare/main...feat/auto-offline-sync`.
