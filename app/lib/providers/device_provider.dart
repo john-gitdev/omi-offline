@@ -110,8 +110,14 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     if (connection == null) return -1;
     final files = await connection.getStorageList();
     if (files.isEmpty) return -1;
-    const maxStorageBytes = 480 * 1024 * 1024; // 0x1E000000, matches firmware MAX_STORAGE_BYTES
-    return ((files[0] / maxStorageBytes) * 100).round().clamp(0, 100);
+    final usedBytes = files[0];
+    // files[2] = free_bytes reported by firmware (LittleFS lfs_fs_size).
+    // Fall back to the old hardcoded ceiling if the field is absent or zero
+    // (older firmware that only sent 8 bytes).
+    final freeBytes = files.length > 2 && files[2] > 0 ? files[2] : (480 * 1024 * 1024 - usedBytes);
+    final totalBytes = usedBytes + freeBytes;
+    if (totalBytes <= 0) return -1;
+    return ((usedBytes / totalBytes) * 100).round().clamp(0, 100);
   }
 
   Future<StreamSubscription<List<int>>?> _getBleBatteryLevelListener(
