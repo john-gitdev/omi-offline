@@ -166,7 +166,7 @@ static ssize_t storage_read_characteristic(struct bt_conn *conn,
     uint32_t payload[4] = {0};
     payload[0] = (uint32_t)cached_total_size;   /* total used bytes */
     payload[1] = cached_file_count;             /* number of audio files */
-    payload[2] = 0;                      /* free_bytes — TODO: implement disk_access_ioctl */
+    payload[2] = sd_get_cached_free_bytes();   /* free bytes remaining on SD */
     payload[3] = 0;                      /* status_flags: bit0=charging, bit1=warning, bit2=error */
     
     LOG_INF("Storage read: used=%u bytes, files=%u", payload[0], payload[1]);
