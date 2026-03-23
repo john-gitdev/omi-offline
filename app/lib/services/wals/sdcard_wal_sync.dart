@@ -93,6 +93,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       _cancelPending = true;
       Logger.debug("SDCardWalSync: Cancel requested — will stop at next segment boundary");
 
+      // Tell the firmware to stop streaming immediately so it doesn't keep
+      // sending BLE packets after we cancel the Dart listener.
+      final dev = _device;
+      if (dev != null) {
+        final connFuture = _connectionProvider != null
+            ? _connectionProvider!(dev.id)
+            : ServiceManager.instance().device.ensureConnection(dev.id);
+        connFuture.then((conn) => conn?.stopStorageSync()).catchError((_) {});
+      }
+
       // Hard-cancel fallback: if no segment boundary arrives within 10 seconds
       // (e.g. connection dropped while waiting), abort immediately.
       // Capture the generation so a stale timer from a previous cancel cannot
@@ -127,6 +137,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   Future stop() async {
     _wals = [];
+    final dev = _device;
+    if (dev != null) {
+      final connFuture = _connectionProvider != null
+          ? _connectionProvider!(dev.id)
+          : ServiceManager.instance().device.ensureConnection(dev.id);
+      connFuture.then((conn) => conn?.stopStorageSync()).catchError((_) {});
+    }
     await _storageStream?.cancel();
   }
 
