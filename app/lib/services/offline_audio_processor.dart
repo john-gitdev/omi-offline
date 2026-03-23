@@ -99,10 +99,9 @@ class OfflineAudioProcessor {
   ///
   /// Returns a list of saved file paths for any recordings completed during
   /// this segment.
-  Future<List<String>> processSegmentFile(File segmentFile, DateTime fallbackStartTime,
-      {int? deviceSessionId}) async {
+  Future<List<String>> processSegmentFile(File segmentFile, DateTime fallbackStartTime) async {
     final List<String> savedFiles = [];
-    DateTime segmentStartTime = fallbackStartTime;
+    final DateTime segmentStartTime = fallbackStartTime;
 
     // Read file bytes (one segment at a time, ~240 KB — GC'd after this call returns).
     // Bytes are used for VAD decoding; only lightweight FrameRef structs persist.
@@ -111,60 +110,7 @@ class OfflineAudioProcessor {
 
     final byteData = ByteData.sublistView(bytes);
 
-    // 1. Find timing from first metadata packet (0xFF, length == 255)
-    {
-      int off = 0;
-      while (off + 4 <= bytes.length) {
-        final len = byteData.getUint32(off, Endian.little);
-        if (off + 4 + len > bytes.length) break;
-        if (len == 255 && deviceSessionId != null) {
-          try {
-            final utcTime = byteData.getUint32(off + 4, Endian.little);
-            final uptimeMs = byteData.getUint32(off + 8, Endian.little);
-
-            final sessionAnchorUtc = SharedPreferencesUtil()
-                .getInt('anchor_utc_device_session_$deviceSessionId', defaultValue: 0);
-            final sessionAnchorUptime = SharedPreferencesUtil()
-                .getInt('anchor_uptime_device_session_$deviceSessionId', defaultValue: 0);
-
-            const kMinValidEpoch = 946684800; // Jan 1 2000 — reject unsynced Omi clocks
-            if (sessionAnchorUtc > kMinValidEpoch && sessionAnchorUptime > 0) {
-              // Retroactive Correction: Back-calculate segment start time using the session's BEST anchor.
-              // This handles 'stale' timestamps from periods where the Omi was unsynced (e.g. after battery death).
-              final uptimeDeltaMs = sessionAnchorUptime - uptimeMs;
-              final realUtcSecs = sessionAnchorUtc - (uptimeDeltaMs ~/ 1000);
-              final calculatedTime = DateTime.fromMillisecondsSinceEpoch(realUtcSecs * 1000);
-
-              if (calculatedTime.year < 2000) {
-                // Anchor + uptime delta produced a nonsensical result — fall through to raw Omi time or null.
-              } else if (utcTime > kMinValidEpoch) {
-                final omiTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
-                final driftMs = calculatedTime.difference(omiTime).inMilliseconds.abs();
-
-                // If Omi time is stale (year < 2000) or significantly drifted (>60s), trust the calculated time.
-                if (omiTime.year < 2000 || driftMs > 60000) {
-                  segmentStartTime = calculatedTime;
-                  Logger.debug("OfflineAudioProcessor: Retroactively correcting stale metadata "
-                      "(Omi: $omiTime, Corrected: $calculatedTime, Session: $deviceSessionId)");
-                } else {
-                  segmentStartTime = omiTime; // Omi clock is already accurate
-                }
-              } else {
-                segmentStartTime = calculatedTime;
-              }
-            } else if (utcTime > kMinValidEpoch) {
-              segmentStartTime = DateTime.fromMillisecondsSinceEpoch(utcTime * 1000);
-            }
-          } catch (e) {
-            Logger.error("OfflineAudioProcessor: Error parsing metadata packet: $e");
-          }
-          break; // found timing information
-        }
-        off += 4 + len;
-      }
-    }
-
-    // 2. Gap detection — force-split if device was off between segments
+    // 1. Gap detection — force-split if device was off between segments
     if (_currentRecordingRefs.isNotEmpty && _recordingStartTime != null) {
       final expectedStartTime =
           _recordingStartTime!.add(Duration(milliseconds: _currentRecordingRefs.length * frameDurationMs));
@@ -188,11 +134,6 @@ class OfflineAudioProcessor {
 
       final byteOffset = off; // position of 4-byte length prefix — used in FrameRef
       off += 4;
-
-      if (len == 255) {
-        off += len; // skip metadata packets
-        continue;
-      }
 
       final opusFrame = bytes.sublist(off, off + len);
       off += len;

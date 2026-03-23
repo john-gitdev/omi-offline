@@ -164,21 +164,7 @@ class MarkerRecordingExtractor {
         off += 4;
         if (off + len > bytes.length) break;
 
-        if (len == 255) {
-          // Metadata packet
-          if (off + 16 <= bytes.length) {
-            final utcSecs = byteData.getUint32(off, Endian.little);
-            if (utcSecs > 0) {
-              final utcMs = utcSecs * 1000;
-              if (startTime == null && audioFrameCount == 0) {
-                startTime = DateTime.fromMillisecondsSinceEpoch(utcMs);
-              }
-              anchors.add(_MetaAnchor(audioFrameCount, utcMs));
-            }
-          }
-        } else {
-          audioFrameCount++;
-        }
+        audioFrameCount++;
         off += len;
       }
 
@@ -313,11 +299,6 @@ class MarkerRecordingExtractor {
           while (off + 4 <= bytes.length) {
             final len = bd.getUint32(off, Endian.little);
             if (off + 4 + len > bytes.length) break;
-            if (len == 255) {
-              off += 4 + len;
-              continue; // metadata already processed in _buildSegmentMeta
-            }
-
             final byteOff = off;
             off += 4 + len;
 
