@@ -163,6 +163,14 @@ int get_current_filename(char *buf, size_t buf_size);
 bool sd_is_current_recording_file(const char *filename);
 
 /**
+ * @brief Return the most recently cached free space on the SD card (bytes).
+ *
+ * Updated each time sd_build_file_list_cache() runs on the SD worker thread.
+ * Returns 0 if the cache has not been populated yet or lfs_fs_size() failed.
+ */
+uint32_t sd_get_cached_free_bytes(void);
+
+/**
  * @brief Clear the audio directory.
  *
  * This deletes all audio files in the audio directory.
