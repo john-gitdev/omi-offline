@@ -37,10 +37,6 @@ static bool blink_toggle = false;
 
 static void boot_led_sequence(void)
 {
-    // Simplified boot blink
-    set_led_blue(true);
-    k_msleep(500);
-    led_off();
 }
 
 static void boot_warming_sequence(void)
