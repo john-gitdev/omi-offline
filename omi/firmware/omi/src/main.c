@@ -43,6 +43,31 @@ static void boot_led_sequence(void)
     led_off();
 }
 
+static void boot_warming_sequence(void)
+{
+    const int steps = 30;
+    const int delay_ms = 10;
+
+    // Pulse yellow (Red + Green) while SD pre-warm (lfs_fs_gc) is running
+    while (!sd_is_boot_ready()) {
+        for (int i = 0; i <= steps && !sd_is_boot_ready(); i++) {
+            float t = (float) i / steps;
+            uint8_t level = (uint8_t) (t * 40.0f);
+            set_led_pwm(LED_RED, level);
+            set_led_pwm(LED_GREEN, level);
+            k_msleep(delay_ms);
+        }
+        for (int i = steps; i >= 0 && !sd_is_boot_ready(); i--) {
+            float t = (float) i / steps;
+            uint8_t level = (uint8_t) (t * 40.0f);
+            set_led_pwm(LED_RED, level);
+            set_led_pwm(LED_GREEN, level);
+            k_msleep(delay_ms);
+        }
+    }
+    led_off();
+}
+
 static void boot_ready_sequence(void)
 {
     const int steps = 50;
@@ -186,6 +211,8 @@ int main(void)
 
     ret = transport_start();
     if (ret) LOG_ERR("BLE failed %d", ret);
+
+    boot_warming_sequence();
 
     ret = mic_start();
     if (ret) {
