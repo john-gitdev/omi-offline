@@ -146,14 +146,6 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     return connection.getBleButtonListener(onButtonReceived: onButtonReceived);
   }
 
-  Future<List<int>> _getStorageList(String deviceId) async {
-    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null) {
-      return [];
-    }
-    return connection.getStorageList();
-  }
-
   Future updateBatteryLevel() async {
     // Always fetch a fresh reading — the batteryLevel == -1 guard was skipping updates
     // after reconnect and showing a stale value until the BLE notification fired.
@@ -554,8 +546,13 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     if (dev == null) {
       isDeviceStorageSupport = false;
     } else {
-      var storageFiles = await _getStorageList(dev.id);
-      isDeviceStorageSupport = storageFiles.isNotEmpty;
+      var connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+      if (connection == null) {
+        isDeviceStorageSupport = false;
+      } else {
+        var files = await connection.listFiles();
+        isDeviceStorageSupport = files.isNotEmpty;
+      }
     }
     notifyListeners();
   }
