@@ -385,4 +385,17 @@ class OmiDeviceConnection extends DeviceConnection {
       return false;
     }
   }
+
+  @override
+  Future<bool> performStopStorageSync() async {
+    try {
+      await transport.writeCharacteristic(
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x03]);
+      Logger.debug('OmiDeviceConnection: CMD_STOP sent');
+      return true;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: performStopStorageSync error: $e');
+      return false;
+    }
+  }
 }
