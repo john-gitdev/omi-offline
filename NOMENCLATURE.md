@@ -114,7 +114,6 @@ The firmware (C / Zephyr RTOS on nRF52840) uses C snake_case conventions. Firmwa
 | :--- | :--- | :--- | :--- |
 | `device_session_id` (static u32) | `transport.c` | `deviceSessionId` | Random u32 generated at boot via `sys_rand32_get()` with do-while guard to exclude 0; written into metadata packet bytes 8–11. |
 | `segment_index` (static u32) | `transport.c` | `segmentIndex` | Monotonically incremented per segment written; written into metadata packet bytes 12–15. |
-| `ble_packet_index` (static u32) | `storage.c` | *(no app equivalent)* | Counts BLE notification packets within a single file transfer (payload = negotiated MTU − 3 bytes, max 256). Internal to BLE transport; not a storage concept. |
 | `write_marker_to_storage()` | `transport.c`, `transport.h` | `Marker` | Writes a `0xFE` packet-type frame. The packet-type byte is a protocol constant — unchanged by this rename. |
 | `marker_flash_count` (volatile u8) | `button.c`, `button.h`, `main.c` | *(no app equivalent)* | Drives the transient white LED flash on double-tap (Marker event). |
 | `0xFD` frame type / EOT marker | `storage.c` | end-of-transfer signal | Signals end of file list to the app; consumed by `SDCardWalSyncImpl`, not stored. |

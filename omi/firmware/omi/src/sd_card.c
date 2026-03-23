@@ -241,8 +241,6 @@ static char current_filename[MAX_FILENAME_LEN] = {0};
 static char current_file_path[64] = {0};
 static int64_t current_file_created_uptime_ms = 0;
 static bool current_file_needs_rename = false;
-static bool deferred_timesync_rename_pending = false;
-static uint32_t deferred_timesync_utc_time = 0;
 static uint32_t cached_stats_file_count = 0;
 static uint64_t cached_stats_total_size = 0;
 static uint32_t cached_free_bytes = 0;
@@ -509,7 +507,8 @@ static int sd_mount(void)
     ret = lfs_mount(&lfs_fs, &lfs_cfg);
     LOG_INF("[SD_BOOT] lfs_mount took %lld ms (ret=%d)", k_uptime_get() - mount_start_ms, ret);
     if (ret != LFS_ERR_OK) {
-        LOG_WRN("LFS mount failed (%d), formattingâ€¦", ret);
+        LOG_WRN("LFS mount failed (%d) — existing data on SD will be ERASED by format", ret);
+        LOG_WRN("If this device was previously using FATFS, all old recordings are lost.");
         ret = lfs_format(&lfs_fs, &lfs_cfg);
         if (ret != LFS_ERR_OK) {
             LOG_ERR("LFS format failed: %d", ret);
@@ -879,10 +878,34 @@ static int compare_filenames(const void *a, const void *b)
     return (ta < tb) ? -1 : (ta > tb) ? 1 : 0;
 }
 
+static int64_t free_bytes_valid_until_ms = 0;
+
+static void refresh_free_bytes_if_stale(void)
+{
+    int64_t now = k_uptime_get();
+    if (now < free_bytes_valid_until_ms) return;
+
+    lfs_ssize_t used_blocks = lfs_fs_size(&lfs_fs);
+    if (used_blocks >= 0 && lfs_cfg.block_count > 0) {
+        uint64_t total_cap = (uint64_t)lfs_cfg.block_count * lfs_cfg.block_size;
+        uint64_t used_cap  = (uint64_t)used_blocks * lfs_cfg.block_size;
+        cached_free_bytes  = (used_cap < total_cap) ? (uint32_t)(total_cap - used_cap) : 0;
+    } else {
+        cached_free_bytes = 0;
+    }
+    free_bytes_valid_until_ms = now + (60 * 1000);  /* Recompute at most once per minute */
+}
+
+static void invalidate_free_bytes_cache(void)
+{
+    free_bytes_valid_until_ms = 0;
+}
+
 static void invalidate_file_cache(void)
 {
     file_cache_valid = false;
     cached_stats_valid_until_ms = 0;
+    invalidate_free_bytes_cache();
 }
 
 static void sort_cached_file_entries(void)
@@ -1000,15 +1023,7 @@ static int refresh_file_cache(void)
     cached_stats_file_count = total_count;
     cached_stats_total_size = total_size;
 
-    /* Compute free space: lfs_fs_size() returns number of blocks in use. */
-    lfs_ssize_t used_blocks = lfs_fs_size(&lfs_fs);
-    if (used_blocks >= 0 && lfs_cfg.block_count > 0) {
-        uint64_t total_cap = (uint64_t)lfs_cfg.block_count * lfs_cfg.block_size;
-        uint64_t used_cap  = (uint64_t)used_blocks          * lfs_cfg.block_size;
-        cached_free_bytes  = (used_cap < total_cap) ? (uint32_t)(total_cap - used_cap) : 0;
-    } else {
-        cached_free_bytes = 0;
-    }
+    refresh_free_bytes_if_stale();
 
     cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
     file_cache_valid = true;
@@ -1042,7 +1057,7 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
 
     char new_filename[MAX_FILENAME_LEN];
     snprintf(new_filename, sizeof(new_filename), "%08X.txt", correct_ts);
-    LOG_INF("Rename: %s -> %s (elapsed=%u ms)", current_filename, new_filename, elapsed);
+    LOG_INF("Rename: %s -> %s (elapsed=%lld ms)", current_filename, new_filename, elapsed_ms);
 
     if (write_batch_offset > 0)
         flush_batch_buffer();
@@ -1146,7 +1161,16 @@ void sd_worker_thread(void)
     print_audio_files_at_boot();
 
     /* ---- Pre-warm LFS block allocator ---- */
-    /* After mount, the LFS lookahead buffer is EMPTY and the start position
+    /* NOTE: Boot audio loss is expected here.
+     * With 200 MB data on SPI SD, this takes ~10-50 seconds.
+     * Audio frames arriving during this window are silently dropped
+     * (sd_boot_ready == 0). This is preferable to a 50-second stall
+     * in the real-time write path on the first lfs_alloc().
+     *
+     * Future improvement: persist the lookahead bitmap to NVS between
+     * reboots to skip the scan entirely on warm boots.
+     *
+     * After mount, the LFS lookahead buffer is EMPTY and the start position
      * is random (seed % block_count).  The very first lfs_alloc() would
      * trigger lfs_alloc_scan() — a full O(used_blocks) filesystem traversal
      * over SPI SD that can take 10-50+ seconds with 100-200 MB of data.
@@ -1377,16 +1401,36 @@ void sd_worker_thread(void)
             struct lfs_info info;
             char fpath[64];
 
-            if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) == 0) {
-                while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
-                    if (info.type != LFS_TYPE_REG)
-                        continue;
-                    build_file_path(info.name, fpath, sizeof(fpath));
+            {
+                /* Two-phase delete: LittleFS forbids lfs_remove() during
+                 * lfs_dir_read() — the directory metadata is a CTZ skip-list
+                 * and removing an entry mid-iteration causes undefined behavior
+                 * (skipped files, double-reads, or corruption). */
+                char del_names[MAX_AUDIO_FILES][MAX_FILENAME_LEN];
+                int del_count = 0;
+
+                /* Phase 1: collect filenames */
+                if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) == 0) {
+                    while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
+                        if (info.type != LFS_TYPE_REG)
+                            continue;
+                        if (del_count < MAX_AUDIO_FILES) {
+                            strncpy(del_names[del_count], info.name,
+                                    MAX_FILENAME_LEN - 1);
+                            del_names[del_count][MAX_FILENAME_LEN - 1] = '\0';
+                            del_count++;
+                        }
+                    }
+                    lfs_dir_close(&lfs_fs, &dir);
+                }
+
+                /* Phase 2: delete after directory handle is closed */
+                for (int i = 0; i < del_count; i++) {
+                    build_file_path(del_names[i], fpath, sizeof(fpath));
                     int rm = lfs_remove(&lfs_fs, fpath);
                     if (rm < 0)
                         LOG_ERR("[SD_WORK] rm %s: %d", fpath, rm);
                 }
-                lfs_dir_close(&lfs_fs, &dir);
             }
 
             /* Reset offset info */
@@ -1522,15 +1566,12 @@ void sd_worker_thread(void)
         /* ---- Time synced ---- */
         case REQ_TIME_SYNCED:
             if (current_file_needs_rename && current_filename[0] != '\0') {
-                if (ble_connected) {
-                    deferred_timesync_rename_pending = true;
-                    deferred_timesync_utc_time = req.u.time_synced.utc_time;
-                    LOG_INF("[SD_WORK] Deferring TMP rename while BLE connected");
-                } else {
-                    sd_update_filename_after_timesync(req.u.time_synced.utc_time);
-                    invalidate_file_cache();
-                    deferred_timesync_rename_pending = false;
-                }
+                /* Rename immediately — the worker thread is the only writer to
+                 * lfs_fil_data, so close+rename+reopen is safe regardless of
+                 * BLE connection state. The old deferral was overly cautious
+                 * and caused TMP files to be invisible to the app's sync. */
+                sd_update_filename_after_timesync(req.u.time_synced.utc_time);
+                invalidate_file_cache();
             } else if (current_filename[0] == '\0') {
                 res = create_audio_file_with_timestamp();
                 if (res < 0)
@@ -1645,7 +1686,11 @@ uint32_t sd_get_cached_free_bytes(void)
 
 void sd_notify_time_synced(uint32_t utc_time)
 {
+    /* Store value before flag — the atomic_set provides a release barrier
+     * that ensures pending_time_synced_utc is visible to the worker thread
+     * when it sees pending_time_synced == 1. */
     pending_time_synced_utc = utc_time;
+    compiler_barrier();  /* Prevent compiler from reordering past atomic_set */
     atomic_set(&pending_time_synced, 1);
 
     sd_req_t req = {0};
@@ -1678,20 +1723,6 @@ void sd_notify_ble_state(bool connected)
         }
     } else if (!connected && ble_connected) {
         LOG_INF("BLE disconnected");
-        if (deferred_timesync_rename_pending) {
-            sd_req_t req = {0};
-            req.type = REQ_TIME_SYNCED;
-            req.u.time_synced.utc_time = deferred_timesync_utc_time;
-            int ret = k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
-            if (ret == 0) {
-                deferred_timesync_rename_pending = false;
-                LOG_INF("Queued deferred TMP rename after BLE disconnect");
-            } else {
-                pending_time_synced_utc = deferred_timesync_utc_time;
-                atomic_set(&pending_time_synced, 1);
-                LOG_WRN("Deferred TMP rename pending (%d)", ret);
-            }
-        }
         if (current_file_deleted) {
             int cr = create_new_audio_file();
             if (cr < 0)

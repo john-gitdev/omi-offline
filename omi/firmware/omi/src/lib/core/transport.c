@@ -52,7 +52,7 @@ static atomic_t pusher_stop_flag;
 
 struct bt_conn *current_connection = NULL;
 uint16_t current_mtu = 0;
-uint16_t current_package_index = 0;
+uint16_t current_packet_index = 0;
 
 #ifdef CONFIG_OMI_ENABLE_SPEAKER
 static ssize_t audio_data_write_handler(struct bt_conn *conn,
