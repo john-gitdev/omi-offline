@@ -547,6 +547,14 @@ void broadcast_battery_level(struct k_work *work_item)
 // Connection Callbacks
 //
 
+/* Forward declarations for helpers used in connection callbacks */
+#define MTU_RECHECK_DELAY_MS     800
+#define MTU_RECHECK_MAX_ATTEMPTS 6
+static uint8_t mtu_recheck_attempts = 0;
+static void mtu_recheck_work_handler(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(mtu_recheck_work, mtu_recheck_work_handler);
+static void update_conn_params(struct bt_conn *conn);
+
 static void _transport_connected(struct bt_conn *conn, uint8_t err)
 {
     struct bt_conn_info info = {0};
@@ -719,10 +727,6 @@ static void update_mtu(struct bt_conn *conn)
 /* MTU recheck: if MTU is still at the BLE minimum after connection, the peer
  * may not have responded to our exchange yet.  Retry up to 6 times at 800 ms
  * intervals so iOS / Android apps that negotiate MTU late still get a fast path. */
-#define MTU_RECHECK_DELAY_MS     800
-#define MTU_RECHECK_MAX_ATTEMPTS 6
-static uint8_t mtu_recheck_attempts = 0;
-
 static void mtu_recheck_work_handler(struct k_work *work)
 {
     if (!is_connected || !current_connection) {
@@ -738,14 +742,18 @@ static void mtu_recheck_work_handler(struct k_work *work)
         LOG_INF("MTU recheck done: MTU=%u after %u attempts", mtu, mtu_recheck_attempts);
     }
 }
-K_WORK_DELAYABLE_DEFINE(mtu_recheck_work, mtu_recheck_work_handler);
 
 /* Request aggressive connection parameters for higher audio throughput.
  * 7.5–15 ms interval gives ~67–133 packets/s vs ~33 at the 30 ms default. */
 #define CONN_PARAM_UPDATE_RETRIES 3
 static void update_conn_params(struct bt_conn *conn)
 {
-    const struct bt_le_conn_param params = BT_LE_CONN_PARAM(6, 12, 0, 400);
+    struct bt_le_conn_param params = {
+        .interval_min = 6,
+        .interval_max = 12,
+        .latency      = 0,
+        .timeout      = 400,
+    };
     for (int i = 0; i < CONN_PARAM_UPDATE_RETRIES; i++) {
         int err = bt_conn_le_param_update(conn, &params);
         if (!err || err == -EALREADY) {
