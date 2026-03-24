@@ -482,12 +482,13 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     Logger.debug('_onConnected inside: $connectedDevice');
     _disconnectNotificationTimer?.cancel();
 
-    // Await these — both call ensureConnection() internally. Fire-and-forget
-    // here means they race against the sequential awaits below, each spawning
-    // their own BleTransport and calling discoverServices() concurrently.
+    // Await setConnectedDevice first (sets connectedDevice + reads device info).
+    // Then mark connected immediately so the UI updates — don't wait for the
+    // storage support check (listFiles can time out after 10 s and would keep
+    // isConnected false the whole time, making the UI look disconnected).
     await setConnectedDevice(device);
-    await setisDeviceStorageSupport();
     setIsConnected(true);
+    await setisDeviceStorageSupport();
 
     isCharging = await _retrieveChargingState(device.id);
     int currentLevel = await _retrieveBatteryLevel(device.id);

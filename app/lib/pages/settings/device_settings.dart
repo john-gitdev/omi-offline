@@ -38,14 +38,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   Timer? _debounce;
   Timer? _micGainDebounce;
 
-  Future _bleDisconnectDevice(BtDevice btDevice) async {
-    var connection = await ServiceManager.instance().device.ensureConnection(btDevice.id);
-    if (connection == null) {
-      return Future.value(null);
-    }
-    return await connection.disconnect();
-  }
-
   @override
   void initState() {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -638,10 +630,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               onTap: () async {
                 await SharedPreferencesUtil().btDeviceSet(BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0));
                 SharedPreferencesUtil().deviceName = '';
-                final currentDevice = provider.connectedDevice;
-                if (currentDevice != null) {
-                  await _bleDisconnectDevice(currentDevice);
-                }
+                try {
+                  await ServiceManager.instance().device.disconnectDevice();
+                } catch (_) {}
                 provider.setIsConnected(false);
                 provider.setConnectedDevice(null);
                 provider.updateConnectingStatus(false);
