@@ -40,6 +40,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   Timer? _disconnectNotificationTimer;
   final Debouncer _disconnectDebouncer = Debouncer(delay: const Duration(milliseconds: 500));
   final Debouncer _connectDebouncer = Debouncer(delay: const Duration(milliseconds: 100));
+  bool _isHandlingDisconnect = false;
 
   void Function(BtDevice device)? onDeviceConnected;
 
@@ -344,8 +345,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       if (device != null) {
         var cDevice = await _getConnectedDevice();
         if (cDevice != null) {
-          setConnectedDevice(cDevice);
-          setisDeviceStorageSupport();
+          // setConnectedDevice and setisDeviceStorageSupport are also called by
+          // _onDeviceConnected (triggered via the connection-state callback).
+          // Avoid duplicating the heavy BLE operations (listFiles, DIS reads) here.
           SharedPreferencesUtil().deviceName = cDevice.name;
           setIsConnected(true);
         }
@@ -456,12 +458,13 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     // Guard against the cascade: BLE disconnect triggers multiple concurrent
     // callbacks (battery read failure, service-discovery error, etc.) that each
     // call onDeviceConnectionStateChanged(disconnected).  The debouncer catches
-    // rapid-fire duplicates but can still let through one per async gap.
-    // If we're already fully disconnected there is nothing to do.
-    if (!isConnected && connectedDevice == null) {
+    // rapid-fire duplicates; the _isHandlingDisconnect flag blocks re-entry
+    // during the async gap between setConnectedDevice(null) and setIsConnected(false).
+    if (_isHandlingDisconnect || (!isConnected && connectedDevice == null)) {
       Logger.debug('onDeviceDisconnected: already disconnected, skipping');
       return;
     }
+    _isHandlingDisconnect = true;
     Logger.debug('onDisconnected inside: $connectedDevice');
     _stopHealthCheck();
     storageFullPercentage = -1;
@@ -481,6 +484,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _disconnectNotificationTimer = Timer(const Duration(seconds: 30), () {
       Logger.debug('Device Disconnected Notification would happen here in full app');
     });
+
+    _isHandlingDisconnect = false;
 
     Future.delayed(const Duration(seconds: 1), () {
       periodicConnect('coming from onDisconnect');
