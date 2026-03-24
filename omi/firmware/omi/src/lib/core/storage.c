@@ -46,6 +46,9 @@ static uint32_t current_read_offset = 0;
 #define MAX_HEARTBEAT_FRAMES 100
 #define HEARTBEAT 50
 
+/* Control commands */
+#define CMD_ROTATE_FILE     0x13   // Close current recording file and open a new one
+
 /* Multi-file sync state */
 static char sync_file_list[MAX_AUDIO_FILES][MAX_FILENAME_LEN];
 static uint32_t sync_file_sizes[MAX_AUDIO_FILES];
@@ -53,6 +56,7 @@ static int sync_file_count = 0;
 static int current_sync_file_index = -1;
 static uint8_t list_files_requested = 0;  /* Deferred to storage thread */
 static int16_t delete_file_index = -1;     /* -1 = no delete, >=0 = file index to delete */
+static uint8_t rotate_file_requested = 0; /* Deferred to storage thread */
 
 static void storage_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
 static ssize_t storage_write_handler(struct bt_conn *conn,
@@ -416,7 +420,7 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
     
     if (command == CMD_DELETE_FILE) {
         if (len < 2) return INVALID_COMMAND;
-        
+
         uint8_t file_index = ((uint8_t *) buf)[1];
         if (sync_file_count == 0) {
             /* File list not cached, defer refresh + delete to storage thread */
@@ -426,9 +430,15 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
         if (file_index >= sync_file_count) {
             return FILE_INDEX_OUT_OF_RANGE;
         }
-        
+
         delete_file_index = file_index;  /* Defer to storage thread */
         return 0xFF;
+    }
+
+    if (command == CMD_ROTATE_FILE) {
+        /* Defer to storage thread so create_new_audio_file() runs on the SD worker context. */
+        rotate_file_requested = 1;
+        return 0xFF;  /* ACK sent by storage thread after rotation completes */
     }
 
     /* Control commands */
@@ -606,24 +616,40 @@ void storage_write(void)
         if (delete_file_index >= 0) {
             int16_t idx = delete_file_index;
             delete_file_index = -1;
-            
+
             /* Ensure file list is cached */
             if (sync_file_count == 0) {
                 refresh_file_list_cache();
             }
-            
+
             uint8_t result = 0;
             if (idx >= sync_file_count) {
                 result = FILE_INDEX_OUT_OF_RANGE;
             } else if (delete_file_by_index(idx) < 0) {
                 result = FILE_NOT_FOUND;
             }
-            
+
             if (conn) {
                 uint8_t ack[2] = {PACKET_ACK, result};
                 storage_notify(conn, ack, sizeof(ack));
             }
             LOG_INF("Delete file[%d] result: %d", idx, result);
+        }
+        if (rotate_file_requested) {
+            rotate_file_requested = 0;
+            /* create_new_audio_file() closes the current file and opens a new one.
+             * It blocks until the SD worker has completed the rotation, so the ACK
+             * is only sent after the old file is fully sealed and the new one is open.
+             * The app can safely call CMD_LIST_FILES immediately after the ACK. */
+            int ret = create_new_audio_file();
+            /* Invalidate file list cache — the rotated file now appears in the list. */
+            sync_file_count = 0;
+            if (conn) {
+                uint8_t result = (ret >= 0) ? 0 : 1;
+                uint8_t ack[2] = {PACKET_ACK, result};
+                storage_notify(conn, ack, sizeof(ack));
+                LOG_INF("CMD_ROTATE_FILE: new file created, ret=%d", ret);
+            }
         }
         if (stop_started) {
             remaining_length = 0;

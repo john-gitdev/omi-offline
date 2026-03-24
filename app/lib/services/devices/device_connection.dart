@@ -335,6 +335,18 @@ abstract class DeviceConnection {
 
   Future<bool> performStopStorageSync() async => false;
 
+  /// Send CMD_ROTATE_FILE (0x13) and wait for PACKET_ACK (0x03, 0x00).
+  /// The firmware only sends the ACK after the current file is fully closed
+  /// and a new file is successfully opened — safe to call CMD_LIST_FILES immediately after.
+  Future<bool> rotateFile() async {
+    if (await isConnected()) {
+      return await performRotateFile();
+    }
+    return false;
+  }
+
+  Future<bool> performRotateFile() async => false;
+
   // Feature support and Settings
   Future<int> getFeatures() async {
     if (await isConnected()) {

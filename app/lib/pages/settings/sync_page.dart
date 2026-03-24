@@ -59,7 +59,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
 
     try {
-      Logger.debug('DebugTools: Calling syncAll(force: false)');
+      Logger.debug('DebugTools: Calling syncAll()');
       final result = await ServiceManager.instance().wal.getSyncs().syncAll(progress: this);
       Logger.debug(
           'DebugTools: syncAll complete — result=${result == null ? 'null (nothing to sync)' : 'SyncLocalFilesResponse'}');
@@ -94,7 +94,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
         'Force Sync Omi',
-        'This will re-sync pending segments from the device immediately, bypassing the minimum buffer threshold. This may use significant battery. Continue?',
+        'This will close the current recording segment and sync all pending segments immediately, including recordings shorter than the usual minimum. Continue?',
         confirmText: 'Start',
       ),
     );
@@ -106,12 +106,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     setState(() {
       _isSyncing = true;
       _progress = 0.0;
-      _statusMessage = 'Forcing sync from device...';
+      _statusMessage = 'Rotating segment and syncing...';
     });
 
     try {
-      Logger.debug('DebugTools: Calling syncAll(force: true)');
-      await ServiceManager.instance().wal.getSyncs().syncAll(progress: this, force: true);
+      Logger.debug('DebugTools: Calling rotateAndSync()');
+      await ServiceManager.instance().wal.getSyncs().rotateAndSync(progress: this);
       Logger.debug('DebugTools: Force sync complete');
       setState(() {
         _statusMessage = 'Force Sync Complete.';
