@@ -37,8 +37,6 @@ static bool blink_toggle = false;
 
 static void boot_led_sequence(void)
 {
-    // Clear any PWM init glitch that lights all channels on startup
-    led_off();
 }
 
 static void boot_warming_sequence(void)
