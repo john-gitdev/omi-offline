@@ -470,7 +470,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 const SizedBox(height: 12),
                 _DebugButton(
                   label: 'Delete Omi Segments',
-                  description: 'Permanently deletes raw segments from your Omi.',
+                  description: 'Permanently deletes raw segments from your Omi. Will reconnect BLE so the device can start a new recording file.',
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllPending,
