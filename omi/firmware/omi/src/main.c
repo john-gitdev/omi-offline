@@ -48,6 +48,9 @@ static void boot_warming_sequence(void)
 
     LOG_INF("[BOOT] Entering warming phase (SD pre-warm)...");
 
+    // Clear any residual blue from PWM init glitch
+    set_led_blue(false);
+
     // Pulse Yellow (Red + Green) while SD pre-warm (lfs_fs_gc) is running
     while (!sd_is_boot_ready()) {
         if (direction) {
