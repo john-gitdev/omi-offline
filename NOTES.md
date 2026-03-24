@@ -8,7 +8,7 @@ Running log of investigated bugs, deferred decisions, and findings that don't fi
 
 ### Boot Sequence
 1. **Haptic buzz** (200ms) — only power-on signal, no LED
-2. **Pulsing yellow** (Red + Green breathing, 0→40%→0, repeating) — SD card pre-warming (`lfs_fs_gc`). Mic is NOT started yet; no audio is dropped.
+2. **LEDs Off** — SD card pre-warming (`lfs_fs_gc`). Mic is NOT started yet; no audio is dropped.
 3. **Fade to solid yellow** (0→100%) — pre-warm complete, mic starts, main loop takes over
 
 ### LED State Machine (`set_led_state()`, runs every 500ms)
