@@ -1260,16 +1260,34 @@ void sd_worker_thread(void)
         case REQ_WRITE_DATA:
             process_write_data_req(&req);
 
-            /* Drain additional queued write/save_offset messages in one pass.
-             * This reduces queue churn and improves effective SD throughput. */
+            /* Drain additional write/save_offset messages in one burst to
+             * improve SD throughput.
+             *
+             * IMPORTANT: peek before consuming.  The old code called
+             * k_msgq_get() unconditionally and silently discarded any
+             * non-write message (REQ_READ_DATA, REQ_GET_FILE_LIST, etc.)
+             * whose semaphore would then never be signalled — causing
+             * read_audio_data / get_audio_file_list_with_sizes to time out
+             * and the app to receive error ACK 7.  We now peek first and
+             * stop the drain as soon as we see a non-write type so those
+             * requests are handled in the next main-loop iteration. */
             for (int i = 0; i < WRITE_DRAIN_BURST; i++) {
                 sd_req_t next_req;
+                if (k_msgq_peek(&sd_msgq, &next_req) != 0) {
+                    break;  /* Queue empty */
+                }
+                if (next_req.type != REQ_WRITE_DATA && next_req.type != REQ_SAVE_OFFSET) {
+                    LOG_DBG("[SD_WORK] drain burst stopping at req type %d (not write/save)",
+                            next_req.type);
+                    break;  /* Non-write request — leave it for main loop */
+                }
+                /* Now safe to consume */
                 if (k_msgq_get(&sd_msgq, &next_req, K_NO_WAIT) != 0) {
                     break;
                 }
                 if (next_req.type == REQ_WRITE_DATA) {
                     process_write_data_req(&next_req);
-                } else if (next_req.type == REQ_SAVE_OFFSET) {
+                } else {
                     process_save_offset_req(&next_req);
                 }
             }
