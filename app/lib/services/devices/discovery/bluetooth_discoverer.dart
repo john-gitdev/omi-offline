@@ -27,7 +27,7 @@ class BluetoothDeviceDiscoverer extends DeviceDiscoverer {
     late final StreamSubscription sub;
 
     sub = BluetoothAdapter.scanResults.listen((results) {
-      final list = results.cast<ScanResult>().where((r) => r.device.platformName.isNotEmpty).toList();
+      final list = results.cast<ScanResult>().toList();
       bleResults
         ..clear()
         ..addAll(list);
@@ -56,7 +56,7 @@ class BluetoothDeviceDiscoverer extends DeviceDiscoverer {
       await sub.cancel();
 
       final List<BtDevice> devices = bleResults
-          .where((r) => BtDevice.isSupportedDevice(r.device))
+          .where((r) => BtDevice.isSupportedScanResult(r))
           .sorted((a, b) => b.rssi.compareTo(a.rssi))
           .map<BtDevice>((r) => BtDevice.fromScanResult(r))
           .toList();
