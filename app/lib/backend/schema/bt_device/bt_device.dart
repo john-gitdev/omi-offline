@@ -92,10 +92,28 @@ class BtDevice {
     return device.platformName.toLowerCase().contains('omi');
   }
 
+  // Omi audio service UUID prefix — advertised in BT_DATA_UUID128_ALL by the firmware.
+  static const String _omiAudioServicePrefix = '19b100';
+
+  /// Matches a scan result by name (platformName or advertisementData.localName)
+  /// or by the Omi audio service UUID in the advertisement data.
+  /// Use this instead of [isSupportedDevice] during scanning, since platformName
+  /// may be empty on the first scan for devices not yet cached by the OS.
+  static bool isSupportedScanResult(ScanResult result) {
+    final platformName = result.device.platformName.toLowerCase();
+    final localName = result.advertisementData.localName.toLowerCase();
+    if (platformName.contains('omi') || localName.contains('omi')) return true;
+    return result.advertisementData.serviceUuids
+        .any((uuid) => uuid.toString().toLowerCase().startsWith(_omiAudioServicePrefix));
+  }
+
   static BtDevice fromScanResult(ScanResult result) {
+    final name = result.device.platformName.isNotEmpty
+        ? result.device.platformName
+        : result.advertisementData.localName;
     return BtDevice(
       id: result.device.remoteId.str,
-      name: result.device.platformName,
+      name: name,
       type: DeviceType.omi,
       rssi: result.rssi,
     );
