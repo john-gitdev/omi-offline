@@ -104,7 +104,7 @@ void set_led_state()
 
     if (is_muted) {
         r = true; // Solid Red
-    } else if (battery_percentage < 10) {
+    } else if (battery_ready && battery_percentage < 10) {
         r = true; b = true; // Purple
     } else if (is_connected) {
         b = true; // Solid Blue
