@@ -395,9 +395,15 @@ class OmiDeviceConnection extends DeviceConnection {
       await transport.writeCharacteristic(
           storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x12, fileIndex & 0xFF]);
 
-      final success = await completer.future.timeout(const Duration(seconds: 5));
-      Logger.debug('performDeleteFile($fileIndex): success=$success');
-      return success;
+      try {
+        final success = await completer.future.timeout(const Duration(seconds: 5));
+        Logger.debug('performDeleteFile($fileIndex): success=$success');
+        return success;
+      } finally {
+        // Always cancel — on timeout the sub is still alive and a late ACK arriving
+        // after the timeout would be misinterpreted by the next operation's listener.
+        await sub?.cancel();
+      }
     } catch (e) {
       Logger.debug('OmiDeviceConnection: performDeleteFile error: $e');
       return false;
