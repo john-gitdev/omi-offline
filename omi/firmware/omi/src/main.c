@@ -37,19 +37,24 @@ static bool blink_toggle = false;
 
 static void boot_led_sequence(void)
 {
-    // Go dark immediately after the PWM init glitch
+    /* PWM channels are already zeroed inside led_start(), so this is a
+     * belt-and-suspenders call — ensures dark even if something briefly
+     * tickles the pins before we get here. */
     led_off();
+    LOG_INF("[BOOT] LEDs off — waiting for SD + mic");
 }
 
 static void boot_warming_sequence(void)
 {
     const int delay_ms = 10;
+    int64_t wait_start_ms = k_uptime_get();
 
-    // Wait with LEDs off while SD pre-warm (lfs_fs_gc) is running
+    /* Spin with LEDs off until sd_worker finishes mount + lfs_fs_gc + file open.
+     * With little data this completes in <5 s; with 200 MB it can take ~50 s. */
     while (!sd_is_boot_ready()) {
         k_msleep(delay_ms);
     }
-    // Remain dark — fade happens after mic is ready
+    LOG_INF("[BOOT] SD ready after %lld ms — starting mic", k_uptime_get() - wait_start_ms);
 }
 
 static void boot_ready_fade(void)
@@ -57,9 +62,10 @@ static void boot_ready_fade(void)
     const int steps = 30;
     const int delay_ms = 10;
 
-    // Fade up to dim_ratio brightness now that mic is ready;
-    // main loop set_led_state() takes over at the same level — no brightness jump
+    /* SD + mic are ready — fade R+G (yellow) up to dim_ratio so set_led_state()
+     * takes over at the same level with no visible brightness jump. */
     uint8_t target = app_settings_get_dim_ratio();
+    LOG_INF("[BOOT] Fading to yellow (dim_ratio=%u)", target);
     for (int i = 0; i <= steps; i++) {
         float t = (float) i / steps;
         uint8_t level = (uint8_t) (t * target);
@@ -67,6 +73,7 @@ static void boot_ready_fade(void)
         set_led_pwm(LED_GREEN, level);
         k_msleep(delay_ms);
     }
+    LOG_INF("[BOOT] Ready — total boot time %lld ms", k_uptime_get());
 }
 
 void set_led_state()
