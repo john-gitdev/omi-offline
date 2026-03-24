@@ -37,6 +37,8 @@ static bool blink_toggle = false;
 
 static void boot_led_sequence(void)
 {
+    // Clear any PWM init glitch that lights all channels on startup
+    led_off();
 }
 
 static void boot_warming_sequence(void)
@@ -44,17 +46,17 @@ static void boot_warming_sequence(void)
     const int steps = 30;
     const int delay_ms = 10;
 
-    // Clear any residual blue from PWM init glitch
-    set_led_blue(false);
-
     // Wait with LEDs off while SD pre-warm (lfs_fs_gc) is running
     while (!sd_is_boot_ready()) {
         k_msleep(delay_ms);
     }
-    // Fade up to full yellow — main loop set_led_state() takes over from here
+
+    // Fade up to dim_ratio brightness so main loop set_led_state() takes over
+    // at the same level — no brightness jump
+    uint8_t target = app_settings_get_dim_ratio();
     for (int i = 0; i <= steps; i++) {
         float t = (float) i / steps;
-        uint8_t level = (uint8_t) (t * 100.0f);
+        uint8_t level = (uint8_t) (t * target);
         set_led_pwm(LED_RED, level);
         set_led_pwm(LED_GREEN, level);
         k_msleep(delay_ms);
