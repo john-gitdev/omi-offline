@@ -411,7 +411,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   Future<void> _finishSuccess() async {
     _transitionTo(SyncProcessState.successUi);
-    await Future.delayed(const Duration(milliseconds: 1600));
+    await Future.delayed(const Duration(milliseconds: 5000));
     if (!mounted) return;
     setState(() {
       _lastCompletedStage = 'none';
@@ -701,6 +701,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   // ─── Unified status card ───────────────────────────────────────────────────
   Widget _buildSyncProcessCard() {
+    if (_spState == SyncProcessState.idle) {
+      return const SizedBox.shrink();
+    }
+    
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
       padding: const EdgeInsets.all(12),
@@ -1010,7 +1014,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 ),
               IconButton(
                 icon: FaIcon(
-                  FontAwesomeIcons.sliders,
+                  FontAwesomeIcons.filter,
                   color: _filterEnabled ? Colors.deepPurpleAccent : Colors.white,
                   size: 20,
                 ),
