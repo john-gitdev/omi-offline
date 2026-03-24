@@ -332,8 +332,6 @@ static void process_write_data_req(const sd_req_t *req)
 {
     if (sd_write_blocked)
         return;
-    if (current_file_deleted && ble_connected)
-        return;
 
     if (current_filename[0] == '\0') {
         int res = create_audio_file_with_timestamp();
@@ -341,6 +339,7 @@ static void process_write_data_req(const sd_req_t *req)
             sd_write_blocked = true;
             return;
         }
+        current_file_deleted = false;
     }
 
     if (should_rotate_file()) {

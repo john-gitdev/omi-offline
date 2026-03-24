@@ -406,6 +406,12 @@ Key correctness fixes applied since initial implementation:
 | Connection pipeline | `FindDevicesPage` routes through `DeviceService.ensureConnection()` — never bypasses it |
 | VAD slider | Debounce cancels and restarts on every change (no stale previous timer) |
 | `TcpTransport` | Recursive disconnect loop prevented in error handler |
+| Force sync | Always refreshes WAL list from device regardless of sync threshold |
+| Delete Omi Segments | Firmware immediately creates a new recording file on delete; no BLE reconnect cycle needed |
+| Firmware boot | 200ms haptic buzz on power-on; LED pulses yellow during LittleFS pre-warm; mic capture delayed until SD is ready |
+| Firmware boot | Blue LED blink on boot removed; haptic is the sole power-on signal |
+| SD semaphore | Drain after ring-buffer batch to prevent spurious wakeups |
+| Firmware transport | Stray `transport_started = 0` removed — no longer discards first CMD_READ_FILE after delete |
 
 ---
 
