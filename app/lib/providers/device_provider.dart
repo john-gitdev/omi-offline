@@ -505,12 +505,10 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     // presses Sync while we are still doing the slow battery/storage BLE reads below.
     await ServiceManager.instance().wal.getSyncs().setDevice(device);
 
-    isCharging = await _retrieveChargingState(device.id);
-    int currentLevel = await _retrieveBatteryLevel(device.id);
-    if (currentLevel != -1) {
-      batteryLevel = currentLevel;
-    }
-
+    // Skip the one-shot battery/charging reads: the battery detail characteristic
+    // on this firmware is notify-only and never responds to READ, so both calls
+    // block for the full 15s FlutterBluePlus timeout before returning -1/false.
+    // The values come in immediately via the notify subscription below instead.
     int currentStorage = await _retrieveStorageFullPercentage(device.id);
     if (currentStorage != -1) {
       storageFullPercentage = currentStorage;
