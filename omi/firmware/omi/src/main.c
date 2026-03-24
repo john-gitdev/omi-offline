@@ -37,10 +37,7 @@ static bool blink_toggle = false;
 
 static void boot_led_sequence(void)
 {
-    /* PWM channels are already zeroed inside led_start(), so this is a
-     * belt-and-suspenders call — ensures dark even if something briefly
-     * tickles the pins before we get here. */
-    led_off();
+    /* led_start() already zeroed all PWM channels; nothing to do here. */
     LOG_INF("[BOOT] LEDs off — waiting for SD + mic");
 }
 
