@@ -29,11 +29,11 @@ class _ProtocolGapException implements Exception {
 
 class SDCardWalSyncImpl implements SDCardWalSync {
   List<Wal> _wals = <Wal>[];
-  // True once setDevice() has run getMissingWals() for the current device.
-  // Distinguishes "legitimately empty after a real check" from "never checked".
-  // Prevents syncAll() from re-issuing a BLE listFiles on every call when
-  // the device genuinely has nothing to sync.
-  bool _walsInitialized = false;
+  // When true, syncAll() skips the getMissingWals() BLE round-trip exactly once —
+  // because the caller (setDevice or rotateAndSync) just populated _wals itself.
+  // After consuming it, syncAll() always re-fetches so new firmware-rotated files
+  // are discovered on every subsequent background sync or pull-to-refresh.
+  bool _skipNextRefresh = false;
   BtDevice? _device;
 
   /// Optional override for obtaining a [DeviceConnection] in tests.
@@ -149,10 +149,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _device = device;
     if (_device != null) {
       _wals = await getMissingWals();
-      _walsInitialized = true;
+      // We just fetched the list — skip the redundant BLE round-trip on the
+      // first syncAll() that follows, but only that one.
+      _skipNextRefresh = true;
       listener.onWalUpdated();
     } else {
-      _walsInitialized = false;
+      _skipNextRefresh = false;
     }
   }
 
@@ -673,13 +675,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return null;
     }
 
-    // Only refresh the WAL list if setDevice() has never run for this connection.
-    // An empty list after a real check means nothing to sync, not a stale cache.
-    // rotateAndSync() pre-populates _wals with ignoreThreshold=true before calling here.
-    if (!_walsInitialized) {
-      Logger.debug("SDCardWalSync: WAL list not yet initialised, fetching from device...");
+    // Refresh the WAL list so newly firmware-rotated files are discovered.
+    // Skip exactly once when setDevice() or rotateAndSync() just populated _wals —
+    // consuming the flag so every subsequent call does a fresh BLE round-trip.
+    if (_skipNextRefresh) {
+      Logger.debug("SDCardWalSync: Skipping WAL refresh (list was just populated by caller)");
+      _skipNextRefresh = false;
+    } else {
+      Logger.debug("SDCardWalSync: Refreshing WAL list from device...");
       _wals = await getMissingWals();
-      _walsInitialized = true;
     }
 
     // Log full WAL state at sync start so we can audit what's being synced and why.
@@ -956,7 +960,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     // Bypass threshold so the just-rotated segment (possibly < 1 min) is included.
     _wals = await _buildWalsFromFiles(dev.id, ignoreThreshold: true);
-    _walsInitialized = true;
+    // We just populated _wals — skip the redundant refresh on the syncAll() call below,
+    // but only that one (flag is consumed immediately in syncAll).
+    _skipNextRefresh = true;
 
     return await syncAll(progress: progress);
   }
