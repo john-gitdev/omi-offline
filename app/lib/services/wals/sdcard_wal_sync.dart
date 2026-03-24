@@ -100,7 +100,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         final connFuture = _connectionProvider != null
             ? _connectionProvider!(dev.id)
             : ServiceManager.instance().device.ensureConnection(dev.id);
-        connFuture.then((conn) => conn?.stopStorageSync()).catchError((_) {});
+        connFuture.then((conn) => conn?.stopStorageSync() ?? Future.value(false)).catchError((_) => false);
       }
 
       // Hard-cancel fallback: if no segment boundary arrives within 10 seconds
@@ -142,7 +142,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       final connFuture = _connectionProvider != null
           ? _connectionProvider!(dev.id)
           : ServiceManager.instance().device.ensureConnection(dev.id);
-      connFuture.then((conn) => conn?.stopStorageSync()).catchError((_) {});
+      connFuture.then((conn) => conn?.stopStorageSync() ?? Future.value(false)).catchError((_) => false);
     }
     await _storageStream?.cancel();
   }
