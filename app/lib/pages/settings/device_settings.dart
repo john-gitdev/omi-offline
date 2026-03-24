@@ -43,7 +43,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final provider = context.read<DeviceProvider>();
       await provider.getDeviceInfo();
-      await provider.updateBatteryLevel();
+      // Battery level comes from the BLE notification listener set up on connect.
+      // Calling updateBatteryLevel() would try to READ the detail characteristic,
+      // which is notify-only (GATT_READ_NOT_PERMITTED). Skip it here.
       _loadInitialDimRatio();
     });
     super.initState();
@@ -64,6 +66,12 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
       if (connection != null) {
         var features = await connection.getFeatures();
+        // Retry up to 2 more times if the first read fails (transient GATT error
+        // on a degraded but still-connected link returns 0 instead of the real flags).
+        for (int i = 0; i < 2 && features == 0 && mounted; i++) {
+          await Future.delayed(const Duration(milliseconds: 600));
+          features = await connection.getFeatures();
+        }
         final hasDimming = OmiFeatures.hasFeature(features, OmiFeatures.ledDimming);
         final hasMicGain = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
 
@@ -631,11 +639,16 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               onTap: () async {
                 await SharedPreferencesUtil().btDeviceSet(BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0));
                 SharedPreferencesUtil().deviceName = '';
-                try {
-                  await ServiceManager.instance().device.disconnectDevice();
-                } catch (_) {}
+                // Fire-and-forget — _connection is cleared immediately in disconnectDevice(),
+                // so the UI should not block waiting for the BLE disconnect to complete.
+                // ignore: unawaited_futures
+                ServiceManager.instance().device.disconnectDevice();
+                // Cancel any in-progress sync immediately.
+                final walSync = ServiceManager.instance().wal.getSyncs();
+                walSync.cancelSync();
+                walSync.setDevice(null);
                 provider.setIsConnected(false);
-                provider.setConnectedDevice(null);
+                await provider.setConnectedDevice(null);
                 provider.updateConnectingStatus(false);
                 if (mounted) {
                   Navigator.of(context).pop();
