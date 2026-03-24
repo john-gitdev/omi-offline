@@ -212,7 +212,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           (existing != null && existing.walOffset > 0 && existing.walOffset <= file.size) ? existing.walOffset : 0;
 
       final newBytes = file.size - walOffset;
-      if (!ignoreThreshold && newBytes < threshold) {
+      // Always include partially-synced files (walOffset > 0) regardless of threshold —
+      // we already started downloading them so finish the job. Only gate brand-new files.
+      if (!ignoreThreshold && walOffset == 0 && newBytes < threshold) {
         Logger.debug('SDCardWalSync: file[${file.index}] skipped (newBytes=$newBytes < threshold=$threshold)');
         continue;
       }
