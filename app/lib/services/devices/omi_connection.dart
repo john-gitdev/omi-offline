@@ -8,6 +8,10 @@ import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/utils/logger.dart';
 
 class OmiDeviceConnection extends DeviceConnection {
+  // Holds the BAS fallback subscription so it can be cancelled when the
+  // richer battery detail characteristic starts working or on disconnect.
+  StreamSubscription<List<int>>? _batteryFallbackSub;
+
   OmiDeviceConnection(super.device, super.transport);
 
   @override
@@ -61,30 +65,44 @@ class OmiDeviceConnection extends DeviceConnection {
     void Function(int)? onBatteryLevelChange,
     void Function(bool)? onChargingStateChange,
   }) async {
-    // Prefer the detail characteristic — 4-byte payload: [mv_lo, mv_hi, percentage, charging]
-    try {
-      final stream = transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
-      final subscription = stream.listen((value) {
-        if (value.length >= 4) {
-          if (onBatteryLevelChange != null) onBatteryLevelChange(value[2]); // byte 2 = percentage
-          if (onChargingStateChange != null) onChargingStateChange(value[3] != 0); // byte 3 = charging
-        }
-      });
-      return subscription;
-    } catch (_) {}
-    // Fall back to standard BAS
-    try {
-      final stream = transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
-      final subscription = stream.listen((value) {
-        if (value.isNotEmpty && onBatteryLevelChange != null) {
-          onBatteryLevelChange(value[0]);
-        }
-      });
-      return subscription;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error setting up battery listener: $e');
-      return null;
-    }
+    _batteryFallbackSub?.cancel();
+    _batteryFallbackSub = null;
+
+    // Subscribe to the rich detail characteristic (4-byte: mv_lo, mv_hi, pct, charging).
+    // getCharacteristicStream() sets up the BLE notification asynchronously, so we
+    // cannot tell here whether the characteristic actually exists on this firmware.
+    // Subscribe to the standard BAS characteristic simultaneously as a fallback.
+    // When the detail char fires, the BAS subscription is cancelled (no duplicate
+    // callbacks). If the detail char never fires (older firmware without the custom
+    // service), the BAS subscription keeps delivering battery levels.
+    final detailSub = transport
+        .getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid)
+        .listen((value) {
+      if (value.length >= 4) {
+        // Detail char is working — cancel the BAS fallback to avoid duplicate callbacks.
+        _batteryFallbackSub?.cancel();
+        _batteryFallbackSub = null;
+        if (onBatteryLevelChange != null) onBatteryLevelChange(value[2]); // byte 2 = percentage
+        if (onChargingStateChange != null) onChargingStateChange(value[3] != 0); // byte 3 = charging
+      }
+    });
+
+    _batteryFallbackSub = transport
+        .getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid)
+        .listen((value) {
+      if (value.isNotEmpty && onBatteryLevelChange != null) {
+        onBatteryLevelChange(value[0]);
+      }
+    });
+
+    return detailSub;
+  }
+
+  @override
+  Future<void> disconnect() async {
+    _batteryFallbackSub?.cancel();
+    _batteryFallbackSub = null;
+    await super.disconnect();
   }
 
   @override
