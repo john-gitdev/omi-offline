@@ -453,11 +453,20 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   void onDeviceDisconnected() async {
+    // Guard against the cascade: BLE disconnect triggers multiple concurrent
+    // callbacks (battery read failure, service-discovery error, etc.) that each
+    // call onDeviceConnectionStateChanged(disconnected).  The debouncer catches
+    // rapid-fire duplicates but can still let through one per async gap.
+    // If we're already fully disconnected there is nothing to do.
+    if (!isConnected && connectedDevice == null) {
+      Logger.debug('onDeviceDisconnected: already disconnected, skipping');
+      return;
+    }
     Logger.debug('onDisconnected inside: $connectedDevice');
     _stopHealthCheck();
     storageFullPercentage = -1;
     isCharging = false;
-    setConnectedDevice(null);
+    await setConnectedDevice(null);
     setisDeviceStorageSupport();
     setIsConnected(false);
     updateConnectingStatus(false);
