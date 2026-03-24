@@ -212,9 +212,14 @@ class DeviceService implements IDeviceService {
   @override
   Future<void> disconnectDevice() async {
     final currentConnection = _connection;
+    // Clear immediately so no new operations start on a dying connection.
+    _connection = null;
     if (currentConnection != null) {
-      await currentConnection.disconnect();
-      _connection = null;
+      try {
+        await currentConnection.disconnect().timeout(const Duration(seconds: 5));
+      } catch (_) {
+        // Timeout or BLE error — connection is gone regardless.
+      }
     }
   }
 
