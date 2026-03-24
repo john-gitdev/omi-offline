@@ -18,7 +18,12 @@ int led_start()
     ASSERT_TRUE(pwm_is_ready_dt(&led_red));
     ASSERT_TRUE(pwm_is_ready_dt(&led_green));
     ASSERT_TRUE(pwm_is_ready_dt(&led_blue));
-    LOG_INF("LEDs (PWM) started");
+    /* Zero all channels immediately so the PWM peripheral never glitches
+     * a bright pulse before the first explicit led_off() call. */
+    pwm_set_pulse_dt(&led_red,   0);
+    pwm_set_pulse_dt(&led_green, 0);
+    pwm_set_pulse_dt(&led_blue,  0);
+    LOG_INF("LEDs (PWM) started — all channels zeroed");
     return 0;
 }
 
