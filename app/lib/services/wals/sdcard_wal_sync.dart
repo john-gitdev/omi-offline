@@ -29,6 +29,11 @@ class _ProtocolGapException implements Exception {
 
 class SDCardWalSyncImpl implements SDCardWalSync {
   List<Wal> _wals = <Wal>[];
+  // True once setDevice() has run getMissingWals() for the current device.
+  // Distinguishes "legitimately empty after a real check" from "never checked".
+  // Prevents syncAll() from re-issuing a BLE listFiles on every call when
+  // the device genuinely has nothing to sync.
+  bool _walsInitialized = false;
   BtDevice? _device;
 
   /// Optional override for obtaining a [DeviceConnection] in tests.
@@ -151,7 +156,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _device = device;
     if (_device != null) {
       _wals = await getMissingWals();
+      _walsInitialized = true;
       listener.onWalUpdated();
+    } else {
+      _walsInitialized = false;
     }
   }
 
@@ -204,7 +212,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           (existing != null && existing.walOffset > 0 && existing.walOffset <= file.size) ? existing.walOffset : 0;
 
       final newBytes = file.size - walOffset;
-      if (!ignoreThreshold && newBytes < threshold) {
+      // Always include partially-synced files (walOffset > 0) regardless of threshold —
+      // we already started downloading them so finish the job. Only gate brand-new files.
+      if (!ignoreThreshold && walOffset == 0 && newBytes < threshold) {
         Logger.debug('SDCardWalSync: file[${file.index}] skipped (newBytes=$newBytes < threshold=$threshold)');
         continue;
       }
@@ -681,12 +691,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     // Refresh the WAL list before syncing.
     // force=true always rebuilds without the 60-second threshold so short recordings are included.
+    // Otherwise only refresh if setDevice() has never run for this connection (_walsInitialized=false)
+    // — an empty list after a real check means nothing to sync, not a stale cache.
     if (force) {
       Logger.debug("SDCardWalSync: Force sync — refreshing WAL list without threshold...");
       _wals = await _getMissingWalsIgnoringThreshold();
-    } else if (_wals.isEmpty) {
-      Logger.debug("SDCardWalSync: File list empty, refreshing before sync...");
+      _walsInitialized = true;
+    } else if (!_walsInitialized) {
+      Logger.debug("SDCardWalSync: WAL list not yet initialised, fetching from device...");
       _wals = await getMissingWals();
+      _walsInitialized = true;
     }
 
     // Log full WAL state at sync start so we can audit what's being synced and why.
