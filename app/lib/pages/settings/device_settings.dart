@@ -57,6 +57,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   }
 
   void _loadInitialDimRatio() async {
+    if (!mounted) return;
     final deviceProvider = context.read<DeviceProvider>();
     final pairedDevice = deviceProvider.pairedDevice;
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
@@ -636,7 +637,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                 provider.setIsConnected(false);
                 provider.setConnectedDevice(null);
                 provider.updateConnectingStatus(false);
-                if (context.mounted) {
+                if (mounted) {
                   Navigator.of(context).pop();
                   ScaffoldMessenger.of(
                     context,
