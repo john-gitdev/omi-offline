@@ -772,7 +772,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                   'SDCardWalSync: Gap detected — retry $gapRetries/$maxGapRetries from offset ${e.incoming}. $e');
               wal.walOffset = e.incoming;
               lastOffset = e.incoming;
-              await Future.delayed(const Duration(milliseconds: 100));
+              // Tell the firmware to stop streaming the old offset before we
+              // issue the new READ. Without this the firmware keeps sending queued
+              // packets, flooding the listener with "Ignoring DATA before ACK".
+              final dev = _device;
+              if (dev != null) {
+                final conn = _connectionProvider != null
+                    ? await _connectionProvider!(dev.id)
+                    : await ServiceManager.instance().device.ensureConnection(dev.id);
+                await conn?.stopStorageSync();
+              }
+              await Future.delayed(const Duration(milliseconds: 200));
             }
           }
 
