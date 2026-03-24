@@ -44,6 +44,9 @@ static void boot_warming_sequence(void)
     const int steps = 30;
     const int delay_ms = 10;
 
+    // Clear any residual blue from PWM init glitch
+    set_led_blue(false);
+
     // Wait with LEDs off while SD pre-warm (lfs_fs_gc) is running
     while (!sd_is_boot_ready()) {
         k_msleep(delay_ms);
