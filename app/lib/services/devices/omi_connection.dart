@@ -398,4 +398,36 @@ class OmiDeviceConnection extends DeviceConnection {
       return false;
     }
   }
+
+  /// Send CMD_ROTATE_FILE (0x13) and wait for PACKET_ACK (0x03, result).
+  /// Firmware sends the ACK only after the old file is sealed and new file is open.
+  @override
+  Future<bool> performRotateFile() async {
+    try {
+      final completer = Completer<bool>();
+      StreamSubscription? sub;
+
+      sub = transport
+          .getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid)
+          .listen((data) {
+        if (completer.isCompleted) return;
+        if (data.length >= 2 && data[0] == 0x03) {
+          // PACKET_ACK: result == 0 means success
+          sub?.cancel();
+          completer.complete(data[1] == 0x00);
+        }
+      });
+
+      await transport.writeCharacteristic(
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x13]);
+
+      final success = await completer.future.timeout(const Duration(seconds: 15));
+      Logger.debug('OmiDeviceConnection: performRotateFile success=$success');
+      sub?.cancel();
+      return success;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: performRotateFile error: $e');
+      return false;
+    }
+  }
 }

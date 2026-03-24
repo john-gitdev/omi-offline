@@ -74,18 +74,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   @override
   int get estimatedTotalSegments {
-    int total = 0;
-    final pending = <String>[];
-    for (var wal in _wals) {
-      if (wal.status == WalStatus.miss && wal.storage == WalStorage.sdcard) {
-        total += wal.estimatedSegments;
-        pending.add('  wal[${wal.id}] estimatedSegments=${wal.estimatedSegments} '
-            'totalBytes=${wal.storageTotalBytes} walOffset=${wal.walOffset}');
-      }
-    }
-    Logger.debug(
-        'SDCardWalSync: estimatedTotalSegments=$total from ${pending.length} pending WALs:\n${pending.join('\n')}');
-    return total;
+    // Returns the actual number of pending WAL entries (files) so that the UI
+    // subtext "N of M segments synced" reflects real file counts, not minute-estimates.
+    final pending = _wals.where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard).toList();
+    Logger.debug('SDCardWalSync: estimatedTotalSegments=${pending.length} pending WALs');
+    return pending.length;
   }
 
   SDCardWalSyncImpl(this.listener, {Future<DeviceConnection?> Function(String deviceId)? connectionProvider})
@@ -181,14 +174,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final codec = await _getAudioCodec(_device!.id);
     final threshold = codec.getStorageBytesPerMinute();
     return files.any((f) => f.size >= threshold);
-  }
-
-  /// Same as [getMissingWals] but ignores the 60-second threshold.
-  /// Used by [syncAll] with `force: true`.
-  Future<List<Wal>> _getMissingWalsIgnoringThreshold() async {
-    final dev = _device;
-    if (dev == null) return [];
-    return _buildWalsFromFiles(dev.id, ignoreThreshold: true);
   }
 
   /// Calls CMD_LIST_FILES and builds WAL entries from the response.
@@ -677,7 +662,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   Future<SyncLocalFilesResponse?> syncAll({
     IWalSyncProgressListener? progress,
-    bool force = false,
   }) async {
     if (_isSyncing) {
       Logger.debug("SDCardWalSync: Sync already in progress, ignoring duplicate request");
@@ -689,33 +673,24 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return null;
     }
 
-    // Refresh the WAL list before syncing.
-    // force=true always rebuilds without the 60-second threshold so short recordings are included.
-    // Otherwise only refresh if setDevice() has never run for this connection (_walsInitialized=false)
-    // — an empty list after a real check means nothing to sync, not a stale cache.
-    if (force) {
-      Logger.debug("SDCardWalSync: Force sync — refreshing WAL list without threshold...");
-      _wals = await _getMissingWalsIgnoringThreshold();
-      _walsInitialized = true;
-    } else if (!_walsInitialized) {
+    // Only refresh the WAL list if setDevice() has never run for this connection.
+    // An empty list after a real check means nothing to sync, not a stale cache.
+    // rotateAndSync() pre-populates _wals with ignoreThreshold=true before calling here.
+    if (!_walsInitialized) {
       Logger.debug("SDCardWalSync: WAL list not yet initialised, fetching from device...");
       _wals = await getMissingWals();
       _walsInitialized = true;
     }
 
     // Log full WAL state at sync start so we can audit what's being synced and why.
-    Logger.debug('SDCardWalSync: syncAll start — _wals total=${_wals.length} force=$force');
+    Logger.debug('SDCardWalSync: syncAll start — _wals total=${_wals.length}');
     for (final w in _wals) {
       Logger.debug('  WAL[${w.id}] status=${w.status} estimatedSegments=${w.estimatedSegments} '
           'totalBytes=${w.storageTotalBytes} walOffset=${w.walOffset} '
           'isSyncing=${w.isSyncing}');
     }
 
-    // NOTE: `force` controls WAL *selection* only (include already-synced wals vs. only
-    // missing ones). The firmware offset is always 0 regardless — we always re-download
-    // from the beginning because that's the only safe strategy after an app reinstall or
-    // new device pairing. The `force: false` default in _readStorageBytesToFile is dead code.
-    var wals = _wals.where((w) => (force || w.status == WalStatus.miss) && w.storage == WalStorage.sdcard).toList();
+    var wals = _wals.where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard).toList();
     if (wals.isEmpty) {
       Logger.debug("SDCardWalSync: All synced!");
       return null;
@@ -727,8 +702,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     bool anyPartial = false;
     var resp = SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
 
+    final int totalWals = wals.length;
     try {
-      for (var wal in wals) {
+      for (int walIndex = 0; walIndex < wals.length; walIndex++) {
+        final wal = wals[walIndex];
         if (_isCancelled) break;
 
         wal.isSyncing = true;
@@ -769,9 +746,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                     final seconds = (remainingBytes / (wal.codec.getStorageBytesPerMinute() / 60.0)).truncate();
                     wal.estimatedSegments = (seconds / 60).ceil();
 
-                    final double progressPercent =
+                    // Cumulative progress across all WALs so _syncedCount accurately
+                    // reflects how many WAL files (segments) have been fully downloaded.
+                    final double withinWal =
                         totalBytesToDownload > 0 ? (offset - initialOffset) / totalBytesToDownload : 1.0;
-                    final double clamped = progressPercent.clamp(0.0, 1.0);
+                    final double clamped =
+                        (totalWals > 0 ? (walIndex + withinWal.clamp(0.0, 1.0)) / totalWals : 1.0)
+                            .clamp(0.0, 1.0);
                     progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
                     _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
                   });
@@ -950,6 +931,34 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
 
     return resp;
+  }
+
+  /// Rotate the current recording file on the device, then sync all pending segments
+  /// (including short ones below the usual threshold that were just captured).
+  ///
+  /// Sequence:
+  ///   1. Send CMD_ROTATE_FILE (0x13) — firmware closes current file, opens a new one.
+  ///   2. Wait for PACKET_ACK — guarantees file is sealed before we list files.
+  ///   3. Rebuild WAL list with ignoreThreshold=true so the just-rotated segment is included.
+  ///   4. Call syncAll() which uses the pre-populated WAL list.
+  @override
+  Future<SyncLocalFilesResponse?> rotateAndSync({IWalSyncProgressListener? progress}) async {
+    final dev = _device;
+    if (dev == null) throw Exception('No device connected');
+
+    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+    if (connection == null) throw Exception('Could not connect to device');
+
+    Logger.debug('SDCardWalSync: rotateAndSync — sending CMD_ROTATE_FILE');
+    final rotated = await connection.rotateFile();
+    if (!rotated) throw Exception('File rotation failed — device did not acknowledge');
+    Logger.debug('SDCardWalSync: rotateAndSync — rotation confirmed, refreshing WAL list');
+
+    // Bypass threshold so the just-rotated segment (possibly < 1 min) is included.
+    _wals = await _buildWalsFromFiles(dev.id, ignoreThreshold: true);
+    _walsInitialized = true;
+
+    return await syncAll(progress: progress);
   }
 
   Future<void> _registerSingleSegment(Wal wal, File file, int timerStart) async {

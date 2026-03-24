@@ -37,7 +37,6 @@ abstract class IWalSync {
   Future deleteWal(Wal wal);
   Future<SyncLocalFilesResponse?> syncAll({
     IWalSyncProgressListener? progress,
-    bool force = false,
   });
   Future<SyncLocalFilesResponse?> syncWal({
     required Wal wal,
@@ -82,4 +81,8 @@ abstract class SDCardWalSync implements IWalSync {
   /// exceeding the sync threshold. Avoids building full WAL objects.
   /// Fast path: uses in-memory WAL list if already populated by [setDevice].
   Future<bool> hasFilesToSync();
+
+  /// Send CMD_ROTATE_FILE, wait for ACK (current file sealed, new file open),
+  /// then run a normal sync including short segments below the usual threshold.
+  Future<SyncLocalFilesResponse?> rotateAndSync({IWalSyncProgressListener? progress});
 }
