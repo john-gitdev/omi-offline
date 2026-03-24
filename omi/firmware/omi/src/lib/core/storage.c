@@ -268,6 +268,11 @@ static int refresh_file_list_cache(void)
  * Assumes the file list cache (sync_file_list/sync_file_sizes/sync_file_count)
  * has already been populated by the caller via refresh_file_list_cache().
  * Refreshes only when the cache is empty (sync_file_count == 0).
+ *
+ * The currently-recording file is excluded from the response.  Syncing an
+ * open write file causes contention on the sd_worker and results in
+ * read_audio_data timeouts → error ACK 7.  The file will appear in the next
+ * list once it has been rotated (closed).
  */
 static int send_file_list_response(struct bt_conn *conn)
 {
@@ -276,36 +281,43 @@ static int send_file_list_response(struct bt_conn *conn)
         storage_notify(conn, error_resp, 1);
         return -1;
     }
-    
-    /* Use storage_buffer to build response (max 4440 bytes) */
-    /* Each file: ts(4) + size(4) = 8 bytes, max ~550 files */
-    int resp_len = 0;
 
-    /* Protocol cap: 1-byte count field limits response to 255 files.
-     * Currently safe because MAX_AUDIO_FILES == 100 (sd_card.h).
-     * If MAX_AUDIO_FILES is ever raised above 255, files beyond 255 become
-     * invisible to the app and will accumulate on the SD card unsynced. */
-    uint8_t reported_count = (sync_file_count > 255) ? 255 : (uint8_t)sync_file_count;
-    storage_buffer[resp_len++] = reported_count;
-    if (sync_file_count > 255) {
-        LOG_WRN("File count %d exceeds protocol limit (255), reporting 255", sync_file_count);
-    }
+    /* Use storage_buffer to build response (max 4440 bytes).
+     * Reserve byte [0] for the count; fill it in after iterating. */
+    int resp_len = 1;  /* byte 0 = count placeholder */
+    uint8_t included = 0;
 
-    for (int i = 0; i < sync_file_count && resp_len + 8 <= STORAGE_BUFFER_SIZE; i++) {        uint32_t timestamp = (uint32_t)strtoul(sync_file_list[i], NULL, 16);
+    for (int i = 0; i < sync_file_count && resp_len + 8 <= STORAGE_BUFFER_SIZE; i++) {
+        /* Skip the file the mic is currently writing to.  Attempting to sync
+         * it races the sd_worker write path and causes read timeouts. */
+        if (sd_is_current_recording_file(sync_file_list[i])) {
+            LOG_INF("file_list: skipping active recording file[%d]=%s",
+                    i, sync_file_list[i]);
+            continue;
+        }
+        if (included >= 255) {
+            LOG_WRN("file_list: reached protocol limit (255), truncating");
+            break;
+        }
+
+        uint32_t timestamp = (uint32_t)strtoul(sync_file_list[i], NULL, 16);
         uint32_t size = sync_file_sizes[i];
-        
+
         storage_buffer[resp_len++] = timestamp & 0xFF;
         storage_buffer[resp_len++] = (timestamp >> 8) & 0xFF;
         storage_buffer[resp_len++] = (timestamp >> 16) & 0xFF;
         storage_buffer[resp_len++] = (timestamp >> 24) & 0xFF;
-        
+
         storage_buffer[resp_len++] = size & 0xFF;
         storage_buffer[resp_len++] = (size >> 8) & 0xFF;
         storage_buffer[resp_len++] = (size >> 16) & 0xFF;
         storage_buffer[resp_len++] = (size >> 24) & 0xFF;
+        included++;
     }
-    
-    LOG_INF("Sending file list: %d files, %d bytes", sync_file_count, resp_len);
+
+    storage_buffer[0] = included;
+    LOG_INF("Sending file list: %d/%d files included (active file excluded), %d bytes",
+            included, sync_file_count, resp_len);
     return storage_notify(conn, storage_buffer, resp_len);
 }
 
