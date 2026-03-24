@@ -61,6 +61,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   bool _isUserTriggered = false; // true while user-initiated pipeline is running
   Completer<void>? _pipelineCompleter; // completed when the pipeline reaches a terminal state
 
+  // ─── Force sync state ──────────────────────────────────────────────────────
+  bool _isForcePipeline = false; // true while a force-sync-initiated pipeline is running
+  bool _forceSyncOnCooldown = false; // true for 1 min after the button is pressed
+  Timer? _forceSyncCooldownTimer;
+
   // ─── Persistence keys ──────────────────────────────────────────────────────
   static const _kSpState = 'sp_state';
   static const _kSpSyncedCount = 'sp_synced_count';
@@ -121,6 +126,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _forceSyncCooldownTimer?.cancel();
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(null);
     RecordingsManager.recordingsChangeNotifier.removeListener(_onRecordingsChanged);
     super.dispose();
@@ -233,6 +239,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   void _transitionToError(String activeStage, String message) {
     if (!mounted) return;
+    _isForcePipeline = false;
     _lastActiveStage = activeStage;
     Logger.error('RecordingsPage: Pipeline error [$activeStage]: $message');
     setState(() => _spState = SyncProcessState.error);
@@ -272,6 +279,129 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   void _startPipeline() {
     if (_spState != SyncProcessState.idle) return;
     unawaited(_runPipeline());
+  }
+
+  Future<void> _forceSyncButtonPressed() async {
+    if (_spState != SyncProcessState.idle) return;
+    if (_forceSyncOnCooldown) return;
+
+    final skipConfirm = _prefs.forceSyncSkipConfirm;
+    if (!skipConfirm) {
+      bool doNotShowAgain = false;
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            backgroundColor: const Color(0xFF1C1C1E),
+            title: const Text('Force Sync', style: TextStyle(color: Colors.white)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'This will close the current recording segment and immediately sync all available data, including recordings shorter than the usual minimum.',
+                  style: TextStyle(color: Colors.white70, fontSize: 14),
+                ),
+                const SizedBox(height: 16),
+                GestureDetector(
+                  onTap: () => setDialogState(() => doNotShowAgain = !doNotShowAgain),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: Checkbox(
+                          value: doNotShowAgain,
+                          onChanged: (v) => setDialogState(() => doNotShowAgain = v ?? false),
+                          activeColor: Colors.deepPurpleAccent,
+                          side: const BorderSide(color: Colors.grey),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Text('Don\'t show again', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('Yes', style: TextStyle(color: Colors.deepPurpleAccent)),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (confirm != true) return;
+      if (doNotShowAgain) _prefs.forceSyncSkipConfirm = true;
+    }
+
+    // Start cooldown the moment the user confirms
+    setState(() => _forceSyncOnCooldown = true);
+    _forceSyncCooldownTimer?.cancel();
+    _forceSyncCooldownTimer = Timer(const Duration(minutes: 1), () {
+      if (mounted) setState(() => _forceSyncOnCooldown = false);
+    });
+
+    unawaited(_runForcePipeline());
+  }
+
+  Future<void> _runForcePipeline() async {
+    _isUserTriggered = true;
+    _isForcePipeline = true;
+    _lastActiveStage = 'syncing';
+    _transitionTo(SyncProcessState.syncing);
+
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    setState(() {
+      _totalCount = 0; // will be backfilled by onWalSyncedProgress after rotation+list
+      _syncedCount = 0;
+      _syncSpeed = 0.0;
+    });
+    _persistProgress();
+    WakelockPlus.enable();
+
+    try {
+      await syncs.rotateAndSync(progress: this);
+    } catch (e) {
+      _isUserTriggered = false;
+      _isForcePipeline = false;
+      WakelockPlus.disable();
+      if (_spState == SyncProcessState.stopping) {
+        _transitionTo(SyncProcessState.idle);
+        unawaited(_reloadBatchesSilently());
+      } else {
+        _transitionToError('syncing', e.toString());
+      }
+      return;
+    }
+    WakelockPlus.disable();
+
+    if (_spState == SyncProcessState.stopping) {
+      _isForcePipeline = false;
+      _transitionTo(SyncProcessState.idle);
+      unawaited(_reloadBatchesSilently());
+      return;
+    }
+
+    setState(() {
+      _syncedCount = _totalCount;
+      _lastCompletedStage = 'syncing';
+    });
+    _prefs.saveString(_kSpLastCompleted, 'syncing');
+    await _reloadBatchesSilently();
+    setState(() {
+      _markerCount = _batches.fold(0, (sum, b) => sum + b.markerTimestamps.length);
+    });
+    _persistProgress();
+
+    await _runProcessing();
+    _isUserTriggered = false;
   }
 
   void _resumePipeline() {
@@ -410,6 +540,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   }
 
   Future<void> _finishSuccess() async {
+    _isForcePipeline = false;
     _transitionTo(SyncProcessState.successUi);
     await Future.delayed(const Duration(milliseconds: 1600));
     if (!mounted) return;
@@ -731,9 +862,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         onIconTap = _startPipeline;
 
       case SyncProcessState.syncing:
-        mainText = 'Syncing segments';
+        mainText = _isForcePipeline ? 'Force Sync...' : 'Syncing segments';
         final speedStr = _syncSpeed > 0 ? '  ·  ${_syncSpeed.toStringAsFixed(1)} KB/s' : '';
-        subText = _totalCount > 0 ? '$_syncedCount of $_totalCount segments synced$speedStr' : 'Scanning device…';
+        subText = _totalCount > 0
+            ? '$_syncedCount of $_totalCount segments synced$speedStr'
+            : (_isForcePipeline ? 'Rotating segment…' : 'Scanning device…');
         iconBg = Colors.deepPurpleAccent;
         iconChild = const SizedBox(
           width: 16,
@@ -1008,6 +1141,19 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     MaterialPageRoute(builder: (c) => const DeviceSettings()),
                   ),
                 ),
+              // Force sync button — disabled when syncing is in progress or on cooldown
+              IconButton(
+                icon: FaIcon(
+                  FontAwesomeIcons.boltLightning,
+                  color: (deviceProvider.isConnected && _spState == SyncProcessState.idle && !_forceSyncOnCooldown)
+                      ? Colors.white
+                      : Colors.grey.shade700,
+                  size: 20,
+                ),
+                onPressed: (deviceProvider.isConnected && _spState == SyncProcessState.idle && !_forceSyncOnCooldown)
+                    ? _forceSyncButtonPressed
+                    : null,
+              ),
               IconButton(
                 icon: FaIcon(
                   FontAwesomeIcons.sliders,
