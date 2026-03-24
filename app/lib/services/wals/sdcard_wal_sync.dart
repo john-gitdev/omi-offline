@@ -277,7 +277,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     listener.onWalUpdated();
   }
 
-  Future<File> _flushToDisk(Wal wal, List<List<int>> frames, int timerStart,
+  Future<(File, int)> _flushToDisk(Wal wal, List<List<int>> frames, int timerStart,
       {String? subFolder, int? deviceSessionId, int? segmentIndex, bool append = false}) async {
     final directory = await getApplicationDocumentsDirectory();
     final folderPath = deviceSessionId != null
@@ -311,9 +311,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final file = File(filePath);
     await file.writeAsBytes(data, mode: append ? FileMode.append : FileMode.write);
 
-    Logger.debug("SDCardWalSync _flushToDisk: Wrote ${data.length} bytes to $filePath (append: $append)");
-
-    return file;
+    return (file, data.length);
   }
 
   Future<void> _saveMarker(int deviceSessionId, int utcTime) async {
@@ -369,6 +367,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // leftover data from a prior sync or force-resync. Subsequent flushes within the same
     // transfer can append.
     final Set<String> flushedSegmentsThisTransfer = {};
+    int totalBytesWrittenThisTransfer = 0;
+    final Map<String, int> bytesPerFile = {};
 
     // For partial resume (walOffset > 0), the file we're continuing is always
     // {timerStart}_0.bin.  Mark it as already flushed so subsequent writes append.
@@ -390,11 +390,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       final appendMode = flushedSegmentsThisTransfer.contains(segmentKey);
       if (!appendMode) flushedSegmentsThisTransfer.add(segmentKey);
 
-      var file = await _flushToDisk(wal, frameBuffer, timerStart,
+      var (file, bytesWritten) = await _flushToDisk(wal, frameBuffer, timerStart,
           subFolder: subFolder,
           deviceSessionId: lastDeviceSessionId,
           segmentIndex: lastSegmentIndex,
           append: appendMode);
+      totalBytesWrittenThisTransfer += bytesWritten;
+      bytesPerFile[file.path] = (bytesPerFile[file.path] ?? 0) + bytesWritten;
 
       try {
         await callback(file, currentStreamOffset, timerStart, subFolder: subFolder);
@@ -608,6 +610,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     try {
       await completer.future;
+      final fileCount = bytesPerFile.length;
+      Logger.debug(
+          "SDCardWalSync: Transfer complete — wrote $totalBytesWrittenThisTransfer bytes across $fileCount file(s)");
     } finally {
       _storageStream?.cancel();
       _storageStream = null;
