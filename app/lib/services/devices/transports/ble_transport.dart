@@ -144,6 +144,8 @@ class BleTransport extends DeviceTransport {
 
     if (!_streamControllers.containsKey(key)) {
       _streamControllers[key] = StreamController<List<int>>.broadcast();
+      // Fire-and-forget — errors are handled internally and logged.
+      // ignore: unawaited_futures
       _setupCharacteristicListener(serviceUuid, characteristicUuid, key);
     }
 
@@ -219,6 +221,10 @@ class BleTransport extends DeviceTransport {
     }
     final completer = Completer<List<BluetoothService>>();
     _pendingDiscovery = completer.future;
+    // Prevent "Unhandled Exception" if no second caller is waiting on this future
+    // when it errors — the first caller always handles the error via rethrow.
+    // ignore: unawaited_futures
+    completer.future.catchError((_) {});
     try {
       final services = await _bleDevice.discoverServices();
       _services = services;
@@ -233,28 +239,39 @@ class BleTransport extends DeviceTransport {
   }
 
   Future<BluetoothCharacteristic?> _getCharacteristic(String serviceUuid, String characteristicUuid) async {
-    // Retry up to 3 times, but ONLY when the service itself is missing (transient
-    // discovery timing issue). If the service is present but the characteristic is
-    // not, no amount of re-discovery will help — bail immediately.
-    for (int retry = 0; retry < 3; retry++) {
-      if (_services.isEmpty || retry > 0) {
-        Logger.debug('BLE Transport: Discovering services (attempt ${retry + 1})...');
-        _services = await _safeDiscoverServices();
+    // If services are already discovered, look up directly without re-discovering.
+    // Re-running discoverServices() while a BLE notification stream (e.g. SD-card
+    // sync) is in flight can cause packet gaps and corrupt the transfer. A missing
+    // service after initial discovery is permanent — the firmware doesn't expose it.
+    if (_services.isNotEmpty) {
+      final service = _services.firstWhereOrNull(
+        (s) => s.uuid.str128.toLowerCase() == serviceUuid.toLowerCase(),
+      );
+      if (service != null) {
+        return service.characteristics.firstWhereOrNull(
+          (c) => c.uuid.str128.toLowerCase() == characteristicUuid.toLowerCase(),
+        );
       }
+      // Service not found after a completed discovery — permanently absent.
+      return null;
+    }
+
+    // Services not yet discovered — retry up to 3 times for transient timing issues
+    // (e.g. called immediately after connect() before discoverServices completes).
+    for (int retry = 0; retry < 3; retry++) {
+      Logger.debug('BLE Transport: Discovering services (attempt ${retry + 1})...');
+      _services = await _safeDiscoverServices();
 
       final service = _services.firstWhereOrNull(
         (s) => s.uuid.str128.toLowerCase() == serviceUuid.toLowerCase(),
       );
 
       if (service != null) {
-        // Service found — characteristic is either present or permanently absent.
-        // Do not retry; re-discovery cannot add a characteristic the firmware lacks.
         return service.characteristics.firstWhereOrNull(
           (c) => c.uuid.str128.toLowerCase() == characteristicUuid.toLowerCase(),
         );
       }
 
-      // Service not found — could be a discovery timing issue; retry with back-off.
       if (retry < 2) {
         Logger.debug('BLE Transport: Service $serviceUuid not found (attempt ${retry + 1}), retrying...');
         await Future.delayed(Duration(milliseconds: 500 * (retry + 1)));
