@@ -161,6 +161,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       await syncs.deleteAllPendingWals();
       Logger.debug('DebugTools: deleteAllPendingWals complete');
 
+      // The firmware sets current_file_deleted=true when its active recording file is
+      // deleted, and drops all audio writes while BLE stays connected.  It only creates
+      // a new file on BLE disconnect.  Since the app stays connected after a debug delete,
+      // we must cycle the connection so the firmware can start a fresh recording file.
+      final deviceId = ServiceManager.instance().device.pairedDevice?.id;
+      if (deviceId != null) {
+        Logger.debug('DebugTools: Cycling BLE connection so firmware creates a new recording file');
+        setState(() => _statusMessage = 'Reconnecting to device...');
+        await ServiceManager.instance().device.disconnectDevice();
+        await Future.delayed(const Duration(milliseconds: 500));
+        await ServiceManager.instance().device.ensureConnection(deviceId);
+        Logger.debug('DebugTools: BLE reconnect complete');
+      }
+
       // Reset sync/processing progress state in preferences
       final prefs = SharedPreferencesUtil();
       await prefs.remove('sp_state');
