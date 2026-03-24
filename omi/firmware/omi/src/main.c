@@ -37,20 +37,28 @@ static bool blink_toggle = false;
 
 static void boot_led_sequence(void)
 {
+    // Go dark immediately after the PWM init glitch
+    led_off();
 }
 
 static void boot_warming_sequence(void)
 {
-    const int steps = 30;
     const int delay_ms = 10;
 
     // Wait with LEDs off while SD pre-warm (lfs_fs_gc) is running
     while (!sd_is_boot_ready()) {
         k_msleep(delay_ms);
     }
+    // Remain dark — fade happens after mic is ready
+}
 
-    // Fade up to dim_ratio brightness so main loop set_led_state() takes over
-    // at the same level — no brightness jump
+static void boot_ready_fade(void)
+{
+    const int steps = 30;
+    const int delay_ms = 10;
+
+    // Fade up to dim_ratio brightness now that mic is ready;
+    // main loop set_led_state() takes over at the same level — no brightness jump
     uint8_t target = app_settings_get_dim_ratio();
     for (int i = 0; i <= steps; i++) {
         float t = (float) i / steps;
@@ -188,6 +196,8 @@ int main(void)
         LOG_ERR("Mic failed %d", ret);
         return ret;
     }
+
+    boot_ready_fade();
 
     LOG_INF("Ready\n");
 
