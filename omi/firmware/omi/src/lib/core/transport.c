@@ -493,6 +493,7 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_
 #define BATTERY_REFRESH_INTERVAL_DISCONNECTED 30000 // 30 seconds while offline
 #define CONFIG_OMI_BATTERY_CRITICAL_MV        3500  // mV
 uint8_t battery_percentage = 100;
+bool battery_ready = false;
 void broadcast_battery_level(struct k_work *work_item);
 
 K_WORK_DELAYABLE_DEFINE(battery_work, broadcast_battery_level);
@@ -504,6 +505,7 @@ void broadcast_battery_level(struct k_work *work_item)
     if (battery_get_millivolt(&battery_millivolt) == 0 &&
         battery_get_percentage(&battery_percentage, battery_millivolt) == 0) {
 
+        battery_ready = true;
         LOG_PRINTK("Battery at %d mV (capacity %d%%)\n", battery_millivolt, battery_percentage);
 
         int err = bt_bas_set_battery_level(battery_percentage);

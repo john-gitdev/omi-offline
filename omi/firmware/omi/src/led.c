@@ -95,9 +95,7 @@ void set_led_pwm(led_color_t color, uint8_t level)
 
 void led_off(void)
 {
-    set_led_red(false);
-    k_msleep(10);
-    set_led_green(false);
-    k_msleep(10);
-    set_led_blue(false);
+    pwm_set_pulse_dt(&led_red,   0);
+    pwm_set_pulse_dt(&led_green, 0);
+    pwm_set_pulse_dt(&led_blue,  0);
 }

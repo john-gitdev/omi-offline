@@ -4,6 +4,9 @@
 #include <zephyr/drivers/sensor.h>
 #ifdef CONFIG_OMI_ENABLE_BATTERY
 extern uint8_t battery_percentage;
+// Set to true after the first successful ADC reading so callers can
+// distinguish "no reading yet" from "battery is genuinely at 100%".
+extern bool battery_ready;
 #endif
 extern uint16_t current_mtu;
 
