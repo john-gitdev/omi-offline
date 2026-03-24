@@ -43,42 +43,20 @@ static void boot_warming_sequence(void)
 {
     const int steps = 30;
     const int delay_ms = 10;
-    uint8_t level = 0;
-    bool direction = true; // true = up, false = down
 
-    LOG_INF("[BOOT] Entering warming phase (SD pre-warm)...");
+    // Clear any residual blue from PWM init glitch
+    set_led_blue(false);
 
-    // Pulse Yellow (Red + Green) while SD pre-warm (lfs_fs_gc) is running
+    // Wait with LEDs off while SD pre-warm (lfs_fs_gc) is running
     while (!sd_is_boot_ready()) {
-        if (direction) {
-            level += 2;
-            if (level >= 60) direction = false;
-        } else {
-            level -= 2;
-            if (level <= 2) direction = true;
-        }
-        
-        // Stealth mode check: if user turned off LEDs, keep them off even during warm
-        if (is_led_enabled) {
-            set_led_pwm(LED_RED, level);
-            set_led_pwm(LED_GREEN, level);
-        } else {
-            led_off();
-        }
-        
-        k_msleep(20);
+        k_msleep(delay_ms);
     }
-
-    LOG_INF("[BOOT] Warming complete.");
-
     // Fade up to full yellow — main loop set_led_state() takes over from here
     for (int i = 0; i <= steps; i++) {
         float t = (float) i / steps;
-        uint8_t target_level = (uint8_t) (t * 100.0f);
-        if (is_led_enabled) {
-            set_led_pwm(LED_RED, target_level);
-            set_led_pwm(LED_GREEN, target_level);
-        }
+        uint8_t level = (uint8_t) (t * 100.0f);
+        set_led_pwm(LED_RED, level);
+        set_led_pwm(LED_GREEN, level);
         k_msleep(delay_ms);
     }
 }

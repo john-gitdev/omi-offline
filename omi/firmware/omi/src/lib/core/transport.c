@@ -1010,18 +1010,14 @@ int transport_start()
 
     // Pull the nfsw control high
 #ifdef CONFIG_OMI_ENABLE_RFSW_CTRL
-    if (rfsw_en.port != NULL) {
-        err = gpio_pin_configure_dt(&rfsw_en, (GPIO_OUTPUT | NRF_GPIO_DRIVE_S0H1));
-        if (err) {
-            LOG_ERR("Failed to get the rfsw pin config (err %d)", err);
-        } else {
-            err = gpio_pin_set_dt(&rfsw_en, 1);
-            if (err) {
-                LOG_ERR("Failed to pull the rfsw pin control high (err %d)", err);
-            }
-        }
+    err = gpio_pin_configure_dt(&rfsw_en, (GPIO_OUTPUT | NRF_GPIO_DRIVE_S0H1));
+    if (err) {
+        LOG_ERR("Failed to get the rfsw pin config (err %d)", err);
     } else {
-        LOG_WRN("rfsw_en_pin not found in devicetree, skipping RFSW control");
+        err = gpio_pin_set_dt(&rfsw_en, 1);
+        if (err) {
+            LOG_ERR("Failed to pull the rfsw pin control high (err %d)", err);
+        }
     }
 #endif
 
