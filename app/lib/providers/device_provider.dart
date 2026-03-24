@@ -45,6 +45,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   void Function(BtDevice device)? onDeviceConnected;
 
   DeviceProvider() {
+    // Seed from last known value so battery indicator isn't grey on launch.
+    final saved = SharedPreferencesUtil().lastBatteryLevel;
+    if (saved >= 0) batteryLevel = saved;
     ServiceManager.instance().device.subscribe(this, this);
     if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
       Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true));
@@ -149,6 +152,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       int currentLevel = await _retrieveBatteryLevel(connectedDevice!.id);
       if (currentLevel != -1) {
         batteryLevel = currentLevel;
+        SharedPreferencesUtil().lastBatteryLevel = currentLevel;
         notifyListeners();
       }
     }
@@ -172,6 +176,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       connectedDevice?.id ?? '',
       onBatteryLevelChange: (int value) {
         batteryLevel = value;
+        SharedPreferencesUtil().lastBatteryLevel = value;
         if (batteryLevel < 20 && !_hasLowBatteryAlerted) {
           _hasLowBatteryAlerted = true;
           Logger.debug('Low Battery Alert');
