@@ -18,6 +18,12 @@ class BleTransport extends DeviceTransport {
   DeviceTransportState _state = DeviceTransportState.disconnected;
   StreamSubscription<BluetoothConnectionState>? _bleConnectionSubscription;
 
+  // Serialises concurrent discoverServices() calls. Without this, a
+  // characteristic lookup retry (e.g. button listener) can issue a new
+  // discoverServices() while a BLE notification stream (SD-card download)
+  // is in flight, causing a packet gap and corrupting the transfer.
+  Future<List<BluetoothService>>? _pendingDiscovery;
+
   BleTransport(this._bleDevice) : _connectionStateController = StreamController<DeviceTransportState>.broadcast() {
     _bleConnectionSubscription = _bleDevice.connectionState.listen((state) {
       if (state == BluetoothConnectionState.disconnected) {
@@ -204,6 +210,28 @@ class BleTransport extends DeviceTransport {
     }
   }
 
+  /// Runs discoverServices(), serialising concurrent callers so only one
+  /// GATT discovery is in-flight at a time.  A second caller while discovery
+  /// is already running simply waits for the same result.
+  Future<List<BluetoothService>> _safeDiscoverServices() async {
+    if (_pendingDiscovery != null) {
+      return _pendingDiscovery!;
+    }
+    final completer = Completer<List<BluetoothService>>();
+    _pendingDiscovery = completer.future;
+    try {
+      final services = await _bleDevice.discoverServices();
+      _services = services;
+      completer.complete(services);
+      return services;
+    } catch (e) {
+      completer.completeError(e);
+      rethrow;
+    } finally {
+      _pendingDiscovery = null;
+    }
+  }
+
   Future<BluetoothCharacteristic?> _getCharacteristic(String serviceUuid, String characteristicUuid) async {
     // Retry up to 3 times, but ONLY when the service itself is missing (transient
     // discovery timing issue). If the service is present but the characteristic is
@@ -211,7 +239,7 @@ class BleTransport extends DeviceTransport {
     for (int retry = 0; retry < 3; retry++) {
       if (_services.isEmpty || retry > 0) {
         Logger.debug('BLE Transport: Discovering services (attempt ${retry + 1})...');
-        _services = await _bleDevice.discoverServices();
+        _services = await _safeDiscoverServices();
       }
 
       final service = _services.firstWhereOrNull(
