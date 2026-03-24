@@ -226,6 +226,7 @@ static K_MUTEX_DEFINE(current_filename_lock);
 
 /* Deferred control requests when prio queue is temporarily saturated */
 static atomic_t pending_flush_on_ble_connect;
+static atomic_t pending_rotate_on_ble_connect;
 static atomic_t pending_time_synced;
 static uint32_t pending_time_synced_utc = 0;
 
@@ -343,7 +344,7 @@ static void process_write_data_req(const sd_req_t *req)
     }
 
     if (should_rotate_file()) {
-        LOG_INF("[SD_WORK] Rotating file after 30 min");
+        LOG_INF("[SD_WORK] Rotating file after %d min", (int)(FILE_ROTATION_INTERVAL_MS / 60000));
         flush_batch_buffer();
         create_audio_file_with_timestamp();
     }
@@ -841,11 +842,31 @@ static int flush_batch_buffer(void)
 /* File rotation helper                                                */
 /* ------------------------------------------------------------------ */
 
+/* Minimum file age before a BLE-connect can trigger early rotation (2 minutes).
+ * Avoids creating tiny files when BLE reconnects after a brief disconnect. */
+#define BLE_CONNECT_MIN_ROTATE_AGE_MS (2 * 60 * 1000)
+
 static bool should_rotate_file(void)
 {
     if (current_file_created_uptime_ms == 0)
         return false;
-    return (k_uptime_get() - current_file_created_uptime_ms) >= FILE_ROTATION_INTERVAL_MS;
+
+    int64_t file_age_ms = k_uptime_get() - current_file_created_uptime_ms;
+
+    if (file_age_ms >= FILE_ROTATION_INTERVAL_MS)
+        return true;
+
+    /* On BLE connect: rotate early if file is old enough so the app can
+     * immediately download the completed recording without waiting up to
+     * FILE_ROTATION_INTERVAL_MS for the normal rotation timer. */
+    if (atomic_cas(&pending_rotate_on_ble_connect, 1, 0)) {
+        if (file_age_ms >= BLE_CONNECT_MIN_ROTATE_AGE_MS) {
+            LOG_INF("[SD_WORK] Rotating file on BLE connect (age %lld ms)", file_age_ms);
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1714,6 +1735,10 @@ void sd_notify_ble_state(bool connected)
     if (connected && !ble_connected) {
         ble_connect_time_ms = k_uptime_get();
         LOG_INF("BLE connected");
+        /* Signal the SD worker to rotate the active file on the next write so
+         * the app can immediately download a completed recording.  The worker
+         * checks the file age (>= 2 min) before actually rotating. */
+        atomic_set(&pending_rotate_on_ble_connect, 1);
         /* Fire-and-forget flush via prio queue.
          * Do NOT block here — this runs on the BLE callback thread;
          * a blocking call would freeze the BLE stack and cause
