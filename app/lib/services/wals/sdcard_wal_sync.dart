@@ -417,8 +417,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (_isCancelled || hasError || isStreamLocked) return;
 
       packetsReceived++;
-      // Log only every 100 packets to reduce noise, unless it's near the end
-      if (packetsReceived % 100 == 0 || expectedOffset >= wal.storageTotalBytes - 512) {
+      // Log only every 500 packets to reduce noise, unless it's near the end
+      if (packetsReceived % 500 == 0 || expectedOffset >= wal.storageTotalBytes - 512) {
         Logger.debug(
             "SDCardWalSync: Received ${value.length} bytes (Buffer: ${streamBuffer.length}, Packet #$packetsReceived)");
       }
