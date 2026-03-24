@@ -46,6 +46,10 @@ class SharedPreferencesUtil {
 
   set offlineAdjustmentMode(bool value) => saveBool('offlineAdjustmentMode', value);
 
+  bool get forceSyncSkipConfirm => getBool('force_sync_skip_confirm', defaultValue: false);
+
+  set forceSyncSkipConfirm(bool value) => saveBool('force_sync_skip_confirm', value);
+
   // 'automatic' = continuous VAD, 'marker' = marker-based extraction, 'fixed' = fixed wall-clock intervals
   String get offlineRecordingMode => getString('offlineRecordingMode', defaultValue: 'automatic');
 
