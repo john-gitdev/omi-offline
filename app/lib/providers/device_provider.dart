@@ -499,6 +499,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     setIsConnected(true);
     await setisDeviceStorageSupport();
 
+    // Set the WAL device immediately after file listing so any user-triggered sync
+    // (possible as soon as setIsConnected fires notifyListeners above) finds _device
+    // non-null and _wals pre-populated. Awaiting here prevents a race where the user
+    // presses Sync while we are still doing the slow battery/storage BLE reads below.
+    await ServiceManager.instance().wal.getSyncs().setDevice(device);
+
     isCharging = await _retrieveChargingState(device.id);
     int currentLevel = await _retrieveBatteryLevel(device.id);
     if (currentLevel != -1) {
@@ -525,8 +531,6 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     // Start periodic health check to detect stale connections
     _startHealthCheck();
 
-    // Wals
-    ServiceManager.instance().wal.getSyncs().setDevice(device);
     _doBackgroundSync(); // fire-and-forget
 
     notifyListeners();
