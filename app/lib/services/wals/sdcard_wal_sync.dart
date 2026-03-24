@@ -417,11 +417,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (_isCancelled || hasError || isStreamLocked) return;
 
       packetsReceived++;
-      // Log only every 500 packets to reduce noise, unless it's near the end
-      if (packetsReceived % 500 == 0 || expectedOffset >= wal.storageTotalBytes - 512) {
-        Logger.debug(
-            "SDCardWalSync: Received ${value.length} bytes (Buffer: ${streamBuffer.length}, Packet #$packetsReceived)");
-      }
 
       if (value.isEmpty) {
         Logger.debug("SDCardWalSync: Received empty BLE packet, ignoring.");
@@ -612,7 +607,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       await completer.future;
       final fileCount = bytesPerFile.length;
       Logger.debug(
-          "SDCardWalSync: Transfer complete — wrote $totalBytesWrittenThisTransfer bytes across $fileCount file(s)");
+          "SDCardWalSync: Transfer complete — $packetsReceived packets, $totalBytesWrittenThisTransfer bytes across $fileCount file(s)");
     } finally {
       _storageStream?.cancel();
       _storageStream = null;
