@@ -688,7 +688,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       _skipNextRefresh = false;
     } else {
       Logger.debug("SDCardWalSync: Refreshing WAL list from device...");
-      _wals = await getMissingWals();
+      final refreshed = await getMissingWals();
+      if (refreshed.isNotEmpty || _wals.isEmpty) {
+        _wals = refreshed;
+      } else {
+        Logger.debug("SDCardWalSync: listFiles returned empty — keeping existing ${_wals.length} WAL(s)");
+      }
     }
 
     // Log full WAL state at sync start so we can audit what's being synced and why.
@@ -804,6 +809,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           await Future.delayed(const Duration(milliseconds: 500));
           if (wal.walOffset >= wal.storageTotalBytes) {
             await deleteWal(wal);
+            // Wait for any late DELETE ACK to arrive and be discarded before the
+            // next READ subscription is set up — prevents the late ACK from being
+            // misinterpreted as a READ start ACK by the next file's listener.
+            await Future.delayed(const Duration(milliseconds: 1500));
           } else {
             wal.walOffset = _lastSegmentBoundaryOffset;
             Logger.debug(
