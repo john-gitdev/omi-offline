@@ -280,10 +280,12 @@ static int refresh_file_list_cache(void)
  */
 static int send_file_list_response(struct bt_conn *conn)
 {
-    if (sync_file_count == 0 && refresh_file_list_cache() < 0) {
-        uint8_t error_resp[1] = {0xFF};
-        storage_notify(conn, error_resp, 1);
-        return -1;
+    /* Cache must be populated by caller before invoking this function.
+     * If it is empty here something went wrong upstream — return empty list. */
+    if (sync_file_count == 0) {
+        uint8_t zero_resp[1] = {0};
+        storage_notify(conn, zero_resp, 1);
+        return 0;
     }
 
     /* Use storage_buffer to build response (max 4440 bytes).
@@ -606,11 +608,18 @@ void storage_write(void)
         }
         if (list_files_requested) {
             list_files_requested = 0;
-            /* Always refresh cache so the response is up-to-date, then send.
-             * send_file_list_response() will not re-refresh if count > 0. */
-            refresh_file_list_cache();
+            /* Always refresh cache so the response is up-to-date.
+             * If refresh fails, send error immediately — do NOT let
+             * send_file_list_response() retry (that would add another full
+             * timeout and push total wait beyond the Flutter deadline). */
+            int refresh_ret = refresh_file_list_cache();
             if (conn) {
-                send_file_list_response(conn);
+                if (refresh_ret < 0) {
+                    uint8_t error_resp[1] = {0xFF};
+                    storage_notify(conn, error_resp, 1);
+                } else {
+                    send_file_list_response(conn);
+                }
             }
         }
         if (delete_file_index >= 0) {
