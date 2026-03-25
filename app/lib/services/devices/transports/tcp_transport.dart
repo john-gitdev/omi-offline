@@ -175,7 +175,7 @@ class TcpTransport extends DeviceTransport {
   }
 
   @override
-  Stream<List<int>> getCharacteristicStream(String serviceUuid, String characteristicUuid) {
+  Future<Stream<List<int>>> getCharacteristicStream(String serviceUuid, String characteristicUuid) async {
     // TCP doesn't use characteristics - use dataStream instead
     return const Stream.empty();
   }
