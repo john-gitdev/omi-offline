@@ -117,6 +117,7 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<void> disconnect() async {
     _batteryFallbackSub?.cancel();
     _batteryFallbackSub = null;
+    await stop();
     await super.disconnect();
   }
 
@@ -423,6 +424,7 @@ class OmiDeviceConnection extends DeviceConnection {
       if (!currentCompleter.isCompleted) {
         currentCompleter.complete([]); // Resolve with empty list on error to satisfy callers
       }
+      _listFilesCompleter = null;
       return [];
     }
   }
