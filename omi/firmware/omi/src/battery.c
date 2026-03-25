@@ -1,4 +1,5 @@
 #include "lib/core/lib/battery/battery.h"
+#include "lib/core/transport.h"
 
 #include <hal/nrf_saadc.h>
 #include <zephyr/device.h>
@@ -136,6 +137,9 @@ static void battery_charging_callback(const struct device *dev, struct gpio_call
     if (err) {
         LOG_ERR("Failed to read charging state (%d)", err);
     }
+    /* Push a fresh battery notification immediately on plug/unplug so the
+     * app sees the updated charging state without waiting 10 s. */
+    transport_notify_battery_soon();
 }
 
 int battery_get_millivolt(uint16_t *battery_millivolt)

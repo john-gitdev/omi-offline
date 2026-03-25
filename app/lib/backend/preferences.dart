@@ -194,6 +194,12 @@ class SharedPreferencesUtil {
 
   set doubleTapPausesMuting(bool value) => doubleTapAction = value ? 1 : 0;
 
+  // Last known battery level — restored on connect so the indicator isn't grey
+  // until the first BLE notification fires.
+  int get lastBatteryLevel => getInt('lastBatteryLevel', defaultValue: -1);
+
+  set lastBatteryLevel(int value) => saveInt('lastBatteryLevel', value);
+
   // Developer Diagnostics
   bool get devLogsToFileEnabled => getBool('devLogsToFileEnabled');
 

@@ -7,6 +7,9 @@ extern uint8_t battery_percentage;
 // Set to true after the first successful ADC reading so callers can
 // distinguish "no reading yet" from "battery is genuinely at 100%".
 extern bool battery_ready;
+// Schedule an immediate battery notify (e.g. after charging state changes).
+// Safe to call from ISR/interrupt context.
+void transport_notify_battery_soon(void);
 #endif
 extern uint16_t current_mtu;
 
