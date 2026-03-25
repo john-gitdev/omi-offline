@@ -145,10 +145,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   @override
-  Future<void> setDevice(BtDevice? device) async {
+  Future<void> setDevice(BtDevice? device, {List<StorageFile>? prefetchedFiles}) async {
     _device = device;
     if (_device != null) {
-      _wals = await getMissingWals();
+      _wals = await _buildWalsFromFiles(_device!.id, ignoreThreshold: false, prefetchedFiles: prefetchedFiles);
+      Logger.debug('SDCardWalSync: setDevice — ${_wals.length} WAL(s) built (${prefetchedFiles != null ? 'pre-fetched files' : 'fetched from device'})');
       // We just fetched the list — skip the redundant BLE round-trip on the
       // first syncAll() that follows, but only that one.
       _skipNextRefresh = true;
@@ -180,8 +181,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   /// Calls CMD_LIST_FILES and builds WAL entries from the response.
   /// Files are already sorted oldest-first by the firmware.
-  Future<List<Wal>> _buildWalsFromFiles(String deviceId, {required bool ignoreThreshold}) async {
-    final files = await _listFiles(deviceId);
+  /// [prefetchedFiles] — if provided, skips the BLE round-trip entirely.
+  Future<List<Wal>> _buildWalsFromFiles(String deviceId,
+      {required bool ignoreThreshold, List<StorageFile>? prefetchedFiles}) async {
+    final files = prefetchedFiles ?? await _listFiles(deviceId);
     Logger.debug('SDCardWalSync: listFiles returned ${files.length} files');
     if (files.isEmpty) return [];
 
