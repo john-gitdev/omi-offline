@@ -8,10 +8,6 @@ import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/utils/logger.dart';
 
 class OmiDeviceConnection extends DeviceConnection {
-  // Holds the BAS fallback subscription so it can be cancelled when the
-  // richer battery detail characteristic starts working or on disconnect.
-  StreamSubscription<List<int>>? _batteryFallbackSub;
-
   // Deduplicates concurrent listFiles calls
   Completer<List<StorageFile>>? _listFilesCompleter;
 
@@ -53,28 +49,19 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<int> performRetrieveBatteryLevel() async {
-    // Try richer detail characteristic first (4-byte: mv_lo, mv_hi, pct, charging)
-    try {
-      final detail = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
-      if (detail.length >= 4) return detail[2];
-    } catch (_) {}
-    // Fall back to standard BAS
     try {
       final data = await transport.readCharacteristic(batteryServiceUuid, batteryLevelCharacteristicUuid);
       if (data.isNotEmpty) return data[0];
+      return -1;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error reading battery level: $e');
+      return -1;
     }
-    return -1;
   }
 
   @override
   Future<bool> performRetrieveChargingState() async {
-    try {
-      final detail = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
-      if (detail.length >= 4) return detail[3] != 0;
-    } catch (_) {}
-    return false;
+    return false; // Standard BAS doesn't provide charging state
   }
 
   @override
@@ -82,41 +69,25 @@ class OmiDeviceConnection extends DeviceConnection {
     void Function(int)? onBatteryLevelChange,
     void Function(bool)? onChargingStateChange,
   }) async {
-    _batteryFallbackSub?.cancel();
-    _batteryFallbackSub = null;
+    try {
+      final stream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
 
-    // Subscribe to the rich detail characteristic (4-byte: mv_lo, mv_hi, pct, charging).
-    // getCharacteristicStream() sets up the BLE notification asynchronously, so we
-    // cannot tell here whether the characteristic actually exists on this firmware.
-    // Subscribe to the standard BAS characteristic simultaneously as a fallback.
-    // When the detail char fires, the BAS subscription is cancelled (no duplicate
-    // callbacks). If the detail char never fires (older firmware without the custom
-    // service), the BAS subscription keeps delivering battery levels.
-    final detailStream = await transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
-    final detailSub = detailStream.listen((value) {
-      if (value.length >= 4) {
-        // Detail char is working — cancel the BAS fallback to avoid duplicate callbacks.
-        _batteryFallbackSub?.cancel();
-        _batteryFallbackSub = null;
-        if (onBatteryLevelChange != null) onBatteryLevelChange(value[2]); // byte 2 = percentage
-        if (onChargingStateChange != null) onChargingStateChange(value[3] != 0); // byte 3 = charging
-      }
-    });
+      final subscription = stream.listen((value) {
+        if (value.isNotEmpty && onBatteryLevelChange != null) {
+          Logger.debug('Battery level changed: ${value[0]}');
+          onBatteryLevelChange(value[0]);
+        }
+      });
 
-    final fallbackStream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
-    _batteryFallbackSub = fallbackStream.listen((value) {
-      if (value.isNotEmpty && onBatteryLevelChange != null) {
-        onBatteryLevelChange(value[0]);
-      }
-    });
-
-    return detailSub;
+      return subscription;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Error setting up battery listener: $e');
+      return null;
+    }
   }
 
   @override
   Future<void> disconnect() async {
-    _batteryFallbackSub?.cancel();
-    _batteryFallbackSub = null;
     await stop();
     await super.disconnect();
   }

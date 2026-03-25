@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'package:collection/collection.dart';
 
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/discovery/bluetooth_discoverer.dart';
 import 'package:omi/utils/logger.dart';
+import 'package:omi/utils/mutex.dart';
 import 'package:omi/services/devices/discovery/device_discoverer.dart';
 
 enum DeviceConnectionState {
@@ -55,23 +58,14 @@ class DeviceService implements IDeviceService {
       StreamController<DeviceConnectionState>.broadcast();
 
   DeviceConnection? _connection;
-  // bool _isWifiSyncInProgress = false; // WiFi sync disabled
-  // Tracks the active BLE scan so concurrent calls to discover() can cancel the
-  // prior scan before starting a new one. Without this, two scans would run in
-  // parallel, and most BLE stacks silently fail or throw on concurrent scans.
+  List<BtDevice> _devices = [];
   DeviceDiscoverer? _activeDiscoverer;
-  // Mutex for ensureConnection(): non-forced callers wait for the in-progress
-  // connection attempt instead of spawning a parallel one.  Multiple concurrent
-  // callers (battery read, storage read, WAL sync, etc.) all racing into
-  // ensureConnection() would each create a separate DeviceConnection/BleTransport
-  // and call discoverServices() concurrently — causing the phantom-connection log spam.
-  Future<DeviceConnection?>? _pendingConnection;
+
+  DateTime? _firstConnectedAt;
+  final Mutex _mutex = Mutex();
 
   @override
   DeviceConnection? get connection => _connection;
-
-  // @override
-  // bool get isWifiSyncInProgress => _isWifiSyncInProgress; // WiFi sync disabled
 
   @override
   DeviceServiceStatus get status => _serviceStatus;
@@ -109,8 +103,6 @@ class DeviceService implements IDeviceService {
 
   @override
   Future<List<BtDevice>> discover({String? desirableDeviceId}) async {
-    // Cancel any in-progress scan before starting a new one. Most BLE stacks
-    // do not support concurrent scans and will throw or silently return empty.
     final previous = _activeDiscoverer;
     if (previous != null) {
       Logger.debug('DeviceService: Cancelling previous scan before starting new one');
@@ -129,80 +121,108 @@ class DeviceService implements IDeviceService {
         Logger.debug('DeviceService: Found desirable device $desirableDeviceId');
       }
 
+      _devices = devices;
+
       for (var s in _subscriptions.values) {
         s.onDevices(devices);
       }
 
       return devices;
     } finally {
-      // Clear the reference once the scan completes (or fails), so a subsequent
-      // page pop / dispose doesn't call stop() on an already-finished scan.
       if (_activeDiscoverer == discoverer) _activeDiscoverer = null;
     }
   }
 
   @override
   Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false}) async {
-    // Fast path: already have a live connection to the right device.
-    final currentConnection = _connection;
-    if (currentConnection != null && currentConnection.device.id == deviceId && !force) {
-      return currentConnection;
-    }
-
-    // Serialize: if a connection attempt is already running and this isn't a
-    // force call, wait for it to finish and return whatever it produced.
-    // Without this, N callers (battery, storage, WAL sync …) all race in,
-    // each creates its own DeviceConnection/BleTransport, and every one of
-    // them calls discoverServices() simultaneously → the phantom-connect storm.
-    if (!force) {
-      final pending = _pendingConnection;
-      if (pending != null) {
-        Logger.debug('DeviceService: ensureConnection waiting for in-progress attempt');
-        return await pending;
-      }
-    }
-
-    final future = _performConnect(deviceId);
-    _pendingConnection = future;
+    await _mutex.acquire();
     try {
-      return await future;
+      Logger.debug("ensureConnection ${_connection?.device.id} ${_connection?.status} $force");
+
+      // Not force
+      if (!force && _connection != null) {
+        if (_connection?.device.id != deviceId || _connection?.status != DeviceConnectionState.connected) {
+          return null;
+        }
+
+        // Connected
+        return _connection;
+      }
+
+      // Force
+      if (deviceId == _connection?.device.id && _connection?.status == DeviceConnectionState.connected) {
+        return _connection;
+      }
+
+      // Connect
+      try {
+        await _connectToDevice(deviceId);
+      } on DeviceConnectionException catch (e) {
+        Logger.debug(e.cause);
+        return null;
+      }
+
+      _firstConnectedAt ??= DateTime.now();
+      return _connection;
     } finally {
-      if (identical(_pendingConnection, future)) _pendingConnection = null;
+      _mutex.release();
     }
   }
 
-  Future<DeviceConnection?> _performConnect(String deviceId) async {
-    final existingConnection = _connection;
-    if (existingConnection != null) {
-      await existingConnection.disconnect();
-      await existingConnection.transport.dispose();
+  Future<void> _connectToDevice(String id) async {
+    if (_connection != null) {
+      if (_connection!.status == DeviceConnectionState.connected) {
+        await _connection!.disconnect();
+      }
+      await _connection!.transport.dispose();
+    }
+    _connection = null;
+
+    var device = _devices.firstWhereOrNull((f) => f.id == id);
+    Logger.debug('[DeviceService] device lookup result: ${device?.name ?? "NULL"}');
+
+    if (device == null) {
+      Logger.debug('[DeviceService] Device not in discovered list, checking stored device');
+      device = _getStoredDevice(id);
+      if (device != null) {
+        Logger.debug('[DeviceService] Using stored device: ${device.name}');
+        if (!_devices.any((d) => d.id == device!.id)) {
+          _devices.add(device);
+        }
+      } else {
+        Logger.debug('[DeviceService] No stored device available for $id, returning');
+        return;
+      }
     }
 
-    final device = BtDevice(id: deviceId, name: 'Omi', type: DeviceType.omi, rssi: 0);
     _connection = DeviceConnectionFactory.create(device);
-
-    final newConnection = _connection;
-    if (newConnection != null) {
-      await newConnection.connect(onConnectionStateChanged: (id, state) {
+    if (_connection != null) {
+      await _connection!.connect(onConnectionStateChanged: (id, state) {
         _connectionStateController.add(state);
         for (var s in _subscriptions.values) {
           s.onDeviceConnectionStateChanged(id, state);
         }
       });
+    } else {
+      Logger.debug('[DeviceService] Failed to create device connection for ${device.id}');
     }
+  }
 
-    return _connection;
+  BtDevice? _getStoredDevice(String id) {
+    try {
+      final storedDevice = SharedPreferencesUtil().btDevice;
+      if (storedDevice.id == id && storedDevice.id.isNotEmpty) {
+        return storedDevice;
+      }
+    } catch (e) {
+      Logger.debug('Error getting stored device: $e');
+    }
+    return null;
   }
 
   @override
   Stream<DeviceConnectionState> get connectionStateStream => _connectionStateController.stream;
 
-  // @override
-  // void setWifiSyncInProgress(bool value) { // WiFi sync disabled
-  //   _isWifiSyncInProgress = value;
-  // }
-
-  /// Lightweight health check on the current connection.
   Future<bool> ping() async {
     final conn = _connection;
     if (conn == null) return false;
@@ -212,13 +232,11 @@ class DeviceService implements IDeviceService {
   @override
   Future<void> disconnectDevice() async {
     final currentConnection = _connection;
-    // Clear immediately so no new operations start on a dying connection.
     _connection = null;
     if (currentConnection != null) {
       try {
         await currentConnection.disconnect().timeout(const Duration(seconds: 5));
       } catch (_) {
-        // Timeout or BLE error — connection is gone regardless.
       }
     }
   }

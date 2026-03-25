@@ -63,66 +63,76 @@ abstract class DeviceConnection {
   DeviceTransport transport;
 
   DeviceConnectionState _connectionState = DeviceConnectionState.disconnected;
-  // Single persistent subscriptions — replaced on each connect() call so listeners
-  // never accumulate across reconnects (each connect() previously added a new
-  // listener to the broadcast stream without cancelling the old one).
-  StreamSubscription? _internalStateSubscription;
-  StreamSubscription? _externalStateSubscription;
 
-  DeviceConnection(this.device, this.transport);
+  DeviceConnectionState get status => _connectionState;
+
+  DeviceConnectionState get connectionState => _connectionState;
+
+  Function(String deviceId, DeviceConnectionState state)? _connectionStateChangedCallback;
+
+  StreamSubscription<DeviceTransportState>? _transportStateSubscription;
+
+  DeviceConnection(this.device, this.transport) {
+    // Listen to transport state changes exactly like the original repo
+    _transportStateSubscription = transport.connectionStateStream.listen((transportState) {
+      final deviceState = _mapTransportStateToDeviceState(transportState);
+      if (_connectionState != deviceState) {
+        _connectionState = deviceState;
+        _connectionStateChangedCallback?.call(device.id, _connectionState);
+      }
+    });
+  }
+
+  DeviceConnectionState _mapTransportStateToDeviceState(DeviceTransportState transportState) {
+    switch (transportState) {
+      case DeviceTransportState.connected:
+        return DeviceConnectionState.connected;
+      case DeviceTransportState.disconnected:
+      case DeviceTransportState.connecting:
+      case DeviceTransportState.disconnecting:
+        return DeviceConnectionState.disconnected;
+    }
+  }
 
   Future<void> connect({
     void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged,
   }) async {
-    // Cancel any previous subscriptions before adding new ones.
-    await _internalStateSubscription?.cancel();
-    await _externalStateSubscription?.cancel();
-
-    _internalStateSubscription = transport.connectionStateStream.listen((state) {
-      _connectionState = state == DeviceTransportState.connected
-          ? DeviceConnectionState.connected
-          : DeviceConnectionState.disconnected;
-    });
-
-    if (onConnectionStateChanged != null) {
-      _externalStateSubscription = transport.connectionStateStream.listen((state) {
-        onConnectionStateChanged(
-          device.id,
-          state == DeviceTransportState.connected
-              ? DeviceConnectionState.connected
-              : DeviceConnectionState.disconnected,
-        );
-      });
+    if (_connectionState == DeviceConnectionState.connected) {
+      throw DeviceConnectionException("Connection already established, please disconnect before start new connection");
     }
 
+    // Set callback for connection state changes
+    _connectionStateChangedCallback = onConnectionStateChanged;
+
     try {
+      // Use transport to connect
       await transport.connect();
+
+      // Check connection
+      await ping();
+
+      // Update device info
+      device = await getDeviceInfo(this);
     } catch (e) {
-      throw DeviceConnectionException("Connection failed: $e");
+      throw DeviceConnectionException("Transport connection failed: ${e.toString()}");
     }
   }
 
   Future<void> disconnect() async {
-    // Cancel state subscriptions to prevent stale callbacks firing between
-    // disconnect and a subsequent connect() call.
-    await _internalStateSubscription?.cancel();
-    _internalStateSubscription = null;
-    await _externalStateSubscription?.cancel();
-    _externalStateSubscription = null;
-
-    try {
-      await transport.disconnect();
-    } catch (e) {
-      throw DeviceConnectionException("Disconnect failed: $e");
+    _connectionState = DeviceConnectionState.disconnected;
+    if (_connectionStateChangedCallback != null) {
+      _connectionStateChangedCallback!(device.id, _connectionState);
+      _connectionStateChangedCallback = null;
     }
+
+    await transport.disconnect();
+    await _transportStateSubscription?.cancel();
+    _transportStateSubscription = null;
   }
 
   Future<bool> isConnected() async {
     return _connectionState == DeviceConnectionState.connected;
   }
-
-  DeviceConnectionState get connectionState => _connectionState;
-  DeviceConnectionState get status => _connectionState;
 
   /// Lightweight health check — returns true if the device is actually reachable.
   Future<bool> ping() => transport.ping();
