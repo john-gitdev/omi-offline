@@ -2262,7 +2262,7 @@ int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t 
         return ret;
     }
 
-    if (k_sem_take(&resp.sem, K_MSEC(5000)) != 0) {
+    if (k_sem_take(&resp.sem, K_MSEC(30000)) != 0) {
         LOG_ERR("Timeout waiting for get_file_list");
         list_sizes_in_flight = false;
         return -ETIMEDOUT;
