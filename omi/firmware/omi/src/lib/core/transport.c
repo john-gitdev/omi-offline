@@ -446,10 +446,8 @@ void broadcast_battery_level(struct k_work *work_item)
         battery_get_percentage(&battery_percentage, battery_millivolt) == 0) {
 
         battery_ready = true;
-        LOG_PRINTK("Battery at %d mV (capacity %d%%)\n", battery_millivolt, battery_percentage);
 
-        int err = bt_bas_set_battery_level(battery_percentage);
-        if (err) {
+        int err = bt_bas_set_battery_level(battery_percentage);        if (err) {
             LOG_ERR("Error updating battery level: %d", err);
         }
 

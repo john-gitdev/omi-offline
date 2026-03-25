@@ -245,7 +245,6 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
         k_mutex_unlock(&battery_mut);
         return err;
     }
-    LOG_INF("ADC mV at pin (after conversion): %d, charging: %s", adc_raw_val, is_charging ? "true" : "false");
 
     // Sub 16mV when charging to correct voltage skew
     // based on practical measurements adjusted on the omi device
@@ -255,7 +254,6 @@ int battery_get_millivolt(uint16_t *battery_millivolt)
 
     // Calculate battery voltage using the voltage divider formula
     *battery_millivolt = (uint16_t) (adc_raw_val * ((float) (R1 + R2) / R2));
-    LOG_INF("Battery voltage (mV): %d", *battery_millivolt);
     
     // Restore bat_read_pin to INPUT state to save power/avoid affecting other circuits
     err = gpio_pin_configure_dt(&bat_read_pin, GPIO_INPUT);

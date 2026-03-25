@@ -74,7 +74,6 @@ class OmiDeviceConnection extends DeviceConnection {
 
       final subscription = stream.listen((value) {
         if (value.isNotEmpty && onBatteryLevelChange != null) {
-          Logger.debug('Battery level changed: ${value[0]}');
           onBatteryLevelChange(value[0]);
         }
       });
@@ -356,10 +355,11 @@ class OmiDeviceConnection extends DeviceConnection {
             // 0xFF means the firmware SD worker is temporarily busy (e.g. boot GC
             // or LFS allocator scan).  Retry a few times with a short delay before
             // giving up so the caller gets a real file list once the worker is free.
+            final errorCode = buffer.length > 1 ? buffer[1] : 0;
             if (retryCount < maxRetries) {
               retryCount++;
               buffer.clear();
-              Logger.debug('performListFiles: SD busy (0xFF), retry $retryCount/$maxRetries in 5s');
+              Logger.debug('performListFiles: SD busy (0xFF), error code = -$errorCode, retry $retryCount/$maxRetries in 5s');
               Future.delayed(const Duration(seconds: 5), () async {
                 if (isStale() || currentCompleter.isCompleted) return;
                 try {
@@ -372,7 +372,7 @@ class OmiDeviceConnection extends DeviceConnection {
               });
               return;
             }
-            fail("Device returned error 0xFF");
+            fail("Device returned error 0xFF (code -$errorCode)");
             return;
           }
           if (count > 200) {
