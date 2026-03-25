@@ -15,12 +15,26 @@ class OmiDeviceConnection extends DeviceConnection {
   // Deduplicates concurrent listFiles calls
   Completer<List<StorageFile>>? _listFilesCompleter;
 
+  // Protects against stale packets from previous calls
+  int _listFilesGeneration = 0;
+  StreamSubscription? _listFilesSub;
+  Timer? _timeoutTimer;
+
   OmiDeviceConnection(super.device, super.transport);
 
   @override
   Future<void> connect({void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged}) async {
     await super.connect(onConnectionStateChanged: onConnectionStateChanged);
     await performSyncTime();
+  }
+
+  Future<void> stop() async {
+    _listFilesGeneration++; // 🛑 Invalidate ALL in-flight handlers
+    final sub = _listFilesSub;
+    _listFilesSub = null;
+    await sub?.cancel();
+    _timeoutTimer?.cancel();
+    _timeoutTimer = null;
   }
 
   Future<bool> performSyncTime() async {
@@ -313,39 +327,48 @@ class OmiDeviceConnection extends DeviceConnection {
   /// ongoing sync data stream.
   @override
   Future<List<StorageFile>> performListFiles() async {
-    if (_listFilesCompleter != null) {
-      return _listFilesCompleter!.future;
-    }
+    // 1. Clean previous run & increment generation
+    await stop();
 
-    _listFilesCompleter = Completer<List<StorageFile>>();
-    StreamSubscription? sub;
-    Timer? timeoutTimer;
+    // 2. Capture and increment THIS call's generation
+    final int gen = ++_listFilesGeneration;
+    final currentCompleter = Completer<List<StorageFile>>();
+    _listFilesCompleter = currentCompleter;
 
-    void stop() {
-      sub?.cancel();
-      timeoutTimer?.cancel();
-    }
+    final buffer = <int>[];
+
+    bool isStale() => gen != _listFilesGeneration;
 
     void fail(String reason) {
-      if (_listFilesCompleter != null && !_listFilesCompleter!.isCompleted) {
-        _listFilesCompleter!.completeError(TimeoutException(reason));
+      if (!currentCompleter.isCompleted) {
+        currentCompleter.completeError(TimeoutException(reason));
       }
-      stop();
+      if (_listFilesCompleter == currentCompleter) _listFilesCompleter = null;
+      unawaited(stop());
+    }
+
+    void completeSuccess(List<StorageFile> files) {
+      if (!currentCompleter.isCompleted) {
+        currentCompleter.complete(files);
+      }
+      if (_listFilesCompleter == currentCompleter) _listFilesCompleter = null;
+      unawaited(stop());
     }
 
     void startOrResetTimeout() {
-      timeoutTimer?.cancel();
-      timeoutTimer = Timer(const Duration(seconds: 10), () => fail("Timeout waiting for file list response"));
+      _timeoutTimer?.cancel();
+      _timeoutTimer = Timer(const Duration(seconds: 10), () => fail("Timeout waiting for file list response"));
     }
 
     try {
       final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
       await Future.microtask(() {}); // Ensure listener wiring completes
 
-      final buffer = <int>[];
-
-      sub = stream.listen(
+      _listFilesSub = stream.listen(
         (packet) {
+          // 🛑 Ignore ALL stale packets from previous generations
+          if (isStale()) return;
+
           startOrResetTimeout(); // Reset timeout FIRST
           buffer.addAll(packet);
           Logger.debug('performListFiles: RX packet len=${packet.length}');
@@ -376,15 +399,16 @@ class OmiDeviceConnection extends DeviceConnection {
               files.add(StorageFile(index: i, timestamp: ts, size: sz));
             }
 
-            if (!_listFilesCompleter!.isCompleted) {
-              _listFilesCompleter!.complete(files);
-            }
-            stop();
+            completeSuccess(files);
           }
         },
-        onError: (e) => fail("Stream error: $e"),
+        onError: (e) {
+          if (isStale()) return;
+          fail("Stream error: $e");
+        },
         onDone: () {
-          if (_listFilesCompleter != null && !_listFilesCompleter!.isCompleted) {
+          if (isStale()) return;
+          if (!currentCompleter.isCompleted) {
             fail("Stream closed before full response received");
           }
         },
@@ -393,16 +417,13 @@ class OmiDeviceConnection extends DeviceConnection {
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
       startOrResetTimeout();
 
-      return await _listFilesCompleter!.future;
+      return await currentCompleter.future;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: performListFiles error: $e');
-      if (_listFilesCompleter != null && !_listFilesCompleter!.isCompleted) {
-        _listFilesCompleter!.complete([]); // Resolve with empty list on error to satisfy callers
+      if (!currentCompleter.isCompleted) {
+        currentCompleter.complete([]); // Resolve with empty list on error to satisfy callers
       }
       return [];
-    } finally {
-      stop();
-      _listFilesCompleter = null;
     }
   }
 
