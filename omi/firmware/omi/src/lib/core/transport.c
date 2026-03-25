@@ -275,6 +275,8 @@ static struct bt_gatt_service time_sync_service = BT_GATT_SERVICE(time_sync_serv
 // Characteristics:
 //   - Battery Detail (19B10051): Notify 4 bytes [mv_lo, mv_hi, percentage, charging]
 #ifdef CONFIG_OMI_ENABLE_BATTERY
+static void battery_detail_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+
 static struct bt_uuid_128 battery_detail_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10050, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 battery_detail_characteristic_uuid =
@@ -288,7 +290,7 @@ static struct bt_gatt_attr battery_detail_service_attr[] = {
                            NULL,
                            NULL,
                            NULL),
-    BT_GATT_CCC(NULL, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    BT_GATT_CCC(battery_detail_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 };
 
 static struct bt_gatt_service battery_detail_service = BT_GATT_SERVICE(battery_detail_service_attr);
@@ -542,6 +544,28 @@ void broadcast_battery_level(struct k_work *work_item)
     uint32_t interval = is_connected ? BATTERY_REFRESH_INTERVAL_CONNECTED
                                      : BATTERY_REFRESH_INTERVAL_DISCONNECTED;
     k_work_reschedule(&battery_work, K_MSEC(interval));
+}
+
+/* Called when the phone enables or disables notifications on the battery detail
+ * characteristic.  On subscribe we immediately push the last cached reading so
+ * the app doesn't have to wait up to 10 s for the periodic work to fire. */
+static void battery_detail_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    if (value != BT_GATT_CCC_NOTIFY) {
+        return;
+    }
+    if (battery_ready) {
+        uint8_t buf[4] = {0, 0, battery_percentage, (uint8_t)is_charging};
+        bt_gatt_notify(NULL, attr - 1, buf, sizeof(buf));
+    }
+    /* Also kick a fresh ADC read soon so the cached value is confirmed/updated. */
+    k_work_reschedule(&battery_work, K_MSEC(20));
+}
+
+/* Schedule an immediate battery notify — safe to call from ISR/interrupt context. */
+void transport_notify_battery_soon(void)
+{
+    k_work_reschedule(&battery_work, K_MSEC(50));
 }
 #endif
 
