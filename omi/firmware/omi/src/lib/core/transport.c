@@ -64,17 +64,6 @@ static ssize_t audio_data_write_handler(struct bt_conn *conn,
 #endif
 
 static struct bt_conn_cb _callback_references;
-static void audio_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
-static ssize_t audio_data_read_characteristic(struct bt_conn *conn,
-                                              const struct bt_gatt_attr *attr,
-                                              void *buf,
-                                              uint16_t len,
-                                              uint16_t offset);
-static ssize_t audio_codec_read_characteristic(struct bt_conn *conn,
-                                               const struct bt_gatt_attr *attr,
-                                               void *buf,
-                                               uint16_t len,
-                                               uint16_t offset);
 static ssize_t settings_dim_ratio_write_handler(struct bt_conn *conn,
                                                 const struct bt_gatt_attr *attr,
                                                 const void *buf,
@@ -109,55 +98,6 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_
 // --- GATT Exchange MTU Params ---
 static struct bt_gatt_exchange_params exchange_params;
 
-//
-// Service and Characteristic
-//
-// Audio service with UUID 19B10000-E8F2-537E-4F6C-D104768A1214
-// exposes following characteristics:
-// - Audio data (UUID 19B10001-E8F2-537E-4F6C-D104768A1214) to send audio data (read/notify)
-// - Audio codec (UUID 19B10002-E8F2-537E-4F6C-D104768A1214) to send audio codec type (read)
-// TODO: The current audio service UUID seems to come from old Intel sample code,
-// we should change it to UUID 814b9b7c-25fd-4acd-8604-d28877beee6d
-static struct bt_uuid_128 audio_service_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10000, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
-static struct bt_uuid_128 audio_characteristic_data_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10001, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
-static struct bt_uuid_128 audio_characteristic_format_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10002, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
-#ifdef CONFIG_OMI_ENABLE_SPEAKER
-static struct bt_uuid_128 audio_characteristic_speaker_uuid =
-    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10003, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
-#endif
-
-static struct bt_gatt_attr audio_service_attr[] = {
-    BT_GATT_PRIMARY_SERVICE(&audio_service_uuid),
-    BT_GATT_CHARACTERISTIC(&audio_characteristic_data_uuid.uuid,
-                           BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-                           BT_GATT_PERM_READ,
-                           audio_data_read_characteristic,
-                           NULL,
-                           NULL),
-    BT_GATT_CCC(audio_ccc_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
-    BT_GATT_CHARACTERISTIC(&audio_characteristic_format_uuid.uuid,
-                           BT_GATT_CHRC_READ,
-                           BT_GATT_PERM_READ,
-                           audio_codec_read_characteristic,
-                           NULL,
-                           NULL),
-#ifdef CONFIG_OMI_ENABLE_SPEAKER
-    BT_GATT_CHARACTERISTIC(&audio_characteristic_speaker_uuid.uuid,
-                           BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                           BT_GATT_PERM_WRITE,
-                           NULL,
-                           audio_data_write_handler,
-                           NULL),
-    BT_GATT_CCC(audio_ccc_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE), //
-#endif
-
-};
-
-static struct bt_gatt_service audio_service = BT_GATT_SERVICE(audio_service_attr);
-
 // --- Settings Service ---
 static struct bt_uuid_128 settings_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10010, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
@@ -189,6 +129,19 @@ static struct bt_uuid_128 features_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10020, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 features_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10021, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+static struct bt_uuid_128 features_codec_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10022, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+
+static ssize_t audio_codec_read_characteristic(struct bt_conn *conn,
+                                               const struct bt_gatt_attr *attr,
+                                               void *buf,
+                                               uint16_t len,
+                                               uint16_t offset)
+{
+    uint8_t value[1] = {CODEC_ID};
+    LOG_DBG("audio_codec_read_characteristic %d", CODEC_ID);
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(value));
+}
 
 static struct bt_gatt_attr features_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&features_service_uuid),
@@ -196,6 +149,12 @@ static struct bt_gatt_attr features_service_attr[] = {
                            BT_GATT_CHRC_READ,
                            BT_GATT_PERM_READ,
                            features_read_handler,
+                           NULL,
+                           NULL),
+    BT_GATT_CHARACTERISTIC(&features_codec_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ,
+                           audio_codec_read_characteristic,
                            NULL,
                            NULL),
 };
@@ -299,7 +258,7 @@ static struct bt_gatt_service battery_detail_service = BT_GATT_SERVICE(battery_d
 // Advertisement data
 static const struct bt_data bt_ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-    BT_DATA(BT_DATA_UUID128_ALL, audio_service_uuid.val, sizeof(audio_service_uuid.val)),
+    BT_DATA(BT_DATA_UUID128_ALL, settings_service_uuid.val, sizeof(settings_service_uuid.val)),
     BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
 
@@ -321,27 +280,6 @@ static void audio_ccc_config_changed_handler(const struct bt_gatt_attr *attr, ui
     } else {
         LOG_INF("Invalid CCC value: %u", value);
     }
-}
-
-static ssize_t audio_data_read_characteristic(struct bt_conn *conn,
-                                              const struct bt_gatt_attr *attr,
-                                              void *buf,
-                                              uint16_t len,
-                                              uint16_t offset)
-{
-    LOG_DBG("audio_data_read_characteristic");
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, NULL, 0);
-}
-
-static ssize_t audio_codec_read_characteristic(struct bt_conn *conn,
-                                               const struct bt_gatt_attr *attr,
-                                               void *buf,
-                                               uint16_t len,
-                                               uint16_t offset)
-{
-    uint8_t value[1] = {CODEC_ID};
-    LOG_DBG("audio_codec_read_characteristic %d", CODEC_ID);
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(value));
 }
 
 #ifdef CONFIG_OMI_ENABLE_SPEAKER
@@ -1093,7 +1031,6 @@ int transport_start()
 #endif
 
     // Start advertising
-    bt_gatt_service_register(&audio_service);
     bt_gatt_service_register(&settings_service);
     bt_gatt_service_register(&features_service);
     bt_gatt_service_register(&time_sync_service);
