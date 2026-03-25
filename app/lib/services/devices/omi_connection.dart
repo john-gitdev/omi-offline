@@ -50,7 +50,9 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<int> performRetrieveBatteryLevel() async {
     try {
+      Logger.debug('OmiDeviceConnection: Attempting to read battery level from $batteryServiceUuid:$batteryLevelCharacteristicUuid');
       final data = await transport.readCharacteristic(batteryServiceUuid, batteryLevelCharacteristicUuid);
+      Logger.debug('OmiDeviceConnection: Battery level read returned: $data');
       if (data.isNotEmpty) return data[0];
       return -1;
     } catch (e) {
@@ -70,7 +72,9 @@ class OmiDeviceConnection extends DeviceConnection {
     void Function(bool)? onChargingStateChange,
   }) async {
     try {
+      Logger.debug('OmiDeviceConnection: Setting up battery level listener...');
       final stream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
+      Logger.debug('OmiDeviceConnection: Battery level listener stream created');
 
       final subscription = stream.listen((value) {
         if (value.isNotEmpty && onBatteryLevelChange != null) {
