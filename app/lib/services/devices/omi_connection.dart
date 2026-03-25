@@ -358,7 +358,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
     void startOrResetTimeout() {
       _timeoutTimer?.cancel();
-      _timeoutTimer = Timer(const Duration(seconds: 10), () => fail("Timeout waiting for file list response"));
+      _timeoutTimer = Timer(const Duration(seconds: 35), () => fail("Timeout waiting for file list response"));
     }
 
     try {
