@@ -98,12 +98,7 @@ Optional Upload
 
 * Audio is encoded into **Opus frames (~20ms)**
 * Frames are written into fixed-size `.bin` **Segments**
-* Each segment begins with a **0xFF metadata packet** containing:
-
-  * `deviceSessionId` (random u32 per boot)
-  * `segmentIndex`
-  * UTC timestamp
-  * Device uptime
+* Each segment consists entirely of pure Opus frames, each prefixed by a 4-byte Little-Endian length.
 
 ### Transfer Model
 
@@ -133,23 +128,6 @@ This ensures idempotent delivery: re-connections mid-sync resume cleanly without
   * `(deviceSessionId, segmentIndex)`
 * Processing is **continuous across boundaries**
 * Recordings are **never split by day or batch**
-
-### Timestamp Correction (Golden Anchor)
-
-* The device may not have accurate RTC at boot (e.g. after battery death)
-* As the app receives packets that carry a phone-synced UTC time, it stores the most accurate anchor per session:
-
-```
-anchor_utc_device_session_{id}
-```
-
-* This maps device uptime → real-world timestamps
-
-#### Golden Anchor Guards
-
-* Anchors are only written when `utcTime > kMinValidEpoch` (Jan 1 2000 = 946684800)
-* This prevents unsynced Omi clocks (year < 2000) from poisoning per-segment anchors
-* `RecordingsManager` and `OfflineAudioProcessor` use the best available anchor to **retroactively correct** timestamps for all segments in a session, overriding stale device clocks
 
 ### Cleanup
 
@@ -182,13 +160,14 @@ User-triggered recording via double-tap.
 
 #### Firmware behavior
 
-* Writes a **0xFE marker packet**
+* Sends a **0xFE marker packet** during the BLE stream
 * Triggers LED feedback (`marker_flash_count`)
 
 #### App behavior
 
-* Scans for marker timestamps
-* Performs **bidirectional extraction**:
+* Intercepts `0xFE` marker packets during the BLE stream
+* Saves marker timestamps to a plain-text `markers.txt` file and excludes them from the raw `.bin` segments
+* Performs **bidirectional extraction** around markers:
 
   * Up to 2 hours backward and forward
 * Runs VAD **only within this window**
@@ -341,7 +320,7 @@ All contributors must follow **NOMENCLATURE.md** strictly:
 | ------------- | ------------------------------------------------- |
 | Frame         | Single Opus unit (~20ms)                          |
 | Segment       | `.bin` file containing frames (**never "chunk"**) |
-| DeviceSession | One boot lifecycle (`deviceSessionId`)            |
+| DeviceSession | Hardware recording session identified by its UTC start timestamp (`deviceSessionId`) |
 | Marker        | 0xFE user event (**never "star"**)                |
 | WAL           | Byte-offset sync state                            |
 | Recording     | Final `.m4a` / `.wav` output                      |
@@ -395,7 +374,6 @@ Key correctness fixes applied since initial implementation:
 | Firmware storage | Storage offset parsing aligned to little-endian (matches firmware write order) |
 | Firmware uptime | `last_timestamp_uptime` reset on wipe; uptime rollover handled correctly |
 | Opus decode | One decoder per extraction range — state preserved across segment boundaries |
-| Timestamp anchoring | Golden Anchor guards (`kMinValidEpoch`) prevent stale Omi clocks from corrupting timestamps |
 | Subscription lifecycle | Subscriptions stored and cancelled in all providers, services, and transport layers |
 | WAL sync async safety | `sdcard_wal_sync` prevents double-complete, async-void fire-and-forget, and stream cancel races |
 | `ServiceManager` | `deinit()` is `async`; callers must await it to avoid torn-down services |
@@ -424,9 +402,9 @@ Key correctness fixes applied since initial implementation:
 
 ### Key Components
 
-* `OfflineAudioProcessor` → VAD + segmentation engine; applies Golden Anchor timestamp correction
+* `OfflineAudioProcessor` → VAD + segmentation engine
 * `MarkerRecordingExtractor` → Marker-based extraction; uses per-range Opus decoder for clean cross-segment decoding
-* `SDCardWalSyncImpl` → Framed BLE sync with ACK gating, gap detection, and Golden Anchor management
+* `SDCardWalSyncImpl` → Framed BLE sync with ACK gating and gap detection
 * `FixedIntervalAudioProcessor` → Fixed wall-clock boundary cutting with cross-restart boundary persistence and staleness guard
 
 ---
