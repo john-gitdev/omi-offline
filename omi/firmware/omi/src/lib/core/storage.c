@@ -615,8 +615,8 @@ void storage_write(void)
             int refresh_ret = refresh_file_list_cache();
             if (conn) {
                 if (refresh_ret < 0) {
-                    uint8_t error_resp[1] = {0xFF};
-                    storage_notify(conn, error_resp, 1);
+                    uint8_t error_resp[2] = {0xFF, (uint8_t)(-refresh_ret)};
+                    storage_notify(conn, error_resp, 2);
                 } else {
                     send_file_list_response(conn);
                 }
