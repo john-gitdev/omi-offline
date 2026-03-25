@@ -159,25 +159,17 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _bleBatteryLevelListener = await _getBleBatteryLevelListener(
       connectedDevice?.id ?? '',
       onBatteryLevelChange: (int value) {
-        batteryLevel = value;
-        SharedPreferencesUtil().lastBatteryLevel = value;
-        if (batteryLevel < 20 && !_hasLowBatteryAlerted) {
-          _hasLowBatteryAlerted = true;
-          Logger.debug('Low Battery Alert');
-        } else if (batteryLevel > 20) {
-          // Reset when battery recovers so the alert can fire again if it drops below 20
-          _hasLowBatteryAlerted = false;
-        }
+        if (batteryLevel != value) {
+          batteryLevel = value;
+          SharedPreferencesUtil().lastBatteryLevel = value;
+          
+          if (batteryLevel < 20 && !_hasLowBatteryAlerted) {
+            _hasLowBatteryAlerted = true;
+            Logger.debug('Low Battery Alert');
+          } else if (batteryLevel >= 20) {
+            _hasLowBatteryAlerted = false;
+          }
 
-        final delta = (_lastNotifiedBatteryLevel - value).abs();
-        final batteryNotifyTime = _lastBatteryNotifyTime;
-        final elapsed =
-            batteryNotifyTime == null ? const Duration(minutes: 999) : DateTime.now().difference(batteryNotifyTime);
-        final crossedLowBatteryThreshold =
-            (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
-        final shouldNotify =
-            _lastNotifiedBatteryLevel == -1 || delta >= 5 || elapsed.inMinutes >= 15 || crossedLowBatteryThreshold;
-        if (shouldNotify) {
           _lastNotifiedBatteryLevel = value;
           _lastBatteryNotifyTime = DateTime.now();
           notifyListeners();
@@ -486,21 +478,26 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _disconnectNotificationTimer?.cancel();
 
     // Await setConnectedDevice first (sets connectedDevice + reads device info).
-    // Then mark connected immediately so the UI updates — don't wait for the
-    // storage support check (listFiles can time out after 10 s and would keep
-    // isConnected false the whole time, making the UI look disconnected).
+    // Then mark connected immediately so the UI updates.
     await setConnectedDevice(device);
     setIsConnected(true);
 
+    // IMPORTANT: Fetch battery immediately BEFORE any slow storage operations
+    await initiateBleBatteryListener();
+    await updateBatteryLevel(); // Force an immediate read
+    await initiateBleButtonListener();
+    if (batteryLevel != -1 && batteryLevel < 20) {
+      _hasLowBatteryAlerted = false;
+    }
+    updateConnectingStatus(false);
+
     // Register the device with WAL sync immediately so that sync operations
     // (triggered by the user or background timer) don't fail with "No device
-    // connected" while listFiles() is still running below.  listFiles() can
-    // take 30+ seconds when the firmware SD worker is busy at boot.
+    // connected" while listFiles() is still running below.
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
 
     // DEDUPLICATED: Fetch file list once and use it for multiple purposes.
-    // With the retry logic this may take a few attempts but should eventually
-    // succeed once the firmware SD worker finishes its boot-time GC.
+    // This can take 30+ seconds if the firmware SD worker is busy at boot.
     var connection = await ServiceManager.instance().device.ensureConnection(device.id);
     final files = await connection?.listFiles() ?? [];
     isDeviceStorageSupport = files.isNotEmpty;
@@ -515,22 +512,13 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     }
 
     // Update WAL device with the real file list so the first syncAll() skips
-    // a redundant BLE round-trip.  Guard against the device having disconnected
-    // during the listFiles() wait above.
+    // a redundant BLE round-trip.
     if (connectedDevice?.id == device.id) {
       await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: files);
     }
 
-    await initiateBleBatteryListener();
-    await updateBatteryLevel(); // Force an immediate read
-    await initiateBleButtonListener();
-    if (batteryLevel != -1 && batteryLevel < 20) {
-      _hasLowBatteryAlerted = false;
-    }
-    updateConnectingStatus(false);
-
     // getDeviceInfo() already ran inside setConnectedDevice(); this is a no-op
-    // if firmware revision was fetched successfully (early-exit guard inside it).
+    // if firmware revision was fetched successfully.
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
 
