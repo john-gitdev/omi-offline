@@ -25,4 +25,14 @@ void set_led_blue(bool on);
 void set_led_pwm(led_color_t color, uint8_t level);
 void led_off(void);
 
+/**
+ * @brief Start breathing white pattern
+ */
+void led_start_breathing(void);
+
+/**
+ * @brief Stop breathing pattern and turn LEDs off
+ */
+void led_stop_breathing(void);
+
 #endif
