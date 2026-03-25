@@ -522,6 +522,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     }
 
     await initiateBleBatteryListener();
+    await updateBatteryLevel(); // Force an immediate read
     await initiateBleButtonListener();
     if (batteryLevel != -1 && batteryLevel < 20) {
       _hasLowBatteryAlerted = false;
