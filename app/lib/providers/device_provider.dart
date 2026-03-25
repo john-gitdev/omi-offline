@@ -506,10 +506,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       storageFullPercentage = 0;
     }
 
-    // Set the WAL device immediately after file listing so any user-triggered sync
-    // (possible as soon as setIsConnected fires notifyListeners above) finds _device
-    // non-null and _wals pre-populated.
-    await ServiceManager.instance().wal.getSyncs().setDevice(device);
+    // Set the WAL device, passing the already-fetched file list so setDevice()
+    // skips a redundant CMD_LIST_FILES BLE round-trip and its associated timer.
+    await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: files);
 
     await initiateBleBatteryListener();
     await initiateBleButtonListener();
