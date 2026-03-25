@@ -150,9 +150,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     if (_device != null) {
       _wals = await _buildWalsFromFiles(_device!.id, ignoreThreshold: false, prefetchedFiles: prefetchedFiles);
       Logger.debug('SDCardWalSync: setDevice — ${_wals.length} WAL(s) built (${prefetchedFiles != null ? 'pre-fetched files' : 'fetched from device'})');
-      // We just fetched the list — skip the redundant BLE round-trip on the
-      // first syncAll() that follows, but only that one.
-      _skipNextRefresh = true;
+      // Skip the redundant BLE round-trip on the first syncAll() only when we
+      // have an actual file list.  An empty prefetchedFiles means the caller
+      // registered the device early (before listFiles completed) so we must
+      // still refresh on the next syncAll().
+      _skipNextRefresh = prefetchedFiles != null && prefetchedFiles.isNotEmpty;
       listener.onWalUpdated();
     } else {
       _skipNextRefresh = false;
