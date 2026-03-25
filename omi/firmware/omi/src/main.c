@@ -37,8 +37,8 @@ static bool blink_toggle = false;
 
 static void boot_led_sequence(void)
 {
-    /* led_start() already zeroed all PWM channels; nothing to do here. */
-    LOG_INF("[BOOT] LEDs off — waiting for SD + mic");
+    led_start_breathing();
+    LOG_INF("[BOOT] LEDs breathing white — waiting for SD + mic");
 }
 
 static void boot_warming_sequence(void)
@@ -46,7 +46,7 @@ static void boot_warming_sequence(void)
     const int delay_ms = 10;
     int64_t wait_start_ms = k_uptime_get();
 
-    /* Spin with LEDs off until sd_worker finishes mount + lfs_fs_gc + file open.
+    /* Spin while LEDs are breathing until sd_worker finishes mount + lfs_fs_gc + file open.
      * With little data this completes in <5 s; with 200 MB it can take ~50 s. */
     while (!sd_is_boot_ready()) {
         k_msleep(delay_ms);
@@ -200,6 +200,8 @@ int main(void)
         LOG_ERR("Mic failed %d", ret);
         return ret;
     }
+
+    led_stop_breathing();
 
     boot_ready_fade();
 
