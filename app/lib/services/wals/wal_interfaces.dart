@@ -1,4 +1,5 @@
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
+import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/wals/wal.dart';
 
 class SyncLocalFilesResponse {
@@ -66,7 +67,10 @@ enum WalServiceStatus {
 }
 
 abstract class SDCardWalSync implements IWalSync {
-  Future<void> setDevice(BtDevice? device);
+  /// [prefetchedFiles] — if provided, skips the CMD_LIST_FILES BLE round-trip
+  /// and uses the supplied list directly (avoids a redundant call when the
+  /// caller already has a fresh file listing, e.g. from [_onDeviceConnected]).
+  Future<void> setDevice(BtDevice? device, {List<StorageFile>? prefetchedFiles});
   Future<void> deleteAllSyncedWals();
   Future<void> deleteAllPendingWals();
   bool get isSyncing;
