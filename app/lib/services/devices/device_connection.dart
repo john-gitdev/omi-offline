@@ -13,13 +13,6 @@ import 'package:omi/utils/logger.dart';
 const String batteryServiceUuid = '0000180f-0000-1000-8000-00805f9b34fb';
 const String batteryLevelCharacteristicUuid = '00002a19-0000-1000-8000-00805f9b34fb';
 
-const String audioServiceUuid = '19b10000-e8f2-537e-4f6c-d104768a1214';
-const String audioCharacteristicFormatUuid = '19b10002-e8f2-537e-4f6c-d104768a1214';
-
-const String omiServiceUuid = '19b10000-e8f2-537e-4f6c-d104768a1214';
-const String audioDataStreamCharacteristicUuid = '19b10001-e8f2-537e-4f6c-d104768a1214';
-const String audioCodecCharacteristicUuid = '19b10002-e8f2-537e-4f6c-d104768a1214';
-
 const String buttonServiceUuid = '23ba7924-0000-1000-7450-346eac492e92';
 const String buttonTriggerCharacteristicUuid = '23ba7925-0000-1000-7450-346eac492e92';
 
@@ -29,6 +22,7 @@ const String settingsMicGainCharacteristicUuid = '19b10012-e8f2-537e-4f6c-d10476
 
 const String featuresServiceUuid = '19b10020-e8f2-537e-4f6c-d104768a1214';
 const String featuresCharacteristicUuid = '19b10021-e8f2-537e-4f6c-d104768a1214';
+const String audioCodecCharacteristicUuid = '19b10022-e8f2-537e-4f6c-d104768a1214';
 
 const String timeSyncServiceUuid = '19b10030-e8f2-537e-4f6c-d104768a1214';
 const String timeSyncWriteCharacteristicUuid = '19b10031-e8f2-537e-4f6c-d104768a1214';
@@ -178,22 +172,6 @@ abstract class DeviceConnection {
   }
 
 
-  Future<StreamSubscription<List<int>>?> getBleAudioBytesListener({
-    required void Function(List<int>) onAudioBytesReceived,
-  }) async {
-    if (await isConnected()) {
-      return await performGetBleAudioBytesListener(onAudioBytesReceived: onAudioBytesReceived);
-    }
-    return null;
-  }
-
-  Future<StreamSubscription<List<int>>?> performGetBleAudioBytesListener({
-    required void Function(List<int>) onAudioBytesReceived,
-  }) async {
-    final stream = await transport.getCharacteristicStream(omiServiceUuid, audioDataStreamCharacteristicUuid);
-    return stream.listen(onAudioBytesReceived);
-  }
-
   Future<List<int>> getBleButtonState() async {
     if (await isConnected()) {
       Logger.debug('button state called');
@@ -229,35 +207,6 @@ abstract class DeviceConnection {
 
   Future<BleAudioCodec> performGetAudioCodec();
 
-  Future<StreamSubscription<BleAudioCodec>?> getBleAudioCodecListener({
-    required void Function(BleAudioCodec) onAudioCodecReceived,
-  }) async {
-    if (await isConnected()) {
-      return await performGetBleAudioCodecListener(onAudioCodecReceived: onAudioCodecReceived);
-    }
-    return null;
-  }
-
-  Future<StreamSubscription<BleAudioCodec>?> performGetBleAudioCodecListener({
-    required void Function(BleAudioCodec) onAudioCodecReceived,
-  }) async {
-    final stream = await transport.getCharacteristicStream(audioServiceUuid, audioCharacteristicFormatUuid);
-    return stream.map((value) {
-      if (value.isEmpty) return BleAudioCodec.pcm8;
-      // Firmware sends codec IDs (1=pcm8, 20=opus, 21=opusFS320), NOT enum indices.
-      // Using BleAudioCodec.values[id] would throw RangeError for IDs >= enum length.
-      switch (value[0]) {
-        case 1:
-          return BleAudioCodec.pcm8;
-        case 20:
-          return BleAudioCodec.opus;
-        case 21:
-          return BleAudioCodec.opusFS320;
-        default:
-          return BleAudioCodec.pcm8;
-      }
-    }).listen(onAudioCodecReceived);
-  }
 
   Future<List<int>> getStorageList() async {
     if (await isConnected()) {

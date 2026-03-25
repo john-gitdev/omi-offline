@@ -132,27 +132,9 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<StreamSubscription<List<int>>?> performGetBleButtonListener({
-    required void Function(List<int>) onButtonReceived,
-  }) async {
-    try {
-      final stream = await transport.getCharacteristicStream(buttonServiceUuid, buttonTriggerCharacteristicUuid);
-
-      final subscription = stream.listen((value) {
-        if (value.isNotEmpty) onButtonReceived(value);
-      });
-
-      return subscription ;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error setting up button listener: $e');
-      return null;
-    }
-  }
-
-  @override
   Future<BleAudioCodec> performGetAudioCodec() async {
     try {
-      final codecValue = await transport.readCharacteristic(omiServiceUuid, audioCodecCharacteristicUuid);
+      final codecValue = await transport.readCharacteristic(featuresServiceUuid, audioCodecCharacteristicUuid);
 
       var codecId = 1;
       if (codecValue.isNotEmpty) {
@@ -172,6 +154,24 @@ class OmiDeviceConnection extends DeviceConnection {
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error reading audio codec: $e');
       return BleAudioCodec.pcm8;
+    }
+  }
+
+  @override
+  Future<StreamSubscription<List<int>>?> performGetBleButtonListener({
+    required void Function(List<int>) onButtonReceived,
+  }) async {
+    try {
+      final stream = await transport.getCharacteristicStream(buttonServiceUuid, buttonTriggerCharacteristicUuid);
+
+      final subscription = stream.listen((value) {
+        if (value.isNotEmpty) onButtonReceived(value);
+      });
+
+      return subscription ;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Error setting up button listener: $e');
+      return null;
     }
   }
 
