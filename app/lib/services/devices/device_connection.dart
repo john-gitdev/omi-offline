@@ -169,7 +169,7 @@ abstract class DeviceConnection {
     void Function(int)? onBatteryLevelChange,
     void Function(bool)? onChargingStateChange,
   }) async {
-    final stream = transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
+    final stream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
     return stream.listen((value) {
       if (value.isNotEmpty && onBatteryLevelChange != null) {
         onBatteryLevelChange(value[0]);
@@ -190,7 +190,7 @@ abstract class DeviceConnection {
   Future<StreamSubscription<List<int>>?> performGetBleAudioBytesListener({
     required void Function(List<int>) onAudioBytesReceived,
   }) async {
-    final stream = transport.getCharacteristicStream(omiServiceUuid, audioDataStreamCharacteristicUuid);
+    final stream = await transport.getCharacteristicStream(omiServiceUuid, audioDataStreamCharacteristicUuid);
     return stream.listen(onAudioBytesReceived);
   }
 
@@ -241,7 +241,7 @@ abstract class DeviceConnection {
   Future<StreamSubscription<BleAudioCodec>?> performGetBleAudioCodecListener({
     required void Function(BleAudioCodec) onAudioCodecReceived,
   }) async {
-    final stream = transport.getCharacteristicStream(audioServiceUuid, audioCharacteristicFormatUuid);
+    final stream = await transport.getCharacteristicStream(audioServiceUuid, audioCharacteristicFormatUuid);
     return stream.map((value) {
       if (value.isEmpty) return BleAudioCodec.pcm8;
       // Firmware sends codec IDs (1=pcm8, 20=opus, 21=opusFS320), NOT enum indices.
@@ -288,7 +288,7 @@ abstract class DeviceConnection {
     Function? onError,
     void Function()? onDone,
   }) async {
-    final stream = transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
+    final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
     return stream.listen(
       onStorageBytesReceived,
       onError: onError,

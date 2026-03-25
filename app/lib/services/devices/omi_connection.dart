@@ -12,6 +12,9 @@ class OmiDeviceConnection extends DeviceConnection {
   // richer battery detail characteristic starts working or on disconnect.
   StreamSubscription<List<int>>? _batteryFallbackSub;
 
+  // Deduplicates concurrent listFiles calls
+  Completer<List<StorageFile>>? _listFilesCompleter;
+
   OmiDeviceConnection(super.device, super.transport);
 
   @override
@@ -75,9 +78,8 @@ class OmiDeviceConnection extends DeviceConnection {
     // When the detail char fires, the BAS subscription is cancelled (no duplicate
     // callbacks). If the detail char never fires (older firmware without the custom
     // service), the BAS subscription keeps delivering battery levels.
-    final detailSub = transport
-        .getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid)
-        .listen((value) {
+    final detailStream = await transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+    final detailSub = detailStream.listen((value) {
       if (value.length >= 4) {
         // Detail char is working — cancel the BAS fallback to avoid duplicate callbacks.
         _batteryFallbackSub?.cancel();
@@ -87,9 +89,8 @@ class OmiDeviceConnection extends DeviceConnection {
       }
     });
 
-    _batteryFallbackSub = transport
-        .getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid)
-        .listen((value) {
+    final fallbackStream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
+    _batteryFallbackSub = fallbackStream.listen((value) {
       if (value.isNotEmpty && onBatteryLevelChange != null) {
         onBatteryLevelChange(value[0]);
       }
@@ -120,7 +121,7 @@ class OmiDeviceConnection extends DeviceConnection {
     required void Function(List<int>) onButtonReceived,
   }) async {
     try {
-      final stream = transport.getCharacteristicStream(buttonServiceUuid, buttonTriggerCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(buttonServiceUuid, buttonTriggerCharacteristicUuid);
 
       final subscription = stream.listen((value) {
         if (value.isNotEmpty) onButtonReceived(value);
@@ -312,60 +313,96 @@ class OmiDeviceConnection extends DeviceConnection {
   /// ongoing sync data stream.
   @override
   Future<List<StorageFile>> performListFiles() async {
+    if (_listFilesCompleter != null) {
+      return _listFilesCompleter!.future;
+    }
+
+    _listFilesCompleter = Completer<List<StorageFile>>();
+    StreamSubscription? sub;
+    Timer? timeoutTimer;
+
+    void stop() {
+      sub?.cancel();
+      timeoutTimer?.cancel();
+    }
+
+    void fail(String reason) {
+      if (_listFilesCompleter != null && !_listFilesCompleter!.isCompleted) {
+        _listFilesCompleter!.completeError(TimeoutException(reason));
+      }
+      stop();
+    }
+
+    void startOrResetTimeout() {
+      timeoutTimer?.cancel();
+      timeoutTimer = Timer(const Duration(seconds: 10), () => fail("Timeout waiting for file list response"));
+    }
+
     try {
-      final completer = Completer<List<int>>();
-      StreamSubscription? sub;
+      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
+      await Future.microtask(() {}); // Ensure listener wiring completes
 
-      sub = transport
-          .getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid)
-          .listen((data) {
-        if (completer.isCompleted) return;
-        // The file-list response has no type prefix — first byte is count (0..128).
-        // Reject stale framed packets by structural validity: a valid response is
-        // exactly 1 + count * 8 bytes. Framed packets (DATA/EOT/ACK) never fit this
-        // shape, so this correctly rejects them even when count == 1, 2, or 3.
-        if (data.isEmpty) return;
-        final expectedLen = 1 + data[0] * 8;
-        if (data[0] > 128 || data.length != expectedLen) return;
-        completer.complete(data);
-        sub?.cancel();
-      }, onError: (e) {
-        if (!completer.isCompleted) completer.completeError(e);
-        sub?.cancel();
-      });
+      final buffer = <int>[];
 
-      await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
+      sub = stream.listen(
+        (packet) {
+          startOrResetTimeout(); // Reset timeout FIRST
+          buffer.addAll(packet);
+          Logger.debug('performListFiles: RX packet len=${packet.length}');
 
-      final data = await completer.future.timeout(const Duration(seconds: 10));
+          if (buffer.isEmpty) return;
 
-      if (data.isEmpty) return [];
+          final count = buffer[0];
+          if (count == 0xFF) {
+            fail("Device returned error 0xFF");
+            return;
+          }
+          if (count > 200) {
+            fail("Invalid file count: $count");
+            return;
+          }
 
-      final count = data[0];
-      if (count == 0 || count > 128) {
-        Logger.debug('performListFiles: count=$count — returning empty');
-        return [];
-      }
+          final expectedLen = 1 + count * 8;
+          Logger.debug('performListFiles: Buffer len=${buffer.length} / expected=$expectedLen');
 
-      // Each entry: 4-byte LE timestamp + 4-byte LE size = 8 bytes
-      if (data.length < 1 + count * 8) {
-        Logger.debug('performListFiles: truncated response (got ${data.length}, need ${1 + count * 8})');
-        return [];
-      }
+          if (buffer.length >= expectedLen) {
+            final data = buffer.sublist(0, expectedLen);
 
-      final files = <StorageFile>[];
-      for (int i = 0; i < count; i++) {
-        final base = 1 + i * 8;
-        final ts = data[base] | (data[base + 1] << 8) | (data[base + 2] << 16) | (data[base + 3] << 24);
-        final sz = data[base + 4] | (data[base + 5] << 8) | (data[base + 6] << 16) | (data[base + 7] << 24);
-        files.add(StorageFile(index: i, timestamp: ts, size: sz));
-      }
+            final files = <StorageFile>[];
+            for (int i = 0; i < count; i++) {
+              final base = 1 + i * 8;
+              final ts = data[base] | (data[base + 1] << 8) | (data[base + 2] << 16) | (data[base + 3] << 24);
+              final sz = data[base + 4] | (data[base + 5] << 8) | (data[base + 6] << 16) | (data[base + 7] << 24);
+              files.add(StorageFile(index: i, timestamp: ts, size: sz));
+            }
 
-      Logger.debug('performListFiles: $count files');
-      return files;
+            if (!_listFilesCompleter!.isCompleted) {
+              _listFilesCompleter!.complete(files);
+            }
+            stop();
+          }
+        },
+        onError: (e) => fail("Stream error: $e"),
+        onDone: () {
+          if (_listFilesCompleter != null && !_listFilesCompleter!.isCompleted) {
+            fail("Stream closed before full response received");
+          }
+        },
+      );
+
+      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
+      startOrResetTimeout();
+
+      return await _listFilesCompleter!.future;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: performListFiles error: $e');
+      if (_listFilesCompleter != null && !_listFilesCompleter!.isCompleted) {
+        _listFilesCompleter!.complete([]); // Resolve with empty list on error to satisfy callers
+      }
       return [];
+    } finally {
+      stop();
+      _listFilesCompleter = null;
     }
   }
 
@@ -376,9 +413,8 @@ class OmiDeviceConnection extends DeviceConnection {
       final completer = Completer<bool>();
       StreamSubscription? sub;
 
-      sub = transport
-          .getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid)
-          .listen((data) {
+      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
+      sub = stream.listen((data) {
         if (completer.isCompleted) return;
         // Expect [PACKET_ACK=0x03][result:1]
         if (data.length >= 2 && data[0] == 0x03) {
@@ -402,7 +438,7 @@ class OmiDeviceConnection extends DeviceConnection {
       } finally {
         // Always cancel — on timeout the sub is still alive and a late ACK arriving
         // after the timeout would be misinterpreted by the next operation's listener.
-        await sub?.cancel();
+        await sub.cancel();
       }
     } catch (e) {
       Logger.debug('OmiDeviceConnection: performDeleteFile error: $e');
@@ -431,9 +467,8 @@ class OmiDeviceConnection extends DeviceConnection {
       final completer = Completer<bool>();
       StreamSubscription? sub;
 
-      sub = transport
-          .getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid)
-          .listen((data) {
+      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
+      sub = stream.listen((data) {
         if (completer.isCompleted) return;
         if (data.length >= 2 && data[0] == 0x03) {
           // PACKET_ACK: result == 0 means success
@@ -447,7 +482,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
       final success = await completer.future.timeout(const Duration(seconds: 15));
       Logger.debug('OmiDeviceConnection: performRotateFile success=$success');
-      sub?.cancel();
+      sub.cancel();
       return success;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: performRotateFile error: $e');

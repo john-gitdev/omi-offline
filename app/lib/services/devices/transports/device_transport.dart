@@ -10,7 +10,7 @@ abstract class DeviceTransport {
   Future<bool> isConnected();
   Future<bool> ping();
 
-  Stream<List<int>> getCharacteristicStream(String serviceUuid, String characteristicUuid);
+  Future<Stream<List<int>>> getCharacteristicStream(String serviceUuid, String characteristicUuid);
 
   Future<List<int>> readCharacteristic(String serviceUuid, String characteristicUuid);
   Future<void> writeCharacteristic(String serviceUuid, String characteristicUuid, List<int> data);

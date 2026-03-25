@@ -139,14 +139,12 @@ class BleTransport extends DeviceTransport {
   }
 
   @override
-  Stream<List<int>> getCharacteristicStream(String serviceUuid, String characteristicUuid) {
+  Future<Stream<List<int>>> getCharacteristicStream(String serviceUuid, String characteristicUuid) async {
     final key = '$serviceUuid:$characteristicUuid';
 
     if (!_streamControllers.containsKey(key)) {
       _streamControllers[key] = StreamController<List<int>>.broadcast();
-      // Fire-and-forget — errors are handled internally and logged.
-      // ignore: unawaited_futures
-      _setupCharacteristicListener(serviceUuid, characteristicUuid, key);
+      await _setupCharacteristicListener(serviceUuid, characteristicUuid, key);
     }
 
     return _streamControllers[key]?.stream ?? const Stream.empty();
@@ -156,7 +154,7 @@ class BleTransport extends DeviceTransport {
     try {
       final characteristic = await _getCharacteristic(serviceUuid, characteristicUuid);
       if (characteristic == null) {
-        Logger.debug('BLE Transport: Characteristic not found: $serviceUuid:$characteristicUuid');
+        Logger.debug('BLE Transport: Optional characteristic not found: $serviceUuid:$characteristicUuid');
         return;
       }
 
@@ -224,7 +222,7 @@ class BleTransport extends DeviceTransport {
     // Prevent "Unhandled Exception" if no second caller is waiting on this future
     // when it errors — the first caller always handles the error via rethrow.
     // ignore: unawaited_futures
-    completer.future.catchError((_) {});
+    completer.future.catchError((_) => <BluetoothService>[]);
     try {
       final services = await _bleDevice.discoverServices();
       _services = services;

@@ -103,22 +103,6 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     return connection.retrieveBatteryLevel();
   }
 
-  Future<bool> _retrieveChargingState(String deviceId) async {
-    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null) return false;
-    return connection.retrieveChargingState();
-  }
-
-  Future<int> _retrieveStorageFullPercentage(String deviceId) async {
-    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null) return -1;
-    final files = await connection.listFiles();
-    if (files.isEmpty) return 0;
-    final usedBytes = files.fold(0, (sum, f) => sum + f.size);
-    const totalBytes = 480 * 1024 * 1024; // CV1 SD card capacity
-    return ((usedBytes / totalBytes) * 100).round().clamp(0, 100);
-  }
-
   Future<StreamSubscription<List<int>>?> _getBleBatteryLevelListener(
     String deviceId, {
     void Function(int)? onBatteryLevelChange,
@@ -507,22 +491,25 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     // isConnected false the whole time, making the UI look disconnected).
     await setConnectedDevice(device);
     setIsConnected(true);
-    await setisDeviceStorageSupport();
+
+    // DEDUPLICATED: Fetch file list once and use it for multiple purposes
+    var connection = await ServiceManager.instance().device.ensureConnection(device.id);
+    final files = await connection?.listFiles() ?? [];
+    isDeviceStorageSupport = files.isNotEmpty;
+
+    // Use the fetched files to calculate storage percentage immediately
+    if (files.isNotEmpty) {
+      final usedBytes = files.fold(0, (sum, f) => sum + f.size);
+      const totalBytes = 480 * 1024 * 1024; // CV1 SD card capacity
+      storageFullPercentage = ((usedBytes / totalBytes) * 100).round().clamp(0, 100);
+    } else {
+      storageFullPercentage = 0;
+    }
 
     // Set the WAL device immediately after file listing so any user-triggered sync
     // (possible as soon as setIsConnected fires notifyListeners above) finds _device
-    // non-null and _wals pre-populated. Awaiting here prevents a race where the user
-    // presses Sync while we are still doing the slow battery/storage BLE reads below.
+    // non-null and _wals pre-populated.
     await ServiceManager.instance().wal.getSyncs().setDevice(device);
-
-    // Skip the one-shot battery/charging reads: the battery detail characteristic
-    // on this firmware is notify-only and never responds to READ, so both calls
-    // block for the full 15s FlutterBluePlus timeout before returning -1/false.
-    // The values come in immediately via the notify subscription below instead.
-    int currentStorage = await _retrieveStorageFullPercentage(device.id);
-    if (currentStorage != -1) {
-      storageFullPercentage = currentStorage;
-    }
 
     await initiateBleBatteryListener();
     await initiateBleButtonListener();
