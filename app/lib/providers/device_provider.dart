@@ -492,7 +492,15 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     await setConnectedDevice(device);
     setIsConnected(true);
 
-    // DEDUPLICATED: Fetch file list once and use it for multiple purposes
+    // Register the device with WAL sync immediately so that sync operations
+    // (triggered by the user or background timer) don't fail with "No device
+    // connected" while listFiles() is still running below.  listFiles() can
+    // take 30+ seconds when the firmware SD worker is busy at boot.
+    await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
+
+    // DEDUPLICATED: Fetch file list once and use it for multiple purposes.
+    // With the retry logic this may take a few attempts but should eventually
+    // succeed once the firmware SD worker finishes its boot-time GC.
     var connection = await ServiceManager.instance().device.ensureConnection(device.id);
     final files = await connection?.listFiles() ?? [];
     isDeviceStorageSupport = files.isNotEmpty;
@@ -506,9 +514,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       storageFullPercentage = 0;
     }
 
-    // Set the WAL device, passing the already-fetched file list so setDevice()
-    // skips a redundant CMD_LIST_FILES BLE round-trip and its associated timer.
-    await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: files);
+    // Update WAL device with the real file list so the first syncAll() skips
+    // a redundant BLE round-trip.  Guard against the device having disconnected
+    // during the listFiles() wait above.
+    if (connectedDevice?.id == device.id) {
+      await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: files);
+    }
 
     await initiateBleBatteryListener();
     await initiateBleButtonListener();

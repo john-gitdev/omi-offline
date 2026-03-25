@@ -337,6 +337,8 @@ class OmiDeviceConnection extends DeviceConnection {
     _listFilesCompleter = currentCompleter;
 
     final buffer = <int>[];
+    int retryCount = 0;
+    const int maxRetries = 3;
 
     bool isStale() => gen != _listFilesGeneration;
 
@@ -356,10 +358,12 @@ class OmiDeviceConnection extends DeviceConnection {
       unawaited(stop());
     }
 
-    void startOrResetTimeout() {
+    late void Function() startOrResetTimeout;
+
+    startOrResetTimeout = () {
       _timeoutTimer?.cancel();
       _timeoutTimer = Timer(const Duration(seconds: 35), () => fail("Timeout waiting for file list response"));
-    }
+    };
 
     try {
       final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
@@ -378,6 +382,25 @@ class OmiDeviceConnection extends DeviceConnection {
 
           final count = buffer[0];
           if (count == 0xFF) {
+            // 0xFF means the firmware SD worker is temporarily busy (e.g. boot GC
+            // or LFS allocator scan).  Retry a few times with a short delay before
+            // giving up so the caller gets a real file list once the worker is free.
+            if (retryCount < maxRetries) {
+              retryCount++;
+              buffer.clear();
+              Logger.debug('performListFiles: SD busy (0xFF), retry $retryCount/$maxRetries in 5s');
+              Future.delayed(const Duration(seconds: 5), () async {
+                if (isStale() || currentCompleter.isCompleted) return;
+                try {
+                  await transport.writeCharacteristic(
+                      storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
+                  startOrResetTimeout();
+                } catch (e) {
+                  fail('Retry write failed: $e');
+                }
+              });
+              return;
+            }
             fail("Device returned error 0xFF");
             return;
           }
