@@ -1,10 +1,32 @@
 import 'dart:async';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/utils/logger.dart';
 
 enum DeviceType {
   omi,
+}
+
+enum ImageOrientation {
+  orientation0, // 0 degrees
+  orientation90, // 90 degrees clockwise
+  orientation180, // 180 degrees
+  orientation270; // 270 degrees clockwise
+
+  factory ImageOrientation.fromValue(int value) {
+    switch (value) {
+      case 0:
+        return ImageOrientation.orientation0;
+      case 1:
+        return ImageOrientation.orientation90;
+      case 2:
+        return ImageOrientation.orientation180;
+      case 3:
+        return ImageOrientation.orientation270;
+      default:
+        // Fallback to 0 degrees if the value is unknown
+        return ImageOrientation.orientation0;
+    }
+  }
 }
 
 enum BleAudioCodec {
@@ -88,37 +110,6 @@ class OmiFeatures {
 }
 
 class BtDevice {
-  static bool isSupportedDevice(BluetoothDevice device) {
-    return device.platformName.toLowerCase().contains('omi');
-  }
-
-  // Omi audio service UUID prefix — advertised in BT_DATA_UUID128_ALL by the firmware.
-  static const String _omiAudioServicePrefix = '19b100';
-
-  /// Matches a scan result by name (platformName or advertisementData.localName)
-  /// or by the Omi audio service UUID in the advertisement data.
-  /// Use this instead of [isSupportedDevice] during scanning, since platformName
-  /// may be empty on the first scan for devices not yet cached by the OS.
-  static bool isSupportedScanResult(ScanResult result) {
-    final platformName = result.device.platformName.toLowerCase();
-    final localName = result.advertisementData.localName.toLowerCase();
-    if (platformName.contains('omi') || localName.contains('omi')) return true;
-    return result.advertisementData.serviceUuids
-        .any((uuid) => uuid.toString().toLowerCase().startsWith(_omiAudioServicePrefix));
-  }
-
-  static BtDevice fromScanResult(ScanResult result) {
-    final name = result.device.platformName.isNotEmpty
-        ? result.device.platformName
-        : result.advertisementData.localName;
-    return BtDevice(
-      id: result.device.remoteId.str,
-      name: name,
-      type: DeviceType.omi,
-      rssi: result.rssi,
-    );
-  }
-
   final String id;
   final String name;
   final int rssi;

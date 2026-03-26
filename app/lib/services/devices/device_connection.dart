@@ -1,12 +1,11 @@
 import 'dart:async';
 
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/omi_connection.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
-import 'package:omi/services/devices/transports/ble_transport.dart';
+import 'package:omi/services/devices/transports/native_ble_transport.dart';
 import 'package:omi/utils/logger.dart';
 
 // UUIDs
@@ -47,8 +46,7 @@ const String disManufacturerNameCharacteristicUuid = '00002a29-0000-1000-8000-00
 class DeviceConnectionFactory {
   static DeviceConnection? create(BtDevice device) {
     DeviceTransport transport;
-    final bleDevice = BluetoothDevice.fromId(device.id);
-    transport = BleTransport(bleDevice);
+    transport = NativeBleTransport(device.id);
     return OmiDeviceConnection(device, transport);
   }
 }
