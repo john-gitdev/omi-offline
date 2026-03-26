@@ -293,9 +293,9 @@ void main() {
       5,
     );
 
-    // Pass a wrong fallback time and deviceSessionId=1 so metadata is read
+    // Pass a wrong fallback time and it should still update based on metadata
     final wrongFallback = DateTime(2020, 1, 1);
-    await processor.processSegmentFile(segment, wrongFallback, deviceSessionId: 1);
+    await processor.processSegmentFile(segment, wrongFallback);
 
     // Flush remaining to save the recording
     final savedPath = await processor.flushRemaining();

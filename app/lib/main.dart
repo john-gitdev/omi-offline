@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:omi/pages/recordings/recordings_page.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/heypocket_service.dart';
@@ -15,7 +14,6 @@ import 'package:opus_flutter/opus_flutter.dart' as opus_flutter;
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  FlutterBluePlus.setLogLevel(LogLevel.none);
   initOpus(await opus_flutter.load());
   await SharedPreferencesUtil.init();
   await NotificationsService.initialize();

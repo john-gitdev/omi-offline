@@ -4,7 +4,7 @@ import 'package:collection/collection.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices/device_connection.dart';
-import 'package:omi/services/devices/discovery/bluetooth_discoverer.dart';
+import 'package:omi/services/devices/discovery/native_bluetooth_discoverer.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/mutex.dart';
 import 'package:omi/services/devices/discovery/device_discoverer.dart';
@@ -110,7 +110,7 @@ class DeviceService implements IDeviceService {
       _activeDiscoverer = null;
     }
 
-    final discoverer = BluetoothDeviceDiscoverer();
+    final discoverer = NativeBluetoothDiscoverer();
     _activeDiscoverer = discoverer;
 
     try {
