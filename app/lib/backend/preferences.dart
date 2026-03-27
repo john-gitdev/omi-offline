@@ -176,6 +176,10 @@ class SharedPreferencesUtil {
     return BtDevice.fromJson(jsonDecode(device));
   }
 
+  set lastConnectedDeviceAddress(String value) => saveString('lastConnectedDeviceAddress', value);
+
+  String get lastConnectedDeviceAddress => getString('lastConnectedDeviceAddress');
+
   set deviceName(String value) => saveString('deviceName', value);
 
   String get deviceName => getString('deviceName');

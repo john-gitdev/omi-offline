@@ -203,6 +203,7 @@ class DeviceService implements IDeviceService {
           s.onDeviceConnectionStateChanged(id, state);
         }
       });
+      SharedPreferencesUtil().lastConnectedDeviceAddress = device.id;
     } else {
       Logger.debug('[DeviceService] Failed to create device connection for ${device.id}');
     }
