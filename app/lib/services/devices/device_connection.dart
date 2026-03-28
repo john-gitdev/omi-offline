@@ -27,17 +27,12 @@ const String timeSyncServiceUuid = '19b10030-e8f2-537e-4f6c-d104768a1214';
 const String timeSyncWriteCharacteristicUuid = '19b10031-e8f2-537e-4f6c-d104768a1214';
 
 const String batteryDetailServiceUuid = '19b10050-e8f2-537e-4f6c-d104768a1214';
-const String timeSyncWriteCharacteristicUuid = '19b10031-e8f2-537e-4f6c-d104768a1214';
-
-const String batteryDetailServiceUuid = '19b10050-e8f2-537e-4f6c-d104768a1214';
 // 4-byte notify payload: [mv_lo, mv_hi, percentage (0-100), charging (0/1)]
 const String batteryDetailCharacteristicUuid = '19b10051-e8f2-537e-4f6c-d104768a1214';
-
 
 const String storageDataStreamServiceUuid = '30295780-4301-eabd-2904-2849adfeae43';
 const String storageReadControlCharacteristicUuid = '30295782-4301-eabd-2904-2849adfeae43';
 const String storageDataStreamCharacteristicUuid = '30295781-4301-eabd-2904-2849adfeae43';
-const String storageDataCharacteristicUuid = '30295781-4301-eabd-2904-2849adfeae43';
 
 const String disServiceUuid = '0000180a-0000-1000-8000-00805f9b34fb';
 const String disModelNumberCharacteristicUuid = '00002a24-0000-1000-8000-00805f9b34fb';
@@ -88,8 +83,9 @@ abstract class DeviceConnection {
     switch (transportState) {
       case DeviceTransportState.connected:
         return DeviceConnectionState.connected;
-      case DeviceTransportState.disconnected:
       case DeviceTransportState.connecting:
+        return DeviceConnectionState.connecting;
+      case DeviceTransportState.disconnected:
       case DeviceTransportState.disconnecting:
         return DeviceConnectionState.disconnected;
     }
@@ -248,7 +244,7 @@ abstract class DeviceConnection {
     Function? onError,
     void Function()? onDone,
   }) async {
-    final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
+    final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
     return stream.listen(
       onStorageBytesReceived,
       onError: onError,
