@@ -36,6 +36,8 @@ class OmiBleManager private constructor(private val application: Application) {
         @Volatile
         private var _instance: OmiBleManager? = null
 
+        val isInitialized: Boolean get() = _instance != null
+
         val instance: OmiBleManager
             get() = _instance ?: throw IllegalStateException("OmiBleManager not initialized")
 
@@ -210,6 +212,15 @@ class OmiBleManager private constructor(private val application: Application) {
         val addr = address.uppercase()
         appClosed = false
         manuallyDisconnected.remove(addr)
+
+        // Guard: if native already has a delayed autoConnect=true reconnect pending,
+        // let it complete. A new autoConnect=false call from Dart would cancel that
+        // patient reconnect and replace it with a faster-failing attempt.
+        if (pendingReconnectRunnable != null) {
+            Log.i(TAG, "connectPeripheral($caller): $addr has pending native reconnect, skipping")
+            return
+        }
+
         reconnectRetryCount[addr] = 0
         cancelPendingReconnect()
 
