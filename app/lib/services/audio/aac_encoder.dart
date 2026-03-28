@@ -4,7 +4,7 @@ import 'package:omi/utils/logger.dart';
 
 /// Dart wrapper for the native AAC encoder platform channel.
 ///
-/// Call [startEncoder] to begin a session, feed PCM bytes via [encodeChunk] in
+/// Call [startEncoder] to begin a DeviceSession, feed PCM bytes via [encodeBuffer] in
 /// batches, then call [finishEncoder] to flush and write the final M4A file.
 ///
 /// All methods throw [PlatformException] on native errors — callers should
@@ -12,8 +12,8 @@ import 'package:omi/utils/logger.dart';
 class AacEncoder {
   static const _channel = MethodChannel('com.omi.offline/aacEncoder');
 
-  /// Opens a new encoding session targeting [outputPath] (must end in `.m4a`).
-  /// Returns an opaque session ID string to pass to subsequent calls.
+  /// Opens a new encoding DeviceSession targeting [outputPath] (must end in `.m4a`).
+  /// Returns an opaque DeviceSession ID string to pass to subsequent calls.
   static Future<String> startEncoder(int sampleRate, String outputPath, {int bitrate = 32000}) async {
     final sessionId = await _channel.invokeMethod<String>('startEncoder', {
       'sampleRate': sampleRate,
@@ -24,8 +24,8 @@ class AacEncoder {
   }
 
   /// Feed a batch of raw 16-bit little-endian PCM bytes to the encoder.
-  static Future<void> encodeChunk(String sessionId, Uint8List pcmBytes) async {
-    await _channel.invokeMethod<void>('encodeChunk', {
+  static Future<void> encodeBuffer(String sessionId, Uint8List pcmBytes) async {
+    await _channel.invokeMethod<void>('encodeBuffer', {
       'sessionId': sessionId,
       'pcmBytes': pcmBytes,
     });
