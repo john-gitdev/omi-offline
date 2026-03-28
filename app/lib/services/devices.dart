@@ -197,9 +197,12 @@ class DeviceService implements IDeviceService {
     if (_connection != null) {
       await _connection!.connect(onConnectionStateChanged: (id, state) {
         _connectionStateController.add(state);
-        for (var s in _subscriptions.values) {
-          s.onDeviceConnectionStateChanged(id, state);
-        }
+        // Schedule notifications outside mutex to prevent deadlock
+        Future.microtask(() {
+          for (var s in _subscriptions.values) {
+            s.onDeviceConnectionStateChanged(id, state);
+          }
+        });
       });
       SharedPreferencesUtil().lastConnectedDeviceAddress = device.id;
     } else {
