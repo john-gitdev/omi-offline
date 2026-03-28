@@ -1794,15 +1794,17 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     req.type = REQ_WRITE_DATA;
     memcpy(req.u.write.buf, data, length);
     req.u.write.len = length;
-    /* Fast path: non-blocking enqueue first. */
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
+    /* Fast path: try regular queue first, prio queue as fallback.
+     * Writing audio data to the prio queue starves control requests
+     * (reads, flushes, deletes) which also use the prio queue. */
+    int ret = k_msgq_put(&sd_msgq, &req, K_NO_WAIT);
 
     /* Backpressure: if queue is temporarily full, wait a very short time
      * for worker to drain instead of dropping immediately.
      * This reduces packet loss and CPU spin when SD path stalls briefly. */
     if (ret != 0) {
-        k_timeout_t retry_wait = ble_connected ? K_MSEC(1) : K_MSEC(5);
-        ret = k_msgq_put(&sd_msgq, &req, retry_wait);
+        k_timeout_t retry_wait = atomic_get(&ble_connected) ? K_MSEC(1) : K_MSEC(5);
+        ret = k_msgq_put(&sd_prio_msgq, &req, retry_wait);
     }
 
     if (ret) {
