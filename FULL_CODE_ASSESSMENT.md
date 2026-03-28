@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-This assessment identified **69 issues** across all 5 layers of the Omi offline pipeline, plus **6 nomenclature** mismatches (**75 total**), including **~30 CRITICAL severity** bugs. **All 75 issues have been fixed with code changes.** No issues were deferred or documented-only — every one has a corresponding commit.
+This assessment identified **69 issues** across all 5 layers of the Omi offline pipeline (F1–F19, B1–B13, W1–W9, A1–A15, S1–S13), plus **2 nomenclature** mismatches (**71 total**), including **~30 CRITICAL severity** bugs. **All 71 items have been fixed with code changes.** No issues were deferred or documented-only — every one has a corresponding commit.
 
 The most dangerous patterns found and fixed were:
 
