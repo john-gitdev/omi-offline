@@ -328,7 +328,7 @@ extension AppDelegate {
       switch call.method {
       case "startEncoder":
         self.aacStartEncoder(call: call, result: result)
-      case "encodeChunk":
+      case "encodeBuffer":
         self.aacEncodeChunk(call: call, result: result)
       case "finishEncoder":
         self.aacFinishEncoder(call: call, result: result)
@@ -387,7 +387,7 @@ extension AppDelegate {
     guard let args = call.arguments as? [String: Any],
           let sessionId = args["sessionId"] as? String,
           let pcmFlutter = args["pcmBytes"] as? FlutterStandardTypedData else {
-      result(FlutterError(code: "INVALID_ARGS", message: "encodeChunk requires sessionId and pcmBytes", details: nil))
+      result(FlutterError(code: "INVALID_ARGS", message: "encodeBuffer requires sessionId and pcmBytes", details: nil))
       return
     }
 
