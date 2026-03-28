@@ -47,10 +47,10 @@ class FixedIntervalAudioProcessor {
                 : null),
         _outputDir = outputDir,
         _intervalMs = SharedPreferencesUtil().offlineFixedIntervalMinutes * 60 * 1000,
-        _gapThresholdMs = SharedPreferencesUtil().offlineGapSeconds * 1000 {
+        _gapThresholdMs = SharedPreferencesUtil().vadGapSeconds * 1000 {
     // Restore the boundary that was active when the previous session ended.
     // If nonzero, the next call to processSegmentFile will skip frames that
-    // were already included in the last completed clip.
+    // were already included in the last completed interval.
     // Sanity check: discard the persisted value if it is unreasonably old
     // (> 2× interval in the past) or in the future — both indicate stale/corrupt
     // state. Gap detection will handle a genuine long offline period correctly.
@@ -119,7 +119,7 @@ class FixedIntervalAudioProcessor {
     // If we have a persisted boundary from a previous session and no frames
     // accumulated yet, this segment may straddle the already-completed boundary.
     // Compute how many leading frames to skip so we don't re-include audio that
-    // was already saved in the previous clip.
+    // was already saved in the previous interval.
     int framesToSkip = 0;
     if (_currentRefs.isEmpty && _nextBoundaryMs > 0) {
       final segmentStartMs = segmentStartTime.millisecondsSinceEpoch;
@@ -127,7 +127,7 @@ class FixedIntervalAudioProcessor {
         framesToSkip = ((_nextBoundaryMs - segmentStartMs) / frameDurationMs).ceil();
         _recordingStartTime = DateTime.fromMillisecondsSinceEpoch(_nextBoundaryMs);
         Logger.debug('FixedIntervalAudioProcessor: Skipping $framesToSkip leading frames '
-            '(already in previous clip). New interval starts at $_recordingStartTime');
+            '(already in previous interval). New interval starts at $_recordingStartTime');
       } else {
         // Segment starts at or after the boundary — no skip needed, compute fresh boundary.
         _recordingStartTime = segmentStartTime;
@@ -157,7 +157,7 @@ class FixedIntervalAudioProcessor {
       off += len;
 
       // Skip leading frames that were already included in the previous session's
-      // last completed clip. frameIndex counts only non-metadata frames.
+      // last completed interval. frameIndex counts only non-metadata frames.
       if (frameIndex < framesToSkip) {
         frameIndex++;
         continue;
@@ -171,7 +171,7 @@ class FixedIntervalAudioProcessor {
         final frameEpochMs = _recordingStartTime!.millisecondsSinceEpoch + (_currentRefs.length * frameDurationMs);
         if (frameEpochMs < _nextBoundaryMs) break;
 
-        // Emit clip up to (but not including) current frame — the frame at the
+        // Emit interval up to (but not including) current frame — the frame at the
         // boundary belongs to the new interval.
         Logger.debug(
             'FixedIntervalAudioProcessor: Boundary reached at ${DateTime.fromMillisecondsSinceEpoch(_nextBoundaryMs)}, '
@@ -207,7 +207,7 @@ class FixedIntervalAudioProcessor {
   Future<List<String>> flushOnlyCompleted() async => [];
 
   /// Flush any frames accumulated since the last boundary (partial interval).
-  /// Call this at the end of a manual (foreground) sync to write the trailing clip.
+  /// Call this at the end of a manual (foreground) sync to write the trailing interval.
   Future<String?> flushRemaining() async {
     if (_currentRefs.isEmpty) return null;
     final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);

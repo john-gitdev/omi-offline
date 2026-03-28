@@ -26,21 +26,21 @@ class SharedPreferencesUtil {
 
   set offlineHangoverSeconds(double value) => saveDouble('offlineHangoverSeconds', value);
 
-  int get offlineSplitSeconds => getInt('offlineSplitSeconds', defaultValue: 120);
+  int get vadSplitSeconds => getInt('offlineSplitSeconds', defaultValue: 120);
 
-  set offlineSplitSeconds(int value) => saveInt('offlineSplitSeconds', value);
+  set vadSplitSeconds(int value) => saveInt('offlineSplitSeconds', value);
 
-  int get offlineMinSpeechSeconds => getInt('offlineMinSpeechSeconds', defaultValue: 5);
+  int get vadMinSpeechSeconds => getInt('offlineMinSpeechSeconds', defaultValue: 5);
 
-  set offlineMinSpeechSeconds(int value) => saveInt('offlineMinSpeechSeconds', value);
+  set vadMinSpeechSeconds(int value) => saveInt('offlineMinSpeechSeconds', value);
 
-  double get offlinePreSpeechSeconds => getDouble('offlinePreSpeechSeconds', defaultValue: 1.0);
+  double get vadPreSpeechSeconds => getDouble('offlinePreSpeechSeconds', defaultValue: 1.0);
 
-  set offlinePreSpeechSeconds(double value) => saveDouble('offlinePreSpeechSeconds', value);
+  set vadPreSpeechSeconds(double value) => saveDouble('offlinePreSpeechSeconds', value);
 
-  int get offlineGapSeconds => getInt('offlineGapSeconds', defaultValue: 30);
+  int get vadGapSeconds => getInt('offlineGapSeconds', defaultValue: 30);
 
-  set offlineGapSeconds(int value) => saveInt('offlineGapSeconds', value);
+  set vadGapSeconds(int value) => saveInt('offlineGapSeconds', value);
 
   bool get offlineAdjustmentMode => getBool('offlineAdjustmentMode', defaultValue: false);
 
@@ -68,7 +68,7 @@ class SharedPreferencesUtil {
 
   // Epoch ms of the next pending boundary for fixed mode.
   // Persisted so a fresh processor on the next sync knows which frames in the
-  // boundary-crossing segment were already included in the previous clip.
+  // boundary-crossing segment were already included in the previous recording.
   // 0 = no active boundary (no in-progress interval).
   int get fixedModeNextBoundaryMs => getInt('fixedModeNextBoundaryMs', defaultValue: 0);
 

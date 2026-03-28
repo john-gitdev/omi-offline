@@ -101,8 +101,8 @@ class MarkerRecordingExtractor {
   final SimpleOpusDecoder? _providedDecoder;
 
   MarkerRecordingExtractor({SimpleOpusDecoder? decoder})
-      : _splitFrames = (SharedPreferencesUtil().offlineSplitSeconds * 1000) ~/ _frameDurationMs,
-        _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb,
+      : _splitFrames = (SharedPreferencesUtil().vadSplitSeconds * 1000) ~/ _frameDurationMs,
+        _snrMarginDb = SharedPreferencesUtil().vadSnrMarginDb,
         _lookbackMs = SharedPreferencesUtil().markerLookbackMinutes * 60 * 1000,
         _providedDecoder = decoder;
 
