@@ -4,6 +4,25 @@ This document tracks features, optimizations, and bug fixes that have been revie
 
 ## Unmerged PRs
 
+### [PR #6085: feat: native-owned BLE connection pipeline](https://github.com/BasedHardware/omi/pull/6085)
+- **Status:** Already integrated — all changes present in `omi-offline`
+- **Merged upstream:** March 27, 2026 (author: mdmohsin7)
+- **Assessment:** Every change in this PR was already present in `omi-offline` prior to review. The work had been sourced directly from commit `7645da3` (see Integrated Feature #1 below). No action required.
+- **Files changed upstream (11):**
+  - `app/android/.../BleHostApiImpl.kt` — `discoverServices` → `requestBond`
+  - `app/android/.../OmiBleManager.kt` — always discover on connect (no bond-gating), `requestBond()` impl, GATT codes 22+147 added to retry set
+  - `app/android/.../PigeonCommunicator.g.kt` — `discoverServices` → `requestBond`
+  - `app/ios/Runner/BleHostApiImpl.swift` — `discoverServices` → `requestBond` (iOS auto-bonds at OS level, returns `true`)
+  - `app/ios/Runner/OmiBleManager.swift` — removed Dart-driven `discoverServices`, added RSSI keep-alive timer
+  - `app/ios/Runner/PigeonCommunicator.g.swift` — `discoverServices` → `requestBond`
+  - `app/lib/pigeon_interfaces.dart` — `discoverServices` → `@async requestBond`
+  - `app/lib/gen/pigeon_communicator.g.dart` — `discoverServices` → `requestBond` returning `bool`
+  - `app/lib/services/devices/transports/device_transport.dart` — abstract `requestBond()` with default no-op
+  - `app/lib/services/devices/transports/native_ble_transport.dart` — `requestBond()` impl, removed Dart-side `discoverServices` call
+  - `app/lib/services/devices/limitless_connection.dart` — calls `requestBond()` before subscribing to encrypted characteristics (N/A — file does not exist in `omi-offline`)
+
+---
+
 ### [PR #5994: Fix sync endpoint silent failure causing permanent audio loss](https://github.com/BasedHardware/omi/pull/5994)
 - **Status:** Unmerged
 - **Reason:** This PR addresses silent failures in the network/API synchronization layer and audio data preservation. It does not contain any Bluetooth Low Energy (BLE) hardware connection reliability fixes between the phone and the Omi device, which is what we are looking for.
@@ -13,7 +32,7 @@ This document tracks features, optimizations, and bug fixes that have been revie
 ## Integrated Features & Fixes
 
 ### 1. BLE Connection Pipeline & Stability Refactor
-**Source:** [Commit `7645da3`](https://github.com/BasedHardware/omi/commit/7645da34a3f6f56cc8cec594187cf41a9e8745e0)
+**Source:** [PR #6085](https://github.com/BasedHardware/omi/pull/6085) ("feat: native-owned BLE connection pipeline", mdmohsin7) — [Commit `7645da3`](https://github.com/BasedHardware/omi/commit/7645da34a3f6f56cc8cec594187cf41a9e8745e0)
 
 **Integrated:**
 *   **Native-Owned Service Discovery:** Moved service discovery logic from Dart into the native Android (`OmiBleManager.kt`) and iOS (`OmiBleManager.swift`) layers, triggering immediately upon connection.
