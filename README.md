@@ -13,7 +13,7 @@ Instead of streaming audio in real time, the system:
 
 **Key properties:**
 
-* No continuous BLE streaming
+* No continuous BLE streaming (live streaming has been completely removed)
 * No real-time cloud dependency
 * Improved battery life (phone + wearable)
 * Speech segmentation via post-processing
@@ -22,39 +22,33 @@ Instead of streaming audio in real time, the system:
 
 ## The Evolution: From Streaming to Offline-First
 
-Originally, the Omi wearable operated as a **live streaming system**:
-
-* Audio was continuously sent over BLE
-* The phone immediately uploaded it to the cloud
-* No VAD existed on-device or on-phone
+Originally, the Omi wearable operated as a **live streaming system**. This has been **deprecated and removed** in favor of the offline-first architecture to solve critical issues:
 
 ### Problems with streaming
 
 **Phone battery drain**
 
-* Constant BLE activity
-* Continuous wakeups
-* Cellular uploads
+* Constant BLE activity and continuous wakeups
+* High cellular data usage for real-time uploads
 
 **Wearable constraints**
 
-* High BLE bandwidth usage
-* Rapid battery drain
+* High BLE bandwidth usage and rapid battery drain
 * No tolerance for connection instability
 
 ### Solution: Offline-first architecture
 
 The system was redesigned to:
 
-* Record everything locally on-device
+* Record everything locally on-device (eMMC/SD)
 * Defer all processing to the phone
-* Batch transfer data over BLE
+* Batch transfer data over BLE using a robust native transport layer
 * Run VAD and segmentation offline
 
 ### Result
 
-* Reduced battery usage
-* More reliable data transfer
+* Significantly reduced battery usage for both devices
+* Highly reliable data transfer even with intermittent connections
 
 ---
 
@@ -64,10 +58,10 @@ The system was redesigned to:
 Wearable (MCU)
   - Records audio
   - Encodes Opus frames
-  - Writes to eMMC as .bin segments
+  - Writes to eMMC/SD as .bin segments
   - Inserts metadata + markers
 
-        ↓ BLE (WAL-based sync)
+        ↓ Native BLE (WAL-based sync via Pigeon)
 
 Mobile App (Flutter)
   - Syncs segments incrementally
@@ -105,9 +99,13 @@ Optional Upload
 * The app syncs using a **Write-Ahead Log (WAL)** offset
 * Sync is **append-only and resumable**
 
+#### Native BLE Transport (Pigeon Bridge)
+
+The sync layer uses a **Native GATT implementation** for iOS and Android via a Pigeon bridge. This replaces Dart-based BLE libraries for significantly higher throughput and connection stability.
+
 #### Framed BLE Protocol
 
-The sync layer uses an explicit framing protocol to prevent audio repetition and corruption:
+The protocol prevents audio repetition and corruption:
 
 * **PACKET_DATA**: carries file offset in header — app checks for gaps and duplicates
 * **PACKET_EOT**: signals end of file data
@@ -160,22 +158,17 @@ User-triggered recording via double-tap.
 
 #### Firmware behavior
 
-* Sends a **0xFE marker packet** during the BLE stream
+* Writes a **254 (0xFE) marker packet** (16-byte payload) into the recording stream on the SD card
 * Triggers LED feedback (`marker_flash_count`)
 
 #### App behavior
 
-* Intercepts `0xFE` marker packets during the BLE stream
-* Saves marker timestamps to a plain-text `markers.txt` file and excludes them from the raw `.bin` segments
+* Intercepts `0xFE` marker packets during the BLE sync process
+* Saves marker timestamps to a plain-text `markers.txt` file
 * Performs **bidirectional extraction** around markers:
 
   * Up to 2 hours backward and forward
 * Runs VAD **only within this window**
-
-**Benefit:**
-
-* Precise conversation capture
-* Reduced compute and battery usage
 
 ---
 
@@ -194,10 +187,6 @@ On startup, the persisted boundary is validated before use:
 * If it is more than **2× the interval in the past** (device was offline for over 2 intervals) → discard
 * If it is more than **1× the interval in the future** (corrupt data) → discard
 * On discard, `fixedModeNextBoundaryMs` is reset to 0; the boundary is computed fresh from the first segment's timestamp when `processSegmentFile` runs
-
-The sentinel value 0 means "wait for real audio data before committing to a boundary." This avoids anchoring to wall-clock `now()` in the constructor, which could cause an off-by-a-few-seconds boundary mismatch relative to the actual audio timestamps arriving over BLE.
-
-Gap detection handles genuine long offline periods correctly once processing begins.
 
 ---
 
@@ -266,49 +255,12 @@ Backed by `SharedPreferencesUtil`.
 | Pre-Speech Buffer | `_preSpeechBufferMs`        | Preserves audio before speech start            |
 | Gap Threshold     | `_gapThresholdMs`           | Forces split on large timestamp gaps           |
 
-### Tradeoffs
-
-* Lower SNR → more false positives
-* Higher SNR → missed quiet speech
-* Longer hangover → smoother speech, less fragmentation
-* Short split duration → more aggressive segmentation
-
 ---
 
 ## HeyPocket Integration
 
 API:
 [https://public.heypocketai.com/api/v1](https://public.heypocketai.com/api/v1)
-
-### Upload Model
-
-* Multipart POST with `.m4a` file + API key
-
-### Trigger Modes
-
-* Marker (user initiated)
-* Automatic:
-
-  * Requires `autoSyncEnabled` + `heypocketEnabled`
-  * Background polling via `_pollHeyPocket()`
-
-### Idempotency
-
-* Stored in:
-
-```
-heypocketUploadedFiles (SharedPreferences)
-```
-
-* Prevents duplicate uploads across restarts
-
-### Error Handling
-
-* Wrapped in `HeyPocketException`
-* Supports retry on:
-
-  * Network failures
-  * 4xx / 5xx responses
 
 ---
 
@@ -335,69 +287,46 @@ All contributors must follow **NOMENCLATURE.md** strictly:
 * Requires:
 
   * Efficient MTU usage
-  * Explicit EOT (0xFD)
+  * Explicit EOT (0x02)
 
 ### Memory Constraints
 
 * Loading full PCM is not allowed
 * `FrameRef` architecture is mandatory
 
-### Battery Optimization
-
-* Firmware does:
-
-  * Record
-  * Encode
-  * Store
-
-* Firmware does **not**:
-
-  * Run VAD
-  * Perform analysis
-
-This keeps:
-
-* MCU mostly idle
-* Power usage minimal
-* System predictable and reliable
-
 ---
 
 ## Reliability & Stability
 
-Key correctness fixes applied since initial implementation:
+Key correctness fixes applied:
 
 | Area | Fix |
 | ---- | --- |
-| BLE connection | 15-second timeout on adapter and connection waits prevents indefinite hangs |
+| BLE connection | **Native Migration (Pigeon):** Migrated to native iOS/Android GATT for high-stability connections |
+| Connection States | Added `connecting` state to `DeviceConnectionState` to handle transient states correctly |
+| Battery/Charging | **Immediate Read:** Force immediate battery level and charging state read on connect |
+| Battery/Charging | **Detail Characteristic:** Prefer 4-byte battery detail characteristic (19b10051) for richer data |
+| BLE sync | **Protocol Gap Detection:** Inline retry and rewinding for offset mismatches during sync |
 | BLE sync | Framed protocol with ACK gating eliminates duplicate/gap audio |
-| Firmware storage | Storage offset parsing aligned to little-endian (matches firmware write order) |
+| Firmware storage | **Serialization:** Serialized storage operations to prevent race conditions during list/read/delete |
+| Firmware storage | **Retry Logic:** `performListFiles` retries up to 3x on 0xFF firmware error; timeout increased to 35s |
+| Firmware storage | **Immediate WAL:** Set WAL device immediately on connect without blocking on `listFiles` |
 | Firmware uptime | `last_timestamp_uptime` reset on wipe; uptime rollover handled correctly |
 | Opus decode | One decoder per extraction range — state preserved across segment boundaries |
 | Subscription lifecycle | Subscriptions stored and cancelled in all providers, services, and transport layers |
-| WAL sync async safety | `sdcard_wal_sync` prevents double-complete, async-void fire-and-forget, and stream cancel races |
 | `ServiceManager` | `deinit()` is `async`; callers must await it to avoid torn-down services |
-| Noise floor | Reset correctly on segment boundaries in `OfflineAudioProcessor` |
-| Fixed interval boundary | Staleness guard discards persisted boundary if > 2× interval old or in future; resets to 0 so boundary is anchored to first real audio timestamp |
-| Recordings page | Sync state and dialog lifecycle fixed to reflect true sync status |
-| Low battery alert | Alert now fires correctly during an active session |
-| Connection pipeline | `FindDevicesPage` routes through `DeviceService.ensureConnection()` — never bypasses it |
-| VAD slider | Debounce cancels and restarts on every change (no stale previous timer) |
-| `TcpTransport` | Recursive disconnect loop prevented in error handler |
-| Force sync | Always refreshes WAL list from device regardless of sync threshold |
-| Delete Omi Segments | Firmware immediately creates a new recording file on delete; no BLE reconnect cycle needed |
-| Firmware boot | 200ms haptic buzz on power-on; LED pulses yellow during LittleFS pre-warm; mic capture delayed until SD is ready |
-| Firmware boot | Blue LED blink on boot removed; haptic is the sole power-on signal |
-| SD semaphore | Drain after ring-buffer batch to prevent spurious wakeups |
-| Firmware transport | Stray `transport_started = 0` removed — no longer discards first CMD_READ_FILE after delete |
+| Fixed interval | Staleness guard discards persisted boundary if > 2× interval old or in future |
+| Firmware boot | **oo-1.4.10:** Breathing LED boot pattern and improved SD/Mic initialization sequence |
+| Upstream Tracking | `UPSTREAM.md` tracks reviewed but unmerged PRs from the main Omi repository |
 
 ---
 
-## Repository Structure (Suggested)
+## Repository Structure
 
 ```
 /firmware   → Embedded recording + BLE transport
 /app        → Flutter app (sync, VAD, processing, UI)
+UPSTREAM.md → Tracking of unmerged upstream changes
 ```
 
 ### Key Components
@@ -405,6 +334,5 @@ Key correctness fixes applied since initial implementation:
 * `OfflineAudioProcessor` → VAD + segmentation engine
 * `MarkerRecordingExtractor` → Marker-based extraction; uses per-range Opus decoder for clean cross-segment decoding
 * `SDCardWalSyncImpl` → Framed BLE sync with ACK gating and gap detection
-* `FixedIntervalAudioProcessor` → Fixed wall-clock boundary cutting with cross-restart boundary persistence and staleness guard
-
----
+* `NativeBluetoothDiscoverer` → Native BLE device discovery via Pigeon
+* `FixedIntervalAudioProcessor` → Fixed wall-clock boundary cutting with cross-restart boundary persistence
