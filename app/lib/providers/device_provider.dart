@@ -93,11 +93,10 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   Future _bleDisconnectDevice(BtDevice btDevice) async {
-    var connection = await ServiceManager.instance().device.ensureConnection(btDevice.id);
-    if (connection == null) {
-      return Future.value(null);
-    }
-    return await connection.disconnect();
+    // Use disconnectDevice() directly so _connection is properly nulled.
+    // ensureConnection() returns null when disconnected, leaving a stale
+    // _connection reference that would block subsequent reconnection.
+    await ServiceManager.instance().device.disconnectDevice();
   }
 
   Future<int> _retrieveBatteryLevel(String deviceId) async {
