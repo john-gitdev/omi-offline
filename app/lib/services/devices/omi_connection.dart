@@ -510,4 +510,22 @@ class OmiDeviceConnection extends DeviceConnection {
       return false;
     }
   }
+
+  @override
+  Future<bool> performSyncDeviceTime() async {
+    try {
+      int epoch = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      await transport.writeCharacteristic(timeSyncServiceUuid, timeSyncWriteCharacteristicUuid, [
+        epoch & 0xFF,
+        (epoch >> 8) & 0xFF,
+        (epoch >> 16) & 0xFF,
+        (epoch >> 24) & 0xFF,
+      ]);
+      Logger.debug('OmiDeviceConnection: Successfully synced device time to epoch: $epoch');
+      return true;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Failed to sync device time: $e');
+      return false;
+    }
+  }
 }

@@ -27,6 +27,9 @@ const String timeSyncServiceUuid = '19b10030-e8f2-537e-4f6c-d104768a1214';
 const String timeSyncWriteCharacteristicUuid = '19b10031-e8f2-537e-4f6c-d104768a1214';
 
 const String batteryDetailServiceUuid = '19b10050-e8f2-537e-4f6c-d104768a1214';
+const String timeSyncWriteCharacteristicUuid = '19b10031-e8f2-537e-4f6c-d104768a1214';
+
+const String batteryDetailServiceUuid = '19b10050-e8f2-537e-4f6c-d104768a1214';
 // 4-byte notify payload: [mv_lo, mv_hi, percentage (0-100), charging (0/1)]
 const String batteryDetailCharacteristicUuid = '19b10051-e8f2-537e-4f6c-d104768a1214';
 
@@ -303,6 +306,16 @@ abstract class DeviceConnection {
   }
 
   Future<bool> performRotateFile() async => false;
+
+  /// Syncs the phone's current time to the device via BLE.
+  Future<bool> syncDeviceTime() async {
+    if (await isConnected()) {
+      return await performSyncDeviceTime();
+    }
+    return false;
+  }
+
+  Future<bool> performSyncDeviceTime() async => false;
 
   // Feature support and Settings
   Future<int> getFeatures() async {

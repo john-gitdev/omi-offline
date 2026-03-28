@@ -60,9 +60,6 @@ class NativeBleTransport extends DeviceTransport {
       // If services already arrived (from already-connected path), use them
       if (_servicesCompleter!.isCompleted || _services.isNotEmpty) {
         if (!_servicesCompleter!.isCompleted) _servicesCompleter!.complete(_services);
-      } else {
-        // Trigger discovery — native hasn't sent services yet (fresh connection)
-        _hostApi.discoverServices(_peripheralUuid);
       }
 
       _services = await _servicesCompleter!.future.timeout(const Duration(seconds: 15));
@@ -121,6 +118,16 @@ class NativeBleTransport extends DeviceTransport {
     try {
       return _hostApi.isPeripheralConnected(_peripheralUuid);
     } catch (e) {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> requestBond() async {
+    try {
+      return await _hostApi.requestBond(_peripheralUuid);
+    } catch (e) {
+      Logger.debug('[NativeBleTransport] Failed to request bond: $e');
       return false;
     }
   }

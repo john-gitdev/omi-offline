@@ -9,6 +9,7 @@ abstract class DeviceTransport {
   Future<void> disconnect();
   Future<bool> isConnected();
   Future<bool> ping();
+  Future<bool> requestBond() async { return true; }
 
   Future<Stream<List<int>>> getCharacteristicStream(String serviceUuid, String characteristicUuid);
 

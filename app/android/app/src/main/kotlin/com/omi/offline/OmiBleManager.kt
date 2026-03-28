@@ -31,7 +31,7 @@ class OmiBleManager private constructor(private val application: Application) {
         private const val STABILITY_TIMER_MS = 60000L // 60s — reset retry count after stable connection
 
         /** GATT status codes that are transient and worth retrying. */
-        private val RETRYABLE_STATUS_CODES = setOf(8, 19, 62, 133, 257)
+        private val RETRYABLE_STATUS_CODES = setOf(8, 19, 22, 62, 133, 147, 257)
 
         @Volatile
         private var _instance: OmiBleManager? = null
@@ -84,35 +84,36 @@ class OmiBleManager private constructor(private val application: Application) {
     private var stabilityTimerRunnable: Runnable? = null
     private var pendingReconnectRunnable: Runnable? = null
 
+    private var bondCompletionCallback: ((Boolean) -> Unit)? = null
+    private var bondTimeoutRunnable: Runnable? = null
+    private var bondingAddress: String? = null
+    private val BOND_TIMEOUT_MS = 15000L
+
     private val bondStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
             val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
-            val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+            val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
             val address = device.address.uppercase()
 
             Log.i(TAG, "Bond state changed: $address → $bondState")
-            val gatt = connectedGatts[address] ?: return
+            if (address != bondingAddress) return
             when (bondState) {
                 BluetoothDevice.BOND_BONDED -> {
-                    Log.i(TAG, "Bonding complete for $address, discovering services")
-                    servicesDiscoveredFor.remove(address)
-                    enqueueCommand {
-                        if (!gatt.discoverServices()) {
-                            Log.e(TAG, "discoverServices returned false after bonding")
-                            completeCommand()
-                        }
-                    }
+                    Log.i(TAG, "Bonding complete for $address")
+                    bondingAddress = null
+                    bondTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+                    bondTimeoutRunnable = null
+                    bondCompletionCallback?.invoke(true)
+                    bondCompletionCallback = null
                 }
                 BluetoothDevice.BOND_NONE -> {
-                    Log.w(TAG, "Bonding failed for $address, attempting service discovery anyway")
-                    servicesDiscoveredFor.remove(address)
-                    enqueueCommand {
-                        if (!gatt.discoverServices()) {
-                            Log.e(TAG, "discoverServices returned false after bond failure")
-                            completeCommand()
-                        }
-                    }
+                    Log.w(TAG, "Bonding failed/removed for $address")
+                    bondingAddress = null
+                    bondTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+                    bondTimeoutRunnable = null
+                    bondCompletionCallback?.invoke(false)
+                    bondCompletionCallback = null
                 }
             }
         }
@@ -305,9 +306,31 @@ class OmiBleManager private constructor(private val application: Application) {
         return bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
     }
 
-    fun discoverServices(address: String) {
+    fun requestBond(address: String, completion: (Result<Boolean>) -> Unit) {
         val addr = address.uppercase()
-        connectedGatts[addr]?.discoverServices()
+        val device = connectedGatts[addr]?.device
+        if (device == null) {
+            completion(Result.failure(Exception("Device not connected")))
+            return
+        }
+        if (device.bondState == BluetoothDevice.BOND_BONDED) {
+            Log.i(TAG, "requestBond: $addr already bonded")
+            completion(Result.success(true))
+            return
+        }
+        Log.i(TAG, "requestBond: $addr initiating bond")
+        bondingAddress = addr
+        bondCompletionCallback = { bonded -> completion(Result.success(bonded)) }
+        device.createBond()
+        val timeoutRunnable = Runnable {
+            bondTimeoutRunnable = null
+            bondingAddress = null
+            Log.w(TAG, "requestBond: $addr bond timeout")
+            bondCompletionCallback?.invoke(false)
+            bondCompletionCallback = null
+        }
+        bondTimeoutRunnable = timeoutRunnable
+        mainHandler.postDelayed(timeoutRunnable, BOND_TIMEOUT_MS)
     }
 
     fun readCharacteristic(
@@ -521,7 +544,7 @@ class OmiBleManager private constructor(private val application: Application) {
                     reconnectRetryCount[address] = 0
                     cancelPendingReconnect()
 
-                    OmiBleForegroundService.startService(application, address)
+                    OmiBleForegroundService.startService(application, address, caller = "OmiBleManager.onConnectionStateChange")
                     OmiBleForegroundService.updateNotificationText("Listening and transcribing")
 
                     mainHandler.post {
@@ -531,18 +554,13 @@ class OmiBleManager private constructor(private val application: Application) {
                     startRssiKeepAlive(address)
                     startStabilityTimer(address)
 
-                    if (gatt.device.bondState == BluetoothDevice.BOND_BONDED) {
-                        Log.i(TAG, "Device $address already bonded, discovering services")
-                        enqueueCommand {
-                            if (!gatt.discoverServices()) {
-                                Log.e(TAG, "discoverServices returned false")
-                                completeCommand()
-                            }
+                    // Always discover services immediately — no bonding in the connection pipeline.
+                    // Bonding is only done on-demand via requestBond() for devices that need it.
+                    enqueueCommand {
+                        if (!gatt.discoverServices()) {
+                            Log.e(TAG, "discoverServices returned false")
+                            completeCommand()
                         }
-                    } else {
-                        Log.i(TAG, "Device $address not bonded (state=${gatt.device.bondState}), calling createBond()")
-                        gatt.device.createBond()
-                        // Service discovery happens in bondStateReceiver after bonding completes
                     }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
