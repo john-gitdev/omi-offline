@@ -4,6 +4,18 @@ This document tracks features, optimizations, and bug fixes that have been revie
 
 ## Unmerged PRs
 
+### [PR #6086: BLE Reliability Fixes](https://github.com/BasedHardware/omi/pull/6086)
+- **Status:** Integrated — all applicable changes ported
+- **Assessment:** Five fixes targeting Android BLE crash-on-cold-start and reconnect race conditions. All five were applicable and have been implemented. These bugs were not caught by the prior static deep-dive (PR #64) because they require understanding Android OS CompanionDeviceService lifecycle and cross-layer GATT reconnect interactions — invisible from code reading alone.
+- **Files changed upstream (5):**
+  - `BleCompanionService.kt` — `isInitialized` guard before accessing `OmiBleManager.instance`
+  - `OmiBleManager.kt` — `isInitialized` companion property + reconnect guard in `connectPeripheral`
+  - `devices.dart` — `ensureConnection()` refactored to never recreate transport for same device
+  - `device_provider.dart` — `_bleDisconnectDevice` simplified to call `disconnectDevice()` directly
+  - `native_ble_transport.dart` — `_hasCharacteristic()` helper + existence guards on subscribe/read/write
+
+---
+
 ### [PR #6085: feat: native-owned BLE connection pipeline](https://github.com/BasedHardware/omi/pull/6085)
 - **Status:** Already integrated — all changes present in `omi-offline`
 - **Merged upstream:** March 27, 2026 (author: mdmohsin7)
@@ -30,6 +42,22 @@ This document tracks features, optimizations, and bug fixes that have been revie
 ---
 
 ## Integrated Features & Fixes
+
+### 6. Android BLE Cold-Start Crash & Reconnect Race Fixes
+**Source:** [PR #6086](https://github.com/BasedHardware/omi/pull/6086) ("BLE Reliability Fixes")
+
+**Integrated:**
+*   **`isInitialized` guard (`BleCompanionService.kt`):** Added `OmiBleManager.isInitialized` check in `handleDeviceAppeared` and `onCreate` before accessing `OmiBleManager.instance`. The Android OS can start `BleCompanionService` as a system service (BLE presence event) while the app process is fully dead — before `OmiBleManager.initialize()` has been called. The `instance` getter throws `IllegalStateException` in that state, crashing the service.
+*   **`isInitialized` companion property (`OmiBleManager.kt`):** Added `val isInitialized: Boolean get() = _instance != null` to the companion object to support the guard above without catching exceptions.
+*   **Reconnect guard in `connectPeripheral` (`OmiBleManager.kt`):** Added a check at the top of `connectPeripheral`: if `pendingReconnectRunnable != null`, skip the call and return. When a BLE disconnect occurs, `onConnectionStateChange` schedules a 3s delayed `autoConnect=true` reconnect. If Dart calls `connectPeripheral` before that delay fires, `cancelPendingReconnect()` killed the scheduled runnable and replaced it with an impatient `autoConnect=false` attempt that fails faster — breaking the reliable OS-managed reconnect.
+*   **`ensureConnection` native-owns-reconnect refactor (`devices.dart`):** Refactored `ensureConnection()` so that if a `_connection` already exists for the same device ID (even if disconnected), it returns `null` without disposing the transport or calling `_connectToDevice`. Previously, a `force=true` call (from `_scanConnectDevice`) would dispose the existing transport and invoke `connectPeripheral`, fighting the native `autoConnect=true` reconnect in progress.
+*   **`_bleDisconnectDevice` simplification (`device_provider.dart`):** Changed `_bleDisconnectDevice` (called by `prepareDFU`) to call `DeviceService.disconnectDevice()` directly instead of routing through `ensureConnection()`. `ensureConnection()` returns `null` when the device is disconnected, leaving `_connection` non-null and pointing to a stale object — subsequent reconnection after DFU would fail silently.
+*   **Characteristic existence guards (`native_ble_transport.dart`):** Added `_hasCharacteristic()` helper that checks discovered `_services` before subscribe/read/write. Optional characteristics absent on some device variants no longer cause unnecessary native round-trips or exceptions; subscribe silently skips, read returns `[]`, write throws immediately with a clear message.
+
+**Excluded:**
+*   Nothing. All five fixes were applicable and ported.
+
+---
 
 ### 1. BLE Connection Pipeline & Stability Refactor
 **Source:** [PR #6085](https://github.com/BasedHardware/omi/pull/6085) ("feat: native-owned BLE connection pipeline", mdmohsin7) — [Commit `7645da3`](https://github.com/BasedHardware/omi/commit/7645da34a3f6f56cc8cec594187cf41a9e8745e0)
