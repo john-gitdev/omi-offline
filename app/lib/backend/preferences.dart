@@ -18,9 +18,9 @@ class SharedPreferencesUtil {
 
   //--------------------------- Offline Audio Processing ---------------------//
 
-  double get offlineSnrMarginDb => getDouble('offlineSnrMarginDb', defaultValue: 10.0);
+  double get vadSnrMarginDb => getDouble('offlineSnrMarginDb', defaultValue: 10.0);
 
-  set offlineSnrMarginDb(double value) => saveDouble('offlineSnrMarginDb', value);
+  set vadSnrMarginDb(double value) => saveDouble('offlineSnrMarginDb', value);
 
   double get offlineHangoverSeconds => getDouble('offlineHangoverSeconds', defaultValue: 0.5);
 
