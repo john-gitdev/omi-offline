@@ -1372,8 +1372,18 @@ void sd_worker_thread(void)
                     bytes_since_sync = 0;
                     last_file_sync_uptime_ms = k_uptime_get();
                 }
-                /* Reopen read handle to pick up new file size */
+                /* Reopen read handle to pick up new file size.
+                 * Re-verify the file is still active after the close-reopen
+                 * window to guard against concurrent file rotation. */
                 close_read_handle();
+                k_mutex_lock(&current_filename_lock, K_FOREVER);
+                bool still_active = (current_filename[0] != '\0' &&
+                                     strcmp(req.u.read.filename, current_filename) == 0);
+                k_mutex_unlock(&current_filename_lock);
+                if (!still_active) {
+                    /* File rotated under us — signal completion. */
+                    is_active_file = false;
+                }
                 res = lfs_file_opencfg(&lfs_fs, &lfs_read_handle, read_path, LFS_O_RDONLY, &lfs_read_handle_cfg);
                 if (res < 0) {
                     if (req.u.read.resp) {
