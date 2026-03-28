@@ -380,7 +380,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   Future<void> _performHealthCheck() async {
-    if (!isConnected || connectedDevice == null) {
+    if (_disposed || !isConnected || connectedDevice == null) {
       _stopHealthCheck();
       return;
     }
@@ -389,6 +389,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     if (deviceService is! DeviceService) return;
 
     final alive = await deviceService.ping();
+    // Re-check state after await — device may have disconnected while pinging
+    if (_disposed || !isConnected) return;
     if (alive) {
       _consecutivePingFailures = 0;
       return;
@@ -407,6 +409,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   void _startBackgroundSyncTimer() {
     _backgroundSyncTimer?.cancel();
     _backgroundSyncTimer = Timer.periodic(const Duration(minutes: _backgroundSyncMinutes), (_) async {
+      if (_disposed) return;
       if (!isConnected) {
         if (!isConnecting) {
           for (int attempt = 0; attempt < 3 && !isConnected; attempt++) {
@@ -446,6 +449,18 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       lastSyncErrorTime = DateTime.now();
       Logger.error('Background sync failed: $e');
       notifyListeners();
+    }
+  }
+
+  void onAppPaused() {
+    _stopHealthCheck();
+    _backgroundSyncTimer?.cancel();
+  }
+
+  void onAppResumed() {
+    if (isConnected) {
+      _startHealthCheck();
+      _startBackgroundSyncTimer();
     }
   }
 
@@ -508,8 +523,11 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
     _isHandlingDisconnect = false;
 
-    Future.delayed(const Duration(seconds: 1), () {
-      periodicConnect('coming from onDisconnect');
+    _reconnectDelayTimer?.cancel();
+    _reconnectDelayTimer = Timer(const Duration(seconds: 1), () {
+      if (!_disposed) {
+        periodicConnect('coming from onDisconnect');
+      }
     });
   }
 
@@ -542,8 +560,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
     // DEDUPLICATED: Fetch file list once and use it for multiple purposes.
     // This can take 30+ seconds if the firmware SD worker is busy at boot.
+    // Re-check device is still connected after each long await to avoid stale state.
+    if (_disposed || connectedDevice?.id != device.id) return;
     var connection = await ServiceManager.instance().device.ensureConnection(device.id);
+    if (_disposed || connectedDevice?.id != device.id) return;
     final files = await connection?.listFiles() ?? [];
+    if (_disposed || connectedDevice?.id != device.id) return;
     isDeviceStorageSupport = files.isNotEmpty;
 
     // Use the fetched files to calculate storage percentage immediately
@@ -557,9 +579,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
     // Update WAL device with the real file list so the first syncAll() skips
     // a redundant BLE round-trip.
-    if (connectedDevice?.id == device.id) {
-      await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: files);
-    }
+    if (_disposed || connectedDevice?.id != device.id) return;
+    await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: files);
 
     // getDeviceInfo() already ran inside setConnectedDevice(); this is a no-op
     // if firmware revision was fetched successfully.
