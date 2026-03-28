@@ -142,6 +142,17 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     }
   }
 
+  Future updateChargingState() async {
+    if (connectedDevice == null) return;
+    var connection = await ServiceManager.instance().device.ensureConnection(connectedDevice!.id);
+    if (connection == null) return;
+    final charging = await connection.retrieveChargingState();
+    if (isCharging != charging) {
+      isCharging = charging;
+      notifyListeners();
+    }
+  }
+
   Future<BtDevice?> _getConnectedDevice() async {
     var deviceId = SharedPreferencesUtil().btDevice.id;
     if (deviceId.isEmpty) {
@@ -486,9 +497,13 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     await setConnectedDevice(device);
     setIsConnected(true);
 
-    // IMPORTANT: Fetch battery immediately BEFORE any slow storage operations
+    // IMPORTANT: Fetch battery immediately BEFORE any slow storage operations.
+    // Subscribe to notifications first so we don't miss the firmware's
+    // initial notify-on-subscribe packet, then do one-shot reads for both
+    // percentage (standard BAS, fast) and charging state (battery detail).
     await initiateBleBatteryListener();
-    await updateBatteryLevel(); // Force an immediate read
+    await updateBatteryLevel();
+    await updateChargingState();
     await initiateBleButtonListener();
     if (batteryLevel != -1 && batteryLevel < 20) {
       _hasLowBatteryAlerted = false;
