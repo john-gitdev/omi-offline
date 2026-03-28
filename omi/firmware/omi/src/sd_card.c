@@ -1243,9 +1243,24 @@ void sd_worker_thread(void)
     while (1) {
         /* Handle deferred control requests first (when queue was saturated). */
         if (atomic_cas(&pending_flush_on_ble_connect, 1, 0)) {
-            req.type = REQ_FLUSH_FILE;
-            req.u.create_file.resp = NULL;
-            goto handle_req;
+            /* Attempt flush inline; if it fails, re-set the flag so the
+             * next loop iteration retries instead of silently losing it. */
+            if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
+                int df_res = flush_batch_buffer();
+                if (df_res == 0) {
+                    int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
+                    if (sr < 0) {
+                        atomic_set(&pending_flush_on_ble_connect, 1);
+                    } else {
+                        data_sync_gen++;
+                        bytes_since_sync = 0;
+                        last_file_sync_uptime_ms = k_uptime_get();
+                        LOG_INF("[SD_WORK] Deferred BLE flush OK (%u bytes)", current_file_size);
+                    }
+                } else {
+                    atomic_set(&pending_flush_on_ble_connect, 1);
+                }
+            }
         }
         if (atomic_cas(&pending_time_synced, 1, 0)) {
             req.type = REQ_TIME_SYNCED;
