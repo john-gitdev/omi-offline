@@ -134,9 +134,9 @@ class OmiBleForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun connectToDevice(address: String) {
-        Log.d(TAG, "Connecting to device: $address")
-        OmiBleManager.instance.connectPeripheral(address)
+    private fun connectToDevice(address: String, caller: String = "FgService") {
+        Log.d(TAG, "Connecting to device: $address (caller=$caller)")
+        OmiBleManager.instance.connectPeripheral(address, caller = "FgService/$caller")
     }
 
     private fun reconnectInternal() {
