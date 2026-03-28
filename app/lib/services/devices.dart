@@ -29,9 +29,6 @@ abstract interface class IDeviceService {
   DeviceConnection? get connection;
   Stream<DeviceConnectionState> get connectionStateStream;
 
-  // WiFi sync disabled.
-  // bool get isWifiSyncInProgress;
-  // void setWifiSyncInProgress(bool value);
   Future<void> disconnectDevice();
 
   DeviceServiceStatus get status;
