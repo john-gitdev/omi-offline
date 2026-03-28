@@ -261,7 +261,7 @@ static atomic_t ble_connected;
 static int64_t ble_connect_time_ms = 0;
 
 /* Track if active file was deleted while BLE connected */
-static bool current_file_deleted = false;
+static atomic_t current_file_deleted;
 
 /* Offset info (oldest file + byte offset) */
 static sd_offset_info_t current_offset_info = {0};
@@ -344,7 +344,7 @@ static void process_write_data_req(const sd_req_t *req)
             sd_write_blocked = true;
             return;
         }
-        current_file_deleted = false;
+        atomic_clear(&current_file_deleted);
     }
 
     if (should_rotate_file()) {
@@ -1496,7 +1496,7 @@ void sd_worker_thread(void)
         /* ---- Flush current file ---- */
         case REQ_FLUSH_FILE: {
             int flush_res = 0;
-            if (!current_file_deleted && current_filename[0] != '\0') {
+            if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
                 flush_res = flush_batch_buffer();
                 if (flush_res == 0) {
                     int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
@@ -1555,7 +1555,7 @@ void sd_worker_thread(void)
                 last_file_sync_uptime_ms = 0;
                 write_batch_offset = 0;
                 write_batch_counter = 0;
-                current_file_deleted = true;
+                atomic_set(&current_file_deleted, 1);
             }
 
             int rm = lfs_remove(&lfs_fs, del_path);
