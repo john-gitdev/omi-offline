@@ -1622,7 +1622,7 @@ int app_sd_off(void)
     bool unmount_completed = false;
 
     if (is_mounted && sd_worker_tid) {
-        struct read_resp resp;
+        static struct read_resp resp;
         k_sem_init(&resp.sem, 0, 1);
         resp.res = 0;
 
