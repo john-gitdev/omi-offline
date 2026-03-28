@@ -1059,6 +1059,11 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
     data_sync_gen++;
     bytes_since_sync = 0;
     last_file_sync_uptime_ms = k_uptime_get();
+
+    /* Hold mutex across the entire close-rename-reopen sequence so that
+     * concurrent filename readers (sd_is_current_recording_file) never see
+     * a stale name while the file handle is in an intermediate state. */
+    k_mutex_lock(&current_filename_lock, K_FOREVER);
     lfs_file_close(&lfs_fs, &lfs_fil_data);
 
     char new_path[64];
@@ -1068,16 +1073,16 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
         LOG_ERR("Rename failed: %d", ret);
         /* Re-open old file */
         lfs_file_opencfg(&lfs_fs, &lfs_fil_data, current_file_path, LFS_O_RDWR | LFS_O_APPEND, &lfs_fdata_cfg);
+        k_mutex_unlock(&current_filename_lock);
         return;
     }
 
-    k_mutex_lock(&current_filename_lock, K_FOREVER);
     strncpy(current_filename, new_filename, sizeof(current_filename) - 1);
     strncpy(current_file_path, new_path, sizeof(current_file_path) - 1);
     current_file_needs_rename = false;
-    k_mutex_unlock(&current_filename_lock);
 
     lfs_file_opencfg(&lfs_fs, &lfs_fil_data, current_file_path, LFS_O_RDWR | LFS_O_APPEND, &lfs_fdata_cfg);
+    k_mutex_unlock(&current_filename_lock);
     LOG_INF("File renamed OK: %s", current_filename);
 }
 
