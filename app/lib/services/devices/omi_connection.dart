@@ -439,11 +439,12 @@ class OmiDeviceConnection extends DeviceConnection {
         if (completer.isCompleted) return;
         // Expect [PACKET_ACK=0x03][result:1]
         if (data.length >= 2 && data[0] == 0x03) {
+          sub?.cancel();
           completer.complete(data[1] == 0);
         } else if (data.length == 1 && data[0] == 0x03) {
+          sub?.cancel();
           completer.complete(true); // ACK with no result byte = success
         }
-        sub?.cancel();
       }, onError: (e) {
         if (!completer.isCompleted) completer.completeError(e);
         sub?.cancel();
