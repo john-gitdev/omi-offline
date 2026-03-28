@@ -176,7 +176,7 @@ class RecordingsManager {
     if (await rawSegmentsDir.exists()) {
       final sessionFolders = rawSegmentsDir.listSync().whereType<Directory>().toList();
 
-      // Sort session folders by ID (e.g. "100", "101")
+      // Sort DeviceSession folders by ID (e.g. "100", "101")
       sessionFolders.sort((a, b) {
         final aId = int.tryParse(a.path.split('/').last) ?? 0;
         final bId = int.tryParse(b.path.split('/').last) ?? 0;
@@ -204,7 +204,7 @@ class RecordingsManager {
               }
             }
           } catch (e) {
-            Logger.error("RecordingsManager: Failed to read markers for session $deviceSessionIdStr: $e");
+            Logger.error("RecordingsManager: Failed to read markers for DeviceSession $deviceSessionIdStr: $e");
           }
         }
 
@@ -796,7 +796,7 @@ class RecordingsManager {
   }
 
   /// Background auto-process: processes all batches as one continuous stream.
-  /// Skips the newest segment per session (may still be written by firmware).
+  /// Skips the newest segment per DeviceSession (may still be written by firmware).
   /// Safe to call from a background timer; no-op if a marker process is running.
   static Future<void> processAllCompletedSessions() async {
     if (_isProcessingAny) return;
@@ -824,7 +824,7 @@ class RecordingsManager {
     }
   }
 
-  /// Force-process all batches including the newest segment per session.
+  /// Force-process all batches including the newest segment per DeviceSession.
   /// Used by the debug Force Process button — same as pressing the Process button
   /// on each batch but operates across all days at once.
   /// No-op if a process is already running.
@@ -841,8 +841,8 @@ class RecordingsManager {
     }
   }
 
-  /// Returns [segments] with the highest segmentIndex file excluded per device session.
-  /// Files are named `{deviceSessionId}_{segmentIndex}.bin`; the last segment per session
+  /// Returns [segments] with the highest segmentIndex file excluded per DeviceSession.
+  /// Files are named `{deviceSessionId}_{segmentIndex}.bin`; the last segment per DeviceSession
   /// may still be actively written by the firmware, so we skip it.
   static List<File> excludeNewestSegmentPerSession(List<File> segments) {
     // Also exclude any segment modified within the last 5 seconds to avoid
@@ -904,7 +904,7 @@ class RecordingsManager {
   }
 
   /// Deletes all processed recordings (.m4a/.wav) and their .meta sidecars for a
-  /// day, plus any remaining raw segments and their device session folders.
+  /// day, plus any remaining raw segments and their DeviceSession folders.
   /// Safe to call while nothing is playing.
   Future<void> deleteDay(Batch batch) async {
     final directory = await getApplicationDocumentsDirectory();
@@ -925,7 +925,7 @@ class RecordingsManager {
         sessionFolderPaths.add(file.parent.path);
       }
 
-      // 3. Remove now-empty session folders (non-recursive delete fails if not empty)
+      // 3. Remove now-empty DeviceSession folders (non-recursive delete fails if not empty)
       for (var folderPath in sessionFolderPaths) {
         try { await Directory(folderPath).delete(recursive: false); } on FileSystemException catch (_) {}
       }
