@@ -429,7 +429,7 @@ class RecordingsManager {
 
       // 6. Raw segment deletion
       // Marker and fixed modes always use lastSafeToDeleteIndex because both manage
-      // their own buffer state and only advance the index when a full interval/clip completes.
+      // their own buffer state and only advance the index when a full interval/recording completes.
       if (backgroundMode || isMarkerMode || isFixedMode) {
         // Delete only segments belonging to fully-completed conversations.
         // If adjustment mode is ON, keep everything for re-processing.
