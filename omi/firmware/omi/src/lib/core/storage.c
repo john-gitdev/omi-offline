@@ -50,6 +50,7 @@ static uint32_t current_read_offset = 0;
 #define CMD_ROTATE_FILE     0x13   // Close current recording file and open a new one
 
 /* Multi-file sync state */
+static K_MUTEX_DEFINE(file_list_mutex);
 static char sync_file_list[MAX_AUDIO_FILES][MAX_FILENAME_LEN];
 static uint32_t sync_file_sizes[MAX_AUDIO_FILES];
 static int sync_file_count = 0;
@@ -182,8 +183,8 @@ uint8_t transport_started = 0;
 #define STORAGE_READ_BATCH_SIZE 20
 #define STORAGE_BUFFER_SIZE (SD_BLE_SIZE * STORAGE_READ_BATCH_SIZE + 5 * STORAGE_READ_BATCH_SIZE)  /* ~8.9KB */
 static uint8_t storage_buffer[STORAGE_BUFFER_SIZE];
-static uint8_t stop_started = 0;
-uint32_t remaining_length = 0;
+static atomic_t stop_started;
+static atomic_t remaining_length;
 
 #define SYNC_SPEED_LOG_INTERVAL_MS (30 * 1000)
 
@@ -253,15 +254,18 @@ static uint8_t heartbeat_count = 0;
  */
 static int refresh_file_list_cache(void)
 {
+    k_mutex_lock(&file_list_mutex, K_FOREVER);
     int ret = get_audio_file_list_with_sizes(sync_file_list, sync_file_sizes,
                                              MAX_AUDIO_FILES, &sync_file_count);
     if (ret < 0) {
         LOG_ERR("Failed to get file list: %d", ret);
         sync_file_count = 0;
+        k_mutex_unlock(&file_list_mutex);
         return ret;
     }
-    
+
     LOG_INF("File list refreshed: %d files", sync_file_count);
+    k_mutex_unlock(&file_list_mutex);
     return sync_file_count;
 }
 
@@ -342,13 +346,13 @@ static int setup_file_transfer(int file_index, uint32_t start_offset)
     current_sync_file_index = file_index;
     
     if (current_read_offset < sync_file_sizes[file_index]) {
-        remaining_length = sync_file_sizes[file_index] - current_read_offset;
+        atomic_set(&remaining_length, sync_file_sizes[file_index] - current_read_offset);
     } else {
-        remaining_length = 0;
+        atomic_clear(&remaining_length);
     }
-    
-    LOG_INF("Setup transfer: file[%d]=%s, offset=%u, remaining=%u", 
-            file_index, current_read_filename, current_read_offset, remaining_length);
+
+    LOG_INF("Setup transfer: file[%d]=%s, offset=%u, remaining=%u",
+            file_index, current_read_filename, current_read_offset, (uint32_t)atomic_get(&remaining_length));
     return 0;
 }
 
@@ -503,7 +507,7 @@ static void write_to_gatt(struct bt_conn *conn)
     
     if (current_sync_file_index < 0) {
         LOG_ERR("write_to_gatt called without active multi-file transfer");
-        remaining_length = 0;
+        atomic_clear(&remaining_length);
         return;
     }
 
@@ -514,13 +518,14 @@ static void write_to_gatt(struct bt_conn *conn)
      * saturate or we run out of data. Keeps BLE running at full
      * connection-event throughput instead of one batch per main-loop tick.
      */
-    while (remaining_length > 0) {
-        if (stop_started) {
-            remaining_length = 0;
+    while (atomic_get(&remaining_length) > 0) {
+        if (atomic_get(&stop_started)) {
+            atomic_clear(&remaining_length);
             return;
         }
 
-        uint32_t batch_audio_size = MIN(remaining_length, (uint32_t)(ble_chunk * BLE_BATCH_PACKETS));
+        uint32_t rem = (uint32_t)atomic_get(&remaining_length);
+        uint32_t batch_audio_size = MIN(rem, (uint32_t)(ble_chunk * BLE_BATCH_PACKETS));
         if (batch_audio_size > STORAGE_BUFFER_SIZE) {
             batch_audio_size = STORAGE_BUFFER_SIZE;
         }
@@ -528,7 +533,7 @@ static void write_to_gatt(struct bt_conn *conn)
         int r = read_audio_data(current_read_filename, storage_buffer, batch_audio_size, current_read_offset);
         if (r <= 0) {
             LOG_ERR("Failed to read audio data: %d", r);
-            remaining_length = 0;
+            atomic_clear(&remaining_length);
             /* Notify app so it aborts immediately instead of waiting for timeout. */
             uint8_t err_ack[2] = {PACKET_ACK, FILE_NOT_FOUND};
             storage_notify(conn, err_ack, sizeof(err_ack));
@@ -537,9 +542,9 @@ static void write_to_gatt(struct bt_conn *conn)
         uint32_t bytes_read = (uint32_t)r;
         uint32_t bytes_sent = 0;
 
-        while (bytes_sent < bytes_read && remaining_length > 0) {
-            if (stop_started) {
-                remaining_length = 0;
+        while (bytes_sent < bytes_read && atomic_get(&remaining_length) > 0) {
+            if (atomic_get(&stop_started)) {
+                atomic_clear(&remaining_length);
                 return;
             }
 
@@ -556,8 +561,8 @@ static void write_to_gatt(struct bt_conn *conn)
 
             err = storage_notify(conn, ble_notify_buf, 5 + chunk);
             if (err == -ENOMEM) {
-                if (stop_started) {
-                    remaining_length = 0;
+                if (atomic_get(&stop_started)) {
+                    atomic_clear(&remaining_length);
                     return;
                 }
                 k_yield();
@@ -574,20 +579,20 @@ static void write_to_gatt(struct bt_conn *conn)
             bytes_sent += chunk;
             sync_speed_add_bytes(chunk);
             current_read_offset += chunk;
-            remaining_length -= chunk;
+            atomic_sub(&remaining_length, chunk);
         }
     }
 }
 
 void storage_stop_transfer()
 {
-    remaining_length = 0;
-    stop_started = 1;
+    atomic_clear(&remaining_length);
+    atomic_set(&stop_started, 1);
 }
 
 bool storage_transfer_active(void)
 {
-    return (remaining_length > 0) || (transport_started != 0);
+    return (atomic_get(&remaining_length) > 0) || (transport_started != 0);
 }
 
 void storage_write(void)
@@ -602,7 +607,7 @@ void storage_write(void)
             sync_speed_window_start_ms = 0;
             if (current_sync_file_index < 0) {
                 LOG_ERR("Transfer start requested without CMD_READ_FILE setup");
-                remaining_length = 0;
+                atomic_clear(&remaining_length);
             }
             transport_started = 0;  /* Clear flag after setup */
         }
@@ -660,9 +665,9 @@ void storage_write(void)
                 LOG_INF("CMD_ROTATE_FILE: new file created, ret=%d", ret);
             }
         }
-        if (stop_started) {
-            remaining_length = 0;
-            stop_started = 0;
+        if (atomic_get(&stop_started)) {
+            atomic_clear(&remaining_length);
+            atomic_clear(&stop_started);
             save_offset(current_read_filename, current_read_offset);
         }
         if (heartbeat_count == MAX_HEARTBEAT_FRAMES) {
@@ -672,12 +677,13 @@ void storage_write(void)
             heartbeat_count = 0;
         }
 
-        if (remaining_length > 0) {
+        if (atomic_get(&remaining_length) > 0) {
             if (conn == NULL) {
                 LOG_ERR("invalid connection");
-                remaining_length = 0;
+                atomic_clear(&remaining_length);
                 save_offset(current_read_filename, current_read_offset);
                 // save offset to flash
+                put_current_connection(conn);
                 continue;
                 // k_yield();
             }
@@ -685,9 +691,9 @@ void storage_write(void)
             write_to_gatt(conn);
             heartbeat_count = (heartbeat_count + 1) % (MAX_HEARTBEAT_FRAMES + 1);
 
-            if (remaining_length == 0) {
-                if (stop_started) {
-                    stop_started = 0;
+            if (atomic_get(&remaining_length) == 0) {
+                if (atomic_get(&stop_started)) {
+                    atomic_clear(&stop_started);
                 } else {
                     save_offset(current_read_filename, current_read_offset);
                     LOG_INF("File done: %s", current_read_filename);
@@ -698,18 +704,24 @@ void storage_write(void)
                     /* Notify app: file transfer complete (PACKET_EOT) */
                     LOG_INF("File sync complete, sending EOT: %s", current_read_filename);
                     uint8_t eot[1] = {PACKET_EOT};
-                    (void)storage_notify(get_current_connection(), eot, sizeof(eot));
+                    struct bt_conn *eot_conn = get_current_connection();
+                    (void)storage_notify(eot_conn, eot, sizeof(eot));
+                    put_current_connection(eot_conn);
                     k_msleep(10);
                 }
             }
         }
 
+        put_current_connection(conn);
+
         /* Sleep when there is genuinely no work pending */
-        if (remaining_length == 0 && !stop_started &&
+        if (atomic_get(&remaining_length) == 0 && !atomic_get(&stop_started) &&
             !list_files_requested && delete_file_index < 0) {
-            uint32_t idle_sleep_ms = get_current_connection()
+            struct bt_conn *idle_conn = get_current_connection();
+            uint32_t idle_sleep_ms = idle_conn
                 ? STORAGE_IDLE_POLL_MS_CONNECTED
                 : STORAGE_IDLE_POLL_MS_OFFLINE;
+            put_current_connection(idle_conn);
             k_msleep(idle_sleep_ms);
         } else {
             k_yield();
