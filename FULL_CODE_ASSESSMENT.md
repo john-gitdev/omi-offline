@@ -7,7 +7,7 @@
 
 ## Executive Summary
 
-This assessment identified **77 issues** across all layers of the Omi offline pipeline, including **~25 CRITICAL severity** bugs. The most dangerous patterns are:
+This assessment identified **85+ issues** across all layers of the Omi offline pipeline, including **~30 CRITICAL severity** bugs. The most dangerous patterns are:
 
 1. **Firmware race conditions** on shared state without mutex protection (audio corruption, use-after-free)
 2. **BLE transport double-cancellation** bugs that crash the app
@@ -39,6 +39,14 @@ This assessment identified **77 issues** across all layers of the Omi offline pi
 | F9 | Ring buffer race between mic thread (`codec_receive_pcm()`) and codec thread (`codec_entry()`). Zephyr ring_buf may be safe for single-producer/single-consumer but the logical sequence is not protected. | `codec.c` | 29-98 | Race Condition |
 | F10 | Time sync race with file rename — `sd_update_filename_after_timesync()` closes file, renames, and re-opens without holding mutex during the rename window. | `sd_card.c` | 1040-1082 | Race Condition |
 | F11 | Audio data silently dropped during SD boot phase (10-50 seconds). Intentional but not communicated to user. | `sd_card.c` | 1756-1764 | Data Loss |
+| F12 | **Buffer overflow in `write_to_file()`** — `memcpy(req.u.write.buf, data, length)` has no bounds check against `MAX_WRITE_SIZE` (440). Codec callback can pass any length. | `sd_card.c` | 1785 | Buffer Overflow |
+| F13 | **Use-after-free in `read_audio_data()`** — caller's stack buffer (`buf`) captured in request via `req.u.read.out_buf`. On 15s timeout, function returns and stack unwinds, but SD worker still writes to the freed pointer via `lfs_file_read()`. | `sd_card.c` | 1835-1851 | Use-After-Free |
+| F14 | **SD write queue priority inversion** — audio data writes go to prio queue (10 slots) before regular queue (100 slots). During BLE sync, reads and writes compete on prio queue causing codec thread stalls and timeouts. | `sd_card.c` | 1788-1795 | Priority Inversion |
+| F15 | `ble_connected` flag written without atomic or mutex — BLE thread writes while SD worker reads for timeout selection. | `sd_card.c` | 1745, 1258, 1794, 2062 | Race Condition |
+| F16 | `pending_time_synced_utc` race — non-atomic 32-bit write races with SD worker read. `compiler_barrier()` may not exist in Zephyr. | `sd_card.c` | 1700-1702, 1247 | Race Condition |
+| F17 | `current_file_deleted` flag accessed without synchronization — transport thread reads while SD worker writes. Both can try `create_new_audio_file()` concurrently. | `sd_card.c` | 264, 1553, 1737 | Race Condition |
+| F18 | Deferred `pending_flush_on_ble_connect` can be consumed by `atomic_cas` but never executed if both queues remain full. Flush is lost forever. | `sd_card.c` | 1240-1243, 1731-1732 | Data Loss |
+| F19 | TOCTOU on file rotation during read — after closing and reopening read handle, file could have rotated between close and reopen. Reads return data from wrong file. | `sd_card.c` | 1302-1386 | Race Condition |
 
 ---
 
@@ -162,9 +170,11 @@ This assessment identified **77 issues** across all layers of the Omi offline pi
 
 | Priority | ID | Issue | Risk |
 |----------|----|-------|------|
-| 1 | F2 | Firmware static `read_resp` semaphore re-init after timeout | **Semaphore corruption, undefined behavior** |
-| 2 | F3 | Firmware `current_connection` use-after-free | **BLE stack crash, kernel panic** |
-| 3 | F1 | Firmware `buffer_offset` unprotected writes | **Audio file corruption on every recording** |
+| 1 | F12 | Firmware `write_to_file()` buffer overflow — no bounds check on `memcpy` length | **Stack corruption, potential code execution** |
+| 2 | F2 | Firmware static `read_resp` semaphore re-init after timeout | **Semaphore corruption, undefined behavior** |
+| 3 | F13 | Firmware `read_audio_data()` use-after-free on timeout — SD worker writes to freed stack | **Memory corruption, crash** |
+| 3b | F3 | Firmware `current_connection` use-after-free | **BLE stack crash, kernel panic** |
+| 4 | F1 | Firmware `buffer_offset` unprotected writes | **Audio file corruption on every recording** |
 | 4 | B1/B2 | BLE double stream cancellation | **App crash on file delete/rotate** |
 | 5 | W6 | WAL `syncWal()` gap retry infinite loop | **Sync permanently broken until app restart** |
 | 6 | W1/W2 | WAL boundary offset not tracked properly | **Data loss on interrupted sync** |
