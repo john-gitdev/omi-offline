@@ -340,7 +340,7 @@ class OmiDeviceConnection extends DeviceConnection {
     };
 
     try {
-      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       await Future.microtask(() {}); // Ensure listener wiring completes
 
       _listFilesSub = stream.listen(
@@ -434,16 +434,17 @@ class OmiDeviceConnection extends DeviceConnection {
       final completer = Completer<bool>();
       StreamSubscription? sub;
 
-      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       sub = stream.listen((data) {
         if (completer.isCompleted) return;
         // Expect [PACKET_ACK=0x03][result:1]
         if (data.length >= 2 && data[0] == 0x03) {
+          sub?.cancel();
           completer.complete(data[1] == 0);
         } else if (data.length == 1 && data[0] == 0x03) {
+          sub?.cancel();
           completer.complete(true); // ACK with no result byte = success
         }
-        sub?.cancel();
       }, onError: (e) {
         if (!completer.isCompleted) completer.completeError(e);
         sub?.cancel();
@@ -488,7 +489,7 @@ class OmiDeviceConnection extends DeviceConnection {
       final completer = Completer<bool>();
       StreamSubscription? sub;
 
-      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       sub = stream.listen((data) {
         if (completer.isCompleted) return;
         if (data.length >= 2 && data[0] == 0x03) {
