@@ -1043,7 +1043,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   Future<void> _registerSingleSegment(Wal wal, File file, int timerStart) async {
     // Note: We no longer queue this for automatic processing in LocalWalSync.
-    // The RecordingsManager will pick up the .bin files in raw_segments/ device session folders.
+    // The RecordingsManager will pick up the .bin files in raw_segments/ DeviceSession folders.
   }
 
   /// Counts Opus frames in a .bin segment file (4-byte LE prefix per frame).
