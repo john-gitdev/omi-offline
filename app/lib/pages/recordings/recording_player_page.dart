@@ -149,7 +149,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
     setState(() => _isUploading = true);
     try {
       await HeyPocketService.uploadRecording(apiKey, widget.conversation);
-      _prefs.markUploadedToHeypocket(uploadKey);
+      await _prefs.markUploadedToHeypocket(uploadKey);
       if (mounted) setState(() {});
     } on HeyPocketException catch (e) {
       if (mounted) {
