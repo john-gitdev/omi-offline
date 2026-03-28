@@ -395,24 +395,28 @@ class RecordingsManager {
 
         await liveDir.create(recursive: true);
 
-        // Move files from temp to live
+        // Move files from temp to live — rename first, then clean up legacy files.
+        // This ordering ensures that if the app crashes mid-move, the original
+        // file (temp or legacy WAV) still exists.
         for (var file in newFiles) {
           final fileName = file.path.split('/').last;
           final dest = '$liveRecordingsPath/$fileName';
-          // If a file with the same name already exists (re-process of identical
-          // data), overwrite it rather than failing.
-          final destFile = File(dest);
-          if (await destFile.exists()) await destFile.delete();
 
-          // When placing a new .m4a, remove any legacy .wav with the same timestamp
-          // prefix to avoid both formats coexisting after re-processing.
-          if (fileName.endsWith('.m4a')) {
-            final tsPrefix = fileName.replaceAll('.m4a', '');
-            final legacyWav = File('$liveRecordingsPath/$tsPrefix.wav');
-            if (await legacyWav.exists()) await legacyWav.delete();
+          try {
+            // Remove existing destination if any (idempotent overwrite)
+            try { await File(dest).delete(); } on FileSystemException catch (_) {}
+
+            await file.rename(dest);
+
+            // Only after successful rename, clean up legacy WAV with same timestamp
+            if (fileName.endsWith('.m4a')) {
+              final tsPrefix = fileName.replaceAll('.m4a', '');
+              final legacyWav = File('$liveRecordingsPath/$tsPrefix.wav');
+              try { await legacyWav.delete(); } on FileSystemException catch (_) {}
+            }
+          } catch (e) {
+            Logger.error('RecordingsManager: Failed to move $fileName: $e');
           }
-
-          await file.rename(dest);
         }
 
         // Final flush and a small delay to ensure FS is ready
@@ -644,13 +648,12 @@ class RecordingsManager {
           final liveDir = Directory('${directory.path}/recordings/$dateStr');
           await liveDir.create(recursive: true);
           final dest = '${liveDir.path}/$fileName';
-          final destFile = File(dest);
-          if (await destFile.exists()) await destFile.delete();
+          try { await File(dest).delete(); } on FileSystemException catch (_) {}
+          await file.rename(dest);
           if (fileName.endsWith('.m4a')) {
             final legacyWav = File('${liveDir.path}/${fileName.replaceAll('.m4a', '')}.wav');
-            if (await legacyWav.exists()) await legacyWav.delete();
+            try { await legacyWav.delete(); } on FileSystemException catch (_) {}
           }
-          await file.rename(dest);
         }
 
         await Future.delayed(const Duration(milliseconds: 200));
@@ -761,8 +764,16 @@ class RecordingsManager {
   /// Files are named `{deviceSessionId}_{segmentIndex}.bin`; the last segment per session
   /// may still be actively written by the firmware, so we skip it.
   static List<File> excludeNewestSegmentPerSession(List<File> segments) {
+    // Also exclude any segment modified within the last 5 seconds to avoid
+    // processing a file that is still being written to by the sync layer.
+    final recencyCutoff = DateTime.now().subtract(const Duration(seconds: 5));
     final Map<String, List<File>> bySession = {};
     for (final f in segments) {
+      try {
+        if (f.lastModifiedSync().isAfter(recencyCutoff)) continue;
+      } catch (_) {
+        continue; // File may have been deleted
+      }
       final name = f.path.split('/').last;
       final deviceSessionId = name.split('_').first;
       bySession.putIfAbsent(deviceSessionId, () => []).add(f);
@@ -829,18 +840,13 @@ class RecordingsManager {
     if (!SharedPreferencesUtil().offlineAdjustmentMode) {
       final Set<String> sessionFolderPaths = {};
       for (var file in batch.rawSegments) {
-        if (await file.exists()) {
-          await file.delete();
-          sessionFolderPaths.add(file.parent.path);
-        }
+        try { await file.delete(); } on FileSystemException catch (_) {}
+        sessionFolderPaths.add(file.parent.path);
       }
 
-      // 3. Remove now-empty session folders
+      // 3. Remove now-empty session folders (non-recursive delete fails if not empty)
       for (var folderPath in sessionFolderPaths) {
-        final folder = Directory(folderPath);
-        if (await folder.exists() && await folder.list().isEmpty) {
-          await folder.delete();
-        }
+        try { await Directory(folderPath).delete(recursive: false); } on FileSystemException catch (_) {}
       }
     }
   }
