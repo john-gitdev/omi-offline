@@ -83,8 +83,9 @@ abstract class DeviceConnection {
     switch (transportState) {
       case DeviceTransportState.connected:
         return DeviceConnectionState.connected;
-      case DeviceTransportState.disconnected:
       case DeviceTransportState.connecting:
+        return DeviceConnectionState.connecting;
+      case DeviceTransportState.disconnected:
       case DeviceTransportState.disconnecting:
         return DeviceConnectionState.disconnected;
     }
