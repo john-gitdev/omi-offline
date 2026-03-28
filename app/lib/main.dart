@@ -5,6 +5,7 @@ import 'package:omi/pages/recordings/recordings_page.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/services.dart';
+import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/utils/notifications.dart';
 import 'package:provider/provider.dart';
@@ -18,6 +19,8 @@ void main() async {
   await SharedPreferencesUtil.init();
   await NotificationsService.initialize();
   await ServiceManager.init();
+  await ServiceManager.instance().start();
+  await RecordingsManager.cleanUpIncompleteExtraction();
 
   runApp(const MyApp());
 }
@@ -34,7 +37,6 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    ServiceManager.instance().start();
     _checkHeyPocketKey();
   }
 
