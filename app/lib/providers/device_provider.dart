@@ -505,6 +505,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _stopHealthCheck();
     storageFullPercentage = -1;
     isCharging = false;
+    notifyListeners();
     await setConnectedDevice(null);
     await setisDeviceStorageSupport();
     setIsConnected(false);
@@ -576,6 +577,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     } else {
       storageFullPercentage = 0;
     }
+    notifyListeners();
 
     // Update WAL device with the real file list so the first syncAll() skips
     // a redundant BLE round-trip.
