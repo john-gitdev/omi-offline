@@ -6,9 +6,9 @@ This document defines the official terminology for all audio-related data struct
 
 | Term | Category | Level | Description | Old/Overloaded Terms |
 | :--- | :--- | :--- | :--- | :--- |
-| **Frame** | Data | Atomic | A single encoded Opus audio unit (~20ms). May include transport-specific prefix metadata. | `packet`, `byte_block` |
+| **Frame** | Data | Atomic | A single encoded Opus audio unit (~20ms). May include transport-specific prefix metadata. | `packet`, `byte_block`, `chunk` (when referring to audio data units) |
 | **Segment** | Physical | Storage | A `.bin` file containing a sequence of **Frames**. | `chunk`, `bin`, `file` |
-| **DeviceSession** | Hardware | Stream | An internal hardware-bound concept representing a continuous stream from boot to disconnect. | `session`, `wal_session`, `sessionId` |
+| **DeviceSession** | Hardware | Stream | An internal hardware-bound concept representing a continuous stream from boot to disconnect. | `session`, `wal_session`, `sessionId`, `device session` |
 | **Marker** | Metadata | Event | A point-in-time event (e.g. Star) stored as a timestamp. | `star`, `event`, `stars.txt` |
 | **WAL** | Metadata | Progress | A monotonic, append-only source of truth tracking ingestion progress of **Segments**. | `offset_log`, `sync_state`, `storageOffset` |
 | **Capture** | State | Process | The active state in which **Frames** are being received from the device. | `isRecording`, `active_session` |
@@ -99,10 +99,11 @@ The actual enum values in use:
 
 ## 6. Terminology Rules
 
-- **Segment** is the only valid term for `.bin` files. "chunk" and "bin" are forbidden in code and comments.
+- **Segment** is the only valid term for `.bin` files. "bin" is forbidden in code and comments when referring to audio data files.
 - **Recording** refers only to finalized audio artifacts, never live state.
-- **DeviceSession** must be prefixed explicitly in all internal variable names (e.g., `deviceSessionId`).
+- **DeviceSession** must be prefixed explicitly in all internal variable names (e.g., `deviceSessionId`). The bare term `session` is forbidden in code and comments when referring to a DeviceSession.
 - **DeviceSession** is an internal concept and must never be exposed to the UI or user-facing logs.
+- "chunk" is forbidden when referring to a **Segment** or **Frame** (audio data units). It is permitted in low-level disk I/O, WAV file format parsing (RIFF/fmt/data chunks), and platform channel streaming contexts.
 
 ---
 
@@ -123,4 +124,5 @@ The firmware (C / Zephyr RTOS on nRF52840) uses C snake_case conventions. Firmwa
 
 - All new code must adhere to this nomenclature.
 - PRs introducing conflicting terminology must be rejected or refactored.
-- Legacy terms (chunk, bin, session, star) must not be reintroduced.
+- Legacy terms (`bin` for audio files, `session` for DeviceSession, `star` for Marker) must not be reintroduced.
+- `chunk` is permitted only in low-level I/O, WAV format parsing, and platform channel streaming; it must not be used to refer to Segments or Frames.

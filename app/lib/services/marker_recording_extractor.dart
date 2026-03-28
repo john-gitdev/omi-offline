@@ -169,7 +169,7 @@ class MarkerRecordingExtractor {
       }
 
       if (startTime == null) {
-        // New protocol: session folder name IS the UTC file creation timestamp.
+        // New protocol: DeviceSession folder name IS the UTC file creation timestamp.
         // Filename is {timerStart}_{segIdx}.bin — parse timerStart from the stem.
         final stem = file.path.split('/').last.split('.').first;
         final utcSecs = int.tryParse(stem.split('_').first);
@@ -727,7 +727,7 @@ class MarkerRecordingExtractor {
       final data = batchBuffer.toBytes();
       batchBuffer.clear();
       batchFrameCount = 0;
-      await AacEncoder.encodeChunk(aacSession!, Uint8List.fromList(data));
+      await AacEncoder.encodeBuffer(aacSession!, Uint8List.fromList(data));
     }
 
     String? currentFilePath;

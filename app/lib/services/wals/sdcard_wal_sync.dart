@@ -337,7 +337,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       final markerFile = File('${folder.path}/markers.txt');
       await markerFile.writeAsString('$utcTime\n', mode: FileMode.append);
-      Logger.debug("SDCardWalSync: Saved marker at $utcTime for session $deviceSessionId");
+      Logger.debug("SDCardWalSync: Saved marker at $utcTime for DeviceSession $deviceSessionId");
     } catch (e) {
       Logger.error("SDCardWalSync: Failed to save marker: $e");
     }
@@ -1043,7 +1043,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   Future<void> _registerSingleSegment(Wal wal, File file, int timerStart) async {
     // Note: We no longer queue this for automatic processing in LocalWalSync.
-    // The RecordingsManager will pick up the .bin files in raw_segments/ device session folders.
+    // The RecordingsManager will pick up the .bin files in raw_segments/ DeviceSession folders.
   }
 
   /// Counts Opus frames in a .bin segment file (4-byte LE prefix per frame).
