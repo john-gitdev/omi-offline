@@ -48,7 +48,7 @@ class FixedIntervalAudioProcessor {
         _outputDir = outputDir,
         _intervalMs = SharedPreferencesUtil().offlineFixedIntervalMinutes * 60 * 1000,
         _gapThresholdMs = SharedPreferencesUtil().vadGapSeconds * 1000 {
-    // Restore the boundary that was active when the previous session ended.
+    // Restore the boundary that was active when the previous run ended.
     // If nonzero, the next call to processSegmentFile will skip frames that
     // were already included in the last completed interval.
     // Sanity check: discard the persisted value if it is unreasonably old
@@ -116,7 +116,7 @@ class FixedIntervalAudioProcessor {
       }
     }
 
-    // If we have a persisted boundary from a previous session and no frames
+    // If we have a persisted boundary from a previous run and no frames
     // accumulated yet, this segment may straddle the already-completed boundary.
     // Compute how many leading frames to skip so we don't re-include audio that
     // was already saved in the previous interval.
@@ -156,7 +156,7 @@ class FixedIntervalAudioProcessor {
 
       off += len;
 
-      // Skip leading frames that were already included in the previous session's
+      // Skip leading frames that were already included in the previous run's
       // last completed interval. frameIndex counts only non-metadata frames.
       if (frameIndex < framesToSkip) {
         frameIndex++;
@@ -182,7 +182,7 @@ class FixedIntervalAudioProcessor {
         _recordingStartTime = DateTime.fromMillisecondsSinceEpoch(_nextBoundaryMs);
         _currentRefs = [];
         _nextBoundaryMs += _intervalMs;
-        // Persist the new boundary so the next session can resume correctly.
+        // Persist the new boundary so the next run can resume correctly.
         SharedPreferencesUtil().fixedModeNextBoundaryMs = _nextBoundaryMs;
       }
 
@@ -215,7 +215,7 @@ class FixedIntervalAudioProcessor {
     _nextBoundaryMs = 0;
     _recordingStartTime = null;
     _lastSegmentEndTime = null;
-    // Partial interval fully written — no boundary to resume from next session.
+    // Partial interval fully written — no boundary to resume from next run.
     SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
     Logger.debug('FixedIntervalAudioProcessor: Flushed remaining buffer.');
     return filePath;
@@ -278,7 +278,7 @@ class FixedIntervalAudioProcessor {
       batchBuffer.clear();
       batchFrameCount = 0;
       hasEncodedAnyFrames = true;
-      await AacEncoder.encodeChunk(sessionId!, Uint8List.fromList(bytes));
+      await AacEncoder.encodeBuffer(sessionId!, Uint8List.fromList(bytes));
     }
 
     String? currentFilePath;
