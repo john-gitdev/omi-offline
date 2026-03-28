@@ -19,7 +19,6 @@ enum WalStatus {
 
 enum SyncMethod {
   ble,
-  wifi,
 }
 
 class Wal {
