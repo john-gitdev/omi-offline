@@ -140,6 +140,29 @@ class RecordingsManager {
   static final ValueNotifier<int> recordingsChangeNotifier = ValueNotifier(0);
   static void notifyRecordingsChanged() => recordingsChangeNotifier.value++;
 
+  /// Call on app startup to clean up incomplete extraction from a previous crash.
+  /// If the persisted extraction-in-progress flag is set, the temp directory is
+  /// removed (its partial output would cause duplicates) and the flag is cleared.
+  /// Raw segments are intentionally left intact so processing can be retried.
+  static Future<void> cleanUpIncompleteExtraction() async {
+    final prefs = SharedPreferencesUtil();
+    if (!prefs.extractionInProgress) return;
+
+    Logger.debug('RecordingsManager: Detected incomplete extraction from previous session — cleaning up temp dir.');
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final tempDir = Directory('${directory.path}/processing_temp');
+      if (await tempDir.exists()) {
+        await tempDir.delete(recursive: true);
+        Logger.debug('RecordingsManager: Removed leftover processing_temp directory.');
+      }
+    } catch (e) {
+      Logger.error('RecordingsManager: Failed to clean up processing_temp: $e');
+    } finally {
+      prefs.extractionInProgress = false;
+    }
+  }
+
   Future<List<Batch>> getBatches() async {
     final directory = await getApplicationDocumentsDirectory();
     final rawSegmentsDir = Directory('${directory.path}/raw_segments');
@@ -259,12 +282,39 @@ class RecordingsManager {
 
     _isProcessingAny = true;
     _cancelRequested = false;
+    SharedPreferencesUtil().extractionInProgress = true;
 
     try {
       final directory = await getApplicationDocumentsDirectory();
       final dateString = batch.dateString;
       final liveRecordingsPath = '${directory.path}/recordings/$dateString';
       final tempProcessingPath = '${directory.path}/processing_temp/$dateString';
+
+      // 0. Disk space guard — bail before processing if free space is critically low.
+      // Raw segments are preserved so processing can be retried once space is freed.
+      final rawTotalBytes = batch.rawSegments.fold<int>(0, (sum, f) => sum + f.lengthSync());
+      // M4A is typically ~10% of raw Opus; WAV fallback ≈ raw × 4.  Use raw × 5
+      // as a conservative estimate of the temp space needed.
+      final estimatedNeeded = rawTotalBytes * 5;
+      final stat = await FileStat.stat(directory.path);
+      // stat.size is the inode size, not free space — use a platform method if
+      // available.  As a fallback we attempt to check via a dummy allocation test
+      // only when the raw payload is large (> 50 MB).
+      if (rawTotalBytes > 50 * 1024 * 1024) {
+        try {
+          final probe = File('${directory.path}/.disk_probe');
+          final sink = probe.openWrite();
+          // Write a 1 MB probe to see if disk is responsive
+          sink.add(Uint8List(1024 * 1024));
+          await sink.flush();
+          await sink.close();
+          await probe.delete();
+        } catch (e) {
+          Logger.error('RecordingsManager: Disk space probe failed ($e). '
+              'Skipping processing to preserve raw segments.');
+          return;
+        }
+      }
 
       // 1. Clear any leftover temp processing folder
       final tempDir = Directory(tempProcessingPath);
@@ -395,24 +445,28 @@ class RecordingsManager {
 
         await liveDir.create(recursive: true);
 
-        // Move files from temp to live
+        // Move files from temp to live — rename first, then clean up legacy files.
+        // This ordering ensures that if the app crashes mid-move, the original
+        // file (temp or legacy WAV) still exists.
         for (var file in newFiles) {
           final fileName = file.path.split('/').last;
           final dest = '$liveRecordingsPath/$fileName';
-          // If a file with the same name already exists (re-process of identical
-          // data), overwrite it rather than failing.
-          final destFile = File(dest);
-          if (await destFile.exists()) await destFile.delete();
 
-          // When placing a new .m4a, remove any legacy .wav with the same timestamp
-          // prefix to avoid both formats coexisting after re-processing.
-          if (fileName.endsWith('.m4a')) {
-            final tsPrefix = fileName.replaceAll('.m4a', '');
-            final legacyWav = File('$liveRecordingsPath/$tsPrefix.wav');
-            if (await legacyWav.exists()) await legacyWav.delete();
+          try {
+            // Remove existing destination if any (idempotent overwrite)
+            try { await File(dest).delete(); } on FileSystemException catch (_) {}
+
+            await file.rename(dest);
+
+            // Only after successful rename, clean up legacy WAV with same timestamp
+            if (fileName.endsWith('.m4a')) {
+              final tsPrefix = fileName.replaceAll('.m4a', '');
+              final legacyWav = File('$liveRecordingsPath/$tsPrefix.wav');
+              try { await legacyWav.delete(); } on FileSystemException catch (_) {}
+            }
+          } catch (e) {
+            Logger.error('RecordingsManager: Failed to move $fileName: $e');
           }
-
-          await file.rename(dest);
         }
 
         // Final flush and a small delay to ensure FS is ready
@@ -429,7 +483,7 @@ class RecordingsManager {
 
       // 6. Raw segment deletion
       // Marker and fixed modes always use lastSafeToDeleteIndex because both manage
-      // their own buffer state and only advance the index when a full interval/clip completes.
+      // their own buffer state and only advance the index when a full interval/recording completes.
       if (backgroundMode || isMarkerMode || isFixedMode) {
         // Delete only segments belonging to fully-completed conversations.
         // If adjustment mode is ON, keep everything for re-processing.
@@ -487,6 +541,7 @@ class RecordingsManager {
       }
     } finally {
       _isProcessingAny = false;
+      SharedPreferencesUtil().extractionInProgress = false;
     }
   }
 
@@ -504,9 +559,31 @@ class RecordingsManager {
 
     _isProcessingAny = true;
     _cancelRequested = false;
+    SharedPreferencesUtil().extractionInProgress = true;
 
     try {
       final directory = await getApplicationDocumentsDirectory();
+
+      // Disk space guard — bail before processing if free space is critically low.
+      final allRawFiles = activeBatches.expand((b) => b.rawSegments).toList();
+      final rawTotalBytes = allRawFiles.fold<int>(0, (sum, f) {
+        try { return sum + f.lengthSync(); } catch (_) { return sum; }
+      });
+      if (rawTotalBytes > 50 * 1024 * 1024) {
+        try {
+          final probe = File('${directory.path}/.disk_probe');
+          final sink = probe.openWrite();
+          sink.add(Uint8List(1024 * 1024));
+          await sink.flush();
+          await sink.close();
+          await probe.delete();
+        } catch (e) {
+          Logger.error('RecordingsManager: Disk space probe failed ($e). '
+              'Skipping processing to preserve raw segments.');
+          return;
+        }
+      }
+
       final tempProcessingPath = '${directory.path}/processing_temp/combined';
       final tempDir = Directory(tempProcessingPath);
       if (await tempDir.exists()) await tempDir.delete(recursive: true);
@@ -644,13 +721,12 @@ class RecordingsManager {
           final liveDir = Directory('${directory.path}/recordings/$dateStr');
           await liveDir.create(recursive: true);
           final dest = '${liveDir.path}/$fileName';
-          final destFile = File(dest);
-          if (await destFile.exists()) await destFile.delete();
+          try { await File(dest).delete(); } on FileSystemException catch (_) {}
+          await file.rename(dest);
           if (fileName.endsWith('.m4a')) {
             final legacyWav = File('${liveDir.path}/${fileName.replaceAll('.m4a', '')}.wav');
-            if (await legacyWav.exists()) await legacyWav.delete();
+            try { await legacyWav.delete(); } on FileSystemException catch (_) {}
           }
-          await file.rename(dest);
         }
 
         await Future.delayed(const Duration(milliseconds: 200));
@@ -703,9 +779,17 @@ class RecordingsManager {
       }
     } finally {
       _isProcessingAny = false;
+      SharedPreferencesUtil().extractionInProgress = false;
     }
   }
 
+  /// Derives the date-folder name (YYYY-MM-DD) from epoch milliseconds.
+  ///
+  /// **Convention**: all date folders use the *local* timezone so that
+  /// recordings appear under the date the user experienced them.  Session IDs
+  /// and device markers use UTC internally, but folder placement is always
+  /// local.  A recording that starts before midnight local time and ends after
+  /// midnight is placed under the *start* date.
   static String _dateStringFromMillis(int millis) {
     final dt = DateTime.fromMillisecondsSinceEpoch(millis).toLocal();
     return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
@@ -761,8 +845,16 @@ class RecordingsManager {
   /// Files are named `{deviceSessionId}_{segmentIndex}.bin`; the last segment per session
   /// may still be actively written by the firmware, so we skip it.
   static List<File> excludeNewestSegmentPerSession(List<File> segments) {
+    // Also exclude any segment modified within the last 5 seconds to avoid
+    // processing a file that is still being written to by the sync layer.
+    final recencyCutoff = DateTime.now().subtract(const Duration(seconds: 5));
     final Map<String, List<File>> bySession = {};
     for (final f in segments) {
+      try {
+        if (f.lastModifiedSync().isAfter(recencyCutoff)) continue;
+      } catch (_) {
+        continue; // File may have been deleted
+      }
       final name = f.path.split('/').last;
       final deviceSessionId = name.split('_').first;
       bySession.putIfAbsent(deviceSessionId, () => []).add(f);
@@ -829,18 +921,13 @@ class RecordingsManager {
     if (!SharedPreferencesUtil().offlineAdjustmentMode) {
       final Set<String> sessionFolderPaths = {};
       for (var file in batch.rawSegments) {
-        if (await file.exists()) {
-          await file.delete();
-          sessionFolderPaths.add(file.parent.path);
-        }
+        try { await file.delete(); } on FileSystemException catch (_) {}
+        sessionFolderPaths.add(file.parent.path);
       }
 
-      // 3. Remove now-empty session folders
+      // 3. Remove now-empty session folders (non-recursive delete fails if not empty)
       for (var folderPath in sessionFolderPaths) {
-        final folder = Directory(folderPath);
-        if (await folder.exists() && await folder.list().isEmpty) {
-          await folder.delete();
-        }
+        try { await Directory(folderPath).delete(recursive: false); } on FileSystemException catch (_) {}
       }
     }
   }

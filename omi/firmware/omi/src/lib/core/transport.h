@@ -52,6 +52,13 @@ int broadcast_audio_packets(uint8_t *buffer, size_t size);
  */
 struct bt_conn *get_current_connection();
 
+/**
+ * @brief Release a connection reference obtained from get_current_connection()
+ *
+ * @param conn Connection to release (safe to call with NULL)
+ */
+void put_current_connection(struct bt_conn *conn);
+
 extern uint32_t device_session_id;
 extern uint32_t segment_index;
 

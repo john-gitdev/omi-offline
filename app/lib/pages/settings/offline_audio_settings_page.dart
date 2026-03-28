@@ -29,12 +29,12 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   @override
   void initState() {
     super.initState();
-    _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb;
+    _snrMarginDb = SharedPreferencesUtil().vadSnrMarginDb;
     _hangoverSeconds = SharedPreferencesUtil().offlineHangoverSeconds;
-    _splitSeconds = SharedPreferencesUtil().offlineSplitSeconds;
-    _minSpeechSeconds = SharedPreferencesUtil().offlineMinSpeechSeconds;
-    _preSpeechSeconds = SharedPreferencesUtil().offlinePreSpeechSeconds;
-    _gapSeconds = SharedPreferencesUtil().offlineGapSeconds;
+    _splitSeconds = SharedPreferencesUtil().vadSplitSeconds;
+    _minSpeechSeconds = SharedPreferencesUtil().vadMinSpeechSeconds;
+    _preSpeechSeconds = SharedPreferencesUtil().vadPreSpeechSeconds;
+    _gapSeconds = SharedPreferencesUtil().vadGapSeconds;
     _adjustmentMode = SharedPreferencesUtil().offlineAdjustmentMode;
     _recordingMode = SharedPreferencesUtil().offlineRecordingMode;
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
@@ -47,12 +47,12 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   }
 
   void _saveSettings() {
-    SharedPreferencesUtil().offlineSnrMarginDb = _snrMarginDb;
+    SharedPreferencesUtil().vadSnrMarginDb = _snrMarginDb;
     SharedPreferencesUtil().offlineHangoverSeconds = _hangoverSeconds;
-    SharedPreferencesUtil().offlineSplitSeconds = _splitSeconds;
-    SharedPreferencesUtil().offlineMinSpeechSeconds = _minSpeechSeconds;
-    SharedPreferencesUtil().offlinePreSpeechSeconds = _preSpeechSeconds;
-    SharedPreferencesUtil().offlineGapSeconds = _gapSeconds;
+    SharedPreferencesUtil().vadSplitSeconds = _splitSeconds;
+    SharedPreferencesUtil().vadMinSpeechSeconds = _minSpeechSeconds;
+    SharedPreferencesUtil().vadPreSpeechSeconds = _preSpeechSeconds;
+    SharedPreferencesUtil().vadGapSeconds = _gapSeconds;
     SharedPreferencesUtil().offlineAdjustmentMode = _adjustmentMode;
     SharedPreferencesUtil().offlineRecordingMode = _recordingMode;
     SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
@@ -318,7 +318,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 ),
               ] else ...[
                 Text(
-                  'Audio is saved at fixed wall-clock intervals. The first clip runs from when recording starts to the next boundary, then cuts repeat at the selected interval.',
+                  'Audio is saved at fixed wall-clock intervals. The first interval runs from when recording starts to the next boundary, then cuts repeat at the selected interval.',
                   style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                 ),
                 const SizedBox(height: 16),

@@ -121,7 +121,7 @@ class DeviceService implements IDeviceService {
 
       _devices = devices;
 
-      for (var s in _subscriptions.values) {
+      for (var s in List.from(_subscriptions.values)) {
         s.onDevices(devices);
       }
 
@@ -197,9 +197,12 @@ class DeviceService implements IDeviceService {
     if (_connection != null) {
       await _connection!.connect(onConnectionStateChanged: (id, state) {
         _connectionStateController.add(state);
-        for (var s in _subscriptions.values) {
-          s.onDeviceConnectionStateChanged(id, state);
-        }
+        // Schedule notifications outside mutex to prevent deadlock
+        Future.microtask(() {
+          for (var s in List.from(_subscriptions.values)) {
+            s.onDeviceConnectionStateChanged(id, state);
+          }
+        });
       });
       SharedPreferencesUtil().lastConnectedDeviceAddress = device.id;
     } else {
@@ -241,7 +244,7 @@ class DeviceService implements IDeviceService {
   }
 
   void _onStatusChanged(DeviceServiceStatus status) {
-    for (var s in _subscriptions.values) {
+    for (var s in List.from(_subscriptions.values)) {
       s.onStatusChanged(status);
     }
   }

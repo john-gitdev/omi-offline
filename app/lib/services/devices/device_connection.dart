@@ -68,16 +68,7 @@ abstract class DeviceConnection {
 
   StreamSubscription<DeviceTransportState>? _transportStateSubscription;
 
-  DeviceConnection(this.device, this.transport) {
-    // Listen to transport state changes exactly like the original repo
-    _transportStateSubscription = transport.connectionStateStream.listen((transportState) {
-      final deviceState = _mapTransportStateToDeviceState(transportState);
-      if (_connectionState != deviceState) {
-        _connectionState = deviceState;
-        _connectionStateChangedCallback?.call(device.id, _connectionState);
-      }
-    });
-  }
+  DeviceConnection(this.device, this.transport);
 
   DeviceConnectionState _mapTransportStateToDeviceState(DeviceTransportState transportState) {
     switch (transportState) {
@@ -91,6 +82,11 @@ abstract class DeviceConnection {
     }
   }
 
+  Future<void> dispose() async {
+    await _transportStateSubscription?.cancel();
+    _transportStateSubscription = null;
+  }
+
   Future<void> connect({
     void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged,
   }) async {
@@ -100,6 +96,16 @@ abstract class DeviceConnection {
 
     // Set callback for connection state changes
     _connectionStateChangedCallback = onConnectionStateChanged;
+
+    // Cancel any existing subscription before creating a new one
+    await _transportStateSubscription?.cancel();
+    _transportStateSubscription = transport.connectionStateStream.listen((transportState) {
+      final deviceState = _mapTransportStateToDeviceState(transportState);
+      if (_connectionState != deviceState) {
+        _connectionState = deviceState;
+        _connectionStateChangedCallback?.call(device.id, _connectionState);
+      }
+    });
 
     try {
       // Use transport to connect
@@ -111,6 +117,7 @@ abstract class DeviceConnection {
       // Update device info
       device = await getDeviceInfo(this);
     } catch (e) {
+      await dispose();
       throw DeviceConnectionException("Transport connection failed: ${e.toString()}");
     }
   }
@@ -123,8 +130,7 @@ abstract class DeviceConnection {
     }
 
     await transport.disconnect();
-    await _transportStateSubscription?.cancel();
-    _transportStateSubscription = null;
+    await dispose();
   }
 
   Future<bool> isConnected() async {

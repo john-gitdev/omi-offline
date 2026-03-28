@@ -51,6 +51,7 @@ extern bool is_charging;
 static atomic_t pusher_stop_flag;
 
 struct bt_conn *current_connection = NULL;
+static K_MUTEX_DEFINE(conn_mutex);
 uint16_t current_mtu = 0;
 uint16_t current_packet_index = 0;
 
@@ -469,6 +470,7 @@ void broadcast_battery_level(struct k_work *work_item)
             buf[3] = (uint8_t)is_charging;
             bt_gatt_notify(NULL, &battery_detail_service_attr[1], buf, sizeof(buf));
         }
+        put_current_connection(conn);
 
         if (battery_millivolt < CONFIG_OMI_BATTERY_CRITICAL_MV) {
             LOG_WRN("Battery critical level reached (%d mV). Initiating shutdown.", battery_millivolt);
@@ -533,7 +535,9 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     }
 
     LOG_INF("bluetooth activated");
+    k_mutex_lock(&conn_mutex, K_FOREVER);
     current_connection = bt_conn_ref(conn);
+    k_mutex_unlock(&conn_mutex);
     uint16_t mtu = bt_gatt_get_mtu(conn);
     current_mtu = MAX(mtu, CONFIG_BT_L2CAP_TX_MTU);
 
@@ -578,10 +582,12 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
 
     LOG_INF("Transport disconnected");
 
+    k_mutex_lock(&conn_mutex, K_FOREVER);
     if (current_connection != NULL) {
         bt_conn_unref(current_connection);
         current_connection = NULL;
     }
+    k_mutex_unlock(&conn_mutex);
     current_mtu = 0;
 }
 
@@ -802,6 +808,7 @@ static struct k_thread pusher_thread;
 #define OPUS_PADDED_LENGTH 80
 #define MAX_WRITE_SIZE 440
 static uint16_t buffer_offset = 0;
+static K_MUTEX_DEFINE(storage_temp_mutex);
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 static uint8_t storage_temp_data[MAX_WRITE_SIZE];
@@ -822,9 +829,11 @@ bool write_custom_packet_to_storage(uint8_t marker, uint8_t *data, uint8_t data_
 {
     uint8_t packet_size = data_size + OPUS_PREFIX_LENGTH;
 
+    k_mutex_lock(&storage_temp_mutex, K_FOREVER);
+
     if (buffer_offset + packet_size > MAX_WRITE_SIZE) {
         // Doesn't fit in current block. Flush current block first.
-        // Pad the rest of the block with 0 or marker? 
+        // Pad the rest of the block with 0 or marker?
         // Better: write what we have and start fresh.
         // Actually, the app expects blocks of exactly MAX_WRITE_SIZE.
         // So we must pad the current block.
@@ -842,6 +851,8 @@ bool write_custom_packet_to_storage(uint8_t marker, uint8_t *data, uint8_t data_
         write_to_file(storage_temp_data, MAX_WRITE_SIZE);
         buffer_offset = 0;
     }
+
+    k_mutex_unlock(&storage_temp_mutex);
 
 #ifdef CONFIG_OMI_ENABLE_MONITOR
     monitor_inc_storage_write();
@@ -1091,7 +1102,20 @@ int transport_start()
 
 struct bt_conn *get_current_connection()
 {
-    return current_connection;
+    k_mutex_lock(&conn_mutex, K_FOREVER);
+    struct bt_conn *conn = current_connection;
+    if (conn) {
+        bt_conn_ref(conn);
+    }
+    k_mutex_unlock(&conn_mutex);
+    return conn;
+}
+
+void put_current_connection(struct bt_conn *conn)
+{
+    if (conn) {
+        bt_conn_unref(conn);
+    }
 }
 
 int broadcast_audio_packets(uint8_t *buffer, size_t size)
