@@ -70,7 +70,7 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 }
-                "encodeChunk" -> {
+                "encodeBuffer" -> {
                     val sessionId = call.argument<String>("sessionId") ?: run {
                         result.error("INVALID_ARGS", "sessionId is required", null); return@setMethodCallHandler
                     }
