@@ -1785,6 +1785,11 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
         }
         return 0;
     }
+    if (length > MAX_WRITE_SIZE) {
+        LOG_ERR("write_to_file: length %u exceeds MAX_WRITE_SIZE %d", (unsigned)length, MAX_WRITE_SIZE);
+        return 0;
+    }
+
     sd_req_t req = {0};
     req.type = REQ_WRITE_DATA;
     memcpy(req.u.write.buf, data, length);
