@@ -137,22 +137,19 @@ class DeviceService implements IDeviceService {
     try {
       Logger.debug("ensureConnection ${_connection?.device.id} ${_connection?.status} $force");
 
-      // Not force
-      if (!force && _connection != null) {
-        if (_connection?.device.id != deviceId || _connection?.status != DeviceConnectionState.connected) {
-          return null;
+      // If a connection object already exists for this device, never tear it down —
+      // native owns reconnection once a transport is live.
+      if (_connection != null && _connection!.device.id == deviceId) {
+        if (_connection!.status == DeviceConnectionState.connected) {
+          return _connection;
         }
-
-        // Connected
-        return _connection;
+        // Same device but disconnected — native is handling reconnect; nothing to do.
+        return null;
       }
 
-      // Force
-      if (deviceId == _connection?.device.id && _connection?.status == DeviceConnectionState.connected) {
-        return _connection;
-      }
+      // No existing connection for this device. Only attempt a fresh connect on force.
+      if (!force) return null;
 
-      // Connect
       try {
         await _connectToDevice(deviceId);
       } on DeviceConnectionException catch (e) {
