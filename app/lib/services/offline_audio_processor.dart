@@ -33,7 +33,11 @@ class OfflineAudioProcessor {
   double _noiseFloorDbfs = -40.0;
   int _hangoverFrames = 0;
   int _speechFrameCount = 0;
+  int _skippedFrameCount = 0;
+  int _skippedFramesInRecording = 0; // skipped frames in current recording — keeps timestamps accurate
   int _noiseFloorInitFrames = 50; // first ~1s: fast convergence without alpha
+  int _noiseFloorStaleFrames = 0;
+  static const int _maxNoiseFloorStaleFrames = 250; // ~5 seconds at 50fps
 
   // For time tracking
   DateTime? _recordingStartTime;
@@ -53,13 +57,13 @@ class OfflineAudioProcessor {
                 ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
                 : null),
         _outputDir = outputDir,
-        _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb,
+        _snrMarginDb = SharedPreferencesUtil().vadSnrMarginDb,
         _hangoverFrameCount =
             max(0, (SharedPreferencesUtil().offlineHangoverSeconds * 1000).round() ~/ frameDurationMs),
-        _silenceDurationToSplitMs = SharedPreferencesUtil().offlineSplitSeconds * 1000,
-        _minSpeechMs = SharedPreferencesUtil().offlineMinSpeechSeconds * 1000,
-        _preSpeechBufferMs = (SharedPreferencesUtil().offlinePreSpeechSeconds * 1000).round(),
-        _gapThresholdMs = SharedPreferencesUtil().offlineGapSeconds * 1000;
+        _silenceDurationToSplitMs = SharedPreferencesUtil().vadSplitSeconds * 1000,
+        _minSpeechMs = SharedPreferencesUtil().vadMinSpeechSeconds * 1000,
+        _preSpeechBufferMs = (SharedPreferencesUtil().vadPreSpeechSeconds * 1000).round(),
+        _gapThresholdMs = SharedPreferencesUtil().vadGapSeconds * 1000;
 
   void destroy() {
     _decoder?.destroy();
@@ -112,8 +116,8 @@ class OfflineAudioProcessor {
 
     // 1. Gap detection — force-split if device was off between segments
     if (_currentRecordingRefs.isNotEmpty && _recordingStartTime != null) {
-      final expectedStartTime =
-          _recordingStartTime!.add(Duration(milliseconds: _currentRecordingRefs.length * frameDurationMs));
+      final expectedStartTime = _recordingStartTime!
+          .add(Duration(milliseconds: (_currentRecordingRefs.length + _skippedFramesInRecording) * frameDurationMs));
       final gapMs = segmentStartTime.difference(expectedStartTime).inMilliseconds.abs();
       if (gapMs > _gapThresholdMs) {
         final filePath = await flushRemaining();
@@ -130,6 +134,14 @@ class OfflineAudioProcessor {
     int frameIndex = 0;
     while (off + 4 <= bytes.length) {
       final len = byteData.getUint32(off, Endian.little);
+      if (len > 4000) {
+        // Sanity check: Opus frames should never exceed ~4000 bytes
+        Logger.warning('OfflineAudioProcessor: Skipping corrupt frame with length $len at offset $off');
+        off += 4; // Skip just the length field and try to find next valid frame
+        _skippedFrameCount++;
+        _skippedFramesInRecording++;
+        continue;
+      }
       if (off + 4 + len > bytes.length) break;
 
       final byteOffset = off; // position of 4-byte length prefix — used in FrameRef
@@ -146,6 +158,8 @@ class OfflineAudioProcessor {
         pcmData = _decoder!.decode(input: Uint8List.fromList(opusFrame));
       } catch (e) {
         // Skip corrupt or invalid Opus frames
+        _skippedFrameCount++;
+        _skippedFramesInRecording++;
         continue;
       }
 
@@ -162,10 +176,18 @@ class OfflineAudioProcessor {
 
       // Asymmetric noise floor adaptation during silence
       if (!rawSpeech) {
+        _noiseFloorStaleFrames = 0;
         if (dbfs > _noiseFloorDbfs) {
           _noiseFloorDbfs = _noiseFloorAlphaRise * _noiseFloorDbfs + (1 - _noiseFloorAlphaRise) * dbfs;
         } else {
           _noiseFloorDbfs = _noiseFloorAlphaFall * _noiseFloorDbfs + (1 - _noiseFloorAlphaFall) * dbfs;
+        }
+      } else {
+        _noiseFloorStaleFrames++;
+        // If noise floor seems stuck (everything looks like speech for too long), force adapt
+        if (_noiseFloorStaleFrames > _maxNoiseFloorStaleFrames) {
+          _noiseFloorDbfs = _noiseFloorAlphaRise * _noiseFloorDbfs + (1 - _noiseFloorAlphaRise) * dbfs;
+          _noiseFloorStaleFrames = 0;
         }
       }
 
@@ -209,7 +231,7 @@ class OfflineAudioProcessor {
         final bufferToKeep = min(preSpeechFramesCount, _consecutiveSilenceFrames);
 
         if (_recordingStartTime != null) {
-          final int elapsedMs = (_currentRecordingRefs.length - bufferToKeep) * frameDurationMs;
+          final int elapsedMs = (_currentRecordingRefs.length + _skippedFramesInRecording - bufferToKeep) * frameDurationMs;
           _recordingStartTime = _recordingStartTime!.add(Duration(milliseconds: elapsedMs));
         } else {
           _recordingStartTime = segmentStartTime;
@@ -219,9 +241,14 @@ class OfflineAudioProcessor {
         _speechFrameCount = 0;
         _hangoverFrames = 0;
         _consecutiveSilenceFrames = bufferToKeep;
+        _skippedFramesInRecording = 0;
         // Reset fast-convergence so the new recording re-anchors to the current noise floor.
         _noiseFloorInitFrames = 50;
       }
+    }
+
+    if (_skippedFrameCount > 0) {
+      Logger.warning('OfflineAudioProcessor: Skipped $_skippedFrameCount corrupt Opus frames');
     }
 
     if (bytes.isNotEmpty) {
@@ -255,6 +282,7 @@ class OfflineAudioProcessor {
     _consecutiveSilenceFrames = 0;
     _speechFrameCount = 0;
     _hangoverFrames = 0;
+    _skippedFramesInRecording = 0;
     return filePath;
   }
 
@@ -407,8 +435,11 @@ class OfflineAudioProcessor {
       await AacEncoder.finishEncoder(sessionId!);
     } on Exception catch (e) {
       Logger.error('OfflineAudioProcessor: AAC encoding failed, falling back to WAV: $e');
-      final tmpFile = File('${dateFolder.path}/recording_$timestamp.tmp.m4a');
-      if (await tmpFile.exists()) await tmpFile.delete();
+      // Delete the corrupt M4A file (not .tmp.m4a)
+      final corruptFile = File('${dateFolder.path}/recording_$timestamp.m4a');
+      try {
+        if (await corruptFile.exists()) await corruptFile.delete();
+      } catch (_) {}
       // Do not close currentRaf here — the finally block handles it.
       return await _saveWav(refs, dateFolderPath, timestamp);
     } finally {
@@ -442,14 +473,16 @@ class OfflineAudioProcessor {
     }
     final metaPath = '${dateFolder.path}/recording_$timestamp.meta';
     final List<int> metaOut = [...metaBytes.buffer.asUint8List()];
-    final deviceId = SharedPreferencesUtil().btDevice.id.replaceAll(':', '').toUpperCase();
-    if (deviceId.length >= 6) {
-      final mac6 = deviceId.substring(0, 6);
-      final uploadKey = '${mac6}_recording_$timestamp.m4a';
-      final keyBytes = uploadKey.codeUnits;
-      if (keyBytes.length <= 255) {
-        metaOut.add(keyBytes.length);
-        metaOut.addAll(keyBytes);
+    final rawId = SharedPreferencesUtil().btDevice.id;
+    if (rawId.isNotEmpty) {
+      final deviceId = rawId.replaceAll(':', '').toUpperCase();
+      if (deviceId.length >= 6) {
+        final mac6 = deviceId.substring(0, 6);
+        final uploadKey = '${mac6}_recording_$timestamp.m4a';
+        final keyBytes = uploadKey.codeUnits;
+        final truncatedKey = keyBytes.length > 255 ? keyBytes.sublist(0, 255) : keyBytes;
+        metaOut.add(truncatedKey.length);
+        metaOut.addAll(truncatedKey);
       }
     }
     await File(metaPath).writeAsBytes(metaOut);

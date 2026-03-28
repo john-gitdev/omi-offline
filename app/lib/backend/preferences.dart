@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -13,34 +14,36 @@ class SharedPreferencesUtil {
 
   SharedPreferencesUtil._internal();
 
+  Future<void>? _heypocketUploadGuard;
+
   String get deviceIdHash => _preferences?.getString('deviceIdHash') ?? '';
   set deviceIdHash(String value) => _preferences?.setString('deviceIdHash', value);
 
   //--------------------------- Offline Audio Processing ---------------------//
 
-  double get offlineSnrMarginDb => getDouble('offlineSnrMarginDb', defaultValue: 10.0);
+  double get vadSnrMarginDb => getDouble('offlineSnrMarginDb', defaultValue: 10.0);
 
-  set offlineSnrMarginDb(double value) => saveDouble('offlineSnrMarginDb', value);
+  set vadSnrMarginDb(double value) => saveDouble('offlineSnrMarginDb', value);
 
   double get offlineHangoverSeconds => getDouble('offlineHangoverSeconds', defaultValue: 0.5);
 
   set offlineHangoverSeconds(double value) => saveDouble('offlineHangoverSeconds', value);
 
-  int get offlineSplitSeconds => getInt('offlineSplitSeconds', defaultValue: 120);
+  int get vadSplitSeconds => getInt('offlineSplitSeconds', defaultValue: 120);
 
-  set offlineSplitSeconds(int value) => saveInt('offlineSplitSeconds', value);
+  set vadSplitSeconds(int value) => saveInt('offlineSplitSeconds', value);
 
-  int get offlineMinSpeechSeconds => getInt('offlineMinSpeechSeconds', defaultValue: 5);
+  int get vadMinSpeechSeconds => getInt('offlineMinSpeechSeconds', defaultValue: 5);
 
-  set offlineMinSpeechSeconds(int value) => saveInt('offlineMinSpeechSeconds', value);
+  set vadMinSpeechSeconds(int value) => saveInt('offlineMinSpeechSeconds', value);
 
-  double get offlinePreSpeechSeconds => getDouble('offlinePreSpeechSeconds', defaultValue: 1.0);
+  double get vadPreSpeechSeconds => getDouble('offlinePreSpeechSeconds', defaultValue: 1.0);
 
-  set offlinePreSpeechSeconds(double value) => saveDouble('offlinePreSpeechSeconds', value);
+  set vadPreSpeechSeconds(double value) => saveDouble('offlinePreSpeechSeconds', value);
 
-  int get offlineGapSeconds => getInt('offlineGapSeconds', defaultValue: 30);
+  int get vadGapSeconds => getInt('offlineGapSeconds', defaultValue: 30);
 
-  set offlineGapSeconds(int value) => saveInt('offlineGapSeconds', value);
+  set vadGapSeconds(int value) => saveInt('offlineGapSeconds', value);
 
   bool get offlineAdjustmentMode => getBool('offlineAdjustmentMode', defaultValue: false);
 
@@ -68,7 +71,7 @@ class SharedPreferencesUtil {
 
   // Epoch ms of the next pending boundary for fixed mode.
   // Persisted so a fresh processor on the next sync knows which frames in the
-  // boundary-crossing segment were already included in the previous clip.
+  // boundary-crossing segment were already included in the previous recording.
   // 0 = no active boundary (no in-progress interval).
   int get fixedModeNextBoundaryMs => getInt('fixedModeNextBoundaryMs', defaultValue: 0);
 
@@ -77,6 +80,13 @@ class SharedPreferencesUtil {
   bool get autoSyncEnabled => getBool('autoSyncEnabled', defaultValue: true);
 
   set autoSyncEnabled(bool value) => saveBool('autoSyncEnabled', value);
+
+  // True while extraction/processing is in progress. Persisted so that on
+  // restart after a crash we can detect incomplete processing and clean up
+  // the temp directory to avoid duplicate recordings.
+  bool get extractionInProgress => getBool('extractionInProgress', defaultValue: false);
+
+  set extractionInProgress(bool value) => saveBool('extractionInProgress', value);
 
   bool get recordingsFilterEnabled => getBool('recordingsFilterEnabled', defaultValue: false);
 
@@ -103,11 +113,23 @@ class SharedPreferencesUtil {
 
   bool isUploadedToHeypocket(String uploadKey) => heypocketUploadedFiles.contains(uploadKey);
 
-  void markUploadedToHeypocket(String uploadKey) {
-    if (isUploadedToHeypocket(uploadKey)) return;
-    final set = {...heypocketUploadedFiles};
-    set.add(uploadKey);
-    heypocketUploadedFiles = set.toList();
+  /// Serialized read-modify-write to prevent concurrent calls from losing updates.
+  Future<void> markUploadedToHeypocket(String uploadKey) async {
+    // Wait for any in-flight update to complete before reading.
+    while (_heypocketUploadGuard != null) {
+      await _heypocketUploadGuard;
+    }
+    final completer = Completer<void>();
+    _heypocketUploadGuard = completer.future;
+    try {
+      if (isUploadedToHeypocket(uploadKey)) return;
+      final updated = {...heypocketUploadedFiles};
+      updated.add(uploadKey);
+      await saveStringList('heypocketUploadedFiles', updated.toList());
+    } finally {
+      _heypocketUploadGuard = null;
+      completer.complete();
+    }
   }
 
   static Future<void> init() async {

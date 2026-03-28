@@ -101,8 +101,8 @@ class MarkerRecordingExtractor {
   final SimpleOpusDecoder? _providedDecoder;
 
   MarkerRecordingExtractor({SimpleOpusDecoder? decoder})
-      : _splitFrames = (SharedPreferencesUtil().offlineSplitSeconds * 1000) ~/ _frameDurationMs,
-        _snrMarginDb = SharedPreferencesUtil().offlineSnrMarginDb,
+      : _splitFrames = (SharedPreferencesUtil().vadSplitSeconds * 1000) ~/ _frameDurationMs,
+        _snrMarginDb = SharedPreferencesUtil().vadSnrMarginDb,
         _lookbackMs = SharedPreferencesUtil().markerLookbackMinutes * 60 * 1000,
         _providedDecoder = decoder;
 
@@ -800,6 +800,11 @@ class MarkerRecordingExtractor {
       await AacEncoder.finishEncoder(aacSession!);
     } on Exception catch (e) {
       Logger.error('MarkerRecordingExtractor: AAC encoding failed: $e');
+      // Delete the corrupt M4A file
+      try {
+        final corruptFile = File(m4aPath);
+        if (await corruptFile.exists()) await corruptFile.delete();
+      } catch (_) {}
       await currentRaf?.close();
       decoder?.destroy();
       return null;
@@ -833,14 +838,16 @@ class MarkerRecordingExtractor {
     }
 
     final metaOut = List<int>.from(metaBytes.buffer.asUint8List());
-    final deviceId = SharedPreferencesUtil().btDevice.id.replaceAll(':', '').toUpperCase();
-    if (deviceId.length >= 6) {
-      final mac6 = deviceId.substring(0, 6);
-      final uploadKey = '${mac6}_recording_$timestamp.m4a';
-      final keyBytes = uploadKey.codeUnits;
-      if (keyBytes.length <= 255) {
-        metaOut.add(keyBytes.length);
-        metaOut.addAll(keyBytes);
+    final rawId = SharedPreferencesUtil().btDevice.id;
+    if (rawId.isNotEmpty) {
+      final deviceId = rawId.replaceAll(':', '').toUpperCase();
+      if (deviceId.length >= 6) {
+        final mac6 = deviceId.substring(0, 6);
+        final uploadKey = '${mac6}_recording_$timestamp.m4a';
+        final keyBytes = uploadKey.codeUnits;
+        final truncatedKey = keyBytes.length > 255 ? keyBytes.sublist(0, 255) : keyBytes;
+        metaOut.add(truncatedKey.length);
+        metaOut.addAll(truncatedKey);
       }
     }
     await File('$outputDir/recording_$timestamp.meta').writeAsBytes(metaOut);

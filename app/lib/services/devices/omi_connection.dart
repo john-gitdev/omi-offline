@@ -17,6 +17,9 @@ class OmiDeviceConnection extends DeviceConnection {
   StreamSubscription? _listFilesSub;
   Timer? _timeoutTimer;
 
+  // Cached audio codec to avoid redundant BLE reads
+  BleAudioCodec? _cachedAudioCodec;
+
   /// Serializes storage operations (listFiles, deleteFile, rotateFile) that
   /// share the same BLE characteristic stream. Without this, concurrent
   /// callers could misroute packets between operations.
@@ -37,20 +40,28 @@ class OmiDeviceConnection extends DeviceConnection {
     await sub?.cancel();
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
+    _cachedAudioCodec = null;
   }
 
   Future<bool> performSyncTime() async {
-    try {
-      final epochSeconds = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
-      final byteData = ByteData(4)..setUint32(0, epochSeconds, Endian.little);
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        final epochSeconds = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+        final byteData = ByteData(4)..setUint32(0, epochSeconds, Endian.little);
 
-      await transport.writeCharacteristic(timeSyncServiceUuid, timeSyncWriteCharacteristicUuid, byteData.buffer.asUint8List());
-      Logger.debug('OmiDeviceConnection: Time synced to device: $epochSeconds');
-      return true;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error syncing time: $e');
-      return false;
+        await transport.writeCharacteristic(
+            timeSyncServiceUuid, timeSyncWriteCharacteristicUuid, byteData.buffer.asUint8List());
+        Logger.debug('OmiDeviceConnection: Time synced to device: $epochSeconds');
+        return true;
+      } catch (e) {
+        if (attempt == 2) {
+          Logger.error('OmiDeviceConnection: Time sync failed after 3 attempts: $e');
+          return false;
+        }
+        await Future.delayed(Duration(milliseconds: 100 * (attempt + 1)));
+      }
     }
+    return false;
   }
 
   @override
@@ -146,6 +157,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<BleAudioCodec> performGetAudioCodec() async {
+    if (_cachedAudioCodec != null) return _cachedAudioCodec!;
     try {
       final codecValue = await transport.readCharacteristic(featuresServiceUuid, audioCodecCharacteristicUuid);
 
@@ -154,16 +166,19 @@ class OmiDeviceConnection extends DeviceConnection {
         codecId = codecValue[0];
       }
 
+      BleAudioCodec codec;
       switch (codecId) {
         case 1:
-          return BleAudioCodec.pcm8;
+          codec = BleAudioCodec.pcm8;
         case 20:
-          return BleAudioCodec.opus;
+          codec = BleAudioCodec.opus;
         case 21:
-          return BleAudioCodec.opusFS320;
+          codec = BleAudioCodec.opusFS320;
         default:
-          return BleAudioCodec.pcm8;
+          codec = BleAudioCodec.pcm8;
       }
+      _cachedAudioCodec = codec;
+      return codec;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error reading audio codec: $e');
       return BleAudioCodec.pcm8;
@@ -350,7 +365,11 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   Future<List<StorageFile>> _performListFilesLocked() async {
-    // 1. Clean previous run & increment generation
+    // 1. Cancel old subscription BEFORE incrementing generation to avoid race
+    await _listFilesSub?.cancel();
+    _listFilesSub = null;
+
+    // 2. Clean previous run & increment generation
     await stop();
 
     // 2. Capture and increment THIS call's generation
@@ -489,15 +508,12 @@ class OmiDeviceConnection extends DeviceConnection {
         if (completer.isCompleted) return;
         // Expect [PACKET_ACK=0x03][result:1]
         if (data.length >= 2 && data[0] == 0x03) {
-          sub?.cancel();
           completer.complete(data[1] == 0);
         } else if (data.length == 1 && data[0] == 0x03) {
-          sub?.cancel();
           completer.complete(true); // ACK with no result byte = success
         }
       }, onError: (e) {
         if (!completer.isCompleted) completer.completeError(e);
-        sub?.cancel();
       });
 
       await transport.writeCharacteristic(
@@ -546,9 +562,10 @@ class OmiDeviceConnection extends DeviceConnection {
         if (completer.isCompleted) return;
         if (data.length >= 2 && data[0] == 0x03) {
           // PACKET_ACK: result == 0 means success
-          sub?.cancel();
           completer.complete(data[1] == 0x00);
         }
+      }, onError: (e) {
+        if (!completer.isCompleted) completer.completeError(e);
       });
 
       await transport.writeCharacteristic(
@@ -571,19 +588,25 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<bool> performSyncDeviceTime() async {
-    try {
-      int epoch = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-      await transport.writeCharacteristic(timeSyncServiceUuid, timeSyncWriteCharacteristicUuid, [
-        epoch & 0xFF,
-        (epoch >> 8) & 0xFF,
-        (epoch >> 16) & 0xFF,
-        (epoch >> 24) & 0xFF,
-      ]);
-      Logger.debug('OmiDeviceConnection: Successfully synced device time to epoch: $epoch');
-      return true;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Failed to sync device time: $e');
-      return false;
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        int epoch = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        await transport.writeCharacteristic(timeSyncServiceUuid, timeSyncWriteCharacteristicUuid, [
+          epoch & 0xFF,
+          (epoch >> 8) & 0xFF,
+          (epoch >> 16) & 0xFF,
+          (epoch >> 24) & 0xFF,
+        ]);
+        Logger.debug('OmiDeviceConnection: Successfully synced device time to epoch: $epoch');
+        return true;
+      } catch (e) {
+        if (attempt == 2) {
+          Logger.error('OmiDeviceConnection: Device time sync failed after 3 attempts: $e');
+          return false;
+        }
+        await Future.delayed(Duration(milliseconds: 100 * (attempt + 1)));
+      }
     }
+    return false;
   }
 }

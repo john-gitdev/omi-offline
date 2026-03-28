@@ -44,7 +44,7 @@ class WalService implements IWalService, IWalSyncListener {
   }
 
   void _onStatusChanged(WalServiceStatus status) {
-    for (var s in _subscriptions.values) {
+    for (var s in List.from(_subscriptions.values)) {
       s.onStatusChanged(status);
     }
   }
@@ -56,14 +56,14 @@ class WalService implements IWalService, IWalSyncListener {
 
   @override
   void onWalUpdated() {
-    for (var s in _subscriptions.values) {
+    for (var s in List.from(_subscriptions.values)) {
       s.onWalUpdated();
     }
   }
 
   @override
   void onWalSynced(Wal wal) {
-    for (var s in _subscriptions.values) {
+    for (var s in List.from(_subscriptions.values)) {
       s.onWalSynced(wal);
     }
   }
@@ -71,7 +71,7 @@ class WalService implements IWalService, IWalSyncListener {
   @override
   void onDeviceRecordingFailed() {
     NotificationsService.showDeviceRecordingFailed();
-    for (var s in _subscriptions.values) {
+    for (var s in List.from(_subscriptions.values)) {
       s.onDeviceRecordingFailed();
     }
   }

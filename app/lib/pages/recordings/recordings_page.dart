@@ -721,8 +721,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         _autoUploadActive++;
         if (mounted) setState(() {});
         unawaited(
-          HeyPocketService.uploadRecording(apiKey, conversation).then((_) {
-            _prefs.markUploadedToHeypocket(uploadKey);
+          HeyPocketService.uploadRecording(apiKey, conversation).then((_) async {
+            await _prefs.markUploadedToHeypocket(uploadKey);
           }).catchError((e) {
             debugPrint('HeyPocket auto-upload failed: $e');
           }).whenComplete(() {

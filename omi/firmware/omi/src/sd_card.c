@@ -220,6 +220,10 @@ static uint32_t write_drop_bytes = 0;
  * queue from filling up while lfs_fs_gc() is running on the worker thread. */
 static atomic_t sd_boot_ready;
 
+/* Counter of audio frames dropped while SD boot was in progress.
+ * Incremented in write_to_file(); queryable via sd_get_boot_dropped_frames(). */
+static atomic_t boot_dropped_frames;
+
 /* Protects current_filename / current_file_path across threads.
  * The SD worker updates these during file creation and TMP→hex rename;
  * the storage thread reads them via sd_is_current_recording_file(). */
@@ -229,7 +233,7 @@ static K_MUTEX_DEFINE(current_filename_lock);
 static atomic_t pending_flush_on_ble_connect;
 static atomic_t pending_rotate_on_ble_connect;
 static atomic_t pending_time_synced;
-static uint32_t pending_time_synced_utc = 0;
+static atomic_t pending_time_synced_utc;
 
 static bool is_mounted = false;
 static bool sd_enabled = false;
@@ -257,11 +261,11 @@ static char cached_file_names[MAX_AUDIO_FILES][MAX_FILENAME_LEN] = {0};
 static uint32_t cached_file_sizes[MAX_AUDIO_FILES] = {0};
 
 /* BLE connection tracking for file rotation */
-static bool ble_connected = false;
+static atomic_t ble_connected;
 static int64_t ble_connect_time_ms = 0;
 
 /* Track if active file was deleted while BLE connected */
-static bool current_file_deleted = false;
+static atomic_t current_file_deleted;
 
 /* Offset info (oldest file + byte offset) */
 static sd_offset_info_t current_offset_info = {0};
@@ -344,7 +348,7 @@ static void process_write_data_req(const sd_req_t *req)
             sd_write_blocked = true;
             return;
         }
-        current_file_deleted = false;
+        atomic_clear(&current_file_deleted);
     }
 
     if (should_rotate_file()) {
@@ -1059,6 +1063,11 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
     data_sync_gen++;
     bytes_since_sync = 0;
     last_file_sync_uptime_ms = k_uptime_get();
+
+    /* Hold mutex across the entire close-rename-reopen sequence so that
+     * concurrent filename readers (sd_is_current_recording_file) never see
+     * a stale name while the file handle is in an intermediate state. */
+    k_mutex_lock(&current_filename_lock, K_FOREVER);
     lfs_file_close(&lfs_fs, &lfs_fil_data);
 
     char new_path[64];
@@ -1068,16 +1077,16 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
         LOG_ERR("Rename failed: %d", ret);
         /* Re-open old file */
         lfs_file_opencfg(&lfs_fs, &lfs_fil_data, current_file_path, LFS_O_RDWR | LFS_O_APPEND, &lfs_fdata_cfg);
+        k_mutex_unlock(&current_filename_lock);
         return;
     }
 
-    k_mutex_lock(&current_filename_lock, K_FOREVER);
     strncpy(current_filename, new_filename, sizeof(current_filename) - 1);
     strncpy(current_file_path, new_path, sizeof(current_file_path) - 1);
     current_file_needs_rename = false;
-    k_mutex_unlock(&current_filename_lock);
 
     lfs_file_opencfg(&lfs_fs, &lfs_fil_data, current_file_path, LFS_O_RDWR | LFS_O_APPEND, &lfs_fdata_cfg);
+    k_mutex_unlock(&current_filename_lock);
     LOG_INF("File renamed OK: %s", current_filename);
 }
 
@@ -1232,19 +1241,41 @@ void sd_worker_thread(void)
 
     /* ---- SD boot init complete, allow writes ---- */
     atomic_set(&sd_boot_ready, 1);
-    LOG_INF("[SD_BOOT] SD card ready for audio writes (boot took %lld ms)", k_uptime_get());
+    {
+        long dropped = (long)atomic_get(&boot_dropped_frames);
+        LOG_INF("[SD_BOOT] SD card ready for audio writes (boot took %lld ms, "
+                "%ld audio frames dropped during boot)", k_uptime_get(), dropped);
+        if (dropped > 0) {
+            LOG_WRN("[SD_BOOT] %ld audio frames were dropped while SD was booting", dropped);
+        }
+    }
 
     /* ---- Main loop ---- */
     while (1) {
         /* Handle deferred control requests first (when queue was saturated). */
         if (atomic_cas(&pending_flush_on_ble_connect, 1, 0)) {
-            req.type = REQ_FLUSH_FILE;
-            req.u.create_file.resp = NULL;
-            goto handle_req;
+            /* Attempt flush inline; if it fails, re-set the flag so the
+             * next loop iteration retries instead of silently losing it. */
+            if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
+                int df_res = flush_batch_buffer();
+                if (df_res == 0) {
+                    int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
+                    if (sr < 0) {
+                        atomic_set(&pending_flush_on_ble_connect, 1);
+                    } else {
+                        data_sync_gen++;
+                        bytes_since_sync = 0;
+                        last_file_sync_uptime_ms = k_uptime_get();
+                        LOG_INF("[SD_WORK] Deferred BLE flush OK (%u bytes)", current_file_size);
+                    }
+                } else {
+                    atomic_set(&pending_flush_on_ble_connect, 1);
+                }
+            }
         }
         if (atomic_cas(&pending_time_synced, 1, 0)) {
             req.type = REQ_TIME_SYNCED;
-            req.u.time_synced.utc_time = pending_time_synced_utc;
+            req.u.time_synced.utc_time = (uint32_t)atomic_get(&pending_time_synced_utc);
             goto handle_req;
         }
 
@@ -1255,7 +1286,7 @@ void sd_worker_thread(void)
 
         /* Regular write queue timeout: short when BLE connected (keep read/sync responsive),
          * long when offline (save power). */
-        k_timeout_t write_wait = ble_connected ? K_MSEC(50) : K_MSEC(2000);
+        k_timeout_t write_wait = atomic_get(&ble_connected) ? K_MSEC(50) : K_MSEC(2000);
         if (k_msgq_get(&sd_msgq, &req, write_wait) != 0)
             continue;
 
@@ -1352,8 +1383,18 @@ void sd_worker_thread(void)
                     bytes_since_sync = 0;
                     last_file_sync_uptime_ms = k_uptime_get();
                 }
-                /* Reopen read handle to pick up new file size */
+                /* Reopen read handle to pick up new file size.
+                 * Re-verify the file is still active after the close-reopen
+                 * window to guard against concurrent file rotation. */
                 close_read_handle();
+                k_mutex_lock(&current_filename_lock, K_FOREVER);
+                bool still_active = (current_filename[0] != '\0' &&
+                                     strcmp(req.u.read.filename, current_filename) == 0);
+                k_mutex_unlock(&current_filename_lock);
+                if (!still_active) {
+                    /* File rotated under us — signal completion. */
+                    is_active_file = false;
+                }
                 res = lfs_file_opencfg(&lfs_fs, &lfs_read_handle, read_path, LFS_O_RDONLY, &lfs_read_handle_cfg);
                 if (res < 0) {
                     if (req.u.read.resp) {
@@ -1367,6 +1408,22 @@ void sd_worker_thread(void)
                 read_handle_open = true;
                 read_handle_pos = 0;
                 read_handle_gen = data_sync_gen;
+
+                /* Re-check if the file is still the active file after reopen.
+                 * A file rotation could have changed current_filename between
+                 * the sync and reopen, making our read_path stale. */
+                k_mutex_lock(&current_filename_lock, K_FOREVER);
+                bool still_active = (current_filename[0] != '\0' &&
+                                     strcmp(req.u.read.filename, current_filename) == 0);
+                k_mutex_unlock(&current_filename_lock);
+                if (!still_active) {
+                    if (req.u.read.resp) {
+                        req.u.read.resp->res = 0;
+                        req.u.read.resp->read_bytes = 0;
+                        k_sem_give(&req.u.read.resp->sem);
+                    }
+                    break;
+                }
 
                 lfs_file_seek(&lfs_fs, &lfs_read_handle, (lfs_soff_t) req.u.read.offset, LFS_SEEK_SET);
                 read_handle_pos = (lfs_soff_t) req.u.read.offset;
@@ -1491,7 +1548,7 @@ void sd_worker_thread(void)
         /* ---- Flush current file ---- */
         case REQ_FLUSH_FILE: {
             int flush_res = 0;
-            if (!current_file_deleted && current_filename[0] != '\0') {
+            if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
                 flush_res = flush_batch_buffer();
                 if (flush_res == 0) {
                     int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
@@ -1550,7 +1607,7 @@ void sd_worker_thread(void)
                 last_file_sync_uptime_ms = 0;
                 write_batch_offset = 0;
                 write_batch_counter = 0;
-                current_file_deleted = true;
+                atomic_set(&current_file_deleted, 1);
             }
 
             int rm = lfs_remove(&lfs_fs, del_path);
@@ -1597,6 +1654,11 @@ bool sd_is_boot_ready(void)
     return atomic_get(&sd_boot_ready);
 }
 
+uint32_t sd_get_boot_dropped_frames(void)
+{
+    return (uint32_t)atomic_get(&boot_dropped_frames);
+}
+
 int app_sd_init(void)
 {
     sd_shutdown_in_progress = false;
@@ -1622,7 +1684,7 @@ int app_sd_off(void)
     bool unmount_completed = false;
 
     if (is_mounted && sd_worker_tid) {
-        struct read_resp resp;
+        static struct read_resp resp;
         k_sem_init(&resp.sem, 0, 1);
         resp.res = 0;
 
@@ -1694,11 +1756,8 @@ uint32_t sd_get_cached_free_bytes(void)
 
 void sd_notify_time_synced(uint32_t utc_time)
 {
-    /* Store value before flag — the atomic_set provides a release barrier
-     * that ensures pending_time_synced_utc is visible to the worker thread
-     * when it sees pending_time_synced == 1. */
-    pending_time_synced_utc = utc_time;
-    compiler_barrier();  /* Prevent compiler from reordering past atomic_set */
+    /* Store value before flag — atomic_set provides ordering. */
+    atomic_set(&pending_time_synced_utc, (atomic_val_t)utc_time);
     atomic_set(&pending_time_synced, 1);
 
     sd_req_t req = {0};
@@ -1712,7 +1771,7 @@ void sd_notify_time_synced(uint32_t utc_time)
 
 void sd_notify_ble_state(bool connected)
 {
-    if (connected && !ble_connected) {
+    if (connected && !atomic_get(&ble_connected)) {
         ble_connect_time_ms = k_uptime_get();
         LOG_INF("BLE connected");
         /* Signal the SD worker to rotate the active file on the next write so
@@ -1732,17 +1791,17 @@ void sd_notify_ble_state(bool connected)
             atomic_set(&pending_flush_on_ble_connect, 1);
             LOG_WRN("Flush on BLE connect deferred (%d)", ret);
         }
-    } else if (!connected && ble_connected) {
+    } else if (!connected && atomic_get(&ble_connected)) {
         LOG_INF("BLE disconnected");
-        if (current_file_deleted) {
+        if (atomic_get(&current_file_deleted)) {
             int cr = create_new_audio_file();
             if (cr < 0)
                 LOG_ERR("create file on BLE disconnect failed: %d", cr);
             else
-                current_file_deleted = false;
+                atomic_clear(&current_file_deleted);
         }
     }
-    ble_connected = connected;
+    atomic_set(&ble_connected, connected ? 1 : 0);
 }
 
 uint32_t write_to_file(uint8_t *data, uint32_t length)
@@ -1750,14 +1809,17 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     static int64_t last_write_err_log_ms;
     static int64_t last_shutdown_drop_log_ms;
 
-    /* Silently discard data while SD boot init is still running
-     * (mount + lfs_fs_gc pre-warm + file open). No logging here to
-     * avoid flooding — the worker thread logs when ready. */
+    /* Discard data while SD boot init is still running
+     * (mount + lfs_fs_gc pre-warm + file open).  Rate-limited logging
+     * so the drop is observable; counter is queryable after boot. */
     if (!atomic_get(&sd_boot_ready)) {
         static int64_t last_not_ready_log_ms;
+        atomic_inc(&boot_dropped_frames);
         int64_t now = k_uptime_get();
         if (now - last_not_ready_log_ms > 5000) {
-            LOG_WRN("write_to_file dropped: SD not ready (boot in progress)");
+            LOG_WRN("write_to_file dropped: SD not ready (boot in progress), "
+                     "total dropped frames: %ld",
+                     (long)atomic_get(&boot_dropped_frames));
             last_not_ready_log_ms = now;
         }
         return 0;
@@ -1780,19 +1842,26 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
         }
         return 0;
     }
+    if (length > MAX_WRITE_SIZE) {
+        LOG_ERR("write_to_file: length %u exceeds MAX_WRITE_SIZE %d", (unsigned)length, MAX_WRITE_SIZE);
+        return 0;
+    }
+
     sd_req_t req = {0};
     req.type = REQ_WRITE_DATA;
     memcpy(req.u.write.buf, data, length);
     req.u.write.len = length;
-    /* Fast path: non-blocking enqueue first. */
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
+    /* Fast path: try regular queue first, prio queue as fallback.
+     * Writing audio data to the prio queue starves control requests
+     * (reads, flushes, deletes) which also use the prio queue. */
+    int ret = k_msgq_put(&sd_msgq, &req, K_NO_WAIT);
 
     /* Backpressure: if queue is temporarily full, wait a very short time
      * for worker to drain instead of dropping immediately.
      * This reduces packet loss and CPU spin when SD path stalls briefly. */
     if (ret != 0) {
-        k_timeout_t retry_wait = ble_connected ? K_MSEC(1) : K_MSEC(5);
-        ret = k_msgq_put(&sd_msgq, &req, retry_wait);
+        k_timeout_t retry_wait = atomic_get(&ble_connected) ? K_MSEC(1) : K_MSEC(5);
+        ret = k_msgq_put(&sd_prio_msgq, &req, retry_wait);
     }
 
     if (ret) {
@@ -1811,28 +1880,32 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     return length;
 }
 
+static uint8_t static_read_buf[MAX_WRITE_SIZE];
+
 int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
 {
     /* Static resp so worker never writes to freed stack memory on timeout */
     static struct read_resp resp;
-    static volatile bool read_in_flight;
+    static atomic_t read_in_flight;
 
-    if (read_in_flight) {
+    if (!atomic_cas(&read_in_flight, 0, 1)) {
         /* Check if late worker response arrived */
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            read_in_flight = false; /* Worker caught up */
+            atomic_set(&read_in_flight, 0); /* Worker caught up */
         } else {
             LOG_WRN("read_audio_data: previous request still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&read_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    read_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
 
     sd_req_t req = {0};
     req.type = REQ_READ_DATA;
     strncpy(req.u.read.filename, filename, MAX_FILENAME_LEN - 1);
-    req.u.read.out_buf = buf;
+    req.u.read.out_buf = static_read_buf;
     req.u.read.length = amount;
     req.u.read.offset = offset;
     req.u.read.resp = &resp;
@@ -1840,7 +1913,7 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue read: %d", ret);
-        read_in_flight = false;
+        atomic_set(&read_in_flight, 0);
         return ret;
     }
 
@@ -1850,28 +1923,32 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
          * Next call will check if worker caught up via sem. */
         return -ETIMEDOUT;
     }
-    read_in_flight = false;
+    atomic_set(&read_in_flight, 0);
     if (resp.res) {
         LOG_ERR("read_audio_data failed: %d", resp.res);
         return -1;
     }
+    size_t copy_len = (size_t)resp.read_bytes < (size_t)amount ? (size_t)resp.read_bytes : (size_t)amount;
+    memcpy(buf, static_read_buf, copy_len);
     return resp.read_bytes;
 }
 
 int sd_flush_current_file(void)
 {
     static struct read_resp resp;
-    static volatile bool flush_in_flight;
+    static atomic_t flush_in_flight;
 
-    if (flush_in_flight) {
+    if (!atomic_cas(&flush_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            flush_in_flight = false;
+            atomic_set(&flush_in_flight, 0);
         } else {
             LOG_WRN("sd_flush: previous flush still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&flush_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    flush_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
 
     sd_req_t req = {0};
@@ -1881,7 +1958,7 @@ int sd_flush_current_file(void)
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue flush: %d", ret);
-        flush_in_flight = false;
+        atomic_set(&flush_in_flight, 0);
         return ret;
     }
 
@@ -1889,7 +1966,7 @@ int sd_flush_current_file(void)
         LOG_ERR("Timeout waiting for flush");
         return -ETIMEDOUT;
     }
-    flush_in_flight = false;
+    atomic_set(&flush_in_flight, 0);
     return resp.res;
 }
 
@@ -1899,17 +1976,19 @@ int delete_audio_file(const char *filename)
         return -EINVAL;
 
     static struct read_resp resp;
-    static volatile bool delete_in_flight;
+    static atomic_t delete_in_flight;
 
-    if (delete_in_flight) {
+    if (!atomic_cas(&delete_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            delete_in_flight = false;
+            atomic_set(&delete_in_flight, 0);
         } else {
             LOG_WRN("delete_audio_file: previous delete still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&delete_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    delete_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
 
     sd_req_t req = {0};
@@ -1920,7 +1999,7 @@ int delete_audio_file(const char *filename)
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue delete: %d", ret);
-        delete_in_flight = false;
+        atomic_set(&delete_in_flight, 0);
         return ret;
     }
 
@@ -1928,7 +2007,7 @@ int delete_audio_file(const char *filename)
         LOG_ERR("Timeout waiting for delete");
         return -ETIMEDOUT;
     }
-    delete_in_flight = false;
+    atomic_set(&delete_in_flight, 0);
     if (resp.res < 0 && resp.res != -ENOENT) {
         LOG_ERR("delete_audio_file %s failed: %d", filename, resp.res);
         return resp.res;
@@ -1939,17 +2018,19 @@ int delete_audio_file(const char *filename)
 int clear_audio_directory(void)
 {
     static struct read_resp resp;
-    static volatile bool clear_in_flight;
+    static atomic_t clear_in_flight;
 
-    if (clear_in_flight) {
+    if (!atomic_cas(&clear_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            clear_in_flight = false;
+            atomic_set(&clear_in_flight, 0);
         } else {
             LOG_WRN("clear_audio_directory: previous clear still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&clear_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    clear_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
 
     sd_req_t req = {0};
@@ -1959,7 +2040,7 @@ int clear_audio_directory(void)
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue clear_dir: %d", ret);
-        clear_in_flight = false;
+        atomic_set(&clear_in_flight, 0);
         return -1;
     }
 
@@ -1967,7 +2048,7 @@ int clear_audio_directory(void)
         LOG_ERR("Timeout waiting for clear_dir");
         return -1;
     }
-    clear_in_flight = false;
+    atomic_set(&clear_in_flight, 0);
     if (resp.res) {
         LOG_ERR("clear_audio_directory failed: %d", resp.res);
         return -1;
@@ -2003,17 +2084,19 @@ int get_offset(char *filename, uint32_t *offset)
 int create_new_audio_file(void)
 {
     static struct read_resp resp;
-    static volatile bool create_in_flight;
+    static atomic_t create_in_flight;
 
-    if (create_in_flight) {
+    if (!atomic_cas(&create_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            create_in_flight = false;
+            atomic_set(&create_in_flight, 0);
         } else {
             LOG_WRN("create_new_audio_file: previous request still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&create_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    create_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
 
     sd_req_t req = {0};
@@ -2023,7 +2106,7 @@ int create_new_audio_file(void)
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue create_new_audio_file: %d", ret);
-        create_in_flight = false;
+        atomic_set(&create_in_flight, 0);
         return -1;
     }
 
@@ -2031,13 +2114,13 @@ int create_new_audio_file(void)
         LOG_ERR("Timeout waiting for create_new_audio_file");
         return -1;
     }
-    create_in_flight = false;
+    atomic_set(&create_in_flight, 0);
     if (resp.res) {
         LOG_ERR("create_new_audio_file failed: %d", resp.res);
         return -1;
     }
 
-    if (ble_connected)
+    if (atomic_get(&ble_connected))
         ble_connect_time_ms = k_uptime_get();
     return 0;
 }
@@ -2057,9 +2140,9 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
     }
 
     static struct file_stats_resp resp;
-    static volatile bool stats_in_flight;
+    static atomic_t stats_in_flight;
     int64_t now = k_uptime_get();
-    k_timeout_t wait_timeout = ble_connected ? K_MSEC(1000) : K_MSEC(30000);
+    k_timeout_t wait_timeout = atomic_get(&ble_connected) ? K_MSEC(1000) : K_MSEC(30000);
 
     if (now < cached_stats_valid_until_ms) {
         *file_count = cached_stats_file_count;
@@ -2067,9 +2150,9 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
         return 0;
     }
 
-    if (stats_in_flight) {
+    if (!atomic_cas(&stats_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            stats_in_flight = false;
+            atomic_set(&stats_in_flight, 0);
         } else {
             LOG_WRN("get_audio_file_stats: previous request still in-flight");
             if (cached_stats_valid_until_ms > 0) {
@@ -2079,8 +2162,10 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
             }
             return -EBUSY;
         }
+        if (!atomic_cas(&stats_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    stats_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
 
     sd_req_t req = {0};
@@ -2090,7 +2175,7 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue get_file_stats: %d", ret);
-        stats_in_flight = false;
+        atomic_set(&stats_in_flight, 0);
         if (cached_stats_valid_until_ms > 0) {
             *file_count = cached_stats_file_count;
             *total_size = cached_stats_total_size;
@@ -2101,7 +2186,7 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
 
     if (k_sem_take(&resp.sem, wait_timeout) != 0) {
         LOG_ERR("Timeout waiting for get_file_stats");
-        stats_in_flight = false;
+        atomic_set(&stats_in_flight, 0);
         if (cached_stats_valid_until_ms > 0) {
             *file_count = cached_stats_file_count;
             *total_size = cached_stats_total_size;
@@ -2109,7 +2194,7 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
         }
         return -ETIMEDOUT;
     }
-    stats_in_flight = false;
+    atomic_set(&stats_in_flight, 0);
     if (resp.res) {
         LOG_ERR("get_audio_file_stats failed: %d", resp.res);
         return -1;
@@ -2146,17 +2231,19 @@ int get_audio_file_list(char filenames[][MAX_FILENAME_LEN], int max_files, int *
     }
 
     static struct file_list_resp resp;
-    static volatile bool list_in_flight;
+    static atomic_t list_in_flight;
 
-    if (list_in_flight) {
+    if (!atomic_cas(&list_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            list_in_flight = false;
+            atomic_set(&list_in_flight, 0);
         } else {
             LOG_WRN("get_audio_file_list: previous request still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&list_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    list_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
     resp.count = 0;
 
@@ -2170,16 +2257,16 @@ int get_audio_file_list(char filenames[][MAX_FILENAME_LEN], int max_files, int *
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue get_file_list: %d", ret);
-        list_in_flight = false;
+        atomic_set(&list_in_flight, 0);
         return ret;
     }
 
     if (k_sem_take(&resp.sem, K_MSEC(5000)) != 0) {
         LOG_ERR("Timeout waiting for get_file_list");
-        list_in_flight = false;
+        atomic_set(&list_in_flight, 0);
         return -ETIMEDOUT;
     }
-    list_in_flight = false;
+    atomic_set(&list_in_flight, 0);
     if (resp.res) {
         LOG_ERR("get_audio_file_list failed: %d", resp.res);
         return resp.res;
@@ -2214,17 +2301,19 @@ int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t 
     }
 
     static struct file_list_resp resp;
-    static volatile bool list_sizes_in_flight;
+    static atomic_t list_sizes_in_flight;
 
-    if (list_sizes_in_flight) {
+    if (!atomic_cas(&list_sizes_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            list_sizes_in_flight = false;
+            atomic_set(&list_sizes_in_flight, 0);
         } else {
             LOG_WRN("get_audio_file_list_with_sizes: previous request still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&list_sizes_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    list_sizes_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
     resp.count = 0;
 
@@ -2238,16 +2327,16 @@ int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t 
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue get_file_list: %d", ret);
-        list_sizes_in_flight = false;
+        atomic_set(&list_sizes_in_flight, 0);
         return ret;
     }
 
     if (k_sem_take(&resp.sem, K_MSEC(30000)) != 0) {
         LOG_ERR("Timeout waiting for get_file_list");
-        list_sizes_in_flight = false;
+        atomic_set(&list_sizes_in_flight, 0);
         return -ETIMEDOUT;
     }
-    list_sizes_in_flight = false;
+    atomic_set(&list_sizes_in_flight, 0);
     if (resp.res) {
         LOG_ERR("get_audio_file_list_with_sizes failed: %d", resp.res);
         return resp.res;

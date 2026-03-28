@@ -5,6 +5,7 @@ import 'package:omi/pages/recordings/recordings_page.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/services.dart';
+import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/utils/notifications.dart';
 import 'package:provider/provider.dart';
@@ -18,6 +19,8 @@ void main() async {
   await SharedPreferencesUtil.init();
   await NotificationsService.initialize();
   await ServiceManager.init();
+  await ServiceManager.instance().start();
+  await RecordingsManager.cleanUpIncompleteExtraction();
 
   runApp(const MyApp());
 }
@@ -29,12 +32,32 @@ class MyApp extends StatefulWidget {
   State<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> {
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    ServiceManager.instance().start();
+    WidgetsBinding.instance.addObserver(this);
     _checkHeyPocketKey();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    try {
+      final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
+      if (state == AppLifecycleState.paused) {
+        deviceProvider.onAppPaused();
+      } else if (state == AppLifecycleState.resumed) {
+        deviceProvider.onAppResumed();
+      }
+    } catch (_) {
+      // Provider not yet available during early lifecycle
+    }
   }
 
   void _checkHeyPocketKey() {
