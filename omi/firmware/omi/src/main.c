@@ -49,6 +49,7 @@ static void boot_warming_sequence(void)
     /* Spin while LEDs are breathing until sd_worker finishes mount + lfs_fs_gc + file open.
      * With little data this completes in <5 s; with 200 MB it can take ~50 s. */
     while (!sd_is_boot_ready()) {
+        watchdog_feed();
         k_msleep(delay_ms);
     }
     LOG_INF("[BOOT] SD ready after %lld ms — starting mic", k_uptime_get() - wait_start_ms);
