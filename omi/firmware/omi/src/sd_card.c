@@ -257,7 +257,7 @@ static char cached_file_names[MAX_AUDIO_FILES][MAX_FILENAME_LEN] = {0};
 static uint32_t cached_file_sizes[MAX_AUDIO_FILES] = {0};
 
 /* BLE connection tracking for file rotation */
-static bool ble_connected = false;
+static atomic_t ble_connected;
 static int64_t ble_connect_time_ms = 0;
 
 /* Track if active file was deleted while BLE connected */
@@ -1260,7 +1260,7 @@ void sd_worker_thread(void)
 
         /* Regular write queue timeout: short when BLE connected (keep read/sync responsive),
          * long when offline (save power). */
-        k_timeout_t write_wait = ble_connected ? K_MSEC(50) : K_MSEC(2000);
+        k_timeout_t write_wait = atomic_get(&ble_connected) ? K_MSEC(50) : K_MSEC(2000);
         if (k_msgq_get(&sd_msgq, &req, write_wait) != 0)
             continue;
 
@@ -1717,7 +1717,7 @@ void sd_notify_time_synced(uint32_t utc_time)
 
 void sd_notify_ble_state(bool connected)
 {
-    if (connected && !ble_connected) {
+    if (connected && !atomic_get(&ble_connected)) {
         ble_connect_time_ms = k_uptime_get();
         LOG_INF("BLE connected");
         /* Signal the SD worker to rotate the active file on the next write so
@@ -1737,17 +1737,17 @@ void sd_notify_ble_state(bool connected)
             atomic_set(&pending_flush_on_ble_connect, 1);
             LOG_WRN("Flush on BLE connect deferred (%d)", ret);
         }
-    } else if (!connected && ble_connected) {
+    } else if (!connected && atomic_get(&ble_connected)) {
         LOG_INF("BLE disconnected");
-        if (current_file_deleted) {
+        if (atomic_get(&current_file_deleted)) {
             int cr = create_new_audio_file();
             if (cr < 0)
                 LOG_ERR("create file on BLE disconnect failed: %d", cr);
             else
-                current_file_deleted = false;
+                atomic_clear(&current_file_deleted);
         }
     }
-    ble_connected = connected;
+    atomic_set(&ble_connected, connected ? 1 : 0);
 }
 
 uint32_t write_to_file(uint8_t *data, uint32_t length)
@@ -2063,7 +2063,7 @@ int create_new_audio_file(void)
         return -1;
     }
 
-    if (ble_connected)
+    if (atomic_get(&ble_connected))
         ble_connect_time_ms = k_uptime_get();
     return 0;
 }
