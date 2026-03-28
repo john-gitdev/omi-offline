@@ -220,6 +220,10 @@ static uint32_t write_drop_bytes = 0;
  * queue from filling up while lfs_fs_gc() is running on the worker thread. */
 static atomic_t sd_boot_ready;
 
+/* Counter of audio frames dropped while SD boot was in progress.
+ * Incremented in write_to_file(); queryable via sd_get_boot_dropped_frames(). */
+static atomic_t boot_dropped_frames;
+
 /* Protects current_filename / current_file_path across threads.
  * The SD worker updates these during file creation and TMP→hex rename;
  * the storage thread reads them via sd_is_current_recording_file(). */
@@ -1237,7 +1241,14 @@ void sd_worker_thread(void)
 
     /* ---- SD boot init complete, allow writes ---- */
     atomic_set(&sd_boot_ready, 1);
-    LOG_INF("[SD_BOOT] SD card ready for audio writes (boot took %lld ms)", k_uptime_get());
+    {
+        long dropped = (long)atomic_get(&boot_dropped_frames);
+        LOG_INF("[SD_BOOT] SD card ready for audio writes (boot took %lld ms, "
+                "%ld audio frames dropped during boot)", k_uptime_get(), dropped);
+        if (dropped > 0) {
+            LOG_WRN("[SD_BOOT] %ld audio frames were dropped while SD was booting", dropped);
+        }
+    }
 
     /* ---- Main loop ---- */
     while (1) {
@@ -1643,6 +1654,11 @@ bool sd_is_boot_ready(void)
     return atomic_get(&sd_boot_ready);
 }
 
+uint32_t sd_get_boot_dropped_frames(void)
+{
+    return (uint32_t)atomic_get(&boot_dropped_frames);
+}
+
 int app_sd_init(void)
 {
     sd_shutdown_in_progress = false;
@@ -1793,14 +1809,17 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     static int64_t last_write_err_log_ms;
     static int64_t last_shutdown_drop_log_ms;
 
-    /* Silently discard data while SD boot init is still running
-     * (mount + lfs_fs_gc pre-warm + file open). No logging here to
-     * avoid flooding — the worker thread logs when ready. */
+    /* Discard data while SD boot init is still running
+     * (mount + lfs_fs_gc pre-warm + file open).  Rate-limited logging
+     * so the drop is observable; counter is queryable after boot. */
     if (!atomic_get(&sd_boot_ready)) {
         static int64_t last_not_ready_log_ms;
+        atomic_inc(&boot_dropped_frames);
         int64_t now = k_uptime_get();
         if (now - last_not_ready_log_ms > 5000) {
-            LOG_WRN("write_to_file dropped: SD not ready (boot in progress)");
+            LOG_WRN("write_to_file dropped: SD not ready (boot in progress), "
+                     "total dropped frames: %ld",
+                     (long)atomic_get(&boot_dropped_frames));
             last_not_ready_log_ms = now;
         }
         return 0;

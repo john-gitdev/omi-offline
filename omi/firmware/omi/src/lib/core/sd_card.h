@@ -116,6 +116,18 @@ int app_sd_init(void);
 bool sd_is_boot_ready(void);
 
 /**
+ * @brief Get the number of audio frames dropped during SD boot init.
+ *
+ * During the SD boot phase (mount + lfs_fs_gc pre-warm + file open, typically
+ * 10-50 seconds), incoming audio frames cannot be written and are discarded.
+ * This counter tracks how many frames were dropped. Safe to call from any thread.
+ *
+ * @return Number of audio frames dropped during boot (0 if boot was instant or
+ *         no audio was generated during boot).
+ */
+uint32_t sd_get_boot_dropped_frames(void);
+
+/**
  * @brief Put the SD card interface (controller) into a low-power (suspend) state.
  *        Note: This typically suspends the SPI controller managing the SD card slot.
  *
