@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -12,6 +13,8 @@ class SharedPreferencesUtil {
   }
 
   SharedPreferencesUtil._internal();
+
+  Future<void>? _heypocketUploadGuard;
 
   String get deviceIdHash => _preferences?.getString('deviceIdHash') ?? '';
   set deviceIdHash(String value) => _preferences?.setString('deviceIdHash', value);
@@ -78,6 +81,13 @@ class SharedPreferencesUtil {
 
   set autoSyncEnabled(bool value) => saveBool('autoSyncEnabled', value);
 
+  // True while extraction/processing is in progress. Persisted so that on
+  // restart after a crash we can detect incomplete processing and clean up
+  // the temp directory to avoid duplicate recordings.
+  bool get extractionInProgress => getBool('extractionInProgress', defaultValue: false);
+
+  set extractionInProgress(bool value) => saveBool('extractionInProgress', value);
+
   bool get recordingsFilterEnabled => getBool('recordingsFilterEnabled', defaultValue: false);
 
   set recordingsFilterEnabled(bool value) => saveBool('recordingsFilterEnabled', value);
@@ -103,11 +113,23 @@ class SharedPreferencesUtil {
 
   bool isUploadedToHeypocket(String uploadKey) => heypocketUploadedFiles.contains(uploadKey);
 
-  void markUploadedToHeypocket(String uploadKey) {
-    if (isUploadedToHeypocket(uploadKey)) return;
-    final set = {...heypocketUploadedFiles};
-    set.add(uploadKey);
-    heypocketUploadedFiles = set.toList();
+  /// Serialized read-modify-write to prevent concurrent calls from losing updates.
+  Future<void> markUploadedToHeypocket(String uploadKey) async {
+    // Wait for any in-flight update to complete before reading.
+    while (_heypocketUploadGuard != null) {
+      await _heypocketUploadGuard;
+    }
+    final completer = Completer<void>();
+    _heypocketUploadGuard = completer.future;
+    try {
+      if (isUploadedToHeypocket(uploadKey)) return;
+      final updated = {...heypocketUploadedFiles};
+      updated.add(uploadKey);
+      await saveStringList('heypocketUploadedFiles', updated.toList());
+    } finally {
+      _heypocketUploadGuard = null;
+      completer.complete();
+    }
   }
 
   static Future<void> init() async {
