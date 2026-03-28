@@ -42,7 +42,22 @@ This document tracks features, optimizations, and bug fixes that have been revie
 
 ---
 
-### 3. App-Side Sync Rewrite (LittleFS Protocol)
+### 3. Auto Offline Sync on Device Connect — Reliability Fixes
+**Source:** [PR #5916](https://github.com/BasedHardware/omi/pull/5916)
+
+**Integrated:**
+*   **Partial Transfer Flush Guard (`sdcard_wal_sync.dart`):** Added an `eotReceived` flag to `_readStorageBytesToFile`. The flag is set only when a `PACKET_EOT (0x02)` is received from the firmware. The `onError` and `onDone` BLE stream handlers now check this flag before calling `flushBuffer()`. If the stream closes without a proper EOT (e.g. BLE drops mid-transfer), buffered Opus frames are discarded instead of flushed — preventing corrupted, truncated `.m4a` files from being written to disk.
+*   **Rapid Reconnect Sync Fix (`device_provider.dart`):** Changed the early-return guard in `_doBackgroundSync()` from a hard bail on `walSync.isSyncing` to a conditional await. If `isSyncing` is true but `cancelFuture` is non-null (meaning the disconnect handler already requested cancellation), the method now awaits that future and then proceeds with the sync. This fixes a window where rapid reconnect — disconnect fires `cancelSync()` before reconnect fires `_doBackgroundSync()` — would leave the device perpetually unsynced because the new sync silently returned while the old one was still winding down.
+
+**Excluded:**
+*   **Firmware Version Gating (≥ 3.0.17):** The PR gates the new LittleFS sync path on a firmware version check and adds a `deviceSupportsMultiFileSync` SharedPreferences flag. Not ported — the local project runs a single firmware version and does not need a legacy SD card fallback path.
+*   **`StorageSyncImpl` Architecture Split:** The PR introduces a separate `StorageSyncImpl` class for LittleFS alongside the existing `SDCardWalSyncImpl` for legacy firmware. Not ported — redundant given the single-firmware constraint above; the existing `SDCardWalSyncImpl` (which already uses LittleFS commands 0x10–0x13) is sufficient.
+*   **Upload Progress Callbacks (`UploadProgressCallback`):** The PR enhances `makeMultipartApiCall()` with byte-level progress tracking for the upstream's `/v1/sync-local-files` backend. Not applicable — `omi-offline` uses HeyPocket presigned-URL streaming uploads, a completely separate pipeline.
+*   **`auto_sync_page.dart` and Localization Strings:** New three-tier progress UI page and 20 localization keys tied to the cloud upload pipeline. Not ported — the local project does not use the Omi backend.
+
+---
+
+### 4. App-Side Sync Rewrite (LittleFS Protocol)
 **Source:** [PR #5905 Commits](https://github.com/BasedHardware/omi/pull/5905/commits)
 *   [Commit `1c25b1ca`](https://github.com/BasedHardware/omi/commit/1c25b1caebab76d801504a82076a64ed0517495b)
 *   [Commit `b4ca794a`](https://github.com/BasedHardware/omi/commit/b4ca794a31520bbbdd4f1d8d58bd41dbbd109c47)
