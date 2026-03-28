@@ -441,17 +441,21 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     // call onDeviceConnectionStateChanged(disconnected).  The debouncer catches
     // rapid-fire duplicates; the _isHandlingDisconnect flag blocks re-entry
     // during the async gap between setConnectedDevice(null) and setIsConnected(false).
-    if (_isHandlingDisconnect || (!isConnected && connectedDevice == null)) {
+    // Check _isHandlingDisconnect FIRST to close the race window between the
+    // guard check and flag set.
+    if (_isHandlingDisconnect) return;
+    _isHandlingDisconnect = true;
+    if (!isConnected && connectedDevice == null) {
+      _isHandlingDisconnect = false;
       Logger.debug('onDeviceDisconnected: already disconnected, skipping');
       return;
     }
-    _isHandlingDisconnect = true;
     Logger.debug('onDisconnected inside: $connectedDevice');
     _stopHealthCheck();
     storageFullPercentage = -1;
     isCharging = false;
     await setConnectedDevice(null);
-    setisDeviceStorageSupport();
+    await setisDeviceStorageSupport();
     setIsConnected(false);
     updateConnectingStatus(false);
 
