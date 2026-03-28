@@ -84,6 +84,8 @@ class OmiBleManager private constructor(private val application: Application) {
     private var stabilityTimerRunnable: Runnable? = null
     private var pendingReconnectRunnable: Runnable? = null
 
+    private val connectingAddresses = ConcurrentHashMap.newKeySet<String>()
+
     private var bondCompletionCallback: ((Boolean) -> Unit)? = null
     private var bondTimeoutRunnable: Runnable? = null
     private var bondingAddress: String? = null
@@ -204,15 +206,16 @@ class OmiBleManager private constructor(private val application: Application) {
         scanCallback = null
     }
 
-    fun connectPeripheral(address: String) {
+    fun connectPeripheral(address: String, caller: String = "unknown") {
         val addr = address.uppercase()
         appClosed = false
         manuallyDisconnected.remove(addr)
         reconnectRetryCount[addr] = 0
+        cancelPendingReconnect()
 
         connectedGatts[addr]?.let { gatt ->
             if (bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED) {
-                Log.i(TAG, "connectPeripheral: $addr already connected, re-notifying Dart")
+                Log.i(TAG, "connectPeripheral($caller): $addr already connected, re-notifying Dart")
                 mainHandler.post { flutterApi?.onPeripheralConnected(addr) {} }
                 val services = gatt.services
                 if (services != null && services.isNotEmpty()) {
@@ -228,13 +231,21 @@ class OmiBleManager private constructor(private val application: Application) {
             }
         }
 
+        // Guard: skip if a GATT connect is already in-flight for this address.
+        // Multiple callers (Dart ensureConnection, FgService, CompanionSvc) can race here.
+        if (connectingAddresses.contains(addr)) {
+            Log.i(TAG, "connectPeripheral($caller): $addr connect already in-flight, skipping")
+            return
+        }
+
         connectedGatts[addr]?.close()
         connectedGatts.remove(addr)
         servicesDiscoveredFor.remove(addr)
 
         val adapter = bluetoothAdapter ?: return
         val device = adapter.getRemoteDevice(addr)
-        Log.i(TAG, "connectPeripheral: $addr")
+        Log.i(TAG, "connectPeripheral($caller): $addr")
+        connectingAddresses.add(addr)
         val gatt = device.connectGatt(application, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         connectedGatts[addr] = gatt
     }
@@ -526,6 +537,16 @@ class OmiBleManager private constructor(private val application: Application) {
         isProcessingCommand = false
     }
 
+    private fun removeBond(device: BluetoothDevice) {
+        try {
+            val method = device.javaClass.getMethod("removeBond")
+            method.invoke(device)
+            Log.i(TAG, "Bond removed for ${device.address}")
+        } catch (e: Exception) {
+            Log.w(TAG, "removeBond failed for ${device.address}: ${e.message}")
+        }
+    }
+
     private val gattCallback = object : BluetoothGattCallback() {
 
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -540,6 +561,7 @@ class OmiBleManager private constructor(private val application: Application) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.i(TAG, "Connected to $address, discovering services")
+                    connectingAddresses.remove(address)
                     connectedGatts[address] = gatt
                     reconnectRetryCount[address] = 0
                     cancelPendingReconnect()
@@ -551,7 +573,7 @@ class OmiBleManager private constructor(private val application: Application) {
                         flutterApi?.onPeripheralConnected(address) {}
                     }
 
-                    startRssiKeepAlive(address)
+                    // Defer RSSI keepalive until after service discovery to reduce BLE traffic during setup
                     startStabilityTimer(address)
 
                     // Always discover services immediately — no bonding in the connection pipeline.
@@ -565,11 +587,30 @@ class OmiBleManager private constructor(private val application: Application) {
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.i(TAG, "Disconnected from $address (status=$status)")
+                    connectingAddresses.remove(address)
                     cleanupPeripheral(address)
                     stopStabilityTimer()
                     cancelPendingReconnect()
                     mainHandler.post {
                         flutterApi?.onPeripheralDisconnected(address, if (status != 0) "status=$status" else null) {}
+                    }
+
+                    // status=5 (GATT_INSUFFICIENT_AUTHENTICATION): stale bond — remove and retry
+                    val isAuthFailure = status == 5 && gatt.device.bondState == BluetoothDevice.BOND_BONDED
+                    if (isAuthFailure) {
+                        Log.w(TAG, "Authentication failure for $address, removing stale bond and retrying")
+                        gatt.close()
+                        connectedGatts.remove(address)
+                        removeBond(gatt.device)
+                        connectingAddresses.add(address)
+                        mainHandler.postDelayed({
+                            connectingAddresses.remove(address)
+                            val device = bluetoothAdapter?.getRemoteDevice(address) ?: return@postDelayed
+                            val newGatt = device.connectGatt(application, false, this, BluetoothDevice.TRANSPORT_LE)
+                            connectedGatts[address] = newGatt
+                            connectingAddresses.add(address)
+                        }, RECONNECT_DELAY_MS)
+                        return
                     }
 
                     if (!manuallyDisconnected.contains(address)) {
@@ -642,6 +683,9 @@ class OmiBleManager private constructor(private val application: Application) {
             if (!gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)) {
                 Log.w(TAG, "Failed to request high connection priority")
             }
+
+            // Start RSSI keepalive now that critical setup is complete
+            startRssiKeepAlive(address)
 
             completeCommand()
 
