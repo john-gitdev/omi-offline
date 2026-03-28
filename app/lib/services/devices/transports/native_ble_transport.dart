@@ -223,11 +223,12 @@ class NativeBleTransport extends DeviceTransport {
         _resubscribeAfterReconnect();
       }
     } else {
-      // Remember active subscriptions before closing streams
+      // Remember active subscriptions — but keep stream controllers open so
+      // consumers holding stream references continue to receive data after
+      // a native-initiated reconnect.
       _activeSubscriptionKeys.clear();
       _activeSubscriptionKeys.addAll(_streamControllers.keys);
 
-      _closeAllStreams();
       _services = []; // Clear so reconnect waits for fresh discovery
       _updateState(DeviceTransportState.disconnected);
 
@@ -255,11 +256,14 @@ class NativeBleTransport extends DeviceTransport {
         _servicesCompleter = null;
       }
 
-      // Re-create stream controllers and re-subscribe to previously active characteristics
+      // Re-subscribe to previously active characteristics using existing controllers.
+      // Controllers were kept open during disconnect so consumers still hold valid
+      // stream references — no need to recreate them.
       for (final key in _activeSubscriptionKeys) {
         final parts = key.split(':');
         if (parts.length == 2) {
-          _streamControllers[key] = StreamController<List<int>>.broadcast();
+          // Ensure controller exists (create if somehow missing)
+          _streamControllers[key] ??= StreamController<List<int>>.broadcast();
           _subscribeCharacteristic(parts[0], parts[1]);
         }
       }
