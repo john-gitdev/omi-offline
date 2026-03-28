@@ -138,7 +138,8 @@ class NativeBleTransport extends DeviceTransport {
   Future<Stream<List<int>>> getCharacteristicStream(String serviceUuid, String characteristicUuid) async {
     final key = '${serviceUuid.toLowerCase()}:${characteristicUuid.toLowerCase()}';
 
-    if (!_streamControllers.containsKey(key)) {
+    final existing = _streamControllers[key];
+    if (existing == null || existing.isClosed) {
       _streamControllers[key] = StreamController<List<int>>.broadcast();
       _subscribeCharacteristic(serviceUuid, characteristicUuid);
     }
