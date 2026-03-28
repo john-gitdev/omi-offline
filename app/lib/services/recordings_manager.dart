@@ -174,16 +174,16 @@ class RecordingsManager {
 
     // Process raw segments (now they are in DeviceSession folders)
     if (await rawSegmentsDir.exists()) {
-      final sessionFolders = rawSegmentsDir.listSync().whereType<Directory>().toList();
+      final deviceSessionFolders = rawSegmentsDir.listSync().whereType<Directory>().toList();
 
       // Sort DeviceSession folders by ID (e.g. "100", "101")
-      sessionFolders.sort((a, b) {
+      deviceSessionFolders.sort((a, b) {
         final aId = int.tryParse(a.path.split('/').last) ?? 0;
         final bId = int.tryParse(b.path.split('/').last) ?? 0;
         return aId.compareTo(bId);
       });
 
-      for (var folder in sessionFolders) {
+      for (var folder in deviceSessionFolders) {
         final deviceSessionIdStr = folder.path.split('/').last;
 
         // Skip hidden folders or system folders if any
@@ -488,16 +488,16 @@ class RecordingsManager {
         // Delete only segments belonging to fully-completed conversations.
         // If adjustment mode is ON, keep everything for re-processing.
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
-          Set<String> sessionFoldersToDelete = {};
+          Set<String> deviceSessionFoldersToDelete = {};
           for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
             final file = batch.rawSegments[i];
             if (await file.exists()) {
               Logger.debug("RecordingsManager: [bg] Deleting completed raw segment: ${file.path}");
               await file.delete();
-              sessionFoldersToDelete.add(file.parent.path);
+              deviceSessionFoldersToDelete.add(file.parent.path);
             }
           }
-          for (var folderPath in sessionFoldersToDelete) {
+          for (var folderPath in deviceSessionFoldersToDelete) {
             final folder = Directory(folderPath);
             if (await folder.exists()) {
               try {
@@ -515,17 +515,17 @@ class RecordingsManager {
         // Note: finalized recordings (.wav) are kept until the user explicitly deletes
         // the day via deleteDay(). Raw segments are separate from finalized recordings.
         if (!SharedPreferencesUtil().offlineAdjustmentMode) {
-          Set<String> sessionFoldersToDelete = {};
+          Set<String> deviceSessionFoldersToDelete = {};
 
           for (var file in batch.rawSegments) {
             if (await file.exists()) {
               Logger.debug("RecordingsManager: Deleting successfully processed raw segment: ${file.path}");
               await file.delete();
-              sessionFoldersToDelete.add(file.parent.path);
+              deviceSessionFoldersToDelete.add(file.parent.path);
             }
           }
 
-          for (var folderPath in sessionFoldersToDelete) {
+          for (var folderPath in deviceSessionFoldersToDelete) {
             final folder = Directory(folderPath);
             if (await folder.exists()) {
               try {
@@ -739,16 +739,16 @@ class RecordingsManager {
       // Raw segment deletion — same rules as processDay.
       if (backgroundMode || isMarkerMode || isFixedMode) {
         if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
-          final sessionFolders = <String>{};
+          final deviceSessionFolders = <String>{};
           for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
             final file = allSegments[i];
             if (await file.exists()) {
               Logger.debug("RecordingsManager: [bg] Deleting completed raw segment: ${file.path}");
               await file.delete();
-              sessionFolders.add(file.parent.path);
+              deviceSessionFolders.add(file.parent.path);
             }
           }
-          for (final folderPath in sessionFolders) {
+          for (final folderPath in deviceSessionFolders) {
             final folder = Directory(folderPath);
             if (await folder.exists()) {
               try {
@@ -759,15 +759,15 @@ class RecordingsManager {
         }
       } else {
         if (!SharedPreferencesUtil().offlineAdjustmentMode) {
-          final sessionFolders = <String>{};
+          final deviceSessionFolders = <String>{};
           for (final file in allSegments) {
             if (await file.exists()) {
               Logger.debug("RecordingsManager: Deleting successfully processed raw segment: ${file.path}");
               await file.delete();
-              sessionFolders.add(file.parent.path);
+              deviceSessionFolders.add(file.parent.path);
             }
           }
-          for (final folderPath in sessionFolders) {
+          for (final folderPath in deviceSessionFolders) {
             final folder = Directory(folderPath);
             if (await folder.exists()) {
               try {
@@ -848,7 +848,7 @@ class RecordingsManager {
     // Also exclude any segment modified within the last 5 seconds to avoid
     // processing a file that is still being written to by the sync layer.
     final recencyCutoff = DateTime.now().subtract(const Duration(seconds: 5));
-    final Map<String, List<File>> bySession = {};
+    final Map<String, List<File>> byDeviceSession = {};
     for (final f in segments) {
       try {
         if (f.lastModifiedSync().isAfter(recencyCutoff)) continue;
@@ -857,19 +857,19 @@ class RecordingsManager {
       }
       final name = f.path.split('/').last;
       final deviceSessionId = name.split('_').first;
-      bySession.putIfAbsent(deviceSessionId, () => []).add(f);
+      byDeviceSession.putIfAbsent(deviceSessionId, () => []).add(f);
     }
     final result = <File>[];
-    for (final sessionSegments in bySession.values) {
+    for (final deviceSessionSegments in byDeviceSession.values) {
       // Sort by segmentIndex numerically, then drop the last (highest) one.
-      sessionSegments.sort((a, b) {
+      deviceSessionSegments.sort((a, b) {
         final aParts = a.path.split('/').last.replaceAll('.bin', '').split('_');
         final bParts = b.path.split('/').last.replaceAll('.bin', '').split('_');
         final aSegment = int.tryParse(aParts.length > 1 ? aParts[1] : '0') ?? 0;
         final bSegment = int.tryParse(bParts.length > 1 ? bParts[1] : '0') ?? 0;
         return aSegment.compareTo(bSegment);
       });
-      result.addAll(sessionSegments.take(sessionSegments.length - 1));
+      result.addAll(deviceSessionSegments.take(deviceSessionSegments.length - 1));
     }
     // Re-sort numerically by (deviceSessionId, segmentIndex).
     result.sort((a, b) {
@@ -919,14 +919,14 @@ class RecordingsManager {
     // 2. Delete raw segments only when adjustment mode is OFF.
     //    In adjustment mode the user may want to re-process, so keep the segments.
     if (!SharedPreferencesUtil().offlineAdjustmentMode) {
-      final Set<String> sessionFolderPaths = {};
+      final Set<String> deviceSessionFolderPaths = {};
       for (var file in batch.rawSegments) {
         try { await file.delete(); } on FileSystemException catch (_) {}
-        sessionFolderPaths.add(file.parent.path);
+        deviceSessionFolderPaths.add(file.parent.path);
       }
 
       // 3. Remove now-empty DeviceSession folders (non-recursive delete fails if not empty)
-      for (var folderPath in sessionFolderPaths) {
+      for (var folderPath in deviceSessionFolderPaths) {
         try { await Directory(folderPath).delete(recursive: false); } on FileSystemException catch (_) {}
       }
     }
