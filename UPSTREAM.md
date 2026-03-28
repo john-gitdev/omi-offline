@@ -69,3 +69,19 @@ This document tracks features, optimizations, and bug fixes that have been revie
 **Excluded:**
 *   **Legacy Wi-Fi Sync Artifacts:** The upstream commits still contained some interfaces and models from the legacy Wi-Fi sync (`WifiSyncSetupResult`, `setupWifiSync`, etc.). These had already been entirely expunged from the local `omi-offline` app architecture, so the cleaner local state was preserved.
 *   **FlutterBluePlus Logic:** Upstream still uses standard Flutter plugins in places where `omi-offline` now uses the newly created native `Pigeon` bridges (`NativeBleTransport`).
+
+---
+
+### 5. Android BLE Connect Race Condition Fix (status=5)
+**Source:** [PR #6067](https://github.com/BasedHardware/omi/pull/6067)
+
+**Integrated:**
+*   **`connectingAddresses` Race Guard (`OmiBleManager.kt`):** Added a `ConcurrentHashMap`-backed set that tracks addresses with an in-flight `connectGatt` call. Three callers (Dart `ensureConnection`, `OmiBleForegroundService` startup, `BleCompanionService.deviceAppeared`) can race to call `connectPeripheral` within milliseconds — each call was closing the previous in-flight GATT connection and corrupting the encryption handshake, producing `status=5` (GATT_INSUFFICIENT_AUTHENTICATION). The 2nd and 3rd callers now check the set and return immediately. The set is cleared in both `STATE_CONNECTED` and `STATE_DISCONNECTED` branches of `onConnectionStateChange`.
+*   **`cancelPendingReconnect()` in `connectPeripheral` (`OmiBleManager.kt`):** Added the call at the top of `connectPeripheral` so any delayed reconnect runnable scheduled from a prior disconnect is cancelled before a fresh connection attempt begins. The upstream codebase already had this; the local copy was behind.
+*   **Status=5 Bond Removal + Retry (`OmiBleManager.kt`):** Added a dedicated path in `STATE_DISCONNECTED` for `status == 5` when the device is bonded. Removes the stale bond via `removeBond()` (reflection on the hidden Android API) and schedules a fresh non-autoConnect `connectGatt` after `RECONNECT_DELAY_MS`. Previously status=5 was not in `RETRYABLE_STATUS_CODES` so the connection was permanently abandoned.
+*   **`removeBond()` Helper (`OmiBleManager.kt`):** Small private method wrapping the reflection call with a try/catch since `removeBond` is a hidden Android API.
+*   **RSSI Keepalive Deferred (`OmiBleManager.kt`):** Moved `startRssiKeepAlive()` from `STATE_CONNECTED` to after `requestConnectionPriority()` in `onServicesDiscovered`. Prevents RSSI polling from adding BLE traffic during the critical service discovery and MTU negotiation window.
+*   **Caller Tagging (`OmiBleManager.kt`, `OmiBleForegroundService.kt`, `BleHostApiImpl.kt`):** Added a `caller: String` parameter to `connectPeripheral` and propagated it through `OmiBleForegroundService.connectToDevice`. `BleHostApiImpl` now passes `caller = "Dart"`. All connect-attempt log lines now identify their origin.
+
+**Excluded:**
+*   Nothing. All substantive changes were applicable. Caller tags in `BleCompanionService.kt` and `MainActivity.kt` were already present in the local codebase prior to this PR.
