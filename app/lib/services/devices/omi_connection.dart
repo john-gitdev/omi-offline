@@ -69,7 +69,14 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<bool> performRetrieveChargingState() async {
-    return false; // Standard BAS doesn't provide charging state
+    try {
+      final data = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      // 4-byte payload: [mV_lo, mV_hi, percentage, charging(0/1)]
+      if (data.length >= 4) return data[3] == 1;
+      return false;
+    } catch (_) {
+      return false;
+    }
   }
 
   @override
@@ -77,17 +84,34 @@ class OmiDeviceConnection extends DeviceConnection {
     void Function(int)? onBatteryLevelChange,
     void Function(bool)? onChargingStateChange,
   }) async {
+    // Prefer the rich battery detail characteristic (4-byte: mV_lo, mV_hi, pct, charging)
+    // which provides both level and charging state. Fall back to standard BAS if unavailable.
     try {
-      Logger.debug('OmiDeviceConnection: Setting up battery level listener...');
-      final stream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
-      Logger.debug('OmiDeviceConnection: Battery level listener stream created');
+      Logger.debug('OmiDeviceConnection: Trying battery detail listener...');
+      final stream =
+          await transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      final subscription = stream.listen((value) {
+        if (value.length >= 3 && onBatteryLevelChange != null) {
+          onBatteryLevelChange(value[2]); // byte 2 = percentage 0-100
+        }
+        if (value.length >= 4 && onChargingStateChange != null) {
+          onChargingStateChange(value[3] == 1); // byte 3 = charging flag
+        }
+      });
+      Logger.debug('OmiDeviceConnection: Battery detail listener active');
+      return subscription;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Battery detail unavailable ($e), falling back to standard BAS');
+    }
 
+    // Fallback: standard BAS (1-byte percentage, no charging state)
+    try {
+      final stream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
       final subscription = stream.listen((value) {
         if (value.isNotEmpty && onBatteryLevelChange != null) {
           onBatteryLevelChange(value[0]);
         }
       });
-
       return subscription;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error setting up battery listener: $e');
