@@ -353,8 +353,11 @@ class FixedIntervalAudioProcessor {
       await AacEncoder.finishEncoder(sessionId!);
     } on Exception catch (e) {
       Logger.error('FixedIntervalAudioProcessor: AAC encoding failed, falling back to WAV: $e');
-      final tmpFile = File('${dateFolder.path}/recording_$timestamp.tmp.m4a');
-      if (await tmpFile.exists()) await tmpFile.delete();
+      // Delete the corrupt M4A file (not .tmp.m4a)
+      final corruptFile = File('${dateFolder.path}/recording_$timestamp.m4a');
+      try {
+        if (await corruptFile.exists()) await corruptFile.delete();
+      } catch (_) {}
       return await _saveWav(refs, dateFolderPath, timestamp);
     } finally {
       await currentRaf?.close();
@@ -387,14 +390,16 @@ class FixedIntervalAudioProcessor {
     }
     final metaPath = '${dateFolder.path}/recording_$timestamp.meta';
     final List<int> metaOut = [...metaBytes.buffer.asUint8List()];
-    final deviceId = SharedPreferencesUtil().btDevice.id.replaceAll(':', '').toUpperCase();
-    if (deviceId.length >= 6) {
-      final mac6 = deviceId.substring(0, 6);
-      final uploadKey = '${mac6}_recording_$timestamp.m4a';
-      final keyBytes = uploadKey.codeUnits;
-      if (keyBytes.length <= 255) {
-        metaOut.add(keyBytes.length);
-        metaOut.addAll(keyBytes);
+    final rawId = SharedPreferencesUtil().btDevice.id;
+    if (rawId.isNotEmpty) {
+      final deviceId = rawId.replaceAll(':', '').toUpperCase();
+      if (deviceId.length >= 6) {
+        final mac6 = deviceId.substring(0, 6);
+        final uploadKey = '${mac6}_recording_$timestamp.m4a';
+        final keyBytes = uploadKey.codeUnits;
+        final truncatedKey = keyBytes.length > 255 ? keyBytes.sublist(0, 255) : keyBytes;
+        metaOut.add(truncatedKey.length);
+        metaOut.addAll(truncatedKey);
       }
     }
     await File(metaPath).writeAsBytes(metaOut);
