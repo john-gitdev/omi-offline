@@ -6,6 +6,7 @@ import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/utils/logger.dart';
+import 'package:omi/utils/mutex.dart';
 
 class OmiDeviceConnection extends DeviceConnection {
   // Deduplicates concurrent listFiles calls
@@ -15,6 +16,11 @@ class OmiDeviceConnection extends DeviceConnection {
   int _listFilesGeneration = 0;
   StreamSubscription? _listFilesSub;
   Timer? _timeoutTimer;
+
+  /// Serializes storage operations (listFiles, deleteFile, rotateFile) that
+  /// share the same BLE characteristic stream. Without this, concurrent
+  /// callers could misroute packets between operations.
+  final Mutex _storageMutex = Mutex();
 
   OmiDeviceConnection(super.device, super.transport);
 
@@ -49,10 +55,19 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<int> performRetrieveBatteryLevel() async {
+    // Try the 4-byte battery detail characteristic first — it's the same one
+    // the firmware notifies on, so the GATT cache is warm.
     try {
-      Logger.debug('OmiDeviceConnection: Attempting to read battery level from $batteryServiceUuid:$batteryLevelCharacteristicUuid');
+      final detail = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      if (detail.length >= 3) {
+        Logger.debug('OmiDeviceConnection: Battery detail read: pct=${detail[2]}');
+        return detail[2]; // byte 2 = percentage 0-100
+      }
+    } catch (_) {}
+
+    // Fallback: standard BAS (1-byte percentage)
+    try {
       final data = await transport.readCharacteristic(batteryServiceUuid, batteryLevelCharacteristicUuid);
-      Logger.debug('OmiDeviceConnection: Battery level read returned: $data');
       if (data.isNotEmpty) return data[0];
       return -1;
     } catch (e) {
@@ -63,7 +78,14 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<bool> performRetrieveChargingState() async {
-    return false; // Standard BAS doesn't provide charging state
+    try {
+      final data = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      // 4-byte payload: [mV_lo, mV_hi, percentage, charging(0/1)]
+      if (data.length >= 4) return data[3] == 1;
+      return false;
+    } catch (_) {
+      return false;
+    }
   }
 
   @override
@@ -71,17 +93,34 @@ class OmiDeviceConnection extends DeviceConnection {
     void Function(int)? onBatteryLevelChange,
     void Function(bool)? onChargingStateChange,
   }) async {
+    // Prefer the rich battery detail characteristic (4-byte: mV_lo, mV_hi, pct, charging)
+    // which provides both level and charging state. Fall back to standard BAS if unavailable.
     try {
-      Logger.debug('OmiDeviceConnection: Setting up battery level listener...');
-      final stream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
-      Logger.debug('OmiDeviceConnection: Battery level listener stream created');
+      Logger.debug('OmiDeviceConnection: Trying battery detail listener...');
+      final stream =
+          await transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      final subscription = stream.listen((value) {
+        if (value.length >= 3 && onBatteryLevelChange != null) {
+          onBatteryLevelChange(value[2]); // byte 2 = percentage 0-100
+        }
+        if (value.length >= 4 && onChargingStateChange != null) {
+          onChargingStateChange(value[3] == 1); // byte 3 = charging flag
+        }
+      });
+      Logger.debug('OmiDeviceConnection: Battery detail listener active');
+      return subscription;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Battery detail unavailable ($e), falling back to standard BAS');
+    }
 
+    // Fallback: standard BAS (1-byte percentage, no charging state)
+    try {
+      final stream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
       final subscription = stream.listen((value) {
         if (value.isNotEmpty && onBatteryLevelChange != null) {
           onBatteryLevelChange(value[0]);
         }
       });
-
       return subscription;
     } catch (e) {
       Logger.debug('OmiDeviceConnection: Error setting up battery listener: $e');
@@ -302,6 +341,15 @@ class OmiDeviceConnection extends DeviceConnection {
   /// ongoing sync data stream.
   @override
   Future<List<StorageFile>> performListFiles() async {
+    await _storageMutex.acquire();
+    try {
+      return await _performListFilesLocked();
+    } finally {
+      _storageMutex.release();
+    }
+  }
+
+  Future<List<StorageFile>> _performListFilesLocked() async {
     // 1. Clean previous run & increment generation
     await stop();
 
@@ -430,11 +478,13 @@ class OmiDeviceConnection extends DeviceConnection {
   /// Send CMD_DELETE_FILE (0x12, fileIndex) and wait for PACKET_ACK (0x03, result).
   @override
   Future<bool> performDeleteFile(int fileIndex) async {
+    await _storageMutex.acquire();
     try {
       final completer = Completer<bool>();
       StreamSubscription? sub;
 
-      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream =
+          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       sub = stream.listen((data) {
         if (completer.isCompleted) return;
         // Expect [PACKET_ACK=0x03][result:1]
@@ -458,13 +508,13 @@ class OmiDeviceConnection extends DeviceConnection {
         Logger.debug('performDeleteFile($fileIndex): success=$success');
         return success;
       } finally {
-        // Always cancel — on timeout the sub is still alive and a late ACK arriving
-        // after the timeout would be misinterpreted by the next operation's listener.
         await sub.cancel();
       }
     } catch (e) {
       Logger.debug('OmiDeviceConnection: performDeleteFile error: $e');
       return false;
+    } finally {
+      _storageMutex.release();
     }
   }
 
@@ -485,11 +535,13 @@ class OmiDeviceConnection extends DeviceConnection {
   /// Firmware sends the ACK only after the old file is sealed and new file is open.
   @override
   Future<bool> performRotateFile() async {
+    await _storageMutex.acquire();
     try {
       final completer = Completer<bool>();
       StreamSubscription? sub;
 
-      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream =
+          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       sub = stream.listen((data) {
         if (completer.isCompleted) return;
         if (data.length >= 2 && data[0] == 0x03) {
@@ -502,13 +554,18 @@ class OmiDeviceConnection extends DeviceConnection {
       await transport.writeCharacteristic(
           storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x13]);
 
-      final success = await completer.future.timeout(const Duration(seconds: 15));
-      Logger.debug('OmiDeviceConnection: performRotateFile success=$success');
-      sub.cancel();
-      return success;
+      try {
+        final success = await completer.future.timeout(const Duration(seconds: 15));
+        Logger.debug('OmiDeviceConnection: performRotateFile success=$success');
+        return success;
+      } finally {
+        await sub.cancel();
+      }
     } catch (e) {
       Logger.debug('OmiDeviceConnection: performRotateFile error: $e');
       return false;
+    } finally {
+      _storageMutex.release();
     }
   }
 
