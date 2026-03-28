@@ -11,6 +11,7 @@ import 'package:omi/services/devices/discovery/device_discoverer.dart';
 
 enum DeviceConnectionState {
   connected,
+  connecting,
   disconnected,
 }
 
