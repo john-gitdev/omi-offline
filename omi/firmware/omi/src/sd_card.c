@@ -1815,18 +1815,20 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
 {
     /* Static resp so worker never writes to freed stack memory on timeout */
     static struct read_resp resp;
-    static volatile bool read_in_flight;
+    static atomic_t read_in_flight;
 
-    if (read_in_flight) {
+    if (!atomic_cas(&read_in_flight, 0, 1)) {
         /* Check if late worker response arrived */
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            read_in_flight = false; /* Worker caught up */
+            atomic_set(&read_in_flight, 0); /* Worker caught up */
         } else {
             LOG_WRN("read_audio_data: previous request still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&read_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    read_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
 
     sd_req_t req = {0};
@@ -1840,7 +1842,7 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue read: %d", ret);
-        read_in_flight = false;
+        atomic_set(&read_in_flight, 0);
         return ret;
     }
 
@@ -1850,7 +1852,7 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
          * Next call will check if worker caught up via sem. */
         return -ETIMEDOUT;
     }
-    read_in_flight = false;
+    atomic_set(&read_in_flight, 0);
     if (resp.res) {
         LOG_ERR("read_audio_data failed: %d", resp.res);
         return -1;
@@ -1861,17 +1863,19 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
 int sd_flush_current_file(void)
 {
     static struct read_resp resp;
-    static volatile bool flush_in_flight;
+    static atomic_t flush_in_flight;
 
-    if (flush_in_flight) {
+    if (!atomic_cas(&flush_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            flush_in_flight = false;
+            atomic_set(&flush_in_flight, 0);
         } else {
             LOG_WRN("sd_flush: previous flush still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&flush_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    flush_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
 
     sd_req_t req = {0};
@@ -1881,7 +1885,7 @@ int sd_flush_current_file(void)
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue flush: %d", ret);
-        flush_in_flight = false;
+        atomic_set(&flush_in_flight, 0);
         return ret;
     }
 
@@ -1889,7 +1893,7 @@ int sd_flush_current_file(void)
         LOG_ERR("Timeout waiting for flush");
         return -ETIMEDOUT;
     }
-    flush_in_flight = false;
+    atomic_set(&flush_in_flight, 0);
     return resp.res;
 }
 
@@ -1899,17 +1903,19 @@ int delete_audio_file(const char *filename)
         return -EINVAL;
 
     static struct read_resp resp;
-    static volatile bool delete_in_flight;
+    static atomic_t delete_in_flight;
 
-    if (delete_in_flight) {
+    if (!atomic_cas(&delete_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            delete_in_flight = false;
+            atomic_set(&delete_in_flight, 0);
         } else {
             LOG_WRN("delete_audio_file: previous delete still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&delete_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    delete_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
 
     sd_req_t req = {0};
@@ -1920,7 +1926,7 @@ int delete_audio_file(const char *filename)
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue delete: %d", ret);
-        delete_in_flight = false;
+        atomic_set(&delete_in_flight, 0);
         return ret;
     }
 
@@ -1928,7 +1934,7 @@ int delete_audio_file(const char *filename)
         LOG_ERR("Timeout waiting for delete");
         return -ETIMEDOUT;
     }
-    delete_in_flight = false;
+    atomic_set(&delete_in_flight, 0);
     if (resp.res < 0 && resp.res != -ENOENT) {
         LOG_ERR("delete_audio_file %s failed: %d", filename, resp.res);
         return resp.res;
@@ -1939,17 +1945,19 @@ int delete_audio_file(const char *filename)
 int clear_audio_directory(void)
 {
     static struct read_resp resp;
-    static volatile bool clear_in_flight;
+    static atomic_t clear_in_flight;
 
-    if (clear_in_flight) {
+    if (!atomic_cas(&clear_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            clear_in_flight = false;
+            atomic_set(&clear_in_flight, 0);
         } else {
             LOG_WRN("clear_audio_directory: previous clear still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&clear_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    clear_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
 
     sd_req_t req = {0};
@@ -1959,7 +1967,7 @@ int clear_audio_directory(void)
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue clear_dir: %d", ret);
-        clear_in_flight = false;
+        atomic_set(&clear_in_flight, 0);
         return -1;
     }
 
@@ -1967,7 +1975,7 @@ int clear_audio_directory(void)
         LOG_ERR("Timeout waiting for clear_dir");
         return -1;
     }
-    clear_in_flight = false;
+    atomic_set(&clear_in_flight, 0);
     if (resp.res) {
         LOG_ERR("clear_audio_directory failed: %d", resp.res);
         return -1;
@@ -2003,17 +2011,19 @@ int get_offset(char *filename, uint32_t *offset)
 int create_new_audio_file(void)
 {
     static struct read_resp resp;
-    static volatile bool create_in_flight;
+    static atomic_t create_in_flight;
 
-    if (create_in_flight) {
+    if (!atomic_cas(&create_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            create_in_flight = false;
+            atomic_set(&create_in_flight, 0);
         } else {
             LOG_WRN("create_new_audio_file: previous request still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&create_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    create_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
 
     sd_req_t req = {0};
@@ -2023,7 +2033,7 @@ int create_new_audio_file(void)
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue create_new_audio_file: %d", ret);
-        create_in_flight = false;
+        atomic_set(&create_in_flight, 0);
         return -1;
     }
 
@@ -2031,7 +2041,7 @@ int create_new_audio_file(void)
         LOG_ERR("Timeout waiting for create_new_audio_file");
         return -1;
     }
-    create_in_flight = false;
+    atomic_set(&create_in_flight, 0);
     if (resp.res) {
         LOG_ERR("create_new_audio_file failed: %d", resp.res);
         return -1;
@@ -2057,9 +2067,9 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
     }
 
     static struct file_stats_resp resp;
-    static volatile bool stats_in_flight;
+    static atomic_t stats_in_flight;
     int64_t now = k_uptime_get();
-    k_timeout_t wait_timeout = ble_connected ? K_MSEC(1000) : K_MSEC(30000);
+    k_timeout_t wait_timeout = atomic_get(&ble_connected) ? K_MSEC(1000) : K_MSEC(30000);
 
     if (now < cached_stats_valid_until_ms) {
         *file_count = cached_stats_file_count;
@@ -2067,9 +2077,9 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
         return 0;
     }
 
-    if (stats_in_flight) {
+    if (!atomic_cas(&stats_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            stats_in_flight = false;
+            atomic_set(&stats_in_flight, 0);
         } else {
             LOG_WRN("get_audio_file_stats: previous request still in-flight");
             if (cached_stats_valid_until_ms > 0) {
@@ -2079,8 +2089,10 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
             }
             return -EBUSY;
         }
+        if (!atomic_cas(&stats_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    stats_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
 
     sd_req_t req = {0};
@@ -2090,7 +2102,7 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue get_file_stats: %d", ret);
-        stats_in_flight = false;
+        atomic_set(&stats_in_flight, 0);
         if (cached_stats_valid_until_ms > 0) {
             *file_count = cached_stats_file_count;
             *total_size = cached_stats_total_size;
@@ -2101,7 +2113,7 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
 
     if (k_sem_take(&resp.sem, wait_timeout) != 0) {
         LOG_ERR("Timeout waiting for get_file_stats");
-        stats_in_flight = false;
+        atomic_set(&stats_in_flight, 0);
         if (cached_stats_valid_until_ms > 0) {
             *file_count = cached_stats_file_count;
             *total_size = cached_stats_total_size;
@@ -2109,7 +2121,7 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
         }
         return -ETIMEDOUT;
     }
-    stats_in_flight = false;
+    atomic_set(&stats_in_flight, 0);
     if (resp.res) {
         LOG_ERR("get_audio_file_stats failed: %d", resp.res);
         return -1;
@@ -2146,17 +2158,19 @@ int get_audio_file_list(char filenames[][MAX_FILENAME_LEN], int max_files, int *
     }
 
     static struct file_list_resp resp;
-    static volatile bool list_in_flight;
+    static atomic_t list_in_flight;
 
-    if (list_in_flight) {
+    if (!atomic_cas(&list_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            list_in_flight = false;
+            atomic_set(&list_in_flight, 0);
         } else {
             LOG_WRN("get_audio_file_list: previous request still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&list_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    list_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
     resp.count = 0;
 
@@ -2170,16 +2184,16 @@ int get_audio_file_list(char filenames[][MAX_FILENAME_LEN], int max_files, int *
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue get_file_list: %d", ret);
-        list_in_flight = false;
+        atomic_set(&list_in_flight, 0);
         return ret;
     }
 
     if (k_sem_take(&resp.sem, K_MSEC(5000)) != 0) {
         LOG_ERR("Timeout waiting for get_file_list");
-        list_in_flight = false;
+        atomic_set(&list_in_flight, 0);
         return -ETIMEDOUT;
     }
-    list_in_flight = false;
+    atomic_set(&list_in_flight, 0);
     if (resp.res) {
         LOG_ERR("get_audio_file_list failed: %d", resp.res);
         return resp.res;
@@ -2214,17 +2228,19 @@ int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t 
     }
 
     static struct file_list_resp resp;
-    static volatile bool list_sizes_in_flight;
+    static atomic_t list_sizes_in_flight;
 
-    if (list_sizes_in_flight) {
+    if (!atomic_cas(&list_sizes_in_flight, 0, 1)) {
         if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            list_sizes_in_flight = false;
+            atomic_set(&list_sizes_in_flight, 0);
         } else {
             LOG_WRN("get_audio_file_list_with_sizes: previous request still in-flight");
             return -EBUSY;
         }
+        if (!atomic_cas(&list_sizes_in_flight, 0, 1)) {
+            return -EBUSY;
+        }
     }
-    list_sizes_in_flight = true;
     k_sem_init(&resp.sem, 0, 1);
     resp.count = 0;
 
@@ -2238,16 +2254,16 @@ int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t 
     int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue get_file_list: %d", ret);
-        list_sizes_in_flight = false;
+        atomic_set(&list_sizes_in_flight, 0);
         return ret;
     }
 
     if (k_sem_take(&resp.sem, K_MSEC(30000)) != 0) {
         LOG_ERR("Timeout waiting for get_file_list");
-        list_sizes_in_flight = false;
+        atomic_set(&list_sizes_in_flight, 0);
         return -ETIMEDOUT;
     }
-    list_sizes_in_flight = false;
+    atomic_set(&list_sizes_in_flight, 0);
     if (resp.res) {
         LOG_ERR("get_audio_file_list_with_sizes failed: %d", resp.res);
         return resp.res;
