@@ -56,9 +56,26 @@ Omi is an offline-first wearable audio recorder. The nRF52840 firmware captures 
 - `WalService` creates `Wal` entries per file (tracks codec, device, storage location, sync status: miss → syncing → synced)
 - `SDCardWalSyncImpl` reads files over BLE (256-byte chunks) or TCP (WiFi, port 8080) — allows resume on reconnect without re-downloading
 
+### Hardware (`omi/hardware/consumer/`)
+
+Omi Consumer — open-source AI wearable. PCB: mainboard (v1.2) + charger board (v1.0) + FPC (v1.0).
+
+| Component | Part | Spec |
+|-----------|------|------|
+| SoC | nRF5340-CLAA | Dual-core Bluetooth LE (Nordic Semiconductor) |
+| Wi-Fi | nRF7002-CEAA-R7 | Wi-Fi 6 (Nordic Semiconductor) |
+| Microphones | MMICT5838-00-012 ×2 | TDK top-port PDM |
+| NAND Flash | CSNP4GCR01-DPW | 512 MB (CS Semiconductor) |
+| IMU | LSM6DS3TR-C | 6-axis accelerometer/gyroscope (STMicroelectronics) |
+| Battery | GRP1654M1-1C-1S1P | 3.7 V 150 mAh LiPo, D16×H6.1 mm (GERUIPU) |
+| Charger IC | BQ25101YFPR | Li-Ion, magnetic pogo pins (Texas Instruments) |
+| Motor | — | 3 V vibration, D5.0×H2.5 mm |
+
+Enclosure: CNC aluminium covers (Case A/B), PC+ABS injection-moulded shell, SLA frame + LED guide, silicone internal pad (50A/80A). 88 components total.
+
 ### Firmware (`omi/firmware/devkit/src/`)
 
-Zephyr RTOS on nRF52840. Key threads: mic capture → codec ring buffer → Opus encode → BLE notify / SD card write.
+Zephyr RTOS on nRF52840 (devkit). Key threads: mic capture → codec ring buffer → Opus encode → BLE notify / SD card write.
 
 **Opus config**: 16 kHz mono, VBR, complexity 5, 20 ms frames.
 

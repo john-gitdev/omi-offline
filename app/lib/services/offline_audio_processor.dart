@@ -349,7 +349,7 @@ class OfflineAudioProcessor {
       batchBuffer.clear();
       batchFrameCount = 0;
       hasEncodedAnyFrames = true;
-      await AacEncoder.encodeChunk(sessionId!, Uint8List.fromList(bytes));
+      await AacEncoder.encodeBuffer(sessionId!, Uint8List.fromList(bytes));
     }
 
     // Sequential file reads — open each source file once, seek only when needed
