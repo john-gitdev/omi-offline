@@ -29,12 +29,33 @@ class MyApp extends StatefulWidget {
   State<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> {
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     ServiceManager.instance().start();
     _checkHeyPocketKey();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    try {
+      final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
+      if (state == AppLifecycleState.paused) {
+        deviceProvider.onAppPaused();
+      } else if (state == AppLifecycleState.resumed) {
+        deviceProvider.onAppResumed();
+      }
+    } catch (_) {
+      // Provider not yet available during early lifecycle
+    }
   }
 
   void _checkHeyPocketKey() {
