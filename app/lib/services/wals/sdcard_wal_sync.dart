@@ -105,12 +105,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       // Capture the generation so a stale timer from a previous cancel cannot
       // fire against a new sync's completer.
       final int generation = ++_cancelGeneration;
+      final cancelCompleterAtRequest = _cancelCompleter;
       Future.delayed(const Duration(seconds: 10), () {
-        if (_cancelPending && !_isCancelled && _cancelGeneration == generation) {
+        // Only fire if this is still the same cancel generation and the same
+        // completer instance — a stale timer from a previous cancel must not
+        // interfere with a new sync's completer.
+        if (_cancelPending && !_isCancelled && _cancelGeneration == generation && _cancelCompleter == cancelCompleterAtRequest) {
           Logger.debug("SDCardWalSync: Hard cancel — no segment boundary in 10s");
           _isCancelled = true;
           final transferCompleter = _activeTransferCompleter;
           if (transferCompleter != null && !transferCompleter.isCompleted) {
+            Logger.error('SDCardWalSync: Hard cancel timeout — forcing completion');
             transferCompleter.completeError(Exception('Sync cancelled by user'));
           }
         }
@@ -142,6 +147,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       connFuture.then((conn) => conn?.stopStorageSync() ?? Future.value(false)).catchError((_) => false);
     }
     await _storageStream?.cancel();
+    _storageStream = null;
+    _resetSyncState();
   }
 
   @override
@@ -490,6 +497,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           isStreamLocked = true;
           eotReceived = true;
           await flushBuffer();
+          _lastSegmentBoundaryOffset = currentStreamOffset;
           if (!completer.isCompleted) completer.complete();
           streamBuffer.clear();
           return;
@@ -566,6 +574,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             frameBuffer.add(frame);
             if (frameBuffer.length >= 100) {
               await flushBuffer();
+              _lastSegmentBoundaryOffset = currentStreamOffset;
             }
           } else {
             // Throttled logging for "Waiting for more data"
@@ -595,13 +604,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       Logger.error('SDCard BLE Stream Error: $e');
       if (eotReceived) {
         flushBuffer().whenComplete(() {
+          _lastSegmentBoundaryOffset = currentStreamOffset;
           hasError = true;
           if (!completer.isCompleted) completer.completeError(e);
         });
       } else {
-        // EOT was never received — discard buffered frames to avoid writing a
-        // corrupted partial segment to disk.
+        // EOT was never received — rewind to last safe boundary and discard
+        // buffered frames to avoid writing a corrupted partial segment to disk.
+        wal.walOffset = _lastSegmentBoundaryOffset;
         frameBuffer.clear();
+        streamBuffer.clear();
         hasError = true;
         if (!completer.isCompleted) completer.completeError(e);
       }
@@ -614,6 +626,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         } else {
           // BLE stream closed without a PACKET_EOT — discard buffered frames to
           // avoid writing a corrupted partial segment to disk.
+          if (streamBuffer.isNotEmpty) {
+            Logger.warning(
+                'SDCardWalSync: Stream closed with ${streamBuffer.length} bytes remaining in buffer (possible incomplete marker)');
+          }
           Logger.debug("SDCardWalSync: BLE stream closed before termination marker — discarding partial frames");
           frameBuffer.clear();
           completer.completeError(Exception('BLE stream closed without EOT marker'));
@@ -631,7 +647,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       Logger.debug(
           "SDCardWalSync: Transfer complete — $packetsReceived packets, $totalBytesWrittenThisTransfer bytes across $fileCount file(s)");
     } finally {
-      _storageStream?.cancel();
+      await _storageStream?.cancel();
       _storageStream = null;
     }
   }
@@ -650,6 +666,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _totalBytesDownloaded = 0;
     _downloadStartTime = null;
     _currentSpeedKBps = 0.0;
+    _cancelCompleter = null;
     _activeTransferCompleter = null;
   }
 
@@ -721,7 +738,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           'isSyncing=${w.isSyncing}');
     }
 
-    var wals = _wals.where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard).toList();
+    final walsCopy = List<Wal>.from(_wals);
+    var wals = walsCopy.where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard).toList();
     if (wals.isEmpty) {
       Logger.debug("SDCardWalSync: All synced!");
       return null;
@@ -798,6 +816,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                   'SDCardWalSync: Gap detected — retry $gapRetries/$maxGapRetries from offset ${e.incoming}. $e');
               wal.walOffset = e.incoming;
               lastOffset = e.incoming;
+              _lastSegmentBoundaryOffset = e.incoming;
               // Tell the firmware to stop streaming the old offset before we
               // issue the new READ. Without this the firmware keeps sending queued
               // packets, flooding the listener with "Ignoring DATA before ACK".
@@ -825,18 +844,25 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           // Small delay to allow firmware buffers to clear before sending DELETE
           await Future.delayed(const Duration(milliseconds: 500));
           if (wal.walOffset >= wal.storageTotalBytes) {
-            await deleteWal(wal);
-            // Wait for any late DELETE ACK to arrive and be discarded before the
-            // next READ subscription is set up — prevents the late ACK from being
-            // misinterpreted as a READ start ACK by the next file's listener.
-            await Future.delayed(const Duration(milliseconds: 1500));
+            try {
+              await deleteWal(wal);
+              // Wait for any late DELETE ACK to arrive and be discarded before the
+              // next READ subscription is set up — prevents the late ACK from being
+              // misinterpreted as a READ start ACK by the next file's listener.
+              await Future.delayed(const Duration(milliseconds: 1500));
+              wal.status = WalStatus.synced;
+            } catch (e) {
+              Logger.error('SDCardWalSync: Failed to delete WAL after sync: $e');
+              wal.status = WalStatus.miss;
+              anyPartial = true;
+            }
           } else {
             wal.walOffset = _lastSegmentBoundaryOffset;
             Logger.debug(
                 "SDCardWalSync: Partial transfer — rewound walOffset to last segment boundary $_lastSegmentBoundaryOffset (total ${wal.storageTotalBytes} bytes)");
+            wal.status = WalStatus.miss;
             anyPartial = true;
           }
-          wal.status = WalStatus.synced;
           _wals.removeWhere((w) => w.id == wal.id);
           listener.onWalUpdated();
         } catch (e) {
@@ -926,8 +952,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             Logger.error('SDCardWalSync: Gap retry limit ($maxGapRetries) exceeded. Aborting. $e');
             rethrow;
           }
-          Logger.debug('SDCardWalSync: Gap detected — retry $gapRetries/$maxGapRetries from offset ${wal.walOffset}. $e');
-          await Future.delayed(const Duration(milliseconds: 100));
+          Logger.debug(
+              'SDCardWalSync: Gap detected — retry $gapRetries/$maxGapRetries from offset ${e.incoming}. $e');
+          wal.walOffset = e.incoming;
+          _lastSegmentBoundaryOffset = e.incoming;
+          try {
+            final dev = _device;
+            if (dev != null) {
+              final conn = _connectionProvider != null
+                  ? await _connectionProvider!(dev.id)
+                  : await ServiceManager.instance().device.ensureConnection(dev.id);
+              await conn?.stopStorageSync();
+            }
+          } catch (_) {}
+          await Future.delayed(const Duration(milliseconds: 200));
         }
       }
 
@@ -978,6 +1016,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   ///   4. Call syncAll() which uses the pre-populated WAL list.
   @override
   Future<SyncLocalFilesResponse?> rotateAndSync({IWalSyncProgressListener? progress}) async {
+    if (_isSyncing) {
+      Logger.debug("SDCardWalSync: Sync already in progress, ignoring rotateAndSync request");
+      return null;
+    }
+
     final dev = _device;
     if (dev == null) throw Exception('No device connected');
 
