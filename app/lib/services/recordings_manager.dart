@@ -148,7 +148,7 @@ class RecordingsManager {
     final prefs = SharedPreferencesUtil();
     if (!prefs.extractionInProgress) return;
 
-    Logger.debug('RecordingsManager: Detected incomplete extraction from previous session — cleaning up temp dir.');
+    Logger.debug('RecordingsManager: Detected incomplete extraction from previous run — cleaning up temp dir.');
     try {
       final directory = await getApplicationDocumentsDirectory();
       final tempDir = Directory('${directory.path}/processing_temp');
@@ -885,7 +885,7 @@ class RecordingsManager {
     return result;
   }
 
-  /// Deletes orphaned `.tmp.m4a` files left by interrupted encoding sessions.
+  /// Deletes orphaned `.tmp.m4a` files left by interrupted encoding runs.
   /// Call once at app startup before processing begins.
   static Future<void> cleanupOrphanedTempFiles() async {
     final directory = await getApplicationDocumentsDirectory();

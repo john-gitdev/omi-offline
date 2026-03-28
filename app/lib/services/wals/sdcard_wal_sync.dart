@@ -337,7 +337,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       final markerFile = File('${folder.path}/markers.txt');
       await markerFile.writeAsString('$utcTime\n', mode: FileMode.append);
-      Logger.debug("SDCardWalSync: Saved marker at $utcTime for session $deviceSessionId");
+      Logger.debug("SDCardWalSync: Saved marker at $utcTime for DeviceSession $deviceSessionId");
     } catch (e) {
       Logger.error("SDCardWalSync: Failed to save marker: $e");
     }
