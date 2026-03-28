@@ -1821,6 +1821,8 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     return length;
 }
 
+static uint8_t static_read_buf[MAX_WRITE_SIZE];
+
 int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
 {
     /* Static resp so worker never writes to freed stack memory on timeout */
@@ -1844,7 +1846,7 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
     sd_req_t req = {0};
     req.type = REQ_READ_DATA;
     strncpy(req.u.read.filename, filename, MAX_FILENAME_LEN - 1);
-    req.u.read.out_buf = buf;
+    req.u.read.out_buf = static_read_buf;
     req.u.read.length = amount;
     req.u.read.offset = offset;
     req.u.read.resp = &resp;
@@ -1867,6 +1869,8 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
         LOG_ERR("read_audio_data failed: %d", resp.res);
         return -1;
     }
+    size_t copy_len = (size_t)resp.read_bytes < (size_t)amount ? (size_t)resp.read_bytes : (size_t)amount;
+    memcpy(buf, static_read_buf, copy_len);
     return resp.read_bytes;
 }
 
