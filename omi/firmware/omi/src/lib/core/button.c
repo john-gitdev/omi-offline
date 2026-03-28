@@ -268,7 +268,7 @@ void turnoff_all()
     k_msleep(100);
 #endif
 
-    if (is_sd_on()) {
+    if (is_sd_on() && sd_is_boot_ready()) {
         app_sd_off();
     }
     k_msleep(300);
