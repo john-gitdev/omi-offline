@@ -55,10 +55,19 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<int> performRetrieveBatteryLevel() async {
+    // Try the 4-byte battery detail characteristic first — it's the same one
+    // the firmware notifies on, so the GATT cache is warm.
     try {
-      Logger.debug('OmiDeviceConnection: Attempting to read battery level from $batteryServiceUuid:$batteryLevelCharacteristicUuid');
+      final detail = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      if (detail.length >= 3) {
+        Logger.debug('OmiDeviceConnection: Battery detail read: pct=${detail[2]}');
+        return detail[2]; // byte 2 = percentage 0-100
+      }
+    } catch (_) {}
+
+    // Fallback: standard BAS (1-byte percentage)
+    try {
       final data = await transport.readCharacteristic(batteryServiceUuid, batteryLevelCharacteristicUuid);
-      Logger.debug('OmiDeviceConnection: Battery level read returned: $data');
       if (data.isNotEmpty) return data[0];
       return -1;
     } catch (e) {
