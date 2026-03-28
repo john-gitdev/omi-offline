@@ -572,6 +572,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
         _disconnectDebouncer.cancel();
         _connectDebouncer.run(() => _handleDeviceConnected(deviceId));
         break;
+      case DeviceConnectionState.connecting:
+        // Connection in progress — don't trigger connect or disconnect handlers.
+        break;
       case DeviceConnectionState.disconnected:
         _connectDebouncer.cancel();
         if (deviceId == connectedDevice?.id || deviceId == pairedDevice?.id) {
