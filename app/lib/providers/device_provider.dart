@@ -418,7 +418,17 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   Future<void> _doBackgroundSync() async {
     if (!SharedPreferencesUtil().autoSyncEnabled) return;
     final walSync = ServiceManager.instance().wal.getSyncs();
-    if (walSync.isSyncing) return;
+    if (walSync.isSyncing) {
+      // If a cancel is already in progress (e.g. disconnect handler fired just
+      // before this reconnect-triggered sync), wait for it to finish rather than
+      // silently skipping — otherwise the device never syncs after a rapid reconnect.
+      final cf = walSync.cancelFuture;
+      if (cf != null) {
+        await cf;
+      } else {
+        return; // Sync running with no cancel pending — don't interrupt it.
+      }
+    }
     if (RecordingsManager.isProcessingAny) return;
     try {
       await walSync.syncAll();
