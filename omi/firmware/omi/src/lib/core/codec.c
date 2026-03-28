@@ -2,6 +2,7 @@
 
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/ring_buffer.h>
+#include <zephyr/kernel.h>
 
 #include "config.h"
 #include "utils.h"
@@ -28,6 +29,7 @@ void set_codec_callback(codec_callback callback)
 
 uint8_t codec_ring_buffer_data[AUDIO_BUFFER_SAMPLES * 2]; // 2 bytes per sample
 struct ring_buf codec_ring_buf;
+static K_MUTEX_DEFINE(codec_ring_mutex);
 
 /* Signaled by codec_receive_pcm() each time a PCM block arrives.
  * codec_entry() blocks here instead of polling every 10 ms. */
@@ -39,12 +41,15 @@ int codec_receive_pcm(int16_t *data, size_t len) // this gets called after mic d
     // Here, each sample is 2 bytes (int16_t). 'len' is the number of samples.
     size_t bytes_to_write = len * 2;
 
+    k_mutex_lock(&codec_ring_mutex, K_FOREVER);
     if (ring_buf_space_get(&codec_ring_buf) < bytes_to_write) {
+        k_mutex_unlock(&codec_ring_mutex);
         LOG_WRN("Codec ring buffer full, dropping %u bytes", (unsigned)bytes_to_write);
         return -1;
     }
 
     int written = ring_buf_put(&codec_ring_buf, (uint8_t *) data, bytes_to_write);
+    k_mutex_unlock(&codec_ring_mutex);
     if (written != bytes_to_write) {
         LOG_ERR("Failed to write %u bytes to codec ring buffer (written %d)", (unsigned)bytes_to_write, written);
         return -1;
@@ -89,8 +94,16 @@ void codec_entry()
          * to wake immediately and spin on an empty ring buffer. */
         k_sem_reset(&codec_data_sem);
 
-        while (ring_buf_size_get(&codec_ring_buf) >= CODEC_PACKAGE_SAMPLES * 2) {
-            ring_buf_get(&codec_ring_buf, (uint8_t *) codec_input_samples, CODEC_PACKAGE_SAMPLES * 2);
+        while (1) {
+            k_mutex_lock(&codec_ring_mutex, K_FOREVER);
+            bool have_data = ring_buf_size_get(&codec_ring_buf) >= CODEC_PACKAGE_SAMPLES * 2;
+            if (have_data) {
+                ring_buf_get(&codec_ring_buf, (uint8_t *) codec_input_samples, CODEC_PACKAGE_SAMPLES * 2);
+            }
+            k_mutex_unlock(&codec_ring_mutex);
+            if (!have_data) {
+                break;
+            }
             output_size = execute_codec();
             if (_callback) {
                 _callback(codec_output_bytes, output_size);
