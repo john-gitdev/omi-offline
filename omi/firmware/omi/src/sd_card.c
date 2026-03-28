@@ -31,9 +31,10 @@
 LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 
 #define DISK_DRIVE_NAME CONFIG_SDMMC_VOLUME_NAME
-#define SD_REQ_QUEUE_MSGS 25
+#define SD_REQ_QUEUE_MSGS 100
+#define SD_PRIO_QUEUE_MSGS 10
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
-#define WRITE_BATCH_COUNT 32
+#define WRITE_BATCH_COUNT 200
 #define WRITE_DRAIN_BURST 16
 #define ERROR_THRESHOLD 5
 #define FILE_CACHE_TTL_MS (30 * 1000)
@@ -242,6 +243,8 @@ static char current_filename[MAX_FILENAME_LEN] = {0};
 static char current_file_path[64] = {0};
 static int64_t current_file_created_uptime_ms = 0;
 static bool current_file_needs_rename = false;
+static bool deferred_timesync_rename_pending = false;
+static uint32_t deferred_timesync_utc_time = 0;
 static uint32_t cached_stats_file_count = 0;
 static uint64_t cached_stats_total_size = 0;
 static uint32_t cached_free_bytes = 0;
@@ -268,6 +271,7 @@ static const struct device *const sd_dev = DEVICE_DT_GET(DT_NODELABEL(sdhc0));
 static const struct gpio_dt_spec sd_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(sdcard_en_pin), gpios, {0});
 
 K_MSGQ_DEFINE(sd_msgq, sizeof(sd_req_t), SD_REQ_QUEUE_MSGS, 4);
+K_MSGQ_DEFINE(sd_prio_msgq, sizeof(sd_req_t), SD_PRIO_QUEUE_MSGS, 4);
 
 /* Persistent read file handle — kept open between read_audio_data calls
  * so we avoid the expensive LFS open/seek/close on every read.
@@ -621,7 +625,7 @@ static void print_audio_files_at_boot(void)
 /* File creation / continuation at boot                               */
 /* ------------------------------------------------------------------ */
 
-#define FILE_CONTINUE_THRESHOLD_SEC (30 * 60)
+#define FILE_CONTINUE_THRESHOLD_SEC (2 * 60)
 
 /* Helper: open a file and set the common state variables for continuation. */
 static int _open_file_for_continuation(const char *filename, bool needs_rename)
@@ -657,31 +661,7 @@ static int try_continue_latest_file(void)
     bool rtc_valid = (current_time != 0 && current_time >= 1700000000U);
 
     if (!rtc_valid) {
-        /* No RTC: scan for an existing TMP_ file and continue it rather than
-         * creating a new one on every reboot (which causes unbounded TMP
-         * accumulation). Pick the first TMP_ file found; any one is equivalent
-         * since we cannot order them by creation time without RTC. */
-        if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) < 0) {
-            return -1;
-        }
-
-        char tmp_filename[MAX_FILENAME_LEN] = {0};
-        while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
-            if (info.type != LFS_TYPE_REG || tmp_filename[0] != '\0')
-                continue;
-            if (strncmp(info.name, "TMP_", 4) == 0) {
-                strncpy(tmp_filename, info.name, MAX_FILENAME_LEN - 1);
-            }
-        }
-        lfs_dir_close(&lfs_fs, &dir);
-
-        if (tmp_filename[0] == '\0') {
-            LOG_INF("[SD_BOOT] No existing TMP file, will create new");
-            return -1;
-        }
-
-        LOG_INF("[SD_BOOT] Continuing TMP file: %s", tmp_filename);
-        return _open_file_for_continuation(tmp_filename, /*needs_rename=*/true);
+        return -1;
     }
 
     /* RTC valid: find the most recent timestamped file within the continuation window. */
@@ -1268,6 +1248,11 @@ void sd_worker_thread(void)
             goto handle_req;
         }
 
+        /* Check priority queue first (reads, flushes, lists, deletes) */
+        if (k_msgq_get(&sd_prio_msgq, &req, K_NO_WAIT) == 0) {
+            goto handle_req;
+        }
+
         /* Regular write queue timeout: short when BLE connected (keep read/sync responsive),
          * long when offline (save power). */
         k_timeout_t write_wait = ble_connected ? K_MSEC(50) : K_MSEC(2000);
@@ -1282,17 +1267,12 @@ void sd_worker_thread(void)
             process_write_data_req(&req);
 
             /* Drain additional write/save_offset messages in one burst to
-             * improve SD throughput.
-             *
-             * IMPORTANT: peek before consuming.  The old code called
-             * k_msgq_get() unconditionally and silently discarded any
-             * non-write message (REQ_READ_DATA, REQ_GET_FILE_LIST, etc.)
-             * whose semaphore would then never be signalled — causing
-             * read_audio_data / get_audio_file_list_with_sizes to time out
-             * and the app to receive error ACK 7.  We now peek first and
-             * stop the drain as soon as we see a non-write type so those
-             * requests are handled in the next main-loop iteration. */
+             * improve SD throughput. */
             for (int i = 0; i < WRITE_DRAIN_BURST; i++) {
+                if (k_msgq_num_used_get(&sd_prio_msgq) > 0) {
+                    break; /* Yield to priority requests (BLE read/sync) */
+                }
+                
                 sd_req_t next_req;
                 if (k_msgq_peek(&sd_msgq, &next_req) != 0) {
                     break;  /* Queue empty */
@@ -1650,7 +1630,7 @@ int app_sd_off(void)
         req.type = REQ_UNMOUNT;
         req.u.create_file.resp = &resp;
 
-        int qret = k_msgq_put(&sd_msgq, &req, K_MSEC(2000));
+        int qret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
         if (qret == 0) {
             if (k_sem_take(&resp.sem, K_MSEC(45000)) != 0) {
                 LOG_ERR("Timeout waiting for sd_worker unmount; skip force SD power-off");
@@ -1724,7 +1704,7 @@ void sd_notify_time_synced(uint32_t utc_time)
     sd_req_t req = {0};
     req.type = REQ_TIME_SYNCED;
     req.u.time_synced.utc_time = utc_time;
-    int ret = k_msgq_put(&sd_msgq, &req, K_NO_WAIT);
+    int ret = k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
     if (ret == 0) {
         atomic_set(&pending_time_synced, 0);
     }
@@ -1747,7 +1727,7 @@ void sd_notify_ble_state(bool connected)
         sd_req_t req = {0};
         req.type = REQ_FLUSH_FILE;
         req.u.create_file.resp = NULL; /* no response needed */
-        int ret = k_msgq_put(&sd_msgq, &req, K_NO_WAIT);
+        int ret = k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
         if (ret) {
             atomic_set(&pending_flush_on_ble_connect, 1);
             LOG_WRN("Flush on BLE connect deferred (%d)", ret);
@@ -1805,7 +1785,7 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     memcpy(req.u.write.buf, data, length);
     req.u.write.len = length;
     /* Fast path: non-blocking enqueue first. */
-    int ret = k_msgq_put(&sd_msgq, &req, K_NO_WAIT);
+    int ret = k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
 
     /* Backpressure: if queue is temporarily full, wait a very short time
      * for worker to drain instead of dropping immediately.
@@ -1857,7 +1837,7 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
     req.u.read.offset = offset;
     req.u.read.resp = &resp;
 
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(500));
+    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue read: %d", ret);
         read_in_flight = false;
@@ -1898,7 +1878,7 @@ int sd_flush_current_file(void)
     req.type = REQ_FLUSH_FILE;
     req.u.create_file.resp = &resp;
 
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(500));
+    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue flush: %d", ret);
         flush_in_flight = false;
@@ -1937,7 +1917,7 @@ int delete_audio_file(const char *filename)
     strncpy(req.u.delete_file.filename, filename, MAX_FILENAME_LEN - 1);
     req.u.delete_file.resp = &resp;
 
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(500));
+    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue delete: %d", ret);
         delete_in_flight = false;
@@ -1976,7 +1956,7 @@ int clear_audio_directory(void)
     req.type = REQ_CLEAR_AUDIO_DIR;
     req.u.clear_dir.resp = &resp;
 
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(500));
+    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue clear_dir: %d", ret);
         clear_in_flight = false;
@@ -2040,7 +2020,7 @@ int create_new_audio_file(void)
     req.type = REQ_CREATE_NEW_FILE;
     req.u.create_file.resp = &resp;
 
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(2000));
+    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue create_new_audio_file: %d", ret);
         create_in_flight = false;
@@ -2107,7 +2087,7 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
     req.type = REQ_GET_FILE_STATS;
     req.u.file_stats.resp = &resp;
 
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(2000));
+    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue get_file_stats: %d", ret);
         stats_in_flight = false;
@@ -2187,7 +2167,7 @@ int get_audio_file_list(char filenames[][MAX_FILENAME_LEN], int max_files, int *
     req.u.file_list.max_files = max_files;
     req.u.file_list.resp = &resp;
 
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(2000));
+    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
     if (ret) {
         LOG_ERR("Failed to queue get_file_list: %d", ret);
         list_in_flight = false;
@@ -2255,7 +2235,7 @@ int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t 
     req.u.file_list.max_files = max_files;
     req.u.file_list.resp = &resp;
 
-    int ret = k_msgq_put(&sd_msgq, &req, K_MSEC(500));
+    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
     if (ret) {
         LOG_ERR("Failed to queue get_file_list: %d", ret);
         list_sizes_in_flight = false;

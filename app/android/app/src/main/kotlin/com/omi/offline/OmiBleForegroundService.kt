@@ -28,11 +28,12 @@ class OmiBleForegroundService : Service() {
 
         fun isActive(): Boolean = instance != null
 
-        fun startService(context: Context, deviceAddress: String, shouldConnect: Boolean = false) {
-            Log.d(TAG, "startService: address=$deviceAddress, shouldConnect=$shouldConnect")
+        fun startService(context: Context, deviceAddress: String, shouldConnect: Boolean = false, caller: String? = null) {
+            Log.d(TAG, "startService: address=$deviceAddress, shouldConnect=$shouldConnect, caller=$caller")
             val intent = Intent(context, OmiBleForegroundService::class.java).apply {
                 putExtra("device_address", deviceAddress)
                 putExtra("should_connect", shouldConnect)
+                putExtra("caller", caller)
             }
             try {
                 context.startForegroundService(intent)
@@ -104,6 +105,9 @@ class OmiBleForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val address = intent?.getStringExtra("device_address")
+        val caller = intent?.getStringExtra("caller")
+        Log.d(TAG, "onStartCommand: address=$address, caller=$caller")
+
         val isConnected = address != null && OmiBleManager.instance.isPeripheralConnected(address)
         val initialText = if (isConnected) "Listening and transcribing" else "Connecting to Omi..."
         startForeground(NOTIFICATION_ID, buildNotification(initialText))

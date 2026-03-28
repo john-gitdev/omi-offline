@@ -650,7 +650,7 @@ protocol BleHostApi {
   /// Reconnect a previously-paired peripheral. No active scanning — the platform
   /// handles reconnection at the chipset level (iOS: retrievePeripherals, Android: autoConnect).
   func reconnectKnownPeripheral(uuid: String) throws
-  func discoverServices(peripheralUuid: String) throws
+  func requestBond(uuid: String, completion: @escaping (Result<Bool, Error>) -> Void)
   func readCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, completion: @escaping (Result<FlutterStandardTypedData, Error>) -> Void)
   func writeCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, data: FlutterStandardTypedData, completion: @escaping (Result<Void, Error>) -> Void)
   func subscribeCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String) throws
@@ -749,20 +749,22 @@ class BleHostApiSetup {
     } else {
       reconnectKnownPeripheralChannel.setMessageHandler(nil)
     }
-    let discoverServicesChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.discoverServices\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    let requestBondChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.requestBond\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
-      discoverServicesChannel.setMessageHandler { message, reply in
+      requestBondChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
-        let peripheralUuidArg = args[0] as! String
-        do {
-          try api.discoverServices(peripheralUuid: peripheralUuidArg)
-          reply(wrapResult(nil))
-        } catch {
-          reply(wrapError(error))
+        let uuidArg = args[0] as! String
+        api.requestBond(uuid: uuidArg) { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
         }
       }
     } else {
-      discoverServicesChannel.setMessageHandler(nil)
+      requestBondChannel.setMessageHandler(nil)
     }
     let readCharacteristicChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.readCharacteristic\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
