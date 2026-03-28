@@ -34,6 +34,7 @@ class OfflineAudioProcessor {
   int _hangoverFrames = 0;
   int _speechFrameCount = 0;
   int _skippedFrameCount = 0;
+  int _skippedFramesInRecording = 0; // skipped frames in current recording — keeps timestamps accurate
   int _noiseFloorInitFrames = 50; // first ~1s: fast convergence without alpha
   int _noiseFloorStaleFrames = 0;
   static const int _maxNoiseFloorStaleFrames = 250; // ~5 seconds at 50fps
@@ -115,8 +116,8 @@ class OfflineAudioProcessor {
 
     // 1. Gap detection — force-split if device was off between segments
     if (_currentRecordingRefs.isNotEmpty && _recordingStartTime != null) {
-      final expectedStartTime =
-          _recordingStartTime!.add(Duration(milliseconds: _currentRecordingRefs.length * frameDurationMs));
+      final expectedStartTime = _recordingStartTime!
+          .add(Duration(milliseconds: (_currentRecordingRefs.length + _skippedFramesInRecording) * frameDurationMs));
       final gapMs = segmentStartTime.difference(expectedStartTime).inMilliseconds.abs();
       if (gapMs > _gapThresholdMs) {
         final filePath = await flushRemaining();
@@ -137,6 +138,8 @@ class OfflineAudioProcessor {
         // Sanity check: Opus frames should never exceed ~4000 bytes
         Logger.warning('OfflineAudioProcessor: Skipping corrupt frame with length $len at offset $off');
         off += 4; // Skip just the length field and try to find next valid frame
+        _skippedFrameCount++;
+        _skippedFramesInRecording++;
         continue;
       }
       if (off + 4 + len > bytes.length) break;
@@ -156,6 +159,7 @@ class OfflineAudioProcessor {
       } catch (e) {
         // Skip corrupt or invalid Opus frames
         _skippedFrameCount++;
+        _skippedFramesInRecording++;
         continue;
       }
 
@@ -227,7 +231,7 @@ class OfflineAudioProcessor {
         final bufferToKeep = min(preSpeechFramesCount, _consecutiveSilenceFrames);
 
         if (_recordingStartTime != null) {
-          final int elapsedMs = (_currentRecordingRefs.length - bufferToKeep) * frameDurationMs;
+          final int elapsedMs = (_currentRecordingRefs.length + _skippedFramesInRecording - bufferToKeep) * frameDurationMs;
           _recordingStartTime = _recordingStartTime!.add(Duration(milliseconds: elapsedMs));
         } else {
           _recordingStartTime = segmentStartTime;
@@ -237,6 +241,7 @@ class OfflineAudioProcessor {
         _speechFrameCount = 0;
         _hangoverFrames = 0;
         _consecutiveSilenceFrames = bufferToKeep;
+        _skippedFramesInRecording = 0;
         // Reset fast-convergence so the new recording re-anchors to the current noise floor.
         _noiseFloorInitFrames = 50;
       }
@@ -277,6 +282,7 @@ class OfflineAudioProcessor {
     _consecutiveSilenceFrames = 0;
     _speechFrameCount = 0;
     _hangoverFrames = 0;
+    _skippedFramesInRecording = 0;
     return filePath;
   }
 
