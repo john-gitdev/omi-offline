@@ -162,11 +162,13 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     return connection?.device;
   }
 
-  initiateBleBatteryListener() async {
+  Future<void> initiateBleBatteryListener() async {
+    final oldListener = _bleBatteryLevelListener;
+    _bleBatteryLevelListener = null;
+    await oldListener?.cancel();
     if (connectedDevice == null) {
       return;
     }
-    _bleBatteryLevelListener?.cancel();
     _bleBatteryLevelListener = await _getBleBatteryLevelListener(
       connectedDevice?.id ?? '',
       onBatteryLevelChange: (int value) {
