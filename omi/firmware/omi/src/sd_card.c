@@ -229,7 +229,7 @@ static K_MUTEX_DEFINE(current_filename_lock);
 static atomic_t pending_flush_on_ble_connect;
 static atomic_t pending_rotate_on_ble_connect;
 static atomic_t pending_time_synced;
-static uint32_t pending_time_synced_utc = 0;
+static atomic_t pending_time_synced_utc;
 
 static bool is_mounted = false;
 static bool sd_enabled = false;
@@ -1249,7 +1249,7 @@ void sd_worker_thread(void)
         }
         if (atomic_cas(&pending_time_synced, 1, 0)) {
             req.type = REQ_TIME_SYNCED;
-            req.u.time_synced.utc_time = pending_time_synced_utc;
+            req.u.time_synced.utc_time = (uint32_t)atomic_get(&pending_time_synced_utc);
             goto handle_req;
         }
 
@@ -1699,11 +1699,8 @@ uint32_t sd_get_cached_free_bytes(void)
 
 void sd_notify_time_synced(uint32_t utc_time)
 {
-    /* Store value before flag — the atomic_set provides a release barrier
-     * that ensures pending_time_synced_utc is visible to the worker thread
-     * when it sees pending_time_synced == 1. */
-    pending_time_synced_utc = utc_time;
-    compiler_barrier();  /* Prevent compiler from reordering past atomic_set */
+    /* Store value before flag — atomic_set provides ordering. */
+    atomic_set(&pending_time_synced_utc, (atomic_val_t)utc_time);
     atomic_set(&pending_time_synced, 1);
 
     sd_req_t req = {0};
