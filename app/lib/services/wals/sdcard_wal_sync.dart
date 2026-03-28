@@ -417,6 +417,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _lastSegmentBoundaryOffset = offset;
     bool hasReceivedStartAck = false;
     bool isStreamLocked = false;
+    bool eotReceived = false;
 
     _storageStream = (await connection.getBleStorageBytesListener(onStorageBytesReceived: (List<int> value) async {
       if (_isCancelled || hasError || isStreamLocked) return;
@@ -487,6 +488,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         case 0x02: // PACKET_EOT: [0x02]
           Logger.debug("SDCardWalSync: Received EOT marker. offset=$expectedOffset, bufferLen=${streamBuffer.length}");
           isStreamLocked = true;
+          eotReceived = true;
           await flushBuffer();
           if (!completer.isCompleted) completer.complete();
           streamBuffer.clear();
@@ -591,16 +593,31 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       // meaning any exception thrown inside an async handler is silently dropped.
       // Use .then/.catchError to safely chain the async flush.
       Logger.error('SDCard BLE Stream Error: $e');
-      flushBuffer().whenComplete(() {
+      if (eotReceived) {
+        flushBuffer().whenComplete(() {
+          hasError = true;
+          if (!completer.isCompleted) completer.completeError(e);
+        });
+      } else {
+        // EOT was never received — discard buffered frames to avoid writing a
+        // corrupted partial segment to disk.
+        frameBuffer.clear();
         hasError = true;
         if (!completer.isCompleted) completer.completeError(e);
-      });
+      }
     }, onDone: () {
       if (!completer.isCompleted) {
-        Logger.debug("SDCardWalSync: BLE stream closed before termination marker");
-        flushBuffer().whenComplete(() {
-          if (!completer.isCompleted) completer.complete();
-        });
+        if (eotReceived) {
+          flushBuffer().whenComplete(() {
+            if (!completer.isCompleted) completer.complete();
+          });
+        } else {
+          // BLE stream closed without a PACKET_EOT — discard buffered frames to
+          // avoid writing a corrupted partial segment to disk.
+          Logger.debug("SDCardWalSync: BLE stream closed before termination marker — discarding partial frames");
+          frameBuffer.clear();
+          completer.completeError(Exception('BLE stream closed without EOT marker'));
+        }
       }
     })) as StreamSubscription<List<int>>;
     final readStarted = await _writeToStorage(deviceId, fileNum, 0x11, offset); // CMD_READ_FILE
