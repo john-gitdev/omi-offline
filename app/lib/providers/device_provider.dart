@@ -12,6 +12,7 @@ import 'package:omi/utils/other/debouncer.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
 
 class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption {
+  bool _disposed = false;
   bool isConnecting = false;
   bool isConnected = false;
   bool isDeviceStorageSupport = false;
@@ -37,10 +38,14 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   int _consecutivePingFailures = 0;
   static const int _maxPingFailures = 2;
 
+  Timer? _reconnectDelayTimer;
   Timer? _disconnectNotificationTimer;
   final Debouncer _disconnectDebouncer = Debouncer(delay: const Duration(milliseconds: 500));
   final Debouncer _connectDebouncer = Debouncer(delay: const Duration(milliseconds: 100));
   bool _isHandlingDisconnect = false;
+
+  String? lastSyncError;
+  DateTime? lastSyncErrorTime;
 
   void Function(BtDevice device)? onDeviceConnected;
 
@@ -418,6 +423,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   Future<void> _doBackgroundSync() async {
+    lastSyncError = null;
     if (!SharedPreferencesUtil().autoSyncEnabled) return;
     final walSync = ServiceManager.instance().wal.getSyncs();
     if (walSync.isSyncing) {
@@ -436,15 +442,27 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       await walSync.syncAll();
       await RecordingsManager.processAllCompletedSessions();
     } catch (e) {
-      Logger.debug('Background sync failed: $e');
+      lastSyncError = e.toString();
+      lastSyncErrorTime = DateTime.now();
+      Logger.error('Background sync failed: $e');
+      notifyListeners();
+    }
+  }
+
+  @override
+  void notifyListeners() {
+    if (!_disposed) {
+      super.notifyListeners();
     }
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _bleBatteryLevelListener?.cancel();
     _bleButtonListener?.cancel();
     _reconnectionTimer?.cancel();
+    _reconnectDelayTimer?.cancel();
     _backgroundSyncTimer?.cancel();
     _healthCheckTimer?.cancel();
     _disconnectDebouncer.cancel();
