@@ -1388,6 +1388,22 @@ void sd_worker_thread(void)
                 read_handle_pos = 0;
                 read_handle_gen = data_sync_gen;
 
+                /* Re-check if the file is still the active file after reopen.
+                 * A file rotation could have changed current_filename between
+                 * the sync and reopen, making our read_path stale. */
+                k_mutex_lock(&current_filename_lock, K_FOREVER);
+                bool still_active = (current_filename[0] != '\0' &&
+                                     strcmp(req.u.read.filename, current_filename) == 0);
+                k_mutex_unlock(&current_filename_lock);
+                if (!still_active) {
+                    if (req.u.read.resp) {
+                        req.u.read.resp->res = 0;
+                        req.u.read.resp->read_bytes = 0;
+                        k_sem_give(&req.u.read.resp->sem);
+                    }
+                    break;
+                }
+
                 lfs_file_seek(&lfs_fs, &lfs_read_handle, (lfs_soff_t) req.u.read.offset, LFS_SEEK_SET);
                 read_handle_pos = (lfs_soff_t) req.u.read.offset;
 
