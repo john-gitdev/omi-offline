@@ -410,7 +410,14 @@ class OmiBleManager private constructor(private val application: Application) {
         }
 
         enqueueCommand {
-            val result = gatt.writeCharacteristic(characteristic, data, writeType)
+            val result = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(characteristic, data, writeType)
+            } else {
+                characteristic.value = data
+                characteristic.writeType = writeType
+                val success = gatt.writeCharacteristic(characteristic)
+                if (success) BluetoothStatusCodes.SUCCESS else BluetoothStatusCodes.ERROR_UNKNOWN
+            }
             if (result != BluetoothStatusCodes.SUCCESS) {
                 Log.e(TAG, "writeCharacteristic returned $result for $key")
                 writeCompletions.remove(key)?.invoke(Result.failure(Exception("Write request rejected: $result")))
@@ -435,7 +442,16 @@ class OmiBleManager private constructor(private val application: Application) {
         enqueueCommand {
             gatt.setCharacteristicNotification(characteristic, true)
             if (descriptor != null) {
-                gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                val success = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
+                } else {
+                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    gatt.writeDescriptor(descriptor)
+                }
+                if (!success) {
+                    Log.e(TAG, "writeDescriptor returned false/error for subscribe")
+                    completeCommand()
+                }
             } else {
                 completeCommand()
             }
@@ -451,7 +467,16 @@ class OmiBleManager private constructor(private val application: Application) {
         enqueueCommand {
             gatt.setCharacteristicNotification(characteristic, false)
             if (descriptor != null) {
-                gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)
+                val success = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
+                } else {
+                    descriptor.value = BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+                    gatt.writeDescriptor(descriptor)
+                }
+                if (!success) {
+                    Log.e(TAG, "writeDescriptor returned false/error for unsubscribe")
+                    completeCommand()
+                }
             } else {
                 completeCommand()
             }

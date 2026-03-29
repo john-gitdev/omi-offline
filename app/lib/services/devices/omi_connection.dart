@@ -408,7 +408,9 @@ class OmiDeviceConnection extends DeviceConnection {
 
     try {
       final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
-      await Future.microtask(() {}); // Ensure listener wiring completes
+      // Give the native BLE stack enough time to write the CCCD descriptor
+      // and actually enable notifications before we trigger the device to send data.
+      await Future.delayed(const Duration(milliseconds: 500)); 
 
       _listFilesSub = stream.listen(
         (packet) {
