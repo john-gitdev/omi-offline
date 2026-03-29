@@ -6,6 +6,8 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/services/bridges/ble_bridge.dart';
+import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/utils/notifications.dart';
 import 'package:provider/provider.dart';
@@ -14,6 +16,10 @@ import 'package:opus_flutter/opus_flutter.dart' as opus_flutter;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Register the BLE Flutter API handler so native can call into Dart
+  // (scan results, connection events, characteristic updates, etc.)
+  BleFlutterApi.setUp(BleBridge.instance);
 
   initOpus(await opus_flutter.load());
   await SharedPreferencesUtil.init();
