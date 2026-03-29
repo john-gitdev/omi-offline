@@ -420,8 +420,10 @@ class OmiDeviceConnection extends DeviceConnection {
 
     try {
       final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
-      await Future.delayed(_cccdSettleDelay);
 
+      // Attach listener BEFORE the CCCD settle delay so that any notification
+      // arriving while we wait is not dropped (broadcast streams discard events
+      // when there are zero listeners).
       _listFilesSub = stream.listen(
         (packet) {
           // 🛑 Ignore ALL stale packets from previous generations
@@ -495,6 +497,11 @@ class OmiDeviceConnection extends DeviceConnection {
           }
         },
       );
+
+      // Wait for the CCCD descriptor write to propagate through the GATT queue
+      // before sending the command.  The listener is already attached above so
+      // any early notification won't be lost.
+      await Future.delayed(_cccdSettleDelay);
 
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
       startOrResetTimeout();
