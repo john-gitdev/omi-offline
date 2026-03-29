@@ -25,6 +25,11 @@ class OmiDeviceConnection extends DeviceConnection {
   /// callers could misroute packets between operations.
   final Mutex _storageMutex = Mutex();
 
+  /// Time to wait after subscribing to a storage characteristic before sending
+  /// the first command. Allows the native BLE stack to write the CCCD descriptor
+  /// and enable notifications so data is not lost.
+  static const _cccdSettleDelay = Duration(milliseconds: 500);
+
   OmiDeviceConnection(super.device, super.transport);
 
   @override
@@ -408,9 +413,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
     try {
       final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
-      // Give the native BLE stack enough time to write the CCCD descriptor
-      // and actually enable notifications before we trigger the device to send data.
-      await Future.delayed(const Duration(milliseconds: 500)); 
+      await Future.delayed(_cccdSettleDelay);
 
       _listFilesSub = stream.listen(
         (packet) {
