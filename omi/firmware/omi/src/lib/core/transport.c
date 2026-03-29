@@ -34,6 +34,9 @@
 #include "settings.h"
 #include "storage.h"
 #include "rtc.h"
+#include <zephyr/bluetooth/addr.h>
+#include <zephyr/bluetooth/services/dis.h>
+
 LOG_MODULE_REGISTER(transport, CONFIG_LOG_DEFAULT_LEVEL);
 
 #ifdef CONFIG_OMI_ENABLE_RFSW_CTRL
@@ -236,6 +239,26 @@ static struct bt_gatt_service time_sync_service = BT_GATT_SERVICE(time_sync_serv
 //   - Battery Detail (19B10051): Notify 4 bytes [mv_lo, mv_hi, percentage, charging]
 #ifdef CONFIG_OMI_ENABLE_BATTERY
 static void battery_detail_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+static ssize_t battery_detail_read_handler(struct bt_conn *conn,
+                                          const struct bt_gatt_attr *attr,
+                                          void *buf,
+                                          uint16_t len,
+                                          uint16_t offset)
+{
+    uint16_t battery_millivolt;
+    if (battery_get_millivolt(&battery_millivolt) != 0 ||
+        battery_get_percentage(&battery_percentage, battery_millivolt) != 0) {
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
+
+    uint8_t value[4];
+    value[0] = (uint8_t)(battery_millivolt & 0xFF);
+    value[1] = (uint8_t)(battery_millivolt >> 8);
+    value[2] = battery_percentage;
+    value[3] = (uint8_t)is_charging;
+
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(value));
+}
 
 static struct bt_uuid_128 battery_detail_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10050, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
@@ -247,7 +270,7 @@ static struct bt_gatt_attr battery_detail_service_attr[] = {
     BT_GATT_CHARACTERISTIC(&battery_detail_characteristic_uuid.uuid,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_READ,
-                           NULL,
+                           battery_detail_read_handler,
                            NULL,
                            NULL),
     BT_GATT_CCC(battery_detail_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
@@ -255,6 +278,42 @@ static struct bt_gatt_attr battery_detail_service_attr[] = {
 
 static struct bt_gatt_service battery_detail_service = BT_GATT_SERVICE(battery_detail_service_attr);
 #endif
+
+// --- Button Service ---
+// Service UUID: 23BA7924-0000-1000-7450-346EAC492E92
+// Characteristics:
+//   - Button Trigger (23BA7925): Notify 1 byte (0=released, 1=pressed)
+static struct bt_uuid_128 button_service_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7924, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
+static struct bt_uuid_128 button_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7925, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
+
+static void button_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    if (value == BT_GATT_CCC_NOTIFY) {
+        LOG_INF("Button notifications enabled");
+    } else {
+        LOG_INF("Button notifications disabled");
+    }
+}
+
+static struct bt_gatt_attr button_service_attr[] = {
+    BT_GATT_PRIMARY_SERVICE(&button_service_uuid),
+    BT_GATT_CHARACTERISTIC(&button_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_NONE,
+                           NULL,
+                           NULL,
+                           NULL),
+    BT_GATT_CCC(button_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+};
+
+struct bt_gatt_service button_service = BT_GATT_SERVICE(button_service_attr);
+
+void transport_notify_button_state(uint8_t state)
+{
+    bt_gatt_notify(NULL, &button_service_attr[1], &state, sizeof(state));
+}
 
 // Advertisement data
 static const struct bt_data bt_ad[] = {
@@ -1005,6 +1064,18 @@ int transport_start()
         return err;
     }
     LOG_INF("Transport bluetooth initialized");
+
+    // Set DIS Serial Number to MAC address
+    bt_addr_le_t addr;
+    size_t count = 1;
+    bt_id_get(&addr, &count);
+    char mac_str[18];
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             addr.a.val[5], addr.a.val[4], addr.a.val[3],
+             addr.a.val[2], addr.a.val[1], addr.a.val[0]);
+    bt_dis_set_serial_number(mac_str);
+    LOG_INF("DIS Serial Number set to %s", mac_str);
+
     //  Enable accelerometer
 #ifdef CONFIG_OMI_ENABLE_ACCELEROMETER
     err = accel_start();
