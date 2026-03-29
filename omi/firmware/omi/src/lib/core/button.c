@@ -159,6 +159,7 @@ static struct gpio_callback button_cb_data;
 static void button_gpio_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
     was_pressed = (gpio_pin_get_dt(&usr_btn) == 1);
+    transport_notify_button_state(was_pressed ? 1 : 0);
 }
 
 int button_regist_callback()
@@ -220,9 +221,10 @@ void activate_button_work()
     k_work_schedule(&button_work, K_MSEC(BUTTON_CHECK_INTERVAL));
 }
 
+extern struct bt_gatt_service button_service;
 void register_button_service()
 {
-    // BLE Button Service removed for strictly offline mode.
+    bt_gatt_service_register(&button_service);
 }
 
 FSM_STATE_T get_current_button_state()
