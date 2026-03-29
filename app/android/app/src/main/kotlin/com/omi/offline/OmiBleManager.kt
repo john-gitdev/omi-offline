@@ -29,6 +29,8 @@ class OmiBleManager private constructor(private val application: Application) {
         private const val RECONNECT_DELAY_MS = 3000L // 3s between retries
         private const val MTU_REQUEST_DELAY_MS = 100L // Small delay for BLE stack stability
         private const val STABILITY_TIMER_MS = 60000L // 60s — reset retry count after stable connection
+        private const val DESCRIPTOR_WRITE_TIMEOUT_MS = 5000L // Max wait for onDescriptorWrite before force-unblocking queue
+        private const val WRITE_FAILED = -1 // Fallback error code for pre-API33 writeCharacteristic
 
         /** GATT status codes that are transient and worth retrying. */
         private val RETRYABLE_STATUS_CODES = setOf(8, 19, 22, 62, 133, 147, 257)
@@ -416,7 +418,7 @@ class OmiBleManager private constructor(private val application: Application) {
                 characteristic.value = data
                 characteristic.writeType = writeType
                 val success = gatt.writeCharacteristic(characteristic)
-                if (success) BluetoothStatusCodes.SUCCESS else BluetoothStatusCodes.ERROR_UNKNOWN
+                if (success) BluetoothStatusCodes.SUCCESS else WRITE_FAILED
             }
             if (result != BluetoothStatusCodes.SUCCESS) {
                 Log.e(TAG, "writeCharacteristic returned $result for $key")
@@ -451,6 +453,15 @@ class OmiBleManager private constructor(private val application: Application) {
                 if (!success) {
                     Log.e(TAG, "writeDescriptor returned false/error for subscribe")
                     completeCommand()
+                } else {
+                    // Safety net: if onDescriptorWrite never fires (firmware bug / race),
+                    // force-unblock the queue to prevent a permanent deadlock.
+                    mainHandler.postDelayed({
+                        if (isProcessingCommand) {
+                            Log.w(TAG, "writeDescriptor (subscribe) timeout — onDescriptorWrite not received, force-completing")
+                            completeCommand()
+                        }
+                    }, DESCRIPTOR_WRITE_TIMEOUT_MS)
                 }
             } else {
                 completeCommand()
@@ -476,6 +487,15 @@ class OmiBleManager private constructor(private val application: Application) {
                 if (!success) {
                     Log.e(TAG, "writeDescriptor returned false/error for unsubscribe")
                     completeCommand()
+                } else {
+                    // Safety net: if onDescriptorWrite never fires (firmware bug / race),
+                    // force-unblock the queue to prevent a permanent deadlock.
+                    mainHandler.postDelayed({
+                        if (isProcessingCommand) {
+                            Log.w(TAG, "writeDescriptor (unsubscribe) timeout — onDescriptorWrite not received, force-completing")
+                            completeCommand()
+                        }
+                    }, DESCRIPTOR_WRITE_TIMEOUT_MS)
                 }
             } else {
                 completeCommand()
