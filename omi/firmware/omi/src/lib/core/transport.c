@@ -34,8 +34,6 @@
 #include "settings.h"
 #include "storage.h"
 #include "rtc.h"
-#include <zephyr/bluetooth/addr.h>
-#include <zephyr/bluetooth/services/dis.h>
 
 LOG_MODULE_REGISTER(transport, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -1064,17 +1062,6 @@ int transport_start()
         return err;
     }
     LOG_INF("Transport bluetooth initialized");
-
-    // Set DIS Serial Number to MAC address
-    bt_addr_le_t addr;
-    size_t count = 1;
-    bt_id_get(&addr, &count);
-    char mac_str[18];
-    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-             addr.a.val[5], addr.a.val[4], addr.a.val[3],
-             addr.a.val[2], addr.a.val[1], addr.a.val[0]);
-    bt_dis_set_serial_number(mac_str);
-    LOG_INF("DIS Serial Number set to %s", mac_str);
 
     //  Enable accelerometer
 #ifdef CONFIG_OMI_ENABLE_ACCELEROMETER
