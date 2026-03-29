@@ -464,6 +464,12 @@ class OmiBleManager private constructor(private val application: Application) {
                     }, DESCRIPTOR_WRITE_TIMEOUT_MS)
                 }
             } else {
+                // CCCD descriptor absent from Android's GATT cache for this characteristic.
+                // Notifications will not arrive — the firmware gates all notify calls on
+                // storage_notify_ready() which checks BT_GATT_IS_SUBSCRIBED (CCCD state).
+                // This typically means the GATT cache is stale; the refresh() above should
+                // prevent this on the next connection.
+                Log.w(TAG, "CCCD descriptor null for $characteristicUuid — skipping CCCD write, notifications will not work")
                 completeCommand()
             }
         }
@@ -636,6 +642,25 @@ class OmiBleManager private constructor(private val application: Application) {
 
                     // Always discover services immediately — no bonding in the connection pipeline.
                     // Bonding is only done on-demand via requestBond() for devices that need it.
+                    //
+                    // Clear Android's GATT cache before discovery. Android caches the GATT table
+                    // per device MAC address and reuses it across connections. After a firmware
+                    // update that adds or changes services/characteristics/descriptors (e.g. adding
+                    // the button service or BT_GATT_CCC to the storage characteristic), the cached
+                    // table is stale. A stale cache can result in missing descriptors
+                    // (getDescriptor(CCCD_UUID) returns null), making CCCD writes impossible and
+                    // causing silent notification failures.
+                    try {
+                        val refreshMethod = gatt.javaClass.getMethod("refresh")
+                        val refreshed = refreshMethod.invoke(gatt) as? Boolean ?: false
+                        if (refreshed) {
+                            Log.i(TAG, "GATT cache cleared for $address — fresh discovery will follow")
+                        } else {
+                            Log.w(TAG, "GATT cache refresh returned false for $address")
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "GATT cache refresh unavailable: ${e.message}")
+                    }
                     enqueueCommand {
                         if (!gatt.discoverServices()) {
                             Log.e(TAG, "discoverServices returned false")
@@ -817,6 +842,8 @@ class OmiBleManager private constructor(private val application: Application) {
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e(TAG, "Descriptor write failed (status=$status) for ${descriptor.characteristic.uuid}")
+            } else {
+                Log.d(TAG, "Descriptor write success for ${descriptor.characteristic.uuid}")
             }
             completeCommand()
         }
