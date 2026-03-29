@@ -1,0 +1,6 @@
+# Zephyr/NCS firmware config files — never treat as symlinks on any platform
+*.conf  text eol=lf
+*.dts   text eol=lf
+*.dtsi  text eol=lf
+*.cmake text eol=lf
+*.yml   text eol=lf
