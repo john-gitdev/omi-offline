@@ -16,6 +16,9 @@ class OmiDeviceConnection extends DeviceConnection {
   int _listFilesGeneration = 0;
   StreamSubscription? _listFilesSub;
   Timer? _timeoutTimer;
+  // Retries CMD_LIST_FILES until the firmware responds (guards against CCCD
+  // write not yet completing when the first 0x10 command was sent).
+  Timer? _cccdRetryTimer;
 
   // Cached audio codec to avoid redundant BLE reads
   BleAudioCodec? _cachedAudioCodec;
@@ -24,6 +27,11 @@ class OmiDeviceConnection extends DeviceConnection {
   /// share the same BLE characteristic stream. Without this, concurrent
   /// callers could misroute packets between operations.
   final Mutex _storageMutex = Mutex();
+
+  /// Time to wait after subscribing to a storage characteristic before sending
+  /// the first command. Allows the native BLE stack to write the CCCD descriptor
+  /// and enable notifications so data is not lost.
+  static const _cccdSettleDelay = Duration(milliseconds: 500);
 
   OmiDeviceConnection(super.device, super.transport);
 
@@ -40,6 +48,8 @@ class OmiDeviceConnection extends DeviceConnection {
     await sub?.cancel();
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
+    _cccdRetryTimer?.cancel();
+    _cccdRetryTimer = null;
     _cachedAudioCodec = null;
   }
 
@@ -406,16 +416,20 @@ class OmiDeviceConnection extends DeviceConnection {
       _timeoutTimer = Timer(const Duration(seconds: 35), () => fail("Timeout waiting for file list response"));
     };
 
+    bool firstPacketReceived = false;
+
     try {
       final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
-      // Give the native BLE stack enough time to write the CCCD descriptor
-      // and actually enable notifications before we trigger the device to send data.
-      await Future.delayed(const Duration(milliseconds: 500)); 
+      await Future.delayed(_cccdSettleDelay);
 
       _listFilesSub = stream.listen(
         (packet) {
           // 🛑 Ignore ALL stale packets from previous generations
           if (isStale()) return;
+
+          firstPacketReceived = true;
+          _cccdRetryTimer?.cancel();
+          _cccdRetryTimer = null;
 
           startOrResetTimeout(); // Reset timeout FIRST
           buffer.addAll(packet);
@@ -484,6 +498,35 @@ class OmiDeviceConnection extends DeviceConnection {
 
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
       startOrResetTimeout();
+
+      // If the CCCD write was still in the GATT queue when 0x10 was sent, the
+      // firmware will have received the command but silently dropped the
+      // notification response (storage_notify_ready() returns false).  Retry
+      // every 3 s until the first packet arrives — by that point the CCCD write
+      // will have completed (naturally or via the 5 s safety-net in OmiBleManager).
+      int cccdRetryCount = 0;
+      const int maxCccdRetries = 9; // 3 s × 9 = 27 s, within the 35 s outer timeout
+      _cccdRetryTimer = Timer.periodic(const Duration(seconds: 3), (t) async {
+        if (isStale() || currentCompleter.isCompleted || firstPacketReceived) {
+          t.cancel();
+          _cccdRetryTimer = null;
+          return;
+        }
+        if (cccdRetryCount >= maxCccdRetries) {
+          t.cancel();
+          _cccdRetryTimer = null;
+          return;
+        }
+        cccdRetryCount++;
+        Logger.debug('performListFiles: no response yet, re-sending 0x10 (CCCD retry $cccdRetryCount/$maxCccdRetries)');
+        try {
+          await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
+        } catch (e) {
+          t.cancel();
+          _cccdRetryTimer = null;
+          fail('CCCD retry write failed: $e');
+        }
+      });
 
       return await currentCompleter.future;
     } catch (e) {

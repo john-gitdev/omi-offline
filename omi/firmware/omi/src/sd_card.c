@@ -1021,7 +1021,12 @@ static int refresh_file_cache(void)
     cached_stats_file_count = total_count;
     cached_stats_total_size = total_size;
 
-    refresh_free_bytes_if_stale();
+    /* Do NOT call refresh_free_bytes_if_stale() here. lfs_fs_size() traverses
+     * every block in the filesystem and can take 30+ seconds on a full card.
+     * It was blocking the file-list response path, causing the 30 s semaphore
+     * in get_audio_file_list_with_sizes() to expire (especially after a time-
+     * sync, which invalidates both caches together). Free-space is computed
+     * lazily the next time it is actually queried. */
 
     cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
     file_cache_valid = true;
