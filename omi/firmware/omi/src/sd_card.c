@@ -874,6 +874,15 @@ static int compare_filenames(const void *a, const void *b)
     return (ta < tb) ? -1 : (ta > tb) ? 1 : 0;
 }
 
+static void update_cached_free_bytes(void)
+{
+    if (lfs_cfg.block_count > 0) {
+        uint64_t total_cap = (uint64_t)lfs_cfg.block_count * lfs_cfg.block_size;
+        cached_free_bytes = (cached_total_file_size < total_cap)
+                            ? (uint32_t)(total_cap - cached_total_file_size) : 0;
+    }
+}
+
 static void invalidate_file_cache(void)
 {
     file_cache_valid = false;
@@ -912,6 +921,7 @@ static void update_current_file_cache_size(uint32_t delta)
     cached_total_file_size += delta;
     cached_stats_total_size = cached_total_file_size;
     cached_stats_file_count = cached_total_file_count;
+    update_cached_free_bytes();
     cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
 
     for (int i = 0; i < cached_file_list_count; i++) {
@@ -948,6 +958,7 @@ static int refresh_file_cache(void)
             cached_total_file_size = 0;
             cached_stats_file_count = 0;
             cached_stats_total_size = 0;
+            update_cached_free_bytes();
             cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
             file_cache_valid = true;
             return 0;
@@ -994,6 +1005,7 @@ static int refresh_file_cache(void)
     cached_total_file_size = total_size;
     cached_stats_file_count = total_count;
     cached_stats_total_size = total_size;
+    update_cached_free_bytes();
 
     /* Do NOT call refresh_free_bytes_if_stale() here. lfs_fs_size() traverses
      * every block in the filesystem and can take 30+ seconds on a full card.
