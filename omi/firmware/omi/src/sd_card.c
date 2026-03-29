@@ -1413,8 +1413,8 @@ void sd_worker_thread(void)
                  * A file rotation could have changed current_filename between
                  * the sync and reopen, making our read_path stale. */
                 k_mutex_lock(&current_filename_lock, K_FOREVER);
-                bool still_active = (current_filename[0] != '\0' &&
-                                     strcmp(req.u.read.filename, current_filename) == 0);
+                still_active = (current_filename[0] != '\0' &&
+                                strcmp(req.u.read.filename, current_filename) == 0);
                 k_mutex_unlock(&current_filename_lock);
                 if (!still_active) {
                     if (req.u.read.resp) {
