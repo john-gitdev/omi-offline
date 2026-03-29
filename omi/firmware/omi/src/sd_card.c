@@ -247,8 +247,6 @@ static char current_filename[MAX_FILENAME_LEN] = {0};
 static char current_file_path[64] = {0};
 static int64_t current_file_created_uptime_ms = 0;
 static bool current_file_needs_rename = false;
-static bool deferred_timesync_rename_pending = false;
-static uint32_t deferred_timesync_utc_time = 0;
 static uint32_t cached_stats_file_count = 0;
 static uint64_t cached_stats_total_size = 0;
 static uint32_t cached_free_bytes = 0;
@@ -876,34 +874,10 @@ static int compare_filenames(const void *a, const void *b)
     return (ta < tb) ? -1 : (ta > tb) ? 1 : 0;
 }
 
-static int64_t free_bytes_valid_until_ms = 0;
-
-static void refresh_free_bytes_if_stale(void)
-{
-    int64_t now = k_uptime_get();
-    if (now < free_bytes_valid_until_ms) return;
-
-    lfs_ssize_t used_blocks = lfs_fs_size(&lfs_fs);
-    if (used_blocks >= 0 && lfs_cfg.block_count > 0) {
-        uint64_t total_cap = (uint64_t)lfs_cfg.block_count * lfs_cfg.block_size;
-        uint64_t used_cap  = (uint64_t)used_blocks * lfs_cfg.block_size;
-        cached_free_bytes  = (used_cap < total_cap) ? (uint32_t)(total_cap - used_cap) : 0;
-    } else {
-        cached_free_bytes = 0;
-    }
-    free_bytes_valid_until_ms = now + (60 * 1000);  /* Recompute at most once per minute */
-}
-
-static void invalidate_free_bytes_cache(void)
-{
-    free_bytes_valid_until_ms = 0;
-}
-
 static void invalidate_file_cache(void)
 {
     file_cache_valid = false;
     cached_stats_valid_until_ms = 0;
-    invalidate_free_bytes_cache();
 }
 
 static void sort_cached_file_entries(void)

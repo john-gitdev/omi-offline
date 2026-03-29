@@ -329,17 +329,6 @@ static const struct bt_data bt_sd[] = {
 // State and Characteristics
 //
 
-static void audio_ccc_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value)
-{
-    if (value == BT_GATT_CCC_NOTIFY) {
-        LOG_INF("Client subscribed for notifications");
-    } else if (value == 0) {
-        LOG_INF("Client unsubscribed from notifications");
-    } else {
-        LOG_INF("Invalid CCC value: %u", value);
-    }
-}
-
 #ifdef CONFIG_OMI_ENABLE_SPEAKER
 static ssize_t audio_data_write_handler(struct bt_conn *conn,
                                         const struct bt_gatt_attr *attr,
