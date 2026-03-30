@@ -319,6 +319,15 @@ abstract class DeviceConnection {
 
   Future<bool> performSyncDeviceTime() async => false;
 
+  /// Acquires exclusive ownership of the storage data stream.
+  /// Must be used by any service (e.g. WAL sync) that performs long-running
+  /// transfers to prevent other storage commands (like listFiles) from
+  /// interfering or timing out.
+  Future<void> acquireStorageLock() async {}
+
+  /// Releases exclusive ownership of the storage data stream.
+  void releaseStorageLock() {}
+
   // Feature support and Settings
   Future<int> getFeatures() async {
     if (await isConnected()) {

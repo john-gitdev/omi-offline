@@ -761,14 +761,28 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     _resetSyncState();
     _isSyncing = true;
 
+    final dev = _device;
+    if (dev == null) {
+      Logger.debug("SDCardWalSync: No device connected, sync aborted");
+      return null;
+    }
+
+    final connection = _connectionProvider != null
+        ? await _connectionProvider!(dev.id)
+        : await ServiceManager.instance().device.ensureConnection(dev.id);
+
+    if (connection == null) throw Exception('Could not connect to device');
+
     bool anyPartial = false;
     var resp = SyncLocalFilesResponse(newConversationIds: [], updatedConversationIds: []);
 
     final int totalWals = wals.length;
+    await connection.acquireStorageLock();
     try {
       for (int walIndex = 0; walIndex < wals.length; walIndex++) {
         final wal = wals[walIndex];
         if (_isCancelled) break;
+        // ... rest of the loop remains same ...
 
         wal.isSyncing = true;
         wal.syncStartedAt = DateTime.now();
@@ -890,6 +904,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         }
       }
     } finally {
+      connection.releaseStorageLock();
       _isSyncing = false;
       _completeCancelIfPending();
     }
@@ -924,9 +939,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     await _checkDiskSpaceBeforeSync(totalBytesToDownload);
     _downloadStartTime = DateTime.now();
 
+    final dev = _device;
+    if (dev == null) throw Exception('No device connected');
+
+    final connection = _connectionProvider != null
+        ? await _connectionProvider!(dev.id)
+        : await ServiceManager.instance().device.ensureConnection(dev.id);
+
+    if (connection == null) throw Exception('Could not connect to device');
+
     final List<File> syncedFiles = [];
     const int maxGapRetries = 3;
     int gapRetries = 0;
+
+    await connection.acquireStorageLock();
     try {
       while (true) {
         try {
@@ -1012,6 +1038,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       listener.onWalUpdated();
       rethrow;
     } finally {
+      connection.releaseStorageLock();
       _isSyncing = false;
       _completeCancelIfPending();
     }

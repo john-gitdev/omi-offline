@@ -31,9 +31,15 @@ class OmiDeviceConnection extends DeviceConnection {
   /// Time to wait after subscribing to a storage characteristic before sending
   /// the first command. Allows the native BLE stack to write the CCCD descriptor
   /// and enable notifications so data is not lost.
-  static const _cccdSettleDelay = Duration(milliseconds: 500);
+  static const _cccdSettleDelay = Duration(milliseconds: 1000);
 
   OmiDeviceConnection(super.device, super.transport);
+
+  @override
+  Future<void> acquireStorageLock() => _storageMutex.acquire();
+
+  @override
+  void releaseStorageLock() => _storageMutex.release();
 
   @override
   Future<void> connect({void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged}) async {
@@ -46,6 +52,11 @@ class OmiDeviceConnection extends DeviceConnection {
     final sub = _listFilesSub;
     _listFilesSub = null;
     await sub?.cancel();
+
+    // Tell firmware to stop any in-flight transfer (e.g. from a previous CMD_READ_FILE)
+    // so it's ready to process the next command (like 0x10) immediately.
+    await performStopStorageSync();
+
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
     _cccdRetryTimer?.cancel();
