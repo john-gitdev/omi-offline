@@ -141,8 +141,14 @@ class NativeBleTransport extends DeviceTransport {
     final existing = _streamControllers[key];
     if (existing == null || existing.isClosed) {
       _streamControllers[key] = StreamController<List<int>>.broadcast();
-      _subscribeCharacteristic(serviceUuid, characteristicUuid);
     }
+
+    // Always (re-)subscribe on the native side.  The CCCD write is idempotent —
+    // writing ENABLE_NOTIFICATION_VALUE when already enabled is a no-op at the
+    // BLE level.  This guards against the previous subscription having been
+    // silently lost (e.g. GATT queue was busy, stale cache, or native reconnect
+    // completed before _resubscribeAfterReconnect ran).
+    _subscribeCharacteristic(serviceUuid, characteristicUuid);
 
     return _streamControllers[key]!.stream;
   }
