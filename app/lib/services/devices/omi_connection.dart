@@ -568,11 +568,21 @@ class OmiDeviceConnection extends DeviceConnection {
         if (!completer.isCompleted) completer.completeError(e);
       });
 
+      // Wait for the CCCD descriptor write to propagate through the GATT queue
+      // before sending the command. Listener is already attached above so any
+      // early notification won't be lost.
+      await Future.delayed(_cccdSettleDelay);
+
       await transport.writeCharacteristic(
           storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x12, fileIndex & 0xFF]);
 
       try {
-        final success = await completer.future.timeout(const Duration(seconds: 5));
+        // Firmware delete can block up to 30 s waiting for the SD card worker
+        // (k_sem_take timeout in delete_audio_file). Use 35 s to give enough
+        // headroom — the previous 5 s limit was shorter than the firmware's own
+        // internal timeout, causing every delete to appear failed even when the
+        // firmware eventually completed the operation.
+        final success = await completer.future.timeout(const Duration(seconds: 35));
         Logger.debug('performDeleteFile($fileIndex): success=$success');
         return success;
       } finally {
