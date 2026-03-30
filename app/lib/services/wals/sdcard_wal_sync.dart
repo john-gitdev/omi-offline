@@ -201,8 +201,18 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final threshold = codec.getStorageBytesPerMinute();
     final wals = <Wal>[];
 
+    // MAX_STORAGE_BYTES matches firmware sd_card.h: 0x1E000000 = 480 MB.
+    // Any file larger than this is a phantom entry from a ghost LFS mount on
+    // old FatFS data — skip it rather than attempting a multi-GB download.
+    const int kMaxStorageBytes = 0x1E000000;
+
     for (final file in files) {
       if (file.size == 0) continue;
+      if (file.size > kMaxStorageBytes) {
+        Logger.error(
+            'SDCardWalSync: file[${file.index}] has impossible size ${file.size} (> 480 MB) — skipping (ghost mount artifact)');
+        continue;
+      }
 
       // Preserve in-progress walOffset for this file if we have it in memory.
       final existing = _wals.firstWhereOrNull(
@@ -523,7 +533,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           break;
 
         default:
-          Logger.error("SDCardWalSync: Received unknown packet type: $packetType");
+          final hex = value.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+          Logger.error(
+              'SDCardWalSync: Unknown packet type 0x${packetType.toRadixString(16).padLeft(2, '0')} '
+              '(${value.length} bytes): $hex');
           return;
       }
 
