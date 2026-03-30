@@ -402,11 +402,22 @@ class OmiDeviceConnection extends DeviceConnection {
     }
 
     void completeSuccess(List<StorageFile> files) {
-      if (!currentCompleter.isCompleted) {
-        currentCompleter.complete(files);
-      }
+      // Synchronously cancel timers and invalidate the generation counter BEFORE
+      // completing the completer.  This closes the window where the subscription
+      // is still alive after the caller wakes up and sends CMD_READ_FILE — the
+      // ACK/DATA packets for that next command would otherwise be delivered to
+      // this still-active _listFilesSub and silently misprocessed as file-list bytes.
+      _cccdRetryTimer?.cancel();
+      _cccdRetryTimer = null;
+      _timeoutTimer?.cancel();
+      _timeoutTimer = null;
+      _listFilesGeneration++; // isStale() → true; any queued packet is discarded
+      final sub = _listFilesSub;
+      _listFilesSub = null;
+      unawaited(sub?.cancel());
+      _cachedAudioCodec = null;
+      if (!currentCompleter.isCompleted) currentCompleter.complete(files);
       if (_listFilesCompleter == currentCompleter) _listFilesCompleter = null;
-      unawaited(stop());
     }
 
     late void Function() startOrResetTimeout;
