@@ -435,7 +435,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
     startOrResetTimeout = () {
       _timeoutTimer?.cancel();
-      _timeoutTimer = Timer(const Duration(seconds: 35), () => fail("Timeout waiting for file list response"));
+      _timeoutTimer = Timer(const Duration(seconds: 60), () => fail("Timeout waiting for file list response"));
     };
 
     bool firstPacketReceived = false;
@@ -534,7 +534,7 @@ class OmiDeviceConnection extends DeviceConnection {
       // every 3 s until the first packet arrives — by that point the CCCD write
       // will have completed (naturally or via the 5 s safety-net in OmiBleManager).
       int cccdRetryCount = 0;
-      const int maxCccdRetries = 9; // 3 s × 9 = 27 s, within the 35 s outer timeout
+      const int maxCccdRetries = 20; // 3 s × 20 = 60 s, matching the outer timeout
       _cccdRetryTimer = Timer.periodic(const Duration(seconds: 3), (t) async {
         if (isStale() || currentCompleter.isCompleted || firstPacketReceived) {
           t.cancel();
