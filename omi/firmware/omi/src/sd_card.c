@@ -40,8 +40,13 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define FILE_CACHE_TTL_MS (30 * 1000)
 
 /* LittleFS paths are relative to FS root (no mount-point prefix) */
-#define FILE_DATA_DIR "audio"
+#define FILE_DATA_DIR  "audio"
 #define FILE_INFO_PATH "info.txt"
+/* Magic cookie written on every clean LFS format.  If lfs_mount() accidentally
+ * succeeds on stale FatFS data (bytes happen to pass LFS superblock CRC), the
+ * magic file will be absent or contain wrong bytes — triggering a reformat. */
+#define LFS_MAGIC_PATH  ".lfs_magic"
+#define LFS_MAGIC_VALUE 0x4C465356u /* 'L','F','S','V' */
 
 /* ------------------------------------------------------------------ */
 /* LittleFS state                                                     */
@@ -445,6 +450,51 @@ static void lfs_close_files(void)
  * Key difference from FATFS: if there is any corruption LittleFS recovers
  * from its journal automatically â€” no mkfs needed, no power-loss dirty bit.
  */
+/**
+ * check_or_write_magic - verify or create the LFS format-version cookie.
+ *
+ * After a successful lfs_mount() call this function:
+ *   - Returns 0 if the magic file exists and contains LFS_MAGIC_VALUE → healthy FS.
+ *   - Returns 0 and writes the magic file if it is absent → fresh format, first boot.
+ *   - Returns -EBADMSG if the file exists but the value is wrong → ghost mount on
+ *     old FatFS data; caller must lfs_unmount + lfs_format + lfs_mount.
+ *
+ * NOTE: reuses lfs_finfo_buf/cfg because the info file is not open at mount time.
+ */
+static int check_or_write_magic(void)
+{
+    lfs_file_t f;
+    uint32_t   magic = 0;
+
+    int ret = lfs_file_opencfg(&lfs_fs, &f, LFS_MAGIC_PATH, LFS_O_RDONLY, &lfs_finfo_cfg);
+    if (ret == LFS_ERR_OK) {
+        lfs_ssize_t rd = lfs_file_read(&lfs_fs, &f, &magic, sizeof(magic));
+        lfs_file_close(&lfs_fs, &f);
+        if (rd == (lfs_ssize_t)sizeof(magic) && magic == LFS_MAGIC_VALUE) {
+            return 0; /* clean LFS filesystem confirmed */
+        }
+        LOG_WRN("[SD] LFS magic mismatch (read=0x%08X expected=0x%08X) — ghost mount detected",
+                magic, LFS_MAGIC_VALUE);
+        return -EBADMSG;
+    }
+
+    /* File absent: this is a freshly formatted filesystem — write the cookie. */
+    ret = lfs_file_opencfg(&lfs_fs, &f, LFS_MAGIC_PATH, LFS_O_WRONLY | LFS_O_CREAT, &lfs_finfo_cfg);
+    if (ret != LFS_ERR_OK) {
+        LOG_ERR("[SD] Failed to create LFS magic file: %d", ret);
+        return ret;
+    }
+    magic = LFS_MAGIC_VALUE;
+    lfs_ssize_t wr = lfs_file_write(&lfs_fs, &f, &magic, sizeof(magic));
+    lfs_file_close(&lfs_fs, &f);
+    if (wr != (lfs_ssize_t)sizeof(magic)) {
+        LOG_ERR("[SD] LFS magic write failed: %d", (int)wr);
+        return -EIO;
+    }
+    LOG_INF("[SD] LFS magic file written (fresh format)");
+    return 0;
+}
+
 static int sd_mount(void)
 {
     if (is_mounted) {
@@ -520,6 +570,29 @@ static int sd_mount(void)
             LOG_ERR("LFS mount after format failed: %d", ret);
             sd_enable_power(false);
             return -EIO;
+        }
+        /* Write the magic cookie on the freshly formatted filesystem. */
+        (void)check_or_write_magic();
+    } else {
+        /* Mount succeeded — verify the magic cookie to detect ghost mounts
+         * (lfs_mount accidentally succeeding on stale FatFS data). */
+        int magic_ret = check_or_write_magic();
+        if (magic_ret == -EBADMSG) {
+            LOG_WRN("[SD] Ghost mount on FatFS data detected — forcing clean format");
+            lfs_unmount(&lfs_fs);
+            ret = lfs_format(&lfs_fs, &lfs_cfg);
+            if (ret != LFS_ERR_OK) {
+                LOG_ERR("LFS format (ghost mount recovery) failed: %d", ret);
+                sd_enable_power(false);
+                return -EIO;
+            }
+            ret = lfs_mount(&lfs_fs, &lfs_cfg);
+            if (ret != LFS_ERR_OK) {
+                LOG_ERR("LFS mount after ghost-mount recovery failed: %d", ret);
+                sd_enable_power(false);
+                return -EIO;
+            }
+            (void)check_or_write_magic();
         }
     }
 
