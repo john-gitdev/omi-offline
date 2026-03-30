@@ -436,7 +436,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
     startOrResetTimeout = () {
       _timeoutTimer?.cancel();
-      _timeoutTimer = Timer(const Duration(seconds: 70), () => fail("Timeout waiting for file list response"));
+      _timeoutTimer = Timer(const Duration(seconds: 120), () => fail("Timeout waiting for file list response"));
     };
 
     bool firstPacketReceived = false;
@@ -451,6 +451,16 @@ class OmiDeviceConnection extends DeviceConnection {
         (packet) {
           // 🛑 Ignore ALL stale packets from previous generations
           if (isStale()) return;
+
+          if (packet.isEmpty) return;
+
+          // 🛑 Ignore PACKET_ACK (0x03). ACKs are sent by the firmware for commands
+          // like CMD_STOP or CMD_ROTATE. If an ACK arrives while we are waiting
+          // for a file list, it must be ignored to avoid corrupting the buffer.
+          if (packet[0] == 0x03) {
+            Logger.debug('performListFiles: Ignoring ACK packet (0x03)');
+            return;
+          }
 
           firstPacketReceived = true;
           // Note: _cccdRetryTimer is now a one-shot Timer, not periodic
