@@ -22,8 +22,13 @@ class MainActivity : FlutterActivity() {
 
     private var bleHostApiImpl: BleHostApiImpl? = null
 
+    companion object {
+        var isFlutterAlive = false
+    }
+
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        OmiBleManager.isFlutterAlive = true
 
         // Register WiFi Network Plugin
         WifiNetworkPlugin.registerWith(flutterEngine, this)
@@ -33,11 +38,11 @@ class MainActivity : FlutterActivity() {
 
         // Register Native BLE Pigeon APIs
         OmiBleManager.initialize(application)
-        OmiBleManager.instance.flutterApi = BleFlutterApi(flutterEngine.dartExecutor.binaryMessenger)
-        val hostApi = BleHostApiImpl { this }
-        hostApi.initCompanionManager(this)
-        bleHostApiImpl = hostApi
-        BleHostApi.setUp(flutterEngine.dartExecutor.binaryMessenger, hostApi)
+        val flutterApi = BleFlutterApi(flutterEngine.dartExecutor.binaryMessenger)
+        bleHostApiImpl = BleHostApiImpl({ this }, flutterApi).apply {
+            initCompanionManager(this@MainActivity)
+        }
+        BleHostApi.setUp(flutterEngine.dartExecutor.binaryMessenger, bleHostApiImpl)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             if (call.method == "setNotificationOnKillService") {
@@ -106,18 +111,15 @@ class MainActivity : FlutterActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-
-        // Handle CompanionDeviceManager chooser result
-        val address = bleHostApiImpl?.onActivityResult(requestCode, resultCode, data)
-        if (address != null) {
-            // Device selected — start foreground service (no connect — Dart calls connectPeripheral)
-            OmiBleForegroundService.startService(this, address, caller = "MainActivity.onActivityResult")
-        }
+        bleHostApiImpl?.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun onDestroy() {
+        // When user closes the app (swipe away), stop the foreground service.
+        // The service handles disconnecting all managed devices in onDestroy.
         if (isFinishing) {
-            OmiBleManager.instance.disconnectAllPeripherals()
+            OmiBleManager.isFlutterAlive = false
+            OmiBleForegroundService.stopService(this)
         }
         super.onDestroy()
     }

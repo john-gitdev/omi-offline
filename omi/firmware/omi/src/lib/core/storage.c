@@ -284,51 +284,90 @@ static int refresh_file_list_cache(void)
  */
 static int send_file_list_response(struct bt_conn *conn)
 {
-    /* Cache must be populated by caller before invoking this function.
-     * If it is empty here something went wrong upstream — return empty list. */
     if (sync_file_count == 0) {
-        uint8_t zero_resp[1] = {0};
-        storage_notify(conn, zero_resp, 1);
+        uint8_t zero_resp[5] = {PACKET_DATA, 0, 0, 0, 0};
+        storage_notify(conn, zero_resp, 5);
+        uint8_t eot = PACKET_EOT;
+        storage_notify(conn, &eot, 1);
         return 0;
     }
 
-    /* Use storage_buffer to build response (max 4440 bytes).
-     * Reserve byte [0] for the count; fill it in after iterating. */
-    int resp_len = 1;  /* byte 0 = count placeholder */
-    uint8_t included = 0;
+    /* 
+     * Standardized List Protocol: [PACKET_DATA(0x01)][count:4LE][ts1:4LE][sz1:4LE]...
+     * Uses dynamic chunking to stay under MTU. Only first packet contains count.
+     */
+    uint16_t mtu = bt_gatt_get_mtu(conn);
+    uint16_t max_payload = (mtu > 3) ? (mtu - 3) : 20;
+    
+    /* First packet overhead: 1 (type) + 4 (count) = 5 bytes */
+    int first_packet_max = (max_payload - 5) / 8;
+    /* Subsequent packets overhead: 1 (type) = 1 byte */
+    int later_packet_max = (max_payload - 1) / 8;
 
-    for (int i = 0; i < sync_file_count && resp_len + 8 <= STORAGE_BUFFER_SIZE; i++) {
-        /* Skip the file the mic is currently writing to.  Attempting to sync
-         * it races the sd_worker write path and causes read timeouts. */
-        if (sd_is_current_recording_file(sync_file_list[i])) {
-            LOG_INF("file_list: skipping active recording file[%d]=%s",
-                    i, sync_file_list[i]);
-            continue;
+    int files_processed = 0;
+    uint32_t total_included = 0;
+
+    for (int i = 0; i < sync_file_count; i++) {
+        if (!sd_is_current_recording_file(sync_file_list[i])) {
+            total_included++;
         }
-        if (included >= 255) {
-            LOG_WRN("file_list: reached protocol limit (255), truncating");
-            break;
-        }
-
-        uint32_t timestamp = (uint32_t)strtoul(sync_file_list[i], NULL, 16);
-        uint32_t size = sync_file_sizes[i];
-
-        storage_buffer[resp_len++] = timestamp & 0xFF;
-        storage_buffer[resp_len++] = (timestamp >> 8) & 0xFF;
-        storage_buffer[resp_len++] = (timestamp >> 16) & 0xFF;
-        storage_buffer[resp_len++] = (timestamp >> 24) & 0xFF;
-
-        storage_buffer[resp_len++] = size & 0xFF;
-        storage_buffer[resp_len++] = (size >> 8) & 0xFF;
-        storage_buffer[resp_len++] = (size >> 16) & 0xFF;
-        storage_buffer[resp_len++] = (size >> 24) & 0xFF;
-        included++;
     }
 
-    storage_buffer[0] = included;
-    LOG_INF("Sending file list: %d/%d files included (active file excluded), %d bytes",
-            included, sync_file_count, resp_len);
-    return storage_notify(conn, storage_buffer, resp_len);
+    while (files_processed < sync_file_count) {
+        int resp_len = 0;
+        storage_buffer[resp_len++] = PACKET_DATA;
+        
+        int chunk_limit;
+        if (files_processed == 0) {
+            /* First packet: include the 4-byte Little-Endian count */
+            storage_buffer[resp_len++] = total_included & 0xFF;
+            storage_buffer[resp_len++] = (total_included >> 8) & 0xFF;
+            storage_buffer[resp_len++] = (total_included >> 16) & 0xFF;
+            storage_buffer[resp_len++] = (total_included >> 24) & 0xFF;
+            chunk_limit = first_packet_max;
+        } else {
+            chunk_limit = later_packet_max;
+        }
+
+        uint8_t chunk_count = 0;
+        for (; files_processed < sync_file_count && chunk_count < chunk_limit; files_processed++) {
+            if (sd_is_current_recording_file(sync_file_list[files_processed])) {
+                continue;
+            }
+
+            /* Extract timestamp: handle hex UTC or TMP_UPTIME_... formats */
+            uint32_t timestamp = 0;
+            if (strncmp(sync_file_list[files_processed], "TMP_", 4) == 0) {
+                /* For TMP files, use the uptime from the filename as a sortable proxy */
+                timestamp = (uint32_t)strtoul(sync_file_list[files_processed] + 4, NULL, 16);
+            } else {
+                timestamp = (uint32_t)strtoul(sync_file_list[files_processed], NULL, 16);
+            }
+            uint32_t size = sync_file_sizes[files_processed];
+
+            /* Little-Endian for App parser */
+            storage_buffer[resp_len++] = timestamp & 0xFF;
+            storage_buffer[resp_len++] = (timestamp >> 8) & 0xFF;
+            storage_buffer[resp_len++] = (timestamp >> 16) & 0xFF;
+            storage_buffer[resp_len++] = (timestamp >> 24) & 0xFF;
+
+            storage_buffer[resp_len++] = size & 0xFF;
+            storage_buffer[resp_len++] = (size >> 8) & 0xFF;
+            storage_buffer[resp_len++] = (size >> 16) & 0xFF;
+            storage_buffer[resp_len++] = (size >> 24) & 0xFF;
+            chunk_count++;
+        }
+
+        if (chunk_count > 0 || (files_processed == sync_file_count && total_included == 0)) {
+            storage_notify(conn, storage_buffer, resp_len);
+            k_msleep(15); /* Small gap for BLE stability */
+        }
+    }
+
+    uint8_t eot = PACKET_EOT;
+    storage_notify(conn, &eot, 1);
+    
+    return 0;
 }
 
 /**
@@ -393,8 +432,8 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
     /* ===== NEW MULTI-FILE COMMANDS ===== */
     
     if (command == CMD_LIST_FILES) {
-        list_files_requested = 1;  /* Defer to storage thread to avoid stack overflow */
-        return 0xFF;  /* Will be processed in storage thread */
+        list_files_requested = 1;  /* Defer to storage thread */
+        return 0xFF;  /* Storage thread will send its own response */
     }
     
     if (command == CMD_READ_FILE) {
@@ -543,7 +582,22 @@ static void write_to_gatt(struct bt_conn *conn)
         uint32_t bytes_sent = 0;
 
         while (bytes_sent < bytes_read && atomic_get(&remaining_length) > 0) {
+            /* Verify connection is still alive before every batch */
+            struct bt_conn *valid_conn = get_current_connection();
+            if (!valid_conn) {
+                LOG_ERR("BLE disconnected during GATT write loop");
+                atomic_clear(&remaining_length);
+                return;
+            }
+            if (valid_conn != conn) {
+                put_current_connection(valid_conn);
+                LOG_ERR("BLE connection changed during GATT write loop");
+                atomic_clear(&remaining_length);
+                return;
+            }
+
             if (atomic_get(&stop_started)) {
+                put_current_connection(valid_conn);
                 atomic_clear(&remaining_length);
                 return;
             }
@@ -559,12 +613,11 @@ static void write_to_gatt(struct bt_conn *conn)
             ble_notify_buf[4] = (pkt_offset >> 24) & 0xFF;
             memcpy(ble_notify_buf + 5, storage_buffer + bytes_sent, chunk);
 
-            err = storage_notify(conn, ble_notify_buf, 5 + chunk);
+            err = storage_notify(valid_conn, ble_notify_buf, 5 + chunk);
+            put_current_connection(valid_conn);
+
             if (err == -ENOMEM) {
-                if (atomic_get(&stop_started)) {
-                    atomic_clear(&remaining_length);
-                    return;
-                }
+                /* TX buffers full — yield and wait for next connection event */
                 k_yield();
                 continue;
             }
@@ -620,7 +673,7 @@ void storage_write(void)
             int refresh_ret = refresh_file_list_cache();
             if (conn) {
                 if (refresh_ret < 0) {
-                    uint8_t error_resp[2] = {0xFF, (uint8_t)(-refresh_ret)};
+                    uint8_t error_resp[2] = {PACKET_ACK, (uint8_t)(-refresh_ret)};
                     storage_notify(conn, error_resp, 2);
                 } else {
                     send_file_list_response(conn);

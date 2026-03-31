@@ -614,15 +614,13 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           ),
           if (provider.isConnected) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
-            // Disconnect
             GestureDetector(
               onTap: () async {
                 await SharedPreferencesUtil().btDeviceSet(BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0));
                 SharedPreferencesUtil().deviceName = '';
-                // Fire-and-forget — _connection is cleared immediately in disconnectDevice(),
-                // so the UI should not block waiting for the BLE disconnect to complete.
-                // ignore: unawaited_futures
-                ServiceManager.instance().device.disconnectDevice();
+                // Use forgetDevice() to explicitly clear associations and unmanage the device
+                await ServiceManager.instance().device.forgetDevice();
+                
                 // Cancel any in-progress sync immediately.
                 final walSync = ServiceManager.instance().wal.getSyncs();
                 walSync.cancelSync();
@@ -634,7 +632,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                   Navigator.of(context).pop();
                   ScaffoldMessenger.of(
                     context,
-                  ).showSnackBar(const SnackBar(content: Text('Your Omi has been disconnected')));
+                  ).showSnackBar(const SnackBar(content: Text('Your Omi has been unpaired')));
                 }
               },
               child: Padding(
@@ -648,7 +646,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                     ),
                     const SizedBox(width: 16),
                     Text(
-                      provider.connectedDevice == null ? 'Unpair Device' : 'Disconnect Device',
+                      'Unpair Device',
                       style: const TextStyle(color: Colors.redAccent, fontSize: 17, fontWeight: FontWeight.w400),
                     ),
                   ],

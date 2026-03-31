@@ -97,17 +97,25 @@ abstract class BleHostApi {
   @SwiftFunction('stopScan()')
   void stopScan();
 
-  // Connection
-  @SwiftFunction('connectPeripheral(uuid:)')
-  void connectPeripheral(String uuid);
+  // Connection Management (Single-Owner Model)
+  @SwiftFunction('manageDevice(uuid:requiresBond:)')
+  void manageDevice(String uuid, bool requiresBond);
+
+  @SwiftFunction('unmanageDevice(uuid:)')
+  void unmanageDevice(String uuid);
+
+  // Deprecated: use manageDevice
+  // @SwiftFunction('connectPeripheral(uuid:)')
+  // void connectPeripheral(String uuid);
 
   @SwiftFunction('disconnectPeripheral(uuid:)')
   void disconnectPeripheral(String uuid);
 
   /// Reconnect a previously-paired peripheral. No active scanning — the platform
   /// handles reconnection at the chipset level (iOS: retrievePeripherals, Android: autoConnect).
-  @SwiftFunction('reconnectKnownPeripheral(uuid:)')
-  void reconnectKnownPeripheral(String uuid);
+  // Deprecated: use manageDevice
+  // @SwiftFunction('reconnectKnownPeripheral(uuid:)')
+  // void reconnectKnownPeripheral(String uuid);
 
   // Service discovery (now triggered natively after connection)
   // @SwiftFunction('discoverServices(peripheralUuid:)')
@@ -165,6 +173,9 @@ abstract class BleFlutterApi {
   void onPeripheralDisconnected(String peripheralUuid, String? error);
 
   void onServicesDiscovered(String peripheralUuid, List<BleService> services);
+
+  /// Fired only after the device is connected, services are discovered, and MTU is negotiated.
+  void onDeviceReady(String peripheralUuid, List<BleService> services);
 
   /// Individual characteristic value update (non-audio characteristics).
   void onCharacteristicValueUpdated(

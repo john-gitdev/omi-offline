@@ -89,6 +89,7 @@ abstract class DeviceConnection {
 
   Future<void> connect({
     void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged,
+    bool requiresBond = false,
   }) async {
     if (_connectionState == DeviceConnectionState.connected) {
       throw DeviceConnectionException("Connection already established, please disconnect before start new connection");
@@ -109,7 +110,7 @@ abstract class DeviceConnection {
 
     try {
       // Use transport to connect
-      await transport.connect();
+      await transport.connect(requiresBond: requiresBond);
 
       // Check connection
       await ping();

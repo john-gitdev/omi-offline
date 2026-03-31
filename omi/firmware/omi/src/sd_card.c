@@ -1090,6 +1090,10 @@ static int refresh_file_cache(void)
     cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
     file_cache_valid = true;
 
+    /* Reset the block flag if refresh was successful — the card is working now. */
+    sd_write_blocked = false;
+    writing_error_counter = 0;
+
     return 0;
 }
 
@@ -1107,51 +1111,41 @@ static int ensure_file_cache(void)
 
 void sd_update_filename_after_timesync(uint32_t synced_utc_time)
 {
-    if (!current_file_needs_rename || current_filename[0] == '\0' || !is_mounted)
+    if (!is_mounted)
         return;
 
-    int64_t now_ms = k_uptime_get();
-    int64_t elapsed_ms = now_ms - current_file_created_uptime_ms;
-    if (elapsed_ms < 0) elapsed_ms = 0;
-    uint32_t elapsed_s = (uint32_t)(elapsed_ms / 1000LL);
-    /* Clamp so we never underflow synced_utc_time into the distant past. */
-    uint32_t correct_ts = (elapsed_s < synced_utc_time) ? (synced_utc_time - elapsed_s) : synced_utc_time;
+    /* Calculate the UTC offset between uptime and real-world time */
+    uint32_t rtc_offset = synced_utc_time - (uint32_t)(k_uptime_get() / 1000U);
+    LOG_INF("Time sync received: offset is %u s", rtc_offset);
 
-    char new_filename[MAX_FILENAME_LEN];
-    snprintf(new_filename, sizeof(new_filename), "%08X.txt", correct_ts);
-    LOG_INF("Rename: %s -> %s (elapsed=%lld ms)", current_filename, new_filename, elapsed_ms);
-
-    if (write_batch_offset > 0)
-        flush_batch_buffer();
-    lfs_file_sync(&lfs_fs, &lfs_fil_data);
-    data_sync_gen++;
-    bytes_since_sync = 0;
-    last_file_sync_uptime_ms = k_uptime_get();
-
-    /* Hold mutex across the entire close-rename-reopen sequence so that
-     * concurrent filename readers (sd_is_current_recording_file) never see
-     * a stale name while the file handle is in an intermediate state. */
-    k_mutex_lock(&current_filename_lock, K_FOREVER);
-    lfs_file_close(&lfs_fs, &lfs_fil_data);
-
-    char new_path[64];
-    build_file_path(new_filename, new_path, sizeof(new_path));
-    int ret = lfs_rename(&lfs_fs, current_file_path, new_path);
-    if (ret < 0) {
-        LOG_ERR("Rename failed: %d", ret);
-        /* Re-open old file */
-        lfs_file_opencfg(&lfs_fs, &lfs_fil_data, current_file_path, LFS_O_RDWR | LFS_O_APPEND, &lfs_fdata_cfg);
-        k_mutex_unlock(&current_filename_lock);
-        return;
+    /* Retroactively rename all CLOSED temporary files */
+    lfs_dir_t dir;
+    struct lfs_info info;
+    if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) == 0) {
+        char old_path[128], new_path[128], new_fn[MAX_FILENAME_LEN];
+        while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
+            /* Only rename finished TMP_ segments (don't touch the active one) */
+            if (info.type == LFS_TYPE_REG && strncmp(info.name, "TMP_", 4) == 0 &&
+                strcmp(info.name, current_filename) != 0) {
+                
+                uint32_t original_uptime_ms = (uint32_t)strtoul(info.name + 4, NULL, 16);
+                uint32_t correct_ts = (original_uptime_ms / 1000U) + rtc_offset;
+                
+                snprintf(new_fn, MAX_FILENAME_LEN, "%08X.txt", correct_ts);
+                build_file_path(info.name, old_path, 128);
+                build_file_path(new_fn, new_path, 128);
+                
+                if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
+                    LOG_INF("Retroactive rename: %s -> %s", info.name, new_fn);
+                }
+                /* Yield to allow other prio-msgq requests (like get list) to be processed
+                 * between renames if the loop is long. */
+                k_yield();
+            }
+        }
+        lfs_dir_close(&lfs_fs, &dir);
     }
-
-    strncpy(current_filename, new_filename, sizeof(current_filename) - 1);
-    strncpy(current_file_path, new_path, sizeof(current_file_path) - 1);
-    current_file_needs_rename = false;
-
-    lfs_file_opencfg(&lfs_fs, &lfs_fil_data, current_file_path, LFS_O_RDWR | LFS_O_APPEND, &lfs_fdata_cfg);
-    k_mutex_unlock(&current_filename_lock);
-    LOG_INF("File renamed OK: %s", current_filename);
+    invalidate_file_cache();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1228,25 +1222,6 @@ void sd_worker_thread(void)
     print_audio_files_at_boot();
 
     /* ---- Pre-warm LFS block allocator ---- */
-    /* NOTE: Boot audio loss is expected here.
-     * With 200 MB data on SPI SD, this takes ~10-50 seconds.
-     * Audio frames arriving during this window are silently dropped
-     * (sd_boot_ready == 0). This is preferable to a 50-second stall
-     * in the real-time write path on the first lfs_alloc().
-     *
-     * Future improvement: persist the lookahead bitmap to NVS between
-     * reboots to skip the scan entirely on warm boots.
-     *
-     * After mount, the LFS lookahead buffer is EMPTY and the start position
-     * is random (seed % block_count).  The very first lfs_alloc() would
-     * trigger lfs_alloc_scan() — a full O(used_blocks) filesystem traversal
-     * over SPI SD that can take 10-50+ seconds with 100-200 MB of data.
-     *
-     * By calling lfs_fs_gc() here (with compact_thresh=-1 so it skips
-     * metadata compaction), we force that expensive scan to happen NOW,
-     * during boot init, BEFORE the audio pipeline starts feeding data.
-     * This moves the latency spike from the real-time write path to a
-     * one-time boot cost where dropping audio is acceptable. */
     {
         int64_t gc_start_ms = k_uptime_get();
         LOG_INF("[SD_BOOT] Pre-warming LFS allocator (lookahead=%u bytes, %u blocks window)...",
@@ -1256,6 +1231,13 @@ void sd_worker_thread(void)
         int64_t gc_elapsed_ms = k_uptime_get() - gc_start_ms;
         if (gc_res < 0) {
             LOG_WRN("[SD_BOOT] lfs_fs_gc failed: %d (took %lld ms)", gc_res, gc_elapsed_ms);
+            if (gc_res == LFS_ERR_CORRUPT) {
+                LOG_ERR("[SD_BOOT] Hard corruption detected (-84) during GC. Forcing format...");
+                lfs_unmount(&lfs_fs);
+                lfs_format(&lfs_fs, &lfs_cfg);
+                lfs_mount(&lfs_fs, &lfs_cfg);
+                check_or_write_magic();
+            }
         } else {
             LOG_INF("[SD_BOOT] LFS allocator pre-warmed OK in %lld ms", gc_elapsed_ms);
         }
@@ -1270,25 +1252,39 @@ void sd_worker_thread(void)
         res = lfs_file_opencfg(&lfs_fs, &lfs_fil_info, FILE_INFO_PATH, LFS_O_CREAT | LFS_O_RDWR, &lfs_finfo_cfg);
         if (res < 0) {
             LOG_ERR("[SD_WORK] open info failed: %d", res);
-            sd_write_blocked = true;
-        } else if (need_init_off) {
-            memset(&current_offset_info, 0, sizeof(current_offset_info));
-            lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_info, &current_offset_info, sizeof(current_offset_info));
-            if (bw != (lfs_ssize_t) sizeof(current_offset_info)) {
-                LOG_ERR("[SD_WORK] init info write failed: %d", (int) bw);
-            } else {
-                lfs_file_sync(&lfs_fs, &lfs_fil_info);
+            if (res == LFS_ERR_CORRUPT) {
+                LOG_ERR("[SD_BOOT] Hard corruption detected (-84) opening info. Forcing format...");
+                lfs_unmount(&lfs_fs);
+                lfs_format(&lfs_fs, &lfs_cfg);
+                lfs_mount(&lfs_fs, &lfs_cfg);
+                check_or_write_magic();
+                res = lfs_file_opencfg(&lfs_fs, &lfs_fil_info, FILE_INFO_PATH, LFS_O_CREAT | LFS_O_RDWR, &lfs_finfo_cfg);
             }
-        } else {
-            lfs_file_seek(&lfs_fs, &lfs_fil_info, 0, LFS_SEEK_SET);
-            lfs_ssize_t rb = lfs_file_read(&lfs_fs, &lfs_fil_info, &current_offset_info, sizeof(current_offset_info));
-            if (rb != (lfs_ssize_t) sizeof(current_offset_info)) {
-                LOG_ERR("[SD_WORK] read offset info failed: %d", (int) rb);
+            if (res < 0) {
+                sd_write_blocked = true;
+            }
+        }
+        
+        if (res >= 0) {
+            if (need_init_off) {
                 memset(&current_offset_info, 0, sizeof(current_offset_info));
+                lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_info, &current_offset_info, sizeof(current_offset_info));
+                if (bw != (lfs_ssize_t) sizeof(current_offset_info)) {
+                    LOG_ERR("[SD_WORK] init info write failed: %d", (int) bw);
+                } else {
+                    lfs_file_sync(&lfs_fs, &lfs_fil_info);
+                }
             } else {
-                LOG_INF("[SD_WORK] Loaded offset: file=%s off=%u",
-                        current_offset_info.oldest_filename,
-                        current_offset_info.offset_in_file);
+                lfs_file_seek(&lfs_fs, &lfs_fil_info, 0, LFS_SEEK_SET);
+                lfs_ssize_t rb = lfs_file_read(&lfs_fs, &lfs_fil_info, &current_offset_info, sizeof(current_offset_info));
+                if (rb != (lfs_ssize_t) sizeof(current_offset_info)) {
+                    LOG_ERR("[SD_WORK] read offset info failed: %d", (int) rb);
+                    memset(&current_offset_info, 0, sizeof(current_offset_info));
+                } else {
+                    LOG_INF("[SD_WORK] Loaded offset: file=%s off=%u",
+                            current_offset_info.oldest_filename,
+                            current_offset_info.offset_in_file);
+                }
             }
         }
     }
@@ -1299,7 +1295,17 @@ void sd_worker_thread(void)
         res = create_audio_file_with_timestamp();
         if (res < 0) {
             LOG_ERR("[SD_WORK] initial file create failed: %d â€” write blocked", res);
-            sd_write_blocked = true;
+            if (res == LFS_ERR_CORRUPT && !sd_write_blocked) {
+                LOG_ERR("[SD_BOOT] Hard corruption detected (-84) creating file. Forcing format...");
+                lfs_unmount(&lfs_fs);
+                lfs_format(&lfs_fs, &lfs_cfg);
+                lfs_mount(&lfs_fs, &lfs_cfg);
+                check_or_write_magic();
+                res = create_audio_file_with_timestamp();
+            }
+            if (res < 0) {
+                sd_write_blocked = true;
+            }
         }
     }
 
@@ -2349,9 +2355,10 @@ int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t 
         return -ECANCELED;
     }
 
-    /* Fast path: during boot the worker is blocked in lfs_fs_gc().
-     * Return the file list cached during print_audio_files_at_boot() instead. */
-    if (!atomic_get(&sd_boot_ready) && file_cache_valid) {
+    /* Fast path: If the RAM cache is valid, return it immediately.
+     * This prevents the app from timing out if the SD worker is busy
+     * with a long GC scan or mass-rename. */
+    if (file_cache_valid) {
         int n = cached_file_list_count < max_files ? cached_file_list_count : max_files;
         for (int i = 0; i < n; i++) {
             strncpy(filenames[i], cached_file_names[i], MAX_FILENAME_LEN - 1);
@@ -2361,6 +2368,7 @@ int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t 
             }
         }
         *count = n;
+        LOG_INF("File list returned from RAM cache (%d files)", n);
         return 0;
     }
 
@@ -2395,7 +2403,7 @@ int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t 
         return ret;
     }
 
-    if (k_sem_take(&resp.sem, K_MSEC(30000)) != 0) {
+    if (k_sem_take(&resp.sem, K_MSEC(5000)) != 0) {
         LOG_ERR("Timeout waiting for get_file_list");
         atomic_set(&list_sizes_in_flight, 0);
         return -ETIMEDOUT;

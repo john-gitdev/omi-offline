@@ -610,13 +610,13 @@ class WatchRecorderFlutterAPI(private val binaryMessenger: BinaryMessenger, priv
 interface BleHostApi {
   fun startScan(timeoutSeconds: Long, serviceUuids: List<String>)
   fun stopScan()
-  fun connectPeripheral(uuid: String)
+  fun manageDevice(uuid: String, requiresBond: Boolean)
+  fun unmanageDevice(uuid: String)
   fun disconnectPeripheral(uuid: String)
   /**
    * Reconnect a previously-paired peripheral. No active scanning — the platform
    * handles reconnection at the chipset level (iOS: retrievePeripherals, Android: autoConnect).
    */
-  fun reconnectKnownPeripheral(uuid: String)
   fun requestBond(uuid: String, callback: (Result<Boolean>) -> Unit)
   fun readCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, callback: (Result<ByteArray>) -> Unit)
   fun writeCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, data: ByteArray, callback: (Result<Unit>) -> Unit)
@@ -682,13 +682,32 @@ interface BleHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.connectPeripheral$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.manageDevice$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val uuidArg = args[0] as String
+            val requiresBondArg = args[1] as Boolean
+            val wrapped: List<Any?> = try {
+              api.manageDevice(uuidArg, requiresBondArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.unmanageDevice$separatedMessageChannelSuffix", codec)
         if (api != null) {
           channel.setMessageHandler { message, reply ->
             val args = message as List<Any?>
             val uuidArg = args[0] as String
             val wrapped: List<Any?> = try {
-              api.connectPeripheral(uuidArg)
+              api.unmanageDevice(uuidArg)
               listOf(null)
             } catch (exception: Throwable) {
               PigeonCommunicatorPigeonUtils.wrapError(exception)
@@ -707,24 +726,6 @@ interface BleHostApi {
             val uuidArg = args[0] as String
             val wrapped: List<Any?> = try {
               api.disconnectPeripheral(uuidArg)
-              listOf(null)
-            } catch (exception: Throwable) {
-              PigeonCommunicatorPigeonUtils.wrapError(exception)
-            }
-            reply.reply(wrapped)
-          }
-        } else {
-          channel.setMessageHandler(null)
-        }
-      }
-      run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.reconnectKnownPeripheral$separatedMessageChannelSuffix", codec)
-        if (api != null) {
-          channel.setMessageHandler { message, reply ->
-            val args = message as List<Any?>
-            val uuidArg = args[0] as String
-            val wrapped: List<Any?> = try {
-              api.reconnectKnownPeripheral(uuidArg)
               listOf(null)
             } catch (exception: Throwable) {
               PigeonCommunicatorPigeonUtils.wrapError(exception)
@@ -993,6 +994,24 @@ class BleFlutterApi(private val binaryMessenger: BinaryMessenger, private val me
 {
     val separatedMessageChannelSuffix = if (messageChannelSuffix.isNotEmpty()) ".$messageChannelSuffix" else ""
     val channelName = "dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onServicesDiscovered$separatedMessageChannelSuffix"
+    val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
+    channel.send(listOf(peripheralUuidArg, servicesArg)) {
+      if (it is List<*>) {
+        if (it.size > 1) {
+          callback(Result.failure(FlutterError(it[0] as String, it[1] as String, it[2] as String?)))
+        } else {
+          callback(Result.success(Unit))
+        }
+      } else {
+        callback(Result.failure(PigeonCommunicatorPigeonUtils.createConnectionError(channelName)))
+      } 
+    }
+  }
+  /** Fired only after the device is connected, services are discovered, and MTU is negotiated. */
+  fun onDeviceReady(peripheralUuidArg: String, servicesArg: List<BleService>, callback: (Result<Unit>) -> Unit)
+{
+    val separatedMessageChannelSuffix = if (messageChannelSuffix.isNotEmpty()) ".$messageChannelSuffix" else ""
+    val channelName = "dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onDeviceReady$separatedMessageChannelSuffix"
     val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
     channel.send(listOf(peripheralUuidArg, servicesArg)) {
       if (it is List<*>) {

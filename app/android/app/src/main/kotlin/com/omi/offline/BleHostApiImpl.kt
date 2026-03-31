@@ -4,10 +4,9 @@ import android.app.Activity
 import android.util.Log
 
 /**
- * Implements the Pigeon BleHostApi interface, delegating all calls to OmiBleManager.
- * Thin wrapper — same pattern as BleHostApiImpl.swift on iOS.
+ * Implements the Pigeon BleHostApi interface, delegating all calls to OmiBleManager or FgService.
  */
-class BleHostApiImpl(private val getActivity: () -> Activity?) : BleHostApi {
+class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutterApi: BleFlutterApi?) : BleHostApi {
 
     companion object {
         private const val TAG = "OmiBle.HostApi"
@@ -30,16 +29,24 @@ class BleHostApiImpl(private val getActivity: () -> Activity?) : BleHostApi {
         bleManager.stopScan()
     }
 
-    override fun connectPeripheral(uuid: String) {
-        bleManager.connectPeripheral(uuid, caller = "Dart")
+    override fun manageDevice(uuid: String, requiresBond: Boolean) {
+        val activity = getActivity() ?: return
+        OmiBleForegroundService.startService(activity, uuid, requiresBond = requiresBond, caller = "BleHostApi.manageDevice")
+    }
+
+    override fun unmanageDevice(uuid: String) {
+        val activity = getActivity() ?: return
+        val inst = OmiBleForegroundService.instance
+        if (inst != null) {
+            inst.unmanageDevice(uuid)
+        } else {
+            // Fallback if service not running
+            bleManager.closeGatt(uuid)
+        }
     }
 
     override fun disconnectPeripheral(uuid: String) {
-        bleManager.disconnectPeripheral(uuid)
-    }
-
-    override fun reconnectKnownPeripheral(uuid: String) {
-        bleManager.reconnectKnownPeripheral(uuid)
+        bleManager.disconnectGatt(uuid)
     }
 
     override fun requestBond(uuid: String, callback: (Result<Boolean>) -> Unit) {
@@ -100,19 +107,14 @@ class BleHostApiImpl(private val getActivity: () -> Activity?) : BleHostApi {
             }
         }
 
-        // Store callback — will be completed in onActivityResult
         companionAssociationCallback = callback
         cm.associate(deviceAddress = deviceAddress)
     }
 
-    /**
-     * Called from MainActivity.onActivityResult to handle companion chooser result.
-     */
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): String? {
         val address = companionManager?.onActivityResult(requestCode, resultCode, data)
         val cb = companionAssociationCallback
         companionAssociationCallback = null
-
         if (address != null) {
             cb?.invoke(Result.success(address))
         } else {

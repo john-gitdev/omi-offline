@@ -2,101 +2,49 @@ import CoreBluetooth
 import Flutter
 
 /// Native CoreBluetooth manager that handles BLE lifecycle, state restoration,
-/// reconnection, service discovery, and audio batching.
+/// reconnection, and service discovery.
 ///
-/// Replaces flutter_blue_plus on iOS for better battery efficiency and background reliability.
+/// Replaces separate connection/discovery events with a single onDeviceReady signal.
 final class OmiBleManager: NSObject {
     static let shared = OmiBleManager()
-
     static let restoreIdentifier = "com.omi.ble.restore"
-
-    // MARK: - Properties
 
     private var centralManager: CBCentralManager!
     private(set) var flutterApi: BleFlutterApi?
 
-    /// Connected/connecting peripherals keyed by UUID string.
     private var peripherals: [String: CBPeripheral] = [:]
-
-    /// Discovered services per peripheral, keyed by peripheral UUID.
-    private var discoveredServices: [String: [CBService]] = [:]
-
-    /// Pending read completions keyed by "peripheralUuid:serviceUuid:charUuid".
     private var readCompletions: [String: (Result<FlutterStandardTypedData, Error>) -> Void] = [:]
-
-    /// Pending write completions keyed by "peripheralUuid:serviceUuid:charUuid".
     private var writeCompletions: [String: (Result<Void, Error>) -> Void] = [:]
-
-    /// Whether the user explicitly disconnected (suppress auto-reconnect).
     private var manuallyDisconnected: Set<String> = []
 
-    /// Scanning state.
     private var isScanning = false
     private var scanTimer: Timer?
-    /// Queued scan request if Bluetooth wasn't ready when startScan was called.
     private var pendingScan: (timeout: Int, serviceUuids: [String])?
-
-    /// RSSI keep-alive timer — periodic reads prevent connection supervision timeout.
     private var rssiTimer: Timer?
-
-    // MARK: - RSSI Keep-Alive
-
-    private func startRssiKeepAlive(for peripheral: CBPeripheral) {
-        stopRssiKeepAlive()
-        rssiTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self, weak peripheral] _ in
-            guard let peripheral = peripheral, peripheral.state == .connected else {
-                self?.stopRssiKeepAlive()
-                return
-            }
-            peripheral.readRSSI()
-        }
-    }
-
-    private func stopRssiKeepAlive() {
-        rssiTimer?.invalidate()
-        rssiTimer = nil
-    }
-
-    // MARK: - Initialization
 
     private override init() {
         super.init()
-        NSLog("[OmiBle] Initializing OmiBleManager with restore ID: \(OmiBleManager.restoreIdentifier)")
-        centralManager = CBCentralManager(
-            delegate: self,
-            queue: nil,
-            options: [
-                CBCentralManagerOptionRestoreIdentifierKey: OmiBleManager.restoreIdentifier,
-                CBCentralManagerOptionShowPowerAlertKey: true,
-            ]
-        )
-        NSLog("[OmiBle] CBCentralManager created")
+        centralManager = CBCentralManager(delegate: self, queue: nil, options: [
+            CBCentralManagerOptionRestoreIdentifierKey: OmiBleManager.restoreIdentifier,
+            CBCentralManagerOptionShowPowerAlertKey: true,
+        ])
     }
 
     func setFlutterApi(_ api: BleFlutterApi) {
-        flutterApi = api
+        self.flutterApi = api
     }
 
-    // MARK: - Scanning
+    // ── Scanning ──
 
     func startScan(timeout: Int, serviceUuids: [String]) {
-        NSLog("[OmiBle] startScan called, state=\(getBluetoothState()), timeout=\(timeout), serviceUuids=\(serviceUuids)")
-
-        // Queue the scan if Bluetooth isn't ready yet — it will fire once poweredOn
         guard centralManager.state == .poweredOn else {
-            NSLog("[OmiBle] BT not ready, queuing scan")
             pendingScan = (timeout: timeout, serviceUuids: serviceUuids)
             return
         }
-
         pendingScan = nil
         let cbuuids: [CBUUID]? = serviceUuids.isEmpty ? nil : serviceUuids.map { CBUUID(string: $0) }
         isScanning = true
-        NSLog("[OmiBle] Starting BLE scan with services=\(String(describing: cbuuids))")
-        centralManager.scanForPeripherals(withServices: cbuuids, options: [
-            CBCentralManagerScanOptionAllowDuplicatesKey: false,
-        ])
-
+        centralManager.scanForPeripherals(withServices: cbuuids, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
         scanTimer?.invalidate()
         if timeout > 0 {
             scanTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(timeout), repeats: false) { [weak self] _ in
@@ -113,21 +61,23 @@ final class OmiBleManager: NSObject {
         centralManager.stopScan()
     }
 
-    // MARK: - Connection
+    // ── Connection ──
 
     func connectPeripheral(uuid: String) {
         manuallyDisconnected.remove(uuid)
-
         if let peripheral = peripherals[uuid] {
             if peripheral.state == .connected {
-                flutterApi?.onPeripheralConnected(peripheralUuid: uuid) { _ in }
+                // Already connected — ensure services are ready then fire onDeviceReady
+                if peripheral.services != nil && peripheral.services!.allSatisfy({ $0.characteristics != nil }) {
+                    fireReady(peripheral)
+                } else {
+                    peripheral.discoverServices(nil)
+                }
                 return
             }
             centralManager.connect(peripheral, options: nil)
             return
         }
-
-        // Try to retrieve a known peripheral
         guard let cbUuid = UUID(uuidString: uuid) else { return }
         let retrieved = centralManager.retrievePeripherals(withIdentifiers: [cbUuid])
         if let peripheral = retrieved.first {
@@ -143,31 +93,11 @@ final class OmiBleManager: NSObject {
         centralManager.cancelPeripheralConnection(peripheral)
     }
 
-    func disconnectAllPeripherals() {
-        for (uuid, peripheral) in peripherals {
-            manuallyDisconnected.insert(uuid)
-            centralManager.cancelPeripheralConnection(peripheral)
-        }
-    }
-
-    func reconnectKnownPeripheral(uuid: String) {
-        manuallyDisconnected.remove(uuid)
-
-        guard let cbUuid = UUID(uuidString: uuid) else { return }
-        let retrieved = centralManager.retrievePeripherals(withIdentifiers: [cbUuid])
-        if let peripheral = retrieved.first {
-            peripheral.delegate = self
-            peripherals[uuid] = peripheral
-            // iOS handles this at the chipset level — zero CPU/radio cost while waiting.
-            centralManager.connect(peripheral, options: nil)
-        }
-    }
-
     func isPeripheralConnected(uuid: String) -> Bool {
         return peripherals[uuid]?.state == .connected
     }
 
-    // MARK: - Characteristic Operations
+    // ── Characteristic operations ──
 
     func readCharacteristic(
         peripheralUuid: String,
@@ -175,14 +105,12 @@ final class OmiBleManager: NSObject {
         characteristicUuid: String,
         completion: @escaping (Result<FlutterStandardTypedData, Error>) -> Void
     ) {
-        guard let characteristic = findCharacteristic(peripheralUuid: peripheralUuid, serviceUuid: serviceUuid, characteristicUuid: characteristicUuid) else {
+        guard let characteristic = findChar(uuid: peripheralUuid, svc: serviceUuid, char: characteristicUuid) else {
             completion(.failure(PigeonError(code: "NOT_FOUND", message: "Characteristic not found", details: nil)))
             return
         }
-
         let key = "\(peripheralUuid):\(serviceUuid):\(characteristicUuid)".lowercased()
         readCompletions[key] = completion
-
         peripherals[peripheralUuid]?.readValue(for: characteristic)
     }
 
@@ -193,36 +121,30 @@ final class OmiBleManager: NSObject {
         data: FlutterStandardTypedData,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
-        guard let characteristic = findCharacteristic(peripheralUuid: peripheralUuid, serviceUuid: serviceUuid, characteristicUuid: characteristicUuid) else {
+        guard let characteristic = findChar(uuid: peripheralUuid, svc: serviceUuid, char: characteristicUuid) else {
             completion(.failure(PigeonError(code: "NOT_FOUND", message: "Characteristic not found", details: nil)))
             return
         }
-
         let key = "\(peripheralUuid):\(serviceUuid):\(characteristicUuid)".lowercased()
-        let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.write) ? .withResponse : .withoutResponse
-
-        if writeType == .withResponse {
+        let type: CBCharacteristicWriteType = characteristic.properties.contains(.write) ? .withResponse : .withoutResponse
+        if type == .withResponse {
             writeCompletions[key] = completion
         }
-
-        peripherals[peripheralUuid]?.writeValue(data.data, for: characteristic, type: writeType)
-
-        if writeType == .withoutResponse {
+        peripherals[peripheralUuid]?.writeValue(data.data, for: characteristic, type: type)
+        if type == .withoutResponse {
             completion(.success(()))
         }
     }
 
     func subscribeCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String) {
-        guard let characteristic = findCharacteristic(peripheralUuid: peripheralUuid, serviceUuid: serviceUuid, characteristicUuid: characteristicUuid) else { return }
-        peripherals[peripheralUuid]?.setNotifyValue(true, for: characteristic)
+        guard let char = findChar(uuid: peripheralUuid, svc: serviceUuid, char: characteristicUuid) else { return }
+        peripherals[peripheralUuid]?.setNotifyValue(true, for: char)
     }
 
     func unsubscribeCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String) {
-        guard let characteristic = findCharacteristic(peripheralUuid: peripheralUuid, serviceUuid: serviceUuid, characteristicUuid: characteristicUuid) else { return }
-        peripherals[peripheralUuid]?.setNotifyValue(false, for: characteristic)
+        guard let char = findChar(uuid: peripheralUuid, svc: serviceUuid, char: characteristicUuid) else { return }
+        peripherals[peripheralUuid]?.setNotifyValue(false, for: char)
     }
-
-    // MARK: - Bluetooth State
 
     func getBluetoothState() -> String {
         switch centralManager.state {
@@ -231,240 +153,133 @@ final class OmiBleManager: NSObject {
         case .unauthorized: return "unauthorized"
         case .unsupported: return "unsupported"
         case .resetting: return "resetting"
-        case .unknown: return "unknown"
-        @unknown default: return "unknown"
+        default: return "unknown"
         }
     }
 
-    // MARK: - Private Helpers
-
-    private func findCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String) -> CBCharacteristic? {
-        guard let services = discoveredServices[peripheralUuid] else { return nil }
-        let sUuid = CBUUID(string: serviceUuid)
-        let cUuid = CBUUID(string: characteristicUuid)
-
-        guard let service = services.first(where: { $0.uuid == sUuid }) else { return nil }
-        return service.characteristics?.first(where: { $0.uuid == cUuid })
+    private func findChar(uuid: String, svc: String, char: String) -> CBCharacteristic? {
+        guard let peripheral = peripherals[uuid], let services = peripheral.services else { return nil }
+        let sUuid = CBUUID(string: svc), cUuid = CBUUID(string: char)
+        return services.first { $0.uuid == sUuid }?.characteristics?.first { $0.uuid == cUuid }
     }
 
-    private func peripheralUuidString(_ peripheral: CBPeripheral) -> String {
-        return peripheral.identifier.uuidString
+    private func fullUuid(_ uuid: CBUUID) -> String {
+        let s = uuid.uuidString.lowercased()
+        if s.count == 4 { return "0000\(s)-0000-1000-8000-00805f9b34fb" }
+        return s
     }
 
-    /// Normalize a CBUUID to its full 128-bit string representation.
-    /// CoreBluetooth returns "180A" for standard 16-bit UUIDs but Dart sends
-    /// "0000180a-0000-1000-8000-00805f9b34fb". This ensures consistent keys.
-    private func fullUuidString(_ uuid: CBUUID) -> String {
-        if uuid.data.count == 2 {
-            // 16-bit UUID → expand to 128-bit Bluetooth Base UUID
-            let short = uuid.uuidString // e.g. "180A"
-            return "0000\(short)-0000-1000-8000-00805F9B34FB".lowercased()
-        } else if uuid.data.count == 4 {
-            // 32-bit UUID → expand
-            let short = uuid.uuidString
-            return "\(short)-0000-1000-8000-00805F9B34FB".lowercased()
+    private func fireReady(_ peripheral: CBPeripheral) {
+        let uuid = peripheral.identifier.uuidString
+        let services = (peripheral.services ?? []).map { svc in
+            BleService(uuid: fullUuid(svc.uuid), characteristicUuids: (svc.characteristics ?? []).map { fullUuid($0.uuid) })
         }
-        return uuid.uuidString.lowercased()
+        flutterApi?.onDeviceReady(peripheralUuid: uuid, services: services) { _ in }
     }
 
-    // MARK: - Audio Batch Helpers
-
-    private func cleanupPeripheral(_ peripheralUuid: String) {
-        discoveredServices.removeValue(forKey: peripheralUuid)
+    private func startRssiKeepAlive(for peripheral: CBPeripheral) {
         stopRssiKeepAlive()
+        rssiTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self, weak peripheral] _ in
+            guard let p = peripheral, p.state == .connected else {
+                self?.stopRssiKeepAlive()
+                return
+            }
+            p.readRSSI()
+        }
+    }
 
-        // Clean up pending completions
-        let completionKeys = readCompletions.keys.filter { $0.hasPrefix(peripheralUuid.lowercased()) }
-        for key in completionKeys {
-            readCompletions[key]?(.failure(PigeonError(code: "DISCONNECTED", message: "Peripheral disconnected", details: nil)))
-            readCompletions.removeValue(forKey: key)
-        }
-        let writeKeys = writeCompletions.keys.filter { $0.hasPrefix(peripheralUuid.lowercased()) }
-        for key in writeKeys {
-            writeCompletions[key]?(.failure(PigeonError(code: "DISCONNECTED", message: "Peripheral disconnected", details: nil)))
-            writeCompletions.removeValue(forKey: key)
-        }
+    private func stopRssiKeepAlive() {
+        rssiTimer?.invalidate()
+        rssiTimer = nil
+    }
+
+    private func cleanupPeripheral(_ uuid: String) {
+        stopRssiKeepAlive()
+        let prefix = uuid.lowercased()
+        readCompletions.keys.filter { $0.hasPrefix(prefix) }.forEach { readCompletions.removeValue(forKey: $0) }
+        writeCompletions.keys.filter { $0.hasPrefix(prefix) }.forEach { writeCompletions.removeValue(forKey: $0) }
     }
 }
 
-// MARK: - CBCentralManagerDelegate
-
 extension OmiBleManager: CBCentralManagerDelegate {
-
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         let state = getBluetoothState()
-        NSLog("[OmiBle] centralManagerDidUpdateState: \(state), flutterApi=\(flutterApi != nil)")
         flutterApi?.onBluetoothStateChanged(state: state) { _ in }
-
-        // Execute queued scan if Bluetooth just became ready
-        if central.state == .poweredOn, let pending = pendingScan {
-            NSLog("[OmiBle] Executing queued scan (timeout=\(pending.timeout))")
-            startScan(timeout: pending.timeout, serviceUuids: pending.serviceUuids)
+        if central.state == .poweredOn, let p = pendingScan {
+            startScan(timeout: p.timeout, serviceUuids: p.serviceUuids)
         }
     }
 
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
-        // Restore previously connected peripherals after app relaunch
-        if let restoredPeripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
-            var uuids: [String] = []
-            for peripheral in restoredPeripherals {
-                let uuid = peripheralUuidString(peripheral)
-                peripheral.delegate = self
-                peripherals[uuid] = peripheral
-                uuids.append(uuid)
-
-                // Re-establish connection if not already connected
-                if peripheral.state != .connected {
-                    central.connect(peripheral, options: nil)
+        if let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
+            restored.forEach { p in
+                p.delegate = self
+                peripherals[p.identifier.uuidString] = p
+                if p.state != .connected {
+                    central.connect(p, options: nil)
                 }
             }
-            flutterApi?.onStateRestored(peripheralUuids: uuids) { _ in }
+            flutterApi?.onStateRestored(peripheralUuids: restored.map { $0.identifier.uuidString }) { _ in }
         }
     }
 
-    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        let uuid = peripheralUuidString(peripheral)
-        peripheral.delegate = self
-        peripherals[uuid] = peripheral
-
-        let serviceUuids = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID])?.map { $0.uuidString } ?? []
-
-        let blePeripheral = BlePeripheral(
-            uuid: uuid,
-            name: peripheral.name ?? "",
-            rssi: Int64(RSSI.intValue),
-            serviceUuids: serviceUuids
-        )
-
-        flutterApi?.onPeripheralDiscovered(peripheral: blePeripheral) { _ in }
+    func centralManager(_ central: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String: Any], rssi: NSNumber) {
+        peripherals[p.identifier.uuidString] = p
+        p.delegate = self
+        let svcs = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID])?.map { $0.uuidString } ?? []
+        let bleP = BlePeripheral(uuid: p.identifier.uuidString, name: p.name ?? "", rssi: Int64(rssi.intValue), serviceUuids: svcs)
+        flutterApi?.onPeripheralDiscovered(peripheral: bleP) { _ in }
     }
 
-    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        let uuid = peripheralUuidString(peripheral)
-        NSLog("[OmiBle] didConnect: \(peripheral.name ?? "<nil>"), uuid=\(uuid)")
-        peripheral.delegate = self
-        flutterApi?.onPeripheralConnected(peripheralUuid: uuid) { _ in }
-        peripheral.discoverServices(nil)
+    func centralManager(_ central: CBCentralManager, didConnect p: CBPeripheral) {
+        p.delegate = self
+        p.discoverServices(nil)
     }
 
-    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        let uuid = peripheralUuidString(peripheral)
-        NSLog("[OmiBle] didFailToConnect: \(peripheral.name ?? "<nil>"), uuid=\(uuid), error=\(error?.localizedDescription ?? "nil")")
+    func centralManager(_ central: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
+        let uuid = p.identifier.uuidString
         cleanupPeripheral(uuid)
         flutterApi?.onPeripheralDisconnected(peripheralUuid: uuid, error: error?.localizedDescription) { _ in }
     }
 
-    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        let uuid = peripheralUuidString(peripheral)
-        NSLog("[OmiBle] didDisconnect: \(peripheral.name ?? "<nil>"), uuid=\(uuid), error=\(error?.localizedDescription ?? "nil")")
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
+        let uuid = p.identifier.uuidString
         cleanupPeripheral(uuid)
         flutterApi?.onPeripheralDisconnected(peripheralUuid: uuid, error: error?.localizedDescription) { _ in }
-
-        // Auto-reconnect unless manually disconnected
         if !manuallyDisconnected.contains(uuid) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(200)) { [weak self] in
-                guard let self = self else { return }
-                // iOS handles this at the BLE chipset level — zero CPU/radio cost while waiting
-                self.centralManager.connect(peripheral, options: nil)
-            }
+            centralManager.connect(p, options: nil)
         }
     }
 }
 
-// MARK: - CBPeripheralDelegate
-
 extension OmiBleManager: CBPeripheralDelegate {
-
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        let uuid = peripheralUuidString(peripheral)
-
-        guard let services = peripheral.services else { return }
-        discoveredServices[uuid] = services
-
-        // Discover characteristics for all services
-        for service in services {
-            peripheral.discoverCharacteristics(nil, for: service)
-        }
+    func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
+        guard let svcs = p.services else { return }
+        svcs.forEach { p.discoverCharacteristics(nil, for: $0) }
     }
 
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        let uuid = peripheralUuidString(peripheral)
-
-        // Check if all services have had their characteristics discovered
-        guard let services = peripheral.services else { return }
-        let allDiscovered = services.allSatisfy { $0.characteristics != nil }
-
-        if allDiscovered {
-            let bleServices = services.map { svc in
-                BleService(
-                    uuid: self.fullUuidString(svc.uuid),
-                    characteristicUuids: svc.characteristics?.map { self.fullUuidString($0.uuid) } ?? []
-                )
-            }
-            flutterApi?.onServicesDiscovered(peripheralUuid: uuid, services: bleServices) { _ in }
-            startRssiKeepAlive(for: peripheral)
-        }
+    func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor svc: CBService, error: Error?) {
+        guard let svcs = p.services, svcs.allSatisfy({ $0.characteristics != nil }) else { return }
+        fireReady(p)
+        startRssiKeepAlive(for: p)
     }
 
-    func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
-        // Pure keep-alive — value intentionally not used
-    }
-
-    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        let uuid = peripheralUuidString(peripheral)
-        guard let service = characteristic.service else { return }
-
-        let serviceUuid = fullUuidString(service.uuid)
-        let charUuid = fullUuidString(characteristic.uuid)
-        let key = "\(uuid):\(serviceUuid):\(charUuid)".lowercased()
-
-        // Handle pending read completion
-        if let completion = readCompletions[key] {
-            readCompletions.removeValue(forKey: key)
-            if let error = error {
-                completion(.failure(error))
-            } else {
-                let data = characteristic.value ?? Data()
-                completion(.success(FlutterStandardTypedData(bytes: data)))
-            }
+    func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
+        let uuid = p.identifier.uuidString
+        let key = "\(uuid):\(fullUuid(c.service!.uuid)):\(fullUuid(c.uuid))".lowercased()
+        if let comp = readCompletions.removeValue(forKey: key) {
+            if let error = error { comp(.failure(error)) }
+            else { comp(.success(FlutterStandardTypedData(bytes: c.value ?? Data()))) }
             return
         }
-
-        // Handle notification
-        guard let data = characteristic.value, !data.isEmpty else { return }
-
-        let typedData = FlutterStandardTypedData(bytes: data)
-        flutterApi?.onCharacteristicValueUpdated(
-            peripheralUuid: uuid,
-            serviceUuid: serviceUuid,
-            characteristicUuid: charUuid,
-            value: typedData
-        ) { _ in }
+        guard let data = c.value, !data.isEmpty else { return }
+        flutterApi?.onCharacteristicValueUpdated(peripheralUuid: uuid, serviceUuid: fullUuid(c.service!.uuid), characteristicUuid: fullUuid(c.uuid), value: FlutterStandardTypedData(bytes: data)) { _ in }
     }
 
-    func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
-        let uuid = peripheralUuidString(peripheral)
-        guard let service = characteristic.service else { return }
-
-        let key = "\(uuid):\(fullUuidString(service.uuid)):\(fullUuidString(characteristic.uuid))".lowercased()
-
-        if let completion = writeCompletions[key] {
-            writeCompletions.removeValue(forKey: key)
-            if let error = error {
-                completion(.failure(error))
-            } else {
-                completion(.success(()))
-            }
-        }
-    }
-
-    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
-        let uuid = peripheralUuidString(peripheral)
-        let charUuid = fullUuidString(characteristic.uuid)
-        if let error = error {
-            NSLog("[OmiBle] Failed to update notification state for \(charUuid): \(error.localizedDescription)")
-        } else {
-            NSLog("[OmiBle] Notification state updated for \(charUuid): isNotifying=\(characteristic.isNotifying)")
+    func peripheral(_ p: CBPeripheral, didWriteValueFor c: CBCharacteristic, error: Error?) {
+        let key = "\(p.identifier.uuidString):\(fullUuid(c.service!.uuid)):\(fullUuid(c.uuid))".lowercased()
+        if let comp = writeCompletions.removeValue(forKey: key) {
+            if let error = error { comp(.failure(error)) } else { comp(.success(())) }
         }
     }
 }

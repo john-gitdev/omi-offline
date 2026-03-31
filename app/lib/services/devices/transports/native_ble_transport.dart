@@ -6,21 +6,17 @@ import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/utils/logger.dart';
 import 'device_transport.dart';
 
-/// BLE transport backed by native platform APIs via Pigeon.
-/// iOS: CoreBluetooth. Android: BluetoothGatt + CompanionDeviceManager.
 class NativeBleTransport extends DeviceTransport {
   final String _peripheralUuid;
   final BleHostApi _hostApi = BleHostApi();
-  final StreamController<DeviceTransportState> _connectionStateController =
-      StreamController<DeviceTransportState>.broadcast();
 
-  /// Characteristic notification streams, keyed by "serviceUuid:charUuid" (lowercased).
+  final _connectionStateController = StreamController<DeviceTransportState>.broadcast();
   final Map<String, StreamController<List<int>>> _streamControllers = {};
+  final Set<String> _activeSubscriptionKeys = {};
 
   /// Discovered services from native.
   List<BleService> _services = [];
-  Completer<void>? _connectCompleter;
-  Completer<List<BleService>>? _servicesCompleter;
+  Completer<void>? _deviceReadyCompleter;
 
   DeviceTransportState _state = DeviceTransportState.disconnected;
 
@@ -28,7 +24,7 @@ class NativeBleTransport extends DeviceTransport {
     BleBridge.instance.registerPeripheral(
       peripheralUuid: _peripheralUuid,
       onConnectionState: _handleConnectionState,
-      onServicesDiscovered: _handleServicesDiscovered,
+      onDeviceReady: _handleDeviceReady,
       onCharacteristicValue: _handleCharacteristicValue,
     );
   }
@@ -42,37 +38,27 @@ class NativeBleTransport extends DeviceTransport {
   // MARK: - Connection
 
   @override
-  Future<void> connect() async {
+  Future<void> connect({bool requiresBond = false}) async {
     if (_state == DeviceTransportState.connected) return;
 
     _updateState(DeviceTransportState.connecting);
 
     try {
-      _connectCompleter = Completer<void>();
-      // Set services completer early — native may send onServicesDiscovered
-      // together with onPeripheralConnected (when already connected)
-      _servicesCompleter = Completer<List<BleService>>();
-      _hostApi.connectPeripheral(_peripheralUuid);
+      _deviceReadyCompleter = Completer<void>();
+      
+      // Intent-based management: native owns the connection pipeline
+      // (connect -> discovery -> MTU -> Ready)
+      _hostApi.manageDevice(_peripheralUuid, requiresBond);
 
-      await _connectCompleter!.future.timeout(const Duration(seconds: 30));
-      _connectCompleter = null;
-
-      // If services already arrived (from already-connected path), use them
-      if (_servicesCompleter!.isCompleted || _services.isNotEmpty) {
-        if (!_servicesCompleter!.isCompleted) _servicesCompleter!.complete(_services);
-      }
-
-      _services = await _servicesCompleter!.future.timeout(const Duration(seconds: 15));
-      _servicesCompleter = null;
-
-      // Audio batching disabled — backend expects one Opus frame per WebSocket message.
-      // Batching would require backend changes to handle concatenated frames.
+      await _deviceReadyCompleter!.future.timeout(const Duration(seconds: 60));
+      _deviceReadyCompleter = null;
 
       _updateState(DeviceTransportState.connected);
     } catch (e) {
-      Logger.debug('[NativeBleTransport] connect failed: $e');
-      _connectCompleter = null;
-      _servicesCompleter = null;
+      Logger.debug('[NativeBleTransport] connect failed or timed out: $e');
+      _deviceReadyCompleter = null;
+      // We don't call unmanageDevice here because we want native to keep retrying
+      // if it's a transient error. The UI will just show disconnected.
       _updateState(DeviceTransportState.disconnected);
       rethrow;
     }
@@ -96,7 +82,7 @@ class NativeBleTransport extends DeviceTransport {
       }
 
       _closeAllStreams();
-      _hostApi.disconnectPeripheral(_peripheralUuid);
+      _hostApi.unmanageDevice(_peripheralUuid);
       _updateState(DeviceTransportState.disconnected);
     } catch (e) {
       _updateState(DeviceTransportState.disconnected);
@@ -105,148 +91,71 @@ class NativeBleTransport extends DeviceTransport {
   }
 
   @override
-  Future<bool> isConnected() async {
-    try {
-      return _hostApi.isPeripheralConnected(_peripheralUuid);
-    } catch (e) {
-      return false;
-    }
+  Future<void> dispose() async {
+    await disconnect();
+    BleBridge.instance.unregisterPeripheral(_peripheralUuid);
+    await _connectionStateController.close();
   }
+
+  // MARK: - Characteristics
 
   @override
-  Future<bool> ping() async {
+  Future<Uint8List> readCharacteristic(String serviceUuid, String characteristicUuid) async {
     try {
-      return _hostApi.isPeripheralConnected(_peripheralUuid);
+      final value = await _hostApi.readCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid);
+      return value;
     } catch (e) {
-      return false;
-    }
-  }
-
-  @override
-  Future<bool> requestBond() async {
-    try {
-      return await _hostApi.requestBond(_peripheralUuid);
-    } catch (e) {
-      Logger.debug('[NativeBleTransport] Failed to request bond: $e');
-      return false;
-    }
-  }
-
-  // MARK: - Characteristic Streams
-
-  @override
-  Future<Stream<List<int>>> getCharacteristicStream(String serviceUuid, String characteristicUuid) async {
-    final key = '${serviceUuid.toLowerCase()}:${characteristicUuid.toLowerCase()}';
-
-    final existing = _streamControllers[key];
-    if (existing == null || existing.isClosed) {
-      _streamControllers[key] = StreamController<List<int>>.broadcast();
-    }
-
-    // Always (re-)subscribe on the native side.  The CCCD write is idempotent —
-    // writing ENABLE_NOTIFICATION_VALUE when already enabled is a no-op at the
-    // BLE level.  This guards against the previous subscription having been
-    // silently lost (e.g. GATT queue was busy, stale cache, or native reconnect
-    // completed before _resubscribeAfterReconnect ran).
-    _subscribeCharacteristic(serviceUuid, characteristicUuid);
-
-    return _streamControllers[key]!.stream;
-  }
-
-  bool _hasCharacteristic(String serviceUuid, String characteristicUuid) {
-    final svcUuid = serviceUuid.toLowerCase();
-    final charUuid = characteristicUuid.toLowerCase();
-    return _services.any((s) => s.uuid == svcUuid && s.characteristicUuids.contains(charUuid));
-  }
-
-  void _subscribeCharacteristic(String serviceUuid, String characteristicUuid) {
-    if (!_hasCharacteristic(serviceUuid, characteristicUuid)) {
-      Logger.debug('[NativeBleTransport] Characteristic not found, skipping subscribe $serviceUuid:$characteristicUuid');
-      return;
-    }
-    try {
-      _hostApi.subscribeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid);
-    } catch (e) {
-      Logger.debug('[NativeBleTransport] Failed to subscribe $serviceUuid:$characteristicUuid: $e');
-    }
-  }
-
-  @override
-  Future<List<int>> readCharacteristic(String serviceUuid, String characteristicUuid) async {
-    if (!_hasCharacteristic(serviceUuid, characteristicUuid)) {
-      Logger.debug('[NativeBleTransport] Characteristic not found, skipping read $serviceUuid:$characteristicUuid');
-      return [];
-    }
-    try {
-      final data = await _hostApi.readCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid);
-      return data.toList();
-    } catch (e) {
-      Logger.debug('[NativeBleTransport] Failed to read $serviceUuid:$characteristicUuid: $e');
-      return [];
+      Logger.debug('[NativeBleTransport] readCharacteristic failed: $e');
+      rethrow;
     }
   }
 
   @override
   Future<void> writeCharacteristic(String serviceUuid, String characteristicUuid, List<int> data) async {
-    if (!_hasCharacteristic(serviceUuid, characteristicUuid)) {
-      throw Exception('[NativeBleTransport] Characteristic not found: $serviceUuid:$characteristicUuid');
-    }
     try {
       await _hostApi.writeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid, Uint8List.fromList(data));
     } catch (e) {
-      Logger.debug('[NativeBleTransport] Failed to write characteristic: $e');
+      Logger.debug('[NativeBleTransport] writeCharacteristic failed: $e');
       rethrow;
     }
   }
 
-  // MARK: - Dispose
-
   @override
-  Future<void> dispose() async {
-    BleBridge.instance.unregisterPeripheral(_peripheralUuid);
-    _closeAllStreams();
-    await _connectionStateController.close();
+  Stream<List<int>> getCharacteristicStream(String serviceUuid, String characteristicUuid) {
+    final key = '$serviceUuid:$characteristicUuid'.toLowerCase();
+    if (!_streamControllers.containsKey(key)) {
+      _streamControllers[key] = StreamController<List<int>>.broadcast(
+        onListen: () => _subscribeCharacteristic(serviceUuid, characteristicUuid),
+        onCancel: () => _unsubscribeCharacteristic(serviceUuid, characteristicUuid),
+      );
+    }
+    return _streamControllers[key]!.stream;
   }
 
-  // MARK: - Private Helpers
-
-  void _updateState(DeviceTransportState newState) {
-    if (_state != newState) {
-      _state = newState;
-      _connectionStateController.add(_state);
+  void _subscribeCharacteristic(String serviceUuid, String characteristicUuid) {
+    final key = '$serviceUuid:$characteristicUuid'.toLowerCase();
+    _activeSubscriptionKeys.add(key);
+    try {
+      _hostApi.subscribeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid);
+    } catch (e) {
+      Logger.debug('[NativeBleTransport] subscribeCharacteristic failed: $e');
     }
   }
 
-  void _closeAllStreams() {
-    for (final controller in _streamControllers.values) {
-      controller.close();
-    }
-    _streamControllers.clear();
-  }
-
-  void _addToStream(String serviceUuid, String characteristicUuid, List<int> data) {
-    final key = '${serviceUuid.toLowerCase()}:${characteristicUuid.toLowerCase()}';
-    final controller = _streamControllers[key];
-    if (controller != null && !controller.isClosed) {
-      controller.add(data);
+  void _unsubscribeCharacteristic(String serviceUuid, String characteristicUuid) {
+    final key = '$serviceUuid:$characteristicUuid'.toLowerCase();
+    _activeSubscriptionKeys.remove(key);
+    try {
+      _hostApi.unsubscribeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid);
+    } catch (e) {
+      Logger.debug('[NativeBleTransport] unsubscribeCharacteristic failed: $e');
     }
   }
 
-  // MARK: - Native Callbacks
-
-  /// Track which characteristics were subscribed so we can re-subscribe on reconnect.
-  final Set<String> _activeSubscriptionKeys = {};
+  // MARK: - Callbacks
 
   void _handleConnectionState(bool connected, String? error) {
-    if (connected) {
-      // Complete pending connect if waiting
-      if (_connectCompleter != null && !_connectCompleter!.isCompleted) {
-        _connectCompleter!.complete();
-      } else {
-        // Auto-reconnect from native — re-discover services and re-subscribe
-        _resubscribeAfterReconnect();
-      }
-    } else {
+    if (!connected) {
       // Remember active subscriptions — but keep stream controllers open so
       // consumers holding stream references continue to receive data after
       // a native-initiated reconnect.
@@ -256,60 +165,60 @@ class NativeBleTransport extends DeviceTransport {
       _services = []; // Clear so reconnect waits for fresh discovery
       _updateState(DeviceTransportState.disconnected);
 
-      // Fail pending completers
-      if (_connectCompleter != null && !_connectCompleter!.isCompleted) {
-        _connectCompleter!.completeError(error ?? 'Disconnected');
-      }
-      if (_servicesCompleter != null && !_servicesCompleter!.isCompleted) {
-        _servicesCompleter!.completeError(error ?? 'Disconnected');
+      // Fail pending ready completer
+      if (_deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted) {
+        _deviceReadyCompleter!.completeError(error ?? 'Disconnected');
       }
     }
   }
 
-  bool _isResubscribing = false;
-
-  Future<void> _resubscribeAfterReconnect() async {
-    if (_isResubscribing) return;
-    _isResubscribing = true;
-    try {
-      // Wait for native to complete its connect → MTU → discoverServices flow
-      // Native fires onServicesDiscovered automatically, so just wait for it
-      if (_services.isEmpty) {
-        _servicesCompleter = Completer<List<BleService>>();
-        _services = await _servicesCompleter!.future.timeout(const Duration(seconds: 15));
-        _servicesCompleter = null;
-      }
-
-      // Re-subscribe to previously active characteristics using existing controllers.
-      // Controllers were kept open during disconnect so consumers still hold valid
-      // stream references — no need to recreate them.
-      for (final key in _activeSubscriptionKeys) {
-        final parts = key.split(':');
-        if (parts.length == 2) {
-          // Ensure controller exists (create if somehow missing)
-          _streamControllers[key] ??= StreamController<List<int>>.broadcast();
-          _subscribeCharacteristic(parts[0], parts[1]);
-        }
-      }
-
-      _updateState(DeviceTransportState.connected);
-    } catch (e) {
-      Logger.debug('[NativeBleTransport] Failed to re-subscribe after reconnect: $e');
-      _servicesCompleter = null;
-      _updateState(DeviceTransportState.disconnected);
-    } finally {
-      _isResubscribing = false;
-    }
-  }
-
-  void _handleServicesDiscovered(List<BleService> services) {
+  Future<void> _handleDeviceReady(List<BleService> services) async {
     _services = services;
-    if (_servicesCompleter != null && !_servicesCompleter!.isCompleted) {
-      _servicesCompleter!.complete(services);
+
+    // Re-subscribe to previously active characteristics using existing controllers.
+    // Controllers were kept open during disconnect so consumers still hold valid
+    // stream references — no need to recreate them.
+    for (final key in _activeSubscriptionKeys) {
+      final parts = key.split(':');
+      if (parts.length == 2) {
+        // Ensure controller exists (create if somehow missing)
+        _streamControllers[key] ??= StreamController<List<int>>.broadcast();
+        _subscribeCharacteristic(parts[0], parts[1]);
+      }
+    }
+
+    _updateState(DeviceTransportState.connected);
+
+    // Complete pending ready completer if waiting
+    if (_deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted) {
+      _deviceReadyCompleter!.complete();
     }
   }
 
   void _handleCharacteristicValue(String serviceUuid, String characteristicUuid, Uint8List value) {
     _addToStream(serviceUuid, characteristicUuid, value);
+  }
+
+  // MARK: - Helpers
+
+  void _updateState(DeviceTransportState newState) {
+    if (_state == newState) return;
+    _state = newState;
+    _connectionStateController.add(newState);
+  }
+
+  void _addToStream(String serviceUuid, String characteristicUuid, Uint8List value) {
+    final key = '$serviceUuid:$characteristicUuid'.toLowerCase();
+    if (_streamControllers.containsKey(key)) {
+      _streamControllers[key]!.add(value.toList());
+    }
+  }
+
+  void _closeAllStreams() {
+    for (final controller in _streamControllers.values) {
+      controller.close();
+    }
+    _streamControllers.clear();
+    _activeSubscriptionKeys.clear();
   }
 }
