@@ -30,6 +30,7 @@ abstract interface class IDeviceService {
   Stream<DeviceConnectionState> get connectionStateStream;
 
   Future<void> disconnectDevice();
+  Future<void> forgetDevice();
 
   DeviceServiceStatus get status;
   DeviceConnectionState get connectionState;
@@ -238,6 +239,19 @@ class DeviceService implements IDeviceService {
       } catch (_) {
       }
     }
+  }
+
+  @override
+  Future<void> forgetDevice() async {
+    final currentConnection = _connection;
+    _connection = null;
+    if (currentConnection != null) {
+      try {
+        await currentConnection.disconnect().timeout(const Duration(seconds: 5));
+        await currentConnection.transport.dispose();
+      } catch (_) {}
+    }
+    SharedPreferencesUtil().lastConnectedDeviceAddress = '';
   }
 
   void _onStatusChanged(DeviceServiceStatus status) {

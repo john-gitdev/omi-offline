@@ -43,8 +43,11 @@ class OmiDeviceConnection extends DeviceConnection {
   void releaseStorageLock() => _storageMutex.release();
 
   @override
-  Future<void> connect({void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged}) async {
-    await super.connect(onConnectionStateChanged: onConnectionStateChanged);
+  Future<void> connect({
+    void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged,
+    bool requiresBond = false,
+  }) async {
+    await super.connect(onConnectionStateChanged: onConnectionStateChanged, requiresBond: requiresBond);
     await performSyncTime();
   }
 
@@ -454,11 +457,18 @@ class OmiDeviceConnection extends DeviceConnection {
 
           if (packet.isEmpty) return;
 
-          // 🛑 Ignore PACKET_ACK (0x03). ACKs are sent by the firmware for commands
-          // like CMD_STOP or CMD_ROTATE. If an ACK arrives while we are waiting
-          // for a file list, it must be ignored to avoid corrupting the buffer.
           if (packet[0] == 0x03) {
             Logger.debug('performListFiles: Ignoring ACK packet (0x03)');
+            return;
+          }
+
+          if (packet[0] == 0x02) {
+            Logger.debug('performListFiles: Ignoring EOT packet (0x02)');
+            return;
+          }
+
+          if (packet[0] != 0x01) {
+            Logger.debug('performListFiles: Unexpected packet type ${packet[0]}');
             return;
           }
 
@@ -468,52 +478,37 @@ class OmiDeviceConnection extends DeviceConnection {
           _cccdRetryTimer = null;
 
           startOrResetTimeout(); // Reset timeout FIRST
-          buffer.addAll(packet);
+          
+          // Standardized List Protocol: Skip 0x01 header, add payload to buffer
+          buffer.addAll(packet.sublist(1));
           Logger.debug('performListFiles: RX packet len=${packet.length}');
 
           if (buffer.isEmpty) return;
 
-          final count = buffer[0];
-          if (count == 0xFF) {
-            // 0xFF means the firmware SD worker is temporarily busy (e.g. boot GC
-            // or LFS allocator scan).  Retry a few times with a short delay before
-            // giving up so the caller gets a real file list once the worker is free.
-            final errorCode = buffer.length > 1 ? buffer[1] : 0;
-            if (retryCount < maxRetries) {
-              retryCount++;
-              buffer.clear();
-              Logger.debug('performListFiles: SD busy (0xFF), error code = -$errorCode, retry $retryCount/$maxRetries in 5s');
-              Future.delayed(const Duration(seconds: 5), () async {
-                if (isStale() || currentCompleter.isCompleted) return;
-                try {
-                  await transport.writeCharacteristic(
-                      storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
-                  startOrResetTimeout();
-                } catch (e) {
-                  fail('Retry write failed: $e');
-                }
-              });
-              return;
-            }
-            fail("Device returned error 0xFF (code -$errorCode)");
-            return;
-          }
-          if (count > 200) {
+          // Standardized: first 4 bytes are total count (Little-Endian uint32)
+          if (buffer.length < 4) return;
+
+          final byteData = ByteData.sublistView(Uint8List.fromList(buffer));
+          final count = byteData.getUint32(0, Endian.little);
+
+          if (count > 1000) {
             fail("Invalid file count: $count");
             return;
           }
 
-          final expectedLen = 1 + count * 8;
+          // Header (4) + Entries (count * 8)
+          final expectedLen = 4 + count * 8;
           Logger.debug('performListFiles: Buffer len=${buffer.length} / expected=$expectedLen');
 
           if (buffer.length >= expectedLen) {
             final data = buffer.sublist(0, expectedLen);
+            final entriesByteData = ByteData.sublistView(Uint8List.fromList(data));
 
             final files = <StorageFile>[];
             for (int i = 0; i < count; i++) {
-              final base = 1 + i * 8;
-              final ts = data[base] | (data[base + 1] << 8) | (data[base + 2] << 16) | (data[base + 3] << 24);
-              final sz = data[base + 4] | (data[base + 5] << 8) | (data[base + 6] << 16) | (data[base + 7] << 24);
+              final base = 4 + i * 8;
+              final ts = entriesByteData.getUint32(base, Endian.little);
+              final sz = entriesByteData.getUint32(base + 4, Endian.little);
               files.add(StorageFile(index: i, timestamp: ts, size: sz));
             }
 

@@ -631,13 +631,15 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     Logger.debug("provider > device connection state changed...$deviceId...$state...${connectedDevice?.id}");
     switch (state) {
       case DeviceConnectionState.connected:
+        updateConnectingStatus(false);
         _disconnectDebouncer.cancel();
         _connectDebouncer.run(() => _handleDeviceConnected(deviceId));
         break;
       case DeviceConnectionState.connecting:
-        // Connection in progress — don't trigger connect or disconnect handlers.
+        updateConnectingStatus(true);
         break;
       case DeviceConnectionState.disconnected:
+        updateConnectingStatus(false);
         _connectDebouncer.cancel();
         if (deviceId == connectedDevice?.id || deviceId == pairedDevice?.id) {
           _disconnectDebouncer.run(onDeviceDisconnected);

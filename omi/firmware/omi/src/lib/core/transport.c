@@ -92,7 +92,7 @@ static ssize_t
 features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf, uint16_t len, uint16_t offset);
 
 // Forward declarations for update functions and callbacks
-/* static void update_phy(struct bt_conn *conn); */
+static void update_phy(struct bt_conn *conn);
 static void update_data_length(struct bt_conn *conn);
 static void update_mtu(struct bt_conn *conn);
 static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_exchange_params *params);
@@ -598,7 +598,15 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
             supervision_timeout);
     LOG_INF("Initial MTU: %u", mtu);
 
-    // PHY update is handled automatically by CONFIG_BT_AUTO_PHY_UPDATE — no manual call needed.
+    // Request aggressive connection params for higher BLE sync throughput.
+    update_conn_params(current_connection);
+
+    // Delay a bit before PHY request to avoid early HCI race on some phones.
+    k_sleep(K_MSEC(300));
+
+    // Initiate PHY, Data Length, and MTU updates
+    update_phy(current_connection);
+
     // Add a delay before data length and MTU updates as per Nordic example
     k_sleep(K_MSEC(1000));
     update_data_length(current_connection);
@@ -606,8 +614,6 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
 
     mtu_recheck_attempts = 0;
     k_work_schedule(&mtu_recheck_work, K_MSEC(MTU_RECHECK_DELAY_MS));
-
-    update_conn_params(current_connection);
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     sd_notify_ble_state(true);
@@ -755,6 +761,22 @@ static void mtu_recheck_work_handler(struct k_work *work)
         k_work_reschedule((struct k_work_delayable *)work, K_MSEC(MTU_RECHECK_DELAY_MS));
     } else {
         LOG_INF("MTU recheck done: MTU=%u after %u attempts", mtu, mtu_recheck_attempts);
+    }
+}
+
+static void update_phy(struct bt_conn *conn)
+{
+    int err;
+    const struct bt_conn_le_phy_param preferred_phy = {
+        .options = BT_CONN_LE_PHY_OPT_NONE,
+        .pref_rx_phy = BT_GAP_LE_PHY_2M,
+        .pref_tx_phy = BT_GAP_LE_PHY_2M,
+    };
+    err = bt_conn_le_phy_update(conn, &preferred_phy);
+    if (err) {
+        LOG_WRN("PHY update request failed (err %d). Device will use default (1M).", err);
+    } else {
+        LOG_INF("PHY update requested (2M preferred)");
     }
 }
 
