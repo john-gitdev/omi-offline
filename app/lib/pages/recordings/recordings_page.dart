@@ -262,15 +262,18 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     if (!mounted) return;
     setState(() {
       _syncSpeed = speedKBps ?? 0.0;
-      // If _totalCount was 0 at pipeline start (WAL list wasn't populated yet),
-      // backfill it from estimatedTotalSegments now that syncAll has refreshed _wals.
-      if (_totalCount == 0) {
-        _totalCount = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
+      // If _totalCount is 0 or mismatched (WAL list wasn't populated yet),
+      // refresh it from estimatedTotalSegments now that syncAll/listFiles has progressed.
+      final currentEstimated = ServiceManager.instance().wal.getSyncs().recordingsCount;
+      if (_totalCount <= 0 && currentEstimated > 0) {
+        _totalCount = currentEstimated;
+        Logger.debug('RecordingsPage: Backfilled totalCount from service: $_totalCount');
       }
+      
       if (_totalCount > 0) {
         _syncedCount = (percentage * _totalCount).round().clamp(0, _totalCount);
       } else {
-        _syncedCount++;
+        _syncedCount = 0;
       }
     });
   }
@@ -427,6 +430,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _isUserTriggered = true;
     _lastActiveStage = 'syncing';
     _transitionTo(SyncProcessState.syncing);
+
+    // Give background setup (listFiles) a few seconds to complete if we just connected
+    await Future.delayed(const Duration(seconds: 3));
 
     final syncs = ServiceManager.instance().wal.getSyncs();
     final estimatedTotal = syncs.estimatedTotalSegments;

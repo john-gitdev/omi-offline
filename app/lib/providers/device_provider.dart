@@ -28,7 +28,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   bool _hasLowBatteryAlerted = false;
   Timer? _reconnectionTimer;
   DateTime? _reconnectAt;
-  final int _connectionCheckSeconds = 15; // 10s periods, 5s for each scan
+  final int _connectionCheckSeconds = 30; // Scan every 30s instead of 15s
 
   Timer? _backgroundSyncTimer;
   static const int _backgroundSyncMinutes = 30;
@@ -49,9 +49,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     final saved = SharedPreferencesUtil().lastBatteryLevel;
     if (saved >= 0) batteryLevel = saved;
     ServiceManager.instance().device.subscribe(this, this);
-    if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
-      Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true));
-    }
+    // Remove the immediate periodicConnect on launch — wait for the page to trigger it or for
+    // the system state to settle.
     _startBackgroundSyncTimer();
   }
 
@@ -385,18 +384,28 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   void _onDeviceConnected(BtDevice device) async {
     await setConnectedDevice(device);
     setIsConnected(true);
+    updateConnectingStatus(false);
+    notifyListeners();
+
+    // Perform remaining setup in background to avoid blocking the "Connected" state show
+    unawaited(_finishDeviceSetup(device));
+  }
+
+  Future<void> _finishDeviceSetup(BtDevice device) async {
+    if (_disposed || connectedDevice?.id != device.id) return;
+
     await initiateBleBatteryListener();
     await updateBatteryLevel();
     await updateChargingState();
     await initiateBleButtonListener();
-    updateConnectingStatus(false);
 
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
 
     if (_disposed || connectedDevice?.id != device.id) return;
     var connection = await ServiceManager.instance().device.ensureConnection(device.id);
-    if (_disposed || connectedDevice?.id != device.id) return;
-    final files = await connection?.listFiles() ?? [];
+    if (connection == null || _disposed || connectedDevice?.id != device.id) return;
+
+    final files = await connection.listFiles();
     if (_disposed || connectedDevice?.id != device.id) return;
     isDeviceStorageSupport = files.isNotEmpty;
 
@@ -409,13 +418,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     }
     notifyListeners();
 
-    if (_disposed || connectedDevice?.id != device.id) return;
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: files);
 
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
 
-    _doBackgroundSync(); // fire-and-forget
+    _doBackgroundSync();
     notifyListeners();
     onDeviceConnected?.call(device);
   }

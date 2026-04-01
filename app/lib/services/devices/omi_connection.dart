@@ -289,24 +289,56 @@ class OmiDeviceConnection extends DeviceConnection {
 
     try {
       final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      int? expectedTotalBytes;
+
       _listFilesSub = stream.listen((packet) {
         if (isStale() || packet.isEmpty) return;
-        if (packet[0] == 0x03 || packet[0] == 0x02) return;
-        if (packet[0] != 0x01) { fail("Unexpected packet type"); return; }
-        _cccdRetryTimer?.cancel(); _cccdRetryTimer = null;
-        _timeoutTimer?.cancel();
-        _timeoutTimer = Timer(const Duration(seconds: 120), () => fail("Timeout"));
+
+        // PACKET_ACK (0x03) with result 0 means success but potentially empty data
+        if (packet[0] == 0x03) {
+          if (buffer.isEmpty) success([]); // ACK received before any data = empty list
+          return;
+        }
+
+        if (packet[0] == 0x02) return; // Ignore EOT for list files (usually not sent)
+
+        // For every packet, we expect the PACKET_DATA (0x01) header
+        if (packet[0] != 0x01) {
+          fail("Unexpected packet type: 0x${packet[0].toRadixString(16)}");
+          return;
+        }
+
+        // Add the payload (skipping 0x01 header) to our accumulation buffer
         buffer.addAll(packet.sublist(1));
-        if (buffer.length < 4) return;
-        final count = ByteData.sublistView(Uint8List.fromList(buffer)).getUint32(0, Endian.little);
-        if (count > 1000) { fail("Invalid count"); return; }
-        final expected = 4 + count * 8;
-        if (buffer.length >= expected) {
-          final files = <StorageFile>[];
-          final bd = ByteData.sublistView(Uint8List.fromList(buffer.sublist(0, expected)));
-          for (int i = 0; i < count; i++) {
-            files.add(StorageFile(index: i, timestamp: bd.getUint32(4 + i * 8, Endian.little), size: bd.getUint32(8 + i * 8, Endian.little)));
+
+        // Once we have the first 4 bytes of data, we know the total count
+        if (expectedTotalBytes == null && buffer.length >= 4) {
+          final count = ByteData.sublistView(Uint8List.fromList(buffer)).getUint32(0, Endian.little);
+          if (count == 0) {
+            success([]);
+            return;
           }
+          if (count > 2000) {
+            fail("Invalid file count: $count");
+            return;
+          }
+          expectedTotalBytes = 4 + (count * 8);
+          Logger.debug('OmiDeviceConnection: Expecting $count files ($expectedTotalBytes bytes total)');
+        }
+
+        // Keep accumulating until we reach the expected size
+        if (expectedTotalBytes != null && buffer.length >= expectedTotalBytes!) {
+          final count = ByteData.sublistView(Uint8List.fromList(buffer)).getUint32(0, Endian.little);
+          final files = <StorageFile>[];
+          final bd = ByteData.sublistView(Uint8List.fromList(buffer.sublist(0, expectedTotalBytes!)));
+          for (int i = 0; i < count; i++) {
+            files.add(StorageFile(
+              index: i,
+              timestamp: bd.getUint32(4 + i * 8, Endian.little),
+              size: bd.getUint32(8 + i * 8, Endian.little),
+            ));
+          }
+          Logger.debug('OmiDeviceConnection: Successfully parsed all $count files');
           success(files);
         }
       });

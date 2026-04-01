@@ -34,8 +34,8 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define SD_REQ_QUEUE_MSGS 100
 #define SD_PRIO_QUEUE_MSGS 10
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
-#define WRITE_BATCH_COUNT 200
-#define WRITE_DRAIN_BURST 16
+#define WRITE_BATCH_COUNT 100
+#define WRITE_DRAIN_BURST 32
 #define ERROR_THRESHOLD 5
 #define FILE_CACHE_TTL_MS (30 * 1000)
 
@@ -60,15 +60,15 @@ static lfs_file_t lfs_fil_data;
 static lfs_file_t lfs_fil_info;
 
 /* Static buffers for lfs_file_opencfg (avoids heap allocation)
- * Size must match cache_size (LFS_CACHE_SIZE = 4096). */
-static uint8_t lfs_fdata_buf[4096];
-static uint8_t lfs_finfo_buf[4096];
+ * Size must match cache_size (LFS_CACHE_SIZE = 8192). */
+static uint8_t lfs_fdata_buf[8192];
+static uint8_t lfs_finfo_buf[8192];
 static struct lfs_file_config lfs_fdata_cfg = {.buffer = lfs_fdata_buf};
 static struct lfs_file_config lfs_finfo_cfg = {.buffer = lfs_finfo_buf};
 
-/* LFS I/O buffers — sized to cache_size (4096) for multi-sector I/O */
-static uint8_t lfs_read_buf[4096];
-static uint8_t lfs_prog_buf[4096];
+/* LFS I/O buffers — sized to cache_size (8192) for multi-sector I/O */
+static uint8_t lfs_read_buf[8192];
+static uint8_t lfs_prog_buf[8192];
 /* Lookahead buffer sizing:
  * 128 bytes = 1024 blocks = 4 MB window → too small for 512 MB SD (128K blocks).
  * Every time the window is exhausted, LFS triggers a FULL filesystem traversal
@@ -91,9 +91,9 @@ static uint8_t _lfs_io_tmp[512];
  * With 512-byte blocks, a 512 MB SD has 1M blocks and LFS metadata overhead
  * is enormous (CTZ skip-lists, lookahead scans).  4096-byte blocks reduce
  * the block count to ~128K and cut metadata overhead by ~8x. */
-#define LFS_BLOCK_SIZE 4096
+#define LFS_BLOCK_SIZE 8192
 #define LFS_CACHE_SIZE LFS_BLOCK_SIZE                         /* cache = 1 full block for multi-sector I/O */
-#define SECTORS_PER_BLOCK (LFS_BLOCK_SIZE / DISK_SECTOR_SIZE) /* 8 */
+#define SECTORS_PER_BLOCK (LFS_BLOCK_SIZE / DISK_SECTOR_SIZE) /* 16 */
 /* LittleFS disk_access callbacks                                      */
 /* ------------------------------------------------------------------ */
 
@@ -286,7 +286,7 @@ K_MSGQ_DEFINE(sd_prio_msgq, sizeof(sd_req_t), SD_PRIO_QUEUE_MSGS, 4);
  * block reads (≈50 SPI transactions), making each read 100–300 ms.
  * Keeping the handle open reduces this to a simple sequential read (~5 ms). */
 static lfs_file_t lfs_read_handle;
-static uint8_t lfs_read_handle_buf[4096];
+static uint8_t lfs_read_handle_buf[8192];
 static struct lfs_file_config lfs_read_handle_cfg = {.buffer = lfs_read_handle_buf};
 static char read_handle_filename[MAX_FILENAME_LEN] = {0};
 static bool read_handle_open = false;
