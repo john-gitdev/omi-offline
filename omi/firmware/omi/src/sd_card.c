@@ -1671,6 +1671,12 @@ uint32_t sd_get_boot_dropped_frames(void)
     return (uint32_t)atomic_get(&boot_dropped_frames);
 }
 
+void sd_request_wipe(void)
+{
+    atomic_set(&proactive_wipe_requested, 1);
+    LOG_INF("[SD] Proactive wipe flag set for next boot");
+}
+
 int app_sd_init(void)
 {
     sd_shutdown_in_progress = false;
