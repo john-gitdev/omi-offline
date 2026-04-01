@@ -248,6 +248,7 @@ class NativeBleTransport extends DeviceTransport {
   }
 
   void _handleDeviceReady(List<BleService> services) {
+    _services = services;
     if (_deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted) {
       // Initial connection
       _deviceReadyCompleter!.complete(services);
@@ -255,6 +256,7 @@ class NativeBleTransport extends DeviceTransport {
       // Auto-reconnect from native — re-subscribe to characteristics
       _resubscribeAfterReconnect(services);
     }
+    _updateState(DeviceTransportState.connected);
   }
 
   bool _isResubscribing = false;

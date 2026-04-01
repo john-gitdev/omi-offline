@@ -14,6 +14,10 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
 
     private val bleManager get() = OmiBleManager.instance
 
+    init {
+        bleManager.flutterApi = flutterApi
+    }
+
     private var companionManager: OmiCompanionManager? = null
     private var companionAssociationCallback: ((Result<String>) -> Unit)? = null
 
