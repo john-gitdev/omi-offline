@@ -1,9 +1,19 @@
 import 'dart:async';
 import 'package:omi/services/devices/device_connection.dart';
+import 'package:omi/services/devices/discovery/device_locator.dart';
+export 'package:omi/services/devices/discovery/device_locator.dart';
 import 'package:omi/utils/logger.dart';
 
 enum DeviceType {
   omi,
+  appleWatch,
+  plaud,
+  bee,
+  fieldy,
+  friendPendant,
+  limitless,
+  frame,
+  openglass,
 }
 
 enum ImageOrientation {
@@ -113,6 +123,8 @@ class BtDevice {
   final String name;
   final int rssi;
   final DeviceType type;
+  // Protocol-agnostic discovery locator for post-discovery connection
+  final DeviceLocator? locator;
   final String? modelNumber;
   final String? firmwareRevision;
   final String? hardwareRevision;
@@ -124,6 +136,7 @@ class BtDevice {
     required this.name,
     required this.type,
     required this.rssi,
+    this.locator,
     this.modelNumber,
     this.firmwareRevision,
     this.hardwareRevision,
@@ -139,6 +152,7 @@ class BtDevice {
       name: json['name'],
       rssi: json['rssi'] ?? 0,
       type: DeviceType.omi,
+      locator: json['locator'] != null ? DeviceLocator.fromJson(json['locator']) : null,
       modelNumber: json['modelNumber'],
       firmwareRevision: json['firmwareRevision'],
       hardwareRevision: json['hardwareRevision'],
@@ -152,7 +166,8 @@ class BtDevice {
       'id': id,
       'name': name,
       'rssi': rssi,
-      'type': type.toString(),
+      'type': type.index,
+      'locator': locator?.toJson(),
       'modelNumber': modelNumber,
       'firmwareRevision': firmwareRevision,
       'hardwareRevision': hardwareRevision,
@@ -166,6 +181,7 @@ class BtDevice {
     String? name,
     int? rssi,
     DeviceType? type,
+    DeviceLocator? locator,
     String? modelNumber,
     String? firmwareRevision,
     String? hardwareRevision,
@@ -177,6 +193,7 @@ class BtDevice {
       name: name ?? this.name,
       rssi: rssi ?? this.rssi,
       type: type ?? this.type,
+      locator: locator ?? this.locator,
       modelNumber: modelNumber ?? this.modelNumber,
       firmwareRevision: firmwareRevision ?? this.firmwareRevision,
       hardwareRevision: hardwareRevision ?? this.hardwareRevision,

@@ -1,3 +1,4 @@
+import 'package:omi/gen/pigeon_communicator.g.dart';
 import "package:omi/widgets/dialog.dart";
 import 'dart:async';
 
@@ -618,8 +619,15 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               onTap: () async {
                 await SharedPreferencesUtil().btDeviceSet(BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0));
                 SharedPreferencesUtil().deviceName = '';
-                // Use forgetDevice() to explicitly clear associations and unmanage the device
-                await ServiceManager.instance().device.forgetDevice();
+                final pairedDeviceId = provider.pairedDevice!.id;
+                // Use forgetDevice() to explicitly clear associations
+                await ServiceManager.instance().device.forgetDevice(pairedDeviceId);
+                
+                // Explicitly tell native to stop managing this device (PR 6200 alignment)
+                if (provider.pairedDevice != null) {
+                  final BleHostApi hostApi = BleHostApi();
+                  await hostApi.unmanageDevice(provider.pairedDevice!.id);
+                }
                 
                 // Cancel any in-progress sync immediately.
                 final walSync = ServiceManager.instance().wal.getSyncs();
