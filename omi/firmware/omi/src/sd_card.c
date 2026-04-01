@@ -12,6 +12,7 @@
  *   - SD card has internal wear leveling â†’ block_cycles = -1
  */
 #include "lib/core/sd_card.h"
+#include "lib/core/transport.h"
 
 #include <ctype.h>
 #include <lfs.h>
@@ -34,7 +35,6 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define SD_REQ_QUEUE_MSGS 100
 #define SD_PRIO_QUEUE_MSGS 10
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
-#define WRITE_BATCH_COUNT 100
 #define WRITE_DRAIN_BURST 32
 #define ERROR_THRESHOLD 5
 #define FILE_CACHE_TTL_MS (30 * 1000)
@@ -208,12 +208,9 @@ static struct lfs_config lfs_cfg = {
 };
 
 /* ------------------------------------------------------------------ */
-/* Batch write buffer & general state                                  */
+/* General state                                                      */
 /* ------------------------------------------------------------------ */
 
-static uint8_t write_batch_buffer[WRITE_BATCH_COUNT * MAX_WRITE_SIZE];
-static size_t write_batch_offset = 0;
-static int write_batch_counter = 0;
 static uint8_t writing_error_counter = 0;
 static bool sd_write_blocked = false;
 static int64_t last_write_blocked_log_ms = 0;
@@ -239,6 +236,7 @@ static atomic_t pending_flush_on_ble_connect;
 static atomic_t pending_rotate_on_ble_connect;
 static atomic_t pending_time_synced;
 static atomic_t pending_time_synced_utc;
+static atomic_t proactive_wipe_requested;
 
 static bool is_mounted = false;
 static bool sd_enabled = false;
@@ -302,7 +300,6 @@ static uint32_t read_handle_gen = 0;
 void sd_worker_thread(void);
 static void process_write_data_req(const sd_req_t *req);
 static int create_audio_file_with_timestamp(void);
-static int flush_batch_buffer(void);
 static bool should_rotate_file(void);
 static void build_file_path(const char *filename, char *path, size_t path_size);
 static void invalidate_file_cache(void);
@@ -356,36 +353,40 @@ static void process_write_data_req(const sd_req_t *req)
 
     if (should_rotate_file()) {
         LOG_INF("[SD_WORK] Rotating file after %d min", (int)(FILE_ROTATION_INTERVAL_MS / 60000));
-        flush_batch_buffer();
-        create_audio_file_with_timestamp();
-    }
-
-    if (write_batch_offset + req->u.write.len > sizeof(write_batch_buffer)) {
-        flush_batch_buffer();
-        if (write_batch_offset + req->u.write.len > sizeof(write_batch_buffer)) {
-            LOG_ERR("[SD_WORK] batch buffer overflow guard len=%u off=%u",
-                    (unsigned) req->u.write.len,
-                    (unsigned) write_batch_offset);
+        int res = create_audio_file_with_timestamp();
+        if (res < 0) {
+            sd_write_blocked = true;
             return;
         }
     }
 
-    memcpy(write_batch_buffer + write_batch_offset, req->u.write.buf, req->u.write.len);
-    write_batch_offset += req->u.write.len;
-    write_batch_counter++;
+    lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_data, req->u.write.buf, req->u.write.len);
+    if (bw < 0 || (size_t)bw != req->u.write.len) {
+        writing_error_counter++;
+        LOG_ERR("write error bw=%d wanted=%u", (int)bw, (unsigned)req->u.write.len);
 
-    int queued_writes = k_msgq_num_used_get(&sd_msgq);
-    bool queue_pressure_high = queued_writes >= (SD_REQ_QUEUE_MSGS / 3);
-
-    if (write_batch_counter >= WRITE_BATCH_COUNT || queue_pressure_high) {
-        flush_batch_buffer();
+        if (writing_error_counter > ERROR_THRESHOLD) {
+            sd_write_blocked = true;
+            LOG_ERR("Too many write errors, blocking write queue");
+        }
+        return;
     }
+
+    writing_error_counter = 0;
+    current_file_size += (uint32_t)bw;
+    bytes_since_sync += (size_t)bw;
+    update_current_file_cache_size((uint32_t)bw);
 
     bool sync_due_to_interval =
         (bytes_since_sync > 0) && ((k_uptime_get() - last_file_sync_uptime_ms) >= SD_FSYNC_INTERVAL_MS);
 
     if (sync_due_to_interval) {
-        lfs_file_sync(&lfs_fs, &lfs_fil_data);
+        int err = lfs_file_sync(&lfs_fs, &lfs_fil_data);
+        if (err < 0) {
+            LOG_ERR("sync error err=%d", err);
+            sd_write_blocked = true;
+            return;
+        }
         data_sync_gen++;
         bytes_since_sync = 0;
         last_file_sync_uptime_ms = k_uptime_get();
@@ -607,9 +608,6 @@ static int sd_mount(void)
 
 static int sd_unmount(void)
 {
-    if (write_batch_offset > 0) {
-        flush_batch_buffer();
-    }
     close_read_handle();
     lfs_close_files();
     if (is_mounted) {
@@ -719,8 +717,7 @@ static int _open_file_for_continuation(const char *filename, bool needs_rename)
 
     current_file_size = (uint32_t) lfs_file_size(&lfs_fs, &lfs_fil_data);
     bytes_since_sync = 0;
-    write_batch_offset = 0;
-    write_batch_counter = 0;
+
     last_file_sync_uptime_ms = k_uptime_get();
     current_file_created_uptime_ms = k_uptime_get();
     current_file_needs_rename = needs_rename;
@@ -787,8 +784,6 @@ static int create_audio_file_with_timestamp(void)
 
     /* Close current file if open */
     if (current_filename[0] != '\0') {
-        if (write_batch_offset > 0)
-            flush_batch_buffer();
         lfs_file_close(&lfs_fs, &lfs_fil_data);
         k_mutex_lock(&current_filename_lock, K_FOREVER);
         current_filename[0] = '\0';
@@ -810,9 +805,8 @@ static int create_audio_file_with_timestamp(void)
         snprintf(current_filename, sizeof(current_filename), "%08X.txt", timestamp);
         current_file_needs_rename = false;
     } else {
-        uint32_t boot_tag = (uint32_t) k_uptime_get_32();
-        uint32_t cycle_tag = (uint32_t) k_cycle_get_32();
-        snprintf(current_filename, sizeof(current_filename), "TMP_%08X_%04X.txt", boot_tag, cycle_tag & 0xFFFFU);
+        uint32_t boot_uptime = (uint32_t) k_uptime_get_32();
+        snprintf(current_filename, sizeof(current_filename), "TMP_%08X_%08X.txt", boot_uptime, device_session_id);
         current_file_needs_rename = true;
     }
     build_file_path(current_filename, current_file_path, sizeof(current_file_path));
@@ -835,8 +829,7 @@ static int create_audio_file_with_timestamp(void)
 
     current_file_size = 0;
     bytes_since_sync = 0;
-    write_batch_offset = 0;
-    write_batch_counter = 0;
+
     writing_error_counter = 0;
     sd_write_blocked = false;
     last_file_sync_uptime_ms = k_uptime_get();
@@ -847,51 +840,6 @@ static int create_audio_file_with_timestamp(void)
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Batch buffer flush                                                  */
-/* ------------------------------------------------------------------ */
-
-static int flush_batch_buffer(void)
-{
-    if (write_batch_offset == 0)
-        return 0;
-
-    if (sd_write_blocked) {
-        write_batch_offset = 0;
-        write_batch_counter = 0;
-        return -EIO;
-    }
-
-    int64_t flush_start_ms = k_uptime_get();
-    lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_data, write_batch_buffer, write_batch_offset);
-    int64_t flush_cost_ms = k_uptime_get() - flush_start_ms;
-    if (flush_cost_ms > 2000) {
-        LOG_WRN("[SD_PERF] flush_batch_buffer took %lld ms (wrote %u bytes, batch=%d)",
-                flush_cost_ms,
-                (unsigned) write_batch_offset,
-                write_batch_counter);
-    }
-    if (bw < 0 || (size_t) bw != write_batch_offset) {
-        writing_error_counter++;
-        LOG_ERR("batch write error bw=%d wanted=%u", (int) bw, (unsigned) write_batch_offset);
-
-        if (writing_error_counter > ERROR_THRESHOLD) {
-            sd_write_blocked = true;
-            LOG_ERR("Too many write errors, blocking write queue");
-        }
-        write_batch_offset = 0;
-        write_batch_counter = 0;
-        return -EIO;
-    }
-
-    bytes_since_sync += (size_t) bw;
-    current_file_size += (uint32_t) bw;
-    update_current_file_cache_size((uint32_t) bw);
-    write_batch_offset = 0;
-    write_batch_counter = 0;
-    writing_error_counter = 0;
-    return 0;
-}
 
 /* ------------------------------------------------------------------ */
 /* File rotation helper                                                */
@@ -1208,6 +1156,16 @@ void sd_worker_thread(void)
         return;
     }
 
+    /* ---- Handle proactive wipe request (e.g. firmware update) ---- */
+    if (atomic_cas(&proactive_wipe_requested, 1, 0)) {
+        LOG_INF("[SD_WORK] Executing early reformat requested by main...");
+        lfs_unmount(&lfs_fs);
+        lfs_format(&lfs_fs, &lfs_cfg);
+        lfs_mount(&lfs_fs, &lfs_cfg);
+        check_or_write_magic();
+        LOG_INF("[SD_WORK] Early reformat complete.");
+    }
+
     /* ---- Ensure audio directory exists ---- */
     struct lfs_info dir_info;
     if (lfs_stat(&lfs_fs, FILE_DATA_DIR, &dir_info) < 0) {
@@ -1327,19 +1285,14 @@ void sd_worker_thread(void)
             /* Attempt flush inline; if it fails, re-set the flag so the
              * next loop iteration retries instead of silently losing it. */
             if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
-                int df_res = flush_batch_buffer();
-                if (df_res == 0) {
-                    int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
-                    if (sr < 0) {
-                        atomic_set(&pending_flush_on_ble_connect, 1);
-                    } else {
-                        data_sync_gen++;
-                        bytes_since_sync = 0;
-                        last_file_sync_uptime_ms = k_uptime_get();
-                        LOG_INF("[SD_WORK] Deferred BLE flush OK (%u bytes)", current_file_size);
-                    }
-                } else {
+                int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
+                if (sr < 0) {
                     atomic_set(&pending_flush_on_ble_connect, 1);
+                } else {
+                    data_sync_gen++;
+                    bytes_since_sync = 0;
+                    last_file_sync_uptime_ms = k_uptime_get();
+                    LOG_INF("[SD_WORK] Deferred BLE flush OK (%u bytes)", current_file_size);
                 }
             }
         }
@@ -1443,10 +1396,7 @@ void sd_worker_thread(void)
              * This avoids the expensive lfs_file_sync on EVERY read
              * (was ~50-100 ms each) — we only pay the cost when we
              * actually hit the stale-EOF boundary. */
-            if (br == 0 && is_active_file && (write_batch_offset > 0 || bytes_since_sync > 0)) {
-                if (write_batch_offset > 0) {
-                    flush_batch_buffer();
-                }
+            if (br == 0 && is_active_file && (bytes_since_sync > 0)) {
                 if (bytes_since_sync > 0) {
                     lfs_file_sync(&lfs_fs, &lfs_fil_data);
                     data_sync_gen++;
@@ -1520,7 +1470,6 @@ void sd_worker_thread(void)
 
         /* ---- Clear audio directory ---- */
         case REQ_CLEAR_AUDIO_DIR: {
-            flush_batch_buffer();
             close_read_handle();
             lfs_file_close(&lfs_fs, &lfs_fil_data);
             k_mutex_lock(&current_filename_lock, K_FOREVER);
@@ -1581,7 +1530,6 @@ void sd_worker_thread(void)
 
         /* ---- Create new file ---- */
         case REQ_CREATE_NEW_FILE:
-            flush_batch_buffer();
             res = create_audio_file_with_timestamp();
             if (req.u.create_file.resp) {
                 req.u.create_file.resp->res = res;
@@ -1619,18 +1567,15 @@ void sd_worker_thread(void)
         case REQ_FLUSH_FILE: {
             int flush_res = 0;
             if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
-                flush_res = flush_batch_buffer();
-                if (flush_res == 0) {
-                    int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
-                    if (sr < 0) {
-                        LOG_ERR("[SD_WORK] lfs_file_sync failed: %d", sr);
-                        flush_res = sr;
-                    } else {
-                        data_sync_gen++;
-                        bytes_since_sync = 0;
-                        last_file_sync_uptime_ms = k_uptime_get();
-                        LOG_INF("[SD_WORK] Flushed %s (%u bytes)", current_filename, current_file_size);
-                    }
+                int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
+                if (sr < 0) {
+                    LOG_ERR("[SD_WORK] lfs_file_sync failed: %d", sr);
+                    flush_res = sr;
+                } else {
+                    data_sync_gen++;
+                    bytes_since_sync = 0;
+                    last_file_sync_uptime_ms = k_uptime_get();
+                    LOG_INF("[SD_WORK] Flushed %s (%u bytes)", current_filename, current_file_size);
                 }
             }
             if (req.u.create_file.resp) {
@@ -1666,7 +1611,6 @@ void sd_worker_thread(void)
             if (current_filename[0] != '\0' &&
                 filename_equals_ignore_case(current_filename, req.u.delete_file.filename)) {
                 LOG_INF("[SD_WORK] Deleting active recording file");
-                flush_batch_buffer();
                 lfs_file_close(&lfs_fs, &lfs_fil_data);
                 k_mutex_lock(&current_filename_lock, K_FOREVER);
                 current_filename[0] = '\0';
@@ -1675,8 +1619,6 @@ void sd_worker_thread(void)
                 current_file_size = 0;
                 bytes_since_sync = 0;
                 last_file_sync_uptime_ms = 0;
-                write_batch_offset = 0;
-                write_batch_counter = 0;
                 atomic_set(&current_file_deleted, 1);
             }
 
