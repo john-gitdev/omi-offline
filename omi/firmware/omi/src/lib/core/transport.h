@@ -62,7 +62,7 @@ void put_current_connection(struct bt_conn *conn);
 extern uint32_t device_session_id;
 extern uint32_t segment_index;
 
-bool write_custom_packet_to_storage(uint8_t marker, uint8_t *data, uint8_t data_size);
+bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t data_size);
 
 void transport_notify_button_state(uint8_t state);
 

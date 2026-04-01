@@ -893,27 +893,29 @@ static void on_codec_output(uint8_t *data, size_t len)
     broadcast_audio_packets(data, len);
 }
 
-bool write_custom_packet_to_storage(uint8_t marker, uint8_t *data, uint8_t data_size)
+bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t data_size)
 {
-    uint8_t packet_size = data_size + OPUS_PREFIX_LENGTH;
+    /* Framed entry: [length:4LE][payload:NB] */
+    uint32_t entry_size = data_size + 4;
 
     k_mutex_lock(&storage_temp_mutex, K_FOREVER);
 
-    if (buffer_offset + packet_size > MAX_WRITE_SIZE) {
-        // Doesn't fit in current block. Flush current block first.
-        // Pad the rest of the block with 0 or marker?
-        // Better: write what we have and start fresh.
-        // Actually, the app expects blocks of exactly MAX_WRITE_SIZE.
-        // So we must pad the current block.
+    if (buffer_offset + entry_size > MAX_WRITE_SIZE) {
+        /* Pad remaining block with 0 (NULL entries) */
         memset(storage_temp_data + buffer_offset, 0, MAX_WRITE_SIZE - buffer_offset);
         write_to_file(storage_temp_data, MAX_WRITE_SIZE);
         buffer_offset = 0;
     }
 
-    // Now it fits for sure (since packet_size < MAX_WRITE_SIZE)
-    storage_temp_data[buffer_offset] = marker;
-    memcpy(storage_temp_data + buffer_offset + 1, data, data_size);
-    buffer_offset += packet_size;
+    /* Write 4-byte Little-Endian length prefix */
+    storage_temp_data[buffer_offset + 0] = (uint8_t)(marker & 0xFF);
+    storage_temp_data[buffer_offset + 1] = (uint8_t)((marker >> 8) & 0xFF);
+    storage_temp_data[buffer_offset + 2] = (uint8_t)((marker >> 16) & 0xFF);
+    storage_temp_data[buffer_offset + 3] = (uint8_t)((marker >> 24) & 0xFF);
+    
+    /* Write payload */
+    memcpy(storage_temp_data + buffer_offset + 4, data, data_size);
+    buffer_offset += entry_size;
 
     if (buffer_offset == MAX_WRITE_SIZE) {
         write_to_file(storage_temp_data, MAX_WRITE_SIZE);

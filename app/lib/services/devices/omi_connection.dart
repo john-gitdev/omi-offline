@@ -261,14 +261,12 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<List<StorageFile>> performListFiles() async {
-    await _storageMutex.acquire();
-    try { return await _performListFilesLocked(); } finally { _storageMutex.release(); }
+    return await _performListFilesLocked();
   }
 
   Future<List<StorageFile>> _performListFilesLocked() async {
     await _listFilesSub?.cancel();
     _listFilesSub = null;
-    await stop();
     final int gen = ++_listFilesGeneration;
     final currentCompleter = Completer<List<StorageFile>>();
     _listFilesCompleter = currentCompleter;
@@ -322,7 +320,8 @@ class OmiDeviceConnection extends DeviceConnection {
             fail("Invalid file count: $count");
             return;
           }
-          expectedTotalBytes = 4 + (count * 8);
+          // Entry format: [index:4][timestamp:4][size:4] = 12 bytes
+          expectedTotalBytes = 4 + (count * 12);
           Logger.debug('OmiDeviceConnection: Expecting $count files ($expectedTotalBytes bytes total)');
         }
 
@@ -333,9 +332,9 @@ class OmiDeviceConnection extends DeviceConnection {
           final bd = ByteData.sublistView(Uint8List.fromList(buffer.sublist(0, expectedTotalBytes!)));
           for (int i = 0; i < count; i++) {
             files.add(StorageFile(
-              index: i,
-              timestamp: bd.getUint32(4 + i * 8, Endian.little),
-              size: bd.getUint32(8 + i * 8, Endian.little),
+              index: bd.getUint32(4 + i * 12, Endian.little),
+              timestamp: bd.getUint32(8 + i * 12, Endian.little),
+              size: bd.getUint32(12 + i * 12, Endian.little),
             ));
           }
           Logger.debug('OmiDeviceConnection: Successfully parsed all $count files');
@@ -356,7 +355,6 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<bool> performDeleteFile(StorageFile file) async {
-    await _storageMutex.acquire();
     try {
       final completer = Completer<bool>();
       final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
@@ -369,7 +367,7 @@ class OmiDeviceConnection extends DeviceConnection {
       final res = await completer.future.timeout(const Duration(seconds: 35));
       await sub.cancel();
       return res;
-    } catch (_) { return false; } finally { _storageMutex.release(); }
+    } catch (_) { return false; }
   }
 
   @override
@@ -382,7 +380,6 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<bool> performRotateFile() async {
-    await _storageMutex.acquire();
     try {
       final completer = Completer<bool>();
       final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
@@ -393,7 +390,27 @@ class OmiDeviceConnection extends DeviceConnection {
       final res = await completer.future.timeout(const Duration(seconds: 15));
       await sub.cancel();
       return res;
-    } catch (_) { return false; } finally { _storageMutex.release(); }
+    } catch (_) { return false; }
+  }
+
+  @override
+  Future<bool> performClearStorage() async {
+    try {
+      final completer = Completer<bool>();
+      final stream =
+          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final sub = stream.listen((data) {
+        if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
+          completer.complete(data.length < 2 || data[1] == 0);
+        }
+      });
+      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x14]);
+      final res = await completer.future.timeout(const Duration(seconds: 10));
+      await sub.cancel();
+      return res;
+    } catch (_) {
+      return false;
+    }
   }
 
   @override

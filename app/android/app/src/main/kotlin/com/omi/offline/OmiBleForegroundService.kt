@@ -164,7 +164,9 @@ class OmiBleForegroundService : Service() {
         }
 
         override fun onCharacteristicChanged(address: String, serviceUuid: String, charUuid: String, value: ByteArray) {
-            // Forward directly to Flutter
+            bleManager.mainHandler.post {
+                bleManager.flutterApi?.onCharacteristicValueUpdated(address, serviceUuid, charUuid, value) {}
+            }
         }
     }
 

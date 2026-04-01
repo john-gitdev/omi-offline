@@ -217,23 +217,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   Future periodicConnect(String printer, {bool boundDeviceOnly = false}) async {
-    _reconnectionTimer?.cancel();
-    scan(t) async {
-      final reconnectAt = _reconnectAt;
-      if (reconnectAt != null && reconnectAt.isAfter(DateTime.now())) return;
-      if (boundDeviceOnly && SharedPreferencesUtil().btDevice.id.isEmpty) {
-        t.cancel();
-        return;
-      }
-      if ((!isConnected && connectedDevice == null)) {
-        if (isConnecting) return;
-        await scanAndConnectToDevice();
-      } else {
-        t.cancel();
-      }
-    }
-    _reconnectionTimer = Timer.periodic(Duration(seconds: _connectionCheckSeconds), scan);
-    scan(_reconnectionTimer);
+    // Disabled auto-connect for debugging as requested.
+    return;
   }
 
   Future<BtDevice?> _scanConnectDevice() async {
@@ -376,19 +361,26 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _isHandlingDisconnect = false;
 
     _reconnectDelayTimer?.cancel();
-    _reconnectDelayTimer = Timer(const Duration(seconds: 1), () {
-      if (!_disposed) periodicConnect('coming from onDisconnect');
-    });
+    // Disabled auto-reconnect trigger for debugging as requested.
   }
 
-  void _onDeviceConnected(BtDevice device) async {
-    await setConnectedDevice(device);
-    setIsConnected(true);
-    updateConnectingStatus(false);
-    notifyListeners();
+  String? _currentlySettingUpId;
 
-    // Perform remaining setup in background to avoid blocking the "Connected" state show
-    unawaited(_finishDeviceSetup(device));
+  void _onDeviceConnected(BtDevice device) async {
+    if (_currentlySettingUpId == device.id) return;
+    _currentlySettingUpId = device.id;
+
+    try {
+      await setConnectedDevice(device);
+      setIsConnected(true);
+      updateConnectingStatus(false);
+      notifyListeners();
+
+      // Perform remaining setup in background
+      await _finishDeviceSetup(device);
+    } finally {
+      _currentlySettingUpId = null;
+    }
   }
 
   Future<void> _finishDeviceSetup(BtDevice device) async {
