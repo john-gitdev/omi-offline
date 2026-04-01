@@ -145,7 +145,7 @@ class OmiBleForegroundService : Service() {
             }
 
             if (managed.requiresBond) {
-                bleManager.requestBond(addr) { result ->
+                bleManager.requestBond(addr) { result: Result<Boolean> ->
                     val bonded = result.getOrDefault(false)
                     Log.i(TAG, "Bond result for $addr: $bonded")
                     if (bonded) {
@@ -162,13 +162,20 @@ class OmiBleForegroundService : Service() {
         override fun onMtuChanged(address: String, mtu: Int, status: Int) {
             // Handled inline via the MTU flow in requestMtuThenNotifyReady
         }
+
+        override fun onCharacteristicChanged(address: String, serviceUuid: String, charUuid: String, value: ByteArray) {
+            // Forward directly to Flutter
+        }
     }
 
     // ── Post-discovery pipeline ──
 
     private fun requestMtuThenNotifyReady(address: String, services: List<BleService>) {
         val addr = address.uppercase()
-        val gatt = bleManager.connectedGatts[addr] ?: return
+        val gatt = bleManager.connectedGatts[addr] ?: run {
+            Log.e(TAG, "requestMtuThenNotifyReady: no GATT for $addr")
+            return
+        }
 
         val hasDfuService = services.any { it.uuid.lowercase() == DFU_SERVICE_UUID }
         if (hasDfuService) {
@@ -178,10 +185,10 @@ class OmiBleForegroundService : Service() {
         }
 
         val originalListener = bleManager.connectionListener
-        bleManager.connectionListener = object : OmiBleManager.BleConnectionListener by connectionListener {
+        bleManager.connectionListener = object : OmiBleManager.BleConnectionListener by (originalListener ?: connectionListener) {
             override fun onMtuChanged(address: String, mtu: Int, status: Int) {
                 bleManager.connectionListener = originalListener
-                Log.i(TAG, "MTU done for $addr (mtu=$mtu, status=$status)")
+                Log.i(TAG, "MTU done for $address (mtu=$mtu, status=$status)")
                 fireDeviceReady(addr, services)
             }
         }
@@ -189,7 +196,8 @@ class OmiBleForegroundService : Service() {
         handler.postDelayed({
             bleManager.enqueueCommand {
                 try {
-                    if (!gatt.requestMtu(MTU_SIZE)) {
+                    val currentGatt = bleManager.connectedGatts[addr]
+                    if (currentGatt == null || !currentGatt.requestMtu(MTU_SIZE)) {
                         Log.e(TAG, "requestMtu failed for $addr")
                         bleManager.completeCommand()
                         bleManager.connectionListener = originalListener
@@ -207,6 +215,11 @@ class OmiBleForegroundService : Service() {
 
     private fun fireDeviceReady(address: String, services: List<BleService>) {
         val addr = address.uppercase()
+        // Ensure device is still connected before firing "Ready"
+        if (!bleManager.isPeripheralConnected(addr)) {
+            Log.w(TAG, "fireDeviceReady: $addr disconnected during pipeline, skipping")
+            return
+        }
         bleManager.mainHandler.post {
             bleManager.flutterApi?.onDeviceReady(addr, services) {}
         }

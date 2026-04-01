@@ -35,7 +35,6 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
     }
 
     override fun unmanageDevice(uuid: String) {
-        val activity = getActivity() ?: return
         val inst = OmiBleForegroundService.instance
         if (inst != null) {
             inst.unmanageDevice(uuid)

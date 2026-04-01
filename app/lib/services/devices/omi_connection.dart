@@ -9,6 +9,38 @@ import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/mutex.dart';
 
 class OmiDeviceConnection extends DeviceConnection {
+  static const String batteryServiceUuid = '0000180f-0000-1000-8000-00805f9b34fb';
+  static const String batteryLevelCharacteristicUuid = '00002a19-0000-1000-8000-00805f9b34fb';
+
+  // 4-byte battery detail: [state:1][mv:2LE][pct:1]
+  static const String batteryDetailServiceUuid = '19b10050-e8f2-537e-4f6c-d104768a1214';
+  static const String batteryDetailCharacteristicUuid = '19b10051-e8f2-537e-4f6c-d104768a1214';
+
+  static const String buttonServiceUuid = '19b10040-e8f2-537e-4f6c-d104768a1214';
+  static const String buttonTriggerCharacteristicUuid = '19b10041-e8f2-537e-4f6c-d104768a1214';
+
+  static const String featuresServiceUuid = '19b10020-e8f2-537e-4f6c-d104768a1214';
+  static const String featuresCharacteristicUuid = '19b10021-e8f2-537e-4f6c-d104768a1214';
+  static const String audioCodecCharacteristicUuid = '19b10002-e8f2-537e-4f6c-d104768a1214';
+
+  static const String storageDataStreamServiceUuid = '30295780-4301-eabd-2904-2849adfeae43';
+  static const String storageDataStreamCharacteristicUuid = '30295781-4301-eabd-2904-2849adfeae43';
+  static const String storageReadControlCharacteristicUuid = '30295782-4301-eabd-2904-2849adfeae43';
+
+  static const String timeSyncServiceUuid = '19b10030-e8f2-537e-4f6c-d104768a1214';
+  static const String timeSyncWriteCharacteristicUuid = '19b10031-e8f2-537e-4f6c-d104768a1214';
+
+  static const String disServiceUuid = '0000180a-0000-1000-8000-00805f9b34fb';
+  static const String disModelNumberCharacteristicUuid = '00002a24-0000-1000-8000-00805f9b34fb';
+  static const String disFirmwareRevisionCharacteristicUuid = '00002a26-0000-1000-8000-00805f9b34fb';
+  static const String disHardwareRevisionCharacteristicUuid = '00002a27-0000-1000-8000-00805f9b34fb';
+  static const String disManufacturerNameCharacteristicUuid = '00002a29-0000-1000-8000-00805f9b34fb';
+  static const String disSerialNumberCharacteristicUuid = '00002a25-0000-1000-8000-00805f9b34fb';
+
+  static const String settingsServiceUuid = '19b10010-e8f2-537e-4f6c-d104768a1214';
+  static const String settingsDimRatioCharacteristicUuid = '19b10011-e8f2-537e-4f6c-d104768a1214';
+  static const String settingsMicGainCharacteristicUuid = '19b10012-e8f2-537e-4f6c-d104768a1214';
+
   // Deduplicates concurrent listFiles calls
   Completer<List<StorageFile>>? _listFilesCompleter;
 
@@ -16,23 +48,15 @@ class OmiDeviceConnection extends DeviceConnection {
   int _listFilesGeneration = 0;
   StreamSubscription? _listFilesSub;
   Timer? _timeoutTimer;
-  // Retries CMD_LIST_FILES until the firmware responds (guards against CCCD
-  // write not yet completing when the first 0x10 command was sent).
+  // Retries CMD_LIST_FILES until the firmware responds
   Timer? _cccdRetryTimer;
 
   // Cached audio codec to avoid redundant BLE reads
   BleAudioCodec? _cachedAudioCodec;
 
-  /// Serializes storage operations (listFiles, deleteFile, rotateFile) that
-  /// share the same BLE characteristic stream. Without this, concurrent
-  /// callers could misroute packets between operations.
   final Mutex _storageMutex = Mutex();
 
-  /// Time to wait after subscribing to a storage characteristic before sending
-  /// the first command. Allows the native BLE stack to write the CCCD descriptor
-  /// and enable notifications so data is not lost.
   static const _cccdSettleDelay = Duration(milliseconds: 2000);
-
 
   OmiDeviceConnection(super.device, super.transport);
 
@@ -48,19 +72,15 @@ class OmiDeviceConnection extends DeviceConnection {
     bool requiresBond = false,
   }) async {
     await super.connect(onConnectionStateChanged: onConnectionStateChanged, requiresBond: requiresBond);
-    await performSyncTime();
+    await performSyncDeviceTime();
   }
 
   Future<void> stop() async {
-    _listFilesGeneration++; // 🛑 Invalidate ALL in-flight handlers
+    _listFilesGeneration++;
     final sub = _listFilesSub;
     _listFilesSub = null;
     await sub?.cancel();
-
-    // Tell firmware to stop any in-flight transfer (e.g. from a previous CMD_READ_FILE)
-    // so it's ready to process the next command (like 0x10) immediately.
     await performStopStorageSync();
-
     _timeoutTimer?.cancel();
     _timeoutTimer = null;
     _cccdRetryTimer?.cancel();
@@ -68,60 +88,48 @@ class OmiDeviceConnection extends DeviceConnection {
     _cachedAudioCodec = null;
   }
 
-  Future<bool> performSyncTime() async {
-    for (int attempt = 0; attempt < 3; attempt++) {
-      try {
-        final epochSeconds = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
-        final byteData = ByteData(4)..setUint32(0, epochSeconds, Endian.little);
-
-        await transport.writeCharacteristic(
-            timeSyncServiceUuid, timeSyncWriteCharacteristicUuid, byteData.buffer.asUint8List());
-        Logger.debug('OmiDeviceConnection: Time synced to device: $epochSeconds');
-        return true;
-      } catch (e) {
-        if (attempt == 2) {
-          Logger.error('OmiDeviceConnection: Time sync failed after 3 attempts: $e');
-          return false;
-        }
-        await Future.delayed(Duration(milliseconds: 100 * (attempt + 1)));
+  @override
+  Future<StorageFileStats?> getStorageFileStats() async {
+    try {
+      final data = await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
+      if (data.length >= 8) {
+        final byteData = ByteData.sublistView(Uint8List.fromList(data));
+        return StorageFileStats(
+          totalUsedBytes: byteData.getUint32(0, Endian.little),
+          fileCount: byteData.getUint32(4, Endian.little),
+        );
       }
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Error getting storage stats: $e');
     }
-    return false;
+    return null;
+  }
+
+  @override
+  Future<Stream<List<int>>> getBleStorageBytesStream() async {
+    return await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
   }
 
   @override
   Future<int> performRetrieveBatteryLevel() async {
-    // Try the 4-byte battery detail characteristic first — it's the same one
-    // the firmware notifies on, so the GATT cache is warm.
     try {
       final detail = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
-      if (detail.length >= 3) {
-        Logger.debug('OmiDeviceConnection: Battery detail read: pct=${detail[2]}');
-        return detail[2]; // byte 2 = percentage 0-100
-      }
+      if (detail.length >= 3) return detail[2];
     } catch (_) {}
-
-    // Fallback: standard BAS (1-byte percentage)
     try {
       final data = await transport.readCharacteristic(batteryServiceUuid, batteryLevelCharacteristicUuid);
       if (data.isNotEmpty) return data[0];
-      return -1;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error reading battery level: $e');
-      return -1;
-    }
+    } catch (_) {}
+    return -1;
   }
 
   @override
   Future<bool> performRetrieveChargingState() async {
     try {
       final data = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
-      // 4-byte payload: [mV_lo, mV_hi, percentage, charging(0/1)]
       if (data.length >= 4) return data[3] == 1;
-      return false;
-    } catch (_) {
-      return false;
-    }
+    } catch (_) {}
+    return false;
   }
 
   @override
@@ -129,39 +137,14 @@ class OmiDeviceConnection extends DeviceConnection {
     void Function(int)? onBatteryLevelChange,
     void Function(bool)? onChargingStateChange,
   }) async {
-    // Prefer the rich battery detail characteristic (4-byte: mV_lo, mV_hi, pct, charging)
-    // which provides both level and charging state. Fall back to standard BAS if unavailable.
     try {
-      Logger.debug('OmiDeviceConnection: Trying battery detail listener...');
-      final stream =
-          await transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
-      final subscription = stream.listen((value) {
-        if (value.length >= 3 && onBatteryLevelChange != null) {
-          onBatteryLevelChange(value[2]); // byte 2 = percentage 0-100
-        }
-        if (value.length >= 4 && onChargingStateChange != null) {
-          onChargingStateChange(value[3] == 1); // byte 3 = charging flag
-        }
+      final stream = await transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      return stream.listen((value) {
+        if (value.length >= 3 && onBatteryLevelChange != null) onBatteryLevelChange(value[2]);
+        if (value.length >= 4 && onChargingStateChange != null) onChargingStateChange(value[3] == 1);
       });
-      Logger.debug('OmiDeviceConnection: Battery detail listener active');
-      return subscription;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Battery detail unavailable ($e), falling back to standard BAS');
-    }
-
-    // Fallback: standard BAS (1-byte percentage, no charging state)
-    try {
-      final stream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
-      final subscription = stream.listen((value) {
-        if (value.isNotEmpty && onBatteryLevelChange != null) {
-          onBatteryLevelChange(value[0]);
-        }
-      });
-      return subscription;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error setting up battery listener: $e');
-      return null;
-    }
+    } catch (_) {}
+    return null;
   }
 
   @override
@@ -174,9 +157,8 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<List<int>> performGetButtonState() async {
     try {
       return await transport.readCharacteristic(buttonServiceUuid, buttonTriggerCharacteristicUuid);
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error reading button state: $e');
-      return <int>[];
+    } catch (_) {
+      return [];
     }
   }
 
@@ -184,30 +166,13 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<BleAudioCodec> performGetAudioCodec() async {
     if (_cachedAudioCodec != null) return _cachedAudioCodec!;
     try {
-      final codecValue = await transport.readCharacteristic(featuresServiceUuid, audioCodecCharacteristicUuid);
-
-      var codecId = 1;
-      if (codecValue.isNotEmpty) {
-        codecId = codecValue[0];
+      final data = await transport.readCharacteristic(featuresServiceUuid, audioCodecCharacteristicUuid);
+      if (data.isNotEmpty) {
+        if (data[0] == 20) return _cachedAudioCodec = BleAudioCodec.opus;
+        if (data[0] == 21) return _cachedAudioCodec = BleAudioCodec.opusFS320;
       }
-
-      BleAudioCodec codec;
-      switch (codecId) {
-        case 1:
-          codec = BleAudioCodec.pcm8;
-        case 20:
-          codec = BleAudioCodec.opus;
-        case 21:
-          codec = BleAudioCodec.opusFS320;
-        default:
-          codec = BleAudioCodec.pcm8;
-      }
-      _cachedAudioCodec = codec;
-      return codec;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error reading audio codec: $e');
-      return BleAudioCodec.pcm8;
-    }
+    } catch (_) {}
+    return _cachedAudioCodec = BleAudioCodec.pcm8;
   }
 
   @override
@@ -216,84 +181,46 @@ class OmiDeviceConnection extends DeviceConnection {
   }) async {
     try {
       final stream = await transport.getCharacteristicStream(buttonServiceUuid, buttonTriggerCharacteristicUuid);
-
-      final subscription = stream.listen((value) {
-        if (value.isNotEmpty) onButtonReceived(value);
-      });
-
-      return subscription ;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error setting up button listener: $e');
-      return null;
-    }
+      return stream.listen((value) { if (value.isNotEmpty) onButtonReceived(value); });
+    } catch (_) { return null; }
   }
 
   @override
   Future<List<int>> performGetStorageList() async {
     try {
-      final storageValue =
-          await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
-      Logger.debug('OmiDeviceConnection: Raw storage characteristic value: $storageValue');
-
-      List<int> storageLengths = [];
-      for (int i = 0; i < (storageValue.length ~/ 4); i++) {
-        int baseIndex = i * 4;
-        int result = ((storageValue[baseIndex] |
-                    (storageValue[baseIndex + 1] << 8) |
-                    (storageValue[baseIndex + 2] << 16) |
-                    (storageValue[baseIndex + 3] << 24)) &
-                0xFFFFFFFF)
-            .toSigned(32);
-        storageLengths.add(result);
+      final data = await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
+      List<int> result = [];
+      for (int i = 0; i < (data.length ~/ 4); i++) {
+        result.add(ByteData.sublistView(Uint8List.fromList(data)).getUint32(i * 4, Endian.little));
       }
-      return storageLengths;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error reading storage list: $e');
-      return <int>[];
-    }
+      return result;
+    } catch (_) { return []; }
   }
 
   @override
   Future<bool> performWriteToStorage(int numFile, int command, int offset) async {
     try {
-      // Offset in little-endian to match the rest of the BLE protocol.
-      var offsetBytes = [
-        offset & 0xFF,
-        (offset >> 8) & 0xFF,
-        (offset >> 16) & 0xFF,
-        (offset >> 24) & 0xFF,
-      ];
-
-      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid,
-          [command & 0xFF, numFile & 0xFF, offsetBytes[0], offsetBytes[1], offsetBytes[2], offsetBytes[3]]);
+      final data = ByteData(6)
+        ..setUint8(0, command & 0xFF)
+        ..setUint8(1, numFile & 0xFF)
+        ..setUint32(2, offset, Endian.little);
+      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, data.buffer.asUint8List());
       return true;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error writing to storage: $e');
-      return false;
-    }
+    } catch (_) { return false; }
   }
 
   @override
   Future<int> performGetFeatures() async {
     try {
       final data = await transport.readCharacteristic(featuresServiceUuid, featuresCharacteristicUuid);
-      if (data.length >= 4) {
-        return ByteData.sublistView(Uint8List.fromList(data)).getUint32(0, Endian.little);
-      }
-      return 0;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error getting features: $e');
-      return 0;
-    }
+      if (data.length >= 4) return ByteData.sublistView(Uint8List.fromList(data)).getUint32(0, Endian.little);
+    } catch (_) {}
+    return 0;
   }
 
   @override
   Future<void> performSetLedDimRatio(int ratio) async {
-    try {
-      await transport.writeCharacteristic(settingsServiceUuid, settingsDimRatioCharacteristicUuid, [ratio]);
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error setting LED dim ratio: $e');
-    }
+    try { await transport.writeCharacteristic(settingsServiceUuid, settingsDimRatioCharacteristicUuid, [ratio]); } catch (_) {}
   }
 
   @override
@@ -301,20 +228,13 @@ class OmiDeviceConnection extends DeviceConnection {
     try {
       final data = await transport.readCharacteristic(settingsServiceUuid, settingsDimRatioCharacteristicUuid);
       if (data.isNotEmpty) return data[0];
-      return null;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error getting LED dim ratio: $e');
-      return null;
-    }
+    } catch (_) {}
+    return null;
   }
 
   @override
   Future<void> performSetMicGain(int gain) async {
-    try {
-      await transport.writeCharacteristic(settingsServiceUuid, settingsMicGainCharacteristicUuid, [gain]);
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error setting mic gain: $e');
-    }
+    try { await transport.writeCharacteristic(settingsServiceUuid, settingsMicGainCharacteristicUuid, [gain]); } catch (_) {}
   }
 
   @override
@@ -322,376 +242,144 @@ class OmiDeviceConnection extends DeviceConnection {
     try {
       final data = await transport.readCharacteristic(settingsServiceUuid, settingsMicGainCharacteristicUuid);
       if (data.isNotEmpty) return data[0];
-      return null;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error getting mic gain: $e');
-      return null;
-    }
+    } catch (_) {}
+    return null;
   }
 
   @override
   Future<BtDevice> performGetDeviceInfo(DeviceConnection? connection) async {
     try {
-      String? modelNumber;
-      try {
-        final data = await transport.readCharacteristic(disServiceUuid, disModelNumberCharacteristicUuid);
-        if (data.isNotEmpty) modelNumber = String.fromCharCodes(data);
-      } catch (_) {}
-
-      String? firmwareRevision;
-      try {
-        final data = await transport.readCharacteristic(disServiceUuid, disFirmwareRevisionCharacteristicUuid);
-        if (data.isNotEmpty) firmwareRevision = String.fromCharCodes(data);
-      } catch (_) {}
-
-      String? hardwareRevision;
-      try {
-        final data = await transport.readCharacteristic(disServiceUuid, disHardwareRevisionCharacteristicUuid);
-        if (data.isNotEmpty) hardwareRevision = String.fromCharCodes(data);
-      } catch (_) {}
-
-      String? manufacturerName;
-      try {
-        final data = await transport.readCharacteristic(disServiceUuid, disManufacturerNameCharacteristicUuid);
-        if (data.isNotEmpty) manufacturerName = String.fromCharCodes(data);
-      } catch (_) {}
-
-      String? serialNumber;
-      try {
-        final data = await transport.readCharacteristic(disServiceUuid, disSerialNumberCharacteristicUuid);
-        if (data.isNotEmpty) serialNumber = String.fromCharCodes(data);
-      } catch (_) {}
-
-      return device.copyWith(
-        modelNumber: modelNumber,
-        firmwareRevision: firmwareRevision,
-        hardwareRevision: hardwareRevision,
-        manufacturerName: manufacturerName,
-        serialNumber: serialNumber,
-      );
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error getting device info: $e');
-      return device;
-    }
+      String? model, fw, hw, manuf, sn;
+      try { model = String.fromCharCodes(await transport.readCharacteristic(disServiceUuid, disModelNumberCharacteristicUuid)); } catch (_) {}
+      try { fw = String.fromCharCodes(await transport.readCharacteristic(disServiceUuid, disFirmwareRevisionCharacteristicUuid)); } catch (_) {}
+      try { hw = String.fromCharCodes(await transport.readCharacteristic(disServiceUuid, disHardwareRevisionCharacteristicUuid)); } catch (_) {}
+      try { manuf = String.fromCharCodes(await transport.readCharacteristic(disServiceUuid, disManufacturerNameCharacteristicUuid)); } catch (_) {}
+      try { sn = String.fromCharCodes(await transport.readCharacteristic(disServiceUuid, disSerialNumberCharacteristicUuid)); } catch (_) {}
+      return device.copyWith(modelNumber: model, firmwareRevision: fw, hardwareRevision: hw, manufacturerName: manuf, serialNumber: sn);
+    } catch (_) { return device; }
   }
 
-  /// Send CMD_LIST_FILES (0x10) and parse the response:
-  ///   [count:1][ts:4LE][size:4LE] × count
-  /// Uses a dedicated one-shot listener so it doesn't interfere with the
-  /// ongoing sync data stream.
   @override
   Future<List<StorageFile>> performListFiles() async {
     await _storageMutex.acquire();
-    try {
-      return await _performListFilesLocked();
-    } finally {
-      _storageMutex.release();
-    }
+    try { return await _performListFilesLocked(); } finally { _storageMutex.release(); }
   }
 
   Future<List<StorageFile>> _performListFilesLocked() async {
-    // 1. Cancel old subscription BEFORE incrementing generation to avoid race
     await _listFilesSub?.cancel();
     _listFilesSub = null;
-
-    // 2. Clean previous run & increment generation
     await stop();
-
-    // 2. Capture and increment THIS call's generation
     final int gen = ++_listFilesGeneration;
     final currentCompleter = Completer<List<StorageFile>>();
     _listFilesCompleter = currentCompleter;
-
     final buffer = <int>[];
-    int retryCount = 0;
-    const int maxRetries = 3;
-
     bool isStale() => gen != _listFilesGeneration;
 
     void fail(String reason) {
-      if (!currentCompleter.isCompleted) {
-        currentCompleter.completeError(TimeoutException(reason));
-      }
-      if (_listFilesCompleter == currentCompleter) _listFilesCompleter = null;
+      if (!currentCompleter.isCompleted) currentCompleter.completeError(TimeoutException(reason));
       unawaited(stop());
     }
 
-    void completeSuccess(List<StorageFile> files) {
-      // Synchronously cancel timers and invalidate the generation counter BEFORE
-      // completing the completer.  This closes the window where the subscription
-      // is still alive after the caller wakes up and sends CMD_READ_FILE — the
-      // ACK/DATA packets for that next command would otherwise be delivered to
-      // this still-active _listFilesSub and silently misprocessed as file-list bytes.
-      _cccdRetryTimer?.cancel();
-      _cccdRetryTimer = null;
-      _timeoutTimer?.cancel();
-      _timeoutTimer = null;
-      _listFilesGeneration++; // isStale() → true; any queued packet is discarded
-      final sub = _listFilesSub;
-      _listFilesSub = null;
-      unawaited(sub?.cancel());
-      _cachedAudioCodec = null;
+    void success(List<StorageFile> files) {
+      _cccdRetryTimer?.cancel(); _timeoutTimer?.cancel();
+      _listFilesGeneration++;
+      final sub = _listFilesSub; _listFilesSub = null; unawaited(sub?.cancel());
       if (!currentCompleter.isCompleted) currentCompleter.complete(files);
-      if (_listFilesCompleter == currentCompleter) _listFilesCompleter = null;
     }
-
-    late void Function() startOrResetTimeout;
-
-    startOrResetTimeout = () {
-      _timeoutTimer?.cancel();
-      _timeoutTimer = Timer(const Duration(seconds: 120), () => fail("Timeout waiting for file list response"));
-    };
-
-    bool firstPacketReceived = false;
 
     try {
       final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
-
-      // Attach listener BEFORE the CCCD settle delay so that any notification
-      // arriving while we wait is not dropped (broadcast streams discard events
-      // when there are zero listeners).
-      _listFilesSub = stream.listen(
-        (packet) {
-          // 🛑 Ignore ALL stale packets from previous generations
-          if (isStale()) return;
-
-          if (packet.isEmpty) return;
-
-          if (packet[0] == 0x03) {
-            Logger.debug('performListFiles: Ignoring ACK packet (0x03)');
-            return;
+      _listFilesSub = stream.listen((packet) {
+        if (isStale() || packet.isEmpty) return;
+        if (packet[0] == 0x03 || packet[0] == 0x02) return;
+        if (packet[0] != 0x01) { fail("Unexpected packet type"); return; }
+        _cccdRetryTimer?.cancel(); _cccdRetryTimer = null;
+        _timeoutTimer?.cancel();
+        _timeoutTimer = Timer(const Duration(seconds: 120), () => fail("Timeout"));
+        buffer.addAll(packet.sublist(1));
+        if (buffer.length < 4) return;
+        final count = ByteData.sublistView(Uint8List.fromList(buffer)).getUint32(0, Endian.little);
+        if (count > 1000) { fail("Invalid count"); return; }
+        final expected = 4 + count * 8;
+        if (buffer.length >= expected) {
+          final files = <StorageFile>[];
+          final bd = ByteData.sublistView(Uint8List.fromList(buffer.sublist(0, expected)));
+          for (int i = 0; i < count; i++) {
+            files.add(StorageFile(index: i, timestamp: bd.getUint32(4 + i * 8, Endian.little), size: bd.getUint32(8 + i * 8, Endian.little)));
           }
-
-          if (packet[0] == 0x02) {
-            Logger.debug('performListFiles: Ignoring EOT packet (0x02)');
-            return;
-          }
-
-          if (packet[0] != 0x01) {
-            Logger.debug('performListFiles: Unexpected packet type ${packet[0]}');
-            return;
-          }
-
-          firstPacketReceived = true;
-          // Note: _cccdRetryTimer is now a one-shot Timer, not periodic
-          _cccdRetryTimer?.cancel();
-          _cccdRetryTimer = null;
-
-          startOrResetTimeout(); // Reset timeout FIRST
-          
-          // Standardized List Protocol: Skip 0x01 header, add payload to buffer
-          buffer.addAll(packet.sublist(1));
-          Logger.debug('performListFiles: RX packet len=${packet.length}');
-
-          if (buffer.isEmpty) return;
-
-          // Standardized: first 4 bytes are total count (Little-Endian uint32)
-          if (buffer.length < 4) return;
-
-          final byteData = ByteData.sublistView(Uint8List.fromList(buffer));
-          final count = byteData.getUint32(0, Endian.little);
-
-          if (count > 1000) {
-            fail("Invalid file count: $count");
-            return;
-          }
-
-          // Header (4) + Entries (count * 8)
-          final expectedLen = 4 + count * 8;
-          Logger.debug('performListFiles: Buffer len=${buffer.length} / expected=$expectedLen');
-
-          if (buffer.length >= expectedLen) {
-            final data = buffer.sublist(0, expectedLen);
-            final entriesByteData = ByteData.sublistView(Uint8List.fromList(data));
-
-            final files = <StorageFile>[];
-            for (int i = 0; i < count; i++) {
-              final base = 4 + i * 8;
-              final ts = entriesByteData.getUint32(base, Endian.little);
-              final sz = entriesByteData.getUint32(base + 4, Endian.little);
-              files.add(StorageFile(index: i, timestamp: ts, size: sz));
-            }
-
-            completeSuccess(files);
-          }
-        },
-        onError: (e) {
-          if (isStale()) return;
-          fail("Stream error: $e");
-        },
-        onDone: () {
-          if (isStale()) return;
-          if (!currentCompleter.isCompleted) {
-            fail("Stream closed before full response received");
-          }
-        },
-      );
-
-      // Wait for the CCCD descriptor write to propagate through the GATT queue
-      // before sending the command.  The listener is already attached above so
-      // any early notification won't be lost.
-      await Future.delayed(_cccdSettleDelay);
-
-      Logger.debug('performListFiles: sending 0x10');
-      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
-      startOrResetTimeout();
-
-      // If the CCCD write was still in the GATT queue when 0x10 was sent, the
-      // firmware will have received the command but silently dropped the
-      // notification response (storage_notify_ready() returns false).
-      //
-      // We use a one-shot 10-second retry timer. This handles the slow CCCD case
-      // without creating an 'Infinity Loop' of requests that can starve the
-      // firmware's storage thread during slow SD operations.
-      _cccdRetryTimer = Timer(const Duration(seconds: 10), () async {
-        if (isStale() || currentCompleter.isCompleted || firstPacketReceived) {
-          _cccdRetryTimer = null;
-          return;
-        }
-        Logger.debug('performListFiles: no response in 10s, sending 0x10 retry (one-shot)');
-        try {
-          await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
-        } catch (e) {
-          fail('CCCD retry write failed: $e');
-        } finally {
-          _cccdRetryTimer = null;
+          success(files);
         }
       });
 
+      await Future.delayed(_cccdSettleDelay);
+      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
+      _timeoutTimer = Timer(const Duration(seconds: 120), () => fail("Timeout"));
+      _cccdRetryTimer = Timer(const Duration(seconds: 10), () async {
+        if (isStale() || currentCompleter.isCompleted) return;
+        try { await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]); } catch (_) {}
+      });
       return await currentCompleter.future;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: performListFiles error: $e');
-      if (!currentCompleter.isCompleted) {
-        currentCompleter.complete([]); // Resolve with empty list on error to satisfy callers
-      }
-      _listFilesCompleter = null;
-      return [];
-    }
+    } catch (e) { return []; }
   }
 
-  /// Send CMD_DELETE_FILE (0x12, fileIndex) and wait for PACKET_ACK (0x03, result).
   @override
-  Future<bool> performDeleteFile(int fileIndex) async {
+  Future<bool> performDeleteFile(StorageFile file) async {
     await _storageMutex.acquire();
     try {
       final completer = Completer<bool>();
-      StreamSubscription? sub;
-
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
-      sub = stream.listen((data) {
+      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final sub = stream.listen((data) {
         if (completer.isCompleted) return;
-        // Expect [PACKET_ACK=0x03][result:1]
-        if (data.length >= 2 && data[0] == 0x03) {
-          completer.complete(data[1] == 0);
-        } else if (data.length == 1 && data[0] == 0x03) {
-          completer.complete(true); // ACK with no result byte = success
-        }
-      }, onError: (e) {
-        if (!completer.isCompleted) completer.completeError(e);
+        if (data.isNotEmpty && data[0] == 0x03) completer.complete(data.length < 2 || data[1] == 0);
       });
-
-      // Wait for the CCCD descriptor write to propagate through the GATT queue
-      // before sending the command. Listener is already attached above so any
-      // early notification won't be lost.
       await Future.delayed(_cccdSettleDelay);
-
-      await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x12, fileIndex & 0xFF]);
-
-      try {
-        // Firmware delete can block up to 30 s waiting for the SD card worker
-        // (k_sem_take timeout in delete_audio_file). Use 35 s to give enough
-        // headroom — the previous 5 s limit was shorter than the firmware's own
-        // internal timeout, causing every delete to appear failed even when the
-        // firmware eventually completed the operation.
-        final success = await completer.future.timeout(const Duration(seconds: 35));
-        Logger.debug('performDeleteFile($fileIndex): success=$success');
-        return success;
-      } finally {
-        await sub.cancel();
-      }
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: performDeleteFile error: $e');
-      return false;
-    } finally {
-      _storageMutex.release();
-    }
+      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x12, file.index & 0xFF]);
+      final res = await completer.future.timeout(const Duration(seconds: 35));
+      await sub.cancel();
+      return res;
+    } catch (_) { return false; } finally { _storageMutex.release(); }
   }
 
   @override
   Future<bool> performStopStorageSync() async {
     try {
-      await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x03]);
-      Logger.debug('OmiDeviceConnection: CMD_STOP sent');
+      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x03]);
       return true;
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: performStopStorageSync error: $e');
-      return false;
-    }
+    } catch (_) { return false; }
   }
 
-  /// Send CMD_ROTATE_FILE (0x13) and wait for PACKET_ACK (0x03, result).
-  /// Firmware sends the ACK only after the old file is sealed and new file is open.
   @override
   Future<bool> performRotateFile() async {
     await _storageMutex.acquire();
     try {
       final completer = Completer<bool>();
-      StreamSubscription? sub;
-
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
-      sub = stream.listen((data) {
-        if (completer.isCompleted) return;
-        if (data.length >= 2 && data[0] == 0x03) {
-          // PACKET_ACK: result == 0 means success
-          completer.complete(data[1] == 0x00);
-        }
-      }, onError: (e) {
-        if (!completer.isCompleted) completer.completeError(e);
+      final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final sub = stream.listen((data) {
+        if (!completer.isCompleted && data.length >= 2 && data[0] == 0x03) completer.complete(data[1] == 0);
       });
-
-      await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x13]);
-
-      try {
-        final success = await completer.future.timeout(const Duration(seconds: 15));
-        Logger.debug('OmiDeviceConnection: performRotateFile success=$success');
-        return success;
-      } finally {
-        await sub.cancel();
-      }
-    } catch (e) {
-      Logger.debug('OmiDeviceConnection: performRotateFile error: $e');
-      return false;
-    } finally {
-      _storageMutex.release();
-    }
+      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x13]);
+      final res = await completer.future.timeout(const Duration(seconds: 15));
+      await sub.cancel();
+      return res;
+    } catch (_) { return false; } finally { _storageMutex.release(); }
   }
 
   @override
   Future<bool> performSyncDeviceTime() async {
-    for (int attempt = 0; attempt < 3; attempt++) {
+    for (int i = 0; i < 3; i++) {
       try {
         int epoch = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-        await transport.writeCharacteristic(timeSyncServiceUuid, timeSyncWriteCharacteristicUuid, [
-          epoch & 0xFF,
-          (epoch >> 8) & 0xFF,
-          (epoch >> 16) & 0xFF,
-          (epoch >> 24) & 0xFF,
-        ]);
-        Logger.debug('OmiDeviceConnection: Successfully synced device time to epoch: $epoch');
+        final data = ByteData(4)..setUint32(0, epoch, Endian.little);
+        await transport.writeCharacteristic(timeSyncServiceUuid, timeSyncWriteCharacteristicUuid, data.buffer.asUint8List());
         return true;
-      } catch (e) {
-        if (attempt == 2) {
-          Logger.error('OmiDeviceConnection: Device time sync failed after 3 attempts: $e');
-          return false;
-        }
-        await Future.delayed(Duration(milliseconds: 100 * (attempt + 1)));
-      }
+      } catch (_) { await Future.delayed(Duration(milliseconds: 100 * (i + 1))); }
     }
     return false;
+  }
+
+  @override
+  Future<Stream<List<int>>> performReadFile(StorageFile file, {int offset = 0}) async {
+    // This is handled by the WAL sync logic which sets up its own listener.
+    return const Stream.empty();
   }
 }

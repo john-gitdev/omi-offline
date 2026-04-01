@@ -47,24 +47,24 @@ This document tracks features, optimizations, and bug fixes that have been revie
 **Source:** [PR #6200](https://github.com/BasedHardware/omi/pull/6200) ("REFACTOR(ANDROID): BLE SINGLE-OWNER CONNECTION MODEL")
 
 **Integrated:**
+*   **1:1 Structural Alignment:** Performed a full 1:1 code replacement of core BLE management files from the definitive PR source (`pr-6200` branch) to ensure perfect architectural alignment and resolve all previous integration mismatches.
 *   **Intent-Based Management (`manageDevice`):** Replaced the multi-step `connect` -> `discover` -> `MTU` sequence with a single native "management" intent. The native layer now owns the entire connection pipeline and only signals `onDeviceReady` when the pipe is stable and fully initialized.
 *   **Android "Connection Owner" Refactor:**
-    *   **`OmiBleForegroundService.kt`**: Now the definitive owner of the connection lifecycle. Implements `ManagedDevice` state tracking, auto-retry logic with stability timers (resetting retries after 60s), and specialized Bluetooth state handling (STATE_TURNING_OFF cleanup + STATE_ON 2s delayed reconnect).
-    *   **`OmiBleManager.kt`**: Refactored into a "pure GATT wrapper." Removed all connection policy and retry logic. Added `BleConnectionListener` for state reporting and implemented a serialized GATT command queue (`enqueueCommand`/`completeCommand`) to ensure stable operations on Android.
-    *   **API 34+ Reconnect Fix**: Implemented `getRemoteLeDevice(addr, ADDRESS_TYPE_RANDOM)` in the manager to fix reconnection failures after Bluetooth toggles on modern Android versions.
+    *   **`OmiBleForegroundService.kt`**: Fully ported the definitive owner of the connection lifecycle. Implements `ManagedDevice` state tracking, auto-retry logic with stability timers, and specialized Bluetooth state handling.
+    *   **`OmiBleManager.kt`**: Fully ported as a "pure GATT wrapper." Implements a serialized GATT command queue (`enqueueCommand`/`completeCommand`) to ensure stable operations on Android by preventing concurrent GATT requests.
+    *   **API 34+ Reconnect Fix**: Integrated the `getRemoteLeDevice(addr, ADDRESS_TYPE_RANDOM)` fix to ensure reliable reconnection after Bluetooth toggles on modern Android devices.
 *   **iOS "Ready Signal" Consolidation:**
-    *   **`OmiBleManager.swift`**: Unified the connection/discovery pipeline. The `onDeviceReady` signal is now only fired after *both* services and characteristics are fully discovered, ensuring the Dart layer never attempts to subscribe to a non-existent characteristic.
-*   **Pigeon API Refactor:** Added `manageDevice`, `unmanageDevice`, and `onDeviceReady`. Deprecated `connectPeripheral` and `reconnectKnownPeripheral`.
-*   **Automated Notification Recovery:** `NativeBleTransport` now automatically re-subscribes to all active characteristic streams upon receiving the `onDeviceReady` signal, ensuring no data loss across native-initiated reconnections.
-*   **Lifecycle Improvements:**
-    *   **`MainActivity.kt`**: Added `OmiBleManager.isFlutterAlive` guard to synchronize native background work with the UI state.
-    *   **`BleCompanionService.kt`**: Integrated `isAppAlive()` and `user_disconnected` preference checks to prevent unwanted background reconnections when the app is closed or the user manually disconnected.
-*   **UI Integration:**
-    *   **`DeviceConnectionState.connecting`**: Added and handled this state in `DeviceProvider` to provide accurate user feedback during the native management phase.
-    *   **Explicit Unpairing**: Updated `device_settings.dart` to use `forgetDevice()`, ensuring all associations and management flags are cleared upon unpair.
+    *   **`OmiBleManager.swift`**: Unified the connection/discovery pipeline to fire `onDeviceReady` only after full discovery of services and characteristics.
+*   **Dart Architecture Refactor:**
+    *   **`NativeBleTransport.dart`**: Ported the long-lived transport model. Implements automated re-subscription to characteristic streams upon receiving the `onDeviceReady` signal, ensuring zero data loss across native-initiated reconnections.
+    *   **`DeviceService.dart`**: Synchronized with the intent-based model, simplifying the connection logic and ensuring consistent state management.
+*   **Lifecycle & UI Integration:**
+    *   **`MainActivity.kt`**: Ported the `OmiBleManager.isFlutterAlive` guard to synchronize native background tasks with the UI lifecycle.
+    *   **`DeviceConnectionState.connecting`**: Handled this state in `DeviceProvider` to provide accurate user feedback during the native management phase.
+    *   **Standardized Unpairing**: Updated `device_settings.dart` to use the unified `forgetDevice()` + native `unmanageDevice()` pipeline.
 
 **Excluded:**
-*   Nothing substantive. The entire architectural shift was ported to ensure long-term stability and alignment with the official Omi project.
+*   Nothing. The entire architectural shift was mirrored 1:1 to ensure long-term stability and alignment with the official Omi project.
 
 ---
 

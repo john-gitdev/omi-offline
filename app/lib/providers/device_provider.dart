@@ -33,11 +33,6 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   Timer? _backgroundSyncTimer;
   static const int _backgroundSyncMinutes = 30;
 
-  Timer? _healthCheckTimer;
-  static const int _healthCheckSeconds = 30;
-  int _consecutivePingFailures = 0;
-  static const int _maxPingFailures = 2;
-
   Timer? _reconnectDelayTimer;
   Timer? _disconnectNotificationTimer;
   final Debouncer _disconnectDebouncer = Debouncer(delay: const Duration(milliseconds: 500));
@@ -93,17 +88,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   Future _bleDisconnectDevice(BtDevice btDevice) async {
-    // Use disconnectDevice() directly so _connection is properly nulled.
-    // ensureConnection() returns null when disconnected, leaving a stale
-    // _connection reference that would block subsequent reconnection.
     await ServiceManager.instance().device.disconnectDevice();
   }
 
   Future<int> _retrieveBatteryLevel(String deviceId) async {
     var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null) {
-      return -1;
-    }
+    if (connection == null) return -1;
     return connection.retrieveBatteryLevel();
   }
 
@@ -113,9 +103,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     void Function(bool)? onChargingStateChange,
   }) async {
     var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null) {
-      return Future.value(null);
-    }
+    if (connection == null) return null;
     return connection.getBleBatteryLevelListener(
       onBatteryLevelChange: onBatteryLevelChange,
       onChargingStateChange: onChargingStateChange,
@@ -127,15 +115,11 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     void Function(List<int>)? onButtonReceived,
   }) async {
     var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null || onButtonReceived == null) {
-      return Future.value(null);
-    }
+    if (connection == null || onButtonReceived == null) return null;
     return connection.getBleButtonListener(onButtonReceived: onButtonReceived);
   }
 
   Future updateBatteryLevel() async {
-    // Always fetch a fresh reading — the batteryLevel == -1 guard was skipping updates
-    // after reconnect and showing a stale value until the BLE notification fired.
     if (connectedDevice != null) {
       int currentLevel = await _retrieveBatteryLevel(connectedDevice!.id);
       if (currentLevel != -1) {
@@ -159,9 +143,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
   Future<BtDevice?> _getConnectedDevice() async {
     var deviceId = SharedPreferencesUtil().btDevice.id;
-    if (deviceId.isEmpty) {
-      return null;
-    }
+    if (deviceId.isEmpty) return null;
     var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
     return connection?.device;
   }
@@ -170,23 +152,18 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     final oldListener = _bleBatteryLevelListener;
     _bleBatteryLevelListener = null;
     await oldListener?.cancel();
-    if (connectedDevice == null) {
-      return;
-    }
+    if (connectedDevice == null) return;
     _bleBatteryLevelListener = await _getBleBatteryLevelListener(
       connectedDevice?.id ?? '',
       onBatteryLevelChange: (int value) {
         if (batteryLevel != value) {
           batteryLevel = value;
           SharedPreferencesUtil().lastBatteryLevel = value;
-          
           if (batteryLevel < 20 && !_hasLowBatteryAlerted) {
             _hasLowBatteryAlerted = true;
-            Logger.debug('Low Battery Alert');
           } else if (batteryLevel >= 20) {
             _hasLowBatteryAlerted = false;
           }
-
           _lastNotifiedBatteryLevel = value;
           _lastBatteryNotifyTime = DateTime.now();
           notifyListeners();
@@ -203,26 +180,14 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   initiateBleButtonListener() async {
-    if (connectedDevice == null) {
-      return;
-    }
+    if (connectedDevice == null) return;
     _bleButtonListener?.cancel();
     _bleButtonListener = await _getBleButtonListener(
       connectedDevice?.id ?? '',
       onButtonReceived: (List<int> value) {
         if (value.isEmpty) return;
         int event = value[0];
-        if (event == 1) {
-          Logger.debug('DeviceProvider: Single Tap detected');
-        } else if (event == 2) {
-          Logger.debug('DeviceProvider: Double Tap detected');
-        } else if (event == 3) {
-          Logger.debug('DeviceProvider: Long Tap detected');
-        } else if (event == 4) {
-          Logger.debug('DeviceProvider: Button Press detected');
-        } else if (event == 5) {
-          Logger.debug('DeviceProvider: Button Release detected');
-        }
+        Logger.debug('DeviceProvider: Button event $event');
       },
     );
     notifyListeners();
@@ -232,15 +197,11 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   bool updateBatteryLevelForTesting(int value, {DateTime? now}) {
     batteryLevel = value;
     final currentTime = now ?? DateTime.now();
-
     final delta = (_lastNotifiedBatteryLevel - value).abs();
     final batteryNotifyTime = _lastBatteryNotifyTime;
-    final elapsed =
-        batteryNotifyTime == null ? const Duration(minutes: 999) : currentTime.difference(batteryNotifyTime);
-    final crossedLowBatteryThreshold =
-        (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
-    final shouldNotify =
-        _lastNotifiedBatteryLevel == -1 || delta >= 5 || elapsed.inMinutes >= 15 || crossedLowBatteryThreshold;
+    final elapsed = batteryNotifyTime == null ? const Duration(minutes: 999) : currentTime.difference(batteryNotifyTime);
+    final crossedLowBatteryThreshold = (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
+    final shouldNotify = _lastNotifiedBatteryLevel == -1 || delta >= 5 || elapsed.inMinutes >= 15 || crossedLowBatteryThreshold;
     if (shouldNotify) {
       _lastNotifiedBatteryLevel = value;
       _lastBatteryNotifyTime = currentTime;
@@ -259,62 +220,38 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   Future periodicConnect(String printer, {bool boundDeviceOnly = false}) async {
     _reconnectionTimer?.cancel();
     scan(t) async {
-      Logger.debug("Period connect seconds: $_connectionCheckSeconds, triggered timer at ${DateTime.now()}");
-
-      final deviceService = ServiceManager.instance().device;
       final reconnectAt = _reconnectAt;
-      if (reconnectAt != null && reconnectAt.isAfter(DateTime.now())) {
-        return;
-      }
+      if (reconnectAt != null && reconnectAt.isAfter(DateTime.now())) return;
       if (boundDeviceOnly && SharedPreferencesUtil().btDevice.id.isEmpty) {
         t.cancel();
         return;
       }
-      Logger.debug("isConnected: $isConnected, isConnecting: $isConnecting, connectedDevice: $connectedDevice");
       if ((!isConnected && connectedDevice == null)) {
-        if (isConnecting) {
-          return;
-        }
+        if (isConnecting) return;
         await scanAndConnectToDevice();
       } else {
         t.cancel();
       }
     }
-
     _reconnectionTimer = Timer.periodic(Duration(seconds: _connectionCheckSeconds), scan);
     scan(_reconnectionTimer);
   }
 
   Future<BtDevice?> _scanConnectDevice() async {
     var device = await _getConnectedDevice();
-    if (device != null) {
-      return device;
-    }
-
+    if (device != null) return device;
     final pairedDeviceId = SharedPreferencesUtil().btDevice.id;
     if (pairedDeviceId.isNotEmpty) {
       try {
-        Logger.debug('Attempting direct reconnection to paired device: $pairedDeviceId');
         await ServiceManager.instance().device.ensureConnection(pairedDeviceId, force: true);
-
         await Future.delayed(const Duration(seconds: 2));
         device = await _getConnectedDevice();
-        if (device != null) {
-          Logger.debug('Direct reconnection successful');
-          return device;
-        }
-      } catch (e) {
-        Logger.debug('Direct reconnection failed: $e');
-      }
+        if (device != null) return device;
+      } catch (_) {}
     }
-
     await ServiceManager.instance().device.discover(desirableDeviceId: pairedDeviceId);
-
     await Future.delayed(const Duration(seconds: 2));
-    if (connectedDevice != null) {
-      return connectedDevice;
-    }
-    return null;
+    return connectedDevice;
   }
 
   Future scanAndConnectToDevice() async {
@@ -323,31 +260,19 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       if (isConnected) {
         if (connectedDevice == null) {
           connectedDevice = await _getConnectedDevice();
-          if (connectedDevice != null) {
-            SharedPreferencesUtil().deviceName = connectedDevice!.name;
-          }
+          if (connectedDevice != null) SharedPreferencesUtil().deviceName = connectedDevice!.name;
         }
-
         setIsConnected(true);
-        notifyListeners();
         return;
       }
-
       var device = await _scanConnectDevice();
-      Logger.debug('inside scanAndConnectToDevice $device in device_provider');
       if (device != null) {
         var cDevice = await _getConnectedDevice();
         if (cDevice != null) {
-          // setConnectedDevice and setisDeviceStorageSupport are also called by
-          // _onDeviceConnected (triggered via the connection-state callback).
-          // Avoid duplicating the heavy BLE operations (listFiles, DIS reads) here.
           SharedPreferencesUtil().deviceName = cDevice.name;
           setIsConnected(true);
         }
-        Logger.debug('device is not null $cDevice');
       }
-
-      notifyListeners();
     } finally {
       updateConnectingStatus(false);
     }
@@ -360,49 +285,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
   void setIsConnected(bool value) {
     isConnected = value;
-    if (isConnected) {
-      _reconnectionTimer?.cancel();
-    }
+    if (isConnected) _reconnectionTimer?.cancel();
     notifyListeners();
-  }
-
-  void _startHealthCheck() {
-    _healthCheckTimer?.cancel();
-    _consecutivePingFailures = 0;
-    _healthCheckTimer = Timer.periodic(Duration(seconds: _healthCheckSeconds), (_) => _performHealthCheck());
-  }
-
-  void _stopHealthCheck() {
-    _healthCheckTimer?.cancel();
-    _healthCheckTimer = null;
-    _consecutivePingFailures = 0;
-  }
-
-  Future<void> _performHealthCheck() async {
-    if (_disposed || !isConnected || connectedDevice == null) {
-      _stopHealthCheck();
-      return;
-    }
-
-    final deviceService = ServiceManager.instance().device;
-    if (deviceService is! DeviceService) return;
-
-    final alive = await deviceService.ping();
-    // Re-check state after await — device may have disconnected while pinging
-    if (_disposed || !isConnected) return;
-    if (alive) {
-      _consecutivePingFailures = 0;
-      return;
-    }
-
-    _consecutivePingFailures++;
-    Logger.debug('DeviceProvider: Health check ping failed ($_consecutivePingFailures/$_maxPingFailures)');
-
-    if (_consecutivePingFailures >= _maxPingFailures) {
-      Logger.debug('DeviceProvider: Device unreachable — forcing disconnect');
-      _stopHealthCheck();
-      await deviceService.disconnectDevice();
-    }
   }
 
   void _startBackgroundSyncTimer() {
@@ -413,11 +297,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
         if (!isConnecting) {
           for (int attempt = 0; attempt < 3 && !isConnected; attempt++) {
             if (attempt > 0) await Future.delayed(const Duration(seconds: 10));
-            Logger.debug('DeviceProvider: Background sync connect attempt ${attempt + 1}/3');
             await scanAndConnectToDevice();
           }
         }
-        // sync triggers in _onDeviceConnected if connection succeeds
       } else {
         _doBackgroundSync();
       }
@@ -429,15 +311,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     if (!SharedPreferencesUtil().autoSyncEnabled) return;
     final walSync = ServiceManager.instance().wal.getSyncs();
     if (walSync.isSyncing) {
-      // If a cancel is already in progress (e.g. disconnect handler fired just
-      // before this reconnect-triggered sync), wait for it to finish rather than
-      // silently skipping — otherwise the device never syncs after a rapid reconnect.
       final cf = walSync.cancelFuture;
-      if (cf != null) {
-        await cf;
-      } else {
-        return; // Sync running with no cancel pending — don't interrupt it.
-      }
+      if (cf != null) await cf;
+      else return;
     }
     if (RecordingsManager.isProcessingAny) return;
     try {
@@ -446,28 +322,21 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     } catch (e) {
       lastSyncError = e.toString();
       lastSyncErrorTime = DateTime.now();
-      Logger.error('Background sync failed: $e');
       notifyListeners();
     }
   }
 
   void onAppPaused() {
-    _stopHealthCheck();
     _backgroundSyncTimer?.cancel();
   }
 
   void onAppResumed() {
-    if (isConnected) {
-      _startHealthCheck();
-      _startBackgroundSyncTimer();
-    }
+    if (isConnected) _startBackgroundSyncTimer();
   }
 
   @override
   void notifyListeners() {
-    if (!_disposed) {
-      super.notifyListeners();
-    }
+    if (!_disposed) super.notifyListeners();
   }
 
   @override
@@ -478,7 +347,6 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _reconnectionTimer?.cancel();
     _reconnectDelayTimer?.cancel();
     _backgroundSyncTimer?.cancel();
-    _healthCheckTimer?.cancel();
     _disconnectDebouncer.cancel();
     _connectDebouncer.cancel();
     ServiceManager.instance().device.unsubscribe(this);
@@ -486,22 +354,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   void onDeviceDisconnected() async {
-    // Guard against the cascade: BLE disconnect triggers multiple concurrent
-    // callbacks (battery read failure, service-discovery error, etc.) that each
-    // call onDeviceConnectionStateChanged(disconnected).  The debouncer catches
-    // rapid-fire duplicates; the _isHandlingDisconnect flag blocks re-entry
-    // during the async gap between setConnectedDevice(null) and setIsConnected(false).
-    // Check _isHandlingDisconnect FIRST to close the race window between the
-    // guard check and flag set.
     if (_isHandlingDisconnect) return;
     _isHandlingDisconnect = true;
     if (!isConnected && connectedDevice == null) {
       _isHandlingDisconnect = false;
-      Logger.debug('onDeviceDisconnected: already disconnected, skipping');
       return;
     }
-    Logger.debug('onDisconnected inside: $connectedDevice');
-    _stopHealthCheck();
     storageFullPercentage = -1;
     isCharging = false;
     notifyListeners();
@@ -510,57 +368,31 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     setIsConnected(false);
     updateConnectingStatus(false);
 
-    // Wals
     final walSync = ServiceManager.instance().wal.getSyncs();
     walSync.cancelSync();
     walSync.setDevice(null);
 
     PlatformManager.instance.crashReporter.logInfo('Omi Device Disconnected');
     _disconnectNotificationTimer?.cancel();
-    _disconnectNotificationTimer = Timer(const Duration(seconds: 30), () {
-      Logger.debug('Device Disconnected Notification would happen here in full app');
-    });
-
     _isHandlingDisconnect = false;
 
     _reconnectDelayTimer?.cancel();
     _reconnectDelayTimer = Timer(const Duration(seconds: 1), () {
-      if (!_disposed) {
-        periodicConnect('coming from onDisconnect');
-      }
+      if (!_disposed) periodicConnect('coming from onDisconnect');
     });
   }
 
   void _onDeviceConnected(BtDevice device) async {
-    Logger.debug('_onConnected inside: $connectedDevice');
-    _disconnectNotificationTimer?.cancel();
-
-    // Await setConnectedDevice first (sets connectedDevice + reads device info).
-    // Then mark connected immediately so the UI updates.
     await setConnectedDevice(device);
     setIsConnected(true);
-
-    // IMPORTANT: Fetch battery immediately BEFORE any slow storage operations.
-    // Subscribe to notifications first so we don't miss the firmware's
-    // initial notify-on-subscribe packet, then do one-shot reads for both
-    // percentage (standard BAS, fast) and charging state (battery detail).
     await initiateBleBatteryListener();
     await updateBatteryLevel();
     await updateChargingState();
     await initiateBleButtonListener();
-    if (batteryLevel != -1 && batteryLevel < 20) {
-      _hasLowBatteryAlerted = false;
-    }
     updateConnectingStatus(false);
 
-    // Register the device with WAL sync immediately so that sync operations
-    // (triggered by the user or background timer) don't fail with "No device
-    // connected" while listFiles() is still running below.
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
 
-    // DEDUPLICATED: Fetch file list once and use it for multiple purposes.
-    // This can take 30+ seconds if the firmware SD worker is busy at boot.
-    // Re-check device is still connected after each long await to avoid stale state.
     if (_disposed || connectedDevice?.id != device.id) return;
     var connection = await ServiceManager.instance().device.ensureConnection(device.id);
     if (_disposed || connectedDevice?.id != device.id) return;
@@ -568,31 +400,22 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     if (_disposed || connectedDevice?.id != device.id) return;
     isDeviceStorageSupport = files.isNotEmpty;
 
-    // Use the fetched files to calculate storage percentage immediately
     if (files.isNotEmpty) {
       final usedBytes = files.fold(0, (sum, f) => sum + f.size);
-      const totalBytes = 480 * 1024 * 1024; // CV1 SD card capacity
+      const totalBytes = 480 * 1024 * 1024;
       storageFullPercentage = ((usedBytes / totalBytes) * 100).round().clamp(0, 100);
     } else {
       storageFullPercentage = 0;
     }
     notifyListeners();
 
-    // Update WAL device with the real file list so the first syncAll() skips
-    // a redundant BLE round-trip.
     if (_disposed || connectedDevice?.id != device.id) return;
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: files);
 
-    // getDeviceInfo() already ran inside setConnectedDevice(); this is a no-op
-    // if firmware revision was fetched successfully.
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
 
-    // Start periodic health check to detect stale connections
-    _startHealthCheck();
-
     _doBackgroundSync(); // fire-and-forget
-
     notifyListeners();
     onDeviceConnected?.call(device);
   }
@@ -600,12 +423,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   void _handleDeviceConnected(String deviceId) async {
     try {
       var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
-      if (connection == null) {
-        return;
-      }
+      if (connection == null) return;
       _onDeviceConnected(connection.device);
     } catch (e) {
-      Logger.error('DeviceProvider: _handleDeviceConnected error: $e');
       updateConnectingStatus(false);
     }
   }
@@ -628,7 +448,6 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
   @override
   void onDeviceConnectionStateChanged(String deviceId, DeviceConnectionState state) async {
-    Logger.debug("provider > device connection state changed...$deviceId...$state...${connectedDevice?.id}");
     switch (state) {
       case DeviceConnectionState.connected:
         updateConnectingStatus(false);
@@ -656,9 +475,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
   prepareDFU() {
     final dev = connectedDevice;
-    if (dev == null) {
-      return;
-    }
+    if (dev == null) return;
     _bleDisconnectDevice(dev);
     _reconnectAt = DateTime.now().add(const Duration(seconds: 30));
   }
