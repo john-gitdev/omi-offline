@@ -208,6 +208,7 @@ abstract class DeviceConnection {
   Future<bool> performSyncDeviceTime();
   Future<bool> performStopStorageSync();
   Future<bool> performRotateFile();
+  Future<bool> performClearStorage();
   Future<List<StorageFile>> performListFiles();
   Future<Stream<List<int>>> performReadFile(StorageFile file, {int offset = 0});
   Future<bool> performDeleteFile(StorageFile file);

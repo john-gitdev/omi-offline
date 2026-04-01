@@ -5,6 +5,7 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/drivers/watchdog.h>
+#include <zephyr/random/random.h>
 
 #include "lib/core/transport.h"
 #include "lib/core/button.h"
@@ -152,21 +153,36 @@ int main(void)
     int ret;
     printk("Starting omi ...\n");
 
+    /* Initialize unique session ID for this boot session */
+    if (device_session_id == 0) {
+        do {
+            device_session_id = sys_rand32_get();
+        } while (device_session_id == 0);
+    }
+
     ret = led_start();
     if (ret) printk("LED failed %d\n", ret);
     boot_led_sequence();
 
     app_settings_init();
 
+    /* Check for firmware version change to trigger a clean wipe */
+    char saved_version[32] = {0};
+    app_settings_get_fw_version(saved_version, sizeof(saved_version));
+    if (strcmp(saved_version, CONFIG_BT_DIS_FW_REV_STR) != 0) {
+        LOG_INF("[BOOT] New firmware version detected (%s -> %s). Triggering clean wipe...", 
+                saved_version, CONFIG_BT_DIS_FW_REV_STR);
+        /* Note: SD init must happen before clearing, but we want this to be atomic at boot */
+        app_sd_init();
+        boot_warming_sequence();
+        clear_audio_directory();
+        app_settings_save_fw_version(CONFIG_BT_DIS_FW_REV_STR);
+        LOG_INF("[BOOT] Clean wipe complete.");
+    } else {
+        app_sd_init();
+    }
+
     init_rtc();
-    lsm6dsl_time_boot_adjust_rtc();
-
-    haptic_init();
-    play_haptic_milli(200);
-
-    flash_init();
-
-    app_sd_init();
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     storage_init();

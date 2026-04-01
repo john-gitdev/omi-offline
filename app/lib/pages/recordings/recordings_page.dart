@@ -96,12 +96,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   void _restoreState() {
     final saved = _prefs.getString(_kSpState, defaultValue: 'idle');
-    const incompleteStates = {'syncing', 'processing', 'stopping'};
-    if (incompleteStates.contains(saved)) {
-      _spState = SyncProcessState.resume;
-      _prefs.saveString(_kSpState, 'resume');
-    } else if (saved == 'error') {
+    // Disable auto-resume for debugging as requested.
+    if (saved == 'error') {
       _spState = SyncProcessState.error;
+    } else {
+      _spState = SyncProcessState.idle;
     }
     _syncedCount = _prefs.getInt(_kSpSyncedCount);
     _totalCount = _prefs.getInt(_kSpTotalCount);
@@ -431,8 +430,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _lastActiveStage = 'syncing';
     _transitionTo(SyncProcessState.syncing);
 
-    // Give background setup (listFiles) a few seconds to complete if we just connected
-    await Future.delayed(const Duration(seconds: 3));
+    // Give the firmware 1s to settle its internal file list cache before we start requesting reads
+    await Future.delayed(const Duration(seconds: 1));
 
     final syncs = ServiceManager.instance().wal.getSyncs();
     final estimatedTotal = syncs.estimatedTotalSegments;

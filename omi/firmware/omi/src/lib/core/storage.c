@@ -38,6 +38,8 @@ static uint32_t current_read_offset = 0;
 #define CMD_LIST_FILES      0x10   // Get list of audio files
 #define CMD_READ_FILE       0x11   // Read specific file: [cmd][file_index][offset:4]
 #define CMD_DELETE_FILE     0x12   // Delete specific file: [cmd][file_index]
+#define CMD_ROTATE_FILE     0x13   // Close current recording file and open a new one
+#define CMD_CLEAR_STORAGE    0x14   // Delete all audio files
 
 #define INVALID_COMMAND 6
 #define FILE_NOT_FOUND 7
@@ -299,10 +301,10 @@ static int send_file_list_response(struct bt_conn *conn)
     uint16_t mtu = bt_gatt_get_mtu(conn);
     uint16_t max_payload = (mtu > 3) ? (mtu - 3) : 20;
     
-    /* First packet overhead: 1 (type) + 4 (count) = 5 bytes */
-    int first_packet_max = (max_payload - 5) / 8;
+    /* First packet overhead: 1 (type) + 4 (count) = 5 bytes. Entry: [idx:4][ts:4][sz:4] = 12 bytes */
+    int first_packet_max = (max_payload - 5) / 12;
     /* Subsequent packets overhead: 1 (type) = 1 byte */
-    int later_packet_max = (max_payload - 1) / 8;
+    int later_packet_max = (max_payload - 1) / 12;
 
     int files_processed = 0;
     uint32_t total_included = 0;
@@ -316,7 +318,7 @@ static int send_file_list_response(struct bt_conn *conn)
     while (files_processed < sync_file_count) {
         int resp_len = 0;
         storage_buffer[resp_len++] = PACKET_DATA;
-        
+
         int chunk_limit;
         if (files_processed == 0) {
             /* First packet: include the 4-byte Little-Endian count */
@@ -338,14 +340,19 @@ static int send_file_list_response(struct bt_conn *conn)
             /* Extract timestamp: handle hex UTC or TMP_UPTIME_... formats */
             uint32_t timestamp = 0;
             if (strncmp(sync_file_list[files_processed], "TMP_", 4) == 0) {
-                /* For TMP files, use the uptime from the filename as a sortable proxy */
                 timestamp = (uint32_t)strtoul(sync_file_list[files_processed] + 4, NULL, 16);
             } else {
                 timestamp = (uint32_t)strtoul(sync_file_list[files_processed], NULL, 16);
             }
             uint32_t size = sync_file_sizes[files_processed];
+            uint32_t index = (uint32_t)files_processed;
 
-            /* Little-Endian for App parser */
+            /* Little-Endian for App parser - 12 byte entry: [idx:4][ts:4][sz:4] */
+            storage_buffer[resp_len++] = index & 0xFF;
+            storage_buffer[resp_len++] = (index >> 8) & 0xFF;
+            storage_buffer[resp_len++] = (index >> 16) & 0xFF;
+            storage_buffer[resp_len++] = (index >> 24) & 0xFF;
+
             storage_buffer[resp_len++] = timestamp & 0xFF;
             storage_buffer[resp_len++] = (timestamp >> 8) & 0xFF;
             storage_buffer[resp_len++] = (timestamp >> 16) & 0xFF;
@@ -355,8 +362,10 @@ static int send_file_list_response(struct bt_conn *conn)
             storage_buffer[resp_len++] = (size >> 8) & 0xFF;
             storage_buffer[resp_len++] = (size >> 16) & 0xFF;
             storage_buffer[resp_len++] = (size >> 24) & 0xFF;
+
             chunk_count++;
         }
+
 
         if (chunk_count > 0 || (files_processed == sync_file_count && total_included == 0)) {
             storage_notify(conn, storage_buffer, resp_len);
@@ -377,6 +386,11 @@ static int setup_file_transfer(int file_index, uint32_t start_offset)
 {
     if (file_index < 0 || file_index >= sync_file_count) {
         LOG_ERR("File index out of range: %d", file_index);
+        return -1;
+    }
+
+    if (sync_file_list[file_index][0] == '\0') {
+        LOG_ERR("File at index %d was already deleted", file_index);
         return -1;
     }
     
@@ -416,7 +430,12 @@ static int delete_file_by_index(int file_index)
     }
 
     LOG_INF("Deleted file[%d]: %s", file_index, target_name);
-    refresh_file_list_cache();
+    
+    /* Mark as deleted in cache instead of refreshing. This keeps indices 
+     * stable for the rest of the app's sync loop. */
+    sync_file_list[file_index][0] = '\0';
+    sync_file_sizes[file_index] = 0;
+    
     return 0;
 }
 
@@ -479,11 +498,26 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
         delete_file_index = file_index;  /* Defer to storage thread */
         return 0xFF;
     }
+if (command == CMD_ROTATE_FILE) {
+    /* Defer to storage thread so create_new_audio_file() runs on the SD worker context. */
+    rotate_file_requested = 1;
+    return 0xFF;  /* ACK sent by storage thread after rotation completes */
+}
 
-    if (command == CMD_ROTATE_FILE) {
-        /* Defer to storage thread so create_new_audio_file() runs on the SD worker context. */
-        rotate_file_requested = 1;
-        return 0xFF;  /* ACK sent by storage thread after rotation completes */
+if (command == CMD_CLEAR_STORAGE) {
+    /* CMD_CLEAR_STORAGE (0x14) - delete all audio files */
+    int ret = clear_audio_directory();
+    sync_file_count = 0; /* Invalidate cache */
+    return (ret >= 0) ? 0 : 1;
+}
+
+/* Control commands */
+
+    if (command == CMD_CLEAR_STORAGE) {
+        /* CMD_CLEAR_STORAGE (0x14) - delete all audio files */
+        int ret = clear_audio_directory();
+        sync_file_count = 0; /* Invalidate cache */
+        return (ret >= 0) ? 0 : 1;
     }
 
     /* Control commands */
