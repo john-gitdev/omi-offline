@@ -170,18 +170,17 @@ int main(void)
     char saved_version[32] = {0};
     app_settings_get_fw_version(saved_version, sizeof(saved_version));
     if (strcmp(saved_version, CONFIG_BT_DIS_FW_REV_STR) != 0) {
-        LOG_INF("[BOOT] New firmware version detected (%s -> %s). Triggering clean wipe...", 
+        LOG_INF("[BOOT] New firmware version detected (%s -> %s). Triggering clean wipe...",
                 saved_version, CONFIG_BT_DIS_FW_REV_STR);
-        /* Note: SD init must happen before clearing, but we want this to be atomic at boot */
-        app_sd_init();
-        boot_warming_sequence();
-        clear_audio_directory();
+
         app_settings_save_fw_version(CONFIG_BT_DIS_FW_REV_STR);
-        LOG_INF("[BOOT] Clean wipe complete.");
+
+        /* Signal the SD system to wipe BEFORE starting it */
+        sd_request_wipe();
+        app_sd_init();
     } else {
         app_sd_init();
     }
-
     init_rtc();
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
