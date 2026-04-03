@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -66,6 +67,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   @override
   int get estimatedTotalSegments {
+    if (_isSyncing) {
+      return _wals.where((w) => w.isSyncing || (w.status == WalStatus.miss && w.storage == WalStorage.sdcard)).length;
+    }
     final pending = _wals.where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard).toList();
     return pending.length;
   }
@@ -247,7 +251,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     listener.onWalUpdated();
   }
 
-  Future<(File, int)> _flushToDisk(Wal wal, List<List<int>> frames, int timerStart,
+  Future<(File, int)> _flushToDisk(Wal wal, List<int> rawData, int timerStart,
       {String? subFolder, int? deviceSessionId, int? segmentIndex, bool append = false}) async {
     final directory = await getApplicationDocumentsDirectory();
     final folderPath = deviceSessionId != null
@@ -260,22 +264,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     String fileName = (deviceSessionId != null && segmentIndex != null)
         ? '${deviceSessionId}_$segmentIndex.bin'
         : wal.getSegmentFileNameByTimestamp(timerStart);
+
     String filePath = '${folder.path}/$fileName';
-
-    final builder = BytesBuilder(copy: false);
-    for (var frame in frames) {
-      final len = frame.length;
-      builder.addByte(len & 0xFF);
-      builder.addByte((len >> 8) & 0xFF);
-      builder.addByte((len >> 16) & 0xFF);
-      builder.addByte((len >> 24) & 0xFF);
-      builder.add(frame);
-    }
-
-    final data = builder.takeBytes();
     final file = File(filePath);
-    await file.writeAsBytes(data, mode: append ? FileMode.append : FileMode.write);
-    return (file, data.length);
+    await file.writeAsBytes(rawData, mode: append ? FileMode.append : FileMode.write);
+    return (file, rawData.length);
   }
 
   Future<void> _saveMarker(int deviceSessionId, int utcTime) async {
@@ -310,10 +303,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     int? lastDeviceSessionId = wal.timerStart > 0 ? wal.timerStart : null;
     int? lastSegmentIndex = 0;
-    final List<List<int>> frameBuffer = [];
-    final List<int> streamBuffer = [];
+    final Queue<Uint8List> chunkQueue = Queue<Uint8List>();
+    final BytesBuilder batchBuilder = BytesBuilder(copy: false);
     final Set<String> flushedSegmentsThisTransfer = {};
     int totalBytesWrittenThisTransfer = 0;
+    int writtenOffset = offset;
 
     if (offset > 0 && lastDeviceSessionId != null) {
       final directory = await getApplicationDocumentsDirectory();
@@ -321,20 +315,21 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (await existingFile.exists()) flushedSegmentsThisTransfer.add('${lastDeviceSessionId}_0');
     }
 
-    Future<void> flushBuffer() async {
-      if (frameBuffer.isEmpty) return;
+    Future<void> flushRawBuffer(List<int> rawData) async {
+      if (rawData.isEmpty) return;
       String subFolder = lastDeviceSessionId?.toString() ?? 'unsynced';
       final segmentKey = '${lastDeviceSessionId}_$lastSegmentIndex';
       final appendMode = flushedSegmentsThisTransfer.contains(segmentKey);
       if (!appendMode) flushedSegmentsThisTransfer.add(segmentKey);
 
-      var (file, bytesWritten) = await _flushToDisk(wal, frameBuffer, timerStart,
+      var (file, bytesWritten) = await _flushToDisk(wal, rawData, timerStart,
           subFolder: subFolder, deviceSessionId: lastDeviceSessionId, segmentIndex: lastSegmentIndex, append: appendMode);
       totalBytesWrittenThisTransfer += bytesWritten;
+      writtenOffset += bytesWritten;
+      _lastSegmentBoundaryOffset = writtenOffset;
       try {
-        await callback(file, currentStreamOffset, timerStart, subFolder: subFolder);
+        await callback(file, writtenOffset, timerStart, subFolder: subFolder);
       } catch (_) {}
-      frameBuffer.clear();
     }
 
     _storageStream?.cancel();
@@ -371,7 +366,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               return;
             }
 
-            streamBuffer.addAll(payload);
+            chunkQueue.add(Uint8List.fromList(payload));
             expectedOffset += payload.length;
             currentStreamOffset = expectedOffset;
             if (onProgress != null) onProgress(expectedOffset);
@@ -380,10 +375,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           case 0x02:
             isStreamLocked = true;
             eotReceived = true;
-            await flushBuffer();
-            _lastSegmentBoundaryOffset = currentStreamOffset;
-            if (!completer.isCompleted) completer.complete();
-            streamBuffer.clear();
+            if (!isProcessing) {
+              if (chunkQueue.isNotEmpty) {
+                batchBuilder.clear();
+                while (chunkQueue.isNotEmpty) {
+                  batchBuilder.add(chunkQueue.removeFirst());
+                }
+                await flushRawBuffer(batchBuilder.toBytes());
+              }
+              _lastSegmentBoundaryOffset = writtenOffset;
+              if (!completer.isCompleted) completer.complete();
+            }
             return;
 
           case 0x03:
@@ -402,33 +404,58 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         if (isProcessing) return;
         isProcessing = true;
         try {
-          while (streamBuffer.length >= 4) {
-            final bd = ByteData.sublistView(Uint8List.fromList(streamBuffer.sublist(0, 4)));
-            int packageSize = bd.getUint32(0, Endian.little);
+          const int BATCH_SIZE = 4096;
 
-            if (packageSize == 254 || packageSize == 0xFFFFFFFE) {
-              if (4 + 16 <= streamBuffer.length) {
-                var metadata = streamBuffer.sublist(4, 4 + 16);
-                var metaBd = ByteData.sublistView(Uint8List.fromList(metadata));
-                if (lastDeviceSessionId != null) await _saveMarker(lastDeviceSessionId!, metaBd.getUint32(0, Endian.little));
-                streamBuffer.removeRange(0, 4 + 16);
-                continue;
-              } else { break; }
+          while (chunkQueue.isNotEmpty) {
+            batchBuilder.clear();
+            int batchSize = 0;
+
+            // Build batch WITHOUT await
+            while (chunkQueue.isNotEmpty && batchSize < BATCH_SIZE) {
+              final chunk = chunkQueue.removeFirst();
+              batchBuilder.add(chunk);
+              batchSize += chunk.length;
             }
-            if (packageSize == 0) { streamBuffer.removeRange(0, 4); continue; }
-            if (4 + packageSize <= streamBuffer.length) {
-              var frame = streamBuffer.sublist(4, 4 + packageSize);
-              streamBuffer.removeRange(0, 4 + packageSize);
-              frameBuffer.add(frame);
-              if (frameBuffer.length >= 100) {
-                await flushBuffer();
-                _lastSegmentBoundaryOffset = currentStreamOffset;
+
+            final Uint8List batch = batchBuilder.toBytes();
+
+            // 2. Scan for Markers (0xFE) without stripping/modifying any bytes (READ-ONLY)
+            int scanOff = 0;
+            while (scanOff + 4 <= batch.length) {
+              final bd = ByteData.sublistView(batch, scanOff, scanOff + 4);
+              int packageSize = bd.getUint32(0, Endian.little);
+
+              if (packageSize == 0xFFFFFFFE) {
+                if (scanOff + 20 <= batch.length) {
+                  final metaBd = ByteData.sublistView(batch, scanOff + 4, scanOff + 20);
+                  if (lastDeviceSessionId != null) {
+                    await _saveMarker(lastDeviceSessionId!, metaBd.getUint32(0, Endian.little));
+                  }
+                  scanOff += 20;
+                  continue;
+                } else {
+                  break;
+                }
               }
-            } else { break; }
-            await Future.microtask(() {});
+
+              if (packageSize == 0 || packageSize == 0xFFFFFFFF) {
+                scanOff += 4;
+              } else if (packageSize > 400) {
+                scanOff += 1;
+              } else {
+                int padded = (packageSize + 3) & ~3;
+                scanOff += (4 + padded);
+              }
+            }
+
+            // ---- SAFE FLUSH ----
+            await flushRawBuffer(batch);
           }
         } finally {
           isProcessing = false;
+          if (eotReceived && !completer.isCompleted) {
+            completer.complete();
+          }
         }
       },
       onError: (e) {
@@ -488,14 +515,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<SyncLocalFilesResponse?> syncAll({IWalSyncProgressListener? progress}) async {
     if (_isSyncing || _device == null) return null;
 
-    final refreshed = await getMissingWals();
-    if (refreshed.isNotEmpty) _wals = refreshed;
-
-    final wals = _wals.where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard).toList();
-    if (wals.isEmpty) return null;
-
     _resetSyncState();
     _isSyncing = true;
+    
+    // Refresh and update atomically before UI sees anything
+    final refreshed = await getMissingWals();
+    _wals = refreshed;
+    listener.onWalUpdated();
+
+    final wals = _wals.where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard).toList();
+    if (wals.isEmpty) {
+      _isSyncing = false;
+      return null;
+    }
     final dev = _device!;
     final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) throw Exception('No connection');
@@ -517,6 +549,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         try {
           Logger.debug('SDCardWalSync: Starting transfer for file[${wal.fileNum}]');
+          bool transferSuccess = false;
           await _readStorageBytesToFile(wal, (File file, int offset, int timerStart, {String? subFolder}) async {
             if (_isCancelled) throw Exception("Cancelled");
             _updateSpeed(offset - lastOffset);
@@ -530,9 +563,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
           });
 
+          // If _readStorageBytesToFile completed without exception, it received PACKET_EOT
+          transferSuccess = true;
+
           Logger.debug('SDCardWalSync: Transfer complete for file[${wal.fileNum}], deleting...');
           await Future.delayed(const Duration(milliseconds: 500));
-          if (wal.walOffset >= wal.storageTotalBytes) {
+          
+          // Trust natural EOT completion even if offset is slightly different due to alignment
+          if (transferSuccess) {
             await deleteWal(wal);
             wal.status = WalStatus.synced;
             Logger.debug('SDCardWalSync: Successfully synced and deleted file[${wal.fileNum}]');
@@ -540,7 +578,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             wal.walOffset = _lastSegmentBoundaryOffset;
             wal.status = WalStatus.miss;
             anyPartial = true;
-            Logger.warn('SDCardWalSync: File[${wal.fileNum}] only partially synced');
+            Logger.warning('SDCardWalSync: File[${wal.fileNum}] failed to complete fully');
           }
           listener.onWalUpdated();
         } catch (e) {

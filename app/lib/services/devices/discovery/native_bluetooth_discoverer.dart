@@ -22,7 +22,7 @@ class NativeBluetoothDiscoverer extends DeviceDiscoverer {
     final previousCallback = BleBridge.instance.peripheralDiscoveredCallback;
 
     BleBridge.instance.peripheralDiscoveredCallback = (BlePeripheral peripheral) {
-      Logger.debug('NativeBluetoothDiscoverer: Discovered peripheral: ${peripheral.name} (${peripheral.uuid})');
+      // Logger.debug('NativeBluetoothDiscoverer: Discovered peripheral: ${peripheral.name} (${peripheral.uuid})');
       if (!results.any((r) => r.uuid == peripheral.uuid)) {
         results.add(peripheral);
       }

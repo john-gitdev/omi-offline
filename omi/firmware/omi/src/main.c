@@ -164,6 +164,9 @@ int main(void)
     if (ret) printk("LED failed %d\n", ret);
     boot_led_sequence();
 
+    haptic_init();
+    play_haptic_milli(100);
+
     app_settings_init();
 
     /* Check for firmware version change to trigger a clean wipe */

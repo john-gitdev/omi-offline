@@ -35,7 +35,7 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define SD_REQ_QUEUE_MSGS 100
 #define SD_PRIO_QUEUE_MSGS 10
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
-#define WRITE_DRAIN_BURST 32
+#define WRITE_DRAIN_BURST 16
 #define ERROR_THRESHOLD 5
 #define FILE_CACHE_TTL_MS (30 * 1000)
 
@@ -214,6 +214,7 @@ static struct lfs_config lfs_cfg = {
 static uint8_t writing_error_counter = 0;
 static bool sd_write_blocked = false;
 static int64_t last_write_blocked_log_ms = 0;
+static int64_t last_write_error_uptime_ms = 0;
 static uint32_t write_drop_packets = 0;
 static uint32_t write_drop_bytes = 0;
 
@@ -225,6 +226,8 @@ static atomic_t sd_boot_ready;
 /* Counter of audio frames dropped while SD boot was in progress.
  * Incremented in write_to_file(); queryable via sd_get_boot_dropped_frames(). */
 static atomic_t boot_dropped_frames;
+static atomic_t stat_block_attempts;
+static atomic_t stat_dropped_frames;
 
 /* Protects current_filename / current_file_path across threads.
  * The SD worker updates these during file creation and TMP→hex rename;
@@ -308,8 +311,15 @@ static void sort_cached_file_entries(void);
 
 static void process_save_offset_req(const sd_req_t *req)
 {
-    if (sd_write_blocked)
-        return;
+    if (sd_write_blocked) {
+        if ((k_uptime_get() - last_write_error_uptime_ms) > 2000) {
+            sd_write_blocked = false;
+            writing_error_counter = 0;
+            LOG_INF("[SD_WORK] Attempting recovery from write-blocked state (offset)");
+        } else {
+            return;
+        }
+    }
 
     lfs_file_seek(&lfs_fs, &lfs_fil_info, 0, LFS_SEEK_SET);
     lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_info, &req->u.info.offset_info, sizeof(sd_offset_info_t));
@@ -317,6 +327,7 @@ static void process_save_offset_req(const sd_req_t *req)
         lfs_file_sync(&lfs_fs, &lfs_fil_info);
         memcpy(&current_offset_info, &req->u.info.offset_info, sizeof(sd_offset_info_t));
     } else {
+        last_write_error_uptime_ms = k_uptime_get();
         LOG_ERR("[SD_WORK] save offset write err %d", (int) bw);
     }
 }
@@ -339,12 +350,20 @@ static void drain_pending_write_queue_for_shutdown(void)
 
 static void process_write_data_req(const sd_req_t *req)
 {
-    if (sd_write_blocked)
-        return;
+    if (sd_write_blocked) {
+        if ((k_uptime_get() - last_write_error_uptime_ms) > 2000) {
+            sd_write_blocked = false;
+            writing_error_counter = 0;
+            LOG_INF("[SD_WORK] Attempting recovery from write-blocked state (data)");
+        } else {
+            return;
+        }
+    }
 
     if (current_filename[0] == '\0') {
         int res = create_audio_file_with_timestamp();
         if (res < 0) {
+            last_write_error_uptime_ms = k_uptime_get();
             sd_write_blocked = true;
             return;
         }
@@ -355,6 +374,7 @@ static void process_write_data_req(const sd_req_t *req)
         LOG_INF("[SD_WORK] Rotating file after %d min", (int)(FILE_ROTATION_INTERVAL_MS / 60000));
         int res = create_audio_file_with_timestamp();
         if (res < 0) {
+            last_write_error_uptime_ms = k_uptime_get();
             sd_write_blocked = true;
             return;
         }
@@ -362,6 +382,7 @@ static void process_write_data_req(const sd_req_t *req)
 
     lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_data, req->u.write.buf, req->u.write.len);
     if (bw < 0 || (size_t)bw != req->u.write.len) {
+        last_write_error_uptime_ms = k_uptime_get();
         writing_error_counter++;
         LOG_ERR("write error bw=%d wanted=%u", (int)bw, (unsigned)req->u.write.len);
 
@@ -383,6 +404,7 @@ static void process_write_data_req(const sd_req_t *req)
     if (sync_due_to_interval) {
         int err = lfs_file_sync(&lfs_fs, &lfs_fil_data);
         if (err < 0) {
+            last_write_error_uptime_ms = k_uptime_get();
             LOG_ERR("sync error err=%d", err);
             sd_write_blocked = true;
             return;
@@ -1279,6 +1301,12 @@ void sd_worker_thread(void)
     }
 
     /* ---- Main loop ---- */
+    static uint32_t stat_writes = 0;
+    static uint32_t stat_reads = 0;
+    static uint32_t stat_hw_exceeded = 0;
+    int consec_writes = 0;
+    bool in_high_watermark = false;
+
     while (1) {
         /* Handle deferred control requests first (when queue was saturated). */
         if (atomic_cas(&pending_flush_on_ble_connect, 1, 0)) {
@@ -1302,16 +1330,54 @@ void sd_worker_thread(void)
             goto handle_req;
         }
 
-        /* Check priority queue first (reads, flushes, lists, deletes) */
-        if (k_msgq_get(&sd_prio_msgq, &req, K_NO_WAIT) == 0) {
+        uint32_t write_usage = k_msgq_num_used_get(&sd_msgq);
+        uint32_t prio_usage = k_msgq_num_used_get(&sd_prio_msgq);
+        
+        /* Hysteresis: Enter panic mode at 70%, Exit at 50% */
+        if (!in_high_watermark && write_usage >= (SD_REQ_QUEUE_MSGS * 70) / 100) {
+            in_high_watermark = true;
+            stat_hw_exceeded++;
+            LOG_INF("[SD_WORK] High watermark reached (%u/%d), entering priority drain", 
+                    write_usage, SD_REQ_QUEUE_MSGS);
+        } else if (in_high_watermark && write_usage <= (SD_REQ_QUEUE_MSGS * 50) / 100) {
+            in_high_watermark = false;
+            LOG_INF("[SD_WORK] Queue depth safe (%u/%d), resuming normal schedule", 
+                    write_usage, SD_REQ_QUEUE_MSGS);
+        }
+
+        /* 
+         * Scheduling Policy:
+         * 1. If in high watermark, aggressively drain writes.
+         * 2. If we have pending writes and haven't exceeded our burst limit (16), process writes.
+         * 3. If there are no priority requests, keep processing writes.
+         */
+        if (write_usage > 0 && (in_high_watermark || consec_writes < 16 || prio_usage == 0)) {
+            if (k_msgq_get(&sd_msgq, &req, K_NO_WAIT) == 0) {
+                consec_writes++;
+                if (req.type == REQ_WRITE_DATA) stat_writes++;
+                goto handle_req;
+            }
+        }
+
+        /* 4. Process priority queue (BLE reads/control) if we yielded from writes or writes are empty */
+        if (prio_usage > 0) {
+            if (k_msgq_get(&sd_prio_msgq, &req, K_NO_WAIT) == 0) {
+                consec_writes = 0; /* Reset counter to allow next write burst */
+                if (req.type == REQ_READ_DATA) stat_reads++;
+                goto handle_req;
+            }
+        }
+
+        /* 5. Both queues empty: block on write_queue to avoid busy loop. 
+         *    Use a shorter timeout when BLE is connected to remain responsive. */
+        k_timeout_t idle_wait = atomic_get(&ble_connected) ? K_MSEC(10) : K_MSEC(2000);
+        if (k_msgq_get(&sd_msgq, &req, idle_wait) == 0) {
+            consec_writes++;
+            if (req.type == REQ_WRITE_DATA) stat_writes++;
             goto handle_req;
         }
 
-        /* Regular write queue timeout: short when BLE connected (keep read/sync responsive),
-         * long when offline (save power). */
-        k_timeout_t write_wait = atomic_get(&ble_connected) ? K_MSEC(50) : K_MSEC(2000);
-        if (k_msgq_get(&sd_msgq, &req, write_wait) != 0)
-            continue;
+        continue;
 
     handle_req:
         switch (req.type) {
@@ -1319,33 +1385,6 @@ void sd_worker_thread(void)
         /* ---- Write data ---- */
         case REQ_WRITE_DATA:
             process_write_data_req(&req);
-
-            /* Drain additional write/save_offset messages in one burst to
-             * improve SD throughput. */
-            for (int i = 0; i < WRITE_DRAIN_BURST; i++) {
-                if (k_msgq_num_used_get(&sd_prio_msgq) > 0) {
-                    break; /* Yield to priority requests (BLE read/sync) */
-                }
-                
-                sd_req_t next_req;
-                if (k_msgq_peek(&sd_msgq, &next_req) != 0) {
-                    break;  /* Queue empty */
-                }
-                if (next_req.type != REQ_WRITE_DATA && next_req.type != REQ_SAVE_OFFSET) {
-                    LOG_DBG("[SD_WORK] drain burst stopping at req type %d (not write/save)",
-                            next_req.type);
-                    break;  /* Non-write request — leave it for main loop */
-                }
-                /* Now safe to consume */
-                if (k_msgq_get(&sd_msgq, &next_req, K_NO_WAIT) != 0) {
-                    break;
-                }
-                if (next_req.type == REQ_WRITE_DATA) {
-                    process_write_data_req(&next_req);
-                } else {
-                    process_save_offset_req(&next_req);
-                }
-            }
             break;
 
         /* ---- Read audio data (uses persistent file handle) ---- */
@@ -1854,11 +1893,17 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
 
     if (sd_write_blocked) {
         int64_t now = k_uptime_get();
-        if (now - last_write_blocked_log_ms > 1000) {
-            LOG_ERR("write_to_file blocked");
-            last_write_blocked_log_ms = now;
+        if ((now - last_write_error_uptime_ms) > 2000) {
+            sd_write_blocked = false;
+            writing_error_counter = 0;
+            LOG_INF("Attempting recovery from write-blocked state");
+        } else {
+            if (now - last_write_blocked_log_ms > 1000) {
+                LOG_ERR("write_to_file blocked (permanent SD failure?)");
+                last_write_blocked_log_ms = now;
+            }
+            return 0;
         }
-        return 0;
     }
     if (length > MAX_WRITE_SIZE) {
         LOG_ERR("write_to_file: length %u exceeds MAX_WRITE_SIZE %d", (unsigned)length, MAX_WRITE_SIZE);
@@ -1869,28 +1914,26 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     req.type = REQ_WRITE_DATA;
     memcpy(req.u.write.buf, data, length);
     req.u.write.len = length;
-    /* Fast path: try regular queue first, prio queue as fallback.
-     * Writing audio data to the prio queue starves control requests
-     * (reads, flushes, deletes) which also use the prio queue. */
-    int ret = k_msgq_put(&sd_msgq, &req, K_NO_WAIT);
 
-    /* Backpressure: if queue is temporarily full, wait a very short time
-     * for worker to drain instead of dropping immediately.
-     * This reduces packet loss and CPU spin when SD path stalls briefly. */
+    /* Try non-blocking put first to check if we need to track a block attempt */
+    int ret = k_msgq_put(&sd_msgq, &req, K_NO_WAIT);
     if (ret != 0) {
-        k_timeout_t retry_wait = atomic_get(&ble_connected) ? K_MSEC(1) : K_MSEC(5);
-        ret = k_msgq_put(&sd_prio_msgq, &req, retry_wait);
+        atomic_inc(&stat_block_attempts);
+        /* Bounded blocking: wait up to 500ms for space in the ordered queue.
+         * SD cards frequently stall for 100-400ms during internal maintenance. */
+        ret = k_msgq_put(&sd_msgq, &req, K_MSEC(500));
     }
 
-    if (ret) {
+    if (ret != 0) {
+        atomic_inc(&stat_dropped_frames);
         write_drop_packets++;
         write_drop_bytes += length;
         int64_t now = k_uptime_get();
         if (now - last_write_err_log_ms > 2000) {
-            LOG_WRN("Write queue full, dropping audio data (%d), dropped=%u pkts (%u bytes)",
-                    ret,
-                    write_drop_packets,
-                    write_drop_bytes);
+            uint32_t depth = k_msgq_num_used_get(&sd_msgq);
+            uint32_t dropped = (uint32_t)atomic_get(&stat_dropped_frames);
+            LOG_ERR("SD queue blocked >500ms (depth=%u/%d), dropped=%u",
+                    depth, SD_REQ_QUEUE_MSGS, dropped);
             last_write_err_log_ms = now;
         }
         return 0;

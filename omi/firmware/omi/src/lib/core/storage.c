@@ -60,6 +60,7 @@ static int current_sync_file_index = -1;
 static uint8_t list_files_requested = 0;  /* Deferred to storage thread */
 static int16_t delete_file_index = -1;     /* -1 = no delete, >=0 = file index to delete */
 static uint8_t rotate_file_requested = 0; /* Deferred to storage thread */
+static uint8_t clear_storage_requested = 0; /* Deferred to storage thread */
 
 static void storage_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
 static ssize_t storage_write_handler(struct bt_conn *conn,
@@ -504,20 +505,10 @@ if (command == CMD_ROTATE_FILE) {
     return 0xFF;  /* ACK sent by storage thread after rotation completes */
 }
 
-if (command == CMD_CLEAR_STORAGE) {
-    /* CMD_CLEAR_STORAGE (0x14) - delete all audio files */
-    int ret = clear_audio_directory();
-    sync_file_count = 0; /* Invalidate cache */
-    return (ret >= 0) ? 0 : 1;
-}
-
-/* Control commands */
-
     if (command == CMD_CLEAR_STORAGE) {
-        /* CMD_CLEAR_STORAGE (0x14) - delete all audio files */
-        int ret = clear_audio_directory();
-        sync_file_count = 0; /* Invalidate cache */
-        return (ret >= 0) ? 0 : 1;
+        /* CMD_CLEAR_STORAGE (0x14) - defer wipe to storage thread to prevent GATT 133 */
+        clear_storage_requested = 1;
+        return 0xFF;
     }
 
     /* Control commands */
@@ -700,10 +691,20 @@ void storage_write(void)
         }
         if (list_files_requested) {
             list_files_requested = 0;
-            /* Always refresh cache so the response is up-to-date.
-             * If refresh fails, send error immediately — do NOT let
-             * send_file_list_response() retry (that would add another full
-             * timeout and push total wait beyond the Flutter deadline). */
+
+            /* Handshake: Wait for SD card boot init to finish (mount + pre-warm).
+             * This ensures the app always gets a definitive list and prevents ACK 7. */
+            int wait_retries = 100; // 10 seconds total (App timeout is usually 10s)
+            while (!sd_is_boot_ready() && wait_retries > 0) {
+                k_msleep(100);
+                wait_retries--;
+            }
+
+            if (!sd_is_boot_ready()) {
+                LOG_WRN("CMD_LIST_FILES: SD card still busy after 10s, proceeding anyway");
+            }
+
+            /* Always refresh cache so the response is up-to-date. */
             int refresh_ret = refresh_file_list_cache();
             if (conn) {
                 if (refresh_ret < 0) {
@@ -718,10 +719,7 @@ void storage_write(void)
             int16_t idx = delete_file_index;
             delete_file_index = -1;
 
-            /* Ensure file list is cached */
-            if (sync_file_count == 0) {
-                refresh_file_list_cache();
-            }
+            if (sync_file_count == 0) refresh_file_list_cache();
 
             uint8_t result = 0;
             if (idx >= sync_file_count) {
@@ -735,6 +733,17 @@ void storage_write(void)
                 storage_notify(conn, ack, sizeof(ack));
             }
             LOG_INF("Delete file[%d] result: %d", idx, result);
+        }
+        if (clear_storage_requested) {
+            clear_storage_requested = 0;
+            int ret = clear_audio_directory();
+            sync_file_count = 0; // Invalidate cache
+            if (conn) {
+                uint8_t result = (ret >= 0) ? 0 : 1;
+                uint8_t ack[2] = {PACKET_ACK, result};
+                storage_notify(conn, ack, sizeof(ack));
+            }
+            LOG_INF("CMD_CLEAR_STORAGE: SD card wiped, ret=%d", ret);
         }
         if (rotate_file_requested) {
             rotate_file_requested = 0;
@@ -792,7 +801,15 @@ void storage_write(void)
                     LOG_INF("File sync complete, sending EOT: %s", current_read_filename);
                     uint8_t eot[1] = {PACKET_EOT};
                     struct bt_conn *eot_conn = get_current_connection();
-                    (void)storage_notify(eot_conn, eot, sizeof(eot));
+                    if (eot_conn) {
+                        int err;
+                        do {
+                            err = storage_notify(eot_conn, eot, sizeof(eot));
+                            if (err == -ENOMEM) {
+                                k_msleep(10);
+                            }
+                        } while (err == -ENOMEM);
+                    }
                     put_current_connection(eot_conn);
                     k_msleep(10);
                 }
