@@ -10,7 +10,6 @@ import 'package:path_provider/path_provider.dart';
 
 import 'package:disk_space_2/disk_space_2.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
-import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/services.dart';
@@ -283,12 +282,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   Future _readStorageBytesToFile(Wal wal, Function(File f, int offset, int timerStart, {String? subFolder}) callback,
-      {bool force = false, Function(int offset)? onProgress}) async {
+      {Function(int offset)? onProgress}) async {
     var deviceId = wal.device;
     int fileNum = wal.fileNum;
     int offset = wal.walOffset;
     int timerStart = wal.timerStart;
-    int currentStreamOffset = offset;
 
     var connection = _connectionProvider != null
         ? await _connectionProvider!(deviceId)
@@ -306,7 +304,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final Queue<Uint8List> chunkQueue = Queue<Uint8List>();
     final BytesBuilder batchBuilder = BytesBuilder(copy: false);
     final Set<String> flushedSegmentsThisTransfer = {};
-    int totalBytesWrittenThisTransfer = 0;
     int writtenOffset = offset;
 
     if (offset > 0 && lastDeviceSessionId != null) {
@@ -324,7 +321,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       var (file, bytesWritten) = await _flushToDisk(wal, rawData, timerStart,
           subFolder: subFolder, deviceSessionId: lastDeviceSessionId, segmentIndex: lastSegmentIndex, append: appendMode);
-      totalBytesWrittenThisTransfer += bytesWritten;
       writtenOffset += bytesWritten;
       _lastSegmentBoundaryOffset = writtenOffset;
       try {
@@ -368,7 +364,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
             chunkQueue.add(Uint8List.fromList(payload));
             expectedOffset += payload.length;
-            currentStreamOffset = expectedOffset;
             if (onProgress != null) onProgress(expectedOffset);
             break;
 
@@ -429,7 +424,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 if (scanOff + 20 <= batch.length) {
                   final metaBd = ByteData.sublistView(batch, scanOff + 4, scanOff + 20);
                   if (lastDeviceSessionId != null) {
-                    await _saveMarker(lastDeviceSessionId!, metaBd.getUint32(0, Endian.little));
+                    await _saveMarker(lastDeviceSessionId, metaBd.getUint32(0, Endian.little));
                   }
                   scanOff += 20;
                   continue;
@@ -464,8 +459,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       },
       onDone: () {
         if (!completer.isCompleted) {
-          if (eotReceived) completer.complete();
-          else completer.completeError(Exception('Stream closed without EOT'));
+          if (eotReceived) {
+            completer.complete();
+          } else {
+            completer.completeError(Exception('Stream closed without EOT'));
+          }
         }
       },
     );
@@ -533,6 +531,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     if (connection == null) throw Exception('No connection');
 
     bool anyPartial = false;
+    _downloadStartTime = DateTime.now();
     await connection.acquireStorageLock();
     try {
       for (int i = 0; i < wals.length; i++) {
@@ -545,11 +544,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         final initialOffset = wal.walOffset;
         int lastOffset = initialOffset;
         await _checkDiskSpaceBeforeSync(wal.storageTotalBytes - initialOffset);
-        _downloadStartTime = DateTime.now();
 
         try {
           Logger.debug('SDCardWalSync: Starting transfer for file[${wal.fileNum}]');
-          bool transferSuccess = false;
           await _readStorageBytesToFile(wal, (File file, int offset, int timerStart, {String? subFolder}) async {
             if (_isCancelled) throw Exception("Cancelled");
             _updateSpeed(offset - lastOffset);
@@ -558,28 +555,23 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           }, onProgress: (offset) {
             wal.walOffset = offset;
             final double withinWal = (wal.storageTotalBytes > initialOffset) ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset) : 1.0;
-            final double clamped = ((i + withinWal.clamp(0.0, 1.0)) / wals.length).clamp(0.0, 1.0);
+            // 90% of the file's share is the download
+            final double clamped = ((i + (withinWal.clamp(0.0, 1.0) * 0.9)) / wals.length).clamp(0.0, 1.0);
             progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
             _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
           });
 
-          // If _readStorageBytesToFile completed without exception, it received PACKET_EOT
-          transferSuccess = true;
-
           Logger.debug('SDCardWalSync: Transfer complete for file[${wal.fileNum}], deleting...');
           await Future.delayed(const Duration(milliseconds: 500));
-          
+
           // Trust natural EOT completion even if offset is slightly different due to alignment
-          if (transferSuccess) {
-            await deleteWal(wal);
-            wal.status = WalStatus.synced;
-            Logger.debug('SDCardWalSync: Successfully synced and deleted file[${wal.fileNum}]');
-          } else {
-            wal.walOffset = _lastSegmentBoundaryOffset;
-            wal.status = WalStatus.miss;
-            anyPartial = true;
-            Logger.warning('SDCardWalSync: File[${wal.fileNum}] failed to complete fully');
-          }
+          await deleteWal(wal);
+          wal.status = WalStatus.synced;
+          // Now hit 100% of this file's share
+          final double fileDone = ((i + 1.0) / wals.length).clamp(0.0, 1.0);
+          progress?.onWalSyncedProgress(fileDone, speedKBps: _currentSpeedKBps);
+          _globalProgressListener?.onWalSyncedProgress(fileDone, speedKBps: _currentSpeedKBps);
+          Logger.debug('SDCardWalSync: Successfully synced and deleted file[${wal.fileNum}]');
           listener.onWalUpdated();
         } catch (e) {
           Logger.error('SDCardWalSync: Failed to sync file[${wal.fileNum}]: $e');
@@ -668,7 +660,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   Future<void> deleteAllSyncedWals() async {
     final synced = _wals.where((w) => w.status == WalStatus.synced).toList();
-    for (final wal in synced) await deleteWal(wal);
+    for (final wal in synced) {
+      await deleteWal(wal);
+    }
   }
 
   @override
@@ -685,7 +679,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     } else {
       Logger.error('SDCardWalSync: CMD_CLEAR_STORAGE failed, falling back to per-file deletion');
       final files = await _listFiles(_device!.id);
-      for (final file in files) await connection.deleteFile(file);
+      for (final file in files) {
+        await connection.deleteFile(file);
+      }
       _wals = [];
       listener.onWalUpdated();
     }

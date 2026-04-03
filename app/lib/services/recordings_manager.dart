@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
@@ -293,10 +292,6 @@ class RecordingsManager {
       // 0. Disk space guard — bail before processing if free space is critically low.
       // Raw segments are preserved so processing can be retried once space is freed.
       final rawTotalBytes = batch.rawSegments.fold<int>(0, (sum, f) => sum + f.lengthSync());
-      // M4A is typically ~10% of raw Opus; WAV fallback ≈ raw × 4.  Use raw × 5
-      // as a conservative estimate of the temp space needed.
-      final estimatedNeeded = rawTotalBytes * 5;
-      final stat = await FileStat.stat(directory.path);
       // stat.size is the inode size, not free space — use a platform method if
       // available.  As a fallback we attempt to check via a dummy allocation test
       // only when the raw payload is large (> 50 MB).
@@ -381,7 +376,8 @@ class RecordingsManager {
                 lastSafeToDeleteIndex = i;
               }
 
-              onProgress((i + 1) / batch.rawSegments.length);
+              // Scaling segment processing to 90% of total progress
+              onProgress(((i + 1) / batch.rawSegments.length) * 0.9);
               if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
             }
 
@@ -417,7 +413,8 @@ class RecordingsManager {
                 lastSafeToDeleteIndex = i;
               }
 
-              onProgress((i + 1) / batch.rawSegments.length);
+              // Scaling segment processing to 90% of total progress
+              onProgress(((i + 1) / batch.rawSegments.length) * 0.9);
               // Yield to the UI to keep it responsive (skipped in background mode)
               if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
             }
@@ -539,6 +536,7 @@ class RecordingsManager {
           }
         }
       }
+      onProgress(1.0);
     } finally {
       _isProcessingAny = false;
       SharedPreferencesUtil().extractionInProgress = false;
@@ -660,7 +658,8 @@ class RecordingsManager {
                 lastSafeToDeleteIndex = i;
               }
 
-              onProgress((i + 1) / allSegments.length);
+              // Scaling segment processing to 90% of total progress
+              onProgress(((i + 1) / allSegments.length) * 0.9);
               if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
             }
 
@@ -694,7 +693,8 @@ class RecordingsManager {
                 lastSafeToDeleteIndex = i;
               }
 
-              onProgress((i + 1) / allSegments.length);
+              // Scaling segment processing to 90% of total progress
+              onProgress(((i + 1) / allSegments.length) * 0.9);
               if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
             }
 
@@ -778,6 +778,7 @@ class RecordingsManager {
           }
         }
       }
+      onProgress(1.0);
     } finally {
       _isProcessingAny = false;
       SharedPreferencesUtil().extractionInProgress = false;
