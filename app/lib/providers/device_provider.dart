@@ -49,8 +49,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     final saved = SharedPreferencesUtil().lastBatteryLevel;
     if (saved >= 0) batteryLevel = saved;
     ServiceManager.instance().device.subscribe(this, this);
-    // Remove the immediate periodicConnect on launch — wait for the page to trigger it or for
-    // the system state to settle.
+    if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
+      Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true));
+    }
     _startBackgroundSyncTimer();
   }
 
@@ -71,10 +72,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       if (currentConnectedDevice != null) {
         var connection = await ServiceManager.instance().device.ensureConnection(currentConnectedDevice.id);
         final info = await currentConnectedDevice.getDeviceInfo(connection);
-        if (info != null) {
-          pairedDevice = info;
-          SharedPreferencesUtil().btDevice = info;
-        }
+        pairedDevice = info;
+        SharedPreferencesUtil().btDevice = info;
       }
     } else {
       if (SharedPreferencesUtil().btDevice.id.isEmpty) {
@@ -217,8 +216,23 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   Future periodicConnect(String printer, {bool boundDeviceOnly = false}) async {
-    // Disabled auto-connect for debugging as requested.
-    return;
+    _reconnectionTimer?.cancel();
+    scan(t) async {
+      final reconnectAt = _reconnectAt;
+      if (reconnectAt != null && reconnectAt.isAfter(DateTime.now())) return;
+      if (boundDeviceOnly && SharedPreferencesUtil().btDevice.id.isEmpty) {
+        t.cancel();
+        return;
+      }
+      if ((!isConnected && connectedDevice == null)) {
+        if (isConnecting) return;
+        await scanAndConnectToDevice();
+      } else {
+        t.cancel();
+      }
+    }
+    _reconnectionTimer = Timer.periodic(Duration(seconds: _connectionCheckSeconds), scan);
+    scan(_reconnectionTimer);
   }
 
   Future<BtDevice?> _scanConnectDevice() async {
@@ -275,8 +289,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
   void _startBackgroundSyncTimer() {
     _backgroundSyncTimer?.cancel();
-    // Disabled for manual debugging
-    _backgroundSyncTimer = Timer.periodic(const Duration(hours: 999), (_) async {
+    _backgroundSyncTimer = Timer.periodic(const Duration(minutes: _backgroundSyncMinutes), (_) async {
       if (_disposed) return;
       if (!isConnected) {
         if (!isConnecting) {
@@ -297,8 +310,11 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     final walSync = ServiceManager.instance().wal.getSyncs();
     if (walSync.isSyncing) {
       final cf = walSync.cancelFuture;
-      if (cf != null) await cf;
-      else return;
+      if (cf != null) {
+        await cf;
+      } else {
+        return;
+      }
     }
     if (RecordingsManager.isProcessingAny) return;
     try {
@@ -362,7 +378,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _isHandlingDisconnect = false;
 
     _reconnectDelayTimer?.cancel();
-    // Disabled auto-reconnect trigger for debugging as requested.
+    _reconnectDelayTimer = Timer(const Duration(seconds: 1), () {
+      if (!_disposed) periodicConnect('coming from onDisconnect');
+    });
   }
 
   String? _currentlySettingUpId;
@@ -416,7 +434,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
 
-    // _doBackgroundSync(); // Removed for manual debugging
+    _doBackgroundSync();
     notifyListeners();
     onDeviceConnected?.call(device);
   }
