@@ -275,7 +275,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
   void _startBackgroundSyncTimer() {
     _backgroundSyncTimer?.cancel();
-    _backgroundSyncTimer = Timer.periodic(const Duration(minutes: _backgroundSyncMinutes), (_) async {
+    // Disabled for manual debugging
+    _backgroundSyncTimer = Timer.periodic(const Duration(hours: 999), (_) async {
       if (_disposed) return;
       if (!isConnected) {
         if (!isConnecting) {
@@ -415,7 +416,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
 
-    _doBackgroundSync();
+    // _doBackgroundSync(); // Removed for manual debugging
     notifyListeners();
     onDeviceConnected?.call(device);
   }

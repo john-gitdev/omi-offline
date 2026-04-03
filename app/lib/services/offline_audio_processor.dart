@@ -34,6 +34,9 @@ class OfflineAudioProcessor {
   int _hangoverFrames = 0;
   int _speechFrameCount = 0;
   int _skippedFrameCount = 0;
+  int _resyncCount = 0;
+  int _zeroFrameCount = 0;
+  int _totalFrameCount = 0;
   int _skippedFramesInRecording = 0; // skipped frames in current recording — keeps timestamps accurate
   int _noiseFloorInitFrames = 50; // first ~1s: fast convergence without alpha
   int _noiseFloorStaleFrames = 0;
@@ -132,23 +135,46 @@ class OfflineAudioProcessor {
     // 3. Process audio frames — store FrameRefs, run VAD on decoded PCM
     int off = 0;
     int frameIndex = 0;
+    _resyncCount = 0;
+    _zeroFrameCount = 0;
+    _totalFrameCount = 0;
+
     while (off + 4 <= bytes.length) {
       final len = byteData.getUint32(off, Endian.little);
-      if (len > 4000) {
-        // Sanity check: Opus frames should never exceed ~4000 bytes
-        Logger.warning('OfflineAudioProcessor: Skipping corrupt frame with length $len at offset $off');
-        off += 4; // Skip just the length field and try to find next valid frame
-        _skippedFrameCount++;
+      
+      // 1. Skip alignment padding, sector-end bulk zeros, or erased flash
+      if (len == 0 || len == 0xFFFFFFFF) {
+        off += 4;
+        _zeroFrameCount++;
+        continue;
+      }
+
+      // 2. Handle Button Press Markers (0xFFFFFFFE)
+      // These are 20 bytes: 4-byte header (0xFFFFFFFE) + 16-byte metadata
+      if (len == 0xFFFFFFFE) {
+        off += 20;
+        continue;
+      }
+
+      // 3. Valid Length Check (Opus frames are usually 20-200 bytes)
+      if (len > 400) {
+        off += 1; // Byte-wise resync: slide 1 byte to find the next valid header
+        _resyncCount++;
         _skippedFramesInRecording++;
         continue;
       }
+
       if (off + 4 + len > bytes.length) break;
 
-      final byteOffset = off; // position of 4-byte length prefix — used in FrameRef
+      _totalFrameCount++;
+      final byteOffset = off; 
       off += 4;
 
       final opusFrame = bytes.sublist(off, off + len);
       off += len;
+      
+      // 3. Snap to next 4-byte boundary
+      off = (off + 3) & ~3;
 
       if (frameIndex++ % 50 == 0) await Future.delayed(Duration.zero);
 
@@ -252,8 +278,10 @@ class OfflineAudioProcessor {
     }
 
     if (bytes.isNotEmpty) {
-      Logger.debug("OfflineAudioProcessor: Processed segment (${frameIndex} audio frames). "
-          "Speech: $_speechFrameCount, NoiseFloor: ${_noiseFloorDbfs.toStringAsFixed(1)} dB, Margin: $_snrMarginDb dB");
+      double successRate = _totalFrameCount > 0 ? ((_totalFrameCount - _skippedFrameCount) / _totalFrameCount) * 100 : 0;
+      Logger.debug("OfflineAudioProcessor: Processed segment (${_totalFrameCount} total frames). "
+          "Success: ${successRate.toStringAsFixed(1)}%, Resyncs: $_resyncCount, Zeros: $_zeroFrameCount, "
+          "Speech: $_speechFrameCount, NoiseFloor: ${_noiseFloorDbfs.toStringAsFixed(1)} dB");
     }
 
     return savedFiles;
@@ -382,7 +410,10 @@ class OfflineAudioProcessor {
         }
 
         final opusBytes = Uint8List.fromList(await currentRaf!.read(ref.frameLength));
-        nextExpectedOffset = frameDataOffset + ref.frameLength;
+        
+        // Correctly calculate nextExpectedOffset including 4-byte block alignment
+        int paddedLength = (ref.frameLength + 3) & ~3;
+        nextExpectedOffset = frameDataOffset - 4 + 4 + paddedLength;
 
         Int16List pcmData;
         try {

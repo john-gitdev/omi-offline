@@ -917,6 +917,13 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
     memcpy(storage_temp_data + buffer_offset + 4, data, data_size);
     buffer_offset += entry_size;
 
+    /* Align buffer_offset to 4-byte boundary for the next entry */
+    uint16_t alignment_padding = (4 - (buffer_offset % 4)) % 4;
+    if (alignment_padding > 0 && buffer_offset + alignment_padding <= MAX_WRITE_SIZE) {
+        memset(storage_temp_data + buffer_offset, 0, alignment_padding);
+        buffer_offset += alignment_padding;
+    }
+
     if (buffer_offset == MAX_WRITE_SIZE) {
         write_to_file(storage_temp_data, MAX_WRITE_SIZE);
         buffer_offset = 0;
@@ -933,7 +940,7 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
 bool write_to_storage(void)
 {
     uint8_t *buffer = tx_buffer + 2;
-    return write_custom_packet_to_storage((uint8_t)tx_buffer_size, buffer, (uint8_t)tx_buffer_size);
+    return write_custom_packet_to_storage(tx_buffer_size, buffer, tx_buffer_size);
 }
 
 uint32_t device_session_id = 0;
@@ -960,7 +967,7 @@ bool write_marker_to_storage(void)
     memset(temp_buffer + 12, 0, 4);
 
     LOG_INF("Writing marker to storage (DeviceSession: %u)", device_session_id);
-    return write_custom_packet_to_storage(254, temp_buffer, 16);
+    return write_custom_packet_to_storage(0xFFFFFFFE, temp_buffer, 16);
 }
 #endif
 

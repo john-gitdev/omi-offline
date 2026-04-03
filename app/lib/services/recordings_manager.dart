@@ -711,7 +711,8 @@ class RecordingsManager {
 
         // Move output files to live folders based on each recording's actual start date.
         final newFiles = tempDir.listSync().whereType<File>().toList();
-        Logger.debug("RecordingsManager: Combined processing complete. ${newFiles.length} recordings produced.");
+        final recordingsCount = newFiles.where((f) => f.path.endsWith('.m4a') || f.path.endsWith('.wav')).length;
+        Logger.debug("RecordingsManager: Combined processing complete. $recordingsCount recordings produced.");
         for (final file in newFiles) {
           final fileName = file.path.split('/').last;
           final parts = fileName.split('_');
