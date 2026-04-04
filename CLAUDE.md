@@ -34,7 +34,7 @@ cd app && flutter gen-l10n
 
 ### Overview
 
-Omi is an offline-first wearable audio recorder. The nRF52840 firmware captures audio via Opus codec, stores it to SD card, and exposes it over BLE. The Flutter app discovers the device, syncs recordings via WAL, decodes Opus to WAV, and splits by silence.
+Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures audio via Opus codec, stores it to SD card, and exposes it over BLE. The Flutter app discovers the device, syncs recordings via WAL, decodes Opus to WAV, and splits by silence.
 
 **Data flow:** Mic → Opus encode (firmware) → SD card → BLE/WiFi transfer → WAL sync → Opus decode → silence detection → WAV files → daily batch UI
 
@@ -48,13 +48,13 @@ Omi is an offline-first wearable audio recorder. The nRF52840 firmware captures 
 - On connect: time sync writes UTC as little-endian u32 to `timeSyncWriteCharacteristicUuid` so the device can anchor recording timestamps.
 
 **Audio pipeline** (`services/`):
-- `RecordingsManager` stores raw BLE frames in `raw_segments/<sessionId>/<sessionId>_<segmentIndex>.bin`
+- `RecordingsManager` stores raw BLE frames in `raw_segments/<deviceSessionId>/<deviceSessionId>_<segmentIndex>.bin`
 - `OfflineAudioProcessor` decodes Opus → 16 kHz mono 16-bit PCM, applies RMS silence detection (-55 dBFS threshold), splits into `recordings/<YYYY-MM-DD>/<recording_<millis>>.m4a`
 - Metadata packets (255-byte frames) carry UTC + device uptime for timestamp anchoring when device clock was reset
 
 **Sync** (`services/wals/`):
 - `WalService` creates `Wal` entries per file (tracks codec, device, storage location, sync status: miss → syncing → synced)
-- `SDCardWalSyncImpl` reads files over BLE (256-byte chunks) or TCP (WiFi, port 8080) — allows resume on reconnect without re-downloading
+- `SDCardWalSyncImpl` reads files over BLE (256-byte chunks) — allows resume on reconnect without re-downloading (WiFi/TCP sync is disabled)
 
 ### Hardware (`omi/hardware/consumer/`)
 
@@ -73,9 +73,9 @@ Omi Consumer — open-source AI wearable. PCB: mainboard (v1.2) + charger board 
 
 Enclosure: CNC aluminium covers (Case A/B), PC+ABS injection-moulded shell, SLA frame + LED guide, silicone internal pad (50A/80A). 88 components total.
 
-### Firmware (`omi/firmware/devkit/src/`)
+### Firmware (`omi/firmware/omi/src/`)
 
-Zephyr RTOS on nRF52840 (devkit). Key threads: mic capture → codec ring buffer → Opus encode → BLE notify / SD card write.
+Zephyr RTOS on nRF5340. Key threads: mic capture → codec ring buffer → Opus encode → BLE notify / SD card write.
 
 **Opus config**: 16 kHz mono, VBR, complexity 5, 20 ms frames.
 
