@@ -7,9 +7,11 @@ Running log of investigated bugs, deferred decisions, and findings that don't fi
 ## Firmware: LED Behavior
 
 ### Boot Sequence
-1. **Haptic buzz** (200ms) — only power-on signal, no LED
-2. **LEDs Off** — SD card pre-warming (`lfs_fs_gc`). Mic is NOT started yet; no audio is dropped.
-3. **Fade to solid yellow** (0→100%) — pre-warm complete, mic starts, main loop takes over
+1. **LEDs breathing white** — starts immediately on `led_start()` before anything else
+2. **Haptic buzz** (100ms) — fires during breathing while settings + SD init run
+3. **Breathing continues** — waiting for SD worker to finish mount + `lfs_fs_gc` + file open (< 5 s with little data, up to ~50 s with 200 MB)
+4. **Mic starts** — once SD is ready (`sd_is_boot_ready()`)
+5. **Breathing stops, fade to yellow** — R+G fade from 0 → `dim_ratio` over 300 ms; `set_led_state()` takes over
 
 ### LED State Machine (`set_led_state()`, runs every 500ms)
 
@@ -17,13 +19,14 @@ Priority order (highest first):
 
 | Priority | Condition | LED |
 |----------|-----------|-----|
-| 1 | Device off | Off |
-| 2 | Double-tap marker (`marker_flash_count > 0`) | White (R+G+B) — overrides stealth |
-| 3 | Stealth mode (`is_led_enabled == false`) | Off |
-| 4 | Muted (long press) | Solid Red |
-| 5 | Low battery (< 10%) | Solid Purple (R+B) |
-| 6 | BLE connected | Solid Blue |
-| 7 | Default / recording | Solid Yellow (R+G) |
+| 1 | Device off (`is_off`) | Off |
+| 2 | Charging starts (`is_charging && !is_led_enabled`) | Force `is_led_enabled = true`, continue |
+| 3 | Double-tap marker (`marker_flash_count > 0`) | White (R+G+B) — overrides stealth |
+| 4 | Stealth mode (`!is_led_enabled`) | Off |
+| 5 | Muted | Solid Red |
+| 6 | Low battery (< 10%) | Solid Purple (R+B) |
+| 7 | BLE connected | Solid Blue |
+| 8 | Default / recording | Solid Yellow (R+G) |
 
 ### Charging Override
 Applied on top of the base state above:
@@ -32,62 +35,38 @@ Applied on top of the base state above:
 - Plugging in charger automatically disables Stealth Mode (`is_led_enabled = true`)
 
 ### Button Controls
-| Action | Effect |
-|--------|--------|
-| Single tap | Toggle Stealth Mode (LED on/off) |
-| Long press (1s) | Toggle Mute — LED goes Red when muted |
-| Double tap | White flash ~1s (marker recorded) — ignored if muted |
-| Double tap + hold (3s) | Power off |
+| Action | Effect | Haptic |
+|--------|--------|--------|
+| Single tap | Toggle Stealth Mode (LED on/off) | None |
+| Long press (1s) | Toggle Mute — LED goes Red when muted, mic paused | 500ms |
+| Double tap | White flash ~1s (marker recorded) — ignored if muted | 300ms |
+| Double tap + hold (3s on second press) | Power off | 1000ms |
 
 ### Hardware Error LEDs
-**Removed in production.** The `feedback.c` error functions (`error_sd_card()`, `error_transport()`, etc.) only log to UART/RTT. No visual LED feedback on errors. Color codes are documented in `feedback.h` comments for reference only.
+**Removed in production.** All `error_*()` functions in `feedback.c` log to UART/RTT only. No visual LED feedback on errors.
 
 ### Stealth Mode Notes
 - Single tap toggles `is_led_enabled`
-- Stealth suppresses all base state LEDs
-- Stealth does **not** suppress: double-tap white flash
+- Stealth suppresses all base state LEDs (priority 4)
+- Stealth does **not** suppress double-tap white flash (priority 3 fires first)
 - Charging always overrides stealth back on
 
 ---
 
-## Firmware: `WRITE_BATCH_COUNT` and `WRITE_DRAIN_BURST` tuning
+## Firmware: SD Write Queue Configuration
 
-**Location:** `omi/firmware/devkit/src/` (SD card write queue config)
+**Location:** `omi/firmware/omi/src/sd_card.c`
 
-**Current values (this repo):**
+**Current values:**
 ```c
-#define WRITE_BATCH_COUNT  32
-#define WRITE_DRAIN_BURST  16
+#define SD_REQ_QUEUE_MSGS  200   // main audio write queue depth
+#define SD_PRIO_QUEUE_MSGS  10   // priority queue (control requests)
+#define WRITE_DRAIN_BURST   16   // frames drained per worker iteration
+#define SD_FSYNC_INTERVAL_MS (60 * 1000)  // fsync every 60s
 ```
 
-**Upstream values (`BasedHardware/omi`):**
-```c
-#define WRITE_BATCH_COUNT  200
-#define WRITE_DRAIN_BURST  16
-```
+Each slot in `sd_msgq` holds one `sd_req_t`. The queue is backed by `K_MSGQ_DEFINE` (static allocation). The worker drains up to `WRITE_DRAIN_BURST` (16) messages per iteration before yielding.
 
-### Analysis
+`SD_FSYNC_INTERVAL_MS` (60 s) controls durability: data is in the LittleFS write cache until fsync fires. A hard power-off within this window risks losing up to 60 s of audio, but LittleFS's copy-on-write metadata ensures the filesystem itself stays consistent.
 
-`WRITE_BATCH_COUNT` sets the static queue depth. Each slot holds one audio frame (440 bytes for Opus at 20 ms / 50 fps).
-
-| Metric | 32 (this repo) | 200 (upstream) |
-|--------|---------------|----------------|
-| Static RAM used | 14 KB | 86 KB (33% of nRF52840's 256 KB) |
-| SD flush frequency | ~every 3.5 s of audio | ~every 22 s |
-| SD write cycles | Higher | Lower |
-| Avg power draw | Slightly higher | Lower |
-| Data loss on hard power-off | ≤14 KB (~3.5 s) | ≤88 KB (~22 s) |
-
-`WRITE_DRAIN_BURST 16` is identical in both — no difference.
-
-### Verdict
-
-**32 is the right value for the nRF52840.** 86 KB as a single static buffer on a 256 KB device is aggressive and leaves little headroom for the BLE stack, Zephyr kernel, and other subsystems.
-
-The queue-pressure early-flush (triggered at 8 queued messages) is the effective ceiling in practice — if audio arrives faster than the SD can drain, the flush fires long before reaching 32 anyway. And since `fsync` only runs every 60 seconds regardless, batching beyond a few seconds provides no durability benefit.
-
-Going higher would marginally reduce `fs_write()` call frequency, but those calls are cheap (filesystem cache, not physical SD writes) and already amortized by the 60 s fsync cadence.
-
-**The 6× smaller data-loss window on hard power-off (3.5 s vs 22 s) is a genuine safety improvement.**
-
-The upstream value of 200 likely targets a device with more RAM or was set without accounting for the nRF52840's memory constraints.
+The early-flush path (`sd_boot_ready` gate + high-watermark logic) prevents the queue from filling during the boot `lfs_fs_gc` pre-warm and during bursts of rapid audio ingestion.
