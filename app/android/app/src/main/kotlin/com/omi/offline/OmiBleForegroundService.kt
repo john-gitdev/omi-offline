@@ -37,9 +37,7 @@ class OmiBleForegroundService : Service() {
         private const val PREFS_NAME = "ble_config"
         private const val PREFS_KEY = "managed_device"
         private const val PREFS_USER_DISCONNECTED = "user_disconnected"
-        private const val DFU_SERVICE_UUID = "00001530-1212-efde-1523-785feabcd123"
-
-        @Volatile
+@Volatile
         var instance: OmiBleForegroundService? = null
             private set
 
@@ -176,13 +174,6 @@ class OmiBleForegroundService : Service() {
         val addr = address.uppercase()
         val gatt = bleManager.connectedGatts[addr] ?: run {
             Log.e(TAG, "requestMtuThenNotifyReady: no GATT for $addr")
-            return
-        }
-
-        val hasDfuService = services.any { it.uuid.lowercase() == DFU_SERVICE_UUID }
-        if (hasDfuService) {
-            Log.i(TAG, "DFU service detected for $addr, skipping MTU request")
-            fireDeviceReady(addr, services)
             return
         }
 
@@ -477,6 +468,9 @@ class OmiBleForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // Transition guard: old builds used START_STICKY, so Android may re-deliver
+        // a pending intent after process death before MainActivity initializes OmiBleManager.
+        if (!OmiBleManager.isInitialized) OmiBleManager.initialize(application)
         createNotificationChannel()
         registerReceiver(
             bluetoothReceiver,

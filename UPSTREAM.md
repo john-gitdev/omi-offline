@@ -41,6 +41,36 @@ This document tracks features, optimizations, and bug fixes that have been revie
 
 ---
 
+## Individual Upstream Commits
+
+### [Commit `bae9dbea3`](https://github.com/BasedHardware/omi/commit/bae9dbea3): fix: BLE API compat for Android < 13 (API < 33)
+- **Status:** Already present — no action required
+- **File:** `OmiBleManager.kt`
+- **Assessment:** Upstream replaced the API 33-only `writeCharacteristic(char, data, writeType)` and `writeDescriptor(descriptor, byte[])` overloads with `Build.VERSION.SDK_INT >= 33` branches that fall back to the deprecated `setValue` + single-param pattern. The local `OmiBleManager.kt` already had equivalent guards using `Build.VERSION_CODES.TIRAMISU` checks, written inline. No action required.
+
+---
+
+### [Commit `b0560a0ec`](https://github.com/BasedHardware/omi/commit/b0560a0ec): fix: guard OmiBleManager init in OmiBleForegroundService.onCreate
+- **Status:** Integrated
+- **File:** `OmiBleForegroundService.kt`
+- **Assessment:** Android may re-deliver a pending intent to the foreground service after process death before `MainActivity` initializes `OmiBleManager`, causing an `IllegalStateException`. The local file was missing the guard. Applied: added `if (!OmiBleManager.isInitialized) OmiBleManager.initialize(application)` after `instance = this` in `onCreate()`.
+
+---
+
+### [Commit `20f323a36`](https://github.com/BasedHardware/omi/commit/20f323a36): fix: remove DFU service MTU skip in requestMtuThenNotifyReady
+- **Status:** Integrated
+- **File:** `OmiBleForegroundService.kt`
+- **Assessment:** Upstream removed the early-return guard that skipped MTU negotiation when a DFU service was detected, allowing MTU negotiation to proceed for all devices unconditionally. The local file still had this block. Applied: removed the `hasDfuService` check and the now-unused `DFU_SERVICE_UUID` constant.
+
+---
+
+### [Commit `a43cd2be0`](https://github.com/BasedHardware/omi/commit/a43cd2be0): fix: log writeCharacteristic errors and add writeDescriptorCompat with queue recovery
+- **Status:** Integrated
+- **File:** `OmiBleManager.kt`
+- **Assessment:** Two issues in the local code: (1) the API 33+ `writeCharacteristic` path silently swallowed the result code on failure; (2) the inlined `writeDescriptor` calls had no failure handling — if a descriptor write was rejected, `completeCommand()` was never called, permanently stalling the BLE command queue. Applied: added `Log.e` on `writeCharacteristic` failure for the API 33+ path; extracted a `writeDescriptorCompat()` helper that calls `completeCommand()` on failure, replacing the inlined subscribe/unsubscribe blocks.
+
+---
+
 ## Integrated Features & Fixes
 
 ### 7. BLE Single-Owner Connection Model (Architecture Refactor)
