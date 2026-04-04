@@ -107,9 +107,9 @@ The sync layer uses a **Native GATT implementation** for iOS and Android via a P
 
 The protocol prevents audio repetition and corruption:
 
-* **PACKET_DATA**: carries file offset in header — app checks for gaps and duplicates
-* **PACKET_EOT**: signals end of file data
-* **PACKET_ACK**: app acknowledges each packet; firmware only advances its offset on success and backs off on BLE errors
+* **`0x01` (data)**: carries 4-byte file offset in header — app checks for gaps; duplicate or overlapping packets are trimmed
+* **`0x02` (EOT)**: firmware signals end of file; app flushes final buffer and completes the transfer
+* **`0x03` (ACK)**: firmware sends start-ACK to app after receiving the read command; app waits for this before processing data
 
 This ensures idempotent delivery: re-connections mid-sync resume cleanly without re-downloading or duplicating data.
 
@@ -307,7 +307,7 @@ Key correctness fixes applied:
 | BLE sync | **Protocol Gap Detection:** Inline retry and rewinding for offset mismatches during sync |
 | BLE sync | Framed protocol with ACK gating eliminates duplicate/gap audio |
 | Firmware storage | **Serialization:** Serialized storage operations to prevent race conditions during list/read/delete |
-| Firmware storage | **Retry Logic:** `performListFiles` retries up to 3x on 0xFF firmware error; timeout increased to 35s |
+| Firmware storage | **Retry Logic:** `performListFiles` has a 120s timeout with a single CCCD re-send at 10s; `deleteFile` has a 35s timeout |
 | Firmware storage | **Immediate WAL:** Set WAL device immediately on connect without blocking on `listFiles` |
 | Firmware uptime | `last_timestamp_uptime` reset on wipe; uptime rollover handled correctly |
 | Opus decode | One decoder per extraction range — state preserved across segment boundaries |
