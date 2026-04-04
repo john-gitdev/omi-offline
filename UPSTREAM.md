@@ -1,130 +1,19 @@
 # Upstream Integrations
 
-This document tracks features, optimizations, and bug fixes that have been reviewed and integrated from the upstream `BasedHardware/omi` repository and its forks into `omi-offline`.
+Tracks features, fixes, and commits reviewed from `BasedHardware/omi` and ported into `omi-offline`.
 
-## Unmerged PRs
-
-### [PR #6086: BLE Reliability Fixes](https://github.com/BasedHardware/omi/pull/6086)
-- **Status:** Integrated — all applicable changes ported
-- **Assessment:** Five fixes targeting Android BLE crash-on-cold-start and reconnect race conditions. All five were applicable and have been implemented. These bugs were not caught by the prior static deep-dive (PR #64) because they require understanding Android OS CompanionDeviceService lifecycle and cross-layer GATT reconnect interactions — invisible from code reading alone.
-- **Files changed upstream (5):**
-  - `BleCompanionService.kt` — `isInitialized` guard before accessing `OmiBleManager.instance`
-  - `OmiBleManager.kt` — `isInitialized` companion property + reconnect guard in `connectPeripheral`
-  - `devices.dart` — `ensureConnection()` refactored to never recreate transport for same device
-  - `device_provider.dart` — `_bleDisconnectDevice` simplified to call `disconnectDevice()` directly
-  - `native_ble_transport.dart` — `_hasCharacteristic()` helper + existence guards on subscribe/read/write
-
----
-
-### [PR #6085: feat: native-owned BLE connection pipeline](https://github.com/BasedHardware/omi/pull/6085)
-- **Status:** Already integrated — all changes present in `omi-offline`
-- **Merged upstream:** March 27, 2026 (author: mdmohsin7)
-- **Assessment:** Every change in this PR was already present in `omi-offline` prior to review. The work had been sourced directly from commit `7645da3` (see Integrated Feature #1 below). No action required.
-- **Files changed upstream (11):**
-  - `app/android/.../BleHostApiImpl.kt` — `discoverServices` → `requestBond`
-  - `app/android/.../OmiBleManager.kt` — always discover on connect (no bond-gating), `requestBond()` impl, GATT codes 22+147 added to retry set
-  - `app/android/.../PigeonCommunicator.g.kt` — `discoverServices` → `requestBond`
-  - `app/ios/Runner/BleHostApiImpl.swift` — `discoverServices` → `requestBond` (iOS auto-bonds at OS level, returns `true`)
-  - `app/ios/Runner/OmiBleManager.swift` — removed Dart-driven `discoverServices`, added RSSI keep-alive timer
-  - `app/ios/Runner/PigeonCommunicator.g.swift` — `discoverServices` → `requestBond`
-  - `app/lib/pigeon_interfaces.dart` — `discoverServices` → `@async requestBond`
-  - `app/lib/gen/pigeon_communicator.g.dart` — `discoverServices` → `requestBond` returning `bool`
-  - `app/lib/services/devices/transports/device_transport.dart` — abstract `requestBond()` with default no-op
-  - `app/lib/services/devices/transports/native_ble_transport.dart` — `requestBond()` impl, removed Dart-side `discoverServices` call
-  - `app/lib/services/devices/limitless_connection.dart` — calls `requestBond()` before subscribing to encrypted characteristics (N/A — file does not exist in `omi-offline`)
-
----
-
-### [PR #5994: Fix sync endpoint silent failure causing permanent audio loss](https://github.com/BasedHardware/omi/pull/5994)
-- **Status:** Unmerged
-- **Reason:** This PR addresses silent failures in the network/API synchronization layer and audio data preservation. It does not contain any Bluetooth Low Energy (BLE) hardware connection reliability fixes between the phone and the Omi device, which is what we are looking for.
-
----
-
-## Individual Upstream Commits
-
-### [Commit `bae9dbea3`](https://github.com/BasedHardware/omi/commit/bae9dbea3): fix: BLE API compat for Android < 13 (API < 33)
-- **Status:** Already present — no action required
-- **File:** `OmiBleManager.kt`
-- **Assessment:** Upstream replaced the API 33-only `writeCharacteristic(char, data, writeType)` and `writeDescriptor(descriptor, byte[])` overloads with `Build.VERSION.SDK_INT >= 33` branches that fall back to the deprecated `setValue` + single-param pattern. The local `OmiBleManager.kt` already had equivalent guards using `Build.VERSION_CODES.TIRAMISU` checks, written inline. No action required.
-
----
-
-### [Commit `b0560a0ec`](https://github.com/BasedHardware/omi/commit/b0560a0ec): fix: guard OmiBleManager init in OmiBleForegroundService.onCreate
-- **Status:** Integrated
-- **File:** `OmiBleForegroundService.kt`
-- **Assessment:** Android may re-deliver a pending intent to the foreground service after process death before `MainActivity` initializes `OmiBleManager`, causing an `IllegalStateException`. The local file was missing the guard. Applied: added `if (!OmiBleManager.isInitialized) OmiBleManager.initialize(application)` after `instance = this` in `onCreate()`.
-
----
-
-### [Commit `20f323a36`](https://github.com/BasedHardware/omi/commit/20f323a36): fix: remove DFU service MTU skip in requestMtuThenNotifyReady
-- **Status:** Integrated
-- **File:** `OmiBleForegroundService.kt`
-- **Assessment:** Upstream removed the early-return guard that skipped MTU negotiation when a DFU service was detected, allowing MTU negotiation to proceed for all devices unconditionally. The local file still had this block. Applied: removed the `hasDfuService` check and the now-unused `DFU_SERVICE_UUID` constant.
-
----
-
-### [Commit `a43cd2be0`](https://github.com/BasedHardware/omi/commit/a43cd2be0): fix: log writeCharacteristic errors and add writeDescriptorCompat with queue recovery
-- **Status:** Integrated
-- **File:** `OmiBleManager.kt`
-- **Assessment:** Two issues in the local code: (1) the API 33+ `writeCharacteristic` path silently swallowed the result code on failure; (2) the inlined `writeDescriptor` calls had no failure handling — if a descriptor write was rejected, `completeCommand()` was never called, permanently stalling the BLE command queue. Applied: added `Log.e` on `writeCharacteristic` failure for the API 33+ path; extracted a `writeDescriptorCompat()` helper that calls `completeCommand()` on failure, replacing the inlined subscribe/unsubscribe blocks.
-
----
-
-## Integrated Features & Fixes
-
-### 7. BLE Single-Owner Connection Model (Architecture Refactor)
-**Source:** [PR #6200](https://github.com/BasedHardware/omi/pull/6200) ("REFACTOR(ANDROID): BLE SINGLE-OWNER CONNECTION MODEL")
-
-**Integrated:**
-*   **1:1 Structural Alignment:** Performed a full 1:1 code replacement of core BLE management files from the definitive PR source (`pr-6200` branch) to ensure perfect architectural alignment and resolve all previous integration mismatches.
-*   **Intent-Based Management (`manageDevice`):** Replaced the multi-step `connect` -> `discover` -> `MTU` sequence with a single native "management" intent. The native layer now owns the entire connection pipeline and only signals `onDeviceReady` when the pipe is stable and fully initialized.
-*   **Android "Connection Owner" Refactor:**
-    *   **`OmiBleForegroundService.kt`**: Fully ported the definitive owner of the connection lifecycle. Implements `ManagedDevice` state tracking, auto-retry logic with stability timers, and specialized Bluetooth state handling.
-    *   **`OmiBleManager.kt`**: Fully ported as a "pure GATT wrapper." Implements a serialized GATT command queue (`enqueueCommand`/`completeCommand`) to ensure stable operations on Android by preventing concurrent GATT requests.
-    *   **API 34+ Reconnect Fix**: Integrated the `getRemoteLeDevice(addr, ADDRESS_TYPE_RANDOM)` fix to ensure reliable reconnection after Bluetooth toggles on modern Android devices.
-*   **iOS "Ready Signal" Consolidation:**
-    *   **`OmiBleManager.swift`**: Unified the connection/discovery pipeline to fire `onDeviceReady` only after full discovery of services and characteristics.
-*   **Dart Architecture Refactor:**
-    *   **`NativeBleTransport.dart`**: Ported the long-lived transport model. Implements automated re-subscription to characteristic streams upon receiving the `onDeviceReady` signal, ensuring zero data loss across native-initiated reconnections.
-    *   **`DeviceService.dart`**: Synchronized with the intent-based model, simplifying the connection logic and ensuring consistent state management.
-*   **Lifecycle & UI Integration:**
-    *   **`MainActivity.kt`**: Ported the `OmiBleManager.isFlutterAlive` guard to synchronize native background tasks with the UI lifecycle.
-    *   **`DeviceConnectionState.connecting`**: Handled this state in `DeviceProvider` to provide accurate user feedback during the native management phase.
-    *   **Standardized Unpairing**: Updated `device_settings.dart` to use the unified `forgetDevice()` + native `unmanageDevice()` pipeline.
-
-**Excluded:**
-*   Nothing. The entire architectural shift was mirrored 1:1 to ensure long-term stability and alignment with the official Omi project.
-
----
-
-### 6. Android BLE Cold-Start Crash & Reconnect Race Fixes
-**Source:** [PR #6086](https://github.com/BasedHardware/omi/pull/6086) ("BLE Reliability Fixes")
-
-**Integrated:**
-*   **`isInitialized` guard (`BleCompanionService.kt`):** Added `OmiBleManager.isInitialized` check in `handleDeviceAppeared` and `onCreate` before accessing `OmiBleManager.instance`. The Android OS can start `BleCompanionService` as a system service (BLE presence event) while the app process is fully dead — before `OmiBleManager.initialize()` has been called. The `instance` getter throws `IllegalStateException` in that state, crashing the service.
-*   **`isInitialized` companion property (`OmiBleManager.kt`):** Added `val isInitialized: Boolean get() = _instance != null` to the companion object to support the guard above without catching exceptions.
-*   **Reconnect guard in `connectPeripheral` (`OmiBleManager.kt`):** Added a check at the top of `connectPeripheral`: if `pendingReconnectRunnable != null`, skip the call and return. When a BLE disconnect occurs, `onConnectionStateChange` schedules a 3s delayed `autoConnect=true` reconnect. If Dart calls `connectPeripheral` before that delay fires, `cancelPendingReconnect()` killed the scheduled runnable and replaced it with an impatient `autoConnect=false` attempt that fails faster — breaking the reliable OS-managed reconnect.
-*   **`ensureConnection` native-owns-reconnect refactor (`devices.dart`):** Refactored `ensureConnection()` so that if a `_connection` already exists for the same device ID (even if disconnected), it returns `null` without disposing the transport or calling `_connectToDevice`. Previously, a `force=true` call (from `_scanConnectDevice`) would dispose the existing transport and invoke `connectPeripheral`, fighting the native `autoConnect=true` reconnect in progress.
-*   **`_bleDisconnectDevice` simplification (`device_provider.dart`):** Changed `_bleDisconnectDevice` (called by `prepareDFU`) to call `DeviceService.disconnectDevice()` directly instead of routing through `ensureConnection()`. `ensureConnection()` returns `null` when the device is disconnected, leaving `_connection` non-null and pointing to a stale object — subsequent reconnection after DFU would fail silently.
-*   **Characteristic existence guards (`native_ble_transport.dart`):** Added `_hasCharacteristic()` helper that checks discovered `_services` before subscribe/read/write. Optional characteristics absent on some device variants no longer cause unnecessary native round-trips or exceptions; subscribe silently skips, read returns `[]`, write throws immediately with a clear message.
-
-**Excluded:**
-*   Nothing. All five fixes were applicable and ported.
-
----
+## Integrated Changes
 
 ### 1. BLE Connection Pipeline & Stability Refactor
-**Source:** [PR #6085](https://github.com/BasedHardware/omi/pull/6085) ("feat: native-owned BLE connection pipeline", mdmohsin7) — [Commit `7645da3`](https://github.com/BasedHardware/omi/commit/7645da34a3f6f56cc8cec594187cf41a9e8745e0)
+**Source:** [PR #6085](https://github.com/BasedHardware/omi/pull/6085) ("feat: native-owned BLE connection pipeline") — [Commit `7645da3`](https://github.com/BasedHardware/omi/commit/7645da34a3f6f56cc8cec594187cf41a9e8745e0)
 
 **Integrated:**
-*   **Native-Owned Service Discovery:** Moved service discovery logic from Dart into the native Android (`OmiBleManager.kt`) and iOS (`OmiBleManager.swift`) layers, triggering immediately upon connection.
-*   **On-Demand Bonding (`requestBond`):** Replaced forced bonding with an explicit `requestBond` method across the Pigeon interfaces and native layers, initiating bonding only when required (e.g., for Limitless connections).
-*   **iOS Connection Keep-Alive:** Implemented an RSSI polling timer (1-second intervals) on iOS to act as a heartbeat, preventing the OS from dropping idle BLE connections due to supervision timeouts.
-*   **Android Retry Resilience:** Expanded `RETRYABLE_STATUS_CODES` (adding `22` and `147`) to make the Android background service aggressively auto-reconnect on transient GATT errors.
+- **Native-Owned Service Discovery:** Moved service discovery from Dart into native Android (`OmiBleManager.kt`) and iOS (`OmiBleManager.swift`) layers, triggering immediately on connection.
+- **On-Demand Bonding (`requestBond`):** Replaced forced bonding with an explicit `requestBond` method across Pigeon interfaces and native layers; bonding only initiates when required.
+- **iOS Connection Keep-Alive:** RSSI polling timer (1s intervals) prevents the OS from dropping idle BLE connections due to supervision timeouts.
+- **Android Retry Resilience:** Expanded `RETRYABLE_STATUS_CODES` (adding `22` and `147`) for aggressive auto-reconnect on transient GATT errors.
 
-**Excluded:**
-*   None. The entire architectural improvement was ported to align `omi-offline` with upstream BLE stability.
+**Excluded:** None.
 
 ---
 
@@ -132,45 +21,42 @@ This document tracks features, optimizations, and bug fixes that have been revie
 **Source:** [TuEmb's `sd_card_improvement` branch (23 commits)](https://github.com/TuEmb/omi/tree/TuEmb/sd_card_improvement)
 
 **Integrated:**
-*   **LittleFS Migration:** Transitioned the SD card file system from `FAT32` to a multi-file `LittleFS` architecture (this was already partially implemented locally and served as the foundation).
-*   **Priority Message Queue (`sd_prio_msgq`):** Added a secondary, high-priority queue for API requests (read, list, delete, flush) to bypass the audio writing queue (`sd_msgq`), massively improving BLE sync responsiveness.
-*   **Queue & Batch Expansion:** Increased `SD_REQ_QUEUE_MSGS` to 100 and `WRITE_BATCH_COUNT` to 200, allowing the firmware to absorb larger audio bursts without dropping frames.
-*   **RAM Optimization:** Ported commit `e99030c2d` to reduce `AUDIO_BUFFER_SAMPLES` from `16000` (1s) to `12800` (0.8s) in `config.h`, freeing up ~6.4KB of RAM to safely accommodate the larger SD card queues.
-*   **File Continuation Tuning:** Reduced the window for appending to an existing file on boot from 30 minutes to 2 minutes (`FILE_CONTINUE_THRESHOLD_SEC`), and dropped the blind `TMP_` continuation fallback.
+- **LittleFS Migration:** Transitioned SD card from FAT32 to multi-file LittleFS (local partial implementation served as foundation).
+- **Priority Message Queue (`sd_prio_msgq`):** High-priority queue for API requests (read, list, delete, flush) bypasses the audio write queue, improving BLE sync responsiveness.
+- **Queue & Batch Expansion:** `SD_REQ_QUEUE_MSGS` → 100, `WRITE_BATCH_COUNT` → 200 to absorb larger audio bursts without dropping frames.
+- **RAM Optimization:** `AUDIO_BUFFER_SAMPLES` reduced from 16000 to 12800 in `config.h`, freeing ~6.4 KB to accommodate the larger queues.
+- **File Continuation Tuning:** `FILE_CONTINUE_THRESHOLD_SEC` reduced from 30 min to 2 min; dropped the blind `TMP_` continuation fallback.
 
 **Excluded:**
-*   **Wi-Fi Removal:** TuEmb's branch completely deleted `wifi.c` and `wifi.h` from the firmware. These files had *already* been removed from the `omi-offline` local repository in previous cleanups, so no further action was needed.
-*   **Deferred Renaming:** Did not port TuEmb's deferred TMP renaming logic or Red LED blinking for missing RTC, because the local implementation using immediate `TMP_` renaming upon receiving a `syncDeviceTime` packet was cleaner and didn't result in lost audio at the beginning of a boot sequence.
+- **Wi-Fi Removal:** Already removed locally; no action needed.
+- **Deferred TMP Renaming & Red LED:** Local immediate `TMP_` renaming on `syncDeviceTime` is cleaner and avoids lost audio at boot.
 
 ---
 
-### 3. Auto Offline Sync on Device Connect — Reliability Fixes
+### 3. App-Side Sync Rewrite (LittleFS Protocol)
+**Source:** [PR #5905](https://github.com/BasedHardware/omi/pull/5905/commits) — Commits [`1c25b1ca`](https://github.com/BasedHardware/omi/commit/1c25b1caebab76d801504a82076a64ed0517495b), [`b4ca794a`](https://github.com/BasedHardware/omi/commit/b4ca794a31520bbbdd4f1d8d58bd41dbbd109c47)
+
+**Integrated:**
+- **`syncDeviceTime()` Implementation:** Extracted `performSyncDeviceTime()` and its UUIDs (`timeSyncServiceUuid`, `timeSyncWriteCharacteristicUuid`) into `device_connection.dart` and `omi_connection.dart`, so the app pushes UTC epoch on connection to anchor firmware timestamps.
+- **LittleFS Commands:** Validated that `sdcard_wal_sync.dart` already used the new firmware commands (`listFiles` 0x10, `readFile` 0x11, `deleteFile` 0x12) and expects the 4-byte timestamp prefix in data packets.
+
+**Excluded:**
+- **Legacy Wi-Fi Sync Artifacts:** Already expunged locally; cleaner local state preserved.
+- **FlutterBluePlus Logic:** `omi-offline` uses native Pigeon bridges (`NativeBleTransport`) in place of the standard Flutter plugin calls.
+
+---
+
+### 4. Auto Offline Sync on Device Connect — Reliability Fixes
 **Source:** [PR #5916](https://github.com/BasedHardware/omi/pull/5916)
 
 **Integrated:**
-*   **Partial Transfer Flush Guard (`sdcard_wal_sync.dart`):** Added an `eotReceived` flag to `_readStorageBytesToFile`. The flag is set only when a `PACKET_EOT (0x02)` is received from the firmware. The `onError` and `onDone` BLE stream handlers now check this flag before calling `flushBuffer()`. If the stream closes without a proper EOT (e.g. BLE drops mid-transfer), buffered Opus frames are discarded instead of flushed — preventing corrupted, truncated `.m4a` files from being written to disk.
-*   **Rapid Reconnect Sync Fix (`device_provider.dart`):** Changed the early-return guard in `_doBackgroundSync()` from a hard bail on `walSync.isSyncing` to a conditional await. If `isSyncing` is true but `cancelFuture` is non-null (meaning the disconnect handler already requested cancellation), the method now awaits that future and then proceeds with the sync. This fixes a window where rapid reconnect — disconnect fires `cancelSync()` before reconnect fires `_doBackgroundSync()` — would leave the device perpetually unsynced because the new sync silently returned while the old one was still winding down.
+- **Partial Transfer Flush Guard (`sdcard_wal_sync.dart`):** `eotReceived` flag ensures `flushBuffer()` is only called when `PACKET_EOT (0x02)` is received. If BLE drops mid-transfer, buffered Opus frames are discarded instead of flushed — preventing corrupted, truncated `.m4a` files.
+- **Rapid Reconnect Sync Fix (`device_provider.dart`):** `_doBackgroundSync()` now awaits `cancelFuture` when `isSyncing` and cancellation is in progress, fixing a window where rapid reconnect left the device permanently unsynced because the new sync returned while the old one was still winding down.
 
 **Excluded:**
-*   **Firmware Version Gating (≥ 3.0.17):** The PR gates the new LittleFS sync path on a firmware version check and adds a `deviceSupportsMultiFileSync` SharedPreferences flag. Not ported — the local project runs a single firmware version and does not need a legacy SD card fallback path.
-*   **`StorageSyncImpl` Architecture Split:** The PR introduces a separate `StorageSyncImpl` class for LittleFS alongside the existing `SDCardWalSyncImpl` for legacy firmware. Not ported — redundant given the single-firmware constraint above; the existing `SDCardWalSyncImpl` (which already uses LittleFS commands 0x10–0x13) is sufficient.
-*   **Upload Progress Callbacks (`UploadProgressCallback`):** The PR enhances `makeMultipartApiCall()` with byte-level progress tracking for the upstream's `/v1/sync-local-files` backend. Not applicable — `omi-offline` uses HeyPocket presigned-URL streaming uploads, a completely separate pipeline.
-*   **`auto_sync_page.dart` and Localization Strings:** New three-tier progress UI page and 20 localization keys tied to the cloud upload pipeline. Not ported — the local project does not use the Omi backend.
-
----
-
-### 4. App-Side Sync Rewrite (LittleFS Protocol)
-**Source:** [PR #5905 Commits](https://github.com/BasedHardware/omi/pull/5905/commits)
-*   [Commit `1c25b1ca`](https://github.com/BasedHardware/omi/commit/1c25b1caebab76d801504a82076a64ed0517495b)
-*   [Commit `b4ca794a`](https://github.com/BasedHardware/omi/commit/b4ca794a31520bbbdd4f1d8d58bd41dbbd109c47)
-
-**Integrated:**
-*   **`syncDeviceTime()` Implementation:** Extracted the missing `performSyncDeviceTime()` method and its associated UUIDs (`timeSyncServiceUuid`, `timeSyncWriteCharacteristicUuid`) and added them to `device_connection.dart` and `omi_connection.dart`. This ensures the app pushes its UTC epoch to the device on connection, allowing the new firmware to accurately rename `TMP_` files to proper timestamped files.
-*   **LittleFS Commands:** Validated that the local `sdcard_wal_sync.dart` was already fully rewritten to use the new firmware commands (`listFiles` 0x10, `readFile` 0x11, `deleteFile` 0x12) and expects the 4-byte timestamp prefix in data packets.
-
-**Excluded:**
-*   **Legacy Wi-Fi Sync Artifacts:** The upstream commits still contained some interfaces and models from the legacy Wi-Fi sync (`WifiSyncSetupResult`, `setupWifiSync`, etc.). These had already been entirely expunged from the local `omi-offline` app architecture, so the cleaner local state was preserved.
-*   **FlutterBluePlus Logic:** Upstream still uses standard Flutter plugins in places where `omi-offline` now uses the newly created native `Pigeon` bridges (`NativeBleTransport`).
+- **Firmware Version Gating (≥ 3.0.17) & `StorageSyncImpl` Architecture Split:** Not ported — single firmware version, no legacy fallback needed; `SDCardWalSyncImpl` is sufficient.
+- **Upload Progress Callbacks:** Not applicable — `omi-offline` uses HeyPocket presigned-URL streaming uploads, not the upstream `/v1/sync-local-files` pipeline.
+- **`auto_sync_page.dart` & Localization Strings:** Not ported — no Omi backend in use.
 
 ---
 
@@ -178,12 +64,67 @@ This document tracks features, optimizations, and bug fixes that have been revie
 **Source:** [PR #6067](https://github.com/BasedHardware/omi/pull/6067)
 
 **Integrated:**
-*   **`connectingAddresses` Race Guard (`OmiBleManager.kt`):** Added a `ConcurrentHashMap`-backed set that tracks addresses with an in-flight `connectGatt` call. Three callers (Dart `ensureConnection`, `OmiBleForegroundService` startup, `BleCompanionService.deviceAppeared`) can race to call `connectPeripheral` within milliseconds — each call was closing the previous in-flight GATT connection and corrupting the encryption handshake, producing `status=5` (GATT_INSUFFICIENT_AUTHENTICATION). The 2nd and 3rd callers now check the set and return immediately. The set is cleared in both `STATE_CONNECTED` and `STATE_DISCONNECTED` branches of `onConnectionStateChange`.
-*   **`cancelPendingReconnect()` in `connectPeripheral` (`OmiBleManager.kt`):** Added the call at the top of `connectPeripheral` so any delayed reconnect runnable scheduled from a prior disconnect is cancelled before a fresh connection attempt begins. The upstream codebase already had this; the local copy was behind.
-*   **Status=5 Bond Removal + Retry (`OmiBleManager.kt`):** Added a dedicated path in `STATE_DISCONNECTED` for `status == 5` when the device is bonded. Removes the stale bond via `removeBond()` (reflection on the hidden Android API) and schedules a fresh non-autoConnect `connectGatt` after `RECONNECT_DELAY_MS`. Previously status=5 was not in `RETRYABLE_STATUS_CODES` so the connection was permanently abandoned.
-*   **`removeBond()` Helper (`OmiBleManager.kt`):** Small private method wrapping the reflection call with a try/catch since `removeBond` is a hidden Android API.
-*   **RSSI Keepalive Deferred (`OmiBleManager.kt`):** Moved `startRssiKeepAlive()` from `STATE_CONNECTED` to after `requestConnectionPriority()` in `onServicesDiscovered`. Prevents RSSI polling from adding BLE traffic during the critical service discovery and MTU negotiation window.
-*   **Caller Tagging (`OmiBleManager.kt`, `OmiBleForegroundService.kt`, `BleHostApiImpl.kt`):** Added a `caller: String` parameter to `connectPeripheral` and propagated it through `OmiBleForegroundService.connectToDevice`. `BleHostApiImpl` now passes `caller = "Dart"`. All connect-attempt log lines now identify their origin.
+- **`connectingAddresses` Race Guard (`OmiBleManager.kt`):** `ConcurrentHashMap`-backed set tracks in-flight `connectGatt` calls. Three callers (Dart `ensureConnection`, `OmiBleForegroundService`, `BleCompanionService`) can race to call `connectPeripheral` within milliseconds — each was closing the previous GATT connection and corrupting the encryption handshake, producing `status=5` (GATT_INSUFFICIENT_AUTHENTICATION). Later callers now return immediately. Set cleared on both `STATE_CONNECTED` and `STATE_DISCONNECTED`.
+- **`cancelPendingReconnect()` in `connectPeripheral`:** Cancels any delayed reconnect runnable before a fresh connection attempt begins.
+- **Status=5 Bond Removal + Retry:** Dedicated `STATE_DISCONNECTED` path for `status == 5` when bonded: removes stale bond via `removeBond()` (reflection on hidden Android API) and schedules a fresh `connectGatt` after `RECONNECT_DELAY_MS`. Previously status=5 was not in `RETRYABLE_STATUS_CODES`, permanently abandoning the connection.
+- **RSSI Keepalive Deferred:** Moved `startRssiKeepAlive()` from `STATE_CONNECTED` to after `requestConnectionPriority()` in `onServicesDiscovered`, reducing BLE traffic during critical service discovery and MTU negotiation.
+- **Caller Tagging:** `caller: String` parameter added to `connectPeripheral`; all connect-attempt log lines now identify their origin.
 
-**Excluded:**
-*   Nothing. All substantive changes were applicable. Caller tags in `BleCompanionService.kt` and `MainActivity.kt` were already present in the local codebase prior to this PR.
+**Excluded:** Caller tags in `BleCompanionService.kt` and `MainActivity.kt` were already present locally.
+
+---
+
+### 6. Android BLE Cold-Start Crash & Reconnect Race Fixes
+**Source:** [PR #6086](https://github.com/BasedHardware/omi/pull/6086) ("BLE Reliability Fixes")
+
+**Integrated:**
+- **`isInitialized` guard (`BleCompanionService.kt`):** Added `OmiBleManager.isInitialized` check in `handleDeviceAppeared` and `onCreate` before accessing `OmiBleManager.instance`. Android can start `BleCompanionService` as a system service before `MainActivity` initializes `OmiBleManager`, causing `IllegalStateException`.
+- **`isInitialized` companion property (`OmiBleManager.kt`):** `val isInitialized: Boolean get() = _instance != null` to support the guard without catching exceptions.
+- **Reconnect guard in `connectPeripheral` (`OmiBleManager.kt`):** Skips if `pendingReconnectRunnable != null`, preventing Dart from fighting the OS-managed `autoConnect=true` reconnect in progress.
+- **`ensureConnection` refactor (`devices.dart`):** Returns `null` without disposing the transport if a `_connection` already exists for the same device ID (even if disconnected), preventing `force=true` calls from killing a native reconnect.
+- **`_bleDisconnectDevice` simplification (`device_provider.dart`):** Calls `DeviceService.disconnectDevice()` directly instead of routing through `ensureConnection()`, which would leave `_connection` pointing to a stale object after DFU.
+- **Characteristic existence guards (`native_ble_transport.dart`):** `_hasCharacteristic()` helper checks discovered `_services`; subscribe silently skips, read returns `[]`, write throws immediately with a clear message for absent optional characteristics.
+
+**Excluded:** None.
+
+---
+
+### 7. BLE Single-Owner Connection Model (Architecture Refactor)
+**Source:** [PR #6200](https://github.com/BasedHardware/omi/pull/6200) ("REFACTOR(ANDROID): BLE SINGLE-OWNER CONNECTION MODEL")
+
+**Integrated:**
+- **1:1 Structural Alignment:** Full code replacement of core BLE management files from the `pr-6200` branch, resolving all prior integration mismatches.
+- **Intent-Based Management (`manageDevice`):** Replaced the multi-step `connect → discover → MTU` sequence with a single "management" intent; the native layer owns the entire pipeline and signals `onDeviceReady` only when fully stable.
+- **Android "Connection Owner" (`OmiBleForegroundService.kt`):** `ManagedDevice` state tracking, auto-retry with stability timers, specialized Bluetooth state handling.
+- **Android "Pure GATT Wrapper" (`OmiBleManager.kt`):** Serialized GATT command queue (`enqueueCommand`/`completeCommand`) prevents concurrent GATT requests.
+- **API 34+ Reconnect Fix:** `getRemoteLeDevice(addr, ADDRESS_TYPE_RANDOM)` for reliable reconnect after Bluetooth toggles on modern Android.
+- **iOS Ready Signal (`OmiBleManager.swift`):** `onDeviceReady` fires only after full service and characteristic discovery.
+- **Dart Transport (`NativeBleTransport.dart`):** Long-lived transport model; auto-resubscribes to characteristic streams on each `onDeviceReady` signal, ensuring zero data loss across native-initiated reconnections.
+- **Connection Logic (`DeviceService.dart`):** Simplified to match the intent-based model.
+- **Lifecycle Guard (`MainActivity.kt`):** `OmiBleManager.isFlutterAlive` guard synchronizes native background tasks with the UI lifecycle.
+- **Connecting State:** `DeviceConnectionState.connecting` handled in `DeviceProvider` for accurate UI feedback.
+- **Standardized Unpairing (`device_settings.dart`):** `forgetDevice()` + native `unmanageDevice()`.
+
+**Excluded:** None.
+
+---
+
+### Minor Individual Commits
+
+Smaller fixes integrated independently; superseded by the PR #6200 full-file replacement.
+
+| Commit | File | Description | Status |
+|--------|------|-------------|--------|
+| [`bae9dbea3`](https://github.com/BasedHardware/omi/commit/bae9dbea3) | `OmiBleManager.kt` | BLE API compat for Android < 13: `SDK_INT >= 33` branches with deprecated `setValue` fallbacks for `writeCharacteristic` / `writeDescriptor` | Already present |
+| [`b0560a0ec`](https://github.com/BasedHardware/omi/commit/b0560a0ec) | `OmiBleForegroundService.kt` | Guard `OmiBleManager` init in `onCreate`: `if (!OmiBleManager.isInitialized) initialize(application)` prevents `IllegalStateException` on re-delivered pending intents after process death | Integrated |
+| [`20f323a36`](https://github.com/BasedHardware/omi/commit/20f323a36) | `OmiBleForegroundService.kt` | Remove DFU service MTU skip in `requestMtuThenNotifyReady`: removed `hasDfuService` guard and unused `DFU_SERVICE_UUID` constant so MTU negotiation proceeds unconditionally | Integrated |
+| [`a43cd2be0`](https://github.com/BasedHardware/omi/commit/a43cd2be0) | `OmiBleManager.kt` | Log `writeCharacteristic` errors on API 33+ path; extract `writeDescriptorCompat()` helper that calls `completeCommand()` on failure, preventing permanent BLE queue stalls | Integrated |
+
+---
+
+## Not Ported
+
+### PR #5994: Fix sync endpoint silent failure causing permanent audio loss
+**Source:** [PR #5994](https://github.com/BasedHardware/omi/pull/5994)
+
+Addresses silent failures in the network/API synchronization layer and audio data preservation upstream. Contains no BLE hardware connection reliability fixes. Not applicable to `omi-offline`.
