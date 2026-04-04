@@ -23,11 +23,9 @@ This document defines the official terminology for all audio-related data struct
 ## 2. Standardized Variable Names
 
 ### Raw Data & Metadata
-- `framesPerSegment`: The target count of frames stored in a single **Segment** file (default: 3000).
 - `segmentIndex`: The zero-based position of a **Segment** within its **DeviceSession**.
 - `deviceSessionId`: The unique identifier for a hardware session (the UNIX UTC timestamp of the session's first file, provided by the firmware).
 - `walOffset`: The current monotonic byte position in the **WAL**. Always bytes — never a segment index.
-- `latestSyncedDeviceSessionId`: The `deviceSessionId` of the most recently fully ingested **DeviceSession**, persisted in SharedPreferences.
 
 ### Capture (Live State)
 - `isCapturing`: Boolean state indicating if a device stream is active.
