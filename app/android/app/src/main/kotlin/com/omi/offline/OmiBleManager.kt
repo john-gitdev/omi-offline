@@ -251,7 +251,9 @@ class OmiBleManager private constructor(private val application: Application) {
 
         enqueueCommand {
             val result = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeCharacteristic(characteristic, data, writeType)
+                val r = gatt.writeCharacteristic(characteristic, data, writeType)
+                if (r != BluetoothStatusCodes.SUCCESS) Log.e(TAG, "writeCharacteristic returned $r for $key")
+                r
             } else {
                 @Suppress("DEPRECATION")
                 characteristic.value = data
@@ -276,13 +278,7 @@ class OmiBleManager private constructor(private val application: Application) {
         enqueueCommand {
             gatt.setCharacteristicNotification(characteristic, true)
             if (descriptor != null) {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                    gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    gatt.writeDescriptor(descriptor)
-                }
+                writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
             } else completeCommand()
         }
     }
@@ -295,13 +291,7 @@ class OmiBleManager private constructor(private val application: Application) {
         enqueueCommand {
             gatt.setCharacteristicNotification(characteristic, false)
             if (descriptor != null) {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                    gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    descriptor.value = BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
-                    gatt.writeDescriptor(descriptor)
-                }
+                writeDescriptorCompat(gatt, descriptor, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)
             } else completeCommand()
         }
     }
@@ -343,6 +333,20 @@ class OmiBleManager private constructor(private val application: Application) {
 
     private fun findCharacteristic(gatt: BluetoothGatt?, serviceUuid: String, characteristicUuid: String): BluetoothGattCharacteristic? =
         gatt?.getService(UUID.fromString(serviceUuid))?.getCharacteristic(UUID.fromString(characteristicUuid))
+
+    @Suppress("DEPRECATION")
+    private fun writeDescriptorCompat(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, value: ByteArray) {
+        val success = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeDescriptor(descriptor, value) == BluetoothStatusCodes.SUCCESS
+        } else {
+            descriptor.value = value
+            gatt.writeDescriptor(descriptor)
+        }
+        if (!success) {
+            Log.e(TAG, "writeDescriptor failed for ${descriptor.uuid}")
+            completeCommand()
+        }
+    }
 
     fun cleanupPeripheral(address: String) {
         val addr = address.uppercase()
