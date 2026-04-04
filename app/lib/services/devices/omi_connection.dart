@@ -58,8 +58,9 @@ class OmiDeviceConnection extends DeviceConnection {
 
   // 2s for the initial listFiles subscription (CCCD descriptor write is slow on first subscribe).
   static const _cccdSettleDelay = Duration(milliseconds: 2000);
-  // 200ms for subsequent commands (delete, rotate) on the already-subscribed characteristic.
-  static const _cccdCommandDelay = Duration(milliseconds: 200);
+  // 500ms for subsequent commands (delete, rotate) — enough for CCCD writes on slow BLE
+  // stacks without the 2s penalty of the full listFiles settle delay.
+  static const _cccdCommandDelay = Duration(milliseconds: 500);
 
   OmiDeviceConnection(super.device, super.transport);
 
