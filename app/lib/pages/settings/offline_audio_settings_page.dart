@@ -191,15 +191,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               Row(
                 children: [
                   _ModeOption(
-                    label: 'Automatic',
-                    selected: _recordingMode == 'automatic',
-                    onTap: () {
-                      setState(() => _recordingMode = 'automatic');
-                      _markDirty();
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  _ModeOption(
                     label: 'Marker',
                     selected: _recordingMode == 'marker',
                     onTap: () {

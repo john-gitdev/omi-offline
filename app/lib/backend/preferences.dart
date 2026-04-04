@@ -54,7 +54,7 @@ class SharedPreferencesUtil {
   set forceSyncSkipConfirm(bool value) => saveBool('force_sync_skip_confirm', value);
 
   // 'automatic' = continuous VAD, 'marker' = marker-based extraction, 'fixed' = fixed wall-clock intervals
-  String get offlineRecordingMode => getString('offlineRecordingMode', defaultValue: 'automatic');
+  String get offlineRecordingMode => getString('offlineRecordingMode', defaultValue: 'marker');
 
   set offlineRecordingMode(String v) => saveString('offlineRecordingMode', v);
 
@@ -159,7 +159,7 @@ class SharedPreferencesUtil {
       prefs.setBool('offlineAdjustmentMode', false);
     }
     if (!prefs.containsKey('offlineRecordingMode')) {
-      prefs.setString('offlineRecordingMode', 'automatic');
+      prefs.setString('offlineRecordingMode', 'marker');
     }
     if (!prefs.containsKey('offlineFixedIntervalMinutes')) {
       prefs.setInt('offlineFixedIntervalMinutes', 60);
