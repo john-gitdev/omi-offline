@@ -243,12 +243,6 @@ static ssize_t battery_detail_read_handler(struct bt_conn *conn,
                                           uint16_t len,
                                           uint16_t offset)
 {
-    uint16_t battery_millivolt;
-    if (battery_get_millivolt(&battery_millivolt) != 0 ||
-        battery_get_percentage(&battery_percentage, battery_millivolt) != 0) {
-        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
-    }
-
     uint8_t value = (uint8_t)is_charging;
 
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &value, sizeof(value));

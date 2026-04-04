@@ -140,10 +140,15 @@ class OmiDeviceConnection extends DeviceConnection {
     void Function(bool)? onChargingStateChange,
   }) async {
     // BAS level stream
-    final levelStream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
-    final levelSub = levelStream.listen((v) {
-      if (v.isNotEmpty && onBatteryLevelChange != null) onBatteryLevelChange(v[0]);
-    });
+    StreamSubscription<List<int>>? levelSub;
+    try {
+      final levelStream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
+      levelSub = levelStream.listen((v) {
+        if (v.isNotEmpty && onBatteryLevelChange != null) onBatteryLevelChange(v[0]);
+      });
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Error subscribing to battery level: $e');
+    }
 
     // Charging stream from custom service
     try {
