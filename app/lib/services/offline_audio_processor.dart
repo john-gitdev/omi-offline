@@ -172,9 +172,6 @@ class OfflineAudioProcessor {
 
       final opusFrame = bytes.sublist(off, off + len);
       off += len;
-      
-      // 3. Snap to next 4-byte boundary
-      off = (off + 3) & ~3;
 
       if (frameIndex++ % 50 == 0) await Future.delayed(Duration.zero);
 
@@ -411,9 +408,7 @@ class OfflineAudioProcessor {
 
         final opusBytes = Uint8List.fromList(await currentRaf!.read(ref.frameLength));
         
-        // Correctly calculate nextExpectedOffset including 4-byte block alignment
-        int paddedLength = (ref.frameLength + 3) & ~3;
-        nextExpectedOffset = frameDataOffset - 4 + 4 + paddedLength;
+        nextExpectedOffset = frameDataOffset + ref.frameLength;
 
         Int16List pcmData;
         try {
