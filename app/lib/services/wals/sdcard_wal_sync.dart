@@ -468,9 +468,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       },
     );
 
-    final readStarted = await _writeToStorage(deviceId, fileNum, 0x11, offset);
-    if (!readStarted) throw Exception('Could not start SD card read');
-    await completer.future;
+    try {
+      final readStarted = await _writeToStorage(deviceId, fileNum, 0x11, offset);
+      if (!readStarted) throw Exception('Could not start SD card read');
+      await completer.future;
+    } finally {
+      // Cancel the stream subscription so it doesn't receive the next operation's
+      // ACK packets (e.g. DELETE ACK) and misinterpret them as a new read start-ACK.
+      // Also covers the case where _writeToStorage fails before completer is awaited.
+      await _storageStream?.cancel();
+      _storageStream = null;
+    }
   }
 
   void _completeCancelIfPending() {
@@ -545,29 +553,50 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         int lastOffset = initialOffset;
         await _checkDiskSpaceBeforeSync(wal.storageTotalBytes - initialOffset);
 
+        // Single try-catch covers both transfer (with gap retries) and delete.
+        // This ensures wal.isSyncing is always cleared and anyPartial is set
+        // whether the failure is a gap retry limit, a transfer error, or a
+        // delete error.
         try {
-          Logger.debug('SDCardWalSync: Starting transfer for file[${wal.fileNum}]');
-          await _readStorageBytesToFile(wal, (File file, int offset, int timerStart, {String? subFolder}) async {
-            if (_isCancelled) throw Exception("Cancelled");
-            _updateSpeed(offset - lastOffset);
-            lastOffset = offset;
-            listener.onWalUpdated();
-          }, onProgress: (offset) {
-            wal.walOffset = offset;
-            final double withinWal = (wal.storageTotalBytes > initialOffset) ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset) : 1.0;
-            // 90% of the file's share is the download
-            final double clamped = ((i + (withinWal.clamp(0.0, 1.0) * 0.9)) / wals.length).clamp(0.0, 1.0);
-            progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
-            _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
-          });
+          const int maxGapRetries = 3;
+          int gapRetries = 0;
+          bool transferred = false;
+          while (!transferred) {
+            try {
+              Logger.debug('SDCardWalSync: Starting transfer for file[${wal.fileNum}] (attempt ${gapRetries + 1})');
+              await _readStorageBytesToFile(wal, (File file, int offset, int timerStart, {String? subFolder}) async {
+                if (_isCancelled) throw Exception("Cancelled");
+                _updateSpeed(offset - lastOffset);
+                lastOffset = offset;
+                listener.onWalUpdated();
+              }, onProgress: (offset) {
+                wal.walOffset = offset;
+                final double withinWal = (wal.storageTotalBytes > initialOffset) ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset) : 1.0;
+                final double clamped = ((i + (withinWal.clamp(0.0, 1.0) * 0.9)) / wals.length).clamp(0.0, 1.0);
+                progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+                _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+              });
+              transferred = true;
+            } on _ProtocolGapException catch (e) {
+              gapRetries++;
+              if (gapRetries > maxGapRetries) {
+                Logger.error('SDCardWalSync: Gap retry limit exceeded for file[${wal.fileNum}]: $e');
+                rethrow; // caught by outer catch below — sets anyPartial
+              }
+              Logger.debug('SDCardWalSync: Gap detected (retry $gapRetries/$maxGapRetries) — rewinding to ${e.incoming}');
+              wal.walOffset = e.incoming;
+              lastOffset = e.incoming;
+              _lastSegmentBoundaryOffset = e.incoming;
+              final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
+              await conn?.stopStorageSync();
+              await Future.delayed(const Duration(milliseconds: 200));
+            }
+          }
 
           Logger.debug('SDCardWalSync: Transfer complete for file[${wal.fileNum}], deleting...');
           await Future.delayed(const Duration(milliseconds: 500));
-
-          // Trust natural EOT completion even if offset is slightly different due to alignment
           await deleteWal(wal);
           wal.status = WalStatus.synced;
-          // Now hit 100% of this file's share
           final double fileDone = ((i + 1.0) / wals.length).clamp(0.0, 1.0);
           progress?.onWalSyncedProgress(fileDone, speedKBps: _currentSpeedKBps);
           _globalProgressListener?.onWalSyncedProgress(fileDone, speedKBps: _currentSpeedKBps);
@@ -578,7 +607,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           wal.walOffset = _lastSegmentBoundaryOffset;
           wal.isSyncing = false;
           listener.onWalUpdated();
-          rethrow;
+          if (_isCancelled) rethrow; // cancellation aborts remaining files
+          anyPartial = true; // all other errors: mark partial and continue
         }
       }
     } finally {

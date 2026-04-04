@@ -172,8 +172,8 @@ class OfflineAudioProcessor {
 
       final opusFrame = bytes.sublist(off, off + len);
       off += len;
-      
-      // 3. Snap to next 4-byte boundary
+      // Snap to next 4-byte boundary — firmware pads each entry to 4-byte alignment
+      // (see write_custom_packet_to_storage in transport.c, lines 920-924).
       off = (off + 3) & ~3;
 
       if (frameIndex++ % 50 == 0) await Future.delayed(Duration.zero);
@@ -410,10 +410,9 @@ class OfflineAudioProcessor {
         }
 
         final opusBytes = Uint8List.fromList(await currentRaf!.read(ref.frameLength));
-        
-        // Correctly calculate nextExpectedOffset including 4-byte block alignment
-        int paddedLength = (ref.frameLength + 3) & ~3;
-        nextExpectedOffset = frameDataOffset - 4 + 4 + paddedLength;
+
+        // Account for 4-byte alignment padding after the payload (firmware-side).
+        nextExpectedOffset = frameDataOffset + ((ref.frameLength + 3) & ~3);
 
         Int16List pcmData;
         try {
