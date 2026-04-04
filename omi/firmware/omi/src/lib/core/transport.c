@@ -234,7 +234,7 @@ static struct bt_gatt_service time_sync_service = BT_GATT_SERVICE(time_sync_serv
 // --- Battery Detail Service ---
 // Service UUID: 19B10050-E8F2-537E-4F6C-D104768A1214
 // Characteristics:
-//   - Battery Detail (19B10051): Notify 4 bytes [mv_lo, mv_hi, percentage, charging]
+//   - Battery Detail (19B10051): Notify 1 byte [charging]
 #ifdef CONFIG_OMI_ENABLE_BATTERY
 static void battery_detail_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static ssize_t battery_detail_read_handler(struct bt_conn *conn,
@@ -249,13 +249,9 @@ static ssize_t battery_detail_read_handler(struct bt_conn *conn,
         return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
     }
 
-    uint8_t value[4];
-    value[0] = (uint8_t)(battery_millivolt & 0xFF);
-    value[1] = (uint8_t)(battery_millivolt >> 8);
-    value[2] = battery_percentage;
-    value[3] = (uint8_t)is_charging;
+    uint8_t value = (uint8_t)is_charging;
 
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(value));
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &value, sizeof(value));
 }
 
 static struct bt_uuid_128 battery_detail_service_uuid =
@@ -509,12 +505,8 @@ void broadcast_battery_level(struct k_work *work_item)
         bool syncing = false;
 #endif
         if (conn != NULL && !syncing) {
-            uint8_t buf[4];
-            buf[0] = (uint8_t)(battery_millivolt & 0xFF);
-            buf[1] = (uint8_t)(battery_millivolt >> 8);
-            buf[2] = battery_percentage;
-            buf[3] = (uint8_t)is_charging;
-            bt_gatt_notify(NULL, &battery_detail_service_attr[1], buf, sizeof(buf));
+            uint8_t is_charging_byte = (uint8_t)is_charging;
+            bt_gatt_notify(NULL, &battery_detail_service_attr[1], &is_charging_byte, 1);
         }
         put_current_connection(conn);
 
@@ -540,8 +532,8 @@ static void battery_detail_ccc_changed(const struct bt_gatt_attr *attr, uint16_t
         return;
     }
     if (battery_ready) {
-        uint8_t buf[4] = {0, 0, battery_percentage, (uint8_t)is_charging};
-        bt_gatt_notify(NULL, attr - 1, buf, sizeof(buf));
+        uint8_t is_charging_byte = (uint8_t)is_charging;
+        bt_gatt_notify(NULL, attr - 1, &is_charging_byte, 1);
     }
     /* Also kick a fresh ADC read soon so the cached value is confirmed/updated. */
     k_work_reschedule(&battery_work, K_MSEC(20));

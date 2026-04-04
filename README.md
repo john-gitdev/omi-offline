@@ -303,7 +303,7 @@ Key correctness fixes applied:
 | BLE connection | **Native Migration (Pigeon):** Migrated to native iOS/Android GATT for high-stability connections |
 | Connection States | Added `connecting` state to `DeviceConnectionState` to handle transient states correctly |
 | Battery/Charging | **Immediate Read:** Force immediate battery level and charging state read on connect |
-| Battery/Charging | **Detail Characteristic:** Prefer 4-byte battery detail characteristic (19b10051) for richer data |
+| Battery/Charging | **Detail Characteristic:** Use 1-byte charging-only characteristic (19b10051) and standard BAS (0x2A19) for level |
 | BLE sync | **Protocol Gap Detection:** Inline retry and rewinding for offset mismatches during sync |
 | BLE sync | Framed protocol with ACK gating eliminates duplicate/gap audio |
 | Firmware storage | **Serialization:** Serialized storage operations to prevent race conditions during list/read/delete |
