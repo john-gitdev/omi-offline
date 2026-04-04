@@ -71,20 +71,6 @@ This document tracks features, optimizations, and bug fixes that have been revie
 
 ---
 
-### [Commit `805d4d39`](https://github.com/BasedHardware/omi/commit/805d4d39): chore: regenerate Pigeon code for BLE diagnostics
-- **Status:** Skipped — feature not present in `omi-offline`
-- **Files:** `PigeonCommunicator.g.kt`, `PigeonCommunicator.g.swift`, `pigeon_communicator.g.dart`
-- **Assessment:** Auto-generated Pigeon glue for a new BLE diagnostics feature (`BleDisconnectEvent`, `BleDeviceDiagnostics`, `startRssiStreaming`, `stopRssiStreaming`, `getDeviceDiagnostics`, `onRssiUpdate`). No consumers of any of these exist in `omi-offline`. Skipped.
-
----
-
-### [Commit `c4dc27aea`](https://github.com/BasedHardware/omi/commit/c4dc27aea): fix(android): double disconnect event and per-device diagnostics keys
-- **Status:** Skipped — feature not present in `omi-offline`
-- **File:** `OmiBleForegroundService.kt`
-- **Assessment:** Bug fixes for the BLE diagnostics feature introduced alongside commit `805d4d39` — guards duplicate disconnect events on manual disconnect and scopes prefs keys per device address. None of the referenced methods (`persistDisconnectEvent`, `incrementReconnectionCount`, `getDeviceDiagnostics`, `PREFS_DIAGNOSTICS`) exist in `omi-offline`. Skipped.
-
----
-
 ## Integrated Features & Fixes
 
 ### 7. BLE Single-Owner Connection Model (Architecture Refactor)
