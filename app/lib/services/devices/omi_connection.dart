@@ -56,7 +56,11 @@ class OmiDeviceConnection extends DeviceConnection {
 
   final Mutex _storageMutex = Mutex();
 
+  // 2s for the initial listFiles subscription (CCCD descriptor write is slow on first subscribe).
   static const _cccdSettleDelay = Duration(milliseconds: 2000);
+  // 500ms for subsequent commands (delete, rotate) — enough for CCCD writes on slow BLE
+  // stacks without the 2s penalty of the full listFiles settle delay.
+  static const _cccdCommandDelay = Duration(milliseconds: 500);
 
   OmiDeviceConnection(super.device, super.transport);
 
@@ -362,7 +366,7 @@ class OmiDeviceConnection extends DeviceConnection {
         if (completer.isCompleted) return;
         if (data.isNotEmpty && data[0] == 0x03) completer.complete(data.length < 2 || data[1] == 0);
       });
-      await Future.delayed(_cccdSettleDelay);
+      await Future.delayed(_cccdCommandDelay);
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x12, file.index & 0xFF]);
       final res = await completer.future.timeout(const Duration(seconds: 35));
       await sub.cancel();
@@ -386,6 +390,7 @@ class OmiDeviceConnection extends DeviceConnection {
       final sub = stream.listen((data) {
         if (!completer.isCompleted && data.length >= 2 && data[0] == 0x03) completer.complete(data[1] == 0);
       });
+      await Future.delayed(_cccdCommandDelay);
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x13]);
       final res = await completer.future.timeout(const Duration(seconds: 15));
       await sub.cancel();
