@@ -26,8 +26,6 @@ cd app && bash test.sh
 dart format --line-length 120 <files>
 clang-format -i <files>          # firmware C/C++
 
-# Regenerate l10n after editing ARB files
-cd app && flutter gen-l10n
 ```
 
 ## Architecture
