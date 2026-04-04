@@ -12,7 +12,7 @@ class OmiDeviceConnection extends DeviceConnection {
   static const String batteryServiceUuid = '0000180f-0000-1000-8000-00805f9b34fb';
   static const String batteryLevelCharacteristicUuid = '00002a19-0000-1000-8000-00805f9b34fb';
 
-  // 4-byte battery detail: [state:1][mv:2LE][pct:1]
+  // 1-byte battery detail: [charging:1]
   static const String batteryDetailServiceUuid = '19b10050-e8f2-537e-4f6c-d104768a1214';
   static const String batteryDetailCharacteristicUuid = '19b10051-e8f2-537e-4f6c-d104768a1214';
 
@@ -50,6 +50,8 @@ class OmiDeviceConnection extends DeviceConnection {
   Timer? _timeoutTimer;
   // Retries CMD_LIST_FILES until the firmware responds
   Timer? _cccdRetryTimer;
+
+  StreamSubscription<List<int>>? _chargingSubscription;
 
   // Cached audio codec to avoid redundant BLE reads
   BleAudioCodec? _cachedAudioCodec;
@@ -117,10 +119,6 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<int> performRetrieveBatteryLevel() async {
     try {
-      final detail = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
-      if (detail.length >= 3) return detail[2];
-    } catch (_) {}
-    try {
       final data = await transport.readCharacteristic(batteryServiceUuid, batteryLevelCharacteristicUuid);
       if (data.isNotEmpty) return data[0];
     } catch (_) {}
@@ -131,7 +129,7 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<bool> performRetrieveChargingState() async {
     try {
       final data = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
-      if (data.length >= 4) return data[3] == 1;
+      if (data.isNotEmpty) return data[0] == 1;
     } catch (_) {}
     return false;
   }
@@ -141,18 +139,30 @@ class OmiDeviceConnection extends DeviceConnection {
     void Function(int)? onBatteryLevelChange,
     void Function(bool)? onChargingStateChange,
   }) async {
+    // BAS level stream
+    final levelStream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
+    final levelSub = levelStream.listen((v) {
+      if (v.isNotEmpty && onBatteryLevelChange != null) onBatteryLevelChange(v[0]);
+    });
+
+    // Charging stream from custom service
     try {
-      final stream = await transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
-      return stream.listen((value) {
-        if (value.length >= 3 && onBatteryLevelChange != null) onBatteryLevelChange(value[2]);
-        if (value.length >= 4 && onChargingStateChange != null) onChargingStateChange(value[3] == 1);
+      final chargingStream = await transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      await _chargingSubscription?.cancel();
+      _chargingSubscription = chargingStream.listen((v) {
+        if (v.isNotEmpty && onChargingStateChange != null) onChargingStateChange(v[0] == 1);
       });
-    } catch (_) {}
-    return null;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Error subscribing to charging state: $e');
+    }
+
+    return levelSub;
   }
 
   @override
   Future<void> disconnect() async {
+    await _chargingSubscription?.cancel();
+    _chargingSubscription = null;
     await stop();
     await super.disconnect();
   }
