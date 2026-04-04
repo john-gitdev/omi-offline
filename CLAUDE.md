@@ -32,7 +32,7 @@ clang-format -i <files>          # firmware C/C++
 
 ### Overview
 
-Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures audio via Opus codec, stores it to SD card, and exposes it over BLE. The Flutter app discovers the device, syncs recordings via WAL, decodes Opus to WAV, and splits by silence.
+Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures audio via Opus codec, stores it to SD card, and exposes it over BLE. The Flutter app discovers the device, syncs recordings via WAL, decodes Opus to .m4a, and splits by silence.
 
 **Data flow:** Mic → Opus encode (firmware) → SD card → BLE transfer (WAL-tracked, ACK-gated, resumable) → raw .bin segments on phone → Opus decode → VAD silence detection → .m4a → daily batch UI
 
@@ -41,18 +41,18 @@ Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures a
 **State management**: `DeviceProvider` (ChangeNotifier) drives all UI. `ServiceManager` is the singleton that holds `IDeviceService`.
 
 **Connection pipeline** (`services/devices/`):
-- `DeviceService.ensureConnection()` is serialized via `_pendingConnection` future — N concurrent callers (battery, storage, WAL sync) share one connection attempt. Critical: never bypass this.
-- `BleTransport` retries service discovery up to 3× if service is missing (transient), but bails immediately if service is found but characteristic is absent (firmware lacks it — retrying cannot help).
+- `DeviceService.ensureConnection()` is serialized via a `Mutex` — N concurrent callers (battery, storage, WAL sync) share one connection attempt. Critical: never bypass this.
+- Connection retry and reconnect logic is owned by the native BLE layer, not Dart.
 - On connect: time sync writes UTC as little-endian u32 to `timeSyncWriteCharacteristicUuid` so the device can anchor recording timestamps.
 
 **Audio pipeline** (`services/`):
-- `RecordingsManager` stores raw BLE frames in `raw_segments/<deviceSessionId>/<deviceSessionId>_<segmentIndex>.bin`
-- `OfflineAudioProcessor` decodes Opus → 16 kHz mono 16-bit PCM, applies RMS silence detection (-55 dBFS threshold), splits into `recordings/<YYYY-MM-DD>/<recording_<millis>>.m4a`
-- Metadata packets (255-byte frames) carry UTC + device uptime for timestamp anchoring when device clock was reset
+- `SDCardWalSyncImpl` saves downloaded segments to `raw_segments/<deviceSessionId>/<deviceSessionId>_<segmentIndex>.bin`; marker packets (20-byte frames: `0xFFFFFFFE` header + 16-byte payload) are extracted to `markers.txt` during transfer
+- `OfflineAudioProcessor` decodes Opus → 16 kHz mono 16-bit PCM, adaptive noise floor tracking (initial -40 dBFS, SNR margin configurable), splits into `recordings/<YYYY-MM-DD>/recording_<millis>.m4a`
+- `RecordingsManager` / `Conversation` model parses finalized recordings from the `recordings/` directory for UI binding
 
 **Sync** (`services/wals/`):
 - `WalService` creates `Wal` entries per file (tracks codec, device, storage location, sync status: miss → syncing → synced)
-- `SDCardWalSyncImpl` reads files over BLE (256-byte chunks) — allows resume on reconnect without re-downloading
+- `SDCardWalSyncImpl` reads files over BLE — allows resume on reconnect without re-downloading
 
 ### Hardware (`omi/hardware/consumer/`)
 
@@ -92,7 +92,7 @@ All Omi services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`:
 | Storage | `30295780-…` | File list + read/delete |
 | Button | `23ba7924-…` | Tap events (1=single, 2=double, 3=long, 4=press, 5=release) |
 
-Storage protocol: read characteristic returns 4-byte LE file lengths; write `[cmd, fileNum, offset_4B]` where cmd: 0=READ, 1=DELETE, 2=NUKE, 3=STOP.
+Storage protocol: write commands to `storageDataStreamCharacteristicUuid`: `0x10`=LIST_FILES, `0x11`=READ `[cmd, fileNum, offset_4B LE]`, `0x12`=DELETE `[cmd, fileNum]`, `0x13`=ROTATE, `0x14`=CLEAR_STORAGE.
 
 Audio codec IDs: 1=pcm8, 20=opus (80 B/frame, 50 fps), 21=opusFS320 (40 B/frame, 50 fps).
 
