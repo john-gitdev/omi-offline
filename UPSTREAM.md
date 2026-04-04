@@ -119,12 +119,3 @@ Smaller fixes integrated independently; superseded by the PR #6200 full-file rep
 | [`b0560a0ec`](https://github.com/BasedHardware/omi/commit/b0560a0ec) | `OmiBleForegroundService.kt` | Guard `OmiBleManager` init in `onCreate`: `if (!OmiBleManager.isInitialized) initialize(application)` prevents `IllegalStateException` on re-delivered pending intents after process death | Integrated |
 | [`20f323a36`](https://github.com/BasedHardware/omi/commit/20f323a36) | `OmiBleForegroundService.kt` | Remove DFU service MTU skip in `requestMtuThenNotifyReady`: removed `hasDfuService` guard and unused `DFU_SERVICE_UUID` constant so MTU negotiation proceeds unconditionally | Integrated |
 | [`a43cd2be0`](https://github.com/BasedHardware/omi/commit/a43cd2be0) | `OmiBleManager.kt` | Log `writeCharacteristic` errors on API 33+ path; extract `writeDescriptorCompat()` helper that calls `completeCommand()` on failure, preventing permanent BLE queue stalls | Integrated |
-
----
-
-## Not Ported
-
-### PR #5994: Fix sync endpoint silent failure causing permanent audio loss
-**Source:** [PR #5994](https://github.com/BasedHardware/omi/pull/5994)
-
-Addresses silent failures in the network/API synchronization layer and audio data preservation upstream. Contains no BLE hardware connection reliability fixes. Not applicable to `omi-offline`.
