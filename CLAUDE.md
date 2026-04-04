@@ -36,7 +36,7 @@ cd app && flutter gen-l10n
 
 Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures audio via Opus codec, stores it to SD card, and exposes it over BLE. The Flutter app discovers the device, syncs recordings via WAL, decodes Opus to WAV, and splits by silence.
 
-**Data flow:** Mic → Opus encode (firmware) → SD card → BLE/WiFi transfer → WAL sync → Opus decode → silence detection → WAV files → daily batch UI
+**Data flow:** Mic → Opus encode (firmware) → SD card → BLE transfer → WAL sync → Opus decode → silence detection → WAV files → daily batch UI
 
 ### App (`app/lib/`)
 
@@ -54,7 +54,7 @@ Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures a
 
 **Sync** (`services/wals/`):
 - `WalService` creates `Wal` entries per file (tracks codec, device, storage location, sync status: miss → syncing → synced)
-- `SDCardWalSyncImpl` reads files over BLE (256-byte chunks) — allows resume on reconnect without re-downloading (WiFi/TCP sync is disabled)
+- `SDCardWalSyncImpl` reads files over BLE (256-byte chunks) — allows resume on reconnect without re-downloading
 
 ### Hardware (`omi/hardware/consumer/`)
 

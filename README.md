@@ -113,8 +113,6 @@ The protocol prevents audio repetition and corruption:
 
 This ensures idempotent delivery: re-connections mid-sync resume cleanly without re-downloading or duplicating data.
 
-> **Note:** WiFi/TCP sync (port 8080) is currently disabled. All sync runs over BLE only.
-
 ---
 
 ## Processing Pipeline
