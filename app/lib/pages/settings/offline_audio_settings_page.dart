@@ -13,7 +13,8 @@ class OfflineAudioSettingsPage extends StatefulWidget {
 
 class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late bool _autoSyncEnabled;
-  late int _fixedIntervalMinutes;
+  late int _markerPreMinutes;
+  late int _markerPostMinutes;
 
   bool _isDirty = false;
 
@@ -21,7 +22,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   void initState() {
     super.initState();
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
-    _fixedIntervalMinutes = SharedPreferencesUtil().offlineFixedIntervalMinutes;
+    _markerPreMinutes = SharedPreferencesUtil().markerPreMinutes;
+    _markerPostMinutes = SharedPreferencesUtil().markerPostMinutes;
   }
 
   void _markDirty() {
@@ -30,7 +32,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
   void _saveSettings() {
     SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
-    SharedPreferencesUtil().offlineFixedIntervalMinutes = _fixedIntervalMinutes;
+    SharedPreferencesUtil().markerPreMinutes = _markerPreMinutes;
+    SharedPreferencesUtil().markerPostMinutes = _markerPostMinutes;
     setState(() => _isDirty = false);
   }
 
@@ -109,6 +112,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Auto Sync toggle
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -137,57 +141,65 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'When enabled, your Omi will automatically try to connect, sync, and process segments every 30 minutes.',
+                      'When enabled, your Omi will automatically connect, sync, and process recordings every 30 minutes.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],
                 ),
               ),
               const SizedBox(height: 32),
+
+              // Pre-marker window
               const Text(
-                'Recording Interval',
+                'Before Marker',
                 style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
               ),
               const SizedBox(height: 8),
               Text(
-                'Audio is saved at fixed wall-clock intervals. The first interval runs from when recording starts to the next boundary, then cuts repeat at the selected interval.',
+                'How much audio before a marker tap to include when you open a marked recording.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
               ),
               const SizedBox(height: 12),
               Row(
-                children: [
-                  _IntervalOption(
-                    label: '30 min',
-                    value: 30,
-                    selected: _fixedIntervalMinutes == 30,
-                    onTap: () {
-                      setState(() => _fixedIntervalMinutes = 30);
-                      _markDirty();
-                    },
-                  ),
-                  const SizedBox(width: 10),
-                  _IntervalOption(
-                    label: '1 hour',
-                    value: 60,
-                    selected: _fixedIntervalMinutes == 60,
-                    onTap: () {
-                      setState(() => _fixedIntervalMinutes = 60);
-                      _markDirty();
-                    },
-                  ),
-                  const SizedBox(width: 10),
-                  _IntervalOption(
-                    label: '2 hours',
-                    value: 120,
-                    selected: _fixedIntervalMinutes == 120,
-                    onTap: () {
-                      setState(() => _fixedIntervalMinutes = 120);
-                      _markDirty();
-                    },
-                  ),
-                ],
+                children: [0, 5, 10, 15]
+                    .map((min) => _WindowOption(
+                          label: min == 0 ? 'None' : '$min min',
+                          selected: _markerPreMinutes == min,
+                          onTap: () {
+                            setState(() => _markerPreMinutes = min);
+                            _markDirty();
+                          },
+                        ))
+                    .toList(),
               ),
               const SizedBox(height: 32),
+
+              // Post-marker window
+              const Text(
+                'After Marker',
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'How much audio after a marker tap to include. Extend right to add more.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [5, 15, 30]
+                    .map((min) => _WindowOption(
+                          label: '$min min',
+                          selected: _markerPostMinutes == min,
+                          onTap: () {
+                            setState(() => _markerPostMinutes = min);
+                            _markDirty();
+                          },
+                        ))
+                    .toList(),
+              ),
+              const SizedBox(height: 32),
+
+              // Info box
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -201,7 +213,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     const SizedBox(width: 16),
                     Expanded(
                       child: Text(
-                        'All recordings are processed locally on-device and saved as AAC (M4A) audio files.',
+                        'Audio is saved in 30-minute segments and processed locally as AAC (M4A) files. '
+                        'Tap the marker button on your Omi to tag a moment — the window above controls how much context is shown.',
                         style: TextStyle(color: Colors.grey.shade300, fontSize: 14),
                       ),
                     ),
@@ -216,13 +229,12 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   }
 }
 
-class _IntervalOption extends StatelessWidget {
+class _WindowOption extends StatelessWidget {
   final String label;
-  final int value;
   final bool selected;
   final VoidCallback onTap;
 
-  const _IntervalOption({required this.label, required this.value, required this.selected, required this.onTap});
+  const _WindowOption({required this.label, required this.selected, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -230,6 +242,7 @@ class _IntervalOption extends StatelessWidget {
       child: GestureDetector(
         onTap: onTap,
         child: Container(
+          margin: const EdgeInsets.only(right: 8),
           padding: const EdgeInsets.symmetric(vertical: 12),
           decoration: BoxDecoration(
             color: const Color(0xFF1C1C1E),
