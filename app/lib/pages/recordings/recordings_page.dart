@@ -48,10 +48,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   double _syncSpeed = 0.0;
   String _lastCompletedStage = 'none'; // "none" | "syncing" | "processing"
   String _lastActiveStage = 'syncing'; // "syncing" | "processing"
-  // ─── Filter state ──────────────────────────────────────────────────────────
-  bool _filterEnabled = SharedPreferencesUtil().recordingsFilterEnabled;
-  int _filterMinutes = SharedPreferencesUtil().recordingsFilterMinutes;
-
   // ─── HeyPocket upload state ────────────────────────────────────────────────
   final Set<String> _uploadingFiles = {};
   int _autoUploadActive = 0;
@@ -669,69 +665,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     await SharePlus.instance.share(ShareParams(files: files, subject: 'Conversations – ${batch.dateString}'));
   }
 
-  // ─── Filter sheet ──────────────────────────────────────────────────────────
-  void _showFilterSheet() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1C1C1E),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModalState) {
-          return Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(color: Colors.grey.shade600, borderRadius: BorderRadius.circular(2)),
-                ),
-                const SizedBox(height: 16),
-                SwitchListTile(
-                  title: const Text('Filter by Duration', style: TextStyle(color: Colors.white)),
-                  value: _filterEnabled,
-                  activeThumbColor: Colors.deepPurpleAccent,
-                  onChanged: (v) {
-                    setModalState(() => _filterEnabled = v);
-                    setState(() => _filterEnabled = v);
-                    SharedPreferencesUtil().recordingsFilterEnabled = v;
-                  },
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Row(
-                    children: [
-                      Text('Min duration:', style: TextStyle(color: Colors.grey.shade400)),
-                      const Spacer(),
-                      Text('$_filterMinutes min',
-                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                ),
-                Slider(
-                  min: 0,
-                  max: 60,
-                  divisions: 60,
-                  value: _filterMinutes.toDouble(),
-                  activeColor: Colors.deepPurpleAccent,
-                  inactiveColor: Colors.grey.shade700,
-                  onChanged: _filterEnabled
-                      ? (v) {
-                          setModalState(() => _filterMinutes = v.round());
-                          setState(() => _filterMinutes = v.round());
-                          SharedPreferencesUtil().recordingsFilterMinutes = v.round();
-                        }
-                      : null,
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
   // ─── HeyPocket ─────────────────────────────────────────────────────────────
   void _tryAutoUploadNext() {
     if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty) return;
@@ -743,7 +676,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         if (_autoUploadActive >= 2) return;
         final conversation = Conversation.fromFile(file);
         if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
-        if (_filterEnabled && conversation.duration < Duration(minutes: _filterMinutes)) continue;
         final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
         if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
@@ -1008,12 +940,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   // ─── Batch card ────────────────────────────────────────────────────────────
   Widget _buildBatchCard(Batch batch) {
-    final allConversations = batch.finalizedRecordings.map(Conversation.fromFile).toList()
+    final conversations = batch.finalizedRecordings.map(Conversation.fromFile).toList()
       ..sort((a, b) => b.startTime.compareTo(a.startTime));
-    final minDuration = Duration(minutes: _filterMinutes);
-    final conversations = (_filterEnabled && _filterMinutes > 0)
-        ? allConversations.where((r) => r.duration >= minDuration).toList()
-        : allConversations;
 
     return Card(
       color: const Color(0xFF1C1C1E),
@@ -1174,14 +1102,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     : null,
               ),
               IconButton(
-                icon: FaIcon(
-                  FontAwesomeIcons.filter,
-                  color: _filterEnabled ? Colors.deepPurpleAccent : Colors.white,
-                  size: 20,
-                ),
-                onPressed: _showFilterSheet,
-              ),
-              IconButton(
                 icon: const FaIcon(FontAwesomeIcons.gear, color: Colors.white, size: 20),
                 onPressed: () => SettingsDrawer.show(context),
               ),
@@ -1191,27 +1111,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
             children: [
               _buildStorageWarning(deviceProvider.storageFullPercentage),
               _buildSyncProcessCard(),
-              if (_filterEnabled && _filterMinutes > 0)
-                Container(
-                  width: double.infinity,
-                  color: Colors.deepPurpleAccent.withValues(alpha: 0.15),
-                  padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
-                  child: Text(
-                    'Showing conversations \u2265 $_filterMinutes min',
-                    style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 12),
-                  ),
-                ),
               Expanded(
                 child: _isLoading
                     ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
                     : Builder(builder: (context) {
-                        final minDuration = Duration(minutes: _filterMinutes);
-                        final visibleBatches = (_filterEnabled && _filterMinutes > 0)
-                            ? _batches.where((b) {
-                                return b.finalizedRecordings
-                                    .any((f) => Conversation.fromFile(f).duration >= minDuration);
-                              }).toList()
-                            : _batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
+                        final visibleBatches = _batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
                         return RefreshIndicator(
                           color: Colors.deepPurpleAccent,
                           onRefresh: () {
