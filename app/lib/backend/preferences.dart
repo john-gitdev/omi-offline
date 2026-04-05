@@ -25,10 +25,13 @@ class SharedPreferencesUtil {
 
   set forceSyncSkipConfirm(bool value) => saveBool('force_sync_skip_confirm', value);
 
-  // Interval in minutes for fixed recording mode: 30, 60, or 120
-  int get offlineFixedIntervalMinutes => getInt('offlineFixedIntervalMinutes', defaultValue: 60);
+  // Minutes of audio before the marker to include in the visible window (default 5).
+  int get markerPreMinutes => getInt('markerPreMinutes', defaultValue: 5);
+  set markerPreMinutes(int value) => saveInt('markerPreMinutes', value);
 
-  set offlineFixedIntervalMinutes(int value) => saveInt('offlineFixedIntervalMinutes', value);
+  // Minutes of audio after the marker to include in the visible window (default 30).
+  int get markerPostMinutes => getInt('markerPostMinutes', defaultValue: 30);
+  set markerPostMinutes(int value) => saveInt('markerPostMinutes', value);
 
   // Epoch ms of the next pending boundary for fixed mode.
   // Persisted so a fresh processor on the next sync knows which frames in the
@@ -98,9 +101,6 @@ class SharedPreferencesUtil {
     _preferences = prefs;
 
     // Set default values if not present
-    if (!prefs.containsKey('offlineFixedIntervalMinutes')) {
-      prefs.setInt('offlineFixedIntervalMinutes', 60);
-    }
     if (!prefs.containsKey('fixedModeNextBoundaryMs')) {
       prefs.setInt('fixedModeNextBoundaryMs', 0);
     }
