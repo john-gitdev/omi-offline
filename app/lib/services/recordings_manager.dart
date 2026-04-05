@@ -396,6 +396,8 @@ class RecordingsManager {
             await processor.flushOnlyCompleted();
           } else {
             await processor.flushRemaining();
+            // All intervals are now closed — every segment is safe to delete.
+            lastSafeToDeleteIndex = allSegments.length - 1;
           }
         } finally {
           processor.destroy();
@@ -656,6 +658,7 @@ class RecordingsManager {
   /// Safe to call from a background timer; no-op if a marker process is running.
   static Future<void> processAllCompletedSessions() async {
     if (_isProcessingAny) return;
+    await enforceRetentionPolicy();
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
     final safeBatches = batches
@@ -686,6 +689,7 @@ class RecordingsManager {
   /// No-op if a process is already running.
   static Future<void> forceProcessAll() async {
     if (_isProcessingAny) return;
+    await enforceRetentionPolicy();
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
     final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
@@ -739,6 +743,31 @@ class RecordingsManager {
       return aSegment.compareTo(bSegment);
     });
     return result;
+  }
+
+  /// Deletes `recordings/<date>/` folders older than [recordingRetentionDays] days.
+  /// Called at the start of each processing run so storage stays bounded automatically.
+  static Future<void> enforceRetentionPolicy() async {
+    final retentionDays = SharedPreferencesUtil().recordingRetentionDays;
+    final directory = await getApplicationDocumentsDirectory();
+    final recordingsDir = Directory('${directory.path}/recordings');
+    if (!recordingsDir.existsSync()) return;
+
+    final cutoff = DateTime.now().subtract(Duration(days: retentionDays));
+    for (final entity in recordingsDir.listSync()) {
+      if (entity is! Directory) continue;
+      final parts = entity.path.split('/').last.split('-');
+      if (parts.length != 3) continue;
+      try {
+        final folderDate = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+        if (folderDate.isBefore(cutoff)) {
+          await entity.delete(recursive: true);
+          Logger.debug('RecordingsManager: Deleted recordings older than $retentionDays days: ${entity.path}');
+        }
+      } catch (_) {
+        continue;
+      }
+    }
   }
 
   /// Deletes orphaned `.tmp.m4a` files left by interrupted encoding runs.
