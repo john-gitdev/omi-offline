@@ -1,7 +1,5 @@
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:math';
-import 'package:flutter/services.dart';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
