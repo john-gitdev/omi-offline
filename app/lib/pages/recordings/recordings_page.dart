@@ -15,6 +15,7 @@ import 'package:omi/pages/settings/settings_drawer.dart';
 import 'package:omi/pages/settings/find_devices_page.dart';
 import 'package:omi/pages/settings/device_settings.dart';
 import 'package:omi/pages/recordings/recording_player_page.dart';
+import 'package:omi/pages/recordings/marker_conversation_player_page.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:omi/widgets/battery_status_indicator.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -977,9 +978,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   }
 
   void _openMarkerConversation(MarkerConversation mc) {
-    // TODO(Phase 4): navigate to MarkerConversationPlayerPage
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Opening marker at ${mc.markerTimeLabel} — player coming in Phase 4')),
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => MarkerConversationPlayerPage(markerConversation: mc),
+      ),
     );
   }
 
