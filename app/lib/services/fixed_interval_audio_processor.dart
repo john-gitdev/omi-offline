@@ -12,14 +12,13 @@ import 'package:omi/utils/logger.dart';
 /// Processor for fixed-interval recording mode.
 ///
 /// Cuts recordings at wall-clock boundaries that fall 1 second before each
-/// interval multiple (i.e. :29:59/:59:59 for 30-min, :59:59 for 1hr, etc.).
-/// The -1 second offset ensures the last cut of any day lands at 23:59:59 and
-/// never spills into the following day.
+/// 30-minute multiple (:29:59 and :59:59). The -1 second offset ensures the
+/// last cut of any day lands at 23:59:59 and never spills into the next day.
 ///
-/// Boundary formula (where _intervalMs = intervalMinutes * 60000):
+/// Boundary formula (_intervalMs = 30 * 60 * 1000):
 ///   nextBoundary = ceil((epochMs + 1000) / _intervalMs) * _intervalMs - 1000
 ///
-/// Example — 30-min, recording started 10:15am:
+/// Example — recording started 10:15am:
 ///   first cut  → 10:29:59
 ///   subsequent → 10:59:59, 11:29:59, 11:59:59, …
 class FixedIntervalAudioProcessor {
@@ -45,7 +44,7 @@ class FixedIntervalAudioProcessor {
                 ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
                 : null),
         _outputDir = outputDir,
-        _intervalMs = SharedPreferencesUtil().offlineFixedIntervalMinutes * 60 * 1000 {
+        _intervalMs = 30 * 60 * 1000 {
     // Restore the boundary that was active when the previous run ended.
     // If nonzero, the next call to processSegmentFile will skip frames that
     // were already included in the last completed interval.
