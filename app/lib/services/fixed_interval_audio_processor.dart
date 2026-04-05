@@ -33,7 +33,6 @@ class FixedIntervalAudioProcessor {
   final SimpleOpusDecoder? _decoder;
   final String? _outputDir;
   final int _intervalMs;
-  final int _gapThresholdMs;
 
   List<FrameRef> _currentRefs = [];
   DateTime? _recordingStartTime;
@@ -46,8 +45,7 @@ class FixedIntervalAudioProcessor {
                 ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
                 : null),
         _outputDir = outputDir,
-        _intervalMs = SharedPreferencesUtil().offlineFixedIntervalMinutes * 60 * 1000,
-        _gapThresholdMs = SharedPreferencesUtil().vadGapSeconds * 1000 {
+        _intervalMs = SharedPreferencesUtil().offlineFixedIntervalMinutes * 60 * 1000 {
     // Restore the boundary that was active when the previous run ended.
     // If nonzero, the next call to processSegmentFile will skip frames that
     // were already included in the last completed interval.
@@ -105,7 +103,7 @@ class FixedIntervalAudioProcessor {
     // current buffer as a partial interval and restart boundary tracking.
     if (_currentRefs.isNotEmpty && _lastSegmentEndTime != null) {
       final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds.abs();
-      if (gapMs > _gapThresholdMs) {
+      if (gapMs > 0) {
         Logger.debug('FixedIntervalAudioProcessor: Gap of ${gapMs}ms detected — flushing partial interval.');
         final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
         if (filePath != null) savedFiles.add(filePath);

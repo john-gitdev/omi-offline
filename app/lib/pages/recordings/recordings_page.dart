@@ -891,7 +891,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         final minStr = _minutesRemaining >= 1
             ? '${_minutesRemaining.ceil()} min of audio remaining'
             : '< 1 min of audio remaining';
-        subText = '$minStr  ·  $_markerCount marker${_markerCount != 1 ? 's' : ''}';
+        subText = minStr;
         iconBg = Colors.deepPurpleAccent;
         iconChild = const SizedBox(
           width: 16,
@@ -1040,25 +1040,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                   ),
                   TextButton.icon(
                     key: Key('delete_day_${batch.dateString}'),
-                    onPressed: () {
-                      if (SharedPreferencesUtil().offlineAdjustmentMode) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Delete Day is disabled while adjustment mode is on.')),
-                        );
-                        return;
-                      }
-                      _deleteDay(batch);
-                    },
-                    icon: FaIcon(FontAwesomeIcons.trashCan,
-                        size: 13,
-                        color:
-                            SharedPreferencesUtil().offlineAdjustmentMode ? Colors.grey.shade700 : Colors.red.shade400),
-                    label: Text('Delete Day',
-                        style: TextStyle(
-                            color: SharedPreferencesUtil().offlineAdjustmentMode
-                                ? Colors.grey.shade700
-                                : Colors.red.shade400,
-                            fontSize: 13)),
+                    onPressed: () => _deleteDay(batch),
+                    icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
+                    label: Text('Delete Day', style: TextStyle(color: Colors.red.shade400, fontSize: 13)),
                   ),
                 ],
               ),
