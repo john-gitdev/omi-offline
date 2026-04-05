@@ -25,6 +25,10 @@ class SharedPreferencesUtil {
 
   set forceSyncSkipConfirm(bool value) => saveBool('force_sync_skip_confirm', value);
 
+  // Days to retain processed .m4a recordings before auto-deletion: 3 or 7.
+  int get recordingRetentionDays => getInt('recordingRetentionDays', defaultValue: 3);
+  set recordingRetentionDays(int value) => saveInt('recordingRetentionDays', value);
+
   // Minutes of audio before the marker to include in the visible window (default 5).
   int get markerPreMinutes => getInt('markerPreMinutes', defaultValue: 5);
   set markerPreMinutes(int value) => saveInt('markerPreMinutes', value);
