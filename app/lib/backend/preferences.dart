@@ -21,53 +21,14 @@ class SharedPreferencesUtil {
 
   //--------------------------- Offline Audio Processing ---------------------//
 
-  double get vadSnrMarginDb => getDouble('offlineSnrMarginDb', defaultValue: 10.0);
-
-  set vadSnrMarginDb(double value) => saveDouble('offlineSnrMarginDb', value);
-
-  double get offlineHangoverSeconds => getDouble('offlineHangoverSeconds', defaultValue: 0.5);
-
-  set offlineHangoverSeconds(double value) => saveDouble('offlineHangoverSeconds', value);
-
-  int get vadSplitSeconds => getInt('offlineSplitSeconds', defaultValue: 120);
-
-  set vadSplitSeconds(int value) => saveInt('offlineSplitSeconds', value);
-
-  int get vadMinSpeechSeconds => getInt('offlineMinSpeechSeconds', defaultValue: 5);
-
-  set vadMinSpeechSeconds(int value) => saveInt('offlineMinSpeechSeconds', value);
-
-  double get vadPreSpeechSeconds => getDouble('offlinePreSpeechSeconds', defaultValue: 1.0);
-
-  set vadPreSpeechSeconds(double value) => saveDouble('offlinePreSpeechSeconds', value);
-
-  int get vadGapSeconds => getInt('offlineGapSeconds', defaultValue: 30);
-
-  set vadGapSeconds(int value) => saveInt('offlineGapSeconds', value);
-
-  bool get offlineAdjustmentMode => getBool('offlineAdjustmentMode', defaultValue: false);
-
-  set offlineAdjustmentMode(bool value) => saveBool('offlineAdjustmentMode', value);
-
   bool get forceSyncSkipConfirm => getBool('force_sync_skip_confirm', defaultValue: false);
 
   set forceSyncSkipConfirm(bool value) => saveBool('force_sync_skip_confirm', value);
 
-  // 'automatic' = continuous VAD, 'marker' = marker-based extraction, 'fixed' = fixed wall-clock intervals
-  String get offlineRecordingMode => getString('offlineRecordingMode', defaultValue: 'marker');
-
-  set offlineRecordingMode(String v) => saveString('offlineRecordingMode', v);
-
-  // Interval in minutes for fixed recording mode: 15, 30, 60, or 120
+  // Interval in minutes for fixed recording mode: 30, 60, or 120
   int get offlineFixedIntervalMinutes => getInt('offlineFixedIntervalMinutes', defaultValue: 60);
 
   set offlineFixedIntervalMinutes(int value) => saveInt('offlineFixedIntervalMinutes', value);
-
-  // Lookback window in minutes for marker mode: how far before a marker to scan for conversation start.
-  // Options: 15, 30, 60, 120. Default: 120 (2 hours).
-  int get markerLookbackMinutes => getInt('markerLookbackMinutes', defaultValue: 120);
-
-  set markerLookbackMinutes(int value) => saveInt('markerLookbackMinutes', value);
 
   // Epoch ms of the next pending boundary for fixed mode.
   // Persisted so a fresh processor on the next sync knows which frames in the
@@ -137,35 +98,8 @@ class SharedPreferencesUtil {
     _preferences = prefs;
 
     // Set default values if not present
-    if (!prefs.containsKey('offlineSnrMarginDb')) {
-      prefs.setDouble('offlineSnrMarginDb', 10.0);
-    }
-    if (!prefs.containsKey('offlineHangoverSeconds')) {
-      prefs.setDouble('offlineHangoverSeconds', 0.5);
-    }
-    if (!prefs.containsKey('offlineSplitSeconds')) {
-      prefs.setInt('offlineSplitSeconds', 120); // 2 minutes default
-    }
-    if (!prefs.containsKey('offlineMinSpeechSeconds')) {
-      prefs.setInt('offlineMinSpeechSeconds', 5); // 5 seconds default
-    }
-    if (!prefs.containsKey('offlinePreSpeechSeconds')) {
-      prefs.setDouble('offlinePreSpeechSeconds', 1.0);
-    }
-    if (!prefs.containsKey('offlineGapSeconds')) {
-      prefs.setInt('offlineGapSeconds', 30);
-    }
-    if (!prefs.containsKey('offlineAdjustmentMode')) {
-      prefs.setBool('offlineAdjustmentMode', false);
-    }
-    if (!prefs.containsKey('offlineRecordingMode')) {
-      prefs.setString('offlineRecordingMode', 'marker');
-    }
     if (!prefs.containsKey('offlineFixedIntervalMinutes')) {
       prefs.setInt('offlineFixedIntervalMinutes', 60);
-    }
-    if (!prefs.containsKey('markerLookbackMinutes')) {
-      prefs.setInt('markerLookbackMinutes', 120);
     }
     if (!prefs.containsKey('fixedModeNextBoundaryMs')) {
       prefs.setInt('fixedModeNextBoundaryMs', 0);

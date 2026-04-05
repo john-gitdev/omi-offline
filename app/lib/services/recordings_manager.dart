@@ -3,8 +3,6 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/fixed_interval_audio_processor.dart';
-import 'package:omi/services/marker_recording_extractor.dart';
-import 'package:omi/services/offline_audio_processor.dart';
 import 'package:omi/utils/logger.dart';
 
 /// Parsed metadata for a single processed recording (M4A or WAV).
@@ -318,116 +316,43 @@ class RecordingsManager {
       }
       await tempDir.create(recursive: true);
 
-      // In adjustment mode, wipe existing processed recordings before reprocessing
-      // so old conversations don't accumulate alongside the new ones.
-      if (SharedPreferencesUtil().offlineAdjustmentMode) {
-        final liveDir = Directory(liveRecordingsPath);
-        if (await liveDir.exists()) {
-          await liveDir.delete(recursive: true);
-          Logger.debug('RecordingsManager: Cleared existing recordings for $dateString (adjustment mode)');
-        }
-        // Also reset the persisted fixed-mode boundary so reprocessing starts fresh
-        // and doesn't incorrectly skip frames based on the previous run's state.
-        SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
-      }
-
-      // 2. Route to automatic (VAD), marker, or fixed-interval processing.
-      // All paths write output files to tempProcessingPath; the move-to-live
-      // block below runs for all.
+      // 2. Fixed-interval processing — cuts at wall-clock boundaries (:29/:59 pattern).
       int lastSafeToDeleteIndex = -1;
-      final mode = SharedPreferencesUtil().offlineRecordingMode;
-      final isMarkerMode = mode == 'marker';
-      final isFixedMode = mode == 'fixed';
 
       try {
-        if (isMarkerMode) {
-          // Marker mode: marker extraction via MarkerRecordingExtractor.
-          // Produces recordings only for conversations the user explicitly starred.
-          // Always keeps a 2hr rolling buffer of raw segments for future markers.
-          final extractor = MarkerRecordingExtractor();
-          try {
-            final result = await extractor.process(batch, tempProcessingPath, forceFlush: !backgroundMode);
-            lastSafeToDeleteIndex = result.lastSafeSegmentIndex;
-            Logger.debug(
-                'RecordingsManager: Marker mode extracted ${result.savedPaths.length} conversations for $dateString');
-          } finally {
-            extractor.destroy();
+        final processor = FixedIntervalAudioProcessor(outputDir: tempProcessingPath);
+        try {
+          for (int i = 0; i < batch.rawSegments.length; i++) {
+            final file = batch.rawSegments[i];
+            final stem = file.path.split('/').last.split('.').first;
+            final timerStart = int.tryParse(stem.split('_').first);
+            const kMinValidEpoch = 946684800;
+            final segmentStartTime = timerStart != null && timerStart > kMinValidEpoch
+                ? DateTime.fromMillisecondsSinceEpoch(timerStart * 1000)
+                : file.lastModifiedSync();
+
+            if (_cancelRequested) {
+              Logger.debug("RecordingsManager: Processing cancelled by user at segment $i.");
+              break;
+            }
+
+            await processor.processSegmentFile(file, segmentStartTime);
+
+            if (backgroundMode && !processor.isCapturing) {
+              lastSafeToDeleteIndex = i;
+            }
+
+            onProgress(((i + 1) / batch.rawSegments.length) * 0.9);
+            if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
           }
-        } else if (isFixedMode) {
-          // Fixed-interval mode: cuts at wall-clock boundaries (:29/:59 pattern).
-          final processor = FixedIntervalAudioProcessor(outputDir: tempProcessingPath);
-          try {
-            for (int i = 0; i < batch.rawSegments.length; i++) {
-              final file = batch.rawSegments[i];
-              final deviceSessionId = int.tryParse(file.parent.path.split('/').last);
-              const kMinValidEpoch = 946684800;
-              final segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
-                  ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
-                  : file.lastModifiedSync();
 
-              if (_cancelRequested) {
-                Logger.debug("RecordingsManager: Processing cancelled by user at segment $i.");
-                break;
-              }
-
-              await processor.processSegmentFile(file, segmentStartTime);
-
-              if (backgroundMode && !processor.isCapturing) {
-                lastSafeToDeleteIndex = i;
-              }
-
-              // Scaling segment processing to 90% of total progress
-              onProgress(((i + 1) / batch.rawSegments.length) * 0.9);
-              if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
-            }
-
-            if (backgroundMode) {
-              await processor.flushOnlyCompleted();
-            } else {
-              await processor.flushRemaining();
-            }
-          } finally {
-            processor.destroy();
+          if (backgroundMode) {
+            await processor.flushOnlyCompleted();
+          } else {
+            await processor.flushRemaining();
           }
-        } else {
-          // Automatic mode: continuous VAD via OfflineAudioProcessor.
-          final processor = OfflineAudioProcessor(outputDir: tempProcessingPath);
-          try {
-            // 3. Process each raw segment sequentially
-            for (int i = 0; i < batch.rawSegments.length; i++) {
-              final file = batch.rawSegments[i];
-              final deviceSessionId = int.tryParse(file.parent.path.split('/').last);
-              const kMinValidEpoch = 946684800;
-              final segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
-                  ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
-                  : file.lastModifiedSync();
-
-              if (_cancelRequested) {
-                Logger.debug("RecordingsManager: Processing cancelled by user at segment $i.");
-                break;
-              }
-
-              await processor.processSegmentFile(file, segmentStartTime);
-
-              if (backgroundMode && !processor.isCapturing) {
-                lastSafeToDeleteIndex = i;
-              }
-
-              // Scaling segment processing to 90% of total progress
-              onProgress(((i + 1) / batch.rawSegments.length) * 0.9);
-              // Yield to the UI to keep it responsive (skipped in background mode)
-              if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
-            }
-
-            // 4. Flush buffer
-            if (backgroundMode) {
-              await processor.flushOnlyCompleted(); // keep in-progress tail
-            } else {
-              await processor.flushRemaining();
-            }
-          } finally {
-            processor.destroy();
-          }
+        } finally {
+          processor.destroy();
         }
 
         // 5. Move new recordings into the live folder.
@@ -478,61 +403,23 @@ class RecordingsManager {
         rethrow;
       }
 
-      // 6. Raw segment deletion
-      // Marker and fixed modes always use lastSafeToDeleteIndex because both manage
-      // their own buffer state and only advance the index when a full interval/recording completes.
-      if (backgroundMode || isMarkerMode || isFixedMode) {
-        // Delete only segments belonging to fully-completed conversations.
-        // If adjustment mode is ON, keep everything for re-processing.
-        if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
-          Set<String> deviceSessionFoldersToDelete = {};
-          for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
-            final file = batch.rawSegments[i];
-            if (await file.exists()) {
-              Logger.debug("RecordingsManager: [bg] Deleting completed raw segment: ${file.path}");
-              await file.delete();
-              deviceSessionFoldersToDelete.add(file.parent.path);
-            }
-          }
-          for (var folderPath in deviceSessionFoldersToDelete) {
-            final folder = Directory(folderPath);
-            if (await folder.exists()) {
-              try {
-                if ((await folder.list().isEmpty)) {
-                  await folder.delete();
-                }
-              } catch (e) {
-                // Ignore if folder is not empty or cannot be deleted
-              }
-            }
+      // 6. Raw segment deletion — only delete segments belonging to fully-completed intervals.
+      if (lastSafeToDeleteIndex >= 0) {
+        final deviceSessionFoldersToDelete = <String>{};
+        for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
+          final file = batch.rawSegments[i];
+          if (await file.exists()) {
+            Logger.debug("RecordingsManager: Deleting completed raw segment: ${file.path}");
+            await file.delete();
+            deviceSessionFoldersToDelete.add(file.parent.path);
           }
         }
-      } else {
-        // 6. Check adjustment mode. If OFF, delete the raw segments.
-        // Note: finalized recordings (.wav) are kept until the user explicitly deletes
-        // the day via deleteDay(). Raw segments are separate from finalized recordings.
-        if (!SharedPreferencesUtil().offlineAdjustmentMode) {
-          Set<String> deviceSessionFoldersToDelete = {};
-
-          for (var file in batch.rawSegments) {
-            if (await file.exists()) {
-              Logger.debug("RecordingsManager: Deleting successfully processed raw segment: ${file.path}");
-              await file.delete();
-              deviceSessionFoldersToDelete.add(file.parent.path);
-            }
-          }
-
-          for (var folderPath in deviceSessionFoldersToDelete) {
-            final folder = Directory(folderPath);
-            if (await folder.exists()) {
-              try {
-                if ((await folder.list().isEmpty)) {
-                  await folder.delete();
-                }
-              } catch (e) {
-                // Ignore if folder is not empty or cannot be deleted
-              }
-            }
+        for (final folderPath in deviceSessionFoldersToDelete) {
+          final folder = Directory(folderPath);
+          if (await folder.exists()) {
+            try {
+              if (await folder.list().isEmpty) await folder.delete();
+            } catch (_) {}
           }
         }
       }
@@ -599,114 +486,42 @@ class RecordingsManager {
             .compareTo(int.tryParse(bp.length > 1 ? bp[1] : '0') ?? 0);
       });
 
-      if (SharedPreferencesUtil().offlineAdjustmentMode) {
-        for (final batch in activeBatches) {
-          final liveDir = Directory('${directory.path}/recordings/${batch.dateString}');
-          if (await liveDir.exists()) {
-            await liveDir.delete(recursive: true);
-            Logger.debug('RecordingsManager: Cleared existing recordings for ${batch.dateString} (adjustment mode)');
-          }
-        }
-        // Also reset the persisted fixed-mode boundary so reprocessing starts fresh
-        // and doesn't incorrectly skip frames based on the previous run's state.
-        SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
-      }
-
       int lastSafeToDeleteIndex = -1;
-      final mode = SharedPreferencesUtil().offlineRecordingMode;
-      final isMarkerMode = mode == 'marker';
-      final isFixedMode = mode == 'fixed';
 
       try {
-        if (isMarkerMode) {
-          final combinedBatch = Batch(
-            dateString: activeBatches.last.dateString, // oldest date
-            date: activeBatches.last.date,
-            rawSegments: allSegments,
-            finalizedRecordings: const [],
-            markerTimestamps: (activeBatches.expand((b) => b.markerTimestamps).toList()..sort()),
-          );
-          final extractor = MarkerRecordingExtractor();
-          try {
-            final result = await extractor.process(combinedBatch, tempProcessingPath, forceFlush: !backgroundMode);
-            lastSafeToDeleteIndex = result.lastSafeSegmentIndex;
-            Logger.debug(
-                'RecordingsManager: Marker mode extracted ${result.savedPaths.length} conversations (combined)');
-          } finally {
-            extractor.destroy();
+        final processor = FixedIntervalAudioProcessor(outputDir: tempProcessingPath);
+        try {
+          for (int i = 0; i < allSegments.length; i++) {
+            final file = allSegments[i];
+            final stem = file.path.split('/').last.split('.').first;
+            final timerStart = int.tryParse(stem.split('_').first);
+            const kMinValidEpoch = 946684800;
+            final segmentStartTime = timerStart != null && timerStart > kMinValidEpoch
+                ? DateTime.fromMillisecondsSinceEpoch(timerStart * 1000)
+                : file.lastModifiedSync();
+
+            if (_cancelRequested) {
+              Logger.debug("RecordingsManager: Processing cancelled at segment $i.");
+              break;
+            }
+
+            await processor.processSegmentFile(file, segmentStartTime);
+
+            if (backgroundMode && !processor.isCapturing) {
+              lastSafeToDeleteIndex = i;
+            }
+
+            onProgress(((i + 1) / allSegments.length) * 0.9);
+            if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
           }
-        } else if (isFixedMode) {
-          // Fixed-interval mode: cuts at wall-clock boundaries (:29/:59 pattern).
-          final processor = FixedIntervalAudioProcessor(outputDir: tempProcessingPath);
-          try {
-            for (int i = 0; i < allSegments.length; i++) {
-              final file = allSegments[i];
-              final deviceSessionId = int.tryParse(file.parent.path.split('/').last);
-              const kMinValidEpoch = 946684800;
-              final segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
-                  ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
-                  : file.lastModifiedSync();
 
-              if (_cancelRequested) {
-                Logger.debug("RecordingsManager: Processing cancelled at segment $i.");
-                break;
-              }
-
-              await processor.processSegmentFile(file, segmentStartTime);
-
-              if (backgroundMode && !processor.isCapturing) {
-                lastSafeToDeleteIndex = i;
-              }
-
-              // Scaling segment processing to 90% of total progress
-              onProgress(((i + 1) / allSegments.length) * 0.9);
-              if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
-            }
-
-            if (backgroundMode) {
-              await processor.flushOnlyCompleted();
-            } else {
-              await processor.flushRemaining();
-            }
-          } finally {
-            processor.destroy();
+          if (backgroundMode) {
+            await processor.flushOnlyCompleted();
+          } else {
+            await processor.flushRemaining();
           }
-        } else {
-          final processor = OfflineAudioProcessor(outputDir: tempProcessingPath);
-          try {
-            for (int i = 0; i < allSegments.length; i++) {
-              final file = allSegments[i];
-              final deviceSessionId = int.tryParse(file.parent.path.split('/').last);
-              const kMinValidEpoch = 946684800;
-              final segmentStartTime = deviceSessionId != null && deviceSessionId > kMinValidEpoch
-                  ? DateTime.fromMillisecondsSinceEpoch(deviceSessionId * 1000)
-                  : file.lastModifiedSync();
-
-              if (_cancelRequested) {
-                Logger.debug("RecordingsManager: Processing cancelled at segment $i.");
-                break;
-              }
-
-              await processor.processSegmentFile(file, segmentStartTime);
-
-              if (backgroundMode && !processor.isCapturing) {
-                lastSafeToDeleteIndex = i;
-              }
-
-              // Scaling segment processing to 90% of total progress
-              onProgress(((i + 1) / allSegments.length) * 0.9);
-              if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
-            }
-
-
-            if (backgroundMode) {
-              await processor.flushOnlyCompleted();
-            } else {
-              await processor.flushRemaining();
-            }
-          } finally {
-            processor.destroy();
-          }
+        } finally {
+          processor.destroy();
         }
 
         // Move output files to live folders based on each recording's actual start date.
@@ -737,44 +552,23 @@ class RecordingsManager {
         rethrow;
       }
 
-      // Raw segment deletion — same rules as processDay.
-      if (backgroundMode || isMarkerMode || isFixedMode) {
-        if (!SharedPreferencesUtil().offlineAdjustmentMode && lastSafeToDeleteIndex >= 0) {
-          final deviceSessionFolders = <String>{};
-          for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
-            final file = allSegments[i];
-            if (await file.exists()) {
-              Logger.debug("RecordingsManager: [bg] Deleting completed raw segment: ${file.path}");
-              await file.delete();
-              deviceSessionFolders.add(file.parent.path);
-            }
-          }
-          for (final folderPath in deviceSessionFolders) {
-            final folder = Directory(folderPath);
-            if (await folder.exists()) {
-              try {
-                if (await folder.list().isEmpty) await folder.delete();
-              } catch (_) {}
-            }
+      // Raw segment deletion — only delete segments belonging to fully-completed intervals.
+      if (lastSafeToDeleteIndex >= 0) {
+        final deviceSessionFolders = <String>{};
+        for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
+          final file = allSegments[i];
+          if (await file.exists()) {
+            Logger.debug("RecordingsManager: Deleting completed raw segment: ${file.path}");
+            await file.delete();
+            deviceSessionFolders.add(file.parent.path);
           }
         }
-      } else {
-        if (!SharedPreferencesUtil().offlineAdjustmentMode) {
-          final deviceSessionFolders = <String>{};
-          for (final file in allSegments) {
-            if (await file.exists()) {
-              Logger.debug("RecordingsManager: Deleting successfully processed raw segment: ${file.path}");
-              await file.delete();
-              deviceSessionFolders.add(file.parent.path);
-            }
-          }
-          for (final folderPath in deviceSessionFolders) {
-            final folder = Directory(folderPath);
-            if (await folder.exists()) {
-              try {
-                if (await folder.list().isEmpty) await folder.delete();
-              } catch (_) {}
-            }
+        for (final folderPath in deviceSessionFolders) {
+          final folder = Directory(folderPath);
+          if (await folder.exists()) {
+            try {
+              if (await folder.list().isEmpty) await folder.delete();
+            } catch (_) {}
           }
         }
       }
@@ -918,19 +712,16 @@ class RecordingsManager {
       Logger.debug('RecordingsManager: Deleted processed recordings for ${batch.dateString}');
     }
 
-    // 2. Delete raw segments only when adjustment mode is OFF.
-    //    In adjustment mode the user may want to re-process, so keep the segments.
-    if (!SharedPreferencesUtil().offlineAdjustmentMode) {
-      final Set<String> deviceSessionFolderPaths = {};
-      for (var file in batch.rawSegments) {
-        try { await file.delete(); } on FileSystemException catch (_) {}
-        deviceSessionFolderPaths.add(file.parent.path);
-      }
+    // 2. Delete raw segments and their DeviceSession folders.
+    final Set<String> deviceSessionFolderPaths = {};
+    for (var file in batch.rawSegments) {
+      try { await file.delete(); } on FileSystemException catch (_) {}
+      deviceSessionFolderPaths.add(file.parent.path);
+    }
 
-      // 3. Remove now-empty DeviceSession folders (non-recursive delete fails if not empty)
-      for (var folderPath in deviceSessionFolderPaths) {
-        try { await Directory(folderPath).delete(recursive: false); } on FileSystemException catch (_) {}
-      }
+    // 3. Remove now-empty DeviceSession folders (non-recursive delete fails if not empty)
+    for (var folderPath in deviceSessionFolderPaths) {
+      try { await Directory(folderPath).delete(recursive: false); } on FileSystemException catch (_) {}
     }
   }
 }
