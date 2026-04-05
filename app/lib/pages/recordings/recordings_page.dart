@@ -952,7 +952,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     );
   }
 
-  // ─── Marker map ───────────────────────────────────────────────────────────
+  // ─── Marker helpers ────────────────────────────────────────────────────────
   /// Maps m4a filename → list of MarkerConversations that reference that file.
   Map<String, List<MarkerConversation>> _buildMarkerMap() {
     final map = <String, List<MarkerConversation>>{};
@@ -964,17 +964,30 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     return map;
   }
 
-  // ─── Batch card ────────────────────────────────────────────────────────────
-  Widget _buildBatchCard(Batch batch, Map<String, List<MarkerConversation>> markerMap) {
-    var conversations = batch.finalizedRecordings.map(Conversation.fromFile).toList()
-      ..sort((a, b) => b.startTime.compareTo(a.startTime));
-
-    if (_showMarkersOnly) {
-      conversations = conversations
-          .where((c) => markerMap.containsKey(c.file.path.split('/').last))
-          .toList();
-      if (conversations.isEmpty) return const SizedBox.shrink();
+  /// Groups _markerConversations by YYYY-MM-DD, preserving sort order (newest first).
+  Map<String, List<MarkerConversation>> _groupMarkersByDate() {
+    final map = <String, List<MarkerConversation>>{};
+    for (final mc in _markerConversations) {
+      final dt = mc.markerTime;
+      final dateStr =
+          '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+      map.putIfAbsent(dateStr, () => []).add(mc);
     }
+    return map;
+  }
+
+  void _openMarkerConversation(MarkerConversation mc) {
+    // TODO(Phase 4): navigate to MarkerConversationPlayerPage
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Opening marker at ${mc.markerTimeLabel} — player coming in Phase 4')),
+    );
+  }
+
+  // ─── Default mode: batch card ──────────────────────────────────────────────
+  Widget _buildBatchCard(Batch batch, Map<String, List<MarkerConversation>> markerMap) {
+    final conversations = batch.finalizedRecordings.map(Conversation.fromFile).toList()
+      ..sort((a, b) => b.startTime.compareTo(a.startTime));
+    if (conversations.isEmpty) return const SizedBox.shrink();
 
     return Card(
       color: const Color(0xFF1C1C1E),
@@ -990,34 +1003,28 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
-            if (conversations.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8.0),
-                child: Text('No processed conversations yet.', style: TextStyle(color: Colors.grey.shade500)),
-              )
-            else ...[
-              ...conversations.map((c) => _buildConversationTile(c, markerMap[c.file.path.split('/').last] ?? [])),
-              const SizedBox(height: 4),
-              const Divider(color: Color(0xFF2C2C2E), height: 1),
-              const SizedBox(height: 4),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  TextButton.icon(
-                    key: Key('export_all_${batch.dateString}'),
-                    onPressed: () => _exportAll(batch, conversations),
-                    icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 13, color: Colors.grey.shade400),
-                    label: Text('Export All', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
-                  ),
-                  TextButton.icon(
-                    key: Key('delete_day_${batch.dateString}'),
-                    onPressed: () => _deleteDay(batch),
-                    icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
-                    label: Text('Delete Day', style: TextStyle(color: Colors.red.shade400, fontSize: 13)),
-                  ),
-                ],
-              ),
-            ],
+            ...conversations.map((c) =>
+                _buildConversationTile(c, markerMap[c.file.path.split('/').last] ?? [])),
+            const SizedBox(height: 4),
+            const Divider(color: Color(0xFF2C2C2E), height: 1),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                TextButton.icon(
+                  key: Key('export_all_${batch.dateString}'),
+                  onPressed: () => _exportAll(batch, conversations),
+                  icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 13, color: Colors.grey.shade400),
+                  label: Text('Export All', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+                ),
+                TextButton.icon(
+                  key: Key('delete_day_${batch.dateString}'),
+                  onPressed: () => _deleteDay(batch),
+                  icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
+                  label: Text('Delete Day', style: TextStyle(color: Colors.red.shade400, fontSize: 13)),
+                ),
+              ],
+            ),
           ],
         ),
       ),
@@ -1025,44 +1032,154 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   }
 
   Widget _buildConversationTile(Conversation conversation, List<MarkerConversation> markers) {
-    final markerTimes = markers.map((m) => m.markerTimeLabel).join(', ');
+    // Sort markers by time ascending so sub-entries read chronologically.
+    final sortedMarkers = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => ConversationPlayerPage(conversation: conversation)),
+          ),
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        conversation.timeRangeLabel,
+                        style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        '${conversation.durationLabel}  ·  ${conversation.sizeLabel}',
+                        style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                if (markers.isNotEmpty) ...[
+                  const FaIcon(FontAwesomeIcons.solidBookmark, color: Colors.amber, size: 13),
+                  const SizedBox(width: 8),
+                ],
+                _buildUploadIcon(conversation),
+                FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
+              ],
+            ),
+          ),
+        ),
+        // Sub-entries: one per marker, indented, tap → marker player
+        ...sortedMarkers.map((mc) => _buildMarkerSubEntry(mc)),
+      ],
+    );
+  }
+
+  Widget _buildMarkerSubEntry(MarkerConversation mc) {
     return InkWell(
-      onTap: () => Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => ConversationPlayerPage(conversation: conversation)),
-      ),
+      onTap: mc.isPending ? null : () => _openMarkerConversation(mc),
       borderRadius: BorderRadius.circular(8),
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+        padding: const EdgeInsets.only(left: 16, top: 6, bottom: 6, right: 4),
         child: Row(
           children: [
+            FaIcon(
+              FontAwesomeIcons.solidBookmark,
+              color: mc.isPending ? Colors.grey.shade600 : Colors.amber,
+              size: 11,
+            ),
+            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    conversation.timeRangeLabel,
-                    style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
-                  ),
-                  const SizedBox(height: 3),
-                  if (markers.isNotEmpty)
-                    Text(
-                      'marker at $markerTimes  ·  ${conversation.durationLabel}',
-                      style: TextStyle(color: Colors.amber.shade700, fontSize: 12),
-                    )
-                  else
-                    Text(
-                      '${conversation.durationLabel}  ·  ${conversation.sizeLabel}',
-                      style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                    mc.isPending ? 'Processing…' : mc.timeRangeLabel,
+                    style: TextStyle(
+                      color: mc.isPending ? Colors.grey.shade600 : Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
                     ),
+                  ),
+                  Text(
+                    'marker at ${mc.markerTimeLabel}',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
+                  ),
                 ],
               ),
             ),
-            if (markers.isNotEmpty) ...[
-              const FaIcon(FontAwesomeIcons.solidBookmark, color: Colors.amber, size: 13),
-              const SizedBox(width: 8),
-            ],
-            _buildUploadIcon(conversation),
-            FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
+            if (!mc.isPending)
+              FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade700, size: 12),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ─── Marker mode: day card ─────────────────────────────────────────────────
+  Widget _buildMarkerDayCard(String dateStr, List<MarkerConversation> markers) {
+    // Sort ascending by markerTime so they read chronologically within the day.
+    final sorted = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
+    return Card(
+      color: const Color(0xFF1C1C1E),
+      margin: const EdgeInsets.only(bottom: 16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              dateStr,
+              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            ...sorted.map(_buildMarkerTile),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMarkerTile(MarkerConversation mc) {
+    return InkWell(
+      onTap: mc.isPending ? null : () => _openMarkerConversation(mc),
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+        child: Row(
+          children: [
+            FaIcon(
+              FontAwesomeIcons.solidBookmark,
+              color: mc.isPending ? Colors.grey.shade600 : Colors.amber,
+              size: 14,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    mc.isPending ? 'Processing…' : mc.timeRangeLabel,
+                    style: TextStyle(
+                      color: mc.isPending ? Colors.grey.shade600 : Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    'marker at ${mc.markerTimeLabel}',
+                    style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            if (!mc.isPending)
+              FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
           ],
         ),
       ),
@@ -1152,12 +1269,40 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 child: _isLoading
                     ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
                     : Builder(builder: (context) {
+                        // ── Marker mode ──────────────────────────────────────
+                        if (_showMarkersOnly) {
+                          final byDate = _groupMarkersByDate();
+                          final dates = byDate.keys.toList()..sort((a, b) => b.compareTo(a));
+                          return RefreshIndicator(
+                            color: Colors.deepPurpleAccent,
+                            onRefresh: () async {},
+                            child: dates.isEmpty
+                                ? ListView(
+                                    physics: const AlwaysScrollableScrollPhysics(),
+                                    children: [
+                                      const SizedBox(height: 100),
+                                      Center(
+                                        child: Text(
+                                          'No marked recordings yet.\nPress the button on your Omi to tag a moment.',
+                                          textAlign: TextAlign.center,
+                                          style: const TextStyle(color: Colors.grey, fontSize: 16),
+                                        ),
+                                      ),
+                                    ],
+                                  )
+                                : ListView.builder(
+                                    physics: const AlwaysScrollableScrollPhysics(),
+                                    padding: const EdgeInsets.all(16),
+                                    itemCount: dates.length,
+                                    itemBuilder: (context, index) =>
+                                        _buildMarkerDayCard(dates[index], byDate[dates[index]]!),
+                                  ),
+                          );
+                        }
+
+                        // ── Default mode ─────────────────────────────────────
                         final markerMap = _buildMarkerMap();
                         final visibleBatches = _batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
-                        final hasContent = _showMarkersOnly
-                            ? visibleBatches.any((b) => b.finalizedRecordings
-                                .any((f) => markerMap.containsKey(f.path.split('/').last)))
-                            : visibleBatches.isNotEmpty;
                         return RefreshIndicator(
                           color: Colors.deepPurpleAccent,
                           onRefresh: () {
@@ -1172,7 +1317,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                             _startPipeline();
                             return completer.future;
                           },
-                          child: !hasContent
+                          child: visibleBatches.isEmpty
                               ? ListView(
                                   physics: const AlwaysScrollableScrollPhysics(),
                                   children: [
@@ -1180,12 +1325,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                                     Center(
                                       child: Column(
                                         children: [
-                                          Text(
-                                            _showMarkersOnly
-                                                ? 'No marked recordings yet.\nPress the button on your Omi to tag a moment.'
-                                                : 'No conversations found.\nSwipe down to sync device.',
+                                          const Text(
+                                            'No conversations found.\nSwipe down to sync device.',
                                             textAlign: TextAlign.center,
-                                            style: const TextStyle(color: Colors.grey, fontSize: 16),
+                                            style: TextStyle(color: Colors.grey, fontSize: 16),
                                           ),
                                           if (deviceProvider.isConnected) ...[
                                             const SizedBox(height: 32),
