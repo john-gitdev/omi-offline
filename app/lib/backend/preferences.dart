@@ -56,14 +56,6 @@ class SharedPreferencesUtil {
 
   set extractionInProgress(bool value) => saveBool('extractionInProgress', value);
 
-  bool get recordingsFilterEnabled => getBool('recordingsFilterEnabled', defaultValue: false);
-
-  set recordingsFilterEnabled(bool value) => saveBool('recordingsFilterEnabled', value);
-
-  int get recordingsFilterMinutes => getInt('recordingsFilterMinutes', defaultValue: 0);
-
-  set recordingsFilterMinutes(int value) => saveInt('recordingsFilterMinutes', value);
-
   //--------------------------- HeyPocket Integration ---------------------//
 
   String get heypocketApiKey => getString('heypocketApiKey');
