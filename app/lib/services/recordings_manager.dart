@@ -514,33 +514,49 @@ class RecordingsManager {
 
       // Find which recording contains this marker.
       // Boundary rule: marker exactly at start of a segment → assign to prior.
-      ({File file, int startMs, int endMs})? match;
+      int matchIdx = -1;
       for (int i = 0; i < recordings.length; i++) {
         final rec = recordings[i];
         if (markerMs >= rec.startMs && markerMs < rec.endMs) {
-          if (markerMs == rec.startMs && i > 0) {
-            match = recordings[i - 1];
-          } else {
-            match = rec;
-          }
+          matchIdx = (markerMs == rec.startMs && i > 0) ? i - 1 : i;
           break;
         }
       }
 
       final Map<String, dynamic> edlData;
-      if (match == null) {
+      if (matchIdx < 0) {
         edlData = {'markerTimestampMs': markerMs, 'segments': <String>[], 'visibleStartMs': 0, 'visibleEndMs': 0};
         Logger.debug('RecordingsManager: Wrote PENDING EDL for marker at $markerTime');
       } else {
-        final segName = match.file.path.split('/').last;
-        final durationMs = match.endMs - match.startMs;
+        final prefs = SharedPreferencesUtil();
+        final windowStartMs = markerMs - prefs.markerPreMinutes * 60 * 1000;
+        final windowEndMs = markerMs + prefs.markerPostMinutes * 60 * 1000;
+
+        // Expand to adjacent segments within this date folder as needed.
+        int segStart = matchIdx;
+        int segEnd = matchIdx;
+        while (segStart > 0 && windowStartMs < recordings[segStart].startMs) {
+          segStart--;
+        }
+        while (segEnd < recordings.length - 1 && windowEndMs > recordings[segEnd].endMs) {
+          segEnd++;
+        }
+
+        final segs = recordings.sublist(segStart, segEnd + 1);
+        final firstStartMs = segs.first.startMs;
+        final totalMs = segs.last.endMs - firstStartMs;
+        final visibleStartMs = (windowStartMs - firstStartMs).clamp(0, totalMs);
+        final visibleEndMs = (windowEndMs - firstStartMs).clamp(0, totalMs);
+        final segNames = segs.map((r) => r.file.path.split('/').last).toList();
+
         edlData = {
           'markerTimestampMs': markerMs,
-          'segments': [segName],
-          'visibleStartMs': 0,
-          'visibleEndMs': durationMs,
+          'segments': segNames,
+          'visibleStartMs': visibleStartMs,
+          'visibleEndMs': visibleEndMs,
         };
-        Logger.debug('RecordingsManager: Wrote EDL for marker at $markerTime → $segName');
+        Logger.debug('RecordingsManager: Wrote EDL for marker at $markerTime → $segNames '
+            '(${visibleStartMs}ms–${visibleEndMs}ms)');
       }
       await edlFile.writeAsString(jsonEncode(edlData));
     }
