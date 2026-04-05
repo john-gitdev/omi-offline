@@ -491,17 +491,43 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       return;
     }
 
-    // Compute total audio minutes from processable (non-live) segments
-    final allRaw = activeBatches.expand((b) => b.rawSegments).toList();
-    final processable = RecordingsManager.excludeNewestSegmentPerSession(allRaw);
-    final totalBytes = processable.fold(0, (sum, f) {
+    // Thunderbolt (force): flush everything including in-progress interval.
+    // Swipe (non-force): only process completed 30-min intervals, skip newest segment
+    // per session (may still be written by firmware) — same behaviour as background auto-sync.
+    final List<Batch> batchesToProcess;
+    final bool backgroundMode;
+    if (_isForcePipeline) {
+      batchesToProcess = activeBatches;
+      backgroundMode = false;
+    } else {
+      batchesToProcess = activeBatches.map((batch) {
+        final safe = RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
+        return Batch(
+          dateString: batch.dateString,
+          date: batch.date,
+          rawSegments: safe,
+          finalizedRecordings: batch.finalizedRecordings,
+          markerTimestamps: batch.markerTimestamps,
+        );
+      }).where((b) => b.rawSegments.isNotEmpty).toList();
+      backgroundMode = true;
+    }
+
+    if (batchesToProcess.isEmpty) {
+      await _finishSuccess();
+      return;
+    }
+
+    // Compute total audio minutes from segments to be processed.
+    final allRaw = batchesToProcess.expand((b) => b.rawSegments).toList();
+    final totalBytes = allRaw.fold(0, (sum, f) {
       try {
         return sum + f.lengthSync();
       } catch (_) {
         return sum;
       }
     });
-    final totalMin = totalBytes / 252000.0; // segment on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
+    final totalMin = totalBytes / 252000.0; // ~84 B/frame × 50 fps × 60 s
     setState(() {
       _totalMinutes = totalMin;
       _minutesRemaining = totalMin;
@@ -510,13 +536,13 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     WakelockPlus.enable();
     try {
-      await _manager.processAll(activeBatches, (progress) {
+      await _manager.processAll(batchesToProcess, (progress) {
         if (mounted) {
           setState(() {
             _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
           });
         }
-      });
+      }, backgroundMode: backgroundMode);
     } catch (e) {
       WakelockPlus.disable();
       if (_spState == SyncProcessState.stopping) {
