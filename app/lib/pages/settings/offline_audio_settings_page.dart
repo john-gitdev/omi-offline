@@ -15,6 +15,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late bool _autoSyncEnabled;
   late int _markerPreMinutes;
   late int _markerPostMinutes;
+  late int _retentionDays;
 
   bool _isDirty = false;
 
@@ -24,6 +25,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
     _markerPreMinutes = SharedPreferencesUtil().markerPreMinutes;
     _markerPostMinutes = SharedPreferencesUtil().markerPostMinutes;
+    _retentionDays = SharedPreferencesUtil().recordingRetentionDays;
   }
 
   void _markDirty() {
@@ -34,6 +36,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
     SharedPreferencesUtil().markerPreMinutes = _markerPreMinutes;
     SharedPreferencesUtil().markerPostMinutes = _markerPostMinutes;
+    SharedPreferencesUtil().recordingRetentionDays = _retentionDays;
     setState(() => _isDirty = false);
   }
 
@@ -192,6 +195,31 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                           selected: _markerPostMinutes == min,
                           onTap: () {
                             setState(() => _markerPostMinutes = min);
+                            _markDirty();
+                          },
+                        ))
+                    .toList(),
+              ),
+              const SizedBox(height: 32),
+
+              // Retention
+              const Text(
+                'Keep Recordings For',
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Recordings older than this are deleted automatically. At 24 hrs/day: ~1 GB per 3 days, ~2.4 GB per 7 days.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [3, 7]
+                    .map((days) => _WindowOption(
+                          label: '$days days',
+                          selected: _retentionDays == days,
+                          onTap: () {
+                            setState(() => _retentionDays = days);
                             _markDirty();
                           },
                         ))
