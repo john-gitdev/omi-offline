@@ -160,6 +160,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         });
       }
 
+      // ── Background processing started (without prior sync) ──────────────
+      if (serviceIsProcessing && _spState == SyncProcessState.idle) {
+        setState(() => _spState = SyncProcessState.processing);
+      }
+
       // ── Background sync finished ─────────────────────────────────────────
       if (!serviceIsSyncing && _spState == SyncProcessState.syncing) {
         if (serviceIsProcessing) {
@@ -834,6 +839,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         _spState == SyncProcessState.processing ||
         _spState == SyncProcessState.stopping) return const SizedBox.shrink();
     if (_accumulatedMinutes < 0.5) return const SizedBox.shrink();
+    if (_accumulatedMinutes >= 30.0) return const SizedBox.shrink();
 
     final double withinInterval = _accumulatedMinutes % 30.0;
     final double progress = withinInterval / 30.0;

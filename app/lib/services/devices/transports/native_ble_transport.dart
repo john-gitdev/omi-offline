@@ -196,7 +196,14 @@ class NativeBleTransport extends DeviceTransport {
 
   @override
   Future<void> dispose() async {
+    // Unregister Dart callbacks first so we don't receive stale events.
     BleBridge.instance.unregisterPeripheral(_peripheralUuid);
+    // Tell native to release this peripheral so a subsequent manageDevice call
+    // starts a fresh connection cycle (without this, native may silently ignore
+    // a repeated manageDevice for an already-managed peripheral).
+    try {
+      _hostApi.unmanageDevice(_peripheralUuid);
+    } catch (_) {}
     _closeAllStreams();
     await _connectionStateController.close();
   }

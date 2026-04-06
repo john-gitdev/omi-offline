@@ -356,6 +356,9 @@ class OmiDeviceConnection extends DeviceConnection {
               size: bd.getUint32(12 + i * 12, Endian.little),
             ));
           }
+          for (int i = 0; i < files.length; i++) {
+            Logger.debug('OmiDeviceConnection: file[$i] index=${files[i].index} ts=${files[i].timestamp} size=${files[i].size}');
+          }
           Logger.debug('OmiDeviceConnection: Successfully parsed all $count files');
           success(files);
         }

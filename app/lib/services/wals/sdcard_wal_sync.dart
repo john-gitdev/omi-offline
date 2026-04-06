@@ -187,6 +187,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       }
 
       final seconds = (newBytes / (codec.getStorageBytesPerMinute() / 60.0)).truncate();
+      // Skip files with less than 1 second of audio that haven't been started —
+      // these are post-rotation stub files the firmware just opened on BLE connect.
+      if (seconds == 0 && walOffset == 0) continue;
       const kMinValidEpoch = 946684800;
       final timerStart = (existing != null)
           ? existing.timerStart
