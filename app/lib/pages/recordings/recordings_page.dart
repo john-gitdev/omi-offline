@@ -577,7 +577,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   Future<void> _finishSuccess() async {
     _isForcePipeline = false;
     _transitionTo(SyncProcessState.successUi);
-    await Future.delayed(const Duration(milliseconds: 5000));
+    await Future.delayed(const Duration(milliseconds: 10000));
     if (!mounted) return;
     setState(() {
       _lastCompletedStage = 'none';
