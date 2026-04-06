@@ -98,7 +98,7 @@ class FixedIntervalAudioProcessor {
 
     // 1. Gap detection — if the device was offline long enough, flush or pad.
     if (_currentRefs.isNotEmpty && _lastSegmentEndTime != null) {
-      final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds.abs();
+      final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds;
       if (gapMs > 2000) {
         Logger.debug('FixedIntervalAudioProcessor: Large gap of ${gapMs}ms detected — flushing partial interval.');
         final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
