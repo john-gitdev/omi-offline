@@ -300,7 +300,7 @@ struct bt_gatt_service button_service = BT_GATT_SERVICE(button_service_attr);
 
 void transport_notify_button_state(uint8_t state)
 {
-    bt_gatt_notify(NULL, &button_service_attr[1], &state, sizeof(state));
+    bt_gatt_notify(NULL, &button_service_attr[2], &state, sizeof(state));
 }
 
 // Advertisement data
@@ -500,7 +500,7 @@ void broadcast_battery_level(struct k_work *work_item)
 #endif
         if (conn != NULL && !syncing) {
             uint8_t is_charging_byte = (uint8_t)is_charging;
-            bt_gatt_notify(NULL, &battery_detail_service_attr[1], &is_charging_byte, 1);
+            bt_gatt_notify(NULL, &battery_detail_service_attr[2], &is_charging_byte, 1);
         }
         put_current_connection(conn);
 
