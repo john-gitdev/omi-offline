@@ -134,8 +134,7 @@ class FixedIntervalAudioProcessor {
     if (_currentRefs.isEmpty && _nextBoundaryMs == 0) {
       _recordingStartTime = segmentStartTime;
       _nextBoundaryMs = _computeNextBoundary(segmentStartTime.millisecondsSinceEpoch);
-      Logger.debug(
-          'FixedIntervalAudioProcessor: New interval started at $segmentStartTime, '
+      Logger.debug('FixedIntervalAudioProcessor: New interval started at $segmentStartTime, '
           'next boundary at ${DateTime.fromMillisecondsSinceEpoch(_nextBoundaryMs)}');
     }
 
@@ -145,9 +144,14 @@ class FixedIntervalAudioProcessor {
     while (off + 4 <= bytes.length) {
       final len = byteData.getUint32(off, Endian.little);
 
+      // Skip alignment padding, sector-end bulk zeros, or erased flash sentinel.
+      if (len == 0 || len == 0xFFFFFFFF) {
+        off += 4;
+        continue;
+      }
+
       // Skip inline marker frames (firmware sentinel 0xFFFFFFFE, 20 bytes total:
-      // 4-byte header + 16-byte payload). These are written into the raw .bin stream
-      // by the firmware and must be stepped over without breaking the Opus frame walk.
+      // 4-byte header + 16-byte payload).
       if (len == 0xFFFFFFFE) {
         if (off + 20 <= bytes.length) {
           off += 20;
@@ -157,12 +161,21 @@ class FixedIntervalAudioProcessor {
         continue;
       }
 
+      // Byte-wise resync on invalid length — Opus frames are always ≤ 400 bytes.
+      if (len > 400) {
+        off += 1;
+        continue;
+      }
+
       if (off + 4 + len > bytes.length) break;
 
       final byteOffset = off;
       off += 4;
-
       off += len;
+      // Snap to next 4-byte boundary — firmware pads each entry to 4-byte alignment
+      // (write_custom_packet_to_storage in transport.c). Without this, VBR frames
+      // with non-4-aligned sizes corrupt every subsequent frame offset.
+      off = (off + 3) & ~3;
 
       // Skip leading frames that were already included in the previous run's
       // last completed interval. frameIndex counts only non-metadata frames.
@@ -198,11 +211,9 @@ class FixedIntervalAudioProcessor {
     }
 
     // Track when this segment ends for gap detection on the next call.
-    _lastSegmentEndTime =
-        _recordingStartTime!.add(Duration(milliseconds: _currentRefs.length * frameDurationMs));
+    _lastSegmentEndTime = _recordingStartTime!.add(Duration(milliseconds: _currentRefs.length * frameDurationMs));
 
-    Logger.debug(
-        'FixedIntervalAudioProcessor: Processed segment ($frameIndex frames). '
+    Logger.debug('FixedIntervalAudioProcessor: Processed segment ($frameIndex frames). '
         'Accumulated ${_currentRefs.length} frames toward next boundary at '
         '${_nextBoundaryMs > 0 ? DateTime.fromMillisecondsSinceEpoch(_nextBoundaryMs) : "none"}.');
 
@@ -292,9 +303,8 @@ class FixedIntervalAudioProcessor {
     String? currentFilePath;
     RandomAccessFile? currentRaf;
     int nextExpectedOffset = -1;
-    final saveDecoder = Platform.isIOS || Platform.isAndroid
-        ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
-        : null;
+    final saveDecoder =
+        Platform.isIOS || Platform.isAndroid ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels) : null;
 
     try {
       for (var i = 0; i < refs.length; i++) {
@@ -412,8 +422,7 @@ class FixedIntervalAudioProcessor {
     }
     await File(metaPath).writeAsBytes(metaOut);
 
-    Logger.debug(
-        'FixedIntervalAudioProcessor: Saved recording (${refs.length} frames, ${durationMs}ms) '
+    Logger.debug('FixedIntervalAudioProcessor: Saved recording (${refs.length} frames, ${durationMs}ms) '
         'starting at $startTime to $m4aPath');
     return m4aPath;
   }
@@ -428,9 +437,8 @@ class FixedIntervalAudioProcessor {
     int nextExpectedOffset = -1;
 
     final List<Uint8List> decodedSegments = [];
-    final wavDecoder = Platform.isIOS || Platform.isAndroid
-        ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
-        : null;
+    final wavDecoder =
+        Platform.isIOS || Platform.isAndroid ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels) : null;
     if (wavDecoder != null) {
       try {
         for (var i = 0; i < refs.length; i++) {
@@ -470,21 +478,33 @@ class FixedIntervalAudioProcessor {
 
     final header = ByteData(44);
     // RIFF
-    header.setUint8(0, 0x52); header.setUint8(1, 0x49); header.setUint8(2, 0x46); header.setUint8(3, 0x46);
+    header.setUint8(0, 0x52);
+    header.setUint8(1, 0x49);
+    header.setUint8(2, 0x46);
+    header.setUint8(3, 0x46);
     header.setUint32(4, 36 + totalPcmBytes, Endian.little);
     // WAVE
-    header.setUint8(8, 0x57); header.setUint8(9, 0x41); header.setUint8(10, 0x56); header.setUint8(11, 0x45);
+    header.setUint8(8, 0x57);
+    header.setUint8(9, 0x41);
+    header.setUint8(10, 0x56);
+    header.setUint8(11, 0x45);
     // fmt
-    header.setUint8(12, 0x66); header.setUint8(13, 0x6D); header.setUint8(14, 0x74); header.setUint8(15, 0x20);
+    header.setUint8(12, 0x66);
+    header.setUint8(13, 0x6D);
+    header.setUint8(14, 0x74);
+    header.setUint8(15, 0x20);
     header.setUint32(16, 16, Endian.little); // chunk size
-    header.setUint16(20, 1, Endian.little);  // PCM
+    header.setUint16(20, 1, Endian.little); // PCM
     header.setUint16(22, channels, Endian.little);
     header.setUint32(24, sampleRate, Endian.little);
     header.setUint32(28, sampleRate * channels * 2, Endian.little); // byte rate
     header.setUint16(32, channels * 2, Endian.little); // block align
     header.setUint16(34, 16, Endian.little); // bits per sample
     // data
-    header.setUint8(36, 0x64); header.setUint8(37, 0x61); header.setUint8(38, 0x74); header.setUint8(39, 0x61);
+    header.setUint8(36, 0x64);
+    header.setUint8(37, 0x61);
+    header.setUint8(38, 0x74);
+    header.setUint8(39, 0x61);
     header.setUint32(40, totalPcmBytes, Endian.little);
 
     sink.add(header.buffer.asUint8List());
