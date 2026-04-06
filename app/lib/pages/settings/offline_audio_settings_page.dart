@@ -13,6 +13,7 @@ class OfflineAudioSettingsPage extends StatefulWidget {
 
 class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late bool _autoSyncEnabled;
+  late bool _use24HourTime;
   late int _markerPreMinutes;
   late int _markerPostMinutes;
   late int _retentionDays;
@@ -23,6 +24,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   void initState() {
     super.initState();
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
+    _use24HourTime = SharedPreferencesUtil().use24HourTime;
     _markerPreMinutes = SharedPreferencesUtil().markerPreMinutes;
     _markerPostMinutes = SharedPreferencesUtil().markerPostMinutes;
     _retentionDays = SharedPreferencesUtil().recordingRetentionDays;
@@ -34,6 +36,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
   void _saveSettings() {
     SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
+    SharedPreferencesUtil().use24HourTime = _use24HourTime;
     SharedPreferencesUtil().markerPreMinutes = _markerPreMinutes;
     SharedPreferencesUtil().markerPostMinutes = _markerPostMinutes;
     SharedPreferencesUtil().recordingRetentionDays = _retentionDays;
@@ -145,6 +148,52 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     const SizedBox(height: 8),
                     Text(
                       'When enabled, your Omi will automatically connect, sync, and process recordings every 30 minutes.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Time format toggle
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Time Format',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        Row(
+                          children: [
+                            Text(
+                              _use24HourTime ? '24hr' : 'AM/PM',
+                              style: TextStyle(color: Colors.grey.shade400, fontSize: 14),
+                            ),
+                            const SizedBox(width: 8),
+                            Switch(
+                              value: _use24HourTime,
+                              activeThumbColor: Colors.deepPurpleAccent,
+                              onChanged: (value) {
+                                setState(() => _use24HourTime = value);
+                                _markDirty();
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Display recording times in 24-hour format or 12-hour AM/PM.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],

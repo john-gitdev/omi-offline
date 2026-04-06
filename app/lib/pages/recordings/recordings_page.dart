@@ -864,8 +864,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     Text('Building next recording',
                         style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
                     const SizedBox(height: 2),
-                    Text('$accMin min synced out of 30',
-                        style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                    Text('$accMin min synced out of 30', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
                   ],
                 ),
               ),
@@ -1040,13 +1039,22 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   }
 
   // ─── Marker helpers ────────────────────────────────────────────────────────
-  /// Maps m4a filename → list of MarkerConversations that reference that file.
+  /// Maps m4a filename → list of MarkerConversations whose marker time falls within that file.
+  /// A marker only appears under the single conversation that contains its timestamp,
+  /// even if its visible window spans multiple segments.
   Map<String, List<MarkerConversation>> _buildMarkerMap() {
     final map = <String, List<MarkerConversation>>{};
     for (final mc in _markerConversations) {
+      if (mc.segments.isEmpty) continue;
+      final markerMs = mc.markerTime.millisecondsSinceEpoch;
+      // Find the last segment whose start is <= markerMs — that segment contains the tap.
+      File markerSegment = mc.segments.first;
       for (final seg in mc.segments) {
-        map.putIfAbsent(seg.path.split('/').last, () => []).add(mc);
+        final name = seg.path.split('/').last;
+        final ms = int.tryParse(name.contains('_') ? name.split('_').last.split('.').first : '');
+        if (ms != null && ms <= markerMs) markerSegment = seg;
       }
+      map.putIfAbsent(markerSegment.path.split('/').last, () => []).add(mc);
     }
     return map;
   }

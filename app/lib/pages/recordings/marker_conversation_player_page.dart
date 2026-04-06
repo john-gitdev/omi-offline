@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/utils/other/time_utils.dart';
 
 enum _DragMode { none, left, right, seek }
 
@@ -65,7 +66,11 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
     for (final seg in _segments) {
       bars.addAll(_readMetaWaveform(seg));
     }
-    if (mounted) setState(() { _waveform = bars; _loadingWaveform = false; });
+    if (mounted)
+      setState(() {
+        _waveform = bars;
+        _loadingWaveform = false;
+      });
   }
 
   List<double> _readMetaWaveform(File seg) {
@@ -144,16 +149,16 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   Future<void> _checkExtendability() async {
     final left = await _findAdjacentSegment(left: true);
     final right = await _findAdjacentSegment(left: false);
-    if (mounted) setState(() { _canExtendLeft = left != null; _canExtendRight = right != null; });
+    if (mounted)
+      setState(() {
+        _canExtendLeft = left != null;
+        _canExtendRight = right != null;
+      });
   }
 
   Future<File?> _findAdjacentSegment({required bool left}) async {
     final dateFolder = widget.markerConversation.edlFile.parent;
-    final all = dateFolder
-        .listSync()
-        .whereType<File>()
-        .where((f) => f.path.endsWith('.m4a'))
-        .toList()
+    final all = dateFolder.listSync().whereType<File>().where((f) => f.path.endsWith('.m4a')).toList()
       ..sort((a, b) => (_parseSegmentMillis(a) ?? 0).compareTo(_parseSegmentMillis(b) ?? 0));
 
     if (left) {
@@ -242,9 +247,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
     if (_segments.isEmpty) return widget.markerConversation.timeRangeLabel;
     final firstMs = _parseSegmentMillis(_segments.first) ?? 0;
     final origin = DateTime.fromMillisecondsSinceEpoch(firstMs);
-    String f(DateTime dt) =>
-        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-    return '${f(origin.add(_visibleStart))} – ${f(origin.add(_visibleEnd))}';
+    return '${fmtHourMin(origin.add(_visibleStart))} – ${fmtHourMin(origin.add(_visibleEnd))}';
   }
 
   Future<void> _saveConversation() async {
@@ -354,8 +357,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                   SizedBox(
                     height: 100,
                     child: _loadingWaveform
-                        ? const Center(
-                            child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
+                        ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
                         : LayoutBuilder(
                             builder: (ctx, constraints) {
                               final width = constraints.maxWidth;
@@ -498,7 +500,11 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: Text(
-                            s == 1.0 ? '1×' : s == 1.5 ? '1.5×' : '2×',
+                            s == 1.0
+                                ? '1×'
+                                : s == 1.5
+                                    ? '1.5×'
+                                    : '2×',
                             style: TextStyle(
                               color: selected ? Colors.white : Colors.grey.shade400,
                               fontSize: 13,
