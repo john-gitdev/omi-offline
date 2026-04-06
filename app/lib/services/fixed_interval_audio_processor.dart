@@ -107,16 +107,17 @@ class FixedIntervalAudioProcessor {
         _nextBoundaryMs = 0;
         _recordingStartTime = null;
         SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
-      } else if (gapMs > 100) {
+      } else if (gapMs > 0) {
         final missingFrames = (gapMs / frameDurationMs).round().clamp(0, 100);
         if (missingFrames > 0) {
-          Logger.debug('FixedIntervalAudioProcessor: Padding gap of ${gapMs}ms with $missingFrames silent frames.');
+          if (gapMs > 100) {
+            Logger.debug('FixedIntervalAudioProcessor: Padding gap of ${gapMs}ms with $missingFrames silent frames.');
+          }
           for (int i = 0; i < missingFrames; i++) {
             _currentRefs.add(FrameRef.silent());
           }
         }
       }
-      // If gapMs <= 100, we ignore it as jitter to maintain timeline stability.
     }
 
     // If we have a persisted boundary from a previous run and no frames
@@ -296,6 +297,7 @@ class FixedIntervalAudioProcessor {
     }
 
     if (aacFailed) {
+      saveDecoder?.destroy();
       return await _saveWav(refs, dateFolderPath, timestamp);
     }
 
@@ -311,8 +313,6 @@ class FixedIntervalAudioProcessor {
     String? currentFilePath;
     RandomAccessFile? currentRaf;
     int nextExpectedOffset = -1;
-    final saveDecoder =
-        Platform.isIOS || Platform.isAndroid ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels) : null;
 
     try {
       final zeroPcmFrame = Int16List(320); // 20ms at 16kHz
@@ -320,7 +320,7 @@ class FixedIntervalAudioProcessor {
         if (i % 50 == 0) await Future.delayed(Duration.zero);
 
         final ref = refs[i];
-        Int16List pcmData;
+        Int16List? pcmData;
 
         if (ref.isSilent) {
           pcmData = zeroPcmFrame;
@@ -341,12 +341,13 @@ class FixedIntervalAudioProcessor {
           nextExpectedOffset = frameDataOffset + ref.frameLength;
 
           try {
-            if (saveDecoder == null) continue;
-            pcmData = saveDecoder.decode(input: opusBytes);
+            pcmData = saveDecoder?.decode(input: opusBytes);
           } catch (e) {
             continue;
           }
         }
+
+        if (pcmData == null) continue;
 
         for (int s = 0; s < pcmData.length; s++) {
           final amplitude = pcmData[s].abs() / 32768.0;
