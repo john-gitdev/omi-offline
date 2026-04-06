@@ -6,6 +6,8 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:omi/services/recordings_manager.dart';
 
+enum _DragMode { none, left, right, seek }
+
 class MarkerConversationPlayerPage extends StatefulWidget {
   final MarkerConversation markerConversation;
 
@@ -36,12 +38,18 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   bool _canExtendRight = false;
   bool _isExtending = false;
 
+  _DragMode _dragMode = _DragMode.none;
+  late bool _userSaved;
+
+  static const double _kHandleHitSlop = 24.0;
+
   @override
   void initState() {
     super.initState();
     _segments = List.of(widget.markerConversation.segments);
     _visibleStart = widget.markerConversation.visibleStart;
     _visibleEnd = widget.markerConversation.visibleEnd;
+    _userSaved = widget.markerConversation.userSaved;
     _init();
   }
 
@@ -223,8 +231,34 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
       'segments': _segments.map((f) => f.path.split('/').last).toList(),
       'visibleStartMs': _visibleStart.inMilliseconds,
       'visibleEndMs': _visibleEnd.inMilliseconds,
+      'userSaved': _userSaved,
     };
     await widget.markerConversation.edlFile.writeAsString(jsonEncode(edlData));
+  }
+
+  // ── Save ───────────────────────────────────────────────────────────────────
+
+  String get _liveTimeRangeLabel {
+    if (_segments.isEmpty) return widget.markerConversation.timeRangeLabel;
+    final firstMs = _parseSegmentMillis(_segments.first) ?? 0;
+    final origin = DateTime.fromMillisecondsSinceEpoch(firstMs);
+    String f(DateTime dt) =>
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    return '${f(origin.add(_visibleStart))} – ${f(origin.add(_visibleEnd))}';
+  }
+
+  Future<void> _saveConversation() async {
+    setState(() => _userSaved = true);
+    await _saveEdl();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Saved'),
+          duration: Duration(seconds: 1),
+          backgroundColor: Color(0xFF1C1C1E),
+        ),
+      );
+    }
   }
 
   // ── Playback controls ──────────────────────────────────────────────────────
@@ -246,11 +280,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   Future<void> _setSpeed(double speed) async {
     await _player.setSpeed(speed);
     setState(() => _speed = speed);
-  }
-
-  void _seekFromWaveform(double ratio, BoxConstraints constraints, double localX) {
-    final r = (localX / constraints.maxWidth).clamp(0.0, 1.0);
-    _player.seek(Duration(milliseconds: (r * _totalDuration.inMilliseconds).round()));
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -295,6 +324,17 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
           'marker at ${widget.markerConversation.markerTimeLabel}',
           style: const TextStyle(color: Colors.white, fontSize: 18),
         ),
+        actions: [
+          IconButton(
+            icon: FaIcon(
+              _userSaved ? FontAwesomeIcons.circleCheck : FontAwesomeIcons.floppyDisk,
+              size: 20,
+              color: _userSaved ? Colors.green : Colors.grey.shade400,
+            ),
+            onPressed: _userSaved ? null : _saveConversation,
+            tooltip: _userSaved ? 'Saved' : 'Save',
+          ),
+        ],
       ),
       body: _loadingAudio
           ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
@@ -303,9 +343,9 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  // Time range label
+                  // Time range label (live — updates during crop drag)
                   Text(
-                    widget.markerConversation.timeRangeLabel,
+                    _liveTimeRangeLabel,
                     style: TextStyle(color: Colors.grey.shade400, fontSize: 14),
                   ),
                   const SizedBox(height: 32),
@@ -317,21 +357,70 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                         ? const Center(
                             child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
                         : LayoutBuilder(
-                            builder: (ctx, constraints) => GestureDetector(
-                              onTapDown: (d) => _seekFromWaveform(progressRatio, constraints, d.localPosition.dx),
-                              onHorizontalDragUpdate: (d) =>
-                                  _seekFromWaveform(progressRatio, constraints, d.localPosition.dx),
-                              child: CustomPaint(
-                                painter: _MarkerWaveformPainter(
-                                  amplitudes: _waveform,
-                                  progress: progressRatio,
-                                  visibleStartRatio: visibleStartRatio,
-                                  visibleEndRatio: visibleEndRatio,
-                                  markerRatio: _markerRatio,
+                            builder: (ctx, constraints) {
+                              final width = constraints.maxWidth;
+                              final tMs = _totalDuration.inMilliseconds.toDouble();
+                              return GestureDetector(
+                                onTapDown: (d) {
+                                  if (tMs == 0) return;
+                                  final r = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                                  _player.seek(Duration(milliseconds: (r * tMs).round()));
+                                },
+                                onHorizontalDragStart: (d) {
+                                  if (tMs == 0) return;
+                                  final x = d.localPosition.dx;
+                                  final vsX = (_visibleStart.inMilliseconds / tMs) * width;
+                                  final veX = (_visibleEnd.inMilliseconds / tMs) * width;
+                                  if ((x - vsX).abs() < _kHandleHitSlop) {
+                                    setState(() => _dragMode = _DragMode.left);
+                                  } else if ((x - veX).abs() < _kHandleHitSlop) {
+                                    setState(() => _dragMode = _DragMode.right);
+                                  } else {
+                                    setState(() => _dragMode = _DragMode.seek);
+                                  }
+                                },
+                                onHorizontalDragUpdate: (d) {
+                                  if (tMs == 0) return;
+                                  final r = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                                  final ms = (r * tMs).round();
+                                  if (_dragMode == _DragMode.left) {
+                                    final newStart = Duration(milliseconds: ms);
+                                    const minWindow = Duration(seconds: 30);
+                                    if (newStart >= Duration.zero && newStart < _visibleEnd - minWindow) {
+                                      setState(() => _visibleStart = newStart);
+                                    }
+                                  } else if (_dragMode == _DragMode.right) {
+                                    final newEnd = Duration(milliseconds: ms);
+                                    const minWindow = Duration(seconds: 30);
+                                    if (newEnd <= _totalDuration && newEnd > _visibleStart + minWindow) {
+                                      setState(() => _visibleEnd = newEnd);
+                                    }
+                                  } else {
+                                    _player.seek(Duration(milliseconds: ms));
+                                  }
+                                },
+                                onHorizontalDragEnd: (_) async {
+                                  if (_dragMode == _DragMode.left || _dragMode == _DragMode.right) {
+                                    if (_position < _visibleStart || _position > _visibleEnd) {
+                                      await _player.seek(_visibleStart);
+                                    }
+                                    await _saveEdl();
+                                  }
+                                  if (mounted) setState(() => _dragMode = _DragMode.none);
+                                },
+                                child: CustomPaint(
+                                  painter: _MarkerWaveformPainter(
+                                    amplitudes: _waveform,
+                                    progress: progressRatio,
+                                    visibleStartRatio: visibleStartRatio,
+                                    visibleEndRatio: visibleEndRatio,
+                                    markerRatio: _markerRatio,
+                                    activeDragMode: _dragMode,
+                                  ),
+                                  size: Size(width, 100),
                                 ),
-                                size: Size(constraints.maxWidth, 100),
-                              ),
-                            ),
+                              );
+                            },
                           ),
                   ),
 
@@ -457,6 +546,7 @@ class _MarkerWaveformPainter extends CustomPainter {
   final double visibleStartRatio;
   final double visibleEndRatio;
   final double markerRatio;
+  final _DragMode activeDragMode;
 
   const _MarkerWaveformPainter({
     required this.amplitudes,
@@ -464,6 +554,7 @@ class _MarkerWaveformPainter extends CustomPainter {
     required this.visibleStartRatio,
     required this.visibleEndRatio,
     required this.markerRatio,
+    required this.activeDragMode,
   });
 
   @override
@@ -506,7 +597,7 @@ class _MarkerWaveformPainter extends CustomPainter {
       canvas.drawLine(Offset(x, top), Offset(x, top + barHeight), paint);
     }
 
-    // Marker position line
+    // Marker position line (amber)
     final markerX = markerRatio * size.width;
     canvas.drawLine(
       Offset(markerX, 0),
@@ -515,6 +606,29 @@ class _MarkerWaveformPainter extends CustomPainter {
         ..color = Colors.amber
         ..strokeWidth = 2,
     );
+
+    // Crop handles — vertical line + pill tab at top
+    _drawHandle(canvas, size, visibleStartRatio * size.width, activeDragMode == _DragMode.left);
+    _drawHandle(canvas, size, visibleEndRatio * size.width, activeDragMode == _DragMode.right);
+  }
+
+  void _drawHandle(Canvas canvas, Size size, double x, bool isActive) {
+    final color = isActive ? Colors.white : const Color(0xFF8E8E93);
+    canvas.drawLine(
+      Offset(x, 0),
+      Offset(x, size.height),
+      Paint()
+        ..color = color
+        ..strokeWidth = 1.5,
+    );
+    // Small pill tab at top to indicate draggability
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(x, 8), width: 10, height: 16),
+        const Radius.circular(3),
+      ),
+      Paint()..color = color,
+    );
   }
 
   @override
@@ -522,7 +636,8 @@ class _MarkerWaveformPainter extends CustomPainter {
       old.progress != progress ||
       old.amplitudes != amplitudes ||
       old.visibleStartRatio != visibleStartRatio ||
-      old.visibleEndRatio != visibleEndRatio;
+      old.visibleEndRatio != visibleEndRatio ||
+      old.activeDragMode != activeDragMode;
 }
 
 // ── Seek button ───────────────────────────────────────────────────────────────
