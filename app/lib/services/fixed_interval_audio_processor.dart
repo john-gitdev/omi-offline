@@ -297,7 +297,6 @@ class FixedIntervalAudioProcessor {
     }
 
     if (aacFailed) {
-      saveDecoder?.destroy();
       return await _saveWav(refs, dateFolderPath, timestamp);
     }
 
@@ -341,7 +340,7 @@ class FixedIntervalAudioProcessor {
           nextExpectedOffset = frameDataOffset + ref.frameLength;
 
           try {
-            pcmData = saveDecoder?.decode(input: opusBytes);
+            pcmData = _decoder?.decode(input: opusBytes);
           } catch (e) {
             continue;
           }
@@ -393,7 +392,6 @@ class FixedIntervalAudioProcessor {
       return await _saveWav(refs, dateFolderPath, timestamp);
     } finally {
       await currentRaf?.close();
-      saveDecoder?.destroy();
     }
 
     // Downsample to 200 waveform buckets.
