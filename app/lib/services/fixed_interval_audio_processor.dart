@@ -144,6 +144,19 @@ class FixedIntervalAudioProcessor {
     int frameIndex = 0;
     while (off + 4 <= bytes.length) {
       final len = byteData.getUint32(off, Endian.little);
+
+      // Skip inline marker frames (firmware sentinel 0xFFFFFFFE, 20 bytes total:
+      // 4-byte header + 16-byte payload). These are written into the raw .bin stream
+      // by the firmware and must be stepped over without breaking the Opus frame walk.
+      if (len == 0xFFFFFFFE) {
+        if (off + 20 <= bytes.length) {
+          off += 20;
+        } else {
+          break;
+        }
+        continue;
+      }
+
       if (off + 4 + len > bytes.length) break;
 
       final byteOffset = off;
