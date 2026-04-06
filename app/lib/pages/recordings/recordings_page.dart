@@ -838,7 +838,6 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     final double withinInterval = _accumulatedMinutes % 30.0;
     final double progress = withinInterval / 30.0;
     final int accMin = _accumulatedMinutes.floor();
-    final int remaining = (30.0 - withinInterval).ceil().clamp(1, 30);
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -859,7 +858,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     Text('Building next recording',
                         style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
                     const SizedBox(height: 2),
-                    Text('$accMin min synced · $remaining min until ready',
+                    Text('$accMin min synced out of 30',
                         style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
                   ],
                 ),
