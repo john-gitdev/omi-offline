@@ -96,19 +96,27 @@ class FixedIntervalAudioProcessor {
 
     final byteData = ByteData.sublistView(bytes);
 
-    // 1. Gap detection — if the device was offline long enough, flush the
-    // current buffer as a partial interval and restart boundary tracking.
+    // 1. Gap detection — if the device was offline long enough, flush or pad.
     if (_currentRefs.isNotEmpty && _lastSegmentEndTime != null) {
       final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds.abs();
-      if (gapMs > 0) {
-        Logger.debug('FixedIntervalAudioProcessor: Gap of ${gapMs}ms detected — flushing partial interval.');
+      if (gapMs > 2000) {
+        Logger.debug('FixedIntervalAudioProcessor: Large gap of ${gapMs}ms detected — flushing partial interval.');
         final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
         if (filePath != null) savedFiles.add(filePath);
         _currentRefs = [];
         _nextBoundaryMs = 0;
         _recordingStartTime = null;
         SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
+      } else if (gapMs > 100) {
+        final missingFrames = (gapMs / frameDurationMs).round().clamp(0, 100);
+        if (missingFrames > 0) {
+          Logger.debug('FixedIntervalAudioProcessor: Padding gap of ${gapMs}ms with $missingFrames silent frames.');
+          for (int i = 0; i < missingFrames; i++) {
+            _currentRefs.add(FrameRef.silent());
+          }
+        }
       }
+      // If gapMs <= 100, we ignore it as jitter to maintain timeline stability.
     }
 
     // If we have a persisted boundary from a previous run and no frames
@@ -307,32 +315,37 @@ class FixedIntervalAudioProcessor {
         Platform.isIOS || Platform.isAndroid ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels) : null;
 
     try {
+      final zeroPcmFrame = Int16List(320); // 20ms at 16kHz
       for (var i = 0; i < refs.length; i++) {
         if (i % 50 == 0) await Future.delayed(Duration.zero);
 
         final ref = refs[i];
-
-        if (ref.segmentFile.path != currentFilePath) {
-          await currentRaf?.close();
-          currentRaf = await ref.segmentFile.open(mode: FileMode.read);
-          currentFilePath = ref.segmentFile.path;
-          nextExpectedOffset = -1;
-        }
-
-        final frameDataOffset = ref.byteOffset + 4;
-        if (nextExpectedOffset != frameDataOffset) {
-          await currentRaf!.setPosition(frameDataOffset);
-        }
-
-        final opusBytes = Uint8List.fromList(await currentRaf!.read(ref.frameLength));
-        nextExpectedOffset = frameDataOffset + ref.frameLength;
-
         Int16List pcmData;
-        try {
-          if (saveDecoder == null) continue;
-          pcmData = saveDecoder.decode(input: opusBytes);
-        } catch (e) {
-          continue;
+
+        if (ref.isSilent) {
+          pcmData = zeroPcmFrame;
+        } else {
+          if (ref.segmentFile!.path != currentFilePath) {
+            await currentRaf?.close();
+            currentRaf = await ref.segmentFile!.open(mode: FileMode.read);
+            currentFilePath = ref.segmentFile!.path;
+            nextExpectedOffset = -1;
+          }
+
+          final frameDataOffset = ref.byteOffset + 4;
+          if (nextExpectedOffset != frameDataOffset) {
+            await currentRaf!.setPosition(frameDataOffset);
+          }
+
+          final opusBytes = Uint8List.fromList(await currentRaf!.read(ref.frameLength));
+          nextExpectedOffset = frameDataOffset + ref.frameLength;
+
+          try {
+            if (saveDecoder == null) continue;
+            pcmData = saveDecoder.decode(input: opusBytes);
+          } catch (e) {
+            continue;
+          }
         }
 
         for (int s = 0; s < pcmData.length; s++) {
@@ -441,31 +454,36 @@ class FixedIntervalAudioProcessor {
         Platform.isIOS || Platform.isAndroid ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels) : null;
     if (wavDecoder != null) {
       try {
+        final zeroPcmFrame = Uint8List(640); // 320 samples * 2 bytes
         for (var i = 0; i < refs.length; i++) {
           if (i % 50 == 0) await Future.delayed(Duration.zero);
 
           final ref = refs[i];
 
-          if (ref.segmentFile.path != currentFilePath) {
-            await currentRaf?.close();
-            currentRaf = await ref.segmentFile.open(mode: FileMode.read);
-            currentFilePath = ref.segmentFile.path;
-            nextExpectedOffset = -1;
-          }
+          if (ref.isSilent) {
+            decodedSegments.add(zeroPcmFrame);
+          } else {
+            if (ref.segmentFile!.path != currentFilePath) {
+              await currentRaf?.close();
+              currentRaf = await ref.segmentFile!.open(mode: FileMode.read);
+              currentFilePath = ref.segmentFile!.path;
+              nextExpectedOffset = -1;
+            }
 
-          final frameDataOffset = ref.byteOffset + 4;
-          if (nextExpectedOffset != frameDataOffset) {
-            await currentRaf!.setPosition(frameDataOffset);
-          }
+            final frameDataOffset = ref.byteOffset + 4;
+            if (nextExpectedOffset != frameDataOffset) {
+              await currentRaf!.setPosition(frameDataOffset);
+            }
 
-          final opusBytes = Uint8List.fromList(await currentRaf!.read(ref.frameLength));
-          nextExpectedOffset = frameDataOffset + ref.frameLength;
+            final opusBytes = Uint8List.fromList(await currentRaf!.read(ref.frameLength));
+            nextExpectedOffset = frameDataOffset + ref.frameLength;
 
-          try {
-            final decoded = wavDecoder.decode(input: opusBytes);
-            decodedSegments.add(decoded.buffer.asUint8List());
-          } catch (e) {
-            // Skip corrupt frame
+            try {
+              final decoded = wavDecoder.decode(input: opusBytes);
+              decodedSegments.add(decoded.buffer.asUint8List());
+            } catch (e) {
+              // Skip corrupt frame
+            }
           }
         }
       } finally {
