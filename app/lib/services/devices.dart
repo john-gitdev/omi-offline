@@ -77,8 +77,13 @@ class DeviceService implements IDeviceService {
   @override
   Future<List<BtDevice>> discover({String? desirableDeviceId, int timeout = 5}) async {
     Logger.debug("Device discovering...");
+    if (_status == DeviceServiceStatus.scanning) {
+      Logger.warning("DeviceService: Discovery requested while already scanning. Ignoring redundant request.");
+      return [];
+    }
+
     if (_status != DeviceServiceStatus.ready) {
-      logCommonErrorMessage("Device service is not ready, may busying or stop");
+      logCommonErrorMessage("Device service is not ready (status: ${_status.name}).");
       return [];
     }
 
