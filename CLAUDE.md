@@ -137,4 +137,4 @@ clang-format -i <files>                  # C/C++ firmware
 - Never push or create PRs unless explicitly asked — commit locally by default.
 
 ### RELEASE / release command
-When the user says "release" or "RELEASE", increment the build number in `app/pubspec.yaml` by 1 (the `+N` part), commit, and push. Only change the semver (`X.Y.Z`) if the user explicitly specifies a new version. Example: `1.1.0+3` → `1.1.0+4`.
+When the user says "release" or "RELEASE", increment the patch digit in `app/pubspec.yaml` by 1, commit, and push. The patch digit serves as the build number — there is no separate `+N` suffix. Example: `0.3.18` → `0.3.19`.
