@@ -49,6 +49,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   double _totalMinutes = 0.0;
   int _markerCount = 0;
   double _syncSpeed = 0.0;
+  double _accumulatedMinutes = 0.0; // raw audio on disk not yet turned into a recording
   String _lastCompletedStage = 'none'; // "none" | "syncing" | "processing"
   String _lastActiveStage = 'syncing'; // "syncing" | "processing"
   // ─── HeyPocket upload state ────────────────────────────────────────────────
@@ -176,7 +177,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
             });
             setState(() {
               _spState = SyncProcessState.processing;
-              _totalMinutes = totalBytes / 252000.0; // segment on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
+              _totalMinutes =
+                  totalBytes / 252000.0; // segment on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
               _minutesRemaining = _totalMinutes;
               _syncedCount = 0;
               _syncSpeed = 0.0;
@@ -267,7 +269,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         _totalCount = currentEstimated;
         Logger.debug('RecordingsPage: Backfilled totalCount from service: $_totalCount');
       }
-      
+
       if (_totalCount > 0) {
         _syncedCount = (percentage * _totalCount).round().clamp(0, _totalCount);
       } else {
@@ -499,16 +501,19 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       batchesToProcess = activeBatches;
       backgroundMode = false;
     } else {
-      batchesToProcess = activeBatches.map((batch) {
-        final safe = RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
-        return Batch(
-          dateString: batch.dateString,
-          date: batch.date,
-          rawSegments: safe,
-          finalizedRecordings: batch.finalizedRecordings,
-          markerTimestamps: batch.markerTimestamps,
-        );
-      }).where((b) => b.rawSegments.isNotEmpty).toList();
+      batchesToProcess = activeBatches
+          .map((batch) {
+            final safe = RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
+            return Batch(
+              dateString: batch.dateString,
+              date: batch.date,
+              rawSegments: safe,
+              finalizedRecordings: batch.finalizedRecordings,
+              markerTimestamps: batch.markerTimestamps,
+            );
+          })
+          .where((b) => b.rawSegments.isNotEmpty)
+          .toList();
       backgroundMode = true;
     }
 
@@ -625,6 +630,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           _batches = results[0] as List<Batch>;
           _markerConversations = results[1] as List<MarkerConversation>;
           _isLoading = false;
+          _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
         });
         _tryAutoUploadNext();
       }
@@ -644,6 +650,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         setState(() {
           _batches = results[0] as List<Batch>;
           _markerConversations = results[1] as List<MarkerConversation>;
+          _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
         });
       }
     } catch (_) {}
@@ -808,12 +815,86 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     );
   }
 
+  // ─── Accumulating progress banner ─────────────────────────────────────────
+  static double _computeAccumulatedMinutes(List<Batch> batches) {
+    final totalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (sum, f) {
+      try {
+        return sum + f.lengthSync();
+      } catch (_) {
+        return sum;
+      }
+    });
+    return totalBytes / 252000.0; // 84 B/frame × 50 fps × 60 s
+  }
+
+  Widget _buildAccumulatingBanner() {
+    // Hide while actively syncing/processing (the sync card already covers this)
+    // and when there's less than half a minute accumulated (not worth showing).
+    if (_spState == SyncProcessState.syncing ||
+        _spState == SyncProcessState.processing ||
+        _spState == SyncProcessState.stopping) return const SizedBox.shrink();
+    if (_accumulatedMinutes < 0.5) return const SizedBox.shrink();
+
+    final double withinInterval = _accumulatedMinutes % 30.0;
+    final double progress = withinInterval / 30.0;
+    final int accMin = _accumulatedMinutes.floor();
+    final int remaining = (30.0 - withinInterval).ceil().clamp(1, 30);
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Building next recording',
+                        style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 2),
+                    Text('$accMin min synced · $remaining min until ready',
+                        style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: Colors.deepPurpleAccent.withValues(alpha: 0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Center(
+                  child: FaIcon(FontAwesomeIcons.hourglassHalf, color: Colors.deepPurpleAccent, size: 16),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: progress,
+            backgroundColor: Colors.grey.shade800,
+            color: Colors.deepPurpleAccent,
+          ),
+        ],
+      ),
+    );
+  }
+
   // ─── Unified status card ───────────────────────────────────────────────────
   Widget _buildSyncProcessCard() {
     if (_spState == SyncProcessState.idle) {
       return const SizedBox.shrink();
     }
-    
+
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
       padding: const EdgeInsets.all(12),
@@ -970,8 +1051,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     final map = <String, List<MarkerConversation>>{};
     for (final mc in _markerConversations) {
       final dt = mc.markerTime;
-      final dateStr =
-          '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+      final dateStr = '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
       map.putIfAbsent(dateStr, () => []).add(mc);
     }
     return map;
@@ -1006,8 +1086,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
-            ...conversations.map((c) =>
-                _buildConversationTile(c, markerMap[c.file.path.split('/').last] ?? [])),
+            ...conversations.map((c) => _buildConversationTile(c, markerMap[c.file.path.split('/').last] ?? [])),
             const SizedBox(height: 4),
             const Divider(color: Color(0xFF2C2C2E), height: 1),
             const SizedBox(height: 4),
@@ -1118,8 +1197,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.green, size: 12),
               const SizedBox(width: 6),
             ],
-            if (!mc.isPending)
-              FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade700, size: 12),
+            if (!mc.isPending) FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade700, size: 12),
           ],
         ),
       ),
@@ -1189,8 +1267,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.green, size: 14),
               const SizedBox(width: 8),
             ],
-            if (!mc.isPending)
-              FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
+            if (!mc.isPending) FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
           ],
         ),
       ),
@@ -1276,6 +1353,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
             children: [
               _buildStorageWarning(deviceProvider.storageFullPercentage),
               _buildSyncProcessCard(),
+              _buildAccumulatingBanner(),
               Expanded(
                 child: _isLoading
                     ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
@@ -1374,8 +1452,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                                   physics: const AlwaysScrollableScrollPhysics(),
                                   padding: const EdgeInsets.all(16),
                                   itemCount: visibleBatches.length,
-                                  itemBuilder: (context, index) =>
-                                      _buildBatchCard(visibleBatches[index], markerMap),
+                                  itemBuilder: (context, index) => _buildBatchCard(visibleBatches[index], markerMap),
                                 ),
                         );
                       }),
