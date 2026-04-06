@@ -733,7 +733,14 @@ class RecordingsManager {
         final bSegment = int.tryParse(bParts.length > 1 ? bParts[1] : '0') ?? 0;
         return aSegment.compareTo(bSegment);
       });
-      result.addAll(deviceSessionSegments.take(deviceSessionSegments.length - 1));
+      // Only exclude the newest segment when a session has 2+ segments.
+      // Single-segment sessions are completed SD-card file transfers — safe to process.
+      // Very-recently-written files are already filtered by the recency cutoff above.
+      if (deviceSessionSegments.length > 1) {
+        result.addAll(deviceSessionSegments.take(deviceSessionSegments.length - 1));
+      } else {
+        result.addAll(deviceSessionSegments);
+      }
     }
     // Re-sort numerically by (deviceSessionId, segmentIndex).
     result.sort((a, b) {
