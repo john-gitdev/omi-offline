@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/fixed_interval_audio_processor.dart';
 import 'package:omi/utils/logger.dart';
+import 'package:omi/utils/other/time_utils.dart';
 
 /// Parsed metadata for a single processed recording (M4A or WAV).
 class Conversation {
@@ -88,8 +89,11 @@ class Conversation {
   }
 
   String get timeRangeLabel {
-    String fmt(DateTime dt) => '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-    return '${fmt(startTime)} – ${fmt(endTime)}';
+    // Round start to nearest minute so near-boundary starts (e.g. 11:59:47) display cleanly.
+    final rounded = roundToMinute(startTime);
+    // Show inclusive end: subtract 1s so a 30-min segment displays as HH:MM–HH:29, not HH:MM–HH:30.
+    final inclusiveEnd = rounded.add(duration).subtract(const Duration(seconds: 1));
+    return '${fmtHourMin(rounded)} – ${fmtHourMin(inclusiveEnd)}';
   }
 
   String get durationLabel {
@@ -147,22 +151,18 @@ class MarkerConversation {
 
   bool get isPending => segments.isEmpty;
 
-  String get markerTimeLabel {
-    final h = markerTime.hour.toString().padLeft(2, '0');
-    final m = markerTime.minute.toString().padLeft(2, '0');
-    return '$h:$m';
-  }
+  String get markerTimeLabel => fmtHourMin(markerTime);
 
   String get timeRangeLabel {
     if (isPending) return 'Processing…';
-    String fmt(DateTime dt) => '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
     final segStart = segments.first.path.split('/').last;
     final millisStr = segStart.contains('_') ? segStart.split('_').last.split('.').first : null;
     final millis = millisStr != null ? int.tryParse(millisStr) : null;
     if (millis == null) return markerTimeLabel;
-    final start = DateTime.fromMillisecondsSinceEpoch(millis).add(visibleStart);
-    final end = DateTime.fromMillisecondsSinceEpoch(millis).add(visibleEnd);
-    return '${fmt(start)} – ${fmt(end)}';
+    final base = DateTime.fromMillisecondsSinceEpoch(millis);
+    final start = base.add(visibleStart);
+    final end = base.add(visibleEnd);
+    return '${fmtHourMin(start)} – ${fmtHourMin(end)}';
   }
 }
 
@@ -331,7 +331,11 @@ class RecordingsManager {
       // Disk space guard — bail before processing if free space is critically low.
       final allRawFiles = activeBatches.expand((b) => b.rawSegments).toList();
       final rawTotalBytes = allRawFiles.fold<int>(0, (sum, f) {
-        try { return sum + f.lengthSync(); } catch (_) { return sum; }
+        try {
+          return sum + f.lengthSync();
+        } catch (_) {
+          return sum;
+        }
       });
       if (rawTotalBytes > 50 * 1024 * 1024) {
         try {
@@ -418,11 +422,15 @@ class RecordingsManager {
           final liveDir = Directory('${directory.path}/recordings/$dateStr');
           await liveDir.create(recursive: true);
           final dest = '${liveDir.path}/$fileName';
-          try { await File(dest).delete(); } on FileSystemException catch (_) {}
+          try {
+            await File(dest).delete();
+          } on FileSystemException catch (_) {}
           await file.rename(dest);
           if (fileName.endsWith('.m4a')) {
             final legacyWav = File('${liveDir.path}/${fileName.replaceAll('.m4a', '')}.wav');
-            try { await legacyWav.delete(); } on FileSystemException catch (_) {}
+            try {
+              await legacyWav.delete();
+            } on FileSystemException catch (_) {}
           }
         }
 
@@ -471,8 +479,7 @@ class RecordingsManager {
   /// Writes EDL sidecars for all markers in [markerTimestamps] into [liveRecordingsDirPath].
   /// Idempotent: skips EDLs that already exist with non-empty segments.
   /// Resolves previously-pending EDLs (empty segments) when the backing m4a is now available.
-  static Future<void> _resolveMarkerConversations(
-      String liveRecordingsDirPath, List<DateTime> markerTimestamps) async {
+  static Future<void> _resolveMarkerConversations(String liveRecordingsDirPath, List<DateTime> markerTimestamps) async {
     final liveDir = Directory(liveRecordingsDirPath);
     if (!liveDir.existsSync()) return;
     if (markerTimestamps.isEmpty) return;
@@ -587,11 +594,7 @@ class RecordingsManager {
           .toList();
 
       // Build sorted m4a list once per date folder for canExtendLeft/Right checks.
-      final allM4as = dateFolder
-          .listSync()
-          .whereType<File>()
-          .where((f) => f.path.endsWith('.m4a'))
-          .toList()
+      final allM4as = dateFolder.listSync().whereType<File>().where((f) => f.path.endsWith('.m4a')).toList()
         ..sort((a, b) => (_parseRecordingMillis(a) ?? 0).compareTo(_parseRecordingMillis(b) ?? 0));
 
       for (final edlFile in edlFiles) {
@@ -603,10 +606,8 @@ class RecordingsManager {
           final visibleEndMs = json['visibleEndMs'] as int;
           final userSaved = json['userSaved'] as bool? ?? false;
 
-          final segments = segmentNames
-              .map((name) => File('${dateFolder.path}/$name'))
-              .where((f) => f.existsSync())
-              .toList();
+          final segments =
+              segmentNames.map((name) => File('${dateFolder.path}/$name')).where((f) => f.existsSync()).toList();
 
           bool canExtendLeft = false;
           bool canExtendRight = false;
@@ -815,13 +816,17 @@ class RecordingsManager {
     // 2. Delete raw segments and their DeviceSession folders.
     final Set<String> deviceSessionFolderPaths = {};
     for (var file in batch.rawSegments) {
-      try { await file.delete(); } on FileSystemException catch (_) {}
+      try {
+        await file.delete();
+      } on FileSystemException catch (_) {}
       deviceSessionFolderPaths.add(file.parent.path);
     }
 
     // 3. Remove now-empty DeviceSession folders (non-recursive delete fails if not empty)
     for (var folderPath in deviceSessionFolderPaths) {
-      try { await Directory(folderPath).delete(recursive: false); } on FileSystemException catch (_) {}
+      try {
+        await Directory(folderPath).delete(recursive: false);
+      } on FileSystemException catch (_) {}
     }
   }
 }

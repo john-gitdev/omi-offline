@@ -49,6 +49,10 @@ class SharedPreferencesUtil {
 
   set autoSyncEnabled(bool value) => saveBool('autoSyncEnabled', value);
 
+  // Whether to display times in 24-hour format (true) or 12-hour AM/PM (false).
+  bool get use24HourTime => getBool('use24HourTime', defaultValue: true);
+  set use24HourTime(bool value) => saveBool('use24HourTime', value);
+
   // True while extraction/processing is in progress. Persisted so that on
   // restart after a crash we can detect incomplete processing and clean up
   // the temp directory to avoid duplicate recordings.

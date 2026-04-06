@@ -1,3 +1,25 @@
+import 'package:omi/backend/preferences.dart';
+
+/// Formats [dt] as HH:MM (24-hour) or H:MM AM/PM depending on the user's
+/// `use24HourTime` preference.
+String fmtHourMin(DateTime dt) {
+  final use24 = SharedPreferencesUtil().use24HourTime;
+  if (use24) {
+    return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+  final hour12 = dt.hour == 0 ? 12 : (dt.hour > 12 ? dt.hour - 12 : dt.hour);
+  final period = dt.hour < 12 ? 'AM' : 'PM';
+  return '$hour12:${dt.minute.toString().padLeft(2, '0')} $period';
+}
+
+/// Rounds [dt] to the nearest minute (>=30s rounds up).
+DateTime roundToMinute(DateTime dt) {
+  if (dt.second >= 30) {
+    return DateTime(dt.year, dt.month, dt.day, dt.hour, dt.minute).add(const Duration(minutes: 1));
+  }
+  return DateTime(dt.year, dt.month, dt.day, dt.hour, dt.minute);
+}
+
 String secondsToHumanReadable(int seconds) {
   if (seconds < 60) {
     return '$seconds ${seconds == 1 ? 'sec' : 'secs'}';
