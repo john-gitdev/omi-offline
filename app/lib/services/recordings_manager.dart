@@ -132,6 +132,7 @@ class MarkerConversation {
   final File edlFile;
   final bool canExtendLeft;
   final bool canExtendRight;
+  final bool userSaved;
 
   const MarkerConversation({
     required this.markerTime,
@@ -141,6 +142,7 @@ class MarkerConversation {
     required this.edlFile,
     this.canExtendLeft = false,
     this.canExtendRight = false,
+    this.userSaved = false,
   });
 
   bool get isPending => segments.isEmpty;
@@ -599,6 +601,7 @@ class RecordingsManager {
           final segmentNames = (json['segments'] as List).cast<String>();
           final visibleStartMs = json['visibleStartMs'] as int;
           final visibleEndMs = json['visibleEndMs'] as int;
+          final userSaved = json['userSaved'] as bool? ?? false;
 
           final segments = segmentNames
               .map((name) => File('${dateFolder.path}/$name'))
@@ -624,6 +627,7 @@ class RecordingsManager {
             edlFile: edlFile,
             canExtendLeft: canExtendLeft,
             canExtendRight: canExtendRight,
+            userSaved: userSaved,
           ));
         } catch (e) {
           Logger.error('RecordingsManager: Failed to parse EDL ${edlFile.path}: $e');
