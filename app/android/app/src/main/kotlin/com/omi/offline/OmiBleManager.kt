@@ -83,7 +83,7 @@ class OmiBleManager private constructor(private val application: Application) {
     private var isProcessingCommand = false
 
     private var rssiKeepAliveRunnable: Runnable? = null
-    private val rssiKeepAliveInterval = 500L
+    private val rssiKeepAliveInterval = 3000L
 
     private var bondCompletionCallback: ((Boolean) -> Unit)? = null
     private var bondTimeoutRunnable: Runnable? = null

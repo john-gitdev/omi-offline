@@ -6,6 +6,8 @@ import android.companion.*
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -39,22 +41,51 @@ class OmiCompanionManager(
                 .build()
         )
 
-        companionDeviceManager.associate(
-            requestBuilder.build(),
-            ContextCompat.getMainExecutor(context),
-            object : CompanionDeviceManager.Callback() {
-                override fun onDeviceFound(chooserLauncher: android.content.IntentSender) {
-                    try {
-                        getActivity()?.startIntentSenderForResult(chooserLauncher, COMPANION_REQUEST_CODE, null, 0, 0, 0)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to start chooser", e)
+        val request = requestBuilder.build()
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            companionDeviceManager.associate(
+                request,
+                ContextCompat.getMainExecutor(context),
+                object : CompanionDeviceManager.Callback() {
+                    override fun onDeviceFound(chooserLauncher: android.content.IntentSender) {
+                        launchChooser(chooserLauncher)
+                    }
+
+                    override fun onFailure(error: CharSequence?) {
+                        Log.e(TAG, "associate() failed: $error")
                     }
                 }
+            )
+        } else {
+            @Suppress("deprecation")
+            companionDeviceManager.associate(
+                request,
+                object : CompanionDeviceManager.Callback() {
+                    override fun onDeviceFound(chooserLauncher: android.content.IntentSender) {
+                        launchChooser(chooserLauncher)
+                    }
 
-                override fun onFailure(error: CharSequence?) {
-                    Log.e(TAG, "associate() failed: $error")
-                }
-            })
+                    override fun onFailure(error: CharSequence?) {
+                        Log.e(TAG, "associate() failed: $error")
+                    }
+                },
+                Handler(Looper.getMainLooper())
+            )
+        }
+    }
+
+    private fun launchChooser(chooserLauncher: android.content.IntentSender) {
+        val activity = getActivity()
+        if (activity == null) {
+            Log.e(TAG, "Cannot launch chooser: activity is null")
+            return
+        }
+        try {
+            activity.startIntentSenderForResult(chooserLauncher, COMPANION_REQUEST_CODE, null, 0, 0, 0)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start chooser", e)
+        }
     }
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): String? {
@@ -66,7 +97,14 @@ class OmiCompanionManager(
         return address
     }
 
-    fun getMacAddresses(): List<String> = companionDeviceManager.myAssociations.mapNotNull { it.deviceMacAddress?.toString() }
+    fun getMacAddresses(): List<String> {
+        return if (Build.VERSION.SDK_INT >= 33) {
+            companionDeviceManager.myAssociations.mapNotNull { it.deviceMacAddress?.toString() }
+        } else {
+            @Suppress("deprecation")
+            companionDeviceManager.associations
+        }
+    }
 
     fun disassociateAll() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -82,6 +120,10 @@ class OmiCompanionManager(
     }
 
     fun startObserving() {
+        if (Build.VERSION.SDK_INT < 33) {
+            Log.d(TAG, "startObserving: skipped (API \${Build.VERSION.SDK_INT} < 33)")
+            return
+        }
         val associations = companionDeviceManager.myAssociations
         if (associations.isEmpty()) return
 
@@ -93,24 +135,25 @@ class OmiCompanionManager(
                     .setAssociationId(association.id)
                     .build()
                 companionDeviceManager.startObservingDevicePresence(request)
-                Log.d(TAG, "Observing device presence (API 36+) for association ${association.id}")
+                Log.d(TAG, "Observing device presence (API 36+) for association \${association.id}")
             } catch (e: Exception) {
-                Log.w(TAG, "startObserving (API 36+) failed: ${e.message}")
+                Log.w(TAG, "startObserving (API 36+) failed: \${e.message}")
             }
         } else {
             val mac = association.deviceMacAddress
             if (mac != null) {
                 try {
                     companionDeviceManager.startObservingDevicePresence(mac.toString())
-                    Log.d(TAG, "Observing device presence for $mac")
+                    Log.d(TAG, "Observing device presence for \$mac")
                 } catch (e: Exception) {
-                    Log.w(TAG, "startObserving failed: ${e.message}")
+                    Log.w(TAG, "startObserving failed: \${e.message}")
                 }
             }
         }
     }
 
     fun stopObserving() {
+        if (Build.VERSION.SDK_INT < 33) return
         for (association in companionDeviceManager.myAssociations) {
             try {
                 if (Build.VERSION.SDK_INT >= 36) {
@@ -125,7 +168,7 @@ class OmiCompanionManager(
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "stopObserving failed: ${e.message}")
+                Log.w(TAG, "stopObserving failed: \${e.message}")
             }
         }
     }
