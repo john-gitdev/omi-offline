@@ -136,7 +136,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
   }
 
   Widget _buildVersionInfoSection() {
-    final displayText = buildVersion != null ? '${version ?? ""} ($buildVersion)' : (version ?? '');
+    final displayText = version ?? '';
 
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
