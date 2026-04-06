@@ -977,12 +977,13 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     return map;
   }
 
-  void _openMarkerConversation(MarkerConversation mc) {
-    Navigator.of(context).push(
+  Future<void> _openMarkerConversation(MarkerConversation mc) async {
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => MarkerConversationPlayerPage(markerConversation: mc),
       ),
     );
+    await _reloadBatchesSilently();
   }
 
   // ─── Default mode: batch card ──────────────────────────────────────────────
@@ -1113,6 +1114,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 ],
               ),
             ),
+            if (!mc.isPending && mc.userSaved) ...[
+              const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.green, size: 12),
+              const SizedBox(width: 6),
+            ],
             if (!mc.isPending)
               FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade700, size: 12),
           ],
@@ -1180,6 +1185,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 ],
               ),
             ),
+            if (!mc.isPending && mc.userSaved) ...[
+              const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.green, size: 14),
+              const SizedBox(width: 8),
+            ],
             if (!mc.isPending)
               FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
           ],
