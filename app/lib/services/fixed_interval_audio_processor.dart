@@ -107,16 +107,15 @@ class FixedIntervalAudioProcessor {
         _nextBoundaryMs = 0;
         _recordingStartTime = null;
         SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
-      } else if (gapMs > 0) {
+      } else if (gapMs > 100) {
         final missingFrames = (gapMs / frameDurationMs).round().clamp(0, 100);
         if (missingFrames > 0) {
-          if (gapMs > 100) {
-            Logger.debug('FixedIntervalAudioProcessor: Padding gap of ${gapMs}ms with $missingFrames silent frames.');
-          }
+          Logger.debug('FixedIntervalAudioProcessor: Padding gap of ${gapMs}ms with $missingFrames silent frames.');
           for (int i = 0; i < missingFrames; i++) {
             _currentRefs.add(FrameRef.silent());
           }
         }
+        // Gaps <= 100ms are BLE transport jitter — ignore to keep timeline stable.
       }
     }
 
