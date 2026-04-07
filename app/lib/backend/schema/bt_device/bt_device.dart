@@ -91,7 +91,7 @@ enum BleAudioCodec {
   static const int _opusFps = 50;
 
   /// Estimated SD card bytes per minute of audio (pre-sync heuristic only).
-  /// Post-sync, exact frame count from .bin files is used instead.
+  /// Post-sync, exact frame count from Segment files is used instead.
   int getStorageBytesPerMinute() {
     switch (this) {
       case BleAudioCodec.opus:
