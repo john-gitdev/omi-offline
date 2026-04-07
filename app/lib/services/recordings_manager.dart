@@ -13,22 +13,22 @@ class Conversation {
   final DateTime startTime;
   final Duration duration;
   final String? uploadKey;
+  final int fileSizeBytes;
 
-  const Conversation({required this.file, required this.startTime, required this.duration, this.uploadKey});
+  const Conversation({
+    required this.file,
+    required this.startTime,
+    required this.duration,
+    required this.fileSizeBytes,
+    this.uploadKey,
+  });
 
   DateTime get endTime => startTime.add(duration);
-  int get fileSizeBytes {
-    try {
-      return file.lengthSync();
-    } catch (_) {
-      return 0;
-    }
-  }
 
   /// Parses start time from the filename (`recording_<millis>.m4a` or `.wav`) and
   /// reads duration from the `.meta` sidecar if present, otherwise falls back to
   /// WAV file size calculation.
-  static Conversation fromFile(File file) {
+  static Future<Conversation> fromFile(File file) async {
     final name = file.path.split('/').last;
     final millisStr = name.contains('_') ? name.split('_').last.split('.').first : null;
     final millis = millisStr != null ? int.tryParse(millisStr) : null;
@@ -37,18 +37,23 @@ class Conversation {
       startTime = DateTime.fromMillisecondsSinceEpoch(millis);
     } else {
       try {
-        startTime = file.lastModifiedSync();
+        startTime = await file.lastModified();
       } catch (_) {
         startTime = DateTime.now();
       }
     }
 
+    int fileSize = 0;
+    try {
+      fileSize = await file.length();
+    } catch (_) {}
+
     // Try .meta sidecar for authoritative duration
     final basePath = file.path.contains('.') ? file.path.substring(0, file.path.lastIndexOf('.')) : file.path;
     final metaFile = File('$basePath.meta');
-    if (metaFile.existsSync()) {
+    if (await metaFile.exists()) {
       try {
-        final metaBytes = metaFile.readAsBytesSync();
+        final metaBytes = await metaFile.readAsBytes();
         if (metaBytes.length >= 8) {
           final bd = ByteData.sublistView(metaBytes);
           final durationMs = bd.getUint32(4, Endian.little);
@@ -67,7 +72,11 @@ class Conversation {
           // processed before the upload key was written to the .meta sidecar.
           final effectiveKey = uploadKey ?? file.path.split('/').last.split('.').first;
           return Conversation(
-              file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: effectiveKey);
+              file: file,
+              startTime: startTime,
+              duration: Duration(milliseconds: durationMs),
+              fileSizeBytes: fileSize,
+              uploadKey: effectiveKey);
         }
       } catch (_) {
         // Fall through to size-based estimate
@@ -77,15 +86,15 @@ class Conversation {
     // Size-based duration estimate — only valid for WAV files.
     // For M4A/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
     final isWav = file.path.endsWith('.wav');
-    int fileSize = 0;
-    try {
-      fileSize = file.lengthSync();
-    } catch (_) {}
     final pcmBytes = isWav && fileSize > 44 ? fileSize - 44 : 0;
     final durationMs = (pcmBytes / 32000.0 * 1000).round();
     final fallbackKey = file.path.split('/').last.split('.').first;
     return Conversation(
-        file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: fallbackKey);
+        file: file,
+        startTime: startTime,
+        duration: Duration(milliseconds: durationMs),
+        fileSizeBytes: fileSize,
+        uploadKey: fallbackKey);
   }
 
   String get timeRangeLabel {
@@ -114,7 +123,7 @@ class Batch {
   final String dateString;
   final DateTime date;
   final List<File> rawSegments;
-  final List<File> finalizedRecordings;
+  final List<Conversation> finalizedRecordings;
   final List<DateTime> markerTimestamps;
 
   Batch({
@@ -194,7 +203,7 @@ class RecordingsManager {
     try {
       final directory = await getApplicationDocumentsDirectory();
       final tempDir = Directory('${directory.path}/processing_temp');
-      if (await tempDir.exists()) {
+      if (tempDir.existsSync()) {
         await tempDir.delete(recursive: true);
         Logger.debug('RecordingsManager: Removed leftover processing_temp directory.');
       }
@@ -211,11 +220,10 @@ class RecordingsManager {
     final recordingsDir = Directory('${directory.path}/recordings');
 
     Map<String, List<File>> rawSegmentsByDate = {};
-    Map<String, List<File>> processedByDate = {};
     Map<String, List<DateTime>> markersByDate = {};
 
     // Process raw segments (now they are in DeviceSession folders)
-    if (await rawSegmentsDir.exists()) {
+    if (rawSegmentsDir.existsSync()) {
       final deviceSessionFolders = rawSegmentsDir.listSync().whereType<Directory>().toList();
 
       // Sort DeviceSession folders by ID (e.g. "100", "101")
@@ -233,9 +241,9 @@ class RecordingsManager {
 
         // 1. Process markers
         final markerFile = File('${folder.path}/markers.txt');
-        if (await markerFile.exists()) {
+        if (markerFile.existsSync()) {
           try {
-            final content = await markerFile.readAsLines();
+            final content = markerFile.readAsLinesSync();
             for (var line in content) {
               final utc = int.tryParse(line.trim());
               if (utc != null) {
@@ -262,9 +270,10 @@ class RecordingsManager {
       }
     }
 
+    Map<String, List<Conversation>> processedByDate = {};
     // Process already processed recordings
-    if (await recordingsDir.exists()) {
-      final dateFolders = recordingsDir.listSync().whereType<Directory>();
+    if (recordingsDir.existsSync()) {
+      final dateFolders = recordingsDir.listSync().whereType<Directory>().toList();
       for (var folder in dateFolders) {
         final dateString = folder.path.split('/').last;
         final files = folder
@@ -272,7 +281,8 @@ class RecordingsManager {
             .whereType<File>()
             .where((f) => f.path.endsWith('.m4a') || f.path.endsWith('.wav'))
             .toList();
-        processedByDate[dateString] = files;
+        final conversations = await Future.wait(files.map(Conversation.fromFile));
+        processedByDate[dateString] = conversations;
       }
     }
 
@@ -354,13 +364,13 @@ class RecordingsManager {
 
       final tempProcessingPath = '${directory.path}/processing_temp/combined';
       final tempDir = Directory(tempProcessingPath);
-      if (await tempDir.exists()) await tempDir.delete(recursive: true);
+      if (tempDir.existsSync()) await tempDir.delete(recursive: true);
       await tempDir.create(recursive: true);
 
       // Moves any completed recordings from tempDir to their live recordings/<date>/ folder
       // and fires onRecordingFinalized for each audio file moved.
       Future<void> moveTempFilesToLive() async {
-        if (!await tempDir.exists()) return;
+        if (!tempDir.existsSync()) return;
         for (final entity in tempDir.listSync().whereType<File>()) {
           final fileName = entity.path.split('/').last;
           final parts = fileName.split('_');
@@ -441,7 +451,7 @@ class RecordingsManager {
         }
 
         await Future.delayed(const Duration(milliseconds: 200));
-        if (await tempDir.exists()) await tempDir.delete(recursive: true);
+        if (tempDir.existsSync()) await tempDir.delete(recursive: true);
 
         // Resolve marker conversations for each date that has markers.
         // Must run after temp→live move so the m4a files are in place.
@@ -460,7 +470,7 @@ class RecordingsManager {
         final deviceSessionFolders = <String>{};
         for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
           final file = allSegments[i];
-          if (await file.exists()) {
+          if (file.existsSync()) {
             Logger.debug("RecordingsManager: Deleting completed raw segment: ${file.path}");
             await file.delete();
             deviceSessionFolders.add(file.parent.path);
@@ -468,9 +478,9 @@ class RecordingsManager {
         }
         for (final folderPath in deviceSessionFolders) {
           final folder = Directory(folderPath);
-          if (await folder.exists()) {
+          if (folder.existsSync()) {
             try {
-              if (await folder.list().isEmpty) await folder.delete();
+              if (folder.listSync().isEmpty) await folder.delete();
             } catch (_) {}
           }
         }
@@ -507,7 +517,7 @@ class RecordingsManager {
         final bd = ByteData.sublistView(metaBytes);
         final durationMs = bd.getUint32(4, Endian.little);
         if (durationMs <= 0) continue;
-        recordings.add((file: entity, startMs: startMs, endMs: startMs + durationMs));
+        recordings.add((file: entity, startMs: startMs, endMs: startMs + durationMs.toInt()));
       } catch (_) {
         continue;
       }
@@ -672,20 +682,22 @@ class RecordingsManager {
     await enforceRetentionPolicy();
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
-    final safeBatches = batches
-        .map((batch) {
-          if (batch.rawSegments.isEmpty) return batch;
-          final safeSegments = excludeNewestSegmentPerSession(batch.rawSegments);
-          return Batch(
-            dateString: batch.dateString,
-            date: batch.date,
-            rawSegments: safeSegments,
-            finalizedRecordings: batch.finalizedRecordings,
-            markerTimestamps: batch.markerTimestamps,
-          );
-        })
-        .where((b) => b.rawSegments.isNotEmpty)
-        .toList();
+
+    final List<Batch> safeBatches = [];
+    for (final batch in batches) {
+      if (batch.rawSegments.isEmpty) continue;
+      final safeSegments = await excludeNewestSegmentPerSession(batch.rawSegments);
+      if (safeSegments.isNotEmpty) {
+        safeBatches.add(Batch(
+          dateString: batch.dateString,
+          date: batch.date,
+          rawSegments: safeSegments,
+          finalizedRecordings: batch.finalizedRecordings,
+          markerTimestamps: batch.markerTimestamps,
+        ));
+      }
+    }
+
     if (safeBatches.isEmpty) return;
     try {
       await manager.processAll(safeBatches, (_) {}, backgroundMode: true);
@@ -715,14 +727,14 @@ class RecordingsManager {
   /// Returns [segments] with the highest segmentIndex file excluded per DeviceSession.
   /// Files are named `{deviceSessionId}_{segmentIndex}.bin`; the last segment per DeviceSession
   /// may still be actively written by the firmware, so we skip it.
-  static List<File> excludeNewestSegmentPerSession(List<File> segments) {
+  static Future<List<File>> excludeNewestSegmentPerSession(List<File> segments) async {
     // Also exclude any segment modified within the last 5 seconds to avoid
     // processing a file that is still being written to by the sync layer.
     final recencyCutoff = DateTime.now().subtract(const Duration(seconds: 5));
     final Map<String, List<File>> byDeviceSession = {};
     for (final f in segments) {
       try {
-        if (f.lastModifiedSync().isAfter(recencyCutoff)) continue;
+        if ((await f.lastModified()).isAfter(recencyCutoff)) continue;
       } catch (_) {
         continue; // File may have been deleted
       }
@@ -793,7 +805,7 @@ class RecordingsManager {
   static Future<void> cleanupOrphanedTempFiles() async {
     final directory = await getApplicationDocumentsDirectory();
     final recordingsDir = Directory('${directory.path}/recordings');
-    if (!await recordingsDir.exists()) return;
+    if (!recordingsDir.existsSync()) return;
     await for (final entity in recordingsDir.list(recursive: true)) {
       if (entity is File && entity.path.endsWith('.tmp.m4a')) {
         try {
@@ -814,7 +826,7 @@ class RecordingsManager {
 
     // 1. Delete processed recordings folder (contains .m4a, .wav, .meta files)
     final recordingsDir = Directory('${directory.path}/recordings/${batch.dateString}');
-    if (await recordingsDir.exists()) {
+    if (recordingsDir.existsSync()) {
       await recordingsDir.delete(recursive: true);
       Logger.debug('RecordingsManager: Deleted processed recordings for ${batch.dateString}');
     }

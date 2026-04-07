@@ -169,10 +169,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       if (!serviceIsSyncing && _spState == SyncProcessState.syncing) {
         if (serviceIsProcessing) {
           // Background processing auto-started after sync — show it.
-          unawaited(_reloadBatchesSilently().then((_) {
+          unawaited(_reloadBatchesSilently().then((_) async {
             if (!mounted) return;
             final allRaw = _batches.expand((b) => b.rawSegments).toList();
-            final processable = RecordingsManager.excludeNewestSegmentPerSession(allRaw);
+            final processable = await RecordingsManager.excludeNewestSegmentPerSession(allRaw);
             final totalBytes = processable.fold(0, (s, f) {
               try {
                 return s + f.lengthSync();
@@ -506,19 +506,20 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       batchesToProcess = activeBatches;
       backgroundMode = false;
     } else {
-      batchesToProcess = activeBatches
-          .map((batch) {
-            final safe = RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
-            return Batch(
-              dateString: batch.dateString,
-              date: batch.date,
-              rawSegments: safe,
-              finalizedRecordings: batch.finalizedRecordings,
-              markerTimestamps: batch.markerTimestamps,
-            );
-          })
-          .where((b) => b.rawSegments.isNotEmpty)
-          .toList();
+      final List<Batch> filtered = [];
+      for (final batch in activeBatches) {
+        final safe = await RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
+        if (safe.isNotEmpty) {
+          filtered.add(Batch(
+            dateString: batch.dateString,
+            date: batch.date,
+            rawSegments: safe,
+            finalizedRecordings: batch.finalizedRecordings,
+            markerTimestamps: batch.markerTimestamps,
+          ));
+        }
+      }
+      batchesToProcess = filtered;
       backgroundMode = true;
     }
 
@@ -701,9 +702,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     final keySetAt = _prefs.heypocketKeySetAt;
     final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
     for (final batch in _batches) {
-      for (final file in batch.finalizedRecordings) {
+      for (final conversation in batch.finalizedRecordings) {
         if (_autoUploadActive >= 2) return;
-        final conversation = Conversation.fromFile(file);
         if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
         final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
@@ -1083,8 +1083,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   // ─── Default mode: batch card ──────────────────────────────────────────────
   Widget _buildBatchCard(Batch batch, Map<String, List<MarkerConversation>> markerMap) {
-    final conversations = batch.finalizedRecordings.map(Conversation.fromFile).toList()
-      ..sort((a, b) => b.startTime.compareTo(a.startTime));
+    final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
     if (conversations.isEmpty) return const SizedBox.shrink();
 
     return Card(
