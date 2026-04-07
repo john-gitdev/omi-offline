@@ -169,10 +169,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       if (!serviceIsSyncing && _spState == SyncProcessState.syncing) {
         if (serviceIsProcessing) {
           // Background processing auto-started after sync — show it.
-          unawaited(_reloadBatchesSilently().then((_) async {
+          unawaited(_reloadBatchesSilently().then((_) {
             if (!mounted) return;
             final allRaw = _batches.expand((b) => b.rawSegments).toList();
-            final processable = await RecordingsManager.excludeNewestSegmentPerSession(allRaw);
+            final processable = RecordingsManager.excludeNewestSegmentPerSession(allRaw);
             final totalBytes = processable.fold(0, (s, f) {
               try {
                 return s + f.lengthSync();
@@ -506,20 +506,19 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       batchesToProcess = activeBatches;
       backgroundMode = false;
     } else {
-      final List<Batch> filtered = [];
-      for (final batch in activeBatches) {
-        final safe = await RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
-        if (safe.isNotEmpty) {
-          filtered.add(Batch(
-            dateString: batch.dateString,
-            date: batch.date,
-            rawSegments: safe,
-            finalizedRecordings: batch.finalizedRecordings,
-            markerTimestamps: batch.markerTimestamps,
-          ));
-        }
-      }
-      batchesToProcess = filtered;
+      batchesToProcess = activeBatches
+          .map((batch) {
+            final safe = RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
+            return Batch(
+              dateString: batch.dateString,
+              date: batch.date,
+              rawSegments: safe,
+              finalizedRecordings: batch.finalizedRecordings,
+              markerTimestamps: batch.markerTimestamps,
+            );
+          })
+          .where((b) => b.rawSegments.isNotEmpty)
+          .toList();
       backgroundMode = true;
     }
 

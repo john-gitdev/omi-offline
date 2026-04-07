@@ -1,3 +1,5 @@
+import "dart:convert";
+import "dart:typed_data";
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/services/recordings_manager.dart';
@@ -124,5 +126,58 @@ void main() {
     final safeSegments = await RecordingsManager.excludeNewestSegmentPerSession([file0]);
 
     expect(safeSegments.isEmpty, true);
+  });
+
+  group('Conversation.fromFile tests', () {
+    test('parses from real file with metadata correctly', () async {
+      final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
+      final wavFile = File(p.join(recordingsDir.path, 'recording_1741687200000.wav'));
+
+      // 1741687200000 = 2026-03-11 10:00:00 UTC
+      final startTime = DateTime.fromMillisecondsSinceEpoch(1741687200000);
+
+      // Mock WAV file with 44 byte header + 3200 bytes of data (100ms at 32000Hz mono)
+      final data = Uint8List(44 + 3200);
+      wavFile.writeAsBytesSync(data);
+
+      final conversation = await Conversation.fromFile(wavFile);
+
+      expect(conversation.startTime, startTime);
+      expect(conversation.fileSizeBytes, 3244);
+      expect(conversation.duration.inMilliseconds, 100);
+    });
+
+    test('prefers metadata sidecar if present', () async {
+      final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
+      final m4aFile = File(p.join(recordingsDir.path, 'recording_1741687200000.m4a'))..writeAsBytesSync([0]);
+      final metaFile = File(p.join(recordingsDir.path, 'recording_1741687200000.meta'));
+
+      // .meta structure: 4 bytes version + 4 bytes durationMs (LE) + ... + byte 408 keyLen + N bytes key
+      final metaData = ByteData(409 + 5);
+      metaData.setUint32(4, 5000, Endian.little); // 5s duration
+      metaData.setUint8(408, 5); // key length
+      final metaBytes = metaData.buffer.asUint8List();
+      metaBytes.setRange(409, 414, utf8.encode('mykey'));
+      metaFile.writeAsBytesSync(metaBytes);
+
+      final conversation = await Conversation.fromFile(m4aFile);
+
+      expect(conversation.duration.inSeconds, 5);
+      expect(conversation.uploadKey, 'mykey');
+      expect(conversation.fileSizeBytes, 1);
+    });
+
+    test('falls back to last modified for start time if filename invalid', () async {
+      final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
+      final wavFile = File(p.join(recordingsDir.path, 'invalid_name.wav'))..writeAsBytesSync(Uint8List(44));
+
+      final now = DateTime.now();
+      wavFile.setLastModifiedSync(now);
+
+      final conversation = await Conversation.fromFile(wavFile);
+
+      // Allow for some small difference in time due to filesystem resolution
+      expect(conversation.startTime.difference(now).inSeconds.abs() <= 1, true);
+    });
   });
 }
