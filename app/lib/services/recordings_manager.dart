@@ -13,22 +13,22 @@ class Conversation {
   final DateTime startTime;
   final Duration duration;
   final String? uploadKey;
+  final int fileSizeBytes;
 
-  const Conversation({required this.file, required this.startTime, required this.duration, this.uploadKey});
+  const Conversation({
+    required this.file,
+    required this.startTime,
+    required this.duration,
+    required this.fileSizeBytes,
+    this.uploadKey,
+  });
 
   DateTime get endTime => startTime.add(duration);
-  int get fileSizeBytes {
-    try {
-      return file.lengthSync();
-    } catch (_) {
-      return 0;
-    }
-  }
 
   /// Parses start time from the filename (`recording_<millis>.m4a` or `.wav`) and
   /// reads duration from the `.meta` sidecar if present, otherwise falls back to
   /// WAV file size calculation.
-  static Conversation fromFile(File file) {
+  static Future<Conversation> fromFile(File file) async {
     final name = file.path.split('/').last;
     final millisStr = name.contains('_') ? name.split('_').last.split('.').first : null;
     final millis = millisStr != null ? int.tryParse(millisStr) : null;
@@ -37,18 +37,23 @@ class Conversation {
       startTime = DateTime.fromMillisecondsSinceEpoch(millis);
     } else {
       try {
-        startTime = file.lastModifiedSync();
+        startTime = await file.lastModified();
       } catch (_) {
         startTime = DateTime.now();
       }
     }
 
+    int fileSize = 0;
+    try {
+      fileSize = await file.length();
+    } catch (_) {}
+
     // Try .meta sidecar for authoritative duration
     final basePath = file.path.contains('.') ? file.path.substring(0, file.path.lastIndexOf('.')) : file.path;
     final metaFile = File('$basePath.meta');
-    if (metaFile.existsSync()) {
+    if (await metaFile.exists()) {
       try {
-        final metaBytes = metaFile.readAsBytesSync();
+        final metaBytes = await metaFile.readAsBytes();
         if (metaBytes.length >= 8) {
           final bd = ByteData.sublistView(metaBytes);
           final durationMs = bd.getUint32(4, Endian.little);
@@ -67,7 +72,11 @@ class Conversation {
           // processed before the upload key was written to the .meta sidecar.
           final effectiveKey = uploadKey ?? file.path.split('/').last.split('.').first;
           return Conversation(
-              file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: effectiveKey);
+              file: file,
+              startTime: startTime,
+              duration: Duration(milliseconds: durationMs),
+              fileSizeBytes: fileSize,
+              uploadKey: effectiveKey);
         }
       } catch (_) {
         // Fall through to size-based estimate
@@ -77,15 +86,15 @@ class Conversation {
     // Size-based duration estimate — only valid for WAV files.
     // For M4A/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
     final isWav = file.path.endsWith('.wav');
-    int fileSize = 0;
-    try {
-      fileSize = file.lengthSync();
-    } catch (_) {}
     final pcmBytes = isWav && fileSize > 44 ? fileSize - 44 : 0;
     final durationMs = (pcmBytes / 32000.0 * 1000).round();
     final fallbackKey = file.path.split('/').last.split('.').first;
     return Conversation(
-        file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: fallbackKey);
+        file: file,
+        startTime: startTime,
+        duration: Duration(milliseconds: durationMs),
+        fileSizeBytes: fileSize,
+        uploadKey: fallbackKey);
   }
 
   String get timeRangeLabel {
@@ -114,7 +123,7 @@ class Batch {
   final String dateString;
   final DateTime date;
   final List<File> rawSegments;
-  final List<File> finalizedRecordings;
+  final List<Conversation> finalizedRecordings;
   final List<DateTime> markerTimestamps;
 
   Batch({
@@ -211,7 +220,6 @@ class RecordingsManager {
     final recordingsDir = Directory('${directory.path}/recordings');
 
     Map<String, List<File>> rawSegmentsByDate = {};
-    Map<String, List<File>> processedByDate = {};
     Map<String, List<DateTime>> markersByDate = {};
 
     // Process raw segments (now they are in DeviceSession folders)
@@ -263,6 +271,7 @@ class RecordingsManager {
       }
     }
 
+    Map<String, List<Conversation>> processedByDate = {};
     // Process already processed recordings
     if (await recordingsDir.exists()) {
       final dateFolders = await recordingsDir.list().where((e) => e is Directory).cast<Directory>().toList();
@@ -273,7 +282,8 @@ class RecordingsManager {
             .where((e) => e is File && (e.path.endsWith('.m4a') || e.path.endsWith('.wav')))
             .cast<File>()
             .toList();
-        processedByDate[dateString] = files;
+        final conversations = await Future.wait(files.map(Conversation.fromFile));
+        processedByDate[dateString] = conversations;
       }
     }
 
@@ -521,7 +531,7 @@ class RecordingsManager {
       final edlFile = File('$liveRecordingsDirPath/marker_$markerMs.edl');
 
       // Skip if EDL already exists and is resolved (has segments).
-      if (edlFile.existsSync()) {
+      if (await edlFile.exists()) {
         try {
           final existing = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
           final segs = (existing['segments'] as List?) ?? [];
@@ -587,7 +597,7 @@ class RecordingsManager {
   Future<List<MarkerConversation>> getMarkerConversations() async {
     final directory = await getApplicationDocumentsDirectory();
     final recordingsDir = Directory('${directory.path}/recordings');
-    if (!recordingsDir.existsSync()) return [];
+    if (!await recordingsDir.exists()) return [];
 
     final result = <MarkerConversation>[];
 
@@ -612,8 +622,11 @@ class RecordingsManager {
           final visibleEndMs = json['visibleEndMs'] as int;
           final userSaved = json['userSaved'] as bool? ?? false;
 
-          final segments =
-              segmentNames.map((name) => File('${dateFolder.path}/$name')).where((f) => f.existsSync()).toList();
+          final List<File> segments = [];
+          for (final name in segmentNames) {
+            final f = File('${dateFolder.path}/$name');
+            if (await f.exists()) segments.add(f);
+          }
 
           bool canExtendLeft = false;
           bool canExtendRight = false;

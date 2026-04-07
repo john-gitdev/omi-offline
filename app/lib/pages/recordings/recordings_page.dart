@@ -169,17 +169,16 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       if (!serviceIsSyncing && _spState == SyncProcessState.syncing) {
         if (serviceIsProcessing) {
           // Background processing auto-started after sync — show it.
-          unawaited(_reloadBatchesSilently().then((_) {
+          unawaited(_reloadBatchesSilently().then((_) async {
             if (!mounted) return;
             final allRaw = _batches.expand((b) => b.rawSegments).toList();
-            final processable = RecordingsManager.excludeNewestSegmentPerSession(allRaw);
-            final totalBytes = processable.fold(0, (s, f) {
+            final processable = await RecordingsManager.excludeNewestSegmentPerSession(allRaw);
+            int totalBytes = 0;
+            for (final f in processable) {
               try {
-                return s + f.lengthSync();
-              } catch (_) {
-                return s;
-              }
-            });
+                totalBytes += await f.length();
+              } catch (_) {}
+            }
             setState(() {
               _spState = SyncProcessState.processing;
               _totalMinutes =
@@ -506,19 +505,20 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       batchesToProcess = activeBatches;
       backgroundMode = false;
     } else {
-      batchesToProcess = activeBatches
-          .map((batch) {
-            final safe = RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
-            return Batch(
-              dateString: batch.dateString,
-              date: batch.date,
-              rawSegments: safe,
-              finalizedRecordings: batch.finalizedRecordings,
-              markerTimestamps: batch.markerTimestamps,
-            );
-          })
-          .where((b) => b.rawSegments.isNotEmpty)
-          .toList();
+      final List<Batch> filtered = [];
+      for (final batch in activeBatches) {
+        final safe = await RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
+        if (safe.isNotEmpty) {
+          filtered.add(Batch(
+            dateString: batch.dateString,
+            date: batch.date,
+            rawSegments: safe,
+            finalizedRecordings: batch.finalizedRecordings,
+            markerTimestamps: batch.markerTimestamps,
+          ));
+        }
+      }
+      batchesToProcess = filtered;
       backgroundMode = true;
     }
 
@@ -529,13 +529,12 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     // Compute total audio minutes from segments to be processed.
     final allRaw = batchesToProcess.expand((b) => b.rawSegments).toList();
-    final totalBytes = allRaw.fold(0, (sum, f) {
+    int totalBytes = 0;
+    for (final f in allRaw) {
       try {
-        return sum + f.lengthSync();
-      } catch (_) {
-        return sum;
-      }
-    });
+        totalBytes += await f.length();
+      } catch (_) {}
+    }
     final totalMin = totalBytes / 252000.0; // ~84 B/frame × 50 fps × 60 s
     setState(() {
       _totalMinutes = totalMin;
@@ -633,11 +632,12 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         _manager.getMarkerConversations(),
       ]);
       if (mounted) {
+        final accMin = await _computeAccumulatedMinutes(results[0] as List<Batch>);
         setState(() {
           _batches = results[0] as List<Batch>;
           _markerConversations = results[1] as List<MarkerConversation>;
           _isLoading = false;
-          _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
+          _accumulatedMinutes = accMin;
         });
         _tryAutoUploadNext();
       }
@@ -654,10 +654,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         _manager.getMarkerConversations(),
       ]);
       if (mounted) {
+        final accMin = await _computeAccumulatedMinutes(results[0] as List<Batch>);
         setState(() {
           _batches = results[0] as List<Batch>;
           _markerConversations = results[1] as List<MarkerConversation>;
-          _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
+          _accumulatedMinutes = accMin;
         });
       }
     } catch (_) {}
@@ -701,9 +702,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     final keySetAt = _prefs.heypocketKeySetAt;
     final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
     for (final batch in _batches) {
-      for (final file in batch.finalizedRecordings) {
+      for (final conversation in batch.finalizedRecordings) {
         if (_autoUploadActive >= 2) return;
-        final conversation = Conversation.fromFile(file);
         if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
         final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
@@ -823,14 +823,15 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   }
 
   // ─── Accumulating progress banner ─────────────────────────────────────────
-  static double _computeAccumulatedMinutes(List<Batch> batches) {
-    final totalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (sum, f) {
-      try {
-        return sum + f.lengthSync();
-      } catch (_) {
-        return sum;
+  static Future<double> _computeAccumulatedMinutes(List<Batch> batches) async {
+    int totalBytes = 0;
+    for (final b in batches) {
+      for (final f in b.rawSegments) {
+        try {
+          totalBytes += await f.length();
+        } catch (_) {}
       }
-    });
+    }
     return totalBytes / 252000.0; // 84 B/frame × 50 fps × 60 s
   }
 
@@ -1083,8 +1084,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   // ─── Default mode: batch card ──────────────────────────────────────────────
   Widget _buildBatchCard(Batch batch, Map<String, List<MarkerConversation>> markerMap) {
-    final conversations = batch.finalizedRecordings.map(Conversation.fromFile).toList()
-      ..sort((a, b) => b.startTime.compareTo(a.startTime));
+    final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
     if (conversations.isEmpty) return const SizedBox.shrink();
 
     return Card(
