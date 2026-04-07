@@ -287,6 +287,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   // ─── Pipeline entry points ─────────────────────────────────────────────────
   void _startPipeline() {
     if (_spState != SyncProcessState.idle) return;
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    if (syncs.isSyncing || RecordingsManager.isProcessingAny) return;
     unawaited(_runPipeline());
   }
 
@@ -452,7 +454,15 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     WakelockPlus.enable();
 
     try {
-      await syncs.syncAll(progress: this);
+      final result = await syncs.syncAll(progress: this);
+      if (result == null) {
+        // Background sync was already running — our call was a no-op.
+        // Don't fall through to processing; let the background pipeline finish.
+        _isUserTriggered = false;
+        WakelockPlus.disable();
+        _transitionTo(SyncProcessState.idle);
+        return;
+      }
     } catch (e) {
       _isUserTriggered = false;
       WakelockPlus.disable();
@@ -617,12 +627,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       ),
     );
     if (confirm != true) return;
+    Logger.debug('RecordingsPage: Cancel confirmed (was $wasState) — cancelling sync + processing.');
     _transitionTo(SyncProcessState.stopping);
-    if (wasState == SyncProcessState.syncing) {
-      ServiceManager.instance().wal.getSyncs().cancelSync();
-    } else {
-      RecordingsManager.cancelProcessing();
-    }
+    ServiceManager.instance().wal.getSyncs().cancelSync();
+    RecordingsManager.cancelProcessing();
   }
 
   // ─── Batch loading ─────────────────────────────────────────────────────────
