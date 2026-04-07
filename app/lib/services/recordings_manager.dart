@@ -380,8 +380,10 @@ class RecordingsManager {
               await legacyWav.delete();
             } on FileSystemException catch (_) {}
             onRecordingFinalized?.call();
+            notifyRecordingsChanged();
           } else if (fileName.endsWith('.wav')) {
             onRecordingFinalized?.call();
+            notifyRecordingsChanged();
           }
         }
       }

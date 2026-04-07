@@ -600,7 +600,13 @@ static void write_to_gatt(struct bt_conn *conn)
             atomic_clear(&remaining_length);
             /* Notify app so it aborts immediately instead of waiting for timeout. */
             uint8_t err_ack[2] = {PACKET_ACK, FILE_NOT_FOUND};
-            storage_notify(conn, err_ack, sizeof(err_ack));
+            int err;
+            do {
+                err = storage_notify(conn, err_ack, sizeof(err_ack));
+                if (err == -ENOMEM) {
+                    k_msleep(10);
+                }
+            } while (err == -ENOMEM);
             return;
         }
         uint32_t bytes_read = (uint32_t)r;
