@@ -510,7 +510,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     // Thunderbolt (force): flush everything including in-progress interval.
     // Swipe (non-force): only process completed 30-min intervals, skip newest segment
-    // per session (may still be written by firmware) — same behaviour as background auto-sync.
+    // per DeviceSession (may still be written by firmware) — same behaviour as background auto-sync.
     final List<Batch> batchesToProcess;
     final bool backgroundMode;
     if (_isForcePipeline) {

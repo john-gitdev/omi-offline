@@ -82,7 +82,7 @@ class FixedIntervalAudioProcessor {
     return boundary <= epochMs ? boundary + _intervalMs : boundary;
   }
 
-  /// Processes a single .bin segment file.
+  /// Processes a single Segment.
   ///
   /// Decodes the segment, emits a saved file each time a wall-clock boundary
   /// is crossed, and accumulates remaining frames for the next boundary.

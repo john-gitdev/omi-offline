@@ -308,25 +308,25 @@ class OmiDeviceConnection extends DeviceConnection {
       final stream = await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
       int? expectedTotalBytes;
 
-      _listFilesSub = stream.listen((packet) {
-        if (isStale() || packet.isEmpty) return;
+      _listFilesSub = stream.listen((blePacket) {
+        if (isStale() || blePacket.isEmpty) return;
 
         // PACKET_ACK (0x03) with result 0 means success but potentially empty data
-        if (packet[0] == 0x03) {
+        if (blePacket[0] == 0x03) {
           if (buffer.isEmpty) success([]); // ACK received before any data = empty list
           return;
         }
 
-        if (packet[0] == 0x02) return; // Ignore EOT for list files (usually not sent)
+        if (blePacket[0] == 0x02) return; // Ignore EOT for list files (usually not sent)
 
         // For every packet, we expect the PACKET_DATA (0x01) header
-        if (packet[0] != 0x01) {
-          fail("Unexpected packet type: 0x${packet[0].toRadixString(16)}");
+        if (blePacket[0] != 0x01) {
+          fail("Unexpected packet type: 0x${blePacket[0].toRadixString(16)}");
           return;
         }
 
         // Add the payload (skipping 0x01 header) to our accumulation buffer
-        buffer.addAll(packet.sublist(1));
+        buffer.addAll(blePacket.sublist(1));
 
         // Once we have the first 4 bytes of data, we know the total count
         if (expectedTotalBytes == null && buffer.length >= 4) {
