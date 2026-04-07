@@ -517,19 +517,16 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       batchesToProcess = activeBatches;
       backgroundMode = false;
     } else {
-      batchesToProcess = activeBatches
-          .map((batch) {
-            final safe = RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
-            return Batch(
-              dateString: batch.dateString,
-              date: batch.date,
-              rawSegments: safe,
-              finalizedRecordings: batch.finalizedRecordings,
-              markerTimestamps: batch.markerTimestamps,
-            );
-          })
-          .where((b) => b.rawSegments.isNotEmpty)
-          .toList();
+      batchesToProcess = (await Future.wait(activeBatches.map((batch) async {
+        final safe = await RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
+        return Batch(
+          dateString: batch.dateString,
+          date: batch.date,
+          rawSegments: safe,
+          finalizedRecordings: batch.finalizedRecordings,
+          markerTimestamps: batch.markerTimestamps,
+        );
+      }))).where((b) => b.rawSegments.isNotEmpty).toList();
       backgroundMode = true;
     }
 
@@ -710,9 +707,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     final keySetAt = _prefs.heypocketKeySetAt;
     final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
     for (final batch in _batches) {
-      for (final file in batch.finalizedRecordings) {
+      for (final conversation in batch.finalizedRecordings) {
         if (_autoUploadActive >= 2) return;
-        final conversation = Conversation.fromFile(file);
         if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
         final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
@@ -1092,8 +1088,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   // ─── Default mode: batch card ──────────────────────────────────────────────
   Widget _buildBatchCard(Batch batch, Map<String, List<MarkerConversation>> markerMap) {
-    final conversations = batch.finalizedRecordings.map(Conversation.fromFile).toList()
-      ..sort((a, b) => b.startTime.compareTo(a.startTime));
+    final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
     if (conversations.isEmpty) return const SizedBox.shrink();
 
     return Card(

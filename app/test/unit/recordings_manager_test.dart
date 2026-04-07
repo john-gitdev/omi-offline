@@ -1,3 +1,5 @@
+import "dart:convert";
+import "dart:typed_data";
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/services/recordings_manager.dart';
@@ -10,6 +12,8 @@ class MockPathProvider extends Fake with MockPlatformInterfaceMixin implements P
   String? tempPath;
   @override
   Future<String?> getApplicationDocumentsPath() async => tempPath;
+  @override
+  Future<String?> getTemporaryPath() async => tempPath;
 }
 
 void main() {
@@ -74,5 +78,108 @@ void main() {
     
     expect(batches[0].rawSegments[0].path.endsWith('100_0.bin'), true);
     expect(batches[0].rawSegments[1].path.endsWith('100_1.bin'), true);
+  });
+
+  test('excludeNewestSegmentPerSession logic correctly excludes newest segment', () async {
+    final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
+    final deviceSession100Dir = Directory(p.join(rawDir.path, '100'))..createSync(recursive: true);
+
+    // Create multiple segments for session 100
+    final file0 = File(p.join(deviceSession100Dir.path, '100_0.bin'))..writeAsBytesSync([0]);
+    final file1 = File(p.join(deviceSession100Dir.path, '100_1.bin'))..writeAsBytesSync([0]);
+    final file2 = File(p.join(deviceSession100Dir.path, '100_2.bin'))..writeAsBytesSync([0]);
+
+    // Set old modification times to avoid recency cutoff
+    final oldTime = DateTime.now().subtract(const Duration(minutes: 1));
+    file0.setLastModifiedSync(oldTime);
+    file1.setLastModifiedSync(oldTime);
+    file2.setLastModifiedSync(oldTime);
+
+    final segments = [file0, file1, file2];
+    final safeSegments = await RecordingsManager.excludeNewestSegmentPerSession(segments);
+
+    expect(safeSegments.length, 2);
+    expect(safeSegments.any((f) => f.path.endsWith('100_0.bin')), true);
+    expect(safeSegments.any((f) => f.path.endsWith('100_1.bin')), true);
+    expect(safeSegments.any((f) => f.path.endsWith('100_2.bin')), false);
+  });
+
+  test('excludeNewestSegmentPerSession keeps single-segment sessions', () async {
+    final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
+    final deviceSession102Dir = Directory(p.join(rawDir.path, '102'))..createSync(recursive: true);
+
+    final file0 = File(p.join(deviceSession102Dir.path, '102_0.bin'))..writeAsBytesSync([0]);
+    file0.setLastModifiedSync(DateTime.now().subtract(const Duration(minutes: 1)));
+
+    final safeSegments = await RecordingsManager.excludeNewestSegmentPerSession([file0]);
+
+    expect(safeSegments.length, 1);
+    expect(safeSegments[0].path.endsWith('102_0.bin'), true);
+  });
+
+  test('excludeNewestSegmentPerSession filters by recency', () async {
+    final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
+    final deviceSession103Dir = Directory(p.join(rawDir.path, '103'))..createSync(recursive: true);
+
+    final file0 = File(p.join(deviceSession103Dir.path, '103_0.bin'))..writeAsBytesSync([0]);
+    // Set modification time to now (within 5s cutoff)
+    file0.setLastModifiedSync(DateTime.now());
+
+    final safeSegments = await RecordingsManager.excludeNewestSegmentPerSession([file0]);
+
+    expect(safeSegments.isEmpty, true);
+  });
+
+  group('Conversation.fromFile tests', () {
+    test('parses from real file with metadata correctly', () async {
+      final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
+      final wavFile = File(p.join(recordingsDir.path, 'recording_1741687200000.wav'));
+
+      // 1741687200000 = 2026-03-11 10:00:00 UTC
+      final startTime = DateTime.fromMillisecondsSinceEpoch(1741687200000);
+
+      // Mock WAV file with 44 byte header + 3200 bytes of data (100ms at 32000Hz mono)
+      final data = Uint8List(44 + 3200);
+      wavFile.writeAsBytesSync(data);
+
+      final conversation = await Conversation.fromFile(wavFile);
+
+      expect(conversation.startTime, startTime);
+      expect(conversation.fileSizeBytes, 3244);
+      expect(conversation.duration.inMilliseconds, 100);
+    });
+
+    test('prefers metadata sidecar if present', () async {
+      final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
+      final m4aFile = File(p.join(recordingsDir.path, 'recording_1741687200000.m4a'))..writeAsBytesSync([0]);
+      final metaFile = File(p.join(recordingsDir.path, 'recording_1741687200000.meta'));
+
+      // .meta structure: 4 bytes version + 4 bytes durationMs (LE) + ... + byte 408 keyLen + N bytes key
+      final metaData = ByteData(409 + 5);
+      metaData.setUint32(4, 5000, Endian.little); // 5s duration
+      metaData.setUint8(408, 5); // key length
+      final metaBytes = metaData.buffer.asUint8List();
+      metaBytes.setRange(409, 414, utf8.encode('mykey'));
+      metaFile.writeAsBytesSync(metaBytes);
+
+      final conversation = await Conversation.fromFile(m4aFile);
+
+      expect(conversation.duration.inSeconds, 5);
+      expect(conversation.uploadKey, 'mykey');
+      expect(conversation.fileSizeBytes, 1);
+    });
+
+    test('falls back to last modified for start time if filename invalid', () async {
+      final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
+      final wavFile = File(p.join(recordingsDir.path, 'invalid_name.wav'))..writeAsBytesSync(Uint8List(44));
+
+      final now = DateTime.now();
+      wavFile.setLastModifiedSync(now);
+
+      final conversation = await Conversation.fromFile(wavFile);
+
+      // Allow for some small difference in time due to filesystem resolution
+      expect(conversation.startTime.difference(now).inSeconds.abs() <= 1, true);
+    });
   });
 }

@@ -447,7 +447,7 @@ void main() {
       bd.setUint32(4, 2000, Endian.little); // duration
       metaFile.writeAsBytesSync(bd.buffer.asUint8List());
 
-      final conv = Conversation.fromFile(audioFile);
+      final conv = await Conversation.fromFile(audioFile);
       expect(conv.duration.inMilliseconds, equals(2000));
       // Fallback key should be the filename
       expect(conv.uploadKey, equals('recording_1773961625000'));
@@ -469,7 +469,7 @@ void main() {
       
       metaFile.writeAsBytesSync(builder.toBytes());
 
-      final conv = Conversation.fromFile(audioFile);
+      final conv = await Conversation.fromFile(audioFile);
       expect(conv.duration.inSeconds, equals(5));
       expect(conv.uploadKey, equals(key));
     });
