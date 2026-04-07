@@ -361,7 +361,15 @@ class RecordingsManager {
       // and fires onRecordingFinalized for each audio file moved.
       Future<void> moveTempFilesToLive() async {
         if (!await tempDir.exists()) return;
-        for (final entity in tempDir.listSync().whereType<File>()) {
+        // Move .meta sidecars before .m4a/.wav so the sidecar is always present
+        // by the time onRecordingFinalized fires and the scan reads the file.
+        final entities = tempDir.listSync().whereType<File>().toList()
+          ..sort((a, b) {
+            final aIsMeta = a.path.endsWith('.meta') ? 0 : 1;
+            final bIsMeta = b.path.endsWith('.meta') ? 0 : 1;
+            return aIsMeta.compareTo(bIsMeta);
+          });
+        for (final entity in entities) {
           final fileName = entity.path.split('/').last;
           final parts = fileName.split('_');
           final millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
@@ -808,33 +816,20 @@ class RecordingsManager {
     }
   }
 
-  /// Deletes all processed recordings (.m4a/.wav) and their .meta sidecars for a
-  /// day, plus any remaining raw segments and their DeviceSession folders.
+  /// Deletes processed recordings (.m4a/.wav/.meta) for a day.
+  /// Raw segments are intentionally preserved — they feed the "Building next
+  /// recording" accumulating banner and will be re-processed on the next sync
+  /// to complete the current 30-minute interval.
   /// Safe to call while nothing is playing.
   Future<void> deleteDay(Batch batch) async {
     final directory = await getApplicationDocumentsDirectory();
 
-    // 1. Delete processed recordings folder (contains .m4a, .wav, .meta files)
+    // Delete processed recordings folder (contains .m4a, .wav, .meta files).
+    // Raw segments are left intact so the in-progress interval can still complete.
     final recordingsDir = Directory('${directory.path}/recordings/${batch.dateString}');
     if (await recordingsDir.exists()) {
       await recordingsDir.delete(recursive: true);
       Logger.debug('RecordingsManager: Deleted processed recordings for ${batch.dateString}');
-    }
-
-    // 2. Delete raw segments and their DeviceSession folders.
-    final Set<String> deviceSessionFolderPaths = {};
-    for (var file in batch.rawSegments) {
-      try {
-        await file.delete();
-      } on FileSystemException catch (_) {}
-      deviceSessionFolderPaths.add(file.parent.path);
-    }
-
-    // 3. Remove now-empty DeviceSession folders (non-recursive delete fails if not empty)
-    for (var folderPath in deviceSessionFolderPaths) {
-      try {
-        await Directory(folderPath).delete(recursive: false);
-      } on FileSystemException catch (_) {}
     }
   }
 }
