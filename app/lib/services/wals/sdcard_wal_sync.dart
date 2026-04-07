@@ -36,7 +36,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   IWalSyncListener listener;
 
   bool _isCancelled = false;
-  bool _cancelPending = false;
   bool _isSyncing = false;
   int _cancelGeneration = 0;
   int _lastSegmentBoundaryOffset = 0;
@@ -80,9 +79,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   void cancelSync() {
     if (_isSyncing) {
       _cancelCompleter ??= Completer<void>();
-      _cancelPending = true;
-      Logger.debug("SDCardWalSync: Cancel requested — will stop at next segment boundary");
+      _isCancelled = true;
+      Logger.debug("SDCardWalSync: Cancel requested — stopping immediately");
 
+      // Tell firmware to stop sending (best-effort, fire-and-forget)
       final dev = _device;
       if (dev != null) {
         final connFuture = _connectionProvider != null
@@ -91,18 +91,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         connFuture.then((conn) => conn?.stopStorageSync() ?? Future.value(false)).catchError((_) => false);
       }
 
-      final int generation = ++_cancelGeneration;
-      final cancelCompleterAtRequest = _cancelCompleter;
-      Future.delayed(const Duration(seconds: 10), () {
-        if (_cancelPending && !_isCancelled && _cancelGeneration == generation && _cancelCompleter == cancelCompleterAtRequest) {
-          Logger.debug("SDCardWalSync: Hard cancel — no segment boundary in 10s");
-          _isCancelled = true;
-          final transferCompleter = _activeTransferCompleter;
-          if (transferCompleter != null && !transferCompleter.isCompleted) {
-            transferCompleter.completeError(Exception('Sync cancelled by user'));
-          }
-        }
-      });
+      // Cancel the BLE stream so the app doesn't hang waiting for an EOT that won't come
+      _storageStream?.cancel();
+      _storageStream = null;
+
+      // Error the in-flight transfer completer so _readStorageBytesToFile returns immediately
+      final transferCompleter = _activeTransferCompleter;
+      if (transferCompleter != null && !transferCompleter.isCompleted) {
+        transferCompleter.completeError(Exception('Sync cancelled by user'));
+      }
     }
   }
 
@@ -492,7 +489,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   void _resetSyncState() {
     _isCancelled = false;
-    _cancelPending = false;
     _cancelGeneration++;
     _isSyncing = false;
     _totalBytesDownloaded = 0;
