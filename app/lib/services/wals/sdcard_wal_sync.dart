@@ -334,9 +334,24 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     bool hasReceivedStartAck = false;
     bool isStreamLocked = false;
     int packetsReceived = 0;
+    Timer? inactivityTimer;
+
+    void resetInactivityTimer() {
+      inactivityTimer?.cancel();
+      inactivityTimer = Timer(const Duration(seconds: 15), () {
+        if (!completer.isCompleted) {
+          isStreamLocked = true;
+          hasError = true;
+          completer.completeError(Exception("Transfer stalled: 15s inactivity timeout"));
+        }
+      });
+    }
+
+    resetInactivityTimer();
 
     _storageStream = (await connection.getBleStorageBytesStream()).listen(
       (List<int> value) async {
+        resetInactivityTimer();
         if (_isCancelled || hasError || isStreamLocked) return;
         packetsReceived++;
         if (packetsReceived % 500 == 0) {
@@ -473,6 +488,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (!readStarted) throw Exception('Could not start SD card read');
       await completer.future;
     } finally {
+      inactivityTimer?.cancel();
       // Cancel the stream subscription so it doesn't receive the next operation's
       // ACK packets (e.g. DELETE ACK) and misinterpret them as a new read start-ACK.
       // Also covers the case where _writeToStorage fails before completer is awaited.
@@ -638,18 +654,39 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     await connection.acquireStorageLock();
     try {
-      await _readStorageBytesToFile(wal, (File file, int offset, int timerStart, {String? subFolder}) async {
-        if (_isCancelled) throw Exception("Cancelled");
-        _updateSpeed(offset - lastOffset);
-        lastOffset = offset;
-        listener.onWalUpdated();
-      }, onProgress: (offset) {
-        wal.walOffset = offset;
-        final double progressPercent = (wal.storageTotalBytes > initialOffset) ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset) : 1.0;
-        final double clamped = progressPercent.clamp(0.0, 1.0);
-        progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
-        _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
-      });
+      const int maxGapRetries = 3;
+      int gapRetries = 0;
+      bool transferred = false;
+      while (!transferred) {
+        try {
+          await _readStorageBytesToFile(wal, (File file, int offset, int timerStart, {String? subFolder}) async {
+            if (_isCancelled) throw Exception("Cancelled");
+            _updateSpeed(offset - lastOffset);
+            lastOffset = offset;
+            listener.onWalUpdated();
+          }, onProgress: (offset) {
+            wal.walOffset = offset;
+            final double progressPercent = (wal.storageTotalBytes > initialOffset) ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset) : 1.0;
+            final double clamped = progressPercent.clamp(0.0, 1.0);
+            progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+            _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+          });
+          transferred = true;
+        } on _ProtocolGapException catch (e) {
+          gapRetries++;
+          if (gapRetries > maxGapRetries) {
+            Logger.error('SDCardWalSync: Gap retry limit exceeded for file[${wal.fileNum}]: $e');
+            rethrow;
+          }
+          Logger.debug('SDCardWalSync: Gap detected (retry $gapRetries/$maxGapRetries) — rewinding to ${e.incoming}');
+          wal.walOffset = e.incoming;
+          lastOffset = e.incoming;
+          _lastSegmentBoundaryOffset = e.incoming;
+          final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
+          await conn?.stopStorageSync();
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
+      }
 
       await Future.delayed(const Duration(milliseconds: 500));
       if (wal.walOffset >= wal.storageTotalBytes) {
