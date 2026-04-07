@@ -197,9 +197,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     final currentTime = now ?? DateTime.now();
     final delta = (_lastNotifiedBatteryLevel - value).abs();
     final batteryNotifyTime = _lastBatteryNotifyTime;
-    final elapsed = batteryNotifyTime == null ? const Duration(minutes: 999) : currentTime.difference(batteryNotifyTime);
-    final crossedLowBatteryThreshold = (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
-    final shouldNotify = _lastNotifiedBatteryLevel == -1 || delta >= 5 || elapsed.inMinutes >= 15 || crossedLowBatteryThreshold;
+    final elapsed =
+        batteryNotifyTime == null ? const Duration(minutes: 999) : currentTime.difference(batteryNotifyTime);
+    final crossedLowBatteryThreshold =
+        (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
+    final shouldNotify =
+        _lastNotifiedBatteryLevel == -1 || delta >= 5 || elapsed.inMinutes >= 15 || crossedLowBatteryThreshold;
     if (shouldNotify) {
       _lastNotifiedBatteryLevel = value;
       _lastBatteryNotifyTime = currentTime;
@@ -231,6 +234,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
         t.cancel();
       }
     }
+
     _reconnectionTimer = Timer.periodic(Duration(seconds: _connectionCheckSeconds), scan);
     scan(_reconnectionTimer);
   }

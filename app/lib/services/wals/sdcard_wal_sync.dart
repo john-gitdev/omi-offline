@@ -173,8 +173,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         continue;
       }
 
-      final existing = _wals.firstWhereOrNull(
-          (w) => w.device == deviceId && w.fileNum == file.index && w.storage == WalStorage.sdcard);
+      final existing = _wals
+          .firstWhereOrNull((w) => w.device == deviceId && w.fileNum == file.index && w.storage == WalStorage.sdcard);
       final walOffset =
           (existing != null && existing.walOffset > 0 && existing.walOffset <= file.size) ? existing.walOffset : 0;
 
@@ -324,7 +324,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (!appendMode) flushedSegmentsThisTransfer.add(segmentKey);
 
       var (file, bytesWritten) = await _flushToDisk(wal, rawData, timerStart,
-          subFolder: subFolder, deviceSessionId: lastDeviceSessionId, segmentIndex: lastSegmentIndex, append: appendMode);
+          subFolder: subFolder,
+          deviceSessionId: lastDeviceSessionId,
+          segmentIndex: lastSegmentIndex,
+          append: appendMode);
       writtenOffset += bytesWritten;
       _lastSegmentBoundaryOffset = writtenOffset;
       try {
@@ -377,7 +380,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             } else if (incomingOffset > expectedOffset) {
               isStreamLocked = true;
               hasError = true;
-              if (!completer.isCompleted) completer.completeError(_ProtocolGapException(incomingOffset, expectedOffset));
+              if (!completer.isCompleted)
+                completer.completeError(_ProtocolGapException(incomingOffset, expectedOffset));
               return;
             }
 
@@ -525,7 +529,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         final double requiredMb = (totalBytesToDownload * 1.1) / (1024 * 1024);
         if (freeSpaceMb < requiredMb) throw Exception("Phone Storage Full");
       }
-    } catch (_) { rethrow; }
+    } catch (_) {
+      rethrow;
+    }
   }
 
   void _updateSpeed(int bytesDownloaded) {
@@ -542,7 +548,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     _resetSyncState();
     _isSyncing = true;
-    
+
     // Refresh and update atomically before UI sees anything
     final refreshed = await getMissingWals();
     _wals = refreshed;
@@ -592,7 +598,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 listener.onWalUpdated();
               }, onProgress: (offset) {
                 wal.walOffset = offset;
-                final double withinWal = (wal.storageTotalBytes > initialOffset) ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset) : 1.0;
+                final double withinWal = (wal.storageTotalBytes > initialOffset)
+                    ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
+                    : 1.0;
                 final double clamped = ((i + (withinWal.clamp(0.0, 1.0) * 0.9)) / wals.length).clamp(0.0, 1.0);
                 progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
                 _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
@@ -604,7 +612,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 Logger.error('SDCardWalSync: Gap retry limit exceeded for file[${wal.fileNum}]: $e');
                 rethrow; // caught by outer catch below — sets anyPartial
               }
-              Logger.debug('SDCardWalSync: Gap detected (retry $gapRetries/$maxGapRetries) — rewinding to ${e.incoming}');
+              Logger.debug(
+                  'SDCardWalSync: Gap detected (retry $gapRetries/$maxGapRetries) — rewinding to ${e.incoming}');
               wal.walOffset = e.incoming;
               lastOffset = e.incoming;
               _lastSegmentBoundaryOffset = e.incoming;
@@ -676,7 +685,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             listener.onWalUpdated();
           }, onProgress: (offset) {
             wal.walOffset = offset;
-            final double progressPercent = (wal.storageTotalBytes > initialOffset) ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset) : 1.0;
+            final double progressPercent = (wal.storageTotalBytes > initialOffset)
+                ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
+                : 1.0;
             final double clamped = progressPercent.clamp(0.0, 1.0);
             progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
             _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);

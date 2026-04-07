@@ -276,14 +276,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
     try {
       final directory = await getApplicationDocumentsDirectory();
-      
+
       final recordingsDir = Directory('${directory.path}/recordings');
       if (await recordingsDir.exists()) {
         Logger.debug('DebugTools: Deleting recordings directory');
         await recordingsDir.delete(recursive: true);
         Logger.debug('DebugTools: recordings directory deleted');
       }
-      
+
       final tempDir = Directory('${directory.path}/processing_temp');
       if (await tempDir.exists()) {
         Logger.debug('DebugTools: Deleting processing_temp directory');
@@ -456,7 +456,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 const SizedBox(height: 12),
                 _DebugButton(
                   label: 'Delete Omi Segments',
-                  description: 'Permanently deletes raw segments from your Omi. The device immediately starts a new recording file.',
+                  description:
+                      'Permanently deletes raw segments from your Omi. The device immediately starts a new recording file.',
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllPending,

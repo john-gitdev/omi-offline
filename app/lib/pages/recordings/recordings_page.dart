@@ -170,10 +170,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       if (!serviceIsSyncing && _spState == SyncProcessState.syncing) {
         if (serviceIsProcessing) {
           // Background processing auto-started after sync — show it.
-          unawaited(_reloadBatchesSilently().then((_) {
+          unawaited(_reloadBatchesSilently().then((_) async {
             if (!mounted) return;
             final allRaw = _batches.expand((b) => b.rawSegments).toList();
-            final processable = RecordingsManager.excludeNewestSegmentPerSession(allRaw);
+            final processable = await RecordingsManager.excludeNewestSegmentPerSession(allRaw);
             final totalBytes = processable.fold(0, (s, f) {
               try {
                 return s + f.lengthSync();
@@ -181,6 +181,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 return s;
               }
             });
+            if (!mounted) return;
             setState(() {
               _spState = SyncProcessState.processing;
               _totalMinutes =
@@ -517,19 +518,20 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       batchesToProcess = activeBatches;
       backgroundMode = false;
     } else {
-      batchesToProcess = activeBatches
-          .map((batch) {
-            final safe = RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
-            return Batch(
-              dateString: batch.dateString,
-              date: batch.date,
-              rawSegments: safe,
-              finalizedRecordings: batch.finalizedRecordings,
-              markerTimestamps: batch.markerTimestamps,
-            );
-          })
-          .where((b) => b.rawSegments.isNotEmpty)
-          .toList();
+      final safeBatches = <Batch>[];
+      for (final batch in activeBatches) {
+        final safe = await RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
+        if (safe.isNotEmpty) {
+          safeBatches.add(Batch(
+            dateString: batch.dateString,
+            date: batch.date,
+            rawSegments: safe,
+            finalizedRecordings: batch.finalizedRecordings,
+            markerTimestamps: batch.markerTimestamps,
+          ));
+        }
+      }
+      batchesToProcess = safeBatches;
       backgroundMode = true;
     }
 
@@ -556,15 +558,19 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     WakelockPlus.enable();
     try {
-      await _manager.processAll(batchesToProcess, (progress) {
-        if (mounted) {
-          setState(() {
-            _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
+      await _manager.processAll(
+          batchesToProcess,
+          (progress) {
+            if (mounted) {
+              setState(() {
+                _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
+              });
+            }
+          },
+          backgroundMode: backgroundMode,
+          onRecordingFinalized: () {
+            unawaited(_reloadBatchesSilently());
           });
-        }
-      }, backgroundMode: backgroundMode, onRecordingFinalized: () {
-        unawaited(_reloadBatchesSilently());
-      });
     } catch (e) {
       WakelockPlus.disable();
       if (_spState == SyncProcessState.stopping) {
@@ -875,7 +881,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     Text('Building next recording',
                         style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
                     const SizedBox(height: 2),
-                    Text('$accMin out of 30 minutes accumulated', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                    Text('$accMin out of 30 minutes accumulated',
+                        style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
                   ],
                 ),
               ),

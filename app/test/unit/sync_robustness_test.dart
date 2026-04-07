@@ -99,12 +99,12 @@ class MockDeviceConnection extends Fake implements DeviceConnection {
 class MockBtDevice extends Fake implements BtDevice {
   @override
   String get id => 'test-device-id';
-  
+
   final MockDeviceConnection connection = MockDeviceConnection();
-  
+
   @override
   DeviceConnection? get connectionInstance => connection;
-  
+
   @override
   BleAudioCodec get codec => BleAudioCodec.opus;
 }
@@ -192,7 +192,8 @@ void main() {
       // Simulate ingesting a metadata frame with a stale utcTime
       final mockConn = MockDeviceConnection();
       final sync = SDCardWalSyncImpl(MockWalSyncListener(), connectionProvider: (_) async => mockConn);
-      await sync.setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0), prefetchedFiles: []);
+      await sync
+          .setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0), prefetchedFiles: []);
 
       final wal = Wal(
         codec: BleAudioCodec.opus,
@@ -233,8 +234,10 @@ void main() {
 
       final mockConn = MockDeviceConnection();
       final sync = SDCardWalSyncImpl(MockWalSyncListener(), connectionProvider: (_) async => mockConn);
-      await sync.setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0), prefetchedFiles: []);
-      await sync.setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0), prefetchedFiles: []);
+      await sync
+          .setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0), prefetchedFiles: []);
+      await sync
+          .setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0), prefetchedFiles: []);
 
       final wal = Wal(
         codec: BleAudioCodec.opus,
@@ -275,7 +278,8 @@ void main() {
 
       final mockConn = MockDeviceConnection();
       final sync = SDCardWalSyncImpl(MockWalSyncListener(), connectionProvider: (_) async => mockConn);
-      await sync.setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0), prefetchedFiles: []);
+      await sync
+          .setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0), prefetchedFiles: []);
 
       final wal = Wal(
         codec: BleAudioCodec.opus,
@@ -333,7 +337,8 @@ void main() {
         MockWalSyncListener(),
         connectionProvider: (_) async => mockConn,
       );
-      await sync.setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0), prefetchedFiles: []);
+      await sync
+          .setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0), prefetchedFiles: []);
     });
 
     tearDown(() async {
@@ -468,14 +473,14 @@ void main() {
     test('Conversation.fromFile handles missing uploadKey in meta', () async {
       final audioFile = File('${tempDir.path}/recording_1773961625000.m4a')..createSync(recursive: true);
       final metaFile = File('${tempDir.path}/recording_1773961625000.meta')..createSync(recursive: true);
-      
+
       // Write short meta (only 8 bytes, no upload key)
       final bd = ByteData(8);
       bd.setUint32(0, 1000, Endian.little); // samples
       bd.setUint32(4, 2000, Endian.little); // duration
       metaFile.writeAsBytesSync(bd.buffer.asUint8List());
 
-      final conv = Conversation.fromFile(audioFile);
+      final conv = await Conversation.fromFile(audioFile);
       expect(conv.duration.inMilliseconds, equals(2000));
       // Fallback key should be the filename
       expect(conv.uploadKey, equals('recording_1773961625000'));
@@ -484,22 +489,55 @@ void main() {
     test('Conversation.fromFile parses long uploadKey correctly', () async {
       final audioFile = File('${tempDir.path}/rec_long.m4a')..createSync(recursive: true);
       final metaFile = File('${tempDir.path}/rec_long.meta')..createSync(recursive: true);
-      
+
       final key = 'ABCDEF_recording_123456789.m4a';
       final keyBytes = key.codeUnits;
-      
+
       final builder = BytesBuilder();
       final bd = ByteData(408);
       bd.setUint32(4, 5000, Endian.little); // 5s duration
       builder.add(bd.buffer.asUint8List());
       builder.addByte(keyBytes.length);
       builder.add(keyBytes);
-      
+
       metaFile.writeAsBytesSync(builder.toBytes());
 
-      final conv = Conversation.fromFile(audioFile);
+      final conv = await Conversation.fromFile(audioFile);
       expect(conv.duration.inSeconds, equals(5));
       expect(conv.uploadKey, equals(key));
+    });
+
+    test('Conversation.fromFile parses duration and size asynchronously without .meta file for WAV', () async {
+      final audioFile = File('${tempDir.path}/recording_test_1.wav')..createSync(recursive: true);
+
+      // Create a dummy WAV file with 44 bytes header + some dummy data
+      final builder = BytesBuilder();
+      builder.add(List.filled(44, 0)); // Dummy header
+      // 32000 bytes per second for dummy PCM data -> ~1s
+      builder.add(List.filled(32000, 0));
+      audioFile.writeAsBytesSync(builder.toBytes());
+
+      final conv = await Conversation.fromFile(audioFile);
+
+      // duration calculation check
+      expect(conv.duration.inMilliseconds, equals(1000));
+
+      // verify fileSizeBytes access handles file sizes accurately
+      expect(conv.fileSizeBytes, equals(32044));
+    });
+
+    test('Conversation.fromFile assigns 0 duration without .meta file for M4A', () async {
+      final audioFile = File('${tempDir.path}/recording_test_2.m4a')..createSync(recursive: true);
+
+      // Write some dummy data so it isn't completely empty
+      audioFile.writeAsBytesSync(List.filled(100, 0));
+
+      final conv = await Conversation.fromFile(audioFile);
+
+      // duration calculation check should skip size-based calculation for .m4a
+      expect(conv.duration.inMilliseconds, equals(0));
+
+      expect(conv.fileSizeBytes, equals(100));
     });
   });
 }
