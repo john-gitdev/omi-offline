@@ -69,8 +69,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
         _prefs.heypocketEnabled = false;
         setState(() => _connState = _ConnectionState.error);
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(const SnackBar(content: Text('HeyPocket: API key is invalid')));
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('HeyPocket: API key is invalid')));
         }
       }
     } on HeyPocketException catch (e) {
@@ -92,11 +91,14 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
           child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.grey),
         );
       case _ConnectionState.connected:
-        return Container(width: 10, height: 10, decoration: const BoxDecoration(color: Colors.green, shape: BoxShape.circle));
+        return Container(
+            width: 10, height: 10, decoration: const BoxDecoration(color: Colors.green, shape: BoxShape.circle));
       case _ConnectionState.error:
-        return Container(width: 10, height: 10, decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle));
+        return Container(
+            width: 10, height: 10, decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle));
       case _ConnectionState.idle:
-        return Container(width: 10, height: 10, decoration: BoxDecoration(color: Colors.grey.shade600, shape: BoxShape.circle));
+        return Container(
+            width: 10, height: 10, decoration: BoxDecoration(color: Colors.grey.shade600, shape: BoxShape.circle));
     }
   }
 

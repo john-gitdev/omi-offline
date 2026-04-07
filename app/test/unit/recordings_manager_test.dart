@@ -34,23 +34,23 @@ void main() {
     // raw_segments/100/100_0.bin (modified 2026-03-11)
     // raw_segments/100/100_1.bin (modified 2026-03-11)
     // raw_segments/101/101_0.bin (modified 2026-03-12)
-    
+
     final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
     final deviceSession100Dir = Directory(p.join(rawDir.path, '100'))..createSync(recursive: true);
     final deviceSession101Dir = Directory(p.join(rawDir.path, '101'))..createSync(recursive: true);
-    
+
     final file1 = File(p.join(deviceSession100Dir.path, '100_0.bin'))..writeAsBytesSync([0]);
     final file2 = File(p.join(deviceSession100Dir.path, '100_1.bin'))..writeAsBytesSync([0]);
     final file3 = File(p.join(deviceSession101Dir.path, '101_0.bin'))..writeAsBytesSync([0]);
-    
+
     // Set modification times
     file1.setLastModifiedSync(DateTime(2026, 3, 11, 10));
     file2.setLastModifiedSync(DateTime(2026, 3, 11, 11));
     file3.setLastModifiedSync(DateTime(2026, 3, 12, 10));
-    
+
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
-    
+
     expect(batches.length, 2);
     expect(batches[0].dateString, '2026-03-12');
     expect(batches[0].rawSegments.length, 1);
@@ -61,17 +61,17 @@ void main() {
   test('getBatches sorts segments by filename within a day', () async {
     final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
     final deviceSession100Dir = Directory(p.join(rawDir.path, '100'))..createSync(recursive: true);
-    
+
     // Create files in reverse order
     final file2 = File(p.join(deviceSession100Dir.path, '100_1.bin'))..writeAsBytesSync([0]);
     final file1 = File(p.join(deviceSession100Dir.path, '100_0.bin'))..writeAsBytesSync([0]);
-    
+
     file1.setLastModifiedSync(DateTime(2026, 3, 11, 10));
     file2.setLastModifiedSync(DateTime(2026, 3, 11, 10));
-    
+
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
-    
+
     expect(batches[0].rawSegments[0].path.endsWith('100_0.bin'), true);
     expect(batches[0].rawSegments[1].path.endsWith('100_1.bin'), true);
   });
