@@ -123,14 +123,30 @@ class FixedIntervalAudioProcessor {
     // accumulated yet, this segment may straddle the already-completed boundary.
     // Compute how many leading frames to skip so we don't re-include audio that
     // was already saved in the previous interval.
+    //
+    // IMPORTANT: only skip if the segment starts BEFORE the current interval
+    // (i.e., before _nextBoundaryMs - _intervalMs). If the segment starts
+    // within the current interval, its frames were never saved — don't skip them.
     int framesToSkip = 0;
     if (_currentRefs.isEmpty && _nextBoundaryMs > 0) {
       final segmentStartMs = segmentStartTime.millisecondsSinceEpoch;
       if (segmentStartMs < _nextBoundaryMs) {
-        framesToSkip = ((_nextBoundaryMs - segmentStartMs) / frameDurationMs).ceil();
-        _recordingStartTime = DateTime.fromMillisecondsSinceEpoch(_nextBoundaryMs);
-        Logger.debug('FixedIntervalAudioProcessor: Skipping $framesToSkip leading frames '
-            '(already in previous interval). New interval starts at $_recordingStartTime');
+        final startOfCurrentIntervalMs = _nextBoundaryMs - _intervalMs;
+        if (segmentStartMs < startOfCurrentIntervalMs) {
+          // Segment started before the last completed boundary — its pre-boundary
+          // frames were already saved. Skip them and resume from the boundary.
+          framesToSkip = ((_nextBoundaryMs - segmentStartMs) / frameDurationMs).ceil();
+          _recordingStartTime = DateTime.fromMillisecondsSinceEpoch(_nextBoundaryMs);
+          Logger.debug('FixedIntervalAudioProcessor: Skipping $framesToSkip leading frames '
+              '(already in previous interval). New interval starts at $_recordingStartTime');
+        } else {
+          // Segment starts within the current (uncompleted) interval — these frames
+          // were never saved. Process from segment start, preserve the boundary.
+          _recordingStartTime = segmentStartTime;
+          Logger.debug('FixedIntervalAudioProcessor: Segment starts within current interval '
+              '($segmentStartTime). Processing toward existing boundary at '
+              '${DateTime.fromMillisecondsSinceEpoch(_nextBoundaryMs)}');
+        }
       } else {
         // Segment starts at or after the boundary — no skip needed, compute fresh boundary.
         _recordingStartTime = segmentStartTime;
