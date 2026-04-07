@@ -67,10 +67,6 @@ class ServiceManager {
   Future<void> start() async {
     _device.start();
     _wal.start();
-    if (Platform.isMacOS) {
-      // TODO: Decide if system audio should start automatically or be user-initiated
-      // await _systemAudio.start();
-    }
   }
 
   Future<void> deinit() async {
