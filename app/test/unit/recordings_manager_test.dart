@@ -12,6 +12,8 @@ class MockPathProvider extends Fake with MockPlatformInterfaceMixin implements P
   String? tempPath;
   @override
   Future<String?> getApplicationDocumentsPath() async => tempPath;
+  @override
+  Future<String?> getTemporaryPath() async => tempPath;
 }
 
 void main() {
@@ -94,7 +96,7 @@ void main() {
     file2.setLastModifiedSync(oldTime);
 
     final segments = [file0, file1, file2];
-    final safeSegments = await RecordingsManager.excludeNewestSegmentPerSession(segments);
+    final safeSegments = RecordingsManager.excludeNewestSegmentPerSession(segments);
 
     expect(safeSegments.length, 2);
     expect(safeSegments.any((f) => f.path.endsWith('100_0.bin')), true);
@@ -109,7 +111,7 @@ void main() {
     final file0 = File(p.join(deviceSession102Dir.path, '102_0.bin'))..writeAsBytesSync([0]);
     file0.setLastModifiedSync(DateTime.now().subtract(const Duration(minutes: 1)));
 
-    final safeSegments = await RecordingsManager.excludeNewestSegmentPerSession([file0]);
+    final safeSegments = RecordingsManager.excludeNewestSegmentPerSession([file0]);
 
     expect(safeSegments.length, 1);
     expect(safeSegments[0].path.endsWith('102_0.bin'), true);
@@ -123,7 +125,7 @@ void main() {
     // Set modification time to now (within 5s cutoff)
     file0.setLastModifiedSync(DateTime.now());
 
-    final safeSegments = await RecordingsManager.excludeNewestSegmentPerSession([file0]);
+    final safeSegments = RecordingsManager.excludeNewestSegmentPerSession([file0]);
 
     expect(safeSegments.isEmpty, true);
   });
