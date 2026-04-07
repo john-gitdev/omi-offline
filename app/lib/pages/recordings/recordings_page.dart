@@ -682,7 +682,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
         'Delete Day',
-        'This will permanently delete all processed conversations for ${batch.dateString}. This cannot be undone.',
+        'This will permanently delete all processed recordings for ${batch.dateString}. Raw audio not yet turned into a recording will be kept so it can still complete. This cannot be undone.',
         confirmText: 'Delete',
       ),
     );
@@ -875,7 +875,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     Text('Building next recording',
                         style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
                     const SizedBox(height: 2),
-                    Text('$accMin min synced out of 30', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                    Text('$accMin out of 30 minutes accumulated', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
                   ],
                 ),
               ),
