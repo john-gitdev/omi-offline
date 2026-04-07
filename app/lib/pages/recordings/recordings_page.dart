@@ -287,8 +287,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   // ─── Pipeline entry points ─────────────────────────────────────────────────
   void _startPipeline() {
     if (_spState != SyncProcessState.idle) return;
-    final syncs = ServiceManager.instance().wal.getSyncs();
-    if (syncs.isSyncing || RecordingsManager.isProcessingAny) return;
+    _poll(); // flush any background ops the 500ms timer hasn't caught yet
+    if (_spState != SyncProcessState.idle) return;
     unawaited(_runPipeline());
   }
 
