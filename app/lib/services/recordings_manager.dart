@@ -316,7 +316,7 @@ class RecordingsManager {
   /// moved into `recordings/<date>/` based on each recording's actual start
   /// timestamp, not the batch date they were grouped under.
   Future<void> processAll(List<Batch> batches, Function(double progress) onProgress,
-      {bool backgroundMode = false}) async {
+      {bool backgroundMode = false, VoidCallback? onRecordingFinalized}) async {
     final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
     if (activeBatches.isEmpty) return;
     if (_isProcessingAny) throw Exception("Another processing task is already in progress.");
@@ -357,6 +357,35 @@ class RecordingsManager {
       if (await tempDir.exists()) await tempDir.delete(recursive: true);
       await tempDir.create(recursive: true);
 
+      // Moves any completed recordings from tempDir to their live recordings/<date>/ folder
+      // and fires onRecordingFinalized for each audio file moved.
+      Future<void> moveTempFilesToLive() async {
+        if (!await tempDir.exists()) return;
+        for (final entity in tempDir.listSync().whereType<File>()) {
+          final fileName = entity.path.split('/').last;
+          final parts = fileName.split('_');
+          final millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
+          final dateStr =
+              (millis != null && millis > 0) ? _dateStringFromMillis(millis) : activeBatches.last.dateString;
+          final liveDir = Directory('${directory.path}/recordings/$dateStr');
+          await liveDir.create(recursive: true);
+          final dest = '${liveDir.path}/$fileName';
+          try {
+            await File(dest).delete();
+          } on FileSystemException catch (_) {}
+          await entity.rename(dest);
+          if (fileName.endsWith('.m4a')) {
+            final legacyWav = File('${liveDir.path}/${fileName.replaceAll('.m4a', '')}.wav');
+            try {
+              await legacyWav.delete();
+            } on FileSystemException catch (_) {}
+            onRecordingFinalized?.call();
+          } else if (fileName.endsWith('.wav')) {
+            onRecordingFinalized?.call();
+          }
+        }
+      }
+
       // Combine segments from all batches, sorted by (deviceSessionId, segmentIndex).
       final allSegments = activeBatches.expand((b) => b.rawSegments).toList();
       allSegments.sort((a, b) {
@@ -389,6 +418,7 @@ class RecordingsManager {
             }
 
             await processor.processSegmentFile(file, segmentStartTime);
+            await moveTempFilesToLive();
 
             if (backgroundMode && !processor.isCapturing) {
               lastSafeToDeleteIndex = i;
@@ -405,37 +435,13 @@ class RecordingsManager {
             // All intervals are now closed — every segment is safe to delete.
             lastSafeToDeleteIndex = allSegments.length - 1;
           }
+          await moveTempFilesToLive();
         } finally {
           processor.destroy();
         }
 
-        // Move output files to live folders based on each recording's actual start date.
-        final newFiles = tempDir.listSync().whereType<File>().toList();
-        final recordingsCount = newFiles.where((f) => f.path.endsWith('.m4a') || f.path.endsWith('.wav')).length;
-        Logger.debug("RecordingsManager: Combined processing complete. $recordingsCount recordings produced.");
-        for (final file in newFiles) {
-          final fileName = file.path.split('/').last;
-          final parts = fileName.split('_');
-          final millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
-          final dateStr =
-              (millis != null && millis > 0) ? _dateStringFromMillis(millis) : activeBatches.last.dateString;
-          final liveDir = Directory('${directory.path}/recordings/$dateStr');
-          await liveDir.create(recursive: true);
-          final dest = '${liveDir.path}/$fileName';
-          try {
-            await File(dest).delete();
-          } on FileSystemException catch (_) {}
-          await file.rename(dest);
-          if (fileName.endsWith('.m4a')) {
-            final legacyWav = File('${liveDir.path}/${fileName.replaceAll('.m4a', '')}.wav');
-            try {
-              await legacyWav.delete();
-            } on FileSystemException catch (_) {}
-          }
-        }
-
         await Future.delayed(const Duration(milliseconds: 200));
-        await tempDir.delete(recursive: true);
+        if (await tempDir.exists()) await tempDir.delete(recursive: true);
 
         // Resolve marker conversations for each date that has markers.
         // Must run after temp→live move so the m4a files are in place.

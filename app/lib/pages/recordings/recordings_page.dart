@@ -551,7 +551,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
             _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
           });
         }
-      }, backgroundMode: backgroundMode);
+      }, backgroundMode: backgroundMode, onRecordingFinalized: () {
+        unawaited(_reloadBatchesSilently());
+      });
     } catch (e) {
       WakelockPlus.disable();
       if (_spState == SyncProcessState.stopping) {
