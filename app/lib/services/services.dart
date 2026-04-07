@@ -409,7 +409,7 @@ abstract class ISystemAudioRecorderService {
   void stopAndClearCallbacks();
   void setOnRecordingStartedFromNub(Function() callback);
   void setIsRecordingPausedCallback(bool Function() callback);
-  // TODO: Add status property
+  RecorderServiceStatus get status;
 }
 
 class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
@@ -439,7 +439,10 @@ class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
   bool Function()? _isRecordingPausedCallback;
 
   // To keep track of recording state from Dart's perspective
-  bool _isRecording = false;
+  RecorderServiceStatus _status = RecorderServiceStatus.stop;
+
+  @override
+  RecorderServiceStatus get status => _status;
 
   DesktopSystemAudioRecorderService() {
     _channel.setMethodCallHandler(_handleMethodCall);
@@ -461,7 +464,7 @@ class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
         break;
       case 'audioStreamEnded':
         Logger.debug("audioStreamEnded");
-        _isRecording = false;
+        _status = RecorderServiceStatus.stop;
         if (_onStop != null) {
           _onStop!();
         }
@@ -470,7 +473,7 @@ class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
       case 'captureError':
       case 'converterError':
         Logger.debug("captureError: ${call.arguments}");
-        _isRecording = false;
+        _status = RecorderServiceStatus.stop;
         if (_onError != null && call.arguments is String) {
           _onError!(call.arguments as String);
         }
@@ -521,7 +524,7 @@ class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
           _onStoppedAutomatically!();
         }
 
-        _isRecording = false;
+        _status = RecorderServiceStatus.stop;
         if (_onStop != null) {
           _onStop!();
         }
@@ -565,11 +568,11 @@ class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
     final args = arguments as Map<String, dynamic>?;
     final nativeIsRecording = args?['nativeIsRecording'] as bool? ?? false;
 
-    if (nativeIsRecording && !_isRecording) {
-      _isRecording = true;
+    if (nativeIsRecording && _status != RecorderServiceStatus.recording) {
+      _status = RecorderServiceStatus.recording;
       _onRecording?.call();
-    } else if (!nativeIsRecording && _isRecording) {
-      _isRecording = false;
+    } else if (!nativeIsRecording && _status == RecorderServiceStatus.recording) {
+      _status = RecorderServiceStatus.stop;
       _onStop?.call();
       _clearCallbacks();
     }
@@ -591,7 +594,7 @@ class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
     final args = arguments as Map<String, dynamic>?;
     final reason = args?['reason'] as String? ?? 'Unknown reason';
 
-    _isRecording = false;
+    _status = RecorderServiceStatus.stop;
     _onDisplaySetupInvalid?.call(reason);
     _onStop?.call();
   }
@@ -619,11 +622,11 @@ class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
     try {
       final nativeIsRecording = await _channel.invokeMethod('isRecording') ?? false;
 
-      if (nativeIsRecording && _isRecording) {
+      if (nativeIsRecording && (_status == RecorderServiceStatus.recording || _status == RecorderServiceStatus.initialising)) {
         onError?.call("Already recording");
         return;
-      } else if (nativeIsRecording && !_isRecording) {
-        _isRecording = true;
+      } else if (nativeIsRecording && _status == RecorderServiceStatus.stop) {
+        _status = RecorderServiceStatus.recording;
         _onByteReceived = onByteReceived;
         _onFormatReceived = onFormatReceived;
         _onRecording = onRecording;
@@ -640,14 +643,14 @@ class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
 
         _onRecording?.call();
         return;
-      } else if (!nativeIsRecording && _isRecording) {
-        _isRecording = false;
+      } else if (!nativeIsRecording && (_status == RecorderServiceStatus.recording || _status == RecorderServiceStatus.initialising)) {
+        _status = RecorderServiceStatus.stop;
       }
     } catch (e) {
       Logger.debug("[SystemAudio] State check error: $e");
     }
 
-    if (_isRecording) {
+    if (_status == RecorderServiceStatus.recording || _status == RecorderServiceStatus.initialising) {
       onError?.call("Already recording");
       return;
     }
@@ -667,11 +670,12 @@ class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
     _onStoppedAutomatically = onStoppedAutomatically;
 
     try {
+      _status = RecorderServiceStatus.initialising;
       await _channel.invokeMethod('start');
-      _isRecording = true;
+      _status = RecorderServiceStatus.recording;
       _onRecording?.call();
     } catch (e) {
-      _isRecording = false;
+      _status = RecorderServiceStatus.stop;
       _onError?.call(e.toString());
       _onStop?.call();
       _clearCallbacks();
@@ -693,7 +697,7 @@ class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
     try {
       _channel.invokeMethod('stop');
     } catch (e) {
-      _isRecording = false;
+      _status = RecorderServiceStatus.stop;
       _onError?.call(e.toString());
       _onStop?.call();
       _clearCallbacks();
@@ -704,7 +708,7 @@ class DesktopSystemAudioRecorderService implements ISystemAudioRecorderService {
   /// called when the native stop completes
   @override
   void stopAndClearCallbacks() {
-    _isRecording = false;
+    _status = RecorderServiceStatus.stop;
     _clearCallbacks();
     try {
       _channel.invokeMethod('stop');
