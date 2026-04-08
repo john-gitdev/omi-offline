@@ -95,12 +95,14 @@ class VadAudioProcessor {
       'c':     OrtValueTensor.createTensorWithDataList(_c, [2, 1, 64]),
     };
 
-    final outputs = _session!.run(OrtRunOptions(), inputs);
+    final runOptions = OrtRunOptions();
+    final outputs = _session!.run(runOptions, inputs);
     final prob = (outputs[0]!.value as List<List<List<double>>>)[0][0][0];
 
     _h = _flattenF32(outputs[1]!.value);
     _c = _flattenF32(outputs[2]!.value);
     for (final o in outputs) { o?.release(); }
+    runOptions.release();
 
     return prob > _speechThreshold;
   }
@@ -118,13 +120,13 @@ class VadAudioProcessor {
 
   Future<List<String>> processSegmentFile(File segmentFile, DateTime segmentStartTime) async {
     final savedFiles = <String>[];
-    RandomAccessFile? raf;
 
     try {
       if (!await segmentFile.exists()) return [];
-      raf = await segmentFile.open(mode: FileMode.read);
-      final fileLength = await raf.length();
+      final bytes = await segmentFile.readAsBytes();
+      final fileLength = bytes.length;
       if (fileLength == 0) return [];
+      final byteData = ByteData.sublistView(bytes);
 
       if (_currentRefs.isNotEmpty && _lastSegmentEndTime != null) {
         final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds;
@@ -148,9 +150,7 @@ class VadAudioProcessor {
       while (offset < fileLength) {
         if (offset + 4 > fileLength) break;
 
-        await raf.setPosition(offset);
-        final lenBytes = await raf.read(4);
-        final frameLength = ByteData.sublistView(Uint8List.fromList(lenBytes)).getUint32(0, Endian.little);
+        final frameLength = byteData.getUint32(offset, Endian.little);
 
         if (frameLength == 0 || frameLength == 0xFFFFFFFF) {
           offset += 4;
@@ -162,13 +162,11 @@ class VadAudioProcessor {
           break;
         }
 
-        final frameDataOffset = offset + 4;
-        await raf.setPosition(frameDataOffset);
-        final opusBytes = await raf.read(frameLength);
+        final opusBytes = bytes.sublist(offset + 4, offset + 4 + frameLength);
 
         Int16List? pcmData;
         try {
-          pcmData = _decoder?.decode(input: Uint8List.fromList(opusBytes));
+          pcmData = _decoder?.decode(input: opusBytes);
         } catch (_) {}
 
         bool isSpeech = false;
@@ -249,8 +247,8 @@ class VadAudioProcessor {
       }
 
       _lastSegmentEndTime = segmentStartTime.add(Duration(milliseconds: totalFrameCount * frameDurationMs));
-    } finally {
-      await raf?.close();
+    } catch (e) {
+      Logger.error('VadAudioProcessor: processSegmentFile error: $e');
     }
 
     return savedFiles;

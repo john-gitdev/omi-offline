@@ -181,14 +181,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
     return '$m:$s';
   }
 
-  double get _markerRatio {
-    if (_totalDuration.inMilliseconds == 0) return 0;
-    final firstMs = _parseSegmentMillis(_segments.first) ?? 0;
-    final markerMs = widget.markerConversation.markerTime.millisecondsSinceEpoch;
-    final offsetMs = markerMs - firstMs;
-    return (offsetMs / _totalDuration.inMilliseconds).clamp(0.0, 1.0);
-  }
-
   // ── Dispose ────────────────────────────────────────────────────────────────
 
   @override
