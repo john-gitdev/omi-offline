@@ -114,6 +114,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             });
           }
         }
+
       }
     }
   }

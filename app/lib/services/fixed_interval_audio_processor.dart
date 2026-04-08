@@ -107,7 +107,7 @@ class FixedIntervalAudioProcessor {
         _nextBoundaryMs = 0;
         _recordingStartTime = null;
         SharedPreferencesUtil().fixedModeNextBoundaryMs = 0;
-        // Gaps <= 2000ms are clock drift or normal SD timing variance — just append.
+      // Gaps <= 2000ms are clock drift or normal SD timing variance — just append.
       }
     }
 
