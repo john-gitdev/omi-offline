@@ -116,6 +116,7 @@ dependencies:
   marionette_flutter: ^0.3.0
 
   pigeon: any
+  vad: ^0.0.7+1
 dependency_overrides:
   js: ^0.7.1
   uuid: ^4.4.0
