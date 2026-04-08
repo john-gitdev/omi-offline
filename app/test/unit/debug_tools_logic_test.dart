@@ -5,8 +5,7 @@ import 'package:omi/services/recordings_manager.dart';
 
 void main() {
   group('Debug Tools Logic Tests', () {
-    test('excludeNewestSegmentPerSession logic excludes highest index ONLY if multiple files exist and recent files',
-        () async {
+    test('excludeNewestSegmentPerSession logic excludes highest index ONLY if multiple files exist and recent files', () async {
       final tempDir = Directory.systemTemp.createTempSync('omi_test');
 
       try {
@@ -18,8 +17,7 @@ void main() {
 
         final session2 = Directory('${tempDir.path}/2000');
         session2.createSync();
-        final file2_0 = File('${session2.path}/2000_0.bin')
-          ..createSync(); // Single file in session -> Should be INCLUDED
+        final file2_0 = File('${session2.path}/2000_0.bin')..createSync(); // Single file in session -> Should be INCLUDED
 
         await Process.run('touch', ['-d', '1 hour ago', file1_0.path, file1_1.path, file1_2.path, file2_0.path]);
 
@@ -43,6 +41,7 @@ void main() {
         expect(filteredFiles2.contains(file1_1), isTrue);
         expect(filteredFiles2.contains(file1_2), isFalse, reason: 'Excluded due to recency');
         expect(filteredFiles2.contains(file1_3), isFalse, reason: 'Excluded due to highest index');
+
       } finally {
         tempDir.deleteSync(recursive: true);
       }

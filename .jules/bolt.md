@@ -1,3 +1,0 @@
-## 2023-10-27 - [Async Flutter File Meta Performance]
-**Learning:** In Dart and Flutter, using synchronous file I/O such as `file.lengthSync()` and `file.lastModifiedSync()` when constructing models during the `build()` process of a large list UI can cause noticeable frame stuttering.
-**Action:** Transitioned UI data structures to calculate and wait on `Future.wait` mappings of File metadata (via their async `.length()`, `.lastModified()`, and `.readAsBytes()`) during data loading rather than inside the render loop, which smoothly solved the issue without regressions. Also ensure you use `Future.wait` for arrays of files rather than a sequential loop over `await` to ensure performance parity.

@@ -243,8 +243,7 @@ class AudioPlayerUtils extends ChangeNotifier {
     int offset = 0;
 
     while (offset < opusData.length - 4) {
-      final length =
-          ByteData.sublistView(Uint8List.fromList(opusData.sublist(offset, offset + 4))).getUint32(0, Endian.little);
+      final length = ByteData.sublistView(Uint8List.fromList(opusData.sublist(offset, offset + 4))).getUint32(0, Endian.little);
       offset += 4;
 
       if (offset + length > opusData.length) break;
@@ -295,8 +294,7 @@ class AudioPlayerUtils extends ChangeNotifier {
     int offset = 0;
 
     while (offset < pcmFileData.length - 4) {
-      final length =
-          ByteData.sublistView(Uint8List.fromList(pcmFileData.sublist(offset, offset + 4))).getUint32(0, Endian.little);
+      final length = ByteData.sublistView(Uint8List.fromList(pcmFileData.sublist(offset, offset + 4))).getUint32(0, Endian.little);
       offset += 4;
 
       if (offset + length > pcmFileData.length) break;
