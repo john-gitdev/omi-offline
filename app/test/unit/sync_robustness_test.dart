@@ -1,12 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/devices/device_connection.dart';
-import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/wals/wal.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
@@ -71,11 +69,6 @@ class MockDeviceConnection extends Fake implements DeviceConnection {
   }
 
   @override
-  Future<Stream<List<int>>> getBleStorageBytesStream() async {
-    return _controller.stream;
-  }
-
-  @override
   Future<bool> isConnected() async => true;
 
   @override
@@ -83,24 +76,6 @@ class MockDeviceConnection extends Fake implements DeviceConnection {
 
   @override
   Future<List<int>> performGetStorageList() async => [0, 0];
-
-  @override
-  Future<List<StorageFile>> listFiles() async => [];
-
-  @override
-  Future<void> acquireStorageLock() async {}
-
-  @override
-  Future<void> releaseStorageLock() async {}
-
-  @override
-  Future<bool> writeToStorage(int fileNum, int type, int offset) async => true;
-
-  @override
-  Future<bool> deleteFile(StorageFile file) async => true;
-
-  @override
-  Future<bool> stopStorageSync() async => true;
 }
 
 class MockBtDevice extends Fake implements BtDevice {
@@ -122,14 +97,6 @@ void main() {
 
   setUp(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
-        const MethodChannel('disk_space_2'),
-        (MethodCall methodCall) async {
-      if (methodCall.method == 'getFreeDiskSpace') {
-        return 1000.0;
-      }
-      return null;
-    });
     tempDir = Directory.systemTemp.createTempSync('sync_test');
     mockPathProvider = MockPathProvider()..tempPath = tempDir.path;
     PathProviderPlatform.instance = mockPathProvider;
@@ -169,8 +136,8 @@ void main() {
   group('Golden Anchor Guard', () {
     const kMinValidEpoch = 946684800; // Jan 1 2000
 
-    /// Builds a 17-byte WAL metadata frame (0xFFFFFFFE prefix + 16-byte body).
-    /// Layout: [0xFE 0xFF 0xFF 0xFF][utcLE4][uptimeLE4][sessionLE4][segmentLE4]
+    /// Builds a 17-byte WAL metadata frame (len=255 prefix + 16-byte body).
+    /// Layout: [0xFF 0x00 0x00 0x00][utcLE4][uptimeLE4][sessionLE4][segmentLE4]
     List<int> metaFrame({
       required int utcTime,
       required int uptimeMs,
@@ -182,12 +149,11 @@ void main() {
       buf.setUint32(4, uptimeMs, Endian.little);
       buf.setUint32(8, sessionId, Endian.little);
       buf.setUint32(12, segmentIndex, Endian.little);
-      return [0xFE, 0xFF, 0xFF, 0xFF, ...buf.buffer.asUint8List()];
+      return [0xFF, 0x00, 0x00, 0x00, ...buf.buffer.asUint8List()];
     }
 
-    setUp(() async {
+    setUp(() {
       SharedPreferences.setMockInitialValues({});
-      await SharedPreferencesUtil.init();
     });
 
     test('Stale utcTime (year < 2000) does NOT overwrite a clean anchor', () async {
@@ -204,7 +170,6 @@ void main() {
       // Simulate ingesting a metadata frame with a stale utcTime
       final mockConn = MockDeviceConnection();
       final sync = SDCardWalSyncImpl(MockWalSyncListener(), connectionProvider: (_) async => mockConn);
-      sync.setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0));
 
       final wal = Wal(
         codec: BleAudioCodec.opus,
@@ -213,7 +178,7 @@ void main() {
         fileNum: 1,
         walOffset: 0,
         storageTotalBytes: 17,
-        timerStart: sessionId,
+        timerStart: 0,
         storage: WalStorage.sdcard,
       );
       final syncFuture = sync.syncWal(wal: wal);
@@ -245,7 +210,6 @@ void main() {
 
       final mockConn = MockDeviceConnection();
       final sync = SDCardWalSyncImpl(MockWalSyncListener(), connectionProvider: (_) async => mockConn);
-      sync.setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0));
 
       final wal = Wal(
         codec: BleAudioCodec.opus,
@@ -254,7 +218,7 @@ void main() {
         fileNum: 1,
         walOffset: 0,
         storageTotalBytes: 17,
-        timerStart: sessionId,
+        timerStart: 0,
         storage: WalStorage.sdcard,
       );
       final syncFuture = sync.syncWal(wal: wal);
@@ -286,7 +250,6 @@ void main() {
 
       final mockConn = MockDeviceConnection();
       final sync = SDCardWalSyncImpl(MockWalSyncListener(), connectionProvider: (_) async => mockConn);
-      sync.setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0));
 
       final wal = Wal(
         codec: BleAudioCodec.opus,
@@ -295,7 +258,7 @@ void main() {
         fileNum: 1,
         walOffset: 0,
         storageTotalBytes: 17,
-        timerStart: sessionId,
+        timerStart: 0,
         storage: WalStorage.sdcard,
       );
       final syncFuture = sync.syncWal(wal: wal);
@@ -310,12 +273,8 @@ void main() {
       await syncFuture.catchError((_) {});
       await mockConn.close();
 
-      // Allow async shared preferences saves to complete
-      await Future.delayed(const Duration(milliseconds: 50));
-
-      final sp = SharedPreferencesUtil();
-      expect(sp.getInt('anchor_utc_device_session_$sessionId'), equals(newerUtc));
-      expect(sp.getInt('anchor_uptime_device_session_$sessionId'), equals(newerUptime));
+      expect(prefs.getInt('anchor_utc_device_session_$sessionId'), equals(newerUtc));
+      expect(prefs.getInt('anchor_uptime_device_session_$sessionId'), equals(newerUptime));
     });
   });
 
@@ -348,7 +307,6 @@ void main() {
         MockWalSyncListener(),
         connectionProvider: (_) async => mockConn,
       );
-      sync.setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0));
     });
 
     tearDown(() async {
@@ -368,6 +326,7 @@ void main() {
 
       await pump(); // let subscription register
       mockConn.add(ackPacket(0x01)); // non-zero = firmware error
+      await pump();
 
       await expectLater(syncFuture, throwsA(isA<Exception>()));
     });
