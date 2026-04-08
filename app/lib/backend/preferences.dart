@@ -29,21 +29,34 @@ class SharedPreferencesUtil {
   int get recordingRetentionDays => getInt('recordingRetentionDays', defaultValue: 3);
   set recordingRetentionDays(int value) => saveInt('recordingRetentionDays', value);
 
-  // Minutes of audio before the marker to include in the visible window (default 5).
-  int get markerPreMinutes => getInt('markerPreMinutes', defaultValue: 5);
-  set markerPreMinutes(int value) => saveInt('markerPreMinutes', value);
+  // Silero VAD speech probability cutoff (0.0–1.0). Frames with probability
+  // above this value are classified as speech.
+  double get vadSpeechThreshold => getDouble('vadSpeechThreshold', defaultValue: 0.5);
+  set vadSpeechThreshold(double v) => saveDouble('vadSpeechThreshold', v);
 
-  // Minutes of audio after the marker to include in the visible window (default 30).
-  int get markerPostMinutes => getInt('markerPostMinutes', defaultValue: 30);
-  set markerPostMinutes(int value) => saveInt('markerPostMinutes', value);
+  // Frames of speech to continue counting after Silero reports silence,
+  // to smooth out brief dropouts within a sentence.
+  double get vadHangoverSeconds => getDouble('vadHangoverSeconds', defaultValue: 0.5);
+  set vadHangoverSeconds(double v) => saveDouble('vadHangoverSeconds', v);
 
-  // Epoch ms of the next pending boundary for fixed mode.
-  // Persisted so a fresh processor on the next sync knows which frames in the
-  // boundary-crossing segment were already included in the previous recording.
-  // 0 = no active boundary (no in-progress interval).
-  int get fixedModeNextBoundaryMs => getInt('fixedModeNextBoundaryMs', defaultValue: 0);
+  // Continuous silence duration (seconds) that triggers a conversation cut.
+  int get vadSplitSeconds => getInt('vadSplitSeconds', defaultValue: 120);
+  set vadSplitSeconds(int v) => saveInt('vadSplitSeconds', v);
 
-  set fixedModeNextBoundaryMs(int value) => saveInt('fixedModeNextBoundaryMs', value);
+  // Minimum speech duration (seconds) for a chunk to be saved. Shorter chunks
+  // are discarded (e.g. a cough, a door slam).
+  int get vadMinSpeechSeconds => getInt('vadMinSpeechSeconds', defaultValue: 5);
+  set vadMinSpeechSeconds(int v) => saveInt('vadMinSpeechSeconds', v);
+
+  // Seconds of silence frames to prepend before a new conversation starts,
+  // so speech doesn't begin abruptly.
+  double get vadPreSpeechSeconds => getDouble('vadPreSpeechSeconds', defaultValue: 1.0);
+  set vadPreSpeechSeconds(double v) => saveDouble('vadPreSpeechSeconds', v);
+
+  // Gap between consecutive segment files (seconds) that forces a conversation
+  // cut, regardless of VAD state.
+  int get vadGapSeconds => getInt('vadGapSeconds', defaultValue: 30);
+  set vadGapSeconds(int v) => saveInt('vadGapSeconds', v);
 
   bool get autoSyncEnabled => getBool('autoSyncEnabled', defaultValue: true);
 
@@ -101,8 +114,8 @@ class SharedPreferencesUtil {
     _preferences = prefs;
 
     // Set default values if not present
-    if (!prefs.containsKey('fixedModeNextBoundaryMs')) {
-      prefs.setInt('fixedModeNextBoundaryMs', 0);
+    if (!prefs.containsKey('vadSpeechThreshold')) {
+      prefs.setDouble('vadSpeechThreshold', 0.5);
     }
   }
 
