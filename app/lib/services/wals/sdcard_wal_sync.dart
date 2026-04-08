@@ -602,7 +602,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               wal.walOffset = e.incoming;
               lastOffset = e.incoming;
               _lastSegmentBoundaryOffset = e.incoming;
-              final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
+            final conn = dev != null
+                ? (_connectionProvider != null ? await _connectionProvider!(dev.id) : await ServiceManager.instance().device.ensureConnection(dev.id))
+                : (_connectionProvider != null ? await _connectionProvider!('test') : null);
               await conn?.stopStorageSync();
               await Future.delayed(const Duration(milliseconds: 200));
             }
@@ -643,8 +645,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     wal.syncStartedAt = DateTime.now();
     listener.onWalUpdated();
 
-    final dev = _device!;
-    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+    final dev = _device;
+    final connection = dev != null
+        ? (_connectionProvider != null ? await _connectionProvider!(dev.id) : await ServiceManager.instance().device.ensureConnection(dev.id))
+        : (_connectionProvider != null ? await _connectionProvider!('test') : null);
     if (connection == null) throw Exception('No connection');
 
     final initialOffset = wal.walOffset;
@@ -682,7 +686,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           wal.walOffset = e.incoming;
           lastOffset = e.incoming;
           _lastSegmentBoundaryOffset = e.incoming;
-          final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
+          final conn = dev != null
+              ? (_connectionProvider != null ? await _connectionProvider!(dev.id) : await ServiceManager.instance().device.ensureConnection(dev.id))
+              : (_connectionProvider != null ? await _connectionProvider!('test') : null);
           await conn?.stopStorageSync();
           await Future.delayed(const Duration(milliseconds: 200));
         }
