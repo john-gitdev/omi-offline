@@ -6,13 +6,12 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/services/frame_ref.dart';
 import 'package:omi/utils/logger.dart';
-import 'package:vad/vad.dart';
 
 enum VadState { idle, recording }
 
-/// Processor for VAD-driven recording mode.
+/// Processor for amplitude-driven recording mode (replacing VAD temporarily).
 ///
-/// Chunks recordings based on speech activity rather than wall-clock boundaries.
+/// Chunks recordings based on audio activity rather than wall-clock boundaries.
 class VadAudioProcessor {
   static const int sampleRate = 16000;
   static const int channels = 1;
@@ -28,10 +27,7 @@ class VadAudioProcessor {
 
   int _continuousSilenceMs = 0;
   static const int _silenceThresholdMs = 120000; // 2 minutes
-  static const double _vadThreshold = 0.5;
-
-  VadIterator? _vad;
-  bool _vadInitialized = false;
+  static const double _amplitudeThreshold = 0.05;
 
   VadAudioProcessor._({String? outputDir, SimpleOpusDecoder? decoder})
       : _decoder = decoder ??
@@ -42,48 +38,11 @@ class VadAudioProcessor {
 
   static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
     final processor = VadAudioProcessor._(outputDir: outputDir, decoder: decoder);
-    await processor._initVad();
     return processor;
   }
 
-  Future<void> _initVad() async {
-    try {
-      _vad = await VadIterator.create(
-        isDebug: false,
-        sampleRate: sampleRate,
-        frameSamples: sampleRate * frameDurationMs ~/ 1000,
-        positiveSpeechThreshold: _vadThreshold,
-        negativeSpeechThreshold: _vadThreshold - 0.15,
-        redemptionFrames: 15,
-        preSpeechPadFrames: 5,
-        minSpeechFrames: 5,
-        model: 'silero_vad.onnx',
-      );
-      _vadInitialized = true;
-
-      _vad!.setVadEventCallback((VadEvent event) {
-        if (event.type == VadEventType.start || event.type == VadEventType.realStart) {
-          _lastVadSpeechEvent = true;
-        } else if (event.type == VadEventType.end) {
-          _lastVadSpeechEvent = false;
-        } else if (event.type == VadEventType.frameProcessed) {
-           if (event.probabilities != null) {
-              _lastVadSpeechEvent = event.probabilities!.isSpeech > _vadThreshold;
-           }
-        }
-      });
-
-      Logger.debug('VadAudioProcessor: VAD successfully initialized.');
-    } catch (e) {
-      Logger.error('VadAudioProcessor: Failed to init VAD, using amplitude fallback. Error: $e');
-    }
-  }
-
-  bool _lastVadSpeechEvent = false;
-
   void destroy() {
     _decoder?.destroy();
-    _vad?.release();
   }
 
   bool get isCapturing => _state == VadState.recording;
@@ -134,28 +93,13 @@ class VadAudioProcessor {
 
       bool isSpeech = false;
       if (pcmData != null) {
-        if (_vadInitialized && _vad != null) {
-          try {
-            final floatPcm = Float32List(pcmData.length);
-            for (int i = 0; i < pcmData.length; i++) {
-              floatPcm[i] = pcmData[i] / 32768.0;
-            }
-
-            // Await the processing so we get the events emitted before we check `_lastVadSpeechEvent`
-            await _vad!.processAudioData(floatPcm.buffer.asUint8List());
-            isSpeech = _lastVadSpeechEvent;
-          } catch(e) {
-              Logger.error('VadAudioProcessor: VAD inference error: $e');
-          }
-        } else {
-          // Amplitude fallback simulating VAD
-          double maxVolume = 0;
-          for (int i = 0; i < pcmData.length; i++) {
-             double vol = (pcmData[i] / 32768.0).abs();
-             if (vol > maxVolume) maxVolume = vol;
-          }
-          isSpeech = maxVolume > 0.05; // Dummy threshold
+        // Amplitude fallback simulating VAD
+        double maxVolume = 0;
+        for (int i = 0; i < pcmData.length; i++) {
+           double vol = (pcmData[i] / 32768.0).abs();
+           if (vol > maxVolume) maxVolume = vol;
         }
+        isSpeech = maxVolume > _amplitudeThreshold;
       }
 
       final frameTime = segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
@@ -186,8 +130,6 @@ class VadAudioProcessor {
           _currentRefs = [];
           _continuousSilenceMs = 0;
           _recordingStartTime = null;
-
-          if (_vadInitialized && _vad != null) _vad!.reset();
         }
       }
 
@@ -223,8 +165,6 @@ class VadAudioProcessor {
       _currentRefs = [];
       _continuousSilenceMs = 0;
       _recordingStartTime = null;
-
-      if (_vadInitialized && _vad != null) _vad!.reset();
 
       return filePath;
   }

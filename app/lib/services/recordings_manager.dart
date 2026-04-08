@@ -439,15 +439,10 @@ class RecordingsManager {
           }
 
           if (backgroundMode) {
-            final flushedPath = await processor.flushOnlyCompleted();
-            if (flushedPath != null) {
-              allSegments.add(File(flushedPath));
-            }
+            await processor.flushOnlyCompleted();
           } else {
-            final flushedPath = await processor.flushRemaining();
-            if (flushedPath != null) {
-              allSegments.add(File(flushedPath));
-            }
+            await processor.flushRemaining();
+            // All intervals are now closed — every segment is safe to delete.
             lastSafeToDeleteIndex = allSegments.length - 1;
           }
           await moveTempFilesToLive();
@@ -470,47 +465,30 @@ class RecordingsManager {
         rethrow;
       }
 
+      // Raw segment deletion — only delete segments belonging to fully-completed intervals.
+      if (lastSafeToDeleteIndex >= 0) {
+        final deviceSessionFolders = <String>{};
+        for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
+          final file = allSegments[i];
+          if (await file.exists()) {
+            Logger.debug("RecordingsManager: Deleting completed raw segment: ${file.path}");
+            await file.delete();
+            deviceSessionFolders.add(file.parent.path);
+          }
+        }
+        for (final folderPath in deviceSessionFolders) {
+          final folder = Directory(folderPath);
+          if (await folder.exists()) {
+            try {
+              if (await folder.list().isEmpty) await folder.delete();
+            } catch (_) {}
+          }
+        }
+      }
       onProgress(1.0);
-
-      await _cleanupOldRawSegments();
     } finally {
       _isProcessingAny = false;
       SharedPreferencesUtil().extractionInProgress = false;
-    }
-  }
-
-  Future<void> _cleanupOldRawSegments() async {
-    try {
-      final directory = await getApplicationDocumentsDirectory();
-      final rawSegmentsDir = Directory('${directory.path}/raw_segments');
-      if (!await rawSegmentsDir.exists()) return;
-
-      final now = DateTime.now();
-      final cutoffTime = now.subtract(const Duration(days: 3));
-
-      final deviceSessionFolders = await rawSegmentsDir.list().where((e) => e is Directory).cast<Directory>().toList();
-      for (final sessionFolder in deviceSessionFolders) {
-        final segments = await sessionFolder.list().where((e) => e is File && e.path.endsWith('.bin')).cast<File>().toList();
-        for (final segment in segments) {
-          try {
-            final stat = await segment.stat();
-            if (stat.modified.isBefore(cutoffTime)) {
-              Logger.debug("RecordingsManager: Deleting old raw segment (TTL expired): ${segment.path}");
-              await segment.delete();
-            }
-          } catch (e) {
-            Logger.error("RecordingsManager: Error checking/deleting old segment ${segment.path}: $e");
-          }
-        }
-
-        try {
-          if (await sessionFolder.list().isEmpty) {
-            await sessionFolder.delete();
-          }
-        } catch (_) {}
-      }
-    } catch (e) {
-      Logger.error("RecordingsManager: Error during old raw segments cleanup: $e");
     }
   }
 
