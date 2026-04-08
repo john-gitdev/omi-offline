@@ -677,7 +677,7 @@ class RecordingsManager {
   /// Derives the date-folder name (YYYY-MM-DD) from epoch milliseconds.
   ///
   /// **Convention**: all date folders use the *local* timezone so that
-  /// recordings appear under the date the user experienced them.  Session IDs
+  /// recordings appear under the date the user experienced them.  DeviceSession IDs
   /// and device markers use UTC internally, but folder placement is always
   /// local.  A recording that starts before midnight local time and ends after
   /// midnight is placed under the *start* date.
@@ -761,8 +761,8 @@ class RecordingsManager {
         final bSegment = int.tryParse(bParts.length > 1 ? bParts[1] : '0') ?? 0;
         return aSegment.compareTo(bSegment);
       });
-      // Only exclude the newest segment when a session has 2+ segments.
-      // Single-segment sessions are completed SD-card file transfers — safe to process.
+      // Only exclude the newest segment when a DeviceSession has 2+ segments.
+      // Single-segment DeviceSessions are completed SD-card file transfers — safe to process.
       // Very-recently-written files are already filtered by the recency cutoff above.
       if (deviceSessionSegments.length > 1) {
         result.addAll(deviceSessionSegments.take(deviceSessionSegments.length - 1));

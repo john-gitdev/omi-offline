@@ -16,7 +16,7 @@ This document defines the official terminology for all audio-related data struct
 | **Batch** | Logical | Grouping | A collection of **Segments** and **Conversations** grouped by UTC date. | `DailyBatch` |
 | **Recording** | Artifact | Storage | The final transcoded audio file (`.m4a` or `.wav`) stored on disk. | `processed_file` |
 | **Conversation** | Entity | Local | The local-only logical container (Recording + Timestamps) before AI enrichment. | `RecordingInfo`, `recording` |
-| **Memory** | Entity | Unified | The top-level user object (**Conversation** + Transcript + AI Summary). | `memory_info` |
+| **Memory** | Entity | Unified | (Aspirational) The top-level user object (**Conversation** + Transcript + AI Summary). | `memory_info` |
 
 ---
 
@@ -124,3 +124,4 @@ The firmware (C / Zephyr RTOS on nRF52840) uses C snake_case conventions. Firmwa
 - PRs introducing conflicting terminology must be rejected or refactored.
 - Legacy terms (`bin` for audio files, `session` for DeviceSession, `star` for Marker) must not be reintroduced.
 - `chunk` is permitted only in low-level I/O, WAV format parsing, and platform channel streaming; it must not be used to refer to Segments or Frames.
+- `packet` is permitted only when referring to BLE transport layer packets or other low-level network data chunks, but must not be used for generic audio data units.
