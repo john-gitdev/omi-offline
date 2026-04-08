@@ -339,14 +339,11 @@ class RecordingsManager {
       final directory = await getApplicationDocumentsDirectory();
 
       // Disk space guard — bail before processing if free space is critically low.
+      // OPTIMIZATION: Used asynchronous file sizing (length() + Future.wait) instead of lengthSync()
+      // to avoid frame drops on the main thread when computing the total size of raw segments.
       final allRawFiles = activeBatches.expand((b) => b.rawSegments).toList();
-      final rawTotalBytes = allRawFiles.fold<int>(0, (sum, f) {
-        try {
-          return sum + f.lengthSync();
-        } catch (_) {
-          return sum;
-        }
-      });
+      final lengths = await Future.wait(allRawFiles.map((f) => f.length().catchError((_) => 0)));
+      final rawTotalBytes = lengths.fold(0, (sum, len) => sum + len);
       if (rawTotalBytes > 50 * 1024 * 1024) {
         try {
           final probe = File('${directory.path}/.disk_probe');

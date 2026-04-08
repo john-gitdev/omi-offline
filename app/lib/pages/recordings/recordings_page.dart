@@ -532,14 +532,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     }
 
     // Compute total audio minutes from segments to be processed.
+    // OPTIMIZATION: Use Future.wait and length() to prevent blocking the UI thread during file I/O.
     final allRaw = batchesToProcess.expand((b) => b.rawSegments).toList();
-    final totalBytes = allRaw.fold(0, (sum, f) {
-      try {
-        return sum + f.lengthSync();
-      } catch (_) {
-        return sum;
-      }
-    });
+    final lengths = await Future.wait(allRaw.map((f) => f.length().catchError((_) => 0)));
+    final totalBytes = lengths.fold(0, (sum, len) => sum + len);
     final totalMin = totalBytes / 252000.0; // ~84 B/frame × 50 fps × 60 s
     setState(() {
       _totalMinutes = totalMin;
@@ -639,13 +635,17 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         _manager.getMarkerConversations(),
       ]);
       if (mounted) {
-        setState(() {
-          _batches = results[0] as List<Batch>;
-          _markerConversations = results[1] as List<MarkerConversation>;
-          _isLoading = false;
-          _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
-        });
-        _tryAutoUploadNext();
+        final newBatches = results[0] as List<Batch>;
+        final accMin = await _computeAccumulatedMinutes(newBatches);
+        if (mounted) {
+          setState(() {
+            _batches = newBatches;
+            _markerConversations = results[1] as List<MarkerConversation>;
+            _isLoading = false;
+            _accumulatedMinutes = accMin;
+          });
+          _tryAutoUploadNext();
+        }
       }
     } catch (e) {
       Logger.error('RecordingsPage: Failed to load batches: $e');
@@ -660,11 +660,15 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         _manager.getMarkerConversations(),
       ]);
       if (mounted) {
-        setState(() {
-          _batches = results[0] as List<Batch>;
-          _markerConversations = results[1] as List<MarkerConversation>;
-          _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
-        });
+        final newBatches = results[0] as List<Batch>;
+        final accMin = await _computeAccumulatedMinutes(newBatches);
+        if (mounted) {
+          setState(() {
+            _batches = newBatches;
+            _markerConversations = results[1] as List<MarkerConversation>;
+            _accumulatedMinutes = accMin;
+          });
+        }
       }
     } catch (_) {}
   }
@@ -828,14 +832,12 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   }
 
   // ─── Accumulating progress banner ─────────────────────────────────────────
-  static double _computeAccumulatedMinutes(List<Batch> batches) {
-    final totalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (sum, f) {
-      try {
-        return sum + f.lengthSync();
-      } catch (_) {
-        return sum;
-      }
-    });
+  // OPTIMIZATION: Refactored to use Future.wait and length() instead of lengthSync()
+  // to avoid blocking the main UI thread during synchronous disk I/O, resulting in less jank.
+  static Future<double> _computeAccumulatedMinutes(List<Batch> batches) async {
+    final segments = batches.expand((b) => b.rawSegments).toList();
+    final lengths = await Future.wait(segments.map((f) => f.length().catchError((_) => 0)));
+    final totalBytes = lengths.fold(0, (sum, len) => sum + len);
     return totalBytes / 252000.0; // 84 B/frame × 50 fps × 60 s
   }
 

@@ -158,7 +158,10 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
 
   Future<File?> _findAdjacentSegment({required bool left}) async {
     final dateFolder = widget.markerConversation.edlFile.parent;
-    final all = dateFolder.listSync().whereType<File>().where((f) => f.path.endsWith('.m4a')).toList()
+    // OPTIMIZATION: Switched from listSync() to asynchronous list()
+    // to prevent blocking the UI thread during file system directory traversal.
+    final entities = await dateFolder.list().toList();
+    final all = entities.whereType<File>().where((f) => f.path.endsWith('.m4a')).toList()
       ..sort((a, b) => (_parseSegmentMillis(a) ?? 0).compareTo(_parseSegmentMillis(b) ?? 0));
 
     if (left) {
