@@ -224,7 +224,7 @@ class AudioPlayerUtils extends ChangeNotifier {
     List<int> data = [];
     for (int i = 0; i < wal.data!.length; i++) {
       var frame = wal.data![i];
-      // Assume frame logic was intended to skip some prefix if needed, 
+      // Assume frame logic was intended to skip some prefix if needed,
       // but let's just use the whole frame if it's raw PCM or Opus.
       data.addAll(Uint32List.fromList([frame]).buffer.asUint8List());
     }

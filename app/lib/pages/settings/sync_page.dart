@@ -276,14 +276,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
     try {
       final directory = await getApplicationDocumentsDirectory();
-      
+
       final recordingsDir = Directory('${directory.path}/recordings');
       if (await recordingsDir.exists()) {
         Logger.debug('DebugTools: Deleting recordings directory');
         await recordingsDir.delete(recursive: true);
         Logger.debug('DebugTools: recordings directory deleted');
       }
-      
+
       final tempDir = Directory('${directory.path}/processing_temp');
       if (await tempDir.exists()) {
         Logger.debug('DebugTools: Deleting processing_temp directory');
