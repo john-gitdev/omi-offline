@@ -522,9 +522,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           finalizedRecordings: batch.finalizedRecordings,
           markerTimestamps: batch.markerTimestamps,
         );
-      })))
-          .where((b) => b.rawSegments.isNotEmpty)
-          .toList();
+      }))).where((b) => b.rawSegments.isNotEmpty).toList();
       backgroundMode = true;
     }
 

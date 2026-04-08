@@ -705,9 +705,7 @@ class RecordingsManager {
         finalizedRecordings: batch.finalizedRecordings,
         markerTimestamps: batch.markerTimestamps,
       );
-    })))
-        .where((b) => b.rawSegments.isNotEmpty)
-        .toList();
+    }))).where((b) => b.rawSegments.isNotEmpty).toList();
 
     if (safeBatches.isEmpty) return;
     try {
