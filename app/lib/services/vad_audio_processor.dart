@@ -33,14 +33,18 @@ class VadAudioProcessor {
   VadIterator? _vad;
   bool _vadInitialized = false;
 
-  VadAudioProcessor({String? outputDir, SimpleOpusDecoder? decoder})
+  VadAudioProcessor._({String? outputDir, SimpleOpusDecoder? decoder})
       : _decoder = decoder ??
             (Platform.isIOS || Platform.isAndroid
                 ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
                 : null),
-        _outputDir = outputDir {
-          _initVad();
-        }
+        _outputDir = outputDir;
+
+  static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
+    final processor = VadAudioProcessor._(outputDir: outputDir, decoder: decoder);
+    await processor._initVad();
+    return processor;
+  }
 
   Future<void> _initVad() async {
     try {
@@ -50,17 +54,32 @@ class VadAudioProcessor {
         frameSamples: sampleRate * frameDurationMs ~/ 1000,
         positiveSpeechThreshold: _vadThreshold,
         negativeSpeechThreshold: _vadThreshold - 0.15,
-        redemptionFrames: 0,
-        preSpeechPadFrames: 0,
-        minSpeechFrames: 0,
+        redemptionFrames: 15,
+        preSpeechPadFrames: 5,
+        minSpeechFrames: 5,
         model: 'silero_vad.onnx',
       );
       _vadInitialized = true;
+
+      _vad!.setVadEventCallback((VadEvent event) {
+        if (event.type == VadEventType.start || event.type == VadEventType.realStart) {
+          _lastVadSpeechEvent = true;
+        } else if (event.type == VadEventType.end) {
+          _lastVadSpeechEvent = false;
+        } else if (event.type == VadEventType.frameProcessed) {
+           if (event.probabilities != null) {
+              _lastVadSpeechEvent = event.probabilities!.isSpeech > _vadThreshold;
+           }
+        }
+      });
+
       Logger.debug('VadAudioProcessor: VAD successfully initialized.');
     } catch (e) {
       Logger.error('VadAudioProcessor: Failed to init VAD, using amplitude fallback. Error: $e');
     }
   }
+
+  bool _lastVadSpeechEvent = false;
 
   void destroy() {
     _decoder?.destroy();
@@ -122,30 +141,14 @@ class VadAudioProcessor {
               floatPcm[i] = pcmData[i] / 32768.0;
             }
 
-            // The `vad` package's `VadIterator.processAudioData` takes Uint8List, but we
-            // can use the internal platform model or just do a manual check if we have the model reference.
-            // Let's fallback to the amplitude since `vad` package `VadIterator` in Dart doesn't easily expose
-            // a synchronous `process(Float32List)` that returns a boolean directly, but we need to fulfill the
-            // inference attempt without compilation errors.
-            //
-            // Workaround: In vad 0.0.7+1, `VadIterator` processes data asynchronously via `processAudioData`.
-            // Given this is a synchronous tight loop, we rely on the amplitude fallback while keeping the VAD
-            // initialization intact as requested by the architecture pivot.
-            // (If the package supported synchronous `isSpeech(floatPcm)` we would call it here).
-
-            // To fulfill the requirement of invoking the VAD without breaking the synchronous loop:
-            _vad!.processAudioData(floatPcm.buffer.asUint8List());
-
-            // Because processAudioData is async and emits events, we must use amplitude here for synchronous
-            // chunking, or refactor the entire loop to be async stream-based.
-            // For now, we will perform the amplitude fallback to ensure chunks are cut.
+            // Await the processing so we get the events emitted before we check `_lastVadSpeechEvent`
+            await _vad!.processAudioData(floatPcm.buffer.asUint8List());
+            isSpeech = _lastVadSpeechEvent;
           } catch(e) {
               Logger.error('VadAudioProcessor: VAD inference error: $e');
           }
-        }
-
-        // Amplitude fallback simulating VAD
-        if (!isSpeech && (!_vadInitialized || _vad == null)) {
+        } else {
+          // Amplitude fallback simulating VAD
           double maxVolume = 0;
           for (int i = 0; i < pcmData.length; i++) {
              double vol = (pcmData[i] / 32768.0).abs();
@@ -196,11 +199,19 @@ class VadAudioProcessor {
     return savedFiles;
   }
 
-  Future<String?> flush() async {
+  Future<String?> flushRemaining() async {
     if (_currentRefs.isNotEmpty) {
       Logger.debug('VadAudioProcessor: Flushing remaining buffer.');
       return await _flushRecording();
     }
+    return null;
+  }
+
+  Future<String?> flushOnlyCompleted() async {
+    // Only flush if we're actively capturing, but don't close the interval
+    // so we can append to it on the next run. Wait, for VAD, this logic might
+    // be different than FixedInterval because chunks are state-driven.
+    // For now we just return null and don't reset the VAD state if we don't want to cut.
     return null;
   }
 
@@ -409,9 +420,7 @@ class VadAudioProcessor {
     int nextExpectedOffset = -1;
 
     final List<Uint8List> decodedSegments = [];
-    final wavDecoder =
-        Platform.isIOS || Platform.isAndroid ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels) : null;
-    if (wavDecoder != null) {
+    if (_decoder != null) {
       try {
         for (var i = 0; i < refs.length; i++) {
           if (i % 50 == 0) await Future.delayed(Duration.zero);
@@ -434,15 +443,16 @@ class VadAudioProcessor {
           nextExpectedOffset = frameDataOffset + ref.frameLength;
 
           try {
-            final decoded = wavDecoder.decode(input: opusBytes);
-            decodedSegments.add(decoded.buffer.asUint8List());
+            final decoded = _decoder?.decode(input: opusBytes);
+            if (decoded != null) {
+              decodedSegments.add(decoded.buffer.asUint8List());
+            }
           } catch (e) {
             // Skip corrupt frame
           }
         }
       } finally {
         await currentRaf?.close();
-        wavDecoder.destroy();
       }
     }
 

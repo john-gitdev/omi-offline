@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'package:disk_space_2/disk_space_2.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/services.dart';
@@ -438,8 +439,24 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               if (packageSize == 0xFFFFFFFE) {
                 if (scanOff + 20 <= batch.length) {
                   final metaBd = ByteData.sublistView(batch, scanOff + 4, scanOff + 20);
+
                   if (lastDeviceSessionId != null) {
-                    await _saveMarker(lastDeviceSessionId, metaBd.getUint32(0, Endian.little));
+                    final utcTime = metaBd.getUint32(0, Endian.little);
+                    const kMinValidEpoch = 946684800; // Jan 1 2000
+
+                    if (utcTime > kMinValidEpoch) {
+                      final prefs = SharedPreferencesUtil();
+                      final anchorKey = 'anchor_utc_device_session_$lastDeviceSessionId';
+                      final existingAnchor = prefs.getInt(anchorKey, defaultValue: 0);
+
+                      // Update anchor only if it's new or more than 60s ahead
+                      if (existingAnchor == 0 || (utcTime - existingAnchor) > 60) {
+                        await prefs.saveInt(anchorKey, utcTime);
+                        await prefs.saveInt('anchor_uptime_device_session_$lastDeviceSessionId', metaBd.getUint32(4, Endian.little));
+                      }
+                    }
+
+                    await _saveMarker(lastDeviceSessionId, utcTime);
                   }
                   scanOff += 20;
                   continue;
