@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
-import 'package:omi/services/vad_audio_processor.dart';
+import 'package:omi/services/fixed_interval_audio_processor.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/time_utils.dart';
 
@@ -411,7 +411,7 @@ class RecordingsManager {
       int lastSafeToDeleteIndex = -1;
 
       try {
-        final processor = await VadAudioProcessor.create(outputDir: tempProcessingPath);
+        final processor = FixedIntervalAudioProcessor(outputDir: tempProcessingPath);
         try {
           for (int i = 0; i < allSegments.length; i++) {
             final file = allSegments[i];
