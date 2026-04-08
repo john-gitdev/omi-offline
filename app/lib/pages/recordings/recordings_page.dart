@@ -518,20 +518,16 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       batchesToProcess = activeBatches;
       backgroundMode = false;
     } else {
-      final safeBatches = <Batch>[];
-      for (final batch in activeBatches) {
+      batchesToProcess = (await Future.wait(activeBatches.map((batch) async {
         final safe = await RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
-        if (safe.isNotEmpty) {
-          safeBatches.add(Batch(
-            dateString: batch.dateString,
-            date: batch.date,
-            rawSegments: safe,
-            finalizedRecordings: batch.finalizedRecordings,
-            markerTimestamps: batch.markerTimestamps,
-          ));
-        }
-      }
-      batchesToProcess = safeBatches;
+        return Batch(
+          dateString: batch.dateString,
+          date: batch.date,
+          rawSegments: safe,
+          finalizedRecordings: batch.finalizedRecordings,
+          markerTimestamps: batch.markerTimestamps,
+        );
+      }))).where((b) => b.rawSegments.isNotEmpty).toList();
       backgroundMode = true;
     }
 
@@ -558,19 +554,15 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     WakelockPlus.enable();
     try {
-      await _manager.processAll(
-          batchesToProcess,
-          (progress) {
-            if (mounted) {
-              setState(() {
-                _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
-              });
-            }
-          },
-          backgroundMode: backgroundMode,
-          onRecordingFinalized: () {
-            unawaited(_reloadBatchesSilently());
+      await _manager.processAll(batchesToProcess, (progress) {
+        if (mounted) {
+          setState(() {
+            _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
           });
+        }
+      }, backgroundMode: backgroundMode, onRecordingFinalized: () {
+        unawaited(_reloadBatchesSilently());
+      });
     } catch (e) {
       WakelockPlus.disable();
       if (_spState == SyncProcessState.stopping) {
@@ -716,9 +708,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     final keySetAt = _prefs.heypocketKeySetAt;
     final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
     for (final batch in _batches) {
-      for (final file in batch.finalizedRecordings) {
+      for (final conversation in batch.finalizedRecordings) {
         if (_autoUploadActive >= 2) return;
-        final conversation = Conversation.fromFile(file);
         if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
         final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
@@ -881,8 +872,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     Text('Building next recording',
                         style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
                     const SizedBox(height: 2),
-                    Text('$accMin out of 30 minutes accumulated',
-                        style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                    Text('$accMin out of 30 minutes accumulated', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
                   ],
                 ),
               ),
@@ -1099,8 +1089,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   // ─── Default mode: batch card ──────────────────────────────────────────────
   Widget _buildBatchCard(Batch batch, Map<String, List<MarkerConversation>> markerMap) {
-    final conversations = batch.finalizedRecordings.map(Conversation.fromFile).toList()
-      ..sort((a, b) => b.startTime.compareTo(a.startTime));
+    final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
     if (conversations.isEmpty) return const SizedBox.shrink();
 
     return Card(
