@@ -1055,16 +1055,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   Map<String, List<MarkerConversation>> _buildMarkerMap() {
     final map = <String, List<MarkerConversation>>{};
     for (final mc in _markerConversations) {
-      if (mc.segments.isEmpty) continue;
-      final markerMs = mc.markerTime.millisecondsSinceEpoch;
-      // Find the last segment whose start is <= markerMs — that segment contains the tap.
-      File markerSegment = mc.segments.first;
-      for (final seg in mc.segments) {
-        final name = seg.path.split('/').last;
-        final ms = int.tryParse(name.contains('_') ? name.split('_').last.split('.').first : '');
-        if (ms != null && ms <= markerMs) markerSegment = seg;
-      }
-      map.putIfAbsent(markerSegment.path.split('/').last, () => []).add(mc);
+      if (mc.segment == null) continue; // pending — no segment to key on
+      final key = mc.segment!.path.split('/').last;
+      map.putIfAbsent(key, () => []).add(mc);
     }
     return map;
   }

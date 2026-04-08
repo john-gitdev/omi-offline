@@ -21,10 +21,10 @@ class MarkerConversationPlayerPage extends StatefulWidget {
 class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerPage> {
   final AudioPlayer _player = AudioPlayer();
 
-  // Mutable playback state — updated on extend
-  late List<File> _segments;
-  late Duration _visibleStart;
-  late Duration _visibleEnd;
+  late File _segment;
+  late Duration _markerOffset;
+  late Duration _cropStart;
+  late Duration _cropEnd;
   Duration _totalDuration = Duration.zero;
 
   List<double> _waveform = [];
@@ -35,10 +35,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   bool _isPlaying = false;
   double _speed = 1.0;
 
-  bool _canExtendLeft = false;
-  bool _canExtendRight = false;
-  bool _isExtending = false;
-
   _DragMode _dragMode = _DragMode.none;
   late bool _userSaved;
 
@@ -47,25 +43,23 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   @override
   void initState() {
     super.initState();
-    _segments = List.of(widget.markerConversation.segments);
-    _visibleStart = widget.markerConversation.visibleStart;
-    _visibleEnd = widget.markerConversation.visibleEnd;
+    _segment = widget.markerConversation.segment!;
+    _markerOffset = Duration(milliseconds: widget.markerConversation.markerOffsetMs);
+    _cropStart = Duration(milliseconds: widget.markerConversation.cropStartMs);
+    _cropEnd = Duration(milliseconds: widget.markerConversation.cropEndMs);
     _userSaved = widget.markerConversation.userSaved;
     _init();
   }
 
   Future<void> _init() async {
     await Future.wait([_loadWaveform(), _setupAudio()]);
-    await _checkExtendability();
+    await _player.seek(_markerOffset);
   }
 
   // ── Waveform ───────────────────────────────────────────────────────────────
 
   Future<void> _loadWaveform() async {
-    final bars = <double>[];
-    for (final seg in _segments) {
-      bars.addAll(_readMetaWaveform(seg));
-    }
+    final bars = _readMetaWaveform(_segment);
     if (mounted)
       setState(() {
         _waveform = bars;
@@ -90,16 +84,15 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   // ── Audio setup ────────────────────────────────────────────────────────────
 
   Future<void> _setupAudio() async {
-    final source = _buildSource();
-    await _player.setAudioSource(source, initialPosition: _visibleStart);
+    await _player.setAudioSource(AudioSource.file(_segment.path), initialPosition: _cropStart);
 
-    _totalDuration = _computeTotalDuration();
+    _totalDuration = Duration(milliseconds: _readSegmentDurationMs(_segment));
     if (mounted) setState(() => _loadingAudio = false);
 
     _player.positionStream.listen((pos) {
       if (mounted) setState(() => _position = pos);
-      // Soft stop at visibleEnd
-      if (pos >= _visibleEnd && _isPlaying) _player.pause();
+      // Soft stop at _cropEnd
+      if (pos >= _cropEnd && _isPlaying) _player.pause();
     });
     _player.playerStateStream.listen((state) {
       if (mounted) {
@@ -108,21 +101,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
         });
       }
     });
-  }
-
-  AudioSource _buildSource() {
-    if (_segments.length == 1) return AudioSource.file(_segments[0].path);
-    return ConcatenatingAudioSource(
-      children: _segments.map((f) => AudioSource.file(f.path)).toList(),
-    );
-  }
-
-  Duration _computeTotalDuration() {
-    int total = 0;
-    for (final seg in _segments) {
-      total += _readSegmentDurationMs(seg);
-    }
-    return Duration(milliseconds: total);
   }
 
   int _readSegmentDurationMs(File seg) {
@@ -138,107 +116,13 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
     }
   }
 
-  static int? _parseSegmentMillis(File f) {
-    final name = f.path.split('/').last;
-    final part = name.contains('_') ? name.split('_').last.split('.').first : null;
-    return part != null ? int.tryParse(part) : null;
-  }
-
-  // ── Extend ─────────────────────────────────────────────────────────────────
-
-  Future<void> _checkExtendability() async {
-    final left = await _findAdjacentSegment(left: true);
-    final right = await _findAdjacentSegment(left: false);
-    if (mounted)
-      setState(() {
-        _canExtendLeft = left != null;
-        _canExtendRight = right != null;
-      });
-  }
-
-  Future<File?> _findAdjacentSegment({required bool left}) async {
-    final dateFolder = widget.markerConversation.edlFile.parent;
-    // OPTIMIZATION: Switched from listSync() to asynchronous list()
-    // to prevent blocking the UI thread during file system directory traversal.
-    final entities = await dateFolder.list().toList();
-    final all = entities.whereType<File>().where((f) => f.path.endsWith('.m4a')).toList()
-      ..sort((a, b) => (_parseSegmentMillis(a) ?? 0).compareTo(_parseSegmentMillis(b) ?? 0));
-
-    if (left) {
-      final firstMs = _parseSegmentMillis(_segments.first) ?? 0;
-      final idx = all.indexWhere((f) => (_parseSegmentMillis(f) ?? 0) == firstMs);
-      return idx > 0 ? all[idx - 1] : null;
-    } else {
-      final lastMs = _parseSegmentMillis(_segments.last) ?? 0;
-      final idx = all.indexWhere((f) => (_parseSegmentMillis(f) ?? 0) == lastMs);
-      return (idx >= 0 && idx < all.length - 1) ? all[idx + 1] : null;
-    }
-  }
-
-  Future<void> _extendLeft() async {
-    if (_isExtending) return;
-    final prev = await _findAdjacentSegment(left: true);
-    if (prev == null) return;
-
-    setState(() => _isExtending = true);
-    try {
-      final prevMs = _readSegmentDurationMs(prev);
-      final prevDuration = Duration(milliseconds: prevMs);
-      final savedPosition = _position;
-
-      setState(() {
-        _segments = [prev, ..._segments];
-        // Shift both crop points right by prevDuration to preserve absolute times.
-        _visibleStart = _visibleStart + prevDuration;
-        _visibleEnd = _visibleEnd + prevDuration;
-      });
-
-      await _saveEdl();
-      await _reloadAudio(seekTo: savedPosition + prevDuration);
-      await _loadWaveform();
-      await _checkExtendability();
-    } finally {
-      if (mounted) setState(() => _isExtending = false);
-    }
-  }
-
-  Future<void> _extendRight() async {
-    if (_isExtending) return;
-    final next = await _findAdjacentSegment(left: false);
-    if (next == null) return;
-
-    setState(() => _isExtending = true);
-    try {
-      final nextMs = _readSegmentDurationMs(next);
-      final savedPosition = _position;
-
-      setState(() {
-        _segments = [..._segments, next];
-        // Expand visibleEnd to include the new segment.
-        _visibleEnd = _visibleEnd + Duration(milliseconds: nextMs);
-      });
-
-      await _saveEdl();
-      await _reloadAudio(seekTo: savedPosition);
-      await _loadWaveform();
-      await _checkExtendability();
-    } finally {
-      if (mounted) setState(() => _isExtending = false);
-    }
-  }
-
-  Future<void> _reloadAudio({required Duration seekTo}) async {
-    await _player.setAudioSource(_buildSource(), initialPosition: seekTo);
-    _totalDuration = _computeTotalDuration();
-    if (mounted) setState(() {});
-  }
-
   Future<void> _saveEdl() async {
     final edlData = {
       'markerTimestampMs': widget.markerConversation.markerTime.millisecondsSinceEpoch,
-      'segments': _segments.map((f) => f.path.split('/').last).toList(),
-      'visibleStartMs': _visibleStart.inMilliseconds,
-      'visibleEndMs': _visibleEnd.inMilliseconds,
+      'segmentFilename': _segment.path.split('/').last,
+      'markerOffsetMs': _markerOffset.inMilliseconds,
+      'cropStartMs': _cropStart.inMilliseconds,
+      'cropEndMs': _cropEnd.inMilliseconds,
       'userSaved': _userSaved,
     };
     await widget.markerConversation.edlFile.writeAsString(jsonEncode(edlData));
@@ -247,10 +131,11 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   // ── Save ───────────────────────────────────────────────────────────────────
 
   String get _liveTimeRangeLabel {
-    if (_segments.isEmpty) return widget.markerConversation.timeRangeLabel;
-    final firstMs = _parseSegmentMillis(_segments.first) ?? 0;
-    final origin = DateTime.fromMillisecondsSinceEpoch(firstMs);
-    return '${fmtHourMin(origin.add(_visibleStart))} – ${fmtHourMin(origin.add(_visibleEnd))}';
+    final name = _segment.path.split('/').last;
+    final part = name.contains('_') ? name.split('_').last.split('.').first : null;
+    final firstMs = part != null ? int.tryParse(part) : 0;
+    final origin = DateTime.fromMillisecondsSinceEpoch(firstMs ?? 0);
+    return '${fmtHourMin(origin.add(_cropStart))} – ${fmtHourMin(origin.add(_cropEnd))}';
   }
 
   Future<void> _saveConversation() async {
@@ -296,14 +181,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
     return '$m:$s';
   }
 
-  double get _markerRatio {
-    if (_totalDuration.inMilliseconds == 0) return 0;
-    final firstMs = _parseSegmentMillis(_segments.first) ?? 0;
-    final markerMs = widget.markerConversation.markerTime.millisecondsSinceEpoch;
-    final offsetMs = markerMs - firstMs;
-    return (offsetMs / _totalDuration.inMilliseconds).clamp(0.0, 1.0);
-  }
-
   // ── Dispose ────────────────────────────────────────────────────────────────
 
   @override
@@ -318,8 +195,9 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   Widget build(BuildContext context) {
     final totalMs = _totalDuration.inMilliseconds;
     final progressRatio = totalMs > 0 ? (_position.inMilliseconds / totalMs).clamp(0.0, 1.0) : 0.0;
-    final visibleStartRatio = totalMs > 0 ? (_visibleStart.inMilliseconds / totalMs).clamp(0.0, 1.0) : 0.0;
-    final visibleEndRatio = totalMs > 0 ? (_visibleEnd.inMilliseconds / totalMs).clamp(0.0, 1.0) : 1.0;
+    final visibleStartRatio = totalMs > 0 ? (_cropStart.inMilliseconds / totalMs).clamp(0.0, 1.0) : 0.0;
+    final visibleEndRatio = totalMs > 0 ? (_cropEnd.inMilliseconds / totalMs).clamp(0.0, 1.0) : 1.0;
+    final markerOffsetRatio = totalMs > 0 ? (_markerOffset.inMilliseconds / totalMs).clamp(0.0, 1.0) : 0.0;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0D0D0D),
@@ -374,8 +252,8 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                                 onHorizontalDragStart: (d) {
                                   if (tMs == 0) return;
                                   final x = d.localPosition.dx;
-                                  final vsX = (_visibleStart.inMilliseconds / tMs) * width;
-                                  final veX = (_visibleEnd.inMilliseconds / tMs) * width;
+                                  final vsX = (_cropStart.inMilliseconds / tMs) * width;
+                                  final veX = (_cropEnd.inMilliseconds / tMs) * width;
                                   if ((x - vsX).abs() < _kHandleHitSlop) {
                                     setState(() => _dragMode = _DragMode.left);
                                   } else if ((x - veX).abs() < _kHandleHitSlop) {
@@ -390,15 +268,15 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                                   final ms = (r * tMs).round();
                                   if (_dragMode == _DragMode.left) {
                                     final newStart = Duration(milliseconds: ms);
-                                    const minWindow = Duration(seconds: 30);
-                                    if (newStart >= Duration.zero && newStart < _visibleEnd - minWindow) {
-                                      setState(() => _visibleStart = newStart);
+                                    const minWindow = Duration(seconds: 5);
+                                    if (newStart >= Duration.zero && newStart < _cropEnd - minWindow) {
+                                      setState(() => _cropStart = newStart);
                                     }
                                   } else if (_dragMode == _DragMode.right) {
                                     final newEnd = Duration(milliseconds: ms);
-                                    const minWindow = Duration(seconds: 30);
-                                    if (newEnd <= _totalDuration && newEnd > _visibleStart + minWindow) {
-                                      setState(() => _visibleEnd = newEnd);
+                                    const minWindow = Duration(seconds: 5);
+                                    if (newEnd <= _totalDuration && newEnd > _cropStart + minWindow) {
+                                      setState(() => _cropEnd = newEnd);
                                     }
                                   } else {
                                     _player.seek(Duration(milliseconds: ms));
@@ -406,8 +284,8 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                                 },
                                 onHorizontalDragEnd: (_) async {
                                   if (_dragMode == _DragMode.left || _dragMode == _DragMode.right) {
-                                    if (_position < _visibleStart || _position > _visibleEnd) {
-                                      await _player.seek(_visibleStart);
+                                    if (_position < _cropStart || _position > _cropEnd) {
+                                      await _player.seek(_cropStart);
                                     }
                                     await _saveEdl();
                                   }
@@ -419,7 +297,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                                     progress: progressRatio,
                                     visibleStartRatio: visibleStartRatio,
                                     visibleEndRatio: visibleEndRatio,
-                                    markerRatio: _markerRatio,
+                                    markerRatio: markerOffsetRatio,
                                     activeDragMode: _dragMode,
                                   ),
                                   size: Size(width, 100),
@@ -520,26 +398,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                   ),
                   const SizedBox(height: 32),
 
-                  // Extend buttons
-                  if (_canExtendLeft || _canExtendRight)
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        if (_canExtendLeft)
-                          _ExtendButton(
-                            label: '← Extend',
-                            loading: _isExtending,
-                            onTap: _extendLeft,
-                          ),
-                        if (_canExtendLeft && _canExtendRight) const SizedBox(width: 16),
-                        if (_canExtendRight)
-                          _ExtendButton(
-                            label: 'Extend →',
-                            loading: _isExtending,
-                            onTap: _extendRight,
-                          ),
-                      ],
-                    ),
                 ],
               ),
             ),
@@ -674,33 +532,3 @@ class _SeekBtn extends StatelessWidget {
   }
 }
 
-// ── Extend button ─────────────────────────────────────────────────────────────
-
-class _ExtendButton extends StatelessWidget {
-  final String label;
-  final bool loading;
-  final VoidCallback onTap;
-
-  const _ExtendButton({required this.label, required this.loading, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: loading ? null : onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-        decoration: BoxDecoration(
-          color: const Color(0xFF2C2C2E),
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: loading
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.deepPurpleAccent),
-              )
-            : Text(label, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500)),
-      ),
-    );
-  }
-}
