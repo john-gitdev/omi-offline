@@ -14,9 +14,14 @@ class OfflineAudioSettingsPage extends StatefulWidget {
 class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late bool _autoSyncEnabled;
   late bool _use24HourTime;
-  late int _markerPreMinutes;
-  late int _markerPostMinutes;
   late int _retentionDays;
+
+  late double _vadSpeechThreshold;
+  late int _vadSplitSeconds;
+  late int _vadMinSpeechSeconds;
+  late double _vadHangoverSeconds;
+  late double _vadPreSpeechSeconds;
+  late int _vadGapSeconds;
 
   bool _isDirty = false;
 
@@ -25,9 +30,14 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     super.initState();
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
-    _markerPreMinutes = SharedPreferencesUtil().markerPreMinutes;
-    _markerPostMinutes = SharedPreferencesUtil().markerPostMinutes;
     _retentionDays = SharedPreferencesUtil().recordingRetentionDays;
+
+    _vadSpeechThreshold = SharedPreferencesUtil().vadSpeechThreshold;
+    _vadSplitSeconds = SharedPreferencesUtil().vadSplitSeconds;
+    _vadMinSpeechSeconds = SharedPreferencesUtil().vadMinSpeechSeconds;
+    _vadHangoverSeconds = SharedPreferencesUtil().vadHangoverSeconds;
+    _vadPreSpeechSeconds = SharedPreferencesUtil().vadPreSpeechSeconds;
+    _vadGapSeconds = SharedPreferencesUtil().vadGapSeconds;
   }
 
   void _markDirty() {
@@ -37,9 +47,15 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   void _saveSettings() {
     SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
     SharedPreferencesUtil().use24HourTime = _use24HourTime;
-    SharedPreferencesUtil().markerPreMinutes = _markerPreMinutes;
-    SharedPreferencesUtil().markerPostMinutes = _markerPostMinutes;
     SharedPreferencesUtil().recordingRetentionDays = _retentionDays;
+
+    SharedPreferencesUtil().vadSpeechThreshold = _vadSpeechThreshold;
+    SharedPreferencesUtil().vadSplitSeconds = _vadSplitSeconds;
+    SharedPreferencesUtil().vadMinSpeechSeconds = _vadMinSpeechSeconds;
+    SharedPreferencesUtil().vadHangoverSeconds = _vadHangoverSeconds;
+    SharedPreferencesUtil().vadPreSpeechSeconds = _vadPreSpeechSeconds;
+    SharedPreferencesUtil().vadGapSeconds = _vadGapSeconds;
+
     setState(() => _isDirty = false);
   }
 
@@ -201,53 +217,151 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               ),
               const SizedBox(height: 32),
 
-              // Pre-marker window
+              // Conversation Detection
               const Text(
-                'Before Marker',
+                'Conversation Detection',
                 style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
               ),
-              const SizedBox(height: 8),
-              Text(
-                'How much audio before a marker tap to include when you open a marked recording.',
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [0, 5, 10, 15]
-                    .map((min) => _WindowOption(
-                          label: min == 0 ? 'None' : '$min min',
-                          selected: _markerPreMinutes == min,
-                          onTap: () {
-                            setState(() => _markerPreMinutes = min);
-                            _markDirty();
-                          },
-                        ))
-                    .toList(),
-              ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 16),
 
-              // Post-marker window
+              // Speech Sensitivity
               const Text(
-                'After Marker',
-                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+                'Speech Sensitivity',
+                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 4),
               Text(
-                'How much audio after a marker tap to include. Extend right to add more.',
+                'Lower = more sensitive (picks up quiet speech). Higher = stricter (ignores background noise).',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              ),
+              Slider(
+                value: _vadSpeechThreshold,
+                min: 0.1,
+                max: 0.9,
+                divisions: 16,
+                label: '${(_vadSpeechThreshold * 100).round()}%',
+                activeColor: Colors.deepPurpleAccent,
+                onChanged: (value) {
+                  setState(() => _vadSpeechThreshold = value);
+                  _markDirty();
+                },
+              ),
+              const SizedBox(height: 16),
+
+              // Silence to End Conversation
+              const Text(
+                'Silence to End Conversation',
+                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'How long you need to be quiet before a new conversation begins.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
               ),
               const SizedBox(height: 12),
-              Row(
-                children: [5, 15, 30]
-                    .map((min) => _WindowOption(
-                          label: '$min min',
-                          selected: _markerPostMinutes == min,
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    for (final sec in [30, 60, 120, 300])
+                      Container(
+                        width: 80,
+                        margin: const EdgeInsets.only(right: 8),
+                        child: _WindowOption(
+                          label: sec < 60 ? '${sec}s' : '${sec ~/ 60} min',
+                          selected: _vadSplitSeconds == sec,
                           onTap: () {
-                            setState(() => _markerPostMinutes = min);
+                            setState(() => _vadSplitSeconds = sec);
                             _markDirty();
                           },
-                        ))
-                    .toList(),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              // Minimum Conversation Length
+              const Text(
+                'Minimum Conversation Length',
+                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  for (final sec in [3, 5, 10, 30])
+                    _WindowOption(
+                      label: '${sec}s',
+                      selected: _vadMinSpeechSeconds == sec,
+                      onTap: () {
+                        setState(() => _vadMinSpeechSeconds = sec);
+                        _markDirty();
+                      },
+                    ),
+                ],
+              ),
+              const SizedBox(height: 24),
+
+              // Speech Holdover
+              const Text(
+                'Speech Holdover',
+                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  for (final sec in [0.0, 0.5, 1.0, 2.0])
+                    _WindowOption(
+                      label: '${sec}s',
+                      selected: _vadHangoverSeconds == sec,
+                      onTap: () {
+                        setState(() => _vadHangoverSeconds = sec);
+                        _markDirty();
+                      },
+                    ),
+                ],
+              ),
+              const SizedBox(height: 24),
+
+              // Pre-Speech Buffer
+              const Text(
+                'Pre-Speech Buffer',
+                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  for (final sec in [0.0, 0.5, 1.0, 2.0])
+                    _WindowOption(
+                      label: '${sec}s',
+                      selected: _vadPreSpeechSeconds == sec,
+                      onTap: () {
+                        setState(() => _vadPreSpeechSeconds = sec);
+                        _markDirty();
+                      },
+                    ),
+                ],
+              ),
+              const SizedBox(height: 24),
+
+              // Segment Gap Threshold
+              const Text(
+                'Segment Gap Threshold',
+                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  for (final sec in [10, 30, 60, 120])
+                    _WindowOption(
+                      label: '${sec}s',
+                      selected: _vadGapSeconds == sec,
+                      onTap: () {
+                        setState(() => _vadGapSeconds = sec);
+                        _markDirty();
+                      },
+                    ),
+                ],
               ),
               const SizedBox(height: 32),
 
@@ -290,8 +404,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     const SizedBox(width: 16),
                     Expanded(
                       child: Text(
-                        'Audio is saved in 30-minute segments and processed locally as AAC (M4A) files. '
-                        'Tap the marker button on your Omi to tag a moment — the window above controls how much context is shown.',
+                        'Audio is processed locally using Silero voice activity detection. Each continuous conversation is saved as its own M4A file. Tap the button on your Omi to tag a moment.',
                         style: TextStyle(color: Colors.grey.shade300, fontSize: 14),
                       ),
                     ),

@@ -173,8 +173,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         continue;
       }
 
-      final existing = _wals
-          .firstWhereOrNull((w) => w.device == deviceId && w.fileNum == file.index && w.storage == WalStorage.sdcard);
+      final existing = _wals.firstWhereOrNull(
+          (w) => w.device == deviceId && w.fileNum == file.index && w.storage == WalStorage.sdcard);
       final walOffset =
           (existing != null && existing.walOffset > 0 && existing.walOffset <= file.size) ? existing.walOffset : 0;
 
@@ -215,9 +215,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   Future<BleAudioCodec> _getAudioCodec(String deviceId) async {
-    var connection = _connectionProvider != null
-        ? await _connectionProvider!(deviceId)
-        : await ServiceManager.instance().device.ensureConnection(deviceId);
+    var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
     if (connection == null) return BleAudioCodec.pcm8;
     return await connection.getAudioCodec() ?? BleAudioCodec.pcm8;
   }
@@ -246,9 +244,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         ? await _connectionProvider!(dev.id)
         : await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection != null) {
-      try {
-        await connection.deleteFile(StorageFile(index: wal.fileNum, timestamp: 0, size: 0));
-      } catch (_) {}
+      await connection.deleteFile(StorageFile(index: wal.fileNum, timestamp: 0, size: 0));
     }
     _wals.removeWhere((w) => w.id == wal.id);
     listener.onWalUpdated();
@@ -324,10 +320,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (!appendMode) flushedSegmentsThisTransfer.add(segmentKey);
 
       var (file, bytesWritten) = await _flushToDisk(wal, rawData, timerStart,
-          subFolder: subFolder,
-          deviceSessionId: lastDeviceSessionId,
-          segmentIndex: lastSegmentIndex,
-          append: appendMode);
+          subFolder: subFolder, deviceSessionId: lastDeviceSessionId, segmentIndex: lastSegmentIndex, append: appendMode);
       writtenOffset += bytesWritten;
       _lastSegmentBoundaryOffset = writtenOffset;
       try {
@@ -380,8 +373,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             } else if (incomingOffset > expectedOffset) {
               isStreamLocked = true;
               hasError = true;
-              if (!completer.isCompleted)
-                completer.completeError(_ProtocolGapException(incomingOffset, expectedOffset));
+              if (!completer.isCompleted) completer.completeError(_ProtocolGapException(incomingOffset, expectedOffset));
               return;
             }
 
@@ -529,9 +521,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         final double requiredMb = (totalBytesToDownload * 1.1) / (1024 * 1024);
         if (freeSpaceMb < requiredMb) throw Exception("Phone Storage Full");
       }
-    } catch (_) {
-      rethrow;
-    }
+    } catch (_) { rethrow; }
   }
 
   void _updateSpeed(int bytesDownloaded) {
@@ -548,7 +538,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     _resetSyncState();
     _isSyncing = true;
-
+    
     // Refresh and update atomically before UI sees anything
     final refreshed = await getMissingWals();
     _wals = refreshed;
@@ -560,9 +550,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return null;
     }
     final dev = _device!;
-    final connection = _connectionProvider != null
-        ? await _connectionProvider!(dev.id)
-        : await ServiceManager.instance().device.ensureConnection(dev.id);
+    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) throw Exception('No connection');
 
     bool anyPartial = false;
@@ -598,9 +586,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 listener.onWalUpdated();
               }, onProgress: (offset) {
                 wal.walOffset = offset;
-                final double withinWal = (wal.storageTotalBytes > initialOffset)
-                    ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
-                    : 1.0;
+                final double withinWal = (wal.storageTotalBytes > initialOffset) ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset) : 1.0;
                 final double clamped = ((i + (withinWal.clamp(0.0, 1.0) * 0.9)) / wals.length).clamp(0.0, 1.0);
                 progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
                 _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
@@ -612,14 +598,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 Logger.error('SDCardWalSync: Gap retry limit exceeded for file[${wal.fileNum}]: $e');
                 rethrow; // caught by outer catch below — sets anyPartial
               }
-              Logger.debug(
-                  'SDCardWalSync: Gap detected (retry $gapRetries/$maxGapRetries) — rewinding to ${e.incoming}');
+              Logger.debug('SDCardWalSync: Gap detected (retry $gapRetries/$maxGapRetries) — rewinding to ${e.incoming}');
               wal.walOffset = e.incoming;
               lastOffset = e.incoming;
               _lastSegmentBoundaryOffset = e.incoming;
-              final conn = _connectionProvider != null
-                  ? await _connectionProvider!(dev.id)
-                  : await ServiceManager.instance().device.ensureConnection(dev.id);
+            final conn = dev != null
+                ? (_connectionProvider != null ? await _connectionProvider!(dev.id) : await ServiceManager.instance().device.ensureConnection(dev.id))
+                : (_connectionProvider != null ? await _connectionProvider!('test') : null);
               await conn?.stopStorageSync();
               await Future.delayed(const Duration(milliseconds: 200));
             }
@@ -660,10 +645,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     wal.syncStartedAt = DateTime.now();
     listener.onWalUpdated();
 
-    final dev = _device!;
-    final connection = _connectionProvider != null
-        ? await _connectionProvider!(dev.id)
-        : await ServiceManager.instance().device.ensureConnection(dev.id);
+    final dev = _device;
+    final connection = dev != null
+        ? (_connectionProvider != null ? await _connectionProvider!(dev.id) : await ServiceManager.instance().device.ensureConnection(dev.id))
+        : (_connectionProvider != null ? await _connectionProvider!('test') : null);
     if (connection == null) throw Exception('No connection');
 
     final initialOffset = wal.walOffset;
@@ -685,9 +670,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             listener.onWalUpdated();
           }, onProgress: (offset) {
             wal.walOffset = offset;
-            final double progressPercent = (wal.storageTotalBytes > initialOffset)
-                ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
-                : 1.0;
+            final double progressPercent = (wal.storageTotalBytes > initialOffset) ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset) : 1.0;
             final double clamped = progressPercent.clamp(0.0, 1.0);
             progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
             _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
@@ -703,9 +686,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           wal.walOffset = e.incoming;
           lastOffset = e.incoming;
           _lastSegmentBoundaryOffset = e.incoming;
-          final conn = _connectionProvider != null
-              ? await _connectionProvider!(dev.id)
-              : await ServiceManager.instance().device.ensureConnection(dev.id);
+          final conn = dev != null
+              ? (_connectionProvider != null ? await _connectionProvider!(dev.id) : await ServiceManager.instance().device.ensureConnection(dev.id))
+              : (_connectionProvider != null ? await _connectionProvider!('test') : null);
           await conn?.stopStorageSync();
           await Future.delayed(const Duration(milliseconds: 200));
         }
@@ -737,9 +720,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<SyncLocalFilesResponse?> rotateAndSync({IWalSyncProgressListener? progress}) async {
     if (_isSyncing) return null;
     final dev = _device!;
-    final connection = _connectionProvider != null
-        ? await _connectionProvider!(dev.id)
-        : await ServiceManager.instance().device.ensureConnection(dev.id);
+    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) throw Exception('No connection');
 
     final rotated = await connection.rotateFile();
@@ -759,9 +740,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   Future<void> deleteAllPendingWals() async {
     if (_device == null) return;
-    final connection = _connectionProvider != null
-        ? await _connectionProvider!(_device!.id)
-        : await ServiceManager.instance().device.ensureConnection(_device!.id);
+    final connection = await ServiceManager.instance().device.ensureConnection(_device!.id);
     if (connection == null) return;
 
     Logger.debug('SDCardWalSync: deleteAllPendingWals — Sending CMD_CLEAR_STORAGE (0x14)');
