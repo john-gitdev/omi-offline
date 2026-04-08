@@ -29,6 +29,7 @@ dependencies:
   skeletonizer: 2.0.1
   shimmer: ^3.0.0
   pull_down_button: ^0.10.2
+  onnxruntime: ^1.4.0
 
   flutter_map: ^7.0.2
   latlong2: ^0.9.1
