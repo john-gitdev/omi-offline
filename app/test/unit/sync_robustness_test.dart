@@ -6,10 +6,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/devices/device_connection.dart';
+import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/wals/wal.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
-import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/wals/sdcard_wal_sync.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -207,9 +207,6 @@ void main() {
       final syncFuture = sync.syncWal(wal: wal);
 
       await pump(); // let subscription register
-
-      // Need to capture the error immediately before `await pump()` because the
-      // future completes with an error as soon as the packet is dispatched.
       mockConn.add(ackPacket(0x01)); // non-zero = firmware error
 
       await expectLater(syncFuture, throwsA(isA<Exception>()));
@@ -292,12 +289,9 @@ void main() {
         // DATA at offset 20 — gap (expected 5 on first attempt; on retries
         // wal.walOffset=5 so expectedOffset=5, incoming=20 is still a gap)
         mockConn.add(dataPacket(20, List<int>.filled(5, 0xCC)));
-
-        if (attempt < 3) {
-          await pump();
-          // Allow retry delay (200 ms) to elapse
-          await Future.delayed(const Duration(milliseconds: 250));
-        }
+        await pump();
+        // Allow retry delay (100 ms) to elapse
+        await Future.delayed(const Duration(milliseconds: 150));
       }
 
       await expectLater(syncFuture, throwsA(isA<Exception>()));
