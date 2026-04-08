@@ -408,8 +408,10 @@ class RecordingsManager {
             .compareTo(int.tryParse(bp.length > 1 ? bp[1] : '0') ?? 0);
       });
 
+      int lastSafeToDeleteIndex = -1;
+
       try {
-        final processor = VadAudioProcessor(outputDir: tempProcessingPath);
+        final processor = await VadAudioProcessor.create(outputDir: tempProcessingPath);
         try {
           for (int i = 0; i < allSegments.length; i++) {
             final file = allSegments[i];
@@ -428,11 +430,26 @@ class RecordingsManager {
             await processor.processSegmentFile(file, segmentStartTime);
             await moveTempFilesToLive();
 
+            if (backgroundMode && !processor.isCapturing) {
+              lastSafeToDeleteIndex = i;
+            }
+
             onProgress(((i + 1) / allSegments.length) * 0.9);
             if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
           }
 
-          await processor.flush();
+          if (backgroundMode) {
+            final flushedPath = await processor.flushOnlyCompleted();
+            if (flushedPath != null) {
+              allSegments.add(File(flushedPath));
+            }
+          } else {
+            final flushedPath = await processor.flushRemaining();
+            if (flushedPath != null) {
+              allSegments.add(File(flushedPath));
+            }
+            lastSafeToDeleteIndex = allSegments.length - 1;
+          }
           await moveTempFilesToLive();
         } finally {
           processor.destroy();
