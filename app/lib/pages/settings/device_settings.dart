@@ -622,13 +622,13 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                 final pairedDeviceId = provider.pairedDevice!.id;
                 // Use forgetDevice() to explicitly clear associations
                 await ServiceManager.instance().device.forgetDevice(pairedDeviceId);
-                
+
                 // Explicitly tell native to stop managing this device (PR 6200 alignment)
                 if (provider.pairedDevice != null) {
                   final BleHostApi hostApi = BleHostApi();
                   await hostApi.unmanageDevice(provider.pairedDevice!.id);
                 }
-                
+
                 // Cancel any in-progress sync immediately.
                 final walSync = ServiceManager.instance().wal.getSyncs();
                 walSync.cancelSync();

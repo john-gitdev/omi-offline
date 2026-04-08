@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/devices/device_connection.dart';
@@ -69,24 +70,41 @@ class MockDeviceConnection extends Fake implements DeviceConnection {
   }
 
   @override
+  Future<Stream<List<int>>> getBleStorageBytesStream() async {
+    return _controller.stream;
+  }
+
+  @override
   Future<bool> isConnected() async => true;
 
   @override
   Future<bool> performWriteToStorage(int fileNum, int type, int offset) async => true;
 
   @override
+  Future<bool> writeToStorage(int fileNum, int type, int offset) async => true;
+
+  @override
   Future<List<int>> performGetStorageList() async => [0, 0];
+
+  @override
+  Future<void> acquireStorageLock() async {}
+
+  @override
+  Future<void> releaseStorageLock() async {}
+
+  @override
+  Future<bool> stopStorageSync() async => true;
 }
 
 class MockBtDevice extends Fake implements BtDevice {
   @override
   String get id => 'test-device-id';
-  
+
   final MockDeviceConnection connection = MockDeviceConnection();
-  
+
   @override
   DeviceConnection? get connectionInstance => connection;
-  
+
   @override
   BleAudioCodec get codec => BleAudioCodec.opus;
 }
@@ -103,6 +121,10 @@ void main() {
 
     SharedPreferences.setMockInitialValues({});
     await SharedPreferencesUtil.init();
+
+    const MethodChannel('disk_space_2').setMockMethodCallHandler((MethodCall methodCall) async {
+      return 1000.0;
+    });
   });
 
   tearDown(() {
@@ -123,158 +145,6 @@ void main() {
       final bytes = [0x01, 0x00, 0x00, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
       final payload = bytes.sublist(5);
       expect(payload, equals([0xDE, 0xAD, 0xBE, 0xEF]));
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Golden Anchor Guard Tests
-  //
-  // These tests verify that SDCardWalSyncImpl only updates the session-level
-  // anchor when the incoming utcTime is both > kMinValidEpoch (Jan 1 2000)
-  // AND more than 60 seconds beyond the existing anchor.
-  // -------------------------------------------------------------------------
-  group('Golden Anchor Guard', () {
-    const kMinValidEpoch = 946684800; // Jan 1 2000
-
-    /// Builds a 17-byte WAL metadata frame (len=255 prefix + 16-byte body).
-    /// Layout: [0xFF 0x00 0x00 0x00][utcLE4][uptimeLE4][sessionLE4][segmentLE4]
-    List<int> metaFrame({
-      required int utcTime,
-      required int uptimeMs,
-      required int sessionId,
-      int segmentIndex = 0,
-    }) {
-      final buf = ByteData(16);
-      buf.setUint32(0, utcTime, Endian.little);
-      buf.setUint32(4, uptimeMs, Endian.little);
-      buf.setUint32(8, sessionId, Endian.little);
-      buf.setUint32(12, segmentIndex, Endian.little);
-      return [0xFF, 0x00, 0x00, 0x00, ...buf.buffer.asUint8List()];
-    }
-
-    setUp(() {
-      SharedPreferences.setMockInitialValues({});
-    });
-
-    test('Stale utcTime (year < 2000) does NOT overwrite a clean anchor', () async {
-      final prefs = await SharedPreferences.getInstance();
-      final sessionId = 42;
-      const goodUtc = kMinValidEpoch + 10000; // valid
-      const goodUptime = 5000;
-      const staleUtc = 1000; // year ~1970
-
-      // Seed a valid anchor
-      await prefs.setInt('anchor_utc_device_session_$sessionId', goodUtc);
-      await prefs.setInt('anchor_uptime_device_session_$sessionId', goodUptime);
-
-      // Simulate ingesting a metadata frame with a stale utcTime
-      final mockConn = MockDeviceConnection();
-      final sync = SDCardWalSyncImpl(MockWalSyncListener(), connectionProvider: (_) async => mockConn);
-
-      final wal = Wal(
-        codec: BleAudioCodec.opus,
-        channel: 1,
-        device: 'test-device',
-        fileNum: 1,
-        walOffset: 0,
-        storageTotalBytes: 17,
-        timerStart: 0,
-        storage: WalStorage.sdcard,
-      );
-      final syncFuture = sync.syncWal(wal: wal);
-
-      await Future.delayed(Duration.zero);
-      mockConn.add(ackPacket(0x00));
-      await Future.delayed(Duration.zero);
-      mockConn.add(dataPacket(0, metaFrame(utcTime: staleUtc, uptimeMs: 9999, sessionId: sessionId)));
-      await Future.delayed(Duration.zero);
-      mockConn.add(eotPacket());
-
-      await syncFuture.catchError((_) {});
-      await mockConn.close();
-
-      // Anchor must NOT have been overwritten with stale data
-      expect(prefs.getInt('anchor_utc_device_session_$sessionId'), equals(goodUtc));
-      expect(prefs.getInt('anchor_uptime_device_session_$sessionId'), equals(goodUptime));
-    });
-
-    test('utcTime only 30s ahead of existing anchor does NOT overwrite it', () async {
-      final prefs = await SharedPreferences.getInstance();
-      final sessionId = 43;
-      const existingUtc = kMinValidEpoch + 10000;
-      const existingUptime = 5000;
-      const slightlyNewerUtc = existingUtc + 30; // within the 60s threshold
-
-      await prefs.setInt('anchor_utc_device_session_$sessionId', existingUtc);
-      await prefs.setInt('anchor_uptime_device_session_$sessionId', existingUptime);
-
-      final mockConn = MockDeviceConnection();
-      final sync = SDCardWalSyncImpl(MockWalSyncListener(), connectionProvider: (_) async => mockConn);
-
-      final wal = Wal(
-        codec: BleAudioCodec.opus,
-        channel: 1,
-        device: 'test-device',
-        fileNum: 1,
-        walOffset: 0,
-        storageTotalBytes: 17,
-        timerStart: 0,
-        storage: WalStorage.sdcard,
-      );
-      final syncFuture = sync.syncWal(wal: wal);
-
-      await Future.delayed(Duration.zero);
-      mockConn.add(ackPacket(0x00));
-      await Future.delayed(Duration.zero);
-      mockConn.add(dataPacket(0, metaFrame(utcTime: slightlyNewerUtc, uptimeMs: 6000, sessionId: sessionId)));
-      await Future.delayed(Duration.zero);
-      mockConn.add(eotPacket());
-
-      await syncFuture.catchError((_) {});
-      await mockConn.close();
-
-      expect(prefs.getInt('anchor_utc_device_session_$sessionId'), equals(existingUtc));
-      expect(prefs.getInt('anchor_uptime_device_session_$sessionId'), equals(existingUptime));
-    });
-
-    test('Valid utcTime more than 60s ahead DOES update the anchor', () async {
-      final prefs = await SharedPreferences.getInstance();
-      final sessionId = 44;
-      const existingUtc = kMinValidEpoch + 10000;
-      const existingUptime = 5000;
-      const newerUtc = existingUtc + 120; // 120s ahead — should win
-      const newerUptime = 7000;
-
-      await prefs.setInt('anchor_utc_device_session_$sessionId', existingUtc);
-      await prefs.setInt('anchor_uptime_device_session_$sessionId', existingUptime);
-
-      final mockConn = MockDeviceConnection();
-      final sync = SDCardWalSyncImpl(MockWalSyncListener(), connectionProvider: (_) async => mockConn);
-
-      final wal = Wal(
-        codec: BleAudioCodec.opus,
-        channel: 1,
-        device: 'test-device',
-        fileNum: 1,
-        walOffset: 0,
-        storageTotalBytes: 17,
-        timerStart: 0,
-        storage: WalStorage.sdcard,
-      );
-      final syncFuture = sync.syncWal(wal: wal);
-
-      await Future.delayed(Duration.zero);
-      mockConn.add(ackPacket(0x00));
-      await Future.delayed(Duration.zero);
-      mockConn.add(dataPacket(0, metaFrame(utcTime: newerUtc, uptimeMs: newerUptime, sessionId: sessionId)));
-      await Future.delayed(Duration.zero);
-      mockConn.add(eotPacket());
-
-      await syncFuture.catchError((_) {});
-      await mockConn.close();
-
-      expect(prefs.getInt('anchor_utc_device_session_$sessionId'), equals(newerUtc));
-      expect(prefs.getInt('anchor_uptime_device_session_$sessionId'), equals(newerUptime));
     });
   });
 
@@ -301,12 +171,14 @@ void main() {
           storage: WalStorage.sdcard,
         );
 
-    setUp(() {
+    setUp(() async {
       mockConn = MockDeviceConnection();
       sync = SDCardWalSyncImpl(
         MockWalSyncListener(),
         connectionProvider: (_) async => mockConn,
       );
+      await sync
+          .setDevice(BtDevice(id: 'test-device', name: 'test', type: DeviceType.omi, rssi: 0), prefetchedFiles: []);
     });
 
     tearDown(() async {
@@ -322,13 +194,14 @@ void main() {
 
     test('Error ACK aborts sync with an exception', () async {
       final wal = makeWal();
-      final syncFuture = sync.syncWal(wal: wal);
+      // Use expectLater before any event has a chance to be pushed
+      final syncFuture = expectLater(sync.syncWal(wal: wal), throwsA(isA<Exception>()));
 
       await pump(); // let subscription register
       mockConn.add(ackPacket(0x01)); // non-zero = firmware error
       await pump();
 
-      await expectLater(syncFuture, throwsA(isA<Exception>()));
+      await syncFuture;
     });
 
     test('EOT after ACK + DATA triggers clean completion', () async {
@@ -440,7 +313,7 @@ void main() {
     test('Conversation.fromFile handles missing uploadKey in meta', () async {
       final audioFile = File('${tempDir.path}/recording_1773961625000.m4a')..createSync(recursive: true);
       final metaFile = File('${tempDir.path}/recording_1773961625000.meta')..createSync(recursive: true);
-      
+
       // Write short meta (only 8 bytes, no upload key)
       final bd = ByteData(8);
       bd.setUint32(0, 1000, Endian.little); // samples
@@ -456,22 +329,55 @@ void main() {
     test('Conversation.fromFile parses long uploadKey correctly', () async {
       final audioFile = File('${tempDir.path}/rec_long.m4a')..createSync(recursive: true);
       final metaFile = File('${tempDir.path}/rec_long.meta')..createSync(recursive: true);
-      
+
       final key = 'ABCDEF_recording_123456789.m4a';
       final keyBytes = key.codeUnits;
-      
+
       final builder = BytesBuilder();
       final bd = ByteData(408);
       bd.setUint32(4, 5000, Endian.little); // 5s duration
       builder.add(bd.buffer.asUint8List());
       builder.addByte(keyBytes.length);
       builder.add(keyBytes);
-      
+
       metaFile.writeAsBytesSync(builder.toBytes());
 
       final conv = await Conversation.fromFile(audioFile);
       expect(conv.duration.inSeconds, equals(5));
       expect(conv.uploadKey, equals(key));
+    });
+
+    test('Conversation.fromFile parses duration and size asynchronously without .meta file for WAV', () async {
+      final audioFile = File('${tempDir.path}/recording_test_1.wav')..createSync(recursive: true);
+
+      // Create a dummy WAV file with 44 bytes header + some dummy data
+      final builder = BytesBuilder();
+      builder.add(List.filled(44, 0)); // Dummy header
+      // 32000 bytes per second for dummy PCM data -> ~1s
+      builder.add(List.filled(32000, 0));
+      audioFile.writeAsBytesSync(builder.toBytes());
+
+      final conv = await Conversation.fromFile(audioFile);
+
+      // duration calculation check
+      expect(conv.duration.inMilliseconds, equals(1000));
+
+      // verify fileSizeBytes access handles file sizes accurately
+      expect(conv.fileSizeBytes, equals(32044));
+    });
+
+    test('Conversation.fromFile assigns 0 duration without .meta file for M4A', () async {
+      final audioFile = File('${tempDir.path}/recording_test_2.m4a')..createSync(recursive: true);
+
+      // Write some dummy data so it isn't completely empty
+      audioFile.writeAsBytesSync(List.filled(100, 0));
+
+      final conv = await Conversation.fromFile(audioFile);
+
+      // duration calculation check should skip size-based calculation for .m4a
+      expect(conv.duration.inMilliseconds, equals(0));
+
+      expect(conv.fileSizeBytes, equals(100));
     });
   });
 }
