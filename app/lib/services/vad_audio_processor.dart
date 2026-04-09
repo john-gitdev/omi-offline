@@ -169,6 +169,8 @@ class VadAudioProcessor {
           break;
         }
 
+        if (frameIndex % 50 == 0) await Future.delayed(Duration.zero);
+
         final opusBytes = bytes.sublist(offset + 4, offset + 4 + frameLength);
 
         Int16List? pcmData;
