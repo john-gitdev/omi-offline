@@ -407,7 +407,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               ),
               const SizedBox(height: 4),
               Text(
-                'Speech segments closer together than this are merged into one conversation. Increase to join nearby exchanges; decrease to keep them separate.',
+                'Max allowed time gap between audio segments before forcing a split. Bridges brief gaps caused by the device being turned off or restarting.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
               ),
               const SizedBox(height: 12),
