@@ -179,8 +179,9 @@ class DeviceService implements IDeviceService {
   @override
   void start() {
     _status = DeviceServiceStatus.ready;
-
-    // TODO: Start watchdog to discover automatically, re-connect automatically
+    // Automatic discovery and re-connection are handled natively by the platform transports
+    // (e.g. NativeBleTransport uses CBCentralManager state restoration / Foreground Service auto-connect)
+    // and polled dynamically in dart via DeviceProvider.periodicConnect on app launch/resume.
   }
 
   @override
