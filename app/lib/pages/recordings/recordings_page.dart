@@ -1462,7 +1462,7 @@ class _RecordingsPageState extends State<RecordingsPage>
               children: [
                 TextButton.icon(
                   key: Key('export_all_${batch.dateString}'),
-                  onPressed: () => _exportAll(batch, conversations),
+                  onPressed: () => _exportAll(batch, filtered),
                   icon: FaIcon(
                     FontAwesomeIcons.shareFromSquare,
                     size: 13,
