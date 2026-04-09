@@ -158,7 +158,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
     if (_isPlaying) {
       await _player.pause();
     } else {
-      if (_position >= _visibleEnd) await _player.seek(_visibleStart);
+      if (_position >= _cropEnd) await _player.seek(_cropStart);
       await _player.play();
     }
   }
