@@ -73,7 +73,6 @@ class DeviceService implements IDeviceService {
   DeviceServiceStatus get status => _status;
 
   DateTime? _firstConnectedAt;
-  Timer? _watchdogTimer;
 
   @override
   Future<List<BtDevice>> discover({String? desirableDeviceId, int timeout = 5}) async {
@@ -180,32 +179,15 @@ class DeviceService implements IDeviceService {
   @override
   void start() {
     _status = DeviceServiceStatus.ready;
-
-    _watchdogTimer?.cancel();
-    _watchdogTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
-      if (_status != DeviceServiceStatus.ready) return;
-      if (_isWifiSyncInProgress) return;
-
-      final storedDevice = SharedPreferencesUtil().btDevice;
-      if (storedDevice.id.isNotEmpty) {
-        if (_connection != null && _connection!.device.id == storedDevice.id) {
-          // Transport exists, let native handle reconnection
-          return;
-        }
-
-        Logger.debug("DeviceService Watchdog: Triggering automatic discovery and reconnection for ${storedDevice.id}");
-        await discover(desirableDeviceId: storedDevice.id);
-      }
-    });
+    // Automatic discovery and re-connection are handled natively by the platform transports
+    // (e.g. NativeBleTransport uses CBCentralManager state restoration / Foreground Service auto-connect)
+    // and polled dynamically in dart via DeviceProvider.periodicConnect on app launch/resume.
   }
 
   @override
   void stop() {
     _status = DeviceServiceStatus.stop;
     onStatusChanged(_status);
-
-    _watchdogTimer?.cancel();
-    _watchdogTimer = null;
 
     // Stop all discoverers to prevent resource leaks and battery drain
     for (final discoverer in _discoverers) {
