@@ -130,10 +130,10 @@ class Batch {
 /// [segments] is empty when the backing m4a has not yet been produced (pending).
 class MarkerConversation {
   final DateTime markerTime;
-  final File? segment;       // null = pending (no m4a produced yet)
-  final int markerOffsetMs;  // ms from segment start to the button press
-  final int cropStartMs;     // user-adjustable crop start, default 0
-  final int cropEndMs;       // user-adjustable crop end, default = segment duration
+  final File? segment; // null = pending (no m4a produced yet)
+  final int markerOffsetMs; // ms from segment start to the button press
+  final int cropStartMs; // user-adjustable crop start, default 0
+  final int cropEndMs; // user-adjustable crop end, default = segment duration
   final File edlFile;
   final bool userSaved;
 
@@ -206,7 +206,7 @@ class RecordingsManager {
 
     // Process raw segments (now they are in DeviceSession folders)
     if (await rawSegmentsDir.exists()) {
-      final deviceSessionFolders = rawSegmentsDir.listSync().whereType<Directory>().toList();
+      final deviceSessionFolders = await rawSegmentsDir.list().where((e) => e is Directory).cast<Directory>().toList();
 
       // Sort DeviceSession folders by ID (e.g. "100", "101")
       deviceSessionFolders.sort((a, b) {
@@ -241,10 +241,10 @@ class RecordingsManager {
         }
 
         // 2. Process segments
-        final files = folder.listSync().whereType<File>().where((f) => f.path.endsWith('.bin')).toList();
+        final files = await folder.list().where((f) => f is File && f.path.endsWith('.bin')).cast<File>().toList();
 
         for (var file in files) {
-          final date = file.lastModifiedSync();
+          final date = await file.lastModified();
           final dateString =
               '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
           rawSegmentsByDate.putIfAbsent(dateString, () => []).add(file);
@@ -254,14 +254,15 @@ class RecordingsManager {
 
     // Process already processed recordings
     if (await recordingsDir.exists()) {
-      final dateFolders = recordingsDir.listSync().whereType<Directory>();
+      final dateFolders = await recordingsDir.list().where((e) => e is Directory).cast<Directory>().toList();
       for (var folder in dateFolders) {
         final dateString = folder.path.split('/').last;
-        final files = folder
-            .listSync()
-            .whereType<File>()
-            .where((f) => f.path.endsWith('.m4a') || f.path.endsWith('.wav'))
+        final files = await folder
+            .list()
+            .where((f) => f is File && (f.path.endsWith('.m4a') || f.path.endsWith('.wav')))
+            .cast<File>()
             .toList();
+
         processedByDate[dateString] = files.map((f) => Conversation.fromFile(f)).toList();
       }
     }
@@ -485,8 +486,7 @@ class RecordingsManager {
   /// Writes EDL sidecars for all markers in [markerTimestamps] into [liveRecordingsDirPath].
   /// Idempotent: skips EDLs that already exist with non-empty segments.
   /// Resolves previously-pending EDLs (empty segments) when the backing m4a is now available.
-  static Future<void> _resolveMarkerConversations(
-      String liveRecordingsDirPath, List<DateTime> markerTimestamps) async {
+  static Future<void> _resolveMarkerConversations(String liveRecordingsDirPath, List<DateTime> markerTimestamps) async {
     final liveDir = Directory(liveRecordingsDirPath);
     if (!await liveDir.exists() || markerTimestamps.isEmpty) return;
 
@@ -495,8 +495,7 @@ class RecordingsManager {
     for (final entity in await liveDir.list().toList()) {
       if (entity is! File || !entity.path.endsWith('.m4a')) continue;
       final name = entity.path.split('/').last;
-      final startMs = int.tryParse(
-          name.contains('_') ? name.split('_').last.split('.').first : '');
+      final startMs = int.tryParse(name.contains('_') ? name.split('_').last.split('.').first : '');
       if (startMs == null || startMs <= 0) continue;
       final metaFile = File('${entity.path.substring(0, entity.path.lastIndexOf('.'))}.meta');
       if (!await metaFile.exists()) continue;
@@ -505,8 +504,7 @@ class RecordingsManager {
         if (bd.lengthInBytes < 8) continue;
         final durationMs = bd.getUint32(4, Endian.little);
         if (durationMs <= 0) continue;
-        recordings.add((file: entity, startMs: startMs,
-            endMs: startMs + durationMs, durationMs: durationMs));
+        recordings.add((file: entity, startMs: startMs, endMs: startMs + durationMs, durationMs: durationMs));
       } catch (_) {}
     }
     recordings.sort((a, b) => a.startMs.compareTo(b.startMs));
@@ -524,8 +522,7 @@ class RecordingsManager {
       }
 
       // 1. Exact containment: marker fired while this recording was active.
-      int matchIdx = recordings.indexWhere(
-          (r) => markerMs >= r.startMs && markerMs < r.endMs);
+      int matchIdx = recordings.indexWhere((r) => markerMs >= r.startMs && markerMs < r.endMs);
 
       // 2. Prior conversation: marker fired during silence after this recording ended.
       if (matchIdx < 0) {
