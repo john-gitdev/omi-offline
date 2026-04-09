@@ -14,8 +14,7 @@ class WalFileManager {
   static File? _walBackupFile;
 
   static Future<void> init() async {
-    final directory =
-        Platform.isMacOS ? await getApplicationSupportDirectory() : await getApplicationDocumentsDirectory();
+    final directory = await getApplicationDocumentsDirectory();
     _walFile = File('${directory.path}/$_walFileName');
     _walBackupFile = File('${directory.path}/$_walBackupFileName');
   }
