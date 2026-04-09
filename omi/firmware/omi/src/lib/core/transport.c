@@ -796,7 +796,6 @@ static void update_conn_params(struct bt_conn *conn)
 #define RING_BUFFER_HEADER_SIZE 2
 static uint8_t tx_queue[NETWORK_RING_BUF_SIZE * (CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE)];
 static uint8_t tx_buffer[CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE];
-static uint8_t tx_buffer_2[CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE];
 static uint32_t tx_buffer_size = 0;
 static struct ring_buf ring_buf;
 
@@ -815,19 +814,25 @@ static bool write_to_tx_queue(uint8_t *data, size_t size)
         return false;
     }
 
-    // Copy data (TODO: Avoid this copy)
-    tx_buffer_2[0] = size & 0xFF;
-    tx_buffer_2[1] = (size >> 8) & 0xFF;
-    memcpy(tx_buffer_2 + RING_BUFFER_HEADER_SIZE, data, size);
+    uint8_t *allocated_data;
+    uint32_t required_size = CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE;
 
-    // Write to ring buffer
-    int written =
-        ring_buf_put(&ring_buf,
-                     tx_buffer_2,
-                     (CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE)); // It always fits completely or not at all
-    if (written != CODEC_OUTPUT_MAX_BYTES + RING_BUFFER_HEADER_SIZE) {
+    // Allocate space in the ring buffer directly
+    uint32_t allocated_size = ring_buf_put_claim(&ring_buf, &allocated_data, required_size);
+
+    if (allocated_size < required_size) {
+        ring_buf_put_finish(&ring_buf, 0); // Release claimed space
         return false;
     }
+
+    // Write directly to the ring buffer
+    allocated_data[0] = size & 0xFF;
+    allocated_data[1] = (size >> 8) & 0xFF;
+    memcpy(allocated_data + RING_BUFFER_HEADER_SIZE, data, size);
+
+    // Finalize the write
+    ring_buf_put_finish(&ring_buf, required_size); // It always fits completely or not at all
+
     k_sem_give(&tx_queue_sem);
     return true;
 }
