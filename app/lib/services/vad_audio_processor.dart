@@ -72,7 +72,7 @@ class VadAudioProcessor {
         _minSpeechMs = SharedPreferencesUtil().vadMinSpeechSeconds * 1000,
         _preSpeechBufferMs = (SharedPreferencesUtil().vadPreSpeechSeconds * 1000).round(),
         _gapThresholdMs = SharedPreferencesUtil().vadGapSeconds * 1000,
-        _maxChunkMs = SharedPreferencesUtil().vadMaxChunkMinutes * 60 * 1000;
+        _maxChunkMs = SharedPreferencesUtil().vadMaxConversationMinutes * 60 * 1000;
 
   void destroy() {
     _decoder?.destroy();
@@ -545,13 +545,6 @@ class VadAudioProcessor {
     await sink.close();
 
     Logger.debug('VadAudioProcessor: Saved WAV fallback to $wavPath');
-    return wavPath;
-  }
-}
-avPath;
-  }
-}
-;
     return wavPath;
   }
 }
