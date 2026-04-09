@@ -173,7 +173,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           unawaited(_reloadBatchesSilently().then((_) async {
             if (!mounted) return;
             final allRaw = _batches.expand((b) => b.rawSegments).toList();
-            final processable = await RecordingsManager.excludeNewestSegmentPerSession(allRaw);
+            final processable = RecordingsManager.excludeNewestSegmentPerSession(allRaw);
             final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
             final totalBytes = lengths.fold(0, (s, len) => s + len);
             if (!mounted) return;
@@ -513,8 +513,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       batchesToProcess = activeBatches;
       backgroundMode = false;
     } else {
-      batchesToProcess = (await Future.wait(activeBatches.map((batch) async {
-        final safe = await RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
+      batchesToProcess = activeBatches.map((batch) {
+        final safe = RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
         return Batch(
           dateString: batch.dateString,
           date: batch.date,
@@ -522,7 +522,7 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           finalizedRecordings: batch.finalizedRecordings,
           markerTimestamps: batch.markerTimestamps,
         );
-      }))).where((b) => b.rawSegments.isNotEmpty).toList();
+      }).where((b) => b.rawSegments.isNotEmpty).toList();
       backgroundMode = true;
     }
 
