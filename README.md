@@ -1,82 +1,52 @@
-# Omi Offline: Architecture & Naming Standard
+# Omi Offline
 
 ## What is Omi Offline?
 
-Omi Offline is an **offline-first audio capture and processing system** for a wearable device.
+Omi Offline is an **offline-first audio capture and processing system** for a wearable device. This is a personal fork of the Omi project focused entirely on local, private recording — no cloud dependencies.
 
 Instead of streaming audio in real time, the system:
 
 * Records continuously on-device
 * Stores audio locally in structured segments
 * Syncs data to the phone in batches over BLE
-* Processes audio **offline on the phone** using VAD (RMS-based silence detection)
+* Processes audio **entirely on the phone** using Silero neural VAD
 
 **Key properties:**
 
-* No continuous BLE streaming (live streaming has been completely removed)
-* No real-time cloud dependency
-* Improved battery life (phone + wearable)
-* Speech segmentation via post-processing
-
----
-
-## The Evolution: From Streaming to Offline-First
-
-Originally, the Omi wearable operated as a **live streaming system**. This has been **deprecated and removed** in favor of the offline-first architecture to solve critical issues:
-
-### Problems with streaming
-
-**Phone battery drain**
-
-* Constant BLE activity and continuous wakeups
-* High cellular data usage for real-time uploads
-
-**Wearable constraints**
-
-* High BLE bandwidth usage and rapid battery drain
-* No tolerance for connection instability
-
-### Solution: Offline-first architecture
-
-The system was redesigned to:
-
-* Record everything locally on-device (eMMC/SD)
-* Defer all processing to the phone
-* Batch transfer data over BLE using a robust native transport layer
-* Run VAD and segmentation offline
-
-### Result
-
-* Significantly reduced battery usage for both devices
-* Highly reliable data transfer even with intermittent connections
+* No continuous BLE streaming
+* No cloud dependency of any kind (internet connectivity checks and all cloud APIs removed)
+* HeyPocket is the only external integration
+* Speech segmentation via post-processing with tunable VAD parameters
+* Adjustment Mode for iterating on VAD settings without re-syncing
 
 ---
 
 ## System Overview
 
 ```
-Wearable (MCU)
-  - Records audio
-  - Encodes Opus frames
-  - Writes to eMMC/SD as .bin segments
-  - Inserts metadata + markers
+Wearable (nRF5340)
+  - Records audio via PDM microphones
+  - Encodes Opus frames (16 kHz mono, 20 ms)
+  - Writes to SD card as .bin segments
+  - Inserts marker packets on button press
 
         ↓ Native BLE (WAL-based sync via Pigeon)
 
 Mobile App (Flutter)
-  - Syncs segments incrementally
-  - Stores raw .bin files
+  - Syncs segments incrementally, resumably
+  - Stores raw .bin files on phone
 
         ↓
 
-Offline Processing
-  - VAD (noise-aware, adaptive)
-  - Marker-based extraction (marker mode)
+Offline Processing (VadAudioProcessor)
+  - Silero neural VAD (ONNX, on-device)
+  - Splits audio at silence boundaries
+  - Extracts marker-tagged moments
 
         ↓
 
 Final Recordings
-  - .m4a / .wav files
+  - .m4a files in recordings/<YYYY-MM-DD>/
 
         ↓
 
@@ -92,245 +62,149 @@ Optional Upload
 
 * Audio is encoded into **Opus frames (~20ms)**
 * Frames are written into fixed-size `.bin` **Segments**
-* Each segment consists entirely of pure Opus frames, each prefixed by a 4-byte Little-Endian length.
+* Each segment is pure Opus frames, each prefixed by a 4-byte little-endian length
+* Marker packets (`0xFE` header) are embedded in the stream on button press
 
 ### Transfer Model
 
-* The app syncs using a **Write-Ahead Log (WAL)** offset
-* Sync is **append-only and resumable**
+* The app syncs using a **Write-Ahead Log (WAL)** offset — append-only and resumable
+* Marker packets are extracted to `markers.txt` during transfer
 
 #### Native BLE Transport (Pigeon Bridge)
 
-The sync layer uses a **Native GATT implementation** for iOS and Android via a Pigeon bridge. This replaces Dart-based BLE libraries for significantly higher throughput and connection stability.
+The sync layer uses a **native GATT implementation** for iOS and Android via a Pigeon bridge for higher throughput and connection stability than Dart-based BLE libraries.
 
 #### Framed BLE Protocol
 
-The protocol prevents audio repetition and corruption:
+* **`0x01` (data)**: carries 4-byte file offset — app checks for gaps; duplicate/overlapping packets are trimmed
+* **`0x02` (EOT)**: firmware signals end of file; app flushes and completes transfer
+* **`0x03` (ACK)**: firmware confirms receipt of read command; app waits before processing
 
-* **`0x01` (data)**: carries 4-byte file offset in header — app checks for gaps; duplicate or overlapping packets are trimmed
-* **`0x02` (EOT)**: firmware signals end of file; app flushes final buffer and completes the transfer
-* **`0x03` (ACK)**: firmware sends start-ACK to app after receiving the read command; app waits for this before processing data
-
-This ensures idempotent delivery: re-connections mid-sync resume cleanly without re-downloading or duplicating data.
+Re-connections mid-sync resume cleanly without re-downloading or duplicating data.
 
 ---
 
 ## Processing Pipeline
 
+### VAD Engine (VadAudioProcessor)
+
+Powered by **Silero VAD** — a lightweight neural network running on-device via ONNX Runtime. Falls back to amplitude-based detection if the model fails to load.
+
+* Processes audio frame-by-frame (no full file load into RAM)
+* Uses `FrameRef` disk-pointers — PCM is never held in memory
+* One Opus decoder per processing pass — state preserved across segment boundaries
+* Settings are cached at construction time for the lifetime of one `processAll` pass
+
 ### Chronological Merging
 
-* Segments are ordered by:
-
-  * `(deviceSessionId, segmentIndex)`
-* Processing is **continuous across boundaries**
-* Recordings are **never split by day or batch**
+* Segments are sorted by `(deviceSessionId, segmentIndex)` across all batches
+* Processing is continuous across day boundaries — a conversation spanning midnight is never artificially cut
+* Output files land in `recordings/<date>/` based on the recording's actual start timestamp
 
 ### Cleanup
 
-* After processing:
+After processing, `.bin` segments are deleted.
 
-  * `.bin` segments are deleted
-  * Final recordings are stored as `.m4a` / `.wav`
-* Exception:
-
-  * Segments are retained if **Adjustment Mode** is enabled
+**Exception — Adjustment Mode:** when enabled, `.bin` files are preserved so days can be reprocessed with different VAD settings via the **Reprocess Day** button. When Adjustment Mode is turned off, a banner prompts the user to process any remaining unprocessed days and delete all raw files.
 
 ---
 
-## Recording Modes
+## Recording Mode
 
-### Automatic Mode
+### Automatic (VAD-based)
 
-A continuous forward-scanning VAD system.
+The only recording mode. A continuous forward-scanning VAD system:
 
-* Evaluates every frame
-* Splits when silence exceeds threshold
-* Drops recordings below minimum speech duration
-* Carries trailing silence as pre-buffer for next segment
+* Classifies every 20ms frame as speech or silence using Silero
+* Splits into a new conversation when silence exceeds the configured threshold
+* Drops recordings below the minimum speech duration
+* Merges nearby speech segments within the gap threshold
 
----
+#### Marker System
 
-### Marker Mode (Marker System)
+User-triggered moment tagging via button press (double-tap).
 
-User-triggered recording via double-tap.
-
-#### Firmware behavior
-
-* Writes a **254 (0xFE) marker packet** (16-byte payload) into the recording stream on the SD card
-* Triggers LED feedback (`marker_flash_count`)
-
-#### App behavior
-
-* Intercepts `0xFE` marker packets during the BLE sync process
-* Saves marker timestamps to a plain-text `markers.txt` file
-* Performs **bidirectional extraction** around markers:
-
-  * Up to 2 hours backward and forward
-* Runs VAD **only within this window**
+* **Firmware**: writes a `0xFE` marker packet into the SD card stream; triggers LED flash
+* **App**: extracts marker timestamps to `markers.txt` during BLE sync, then creates `.edl` sidecar files linking each marker to its enclosing `.m4a` recording
 
 ---
 
-### Fixed Interval Mode
+## VAD Tuning
 
-Cuts recordings at fixed wall-clock boundaries regardless of speech content.
+All parameters are user-configurable in **Recording Settings** and backed by `SharedPreferencesUtil`.
 
-* Boundaries fall **1 second before each interval multiple** (e.g. :29:59 / :59:59 for 30-min, :59:59 for 1hr)
-* The −1 second offset ensures the last cut of any day always lands at 23:59:59 and never spills into the next day
-* Boundary state is **persisted across restarts** (`fixedModeNextBoundaryMs` in SharedPreferences) so the processor resumes mid-interval cleanly after an app restart
-
-#### Staleness guard
-
-On startup, the persisted boundary is validated before use:
-
-* If it is more than **2× the interval in the past** (device was offline for over 2 intervals) → discard
-* If it is more than **1× the interval in the future** (corrupt data) → discard
-* On discard, `fixedModeNextBoundaryMs` is reset to 0; the boundary is computed fresh from the first segment's timestamp when `processSegmentFile` runs
+| Setting | Key | Default | Description |
+|---|---|---|---|
+| Speech Sensitivity | `vadSpeechThreshold` | 0.5 | Silero probability cutoff (0–1). Lower = more sensitive |
+| Silence to End Conversation | `vadSplitSeconds` | 120s | Silence duration that triggers a conversation cut |
+| Minimum Conversation Length | `vadMinSpeechSeconds` | 5s | Segments shorter than this are discarded |
+| Speech Holdover | `vadHangoverSeconds` | 0.5s | How long to keep recording after speech drops out |
+| Pre-Speech Buffer | `vadPreSpeechSeconds` | 1.0s | Audio captured before speech onset |
+| Segment Gap Threshold | `vadGapSeconds` | 30s | Nearby segments closer than this are merged |
+| Max Conversation Length | `vadMaxConversationMinutes` | 60 min | Hard cap; forces a cut even without silence |
 
 ---
 
-## VAD System
+## Adjustment Mode
 
-### High-Level Behavior
+Enables iterative VAD tuning without re-syncing from the device.
 
-The system uses:
-
-* Adaptive noise floor tracking
-* Signal-to-noise ratio (SNR) gating
-* Frame-level analysis
-
-All VAD runs **on-device (phone), not firmware**.
-
----
-
-### Implementation Details (OfflineAudioProcessor)
-
-**Streaming decode**
-
-* Iterates frame-by-frame (no full file load)
-
-**dBFS calculation**
-
-* RMS → dBFS per frame
-
-**Adaptive noise floor**
-
-* Two exponential moving averages:
-
-```
-alphaRise = 0.995  (~10s adaptation to louder environments)
-alphaFall = 0.98   (~2s adaptation to quieter environments)
-```
-
-**Speech condition**
-
-```
-frame_dbfs > noiseFloor + snrMarginDb
-```
-
-**Opus decoder lifetime**
-
-* One decoder is created per extraction range (not per segment)
-* Decoder state carries across segment boundaries, ensuring the first frames of each segment decode cleanly
-
-**Memory model (critical)**
-
-* Uses `FrameRef` (byte offsets + lengths)
-* Avoids loading PCM into RAM
-* Reads data only when finalizing recordings
-
----
-
-## VAD Tuning System (Sliders)
-
-Backed by `SharedPreferencesUtil`.
-
-| Setting           | Internal Variable           | Description                                    |
-| ----------------- | --------------------------- | ---------------------------------------------- |
-| SNR Margin        | `_snrMarginDb`              | Required dB above noise floor to detect speech |
-| Hangover Time     | `_hangoverFrameCount`       | Keeps speech active briefly after drop         |
-| Split Duration    | `_silenceDurationToSplitMs` | Silence needed to finalize recording           |
-| Min Speech        | `_minSpeechMs`              | Minimum speech length to keep recording        |
-| Pre-Speech Buffer | `_preSpeechBufferMs`        | Preserves audio before speech start            |
-| Gap Threshold     | `_gapThresholdMs`           | Forces split on large timestamp gaps           |
+* **On**: raw `.bin` files are kept after processing; each day shows a **Reprocess Day** button instead of Delete Day
+* **Off**: normal cleanup; if bins are still on disk a banner appears prompting **Process & Delete**
+* Auto-processing skips days that already have processed recordings — only unprocessed days are touched automatically
 
 ---
 
 ## HeyPocket Integration
 
-API:
-[https://public.heypocketai.com/api/v1](https://public.heypocketai.com/api/v1)
+The only external integration. Uploads finalized `.m4a` recordings to:
+`https://public.heypocketai.com/api/v1`
+
+Configured via an API key in Settings → Integrations.
 
 ---
 
-## Core Invariants & Nomenclature
+## Core Nomenclature
 
-All contributors must follow **NOMENCLATURE.md** strictly:
-
-| Term          | Definition                                        |
-| ------------- | ------------------------------------------------- |
-| Frame         | Single Opus unit (~20ms)                          |
-| Segment       | `.bin` file containing frames (**never "chunk"**) |
-| DeviceSession | Hardware recording session identified by its UTC start timestamp (`deviceSessionId`) |
-| Marker        | 0xFE user event (**never "star"**)                |
-| WAL           | Byte-offset sync state                            |
-| Recording     | Final `.m4a` / `.wav` output                      |
-
----
-
-## Performance Constraints
-
-### BLE Bottlenecks
-
-* Limited throughput
-* Requires:
-
-  * Efficient MTU usage
-  * Explicit EOT (0x02)
-
-### Memory Constraints
-
-* Loading full PCM is not allowed
-* `FrameRef` architecture is mandatory
+| Term | Definition |
+|---|---|
+| Frame | Single Opus unit (~20ms) |
+| Segment | `.bin` file containing frames (**never "chunk"**) |
+| DeviceSession | Hardware recording session identified by its UTC start timestamp |
+| Marker | `0xFE` user event (**never "star"**) |
+| WAL | Byte-offset sync state |
+| Recording | Final `.m4a` output |
+| Conversation | A VAD-delimited recording or a marker-tagged clip |
 
 ---
 
-## Reliability & Stability
+## Reliability
 
-Key correctness fixes applied:
-
-| Area | Fix |
-| ---- | --- |
-| BLE connection | **Native Migration (Pigeon):** Migrated to native iOS/Android GATT for high-stability connections |
-| Connection States | Added `connecting` state to `DeviceConnectionState` to handle transient states correctly |
-| Battery/Charging | **Immediate Read:** Force immediate battery level and charging state read on connect |
-| Battery/Charging | **Detail Characteristic:** Use 1-byte charging-only characteristic (19b10051) and standard BAS (0x2A19) for level |
-| BLE sync | **Protocol Gap Detection:** Inline retry and rewinding for offset mismatches during sync |
-| BLE sync | Framed protocol with ACK gating eliminates duplicate/gap audio |
-| Firmware storage | **Serialization:** Serialized storage operations to prevent race conditions during list/read/delete |
-| Firmware storage | **Retry Logic:** `performListFiles` has a 120s timeout with a single CCCD re-send at 10s; `deleteFile` has a 35s timeout |
-| Firmware storage | **Immediate WAL:** Set WAL device immediately on connect without blocking on `listFiles` |
-| Firmware uptime | `last_timestamp_uptime` reset on wipe; uptime rollover handled correctly |
-| Opus decode | One decoder per extraction range — state preserved across segment boundaries |
-| Subscription lifecycle | Subscriptions stored and cancelled in all providers, services, and transport layers |
-| `ServiceManager` | `deinit()` is `async`; callers must await it to avoid torn-down services |
-| Fixed interval | Staleness guard discards persisted boundary if > 2× interval old or in future |
-| Firmware boot | **oo-1.4.10:** Breathing LED boot pattern and improved SD/Mic initialization sequence |
-| Upstream Tracking | `UPSTREAM.md` tracks reviewed but unmerged PRs from the main Omi repository |
+| Area | Detail |
+|---|---|
+| BLE connection | Native iOS/Android GATT via Pigeon — higher stability than Dart BLE |
+| Sync protocol | Framed protocol with ACK gating and offset gap detection; idempotent on reconnect |
+| Battery/Charging | Immediate read on connect; 4-byte detail characteristic (millivolts, %, charging flag) |
+| Firmware storage | Serialized operations; `performListFiles` 120s timeout with CCCD re-send at 10s; `deleteFile` 35s timeout |
+| Firmware storage | Ring buffer uses `ring_buf_put_claim`/`ring_buf_put_finish` — atomic writes, no partial corruption |
+| Opus decode | One decoder per processing pass — state preserved across segment boundaries |
+| `ServiceManager` | `deinit()` is async; callers must await it |
 
 ---
 
 ## Repository Structure
 
 ```
-/firmware   → Embedded recording + BLE transport
-/app        → Flutter app (sync, VAD, processing, UI)
-UPSTREAM.md → Tracking of unmerged upstream changes
+/omi/firmware   → nRF5340 Zephyr firmware (Opus encode, SD card, BLE transport)
+/app            → Flutter app (BLE sync, Silero VAD, processing, UI)
 ```
 
 ### Key Components
 
-* `OfflineAudioProcessor` → VAD + segmentation engine
-* `MarkerRecordingExtractor` → Marker-based extraction; uses per-range Opus decoder for clean cross-segment decoding
-* `SDCardWalSyncImpl` → Framed BLE sync with ACK gating and gap detection
-* `NativeBluetoothDiscoverer` → Native BLE device discovery via Pigeon
-* `FixedIntervalAudioProcessor` → Fixed wall-clock boundary cutting with cross-restart boundary persistence
+| Component | Purpose |
+|---|---|
+| `VadAudioProcessor` | Silero VAD + Opus decode + `.m4a` output |
+| `SDCardWalSyncImpl` | Framed BLE sync with ACK gating and gap detection |
+| `RecordingsManager` | Batch orchestration, `processAll`, `reprocessDay`, `deleteAllRawSegments` |
+| `NativeBluetoothDiscoverer` | Native BLE device discovery via Pigeon |
+| `DeviceProvider` | Central UI state — BLE connection, battery, sync status |
