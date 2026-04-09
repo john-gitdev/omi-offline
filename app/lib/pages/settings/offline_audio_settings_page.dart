@@ -22,6 +22,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late double _vadHangoverSeconds;
   late double _vadPreSpeechSeconds;
   late int _vadGapSeconds;
+  late int _vadMaxConversationMinutes;
 
   bool _isDirty = false;
 
@@ -38,7 +39,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _vadHangoverSeconds = SharedPreferencesUtil().vadHangoverSeconds;
     _vadPreSpeechSeconds = SharedPreferencesUtil().vadPreSpeechSeconds;
     _vadGapSeconds = SharedPreferencesUtil().vadGapSeconds;
-    _vadMaxConversationMinutes = SharedPreferencesUtil().vadMaxChunkMinutes;
+    _vadMaxConversationMinutes = SharedPreferencesUtil().vadMaxConversationMinutes;
   }
 
   void _markDirty() {
@@ -56,7 +57,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     SharedPreferencesUtil().vadHangoverSeconds = _vadHangoverSeconds;
     SharedPreferencesUtil().vadPreSpeechSeconds = _vadPreSpeechSeconds;
     SharedPreferencesUtil().vadGapSeconds = _vadGapSeconds;
-    SharedPreferencesUtil().vadMaxChunkMinutes = _vadMaxConversationMinutes;
+    SharedPreferencesUtil().vadMaxConversationMinutes = _vadMaxConversationMinutes;
 
     setState(() => _isDirty = false);
   }
