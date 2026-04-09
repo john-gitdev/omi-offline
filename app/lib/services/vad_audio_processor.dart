@@ -23,15 +23,15 @@ class VadAudioProcessor {
 
   // Per-conversation accumulation — FrameRef disk-pointers only, no Opus in RAM
   List<FrameRef> _currentRefs = [];
-  int _speechFrameCount = 0;         // speech frames in current conversation
+  int _speechFrameCount = 0; // speech frames in current conversation
   int _skippedFramesInRecording = 0; // non-speech frames in current conversation (keeps timestamps correct)
   DateTime? _recordingStartTime;
   DateTime? _lastSegmentEndTime;
 
   // VAD state counters
   int _consecutiveSilenceFrames = 0;
-  int _hangoverFrames = 0;           // frames remaining in hangover
-  int _currentChunkDurationMs = 0;   // total frames accumulated (for max-cap)
+  int _hangoverFrames = 0; // frames remaining in hangover
+  int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
 
   // Settings — cached at construction time for the lifetime of one processAll pass
   final double _speechThreshold;
@@ -62,9 +62,10 @@ class VadAudioProcessor {
 
   VadAudioProcessor._({String? outputDir, SimpleOpusDecoder? decoder, OrtSession? session})
       : _session = session,
-        _decoder = decoder ?? (Platform.isIOS || Platform.isAndroid
-            ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
-            : null),
+        _decoder = decoder ??
+            (Platform.isIOS || Platform.isAndroid
+                ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
+                : null),
         _outputDir = outputDir,
         _speechThreshold = SharedPreferencesUtil().vadSpeechThreshold,
         _hangoverFrameCount = (SharedPreferencesUtil().vadHangoverSeconds * 1000).round() ~/ frameDurationMs,
@@ -87,13 +88,13 @@ class VadAudioProcessor {
       return samples512.any((s) => s.abs() > _speechThreshold);
     }
     final input = Float32List.fromList(samples512);
-    final sr    = Int64List.fromList([sampleRate]);
+    final sr = Int64List.fromList([sampleRate]);
 
     final inputs = {
       'input': OrtValueTensor.createTensorWithDataList(input, [1, _vadWindowSamples]),
-      'sr':    OrtValueTensor.createTensorWithDataList(sr, [1]),
-      'h':     OrtValueTensor.createTensorWithDataList(_h, [2, 1, 64]),
-      'c':     OrtValueTensor.createTensorWithDataList(_c, [2, 1, 64]),
+      'sr': OrtValueTensor.createTensorWithDataList(sr, [1]),
+      'h': OrtValueTensor.createTensorWithDataList(_h, [2, 1, 64]),
+      'c': OrtValueTensor.createTensorWithDataList(_c, [2, 1, 64]),
     };
 
     final runOptions = OrtRunOptions();
@@ -102,7 +103,9 @@ class VadAudioProcessor {
 
     _h = _flattenF32(outputs[1]!.value);
     _c = _flattenF32(outputs[2]!.value);
-    for (final o in outputs) { o?.release(); }
+    for (final o in outputs) {
+      o?.release();
+    }
     runOptions.release();
 
     return prob > _speechThreshold;
@@ -111,10 +114,13 @@ class VadAudioProcessor {
   Float32List _flattenF32(dynamic nested) {
     final flat = <double>[];
     void recurse(dynamic v) {
-      if (v is List) { for (final e in v) recurse(e); }
-      else if (v is double) flat.add(v);
-      else if (v is num)   flat.add(v.toDouble());
+      if (v is List) {
+        for (final e in v) recurse(e);
+      } else if (v is double)
+        flat.add(v);
+      else if (v is num) flat.add(v.toDouble());
     }
+
     recurse(nested);
     return Float32List.fromList(flat);
   }
@@ -234,9 +240,9 @@ class VadAudioProcessor {
           _hangoverFrames = 0;
           _consecutiveSilenceFrames = 0;
           _currentChunkDurationMs = 0;
-          _recordingStartTime = segmentStartTime.add(
-            Duration(milliseconds: frameIndex * frameDurationMs)
-          ).subtract(Duration(milliseconds: bufferToKeep * frameDurationMs));
+          _recordingStartTime = segmentStartTime
+              .add(Duration(milliseconds: frameIndex * frameDurationMs))
+              .subtract(Duration(milliseconds: bufferToKeep * frameDurationMs));
         } else if (_currentChunkDurationMs >= _maxChunkMs) {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
           final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
@@ -247,9 +253,7 @@ class VadAudioProcessor {
           _hangoverFrames = 0;
           _consecutiveSilenceFrames = 0;
           _currentChunkDurationMs = 0;
-          _recordingStartTime = segmentStartTime.add(
-            Duration(milliseconds: (frameIndex + 1) * frameDurationMs)
-          );
+          _recordingStartTime = segmentStartTime.add(Duration(milliseconds: (frameIndex + 1) * frameDurationMs));
         }
 
         offset += 4 + ((frameLength + 3) & ~3); // advance past 4-byte-aligned frame (matches SD card wire format)
@@ -355,8 +359,7 @@ class VadAudioProcessor {
     }
 
     String? currentFilePath;
-    RandomAccessFile? currentRaf;
-    int nextExpectedOffset = -1;
+    Uint8List? currentFileBytes;
 
     try {
       for (var i = 0; i < refs.length; i++) {
@@ -365,19 +368,16 @@ class VadAudioProcessor {
         final ref = refs[i];
 
         if (ref.segmentFile.path != currentFilePath) {
-          await currentRaf?.close();
-          currentRaf = await ref.segmentFile.open(mode: FileMode.read);
+          // Note: reading the entire file into memory is a tradeoff (avoids thousands of native file seek/read calls).
+          // Segment files are typically small enough (a few MBs) to make this safe and dramatically faster.
+          currentFileBytes = await ref.segmentFile.readAsBytes();
           currentFilePath = ref.segmentFile.path;
-          nextExpectedOffset = -1;
         }
+
+        if (currentFileBytes == null) continue;
 
         final frameDataOffset = ref.byteOffset + 4;
-        if (nextExpectedOffset != frameDataOffset) {
-          await currentRaf!.setPosition(frameDataOffset);
-        }
-
-        final opusBytes = Uint8List.fromList(await currentRaf!.read(ref.frameLength));
-        nextExpectedOffset = frameDataOffset + ref.frameLength;
+        final opusBytes = currentFileBytes.sublist(frameDataOffset, frameDataOffset + ref.frameLength);
 
         Int16List? pcmData;
         try {
@@ -429,8 +429,6 @@ class VadAudioProcessor {
         if (await corruptFile.exists()) await corruptFile.delete();
       } catch (_) {}
       return await _saveWav(refs, dateFolderPath, timestamp);
-    } finally {
-      await currentRaf?.close();
     }
 
     final finalAmplitudes = List<double>.filled(waveformBuckets, 0.0);
@@ -482,8 +480,7 @@ class VadAudioProcessor {
     final IOSink sink = wavFile.openWrite();
 
     String? currentFilePath;
-    RandomAccessFile? currentRaf;
-    int nextExpectedOffset = -1;
+    Uint8List? currentFileBytes;
 
     final List<Uint8List> decodedSegments = [];
     final wavDecoder =
@@ -496,19 +493,14 @@ class VadAudioProcessor {
           final ref = refs[i];
 
           if (ref.segmentFile.path != currentFilePath) {
-            await currentRaf?.close();
-            currentRaf = await ref.segmentFile.open(mode: FileMode.read);
+            currentFileBytes = await ref.segmentFile.readAsBytes();
             currentFilePath = ref.segmentFile.path;
-            nextExpectedOffset = -1;
           }
+
+          if (currentFileBytes == null) continue;
 
           final frameDataOffset = ref.byteOffset + 4;
-          if (nextExpectedOffset != frameDataOffset) {
-            await currentRaf!.setPosition(frameDataOffset);
-          }
-
-          final opusBytes = Uint8List.fromList(await currentRaf!.read(ref.frameLength));
-          nextExpectedOffset = frameDataOffset + ref.frameLength;
+          final opusBytes = currentFileBytes.sublist(frameDataOffset, frameDataOffset + ref.frameLength);
 
           try {
             final decoded = wavDecoder.decode(input: opusBytes);
@@ -518,7 +510,6 @@ class VadAudioProcessor {
           }
         }
       } finally {
-        await currentRaf?.close();
         wavDecoder.destroy();
       }
     }
