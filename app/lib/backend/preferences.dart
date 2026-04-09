@@ -22,12 +22,12 @@ class SharedPreferencesUtil {
   //--------------------------- Offline Audio Processing ---------------------//
 
   bool get forceSyncSkipConfirm => getBool('force_sync_skip_confirm', defaultValue: false);
-
   set forceSyncSkipConfirm(bool value) => saveBool('force_sync_skip_confirm', value);
 
-  // Days to retain processed .m4a recordings before auto-deletion: 3 or 7.
-  int get recordingRetentionDays => getInt('recordingRetentionDays', defaultValue: 3);
-  set recordingRetentionDays(int value) => saveInt('recordingRetentionDays', value);
+  // When enabled, raw .bin segments are preserved after processing so days can
+  // be reprocessed with different VAD settings via the Reprocess Day button.
+  bool get adjustmentMode => getBool('adjustmentMode', defaultValue: false);
+  set adjustmentMode(bool value) => saveBool('adjustmentMode', value);
 
   // Silero VAD speech probability cutoff (0.0–1.0). Frames with probability
   // above this value are classified as speech.
