@@ -455,8 +455,8 @@ class RecordingsManager {
         rethrow;
       }
 
-      // Raw segment deletion — only delete segments belonging to fully-completed intervals.
-      if (lastSafeToDeleteIndex >= 0) {
+      // Raw segment deletion — skipped in adjustment mode so days can be reprocessed.
+      if (lastSafeToDeleteIndex >= 0 && !SharedPreferencesUtil().adjustmentMode) {
         final deviceSessionFolders = <String>{};
         for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
           final file = allSegments[i];
@@ -648,7 +648,6 @@ class RecordingsManager {
   /// Safe to call from a background timer; no-op if a marker process is running.
   static Future<void> processAllCompletedSessions() async {
     if (_isProcessingAny) return;
-    await enforceRetentionPolicy();
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
     final safeBatches = batches
@@ -664,6 +663,7 @@ class RecordingsManager {
           );
         })
         .where((b) => b.rawSegments.isNotEmpty)
+        .where((b) => !SharedPreferencesUtil().adjustmentMode || b.finalizedRecordings.isEmpty)
         .toList();
     if (safeBatches.isEmpty) return;
     try {
@@ -679,10 +679,12 @@ class RecordingsManager {
   /// No-op if a process is already running.
   static Future<void> forceProcessAll() async {
     if (_isProcessingAny) return;
-    await enforceRetentionPolicy();
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
-    final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
+    final activeBatches = batches
+        .where((b) => b.rawSegments.isNotEmpty)
+        .where((b) => !SharedPreferencesUtil().adjustmentMode || b.finalizedRecordings.isEmpty)
+        .toList();
     if (activeBatches.isEmpty) return;
     try {
       await manager.processAll(activeBatches, (_) {}, backgroundMode: false);
@@ -742,30 +744,6 @@ class RecordingsManager {
     return result;
   }
 
-  /// Deletes `recordings/<date>/` folders older than [recordingRetentionDays] days.
-  /// Called at the start of each processing run so storage stays bounded automatically.
-  static Future<void> enforceRetentionPolicy() async {
-    final retentionDays = SharedPreferencesUtil().recordingRetentionDays;
-    final directory = await getApplicationDocumentsDirectory();
-    final recordingsDir = Directory('${directory.path}/recordings');
-    if (!recordingsDir.existsSync()) return;
-
-    final cutoff = DateTime.now().subtract(Duration(days: retentionDays));
-    for (final entity in recordingsDir.listSync()) {
-      if (entity is! Directory) continue;
-      final parts = entity.path.split('/').last.split('-');
-      if (parts.length != 3) continue;
-      try {
-        final folderDate = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
-        if (folderDate.isBefore(cutoff)) {
-          await entity.delete(recursive: true);
-          Logger.debug('RecordingsManager: Deleted recordings older than $retentionDays days: ${entity.path}');
-        }
-      } catch (_) {
-        continue;
-      }
-    }
-  }
 
   /// Deletes orphaned `.tmp.m4a` files left by interrupted encoding runs.
   /// Call once at app startup before processing begins.
@@ -786,19 +764,38 @@ class RecordingsManager {
   }
 
   /// Deletes processed recordings (.m4a/.wav/.meta) for a day.
-  /// Raw segments are intentionally preserved — they feed the "Building next
-  /// recording" accumulating banner and will be re-processed on the next sync
-  /// to complete the current 30-minute interval.
+  /// Raw segments are intentionally preserved.
   /// Safe to call while nothing is playing.
   Future<void> deleteDay(Batch batch) async {
     final directory = await getApplicationDocumentsDirectory();
-
-    // Delete processed recordings folder (contains .m4a, .wav, .meta files).
-    // Raw segments are left intact so the in-progress interval can still complete.
     final recordingsDir = Directory('${directory.path}/recordings/${batch.dateString}');
     if (await recordingsDir.exists()) {
       await recordingsDir.delete(recursive: true);
       Logger.debug('RecordingsManager: Deleted processed recordings for ${batch.dateString}');
+    }
+  }
+
+  /// Deletes processed recordings for [batch] then immediately reprocesses
+  /// that day's raw segments using current VAD settings.
+  /// Only meaningful in adjustment mode (raw segments must still be on disk).
+  static Future<void> reprocessDay(Batch batch, Function(double) onProgress) async {
+    if (_isProcessingAny) return;
+    final manager = RecordingsManager();
+    await manager.deleteDay(batch);
+    final batches = await manager.getBatches();
+    final target = batches.where((b) => b.dateString == batch.dateString && b.rawSegments.isNotEmpty).toList();
+    if (target.isEmpty) return;
+    await manager.processAll(target, onProgress, backgroundMode: false);
+  }
+
+  /// Deletes all raw .bin segment files and their parent device-session folders.
+  /// Called after adjustment mode is turned off and any pending processing is done.
+  static Future<void> deleteAllRawSegments() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final rawSegmentsDir = Directory('${directory.path}/raw_segments');
+    if (await rawSegmentsDir.exists()) {
+      await rawSegmentsDir.delete(recursive: true);
+      Logger.debug('RecordingsManager: Deleted all raw segments after adjustment mode exit');
     }
   }
 }
