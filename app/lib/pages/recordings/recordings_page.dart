@@ -823,6 +823,7 @@ class _RecordingsPageState extends State<RecordingsPage>
 
     // Delete all remaining bins (including already-processed days).
     await RecordingsManager.deleteAllRawSegments();
+    _prefs.adjustmentModeWasEnabled = false;
 
     setState(() { _minutesRemaining = 0; _lastCompletedStage = 'processing'; });
     _persistProgress();
@@ -1103,6 +1104,7 @@ class _RecordingsPageState extends State<RecordingsPage>
   // ─── Adjustment mode cleanup banner ────────────────────────────────────────
   Widget _buildAdjustmentCleanupBanner() {
     if (_prefs.adjustmentMode) return const SizedBox.shrink();
+    if (!_prefs.adjustmentModeWasEnabled) return const SizedBox.shrink();
     if (_spState != SyncProcessState.idle) return const SizedBox.shrink();
     final pendingDays = _batches.where((b) => b.rawSegments.isNotEmpty).length;
     if (pendingDays == 0) return const SizedBox.shrink();
