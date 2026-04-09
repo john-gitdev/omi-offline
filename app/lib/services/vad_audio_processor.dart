@@ -265,7 +265,7 @@ class VadAudioProcessor {
     return path;
   }
 
-  Future<String?> flushOnlyCompleted() async => null;
+  Future<String?> flushOnlyCompleted() => flushRemaining();
 
   void _resetState() {
     _currentRefs = [];
