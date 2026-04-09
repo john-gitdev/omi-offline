@@ -23,8 +23,8 @@ class VadAudioProcessor {
 
   // Per-conversation accumulation — FrameRef disk-pointers only, no Opus in RAM
   List<FrameRef> _currentRefs = [];
-  int _speechFrameCount = 0;         // speech frames in current chunk
-  int _skippedFramesInRecording = 0; // non-speech frames in current chunk (keeps timestamps correct)
+  int _speechFrameCount = 0;         // speech frames in current conversation
+  int _skippedFramesInRecording = 0; // non-speech frames in current conversation (keeps timestamps correct)
   DateTime? _recordingStartTime;
   DateTime? _lastSegmentEndTime;
 
@@ -40,12 +40,12 @@ class VadAudioProcessor {
   final int _minSpeechMs;
   final int _preSpeechBufferMs;
   final int _gapThresholdMs;
+  final int _maxChunkMs;
 
   static const int sampleRate = 16000;
   static const int channels = 1;
   static const int frameDurationMs = 20; // 20 ms per Opus frame
   static const int _vadWindowSamples = 512; // Silero VAD input size
-  static const int _maxChunkMs = 30 * 60 * 1000; // 30-minute hard cap
 
   static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
     OrtEnv.instance.init();
@@ -71,7 +71,8 @@ class VadAudioProcessor {
         _silenceDurationToSplitMs = SharedPreferencesUtil().vadSplitSeconds * 1000,
         _minSpeechMs = SharedPreferencesUtil().vadMinSpeechSeconds * 1000,
         _preSpeechBufferMs = (SharedPreferencesUtil().vadPreSpeechSeconds * 1000).round(),
-        _gapThresholdMs = SharedPreferencesUtil().vadGapSeconds * 1000;
+        _gapThresholdMs = SharedPreferencesUtil().vadGapSeconds * 1000,
+        _maxChunkMs = SharedPreferencesUtil().vadMaxChunkMinutes * 60 * 1000;
 
   void destroy() {
     _decoder?.destroy();
@@ -227,7 +228,7 @@ class VadAudioProcessor {
             Duration(milliseconds: frameIndex * frameDurationMs)
           ).subtract(Duration(milliseconds: bufferToKeep * frameDurationMs));
         } else if (_currentChunkDurationMs >= _maxChunkMs) {
-          Logger.debug('VadAudioProcessor: Max chunk duration — forcing cut.');
+          Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
           final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
           if (filePath != null) savedFiles.add(filePath);
           _currentRefs = [];
@@ -544,6 +545,13 @@ class VadAudioProcessor {
     await sink.close();
 
     Logger.debug('VadAudioProcessor: Saved WAV fallback to $wavPath');
+    return wavPath;
+  }
+}
+avPath;
+  }
+}
+;
     return wavPath;
   }
 }
