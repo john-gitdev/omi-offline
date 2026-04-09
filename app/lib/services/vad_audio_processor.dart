@@ -147,14 +147,20 @@ class VadAudioProcessor {
       int offset = 0;
       int frameIndex = 0;
       int totalFrameCount = 0;
+      double segmentMaxAmp = 0.0;
 
       while (offset < fileLength) {
         if (offset + 4 > fileLength) break;
 
         final frameLength = byteData.getUint32(offset, Endian.little);
 
+        // Skip null/sentinel words and marker packets (0xFFFFFFFE = button-tap marker, 20 bytes total).
         if (frameLength == 0 || frameLength == 0xFFFFFFFF) {
           offset += 4;
+          continue;
+        }
+        if (frameLength == 0xFFFFFFFE) {
+          offset += 20; // 4-byte header + 16-byte marker payload
           continue;
         }
 
@@ -173,7 +179,9 @@ class VadAudioProcessor {
         bool isSpeech = false;
         if (pcmData != null) {
           for (int s = 0; s < pcmData.length; s++) {
-            _pcmWindow.add(pcmData[s] / 32768.0);
+            final sample = pcmData[s] / 32768.0;
+            _pcmWindow.add(sample);
+            if (sample.abs() > segmentMaxAmp) segmentMaxAmp = sample.abs();
           }
           while (_pcmWindow.length >= 512) {
             final window = _pcmWindow.sublist(0, 512);
@@ -242,12 +250,14 @@ class VadAudioProcessor {
           );
         }
 
-        offset += 4 + frameLength;
+        offset += 4 + ((frameLength + 3) & ~3); // advance past 4-byte-aligned frame (matches SD card wire format)
         frameIndex++;
         totalFrameCount++;
       }
 
       _lastSegmentEndTime = segmentStartTime.add(Duration(milliseconds: totalFrameCount * frameDurationMs));
+      Logger.debug('VadAudioProcessor: ${segmentFile.path.split('/').last} — '
+          '$totalFrameCount frames, $_speechFrameCount speech, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}');
     } catch (e) {
       Logger.error('VadAudioProcessor: processSegmentFile error: $e');
     }
@@ -257,6 +267,12 @@ class VadAudioProcessor {
 
   Future<String?> flushRemaining() async {
     if (_currentRefs.isEmpty || _speechFrameCount * frameDurationMs < _minSpeechMs) {
+      if (_currentRefs.isNotEmpty) {
+        Logger.debug(
+          'VadAudioProcessor: flushRemaining discarding ${_currentRefs.length} frames '
+          '(${_speechFrameCount * frameDurationMs}ms speech < ${_minSpeechMs}ms minimum)',
+        );
+      }
       _resetState();
       return null;
     }
