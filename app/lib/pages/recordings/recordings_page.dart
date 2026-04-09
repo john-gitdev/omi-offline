@@ -959,10 +959,7 @@ class _RecordingsPageState extends State<RecordingsPage>
         _spState == SyncProcessState.stopping)
       return const SizedBox.shrink();
     if (_accumulatedMinutes < 0.5) return const SizedBox.shrink();
-    if (_accumulatedMinutes >= 30.0) return const SizedBox.shrink();
 
-    final double withinInterval = _accumulatedMinutes % 30.0;
-    final double progress = withinInterval / 30.0;
     final int accMin = _accumulatedMinutes.floor();
 
     return Container(
@@ -982,7 +979,7 @@ class _RecordingsPageState extends State<RecordingsPage>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Building next recording',
+                      'Conversation in progress',
                       style: TextStyle(
                         color: Colors.grey.shade400,
                         fontWeight: FontWeight.w500,
@@ -990,7 +987,7 @@ class _RecordingsPageState extends State<RecordingsPage>
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '$accMin out of 30 minutes accumulated',
+                      '$accMin ${accMin == 1 ? 'minute' : 'minutes'} accumulated',
                       style: TextStyle(
                         color: Colors.grey.shade600,
                         fontSize: 11,
@@ -1016,12 +1013,6 @@ class _RecordingsPageState extends State<RecordingsPage>
                 ),
               ),
             ],
-          ),
-          const SizedBox(height: 8),
-          LinearProgressIndicator(
-            value: progress,
-            backgroundColor: Colors.grey.shade800,
-            color: Colors.deepPurpleAccent,
           ),
         ],
       ),
