@@ -206,7 +206,7 @@ class RecordingsManager {
 
     // Process raw segments (now they are in DeviceSession folders)
     if (await rawSegmentsDir.exists()) {
-      final deviceSessionFolders = rawSegmentsDir.listSync().whereType<Directory>().toList();
+      final deviceSessionFolders = await rawSegmentsDir.list().where((e) => e is Directory).cast<Directory>().toList();
 
       // Sort DeviceSession folders by ID (e.g. "100", "101")
       deviceSessionFolders.sort((a, b) {
@@ -241,10 +241,11 @@ class RecordingsManager {
         }
 
         // 2. Process segments
-        final files = folder.listSync().whereType<File>().where((f) => f.path.endsWith('.bin')).toList();
+        final files = await folder.list().where((e) => e is File && e.path.endsWith('.bin')).cast<File>().toList();
 
+        // Note: Using a sequential loop for files as well to maintain insertion order in the list.
         for (var file in files) {
-          final date = file.lastModifiedSync();
+          final date = await file.lastModified();
           final dateString =
               '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
           rawSegmentsByDate.putIfAbsent(dateString, () => []).add(file);
@@ -254,16 +255,17 @@ class RecordingsManager {
 
     // Process already processed recordings
     if (await recordingsDir.exists()) {
-      final dateFolders = recordingsDir.listSync().whereType<Directory>();
-      for (var folder in dateFolders) {
+      final dateFolders = await recordingsDir.list().where((e) => e is Directory).cast<Directory>().toList();
+      await Future.wait(dateFolders.map((folder) async {
         final dateString = folder.path.split('/').last;
-        final files = folder
-            .listSync()
-            .whereType<File>()
-            .where((f) => f.path.endsWith('.m4a') || f.path.endsWith('.wav'))
+        final files = await folder
+            .list()
+            .where((e) => e is File && (e.path.endsWith('.m4a') || e.path.endsWith('.wav')))
+            .cast<File>()
             .toList();
-        processedByDate[dateString] = files.map((f) => Conversation.fromFile(f)).toList();
-      }
+        final conversations = await Future.wait(files.map((f) async => await Conversation.fromFile(f)));
+        processedByDate[dateString] = conversations.cast<Conversation>().toList();
+      }));
     }
 
     // Merge keys
