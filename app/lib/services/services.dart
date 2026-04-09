@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:omi/services/connectivity_service.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/wals.dart';
 
@@ -35,7 +34,6 @@ class ServiceManager {
       throw Exception("Service manager is initiated");
     }
     _instance = ServiceManager._create();
-    await ConnectivityService().init();
   }
 
   Future<void> start() async {
@@ -44,7 +42,6 @@ class ServiceManager {
   }
 
   Future<void> deinit() async {
-    ConnectivityService().dispose();
     await _wal.stop();
     _device.stop();
   }
