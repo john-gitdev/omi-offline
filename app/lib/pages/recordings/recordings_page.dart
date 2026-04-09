@@ -758,7 +758,7 @@ class _RecordingsPageState extends State<RecordingsPage>
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
         'Delete Day',
-        'This will permanently delete all processed recordings for ${batch.dateString}. Raw audio not yet turned into a recording will be kept so it can still complete. This cannot be undone.',
+        'This will permanently delete all processed recordings for ${batch.dateString}. This cannot be undone.',
         confirmText: 'Delete',
       ),
     );
@@ -770,6 +770,87 @@ class _RecordingsPageState extends State<RecordingsPage>
       if (mounted) {
         messenger.showSnackBar(
           SnackBar(content: Text('Error deleting day: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _runAdjustmentCleanup() async {
+    if (_spState != SyncProcessState.idle) return;
+    final daysWithBins = _batches.where((b) => b.rawSegments.isNotEmpty).toList();
+    if (daysWithBins.isEmpty) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        c,
+        () => Navigator.of(c).pop(false),
+        () => Navigator.of(c).pop(true),
+        'Clean up raw audio?',
+        'Raw audio files from ${daysWithBins.length} ${daysWithBins.length == 1 ? 'day' : 'days'} are still on disk. '
+            'Unprocessed days will be processed first, then all raw files will be permanently deleted. '
+            'This cannot be undone.',
+        confirmText: 'Process & Delete',
+      ),
+    );
+    if (confirm != true) return;
+
+    _lastActiveStage = 'processing';
+    _transitionTo(SyncProcessState.processing);
+
+    // Process days that have bins but no recordings yet.
+    final unprocessed = daysWithBins.where((b) => b.finalizedRecordings.isEmpty).toList();
+    if (unprocessed.isNotEmpty) {
+      final totalBytes = unprocessed.expand((b) => b.rawSegments).fold(0, (sum, f) {
+        try { return sum + f.lengthSync(); } catch (_) { return sum; }
+      });
+      setState(() {
+        _totalMinutes = totalBytes / 252000.0;
+        _minutesRemaining = _totalMinutes;
+      });
+      WakelockPlus.enable();
+      try {
+        await _manager.processAll(unprocessed, (progress) {
+          if (mounted) setState(() => _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes));
+        }, backgroundMode: false);
+      } catch (e) {
+        WakelockPlus.disable();
+        _transitionToError('processing', e.toString());
+        return;
+      }
+      WakelockPlus.disable();
+    }
+
+    // Delete all remaining bins (including already-processed days).
+    await RecordingsManager.deleteAllRawSegments();
+
+    setState(() { _minutesRemaining = 0; _lastCompletedStage = 'processing'; });
+    _persistProgress();
+    await _reloadBatchesSilently();
+    await _finishSuccess();
+  }
+
+  Future<void> _reprocessDay(Batch batch) async {
+    final messenger = ScaffoldMessenger.of(context);
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        'Reprocess Day',
+        'This will delete all processed recordings for ${batch.dateString} and reprocess from raw audio using your current VAD settings.',
+        confirmText: 'Reprocess',
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await RecordingsManager.reprocessDay(batch, (_) {});
+      await _loadBatches();
+    } catch (e) {
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Error reprocessing day: $e')),
         );
       }
     }
@@ -1015,6 +1096,49 @@ class _RecordingsPageState extends State<RecordingsPage>
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  // ─── Adjustment mode cleanup banner ────────────────────────────────────────
+  Widget _buildAdjustmentCleanupBanner() {
+    if (_prefs.adjustmentMode) return const SizedBox.shrink();
+    if (_spState != SyncProcessState.idle) return const SizedBox.shrink();
+    final pendingDays = _batches.where((b) => b.rawSegments.isNotEmpty).length;
+    if (pendingDays == 0) return const SizedBox.shrink();
+
+    return GestureDetector(
+      onTap: _runAdjustmentCleanup,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.orange.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.orange.withValues(alpha: 0.3), width: 1),
+        ),
+        child: Row(
+          children: [
+            const FaIcon(FontAwesomeIcons.triangleExclamation, color: Colors.orange, size: 16),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Raw audio pending cleanup',
+                    style: TextStyle(color: Colors.orange, fontWeight: FontWeight.w500, fontSize: 14),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '$pendingDays ${pendingDays == 1 ? 'day' : 'days'} of raw files still on disk. Tap to process & delete.',
+                    style: TextStyle(color: Colors.orange.shade300, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1287,19 +1411,34 @@ class _RecordingsPageState extends State<RecordingsPage>
                     style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                   ),
                 ),
-                TextButton.icon(
-                  key: Key('delete_day_${batch.dateString}'),
-                  onPressed: () => _deleteDay(batch),
-                  icon: FaIcon(
-                    FontAwesomeIcons.trashCan,
-                    size: 13,
-                    color: Colors.red.shade400,
+                if (_prefs.adjustmentMode && batch.rawSegments.isNotEmpty)
+                  TextButton.icon(
+                    key: Key('reprocess_day_${batch.dateString}'),
+                    onPressed: () => _reprocessDay(batch),
+                    icon: FaIcon(
+                      FontAwesomeIcons.rotateRight,
+                      size: 13,
+                      color: Colors.deepPurpleAccent,
+                    ),
+                    label: const Text(
+                      'Reprocess Day',
+                      style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13),
+                    ),
+                  )
+                else
+                  TextButton.icon(
+                    key: Key('delete_day_${batch.dateString}'),
+                    onPressed: () => _deleteDay(batch),
+                    icon: FaIcon(
+                      FontAwesomeIcons.trashCan,
+                      size: 13,
+                      color: Colors.red.shade400,
+                    ),
+                    label: Text(
+                      'Delete Day',
+                      style: TextStyle(color: Colors.red.shade400, fontSize: 13),
+                    ),
                   ),
-                  label: Text(
-                    'Delete Day',
-                    style: TextStyle(color: Colors.red.shade400, fontSize: 13),
-                  ),
-                ),
               ],
             ),
           ],
@@ -1621,6 +1760,7 @@ class _RecordingsPageState extends State<RecordingsPage>
               _buildStorageWarning(deviceProvider.storageFullPercentage),
               _buildSyncProcessCard(),
               _buildAccumulatingBanner(),
+              _buildAdjustmentCleanupBanner(),
               Expanded(
                 child: _isLoading
                     ? const Center(
