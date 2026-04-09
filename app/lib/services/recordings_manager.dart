@@ -114,7 +114,7 @@ class Batch {
   final String dateString;
   final DateTime date;
   final List<File> rawSegments;
-  final List<File> finalizedRecordings;
+  final List<Conversation> finalizedRecordings;
   final List<DateTime> markerTimestamps;
 
   Batch({
@@ -149,6 +149,11 @@ class MarkerConversation {
 
   bool get isPending => segment == null;
   String get markerTimeLabel => fmtHourMin(markerTime);
+
+  String get timeRangeLabel {
+    if (segment == null) return '';
+    return Conversation.fromFile(segment!).timeRangeLabel;
+  }
 }
 
 class RecordingsManager {
@@ -196,7 +201,7 @@ class RecordingsManager {
     final recordingsDir = Directory('${directory.path}/recordings');
 
     Map<String, List<File>> rawSegmentsByDate = {};
-    Map<String, List<File>> processedByDate = {};
+    Map<String, List<Conversation>> processedByDate = {};
     Map<String, List<DateTime>> markersByDate = {};
 
     // Process raw segments (now they are in DeviceSession folders)
@@ -257,7 +262,7 @@ class RecordingsManager {
             .whereType<File>()
             .where((f) => f.path.endsWith('.m4a') || f.path.endsWith('.wav'))
             .toList();
-        processedByDate[dateString] = files;
+        processedByDate[dateString] = files.map((f) => Conversation.fromFile(f)).toList();
       }
     }
 
@@ -285,7 +290,7 @@ class RecordingsManager {
         dateString: dateStr,
         date: date,
         rawSegments: raw,
-        finalizedRecordings: processedByDate[dateStr] ?? [],
+        finalizedRecordings: processedByDate[dateStr] ?? <Conversation>[],
         markerTimestamps: markersByDate[dateStr] ?? [],
       ));
     }
