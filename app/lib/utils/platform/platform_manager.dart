@@ -61,9 +61,6 @@ class PlatformManager {
       } else if (Platform.isAndroid) {
         final androidInfo = await deviceInfo.androidInfo;
         deviceIdentifier = androidInfo.id;
-      } else if (Platform.isMacOS) {
-        final macInfo = await deviceInfo.macOsInfo;
-        deviceIdentifier = macInfo.systemGUID ?? '';
       }
     } catch (e) {
       // Fallback to timestamp if device info fails
@@ -82,6 +79,5 @@ class PlatformManager {
 
   bool get isAnalyticsSupported => PlatformService.isAnalyticsSupported;
   bool get isDebuggingSupported => PlatformService.isCrashlyticsSupported;
-  bool get isMacOS => PlatformService.isMacOS;
-  bool get isFCMSupported => Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
+  bool get isFCMSupported => Platform.isAndroid || Platform.isIOS;
 }
