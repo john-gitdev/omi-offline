@@ -29,6 +29,12 @@ class SharedPreferencesUtil {
   bool get adjustmentMode => getBool('adjustmentMode', defaultValue: false);
   set adjustmentMode(bool value) => saveBool('adjustmentMode', value);
 
+  // Set to true the first time adjustment mode is turned ON; cleared only after
+  // the cleanup banner's "Process & Delete" completes. Used to suppress the
+  // cleanup banner when adjustment mode has never been enabled.
+  bool get adjustmentModeWasEnabled => getBool('adjustmentModeWasEnabled', defaultValue: false);
+  set adjustmentModeWasEnabled(bool value) => saveBool('adjustmentModeWasEnabled', value);
+
   // Silero VAD speech probability cutoff (0.0–1.0). Frames with probability
   // above this value are classified as speech.
   double get vadSpeechThreshold => getDouble('vadSpeechThreshold', defaultValue: 0.5);

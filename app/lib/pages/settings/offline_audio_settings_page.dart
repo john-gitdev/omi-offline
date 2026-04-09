@@ -50,6 +50,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
     SharedPreferencesUtil().use24HourTime = _use24HourTime;
     SharedPreferencesUtil().adjustmentMode = _adjustmentMode;
+    if (_adjustmentMode) SharedPreferencesUtil().adjustmentModeWasEnabled = true;
 
     SharedPreferencesUtil().vadSpeechThreshold = _vadSpeechThreshold;
     SharedPreferencesUtil().vadSplitSeconds = _vadSplitSeconds;
