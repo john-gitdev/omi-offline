@@ -73,6 +73,7 @@ class DeviceService implements IDeviceService {
   DeviceServiceStatus get status => _status;
 
   DateTime? _firstConnectedAt;
+  Timer? _watchdogTimer;
 
   @override
   Future<List<BtDevice>> discover({String? desirableDeviceId, int timeout = 5}) async {
@@ -180,13 +181,31 @@ class DeviceService implements IDeviceService {
   void start() {
     _status = DeviceServiceStatus.ready;
 
-    // TODO: Start watchdog to discover automatically, re-connect automatically
+    _watchdogTimer?.cancel();
+    _watchdogTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+      if (_status != DeviceServiceStatus.ready) return;
+      if (_isWifiSyncInProgress) return;
+
+      final storedDevice = SharedPreferencesUtil().btDevice;
+      if (storedDevice.id.isNotEmpty) {
+        if (_connection != null && _connection!.device.id == storedDevice.id) {
+          // Transport exists, let native handle reconnection
+          return;
+        }
+
+        Logger.debug("DeviceService Watchdog: Triggering automatic discovery and reconnection for ${storedDevice.id}");
+        await discover(desirableDeviceId: storedDevice.id);
+      }
+    });
   }
 
   @override
   void stop() {
     _status = DeviceServiceStatus.stop;
     onStatusChanged(_status);
+
+    _watchdogTimer?.cancel();
+    _watchdogTimer = null;
 
     // Stop all discoverers to prevent resource leaks and battery drain
     for (final discoverer in _discoverers) {
