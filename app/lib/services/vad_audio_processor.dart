@@ -53,7 +53,7 @@ class VadAudioProcessor {
     try {
       final data = await rootBundle.load('assets/models/silero_vad.onnx');
       final sessionOptions = OrtSessionOptions();
-      session = OrtSession.fromBuffer(data.buffer.asUint8List(), sessionOptions);
+      session = OrtSession.fromBuffer(data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes), sessionOptions);
     } catch (e) {
       Logger.error('VadAudioProcessor: Failed to load Silero VAD model, amplitude fallback active: $e');
     }
