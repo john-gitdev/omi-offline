@@ -153,8 +153,16 @@ class VadAudioProcessor {
 
         final frameLength = byteData.getUint32(offset, Endian.little);
 
+        if (frameLength == 0xFFFFFFFE) {
+          offset += 20;
+          continue;
+        }
+
         if (frameLength == 0 || frameLength == 0xFFFFFFFF) {
           offset += 4;
+          continue;
+        } else if (frameLength > 400) {
+          offset += 1;
           continue;
         }
 
@@ -242,7 +250,8 @@ class VadAudioProcessor {
           );
         }
 
-        offset += 4 + frameLength;
+        int padded = (frameLength + 3) & ~3;
+        offset += 4 + padded;
         frameIndex++;
         totalFrameCount++;
       }
