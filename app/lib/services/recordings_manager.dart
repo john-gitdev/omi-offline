@@ -575,19 +575,17 @@ class RecordingsManager {
     final recordingsDir = Directory('${directory.path}/recordings');
     if (!await recordingsDir.exists()) return [];
 
-    final result = <MarkerConversation>[];
+    final entities = await recordingsDir.list().toList();
+    final dateFolders = entities.whereType<Directory>().toList();
 
-    for (final entity in await recordingsDir.list().toList()) {
-      if (entity is! Directory) continue;
-      final dateFolder = entity;
-
+    final resultsNested = await Future.wait(dateFolders.map((dateFolder) async {
       final edlFiles = await dateFolder
           .list()
           .where((e) => e is File && e.path.split('/').last.startsWith('marker_') && e.path.endsWith('.edl'))
           .cast<File>()
           .toList();
 
-      for (final edlFile in edlFiles) {
+      final markerFutures = edlFiles.map((edlFile) async {
         try {
           final json = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
           final markerMs = json['markerTimestampMs'] as int;
@@ -603,7 +601,7 @@ class RecordingsManager {
             if (await f.exists()) segmentFile = f;
           }
 
-          result.add(MarkerConversation(
+          return MarkerConversation(
             markerTime: DateTime.fromMillisecondsSinceEpoch(markerMs),
             segment: segmentFile,
             markerOffsetMs: markerOffsetMs,
@@ -611,12 +609,17 @@ class RecordingsManager {
             cropEndMs: cropEndMs,
             edlFile: edlFile,
             userSaved: userSaved,
-          ));
+          );
         } catch (e) {
           Logger.error('RecordingsManager: Failed to parse EDL ${edlFile.path}: $e');
+          return null;
         }
-      }
-    }
+      });
+
+      return await Future.wait(markerFutures);
+    }));
+
+    final result = resultsNested.expand((list) => list).whereType<MarkerConversation>().toList();
 
     result.sort((a, b) => b.markerTime.compareTo(a.markerTime));
     return result;
