@@ -50,6 +50,7 @@ class _RecordingsPageState extends State<RecordingsPage>
   List<MarkerConversation> _markerConversations = [];
   bool _isLoading = true;
   bool _showMarkersOnly = false;
+  int _minFilterSeconds = 0; // 0 = no filter
 
   // ─── Unified sync+process state ────────────────────────────────────────────
   SyncProcessState _spState = SyncProcessState.idle;
@@ -1101,6 +1102,62 @@ class _RecordingsPageState extends State<RecordingsPage>
     );
   }
 
+  // ─── Duration filter sheet ─────────────────────────────────────────────────
+  void _showFilterSheet() {
+    const options = [0, 30, 60, 120, 300, 600];
+    const labels = ['Off', '30s', '1m', '2m', '5m', '10m'];
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1C1C1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Hide conversations shorter than',
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: List.generate(options.length, (i) {
+                  final selected = _minFilterSeconds == options[i];
+                  return GestureDetector(
+                    onTap: () {
+                      setState(() => _minFilterSeconds = options[i]);
+                      Navigator.of(ctx).pop();
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: selected ? Colors.deepPurpleAccent : const Color(0xFF2C2C2E),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        labels[i],
+                        style: TextStyle(
+                          color: selected ? Colors.white : Colors.grey.shade300,
+                          fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   // ─── Adjustment mode cleanup banner ────────────────────────────────────────
   Widget _buildAdjustmentCleanupBanner() {
     if (_prefs.adjustmentMode) return const SizedBox.shrink();
@@ -1368,7 +1425,10 @@ class _RecordingsPageState extends State<RecordingsPage>
   ) {
     final conversations = [...batch.finalizedRecordings]
       ..sort((a, b) => b.startTime.compareTo(a.startTime));
-    if (conversations.isEmpty) return const SizedBox.shrink();
+    final filtered = _minFilterSeconds > 0
+        ? conversations.where((c) => c.duration.inSeconds >= _minFilterSeconds).toList()
+        : conversations;
+    if (filtered.isEmpty) return const SizedBox.shrink();
 
     return Card(
       color: const Color(0xFF1C1C1E),
@@ -1388,7 +1448,7 @@ class _RecordingsPageState extends State<RecordingsPage>
               ),
             ),
             const SizedBox(height: 12),
-            ...conversations.map(
+            ...filtered.map(
               (c) => _buildConversationTile(
                 c,
                 markerMap[c.file.path.split('/').last] ?? [],
@@ -1728,6 +1788,14 @@ class _RecordingsPageState extends State<RecordingsPage>
                   onPressed: () =>
                       setState(() => _showMarkersOnly = !_showMarkersOnly),
                 ),
+              IconButton(
+                icon: FaIcon(
+                  FontAwesomeIcons.filter,
+                  color: _minFilterSeconds > 0 ? Colors.deepPurpleAccent : Colors.white,
+                  size: 18,
+                ),
+                onPressed: _showFilterSheet,
+              ),
               // Force sync button — disabled when syncing is in progress or on cooldown
               IconButton(
                 icon: FaIcon(
