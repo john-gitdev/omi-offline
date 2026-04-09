@@ -45,7 +45,7 @@ class SharedPreferencesUtil {
 
   // Minimum speech duration (seconds) for a conversation to be saved. Shorter conversations
   // are discarded (e.g. a cough, a door slam).
-  int get vadMinSpeechSeconds => getInt('vadMinSpeechSeconds', defaultValue: 5);
+  int get vadMinSpeechSeconds => getInt('vadMinSpeechSeconds', defaultValue: 3);
   set vadMinSpeechSeconds(int v) => saveInt('vadMinSpeechSeconds', v);
 
   // Seconds of silence frames to prepend before a new conversation starts,
