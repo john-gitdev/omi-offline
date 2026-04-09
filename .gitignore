@@ -1,3 +1,9 @@
+# Tooling / IDE
+.codesight/
+.cursorrules
+AGENTS.md
+codex.md
+
 *.env
 .env*
 !.env.template
