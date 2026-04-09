@@ -220,13 +220,7 @@ class AudioPlayerUtils extends ChangeNotifier {
     final tempDir = await getTemporaryDirectory();
     final tempFilePath = '${tempDir.path}/temp_${wal.id}_${DateTime.now().millisecondsSinceEpoch}.bin';
 
-    List<int> data = [];
-    for (int i = 0; i < wal.data!.length; i++) {
-      var frame = wal.data![i];
-      // Assume frame logic was intended to skip some prefix if needed,
-      // but let's just use the whole frame if it's raw PCM or Opus.
-      data.addAll(Uint32List.fromList([frame]).buffer.asUint8List());
-    }
+    final data = Uint32List.fromList(wal.data!).buffer.asUint8List();
 
     final file = File(tempFilePath);
     await file.writeAsBytes(data);
