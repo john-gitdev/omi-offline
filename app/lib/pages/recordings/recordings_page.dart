@@ -22,7 +22,15 @@ import 'package:omi/widgets/battery_status_indicator.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 // ─── State machine ──────────────────────────────────────────────────────────
-enum SyncProcessState { idle, syncing, processing, stopping, resume, error, successUi }
+enum SyncProcessState {
+  idle,
+  syncing,
+  processing,
+  stopping,
+  resume,
+  error,
+  successUi,
+}
 
 // ─── Page ───────────────────────────────────────────────────────────────────
 class RecordingsPage extends StatefulWidget {
@@ -32,7 +40,8 @@ class RecordingsPage extends StatefulWidget {
   State<RecordingsPage> createState() => _RecordingsPageState();
 }
 
-class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProgressListener {
+class _RecordingsPageState extends State<RecordingsPage>
+    implements IWalSyncProgressListener {
   final RecordingsManager _manager = RecordingsManager();
   final _prefs = SharedPreferencesUtil();
 
@@ -50,7 +59,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   double _totalMinutes = 0.0;
   int _markerCount = 0;
   double _syncSpeed = 0.0;
-  double _accumulatedMinutes = 0.0; // raw audio on disk not yet turned into a recording
+  double _accumulatedMinutes =
+      0.0; // raw audio on disk not yet turned into a recording
   String _lastCompletedStage = 'none'; // "none" | "syncing" | "processing"
   String _lastActiveStage = 'syncing'; // "syncing" | "processing"
   // ─── HeyPocket upload state ────────────────────────────────────────────────
@@ -59,12 +69,16 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   String _lastHpKey = '';
 
   Timer? _pollTimer;
-  bool _isUserTriggered = false; // true while user-initiated pipeline is running
-  Completer<void>? _pipelineCompleter; // completed when the pipeline reaches a terminal state
+  bool _isUserTriggered =
+      false; // true while user-initiated pipeline is running
+  Completer<void>?
+  _pipelineCompleter; // completed when the pipeline reaches a terminal state
 
   // ─── Force sync state ──────────────────────────────────────────────────────
-  bool _isForcePipeline = false; // true while a force-sync-initiated pipeline is running
-  bool _forceSyncOnCooldown = false; // true for 1 min after the button is pressed
+  bool _isForcePipeline =
+      false; // true while a force-sync-initiated pipeline is running
+  bool _forceSyncOnCooldown =
+      false; // true for 1 min after the button is pressed
   Timer? _forceSyncCooldownTimer;
 
   // ─── Persistence keys ──────────────────────────────────────────────────────
@@ -84,8 +98,13 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _restoreState();
     _loadBatches();
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(this);
-    RecordingsManager.recordingsChangeNotifier.addListener(_onRecordingsChanged);
-    _pollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _poll());
+    RecordingsManager.recordingsChangeNotifier.addListener(
+      _onRecordingsChanged,
+    );
+    _pollTimer = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (_) => _poll(),
+    );
   }
 
   void _onRecordingsChanged() {
@@ -107,8 +126,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _totalCount = _prefs.getInt(_kSpTotalCount);
     _minutesRemaining = _prefs.getDouble(_kSpMinutesRemaining);
     _markerCount = _prefs.getInt(_kSpMarkerCount);
-    _lastCompletedStage = _prefs.getString(_kSpLastCompleted, defaultValue: 'none');
-    _lastActiveStage = _prefs.getString(_kSpLastActive, defaultValue: 'syncing');
+    _lastCompletedStage = _prefs.getString(
+      _kSpLastCompleted,
+      defaultValue: 'none',
+    );
+    _lastActiveStage = _prefs.getString(
+      _kSpLastActive,
+      defaultValue: 'syncing',
+    );
 
     // Cold-start: if a background job is already running when the page opens,
     // reflect it immediately rather than waiting for the first poll tick.
@@ -128,7 +153,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _pollTimer?.cancel();
     _forceSyncCooldownTimer?.cancel();
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(null);
-    RecordingsManager.recordingsChangeNotifier.removeListener(_onRecordingsChanged);
+    RecordingsManager.recordingsChangeNotifier.removeListener(
+      _onRecordingsChanged,
+    );
     super.dispose();
   }
 
@@ -170,22 +197,28 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       if (!serviceIsSyncing && _spState == SyncProcessState.syncing) {
         if (serviceIsProcessing) {
           // Background processing auto-started after sync — show it.
-          unawaited(_reloadBatchesSilently().then((_) async {
-            if (!mounted) return;
-            final allRaw = _batches.expand((b) => b.rawSegments).toList();
-            final processable = RecordingsManager.excludeNewestSegmentPerSession(allRaw);
-            final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
-            final totalBytes = lengths.fold(0, (s, len) => s + len);
-            if (!mounted) return;
-            setState(() {
-              _spState = SyncProcessState.processing;
-              _totalMinutes =
-                  totalBytes / 252000.0; // segment on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
-              _minutesRemaining = _totalMinutes;
-              _syncedCount = 0;
-              _syncSpeed = 0.0;
-            });
-          }));
+          unawaited(
+            _reloadBatchesSilently().then((_) async {
+              if (!mounted) return;
+              final allRaw = _batches.expand((b) => b.rawSegments).toList();
+              final processable =
+                  RecordingsManager.excludeNewestSegmentPerSession(allRaw);
+              final lengths = await Future.wait(
+                processable.map((f) => f.length().catchError((_) => 0)),
+              );
+              final totalBytes = lengths.fold(0, (s, len) => s + len);
+              if (!mounted) return;
+              setState(() {
+                _spState = SyncProcessState.processing;
+                _totalMinutes =
+                    totalBytes /
+                    252000.0; // segment on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
+                _minutesRemaining = _totalMinutes;
+                _syncedCount = 0;
+                _syncSpeed = 0.0;
+              });
+            }),
+          );
         } else {
           setState(() {
             _spState = SyncProcessState.idle;
@@ -260,16 +293,24 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   // ─── IWalSyncProgressListener ──────────────────────────────────────────────
   @override
-  void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
+  void onWalSyncedProgress(
+    double percentage, {
+    double? speedKBps,
+    SyncPhase? phase,
+  }) {
     if (!mounted) return;
     setState(() {
       _syncSpeed = speedKBps ?? 0.0;
       // If _totalCount is 0 or mismatched (WAL list wasn't populated yet),
       // refresh it from estimatedTotalSegments now that syncAll/listFiles has progressed.
-      final currentEstimated = ServiceManager.instance().wal.getSyncs().recordingsCount;
+      final currentEstimated = ServiceManager.instance().wal
+          .getSyncs()
+          .recordingsCount;
       if (_totalCount <= 0 && currentEstimated > 0) {
         _totalCount = currentEstimated;
-        Logger.debug('RecordingsPage: Backfilled totalCount from service: $_totalCount');
+        Logger.debug(
+          'RecordingsPage: Backfilled totalCount from service: $_totalCount',
+        );
       }
 
       if (_totalCount > 0) {
@@ -300,7 +341,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, setDialogState) => AlertDialog(
             backgroundColor: const Color(0xFF1C1C1E),
-            title: const Text('Force Sync', style: TextStyle(color: Colors.white)),
+            title: const Text(
+              'Force Sync',
+              style: TextStyle(color: Colors.white),
+            ),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -311,7 +355,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 ),
                 const SizedBox(height: 16),
                 GestureDetector(
-                  onTap: () => setDialogState(() => doNotShowAgain = !doNotShowAgain),
+                  onTap: () =>
+                      setDialogState(() => doNotShowAgain = !doNotShowAgain),
                   child: Row(
                     children: [
                       SizedBox(
@@ -319,13 +364,17 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                         height: 20,
                         child: Checkbox(
                           value: doNotShowAgain,
-                          onChanged: (v) => setDialogState(() => doNotShowAgain = v ?? false),
+                          onChanged: (v) =>
+                              setDialogState(() => doNotShowAgain = v ?? false),
                           activeColor: Colors.deepPurpleAccent,
                           side: const BorderSide(color: Colors.grey),
                         ),
                       ),
                       const SizedBox(width: 8),
-                      const Text('Don\'t show again', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                      const Text(
+                        'Don\'t show again',
+                        style: TextStyle(color: Colors.grey, fontSize: 13),
+                      ),
                     ],
                   ),
                 ),
@@ -334,11 +383,17 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                child: const Text(
+                  'Cancel',
+                  style: TextStyle(color: Colors.grey),
+                ),
               ),
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(true),
-                child: const Text('Yes', style: TextStyle(color: Colors.deepPurpleAccent)),
+                child: const Text(
+                  'Yes',
+                  style: TextStyle(color: Colors.deepPurpleAccent),
+                ),
               ),
             ],
           ),
@@ -366,7 +421,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     final syncs = ServiceManager.instance().wal.getSyncs();
     setState(() {
-      _totalCount = 0; // will be backfilled by onWalSyncedProgress after rotation+list
+      _totalCount =
+          0; // will be backfilled by onWalSyncedProgress after rotation+list
       _syncedCount = 0;
       _syncSpeed = 0.0;
     });
@@ -403,7 +459,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _prefs.saveString(_kSpLastCompleted, 'syncing');
     await _reloadBatchesSilently();
     setState(() {
-      _markerCount = _batches.fold(0, (sum, b) => sum + b.markerTimestamps.length);
+      _markerCount = _batches.fold(
+        0,
+        (sum, b) => sum + b.markerTimestamps.length,
+      );
     });
     _persistProgress();
 
@@ -440,7 +499,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
     final syncs = ServiceManager.instance().wal.getSyncs();
     final estimatedTotal = syncs.estimatedTotalSegments;
-    Logger.debug('RecordingsPage: _runPipeline start — estimatedTotalSegments=$estimatedTotal');
+    Logger.debug(
+      'RecordingsPage: _runPipeline start — estimatedTotalSegments=$estimatedTotal',
+    );
     setState(() {
       _totalCount = estimatedTotal;
       _syncedCount = 0;
@@ -486,7 +547,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _prefs.saveString(_kSpLastCompleted, 'syncing');
     await _reloadBatchesSilently();
     setState(() {
-      _markerCount = _batches.fold(0, (sum, b) => sum + b.markerTimestamps.length);
+      _markerCount = _batches.fold(
+        0,
+        (sum, b) => sum + b.markerTimestamps.length,
+      );
     });
     _persistProgress();
 
@@ -498,7 +562,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _lastActiveStage = 'processing';
     _transitionTo(SyncProcessState.processing);
 
-    final activeBatches = _batches.where((b) => b.rawSegments.isNotEmpty).toList();
+    final activeBatches = _batches
+        .where((b) => b.rawSegments.isNotEmpty)
+        .toList();
     if (activeBatches.isEmpty) {
       await _finishSuccess();
       return;
@@ -513,16 +579,21 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       batchesToProcess = activeBatches;
       backgroundMode = false;
     } else {
-      batchesToProcess = activeBatches.map((batch) {
-        final safe = RecordingsManager.excludeNewestSegmentPerSession(batch.rawSegments);
-        return Batch(
-          dateString: batch.dateString,
-          date: batch.date,
-          rawSegments: safe,
-          finalizedRecordings: batch.finalizedRecordings,
-          markerTimestamps: batch.markerTimestamps,
-        );
-      }).where((b) => b.rawSegments.isNotEmpty).toList();
+      batchesToProcess = activeBatches
+          .map((batch) {
+            final safe = RecordingsManager.excludeNewestSegmentPerSession(
+              batch.rawSegments,
+            );
+            return Batch(
+              dateString: batch.dateString,
+              date: batch.date,
+              rawSegments: safe,
+              finalizedRecordings: batch.finalizedRecordings,
+              markerTimestamps: batch.markerTimestamps,
+            );
+          })
+          .where((b) => b.rawSegments.isNotEmpty)
+          .toList();
       backgroundMode = true;
     }
 
@@ -550,18 +621,22 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     WakelockPlus.enable();
     try {
       await _manager.processAll(
-          batchesToProcess,
-          (progress) {
-            if (mounted) {
-              setState(() {
-                _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
-              });
-            }
-          },
-          backgroundMode: backgroundMode,
-          onRecordingFinalized: () {
-            unawaited(_reloadBatchesSilently());
-          });
+        batchesToProcess,
+        (progress) {
+          if (mounted) {
+            setState(() {
+              _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(
+                0.0,
+                _totalMinutes,
+              );
+            });
+          }
+        },
+        backgroundMode: backgroundMode,
+        onRecordingFinalized: () {
+          unawaited(_reloadBatchesSilently());
+        },
+      );
     } catch (e) {
       WakelockPlus.disable();
       if (_spState == SyncProcessState.stopping) {
@@ -610,7 +685,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   // ─── Cancel modal ──────────────────────────────────────────────────────────
   Future<void> _showCancelModal() async {
-    if (_spState != SyncProcessState.syncing && _spState != SyncProcessState.processing) return;
+    if (_spState != SyncProcessState.syncing &&
+        _spState != SyncProcessState.processing)
+      return;
     final wasState = _spState;
     final confirm = await showDialog<bool>(
       context: context,
@@ -624,7 +701,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       ),
     );
     if (confirm != true) return;
-    Logger.debug('RecordingsPage: Cancel confirmed (was $wasState) — cancelling sync + processing.');
+    Logger.debug(
+      'RecordingsPage: Cancel confirmed (was $wasState) — cancelling sync + processing.',
+    );
     _transitionTo(SyncProcessState.stopping);
     ServiceManager.instance().wal.getSyncs().cancelSync();
     RecordingsManager.cancelProcessing();
@@ -689,7 +768,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       await _loadBatches();
     } catch (e) {
       if (mounted) {
-        messenger.showSnackBar(SnackBar(content: Text('Error deleting day: $e')));
+        messenger.showSnackBar(
+          SnackBar(content: Text('Error deleting day: $e')),
+        );
       }
     }
   }
@@ -697,7 +778,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   Future<void> _exportAll(Batch batch, List<Conversation> conversations) async {
     if (conversations.isEmpty) return;
     final files = conversations.map((r) => XFile(r.file.path)).toList();
-    await SharePlus.instance.share(ShareParams(files: files, subject: 'Conversations – ${batch.dateString}'));
+    await SharePlus.instance.share(
+      ShareParams(files: files, subject: 'Conversations – ${batch.dateString}'),
+    );
   }
 
   // ─── HeyPocket ─────────────────────────────────────────────────────────────
@@ -705,11 +788,14 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty) return;
     final apiKey = _prefs.heypocketApiKey;
     final keySetAt = _prefs.heypocketKeySetAt;
-    final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
+    final keySetTime = keySetAt > 0
+        ? DateTime.fromMillisecondsSinceEpoch(keySetAt)
+        : null;
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
         if (_autoUploadActive >= 2) return;
-        if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
+        if (keySetTime != null && conversation.startTime.isBefore(keySetTime))
+          continue;
         final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
         if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
@@ -718,18 +804,23 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         _autoUploadActive++;
         if (mounted) setState(() {});
         unawaited(
-          HeyPocketService.uploadRecording(apiKey, conversation).then((_) async {
-            await _prefs.markUploadedToHeypocket(uploadKey);
-          }).catchError((e) {
-            debugPrint('HeyPocket auto-upload failed: $e');
-          }).whenComplete(() {
-            _uploadingFiles.remove(uploadKey);
-            _autoUploadActive--;
-            if (mounted) {
-              setState(() {});
-              WidgetsBinding.instance.addPostFrameCallback((_) => _tryAutoUploadNext());
-            }
-          }),
+          HeyPocketService.uploadRecording(apiKey, conversation)
+              .then((_) async {
+                await _prefs.markUploadedToHeypocket(uploadKey);
+              })
+              .catchError((e) {
+                Logger.error('HeyPocket auto-upload failed: $e');
+              })
+              .whenComplete(() {
+                _uploadingFiles.remove(uploadKey);
+                _autoUploadActive--;
+                if (mounted) {
+                  setState(() {});
+                  WidgetsBinding.instance.addPostFrameCallback(
+                    (_) => _tryAutoUploadNext(),
+                  );
+                }
+              }),
         );
       }
     }
@@ -739,14 +830,20 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Upload key unavailable — please reconnect your device and try again.')),
+        const SnackBar(
+          content: Text(
+            'Upload key unavailable — please reconnect your device and try again.',
+          ),
+        ),
       );
       return;
     }
     if (_uploadingFiles.contains(uploadKey)) return;
 
     final alreadyUploaded = _prefs.isUploadedToHeypocket(uploadKey);
-    final title = alreadyUploaded ? 'Re-upload Conversation' : 'Upload Conversation';
+    final title = alreadyUploaded
+        ? 'Re-upload Conversation'
+        : 'Upload Conversation';
     final content = alreadyUploaded
         ? 'This conversation was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)'
         : 'Upload this conversation to HeyPocket?';
@@ -768,21 +865,26 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     _uploadingFiles.add(uploadKey);
     setState(() {});
     unawaited(
-      HeyPocketService.uploadRecording(apiKey, conversation).then((_) {
-        _prefs.markUploadedToHeypocket(uploadKey);
-      }).catchError((e) {
-        if (e is HeyPocketException) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('HeyPocket ${e.statusCode}: ${e.message}')),
-            );
-          }
-        }
-        debugPrint('HeyPocket upload failed: $e');
-      }).whenComplete(() {
-        _uploadingFiles.remove(uploadKey);
-        if (mounted) setState(() {});
-      }),
+      HeyPocketService.uploadRecording(apiKey, conversation)
+          .then((_) {
+            _prefs.markUploadedToHeypocket(uploadKey);
+          })
+          .catchError((e) {
+            if (e is HeyPocketException) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('HeyPocket ${e.statusCode}: ${e.message}'),
+                  ),
+                );
+              }
+            }
+            Logger.error('HeyPocket upload failed: $e');
+          })
+          .whenComplete(() {
+            _uploadingFiles.remove(uploadKey);
+            if (mounted) setState(() {});
+          }),
     );
   }
 
@@ -795,7 +897,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         constraints: const BoxConstraints(),
         icon: Icon(Icons.cloud_off, color: Colors.grey.shade600, size: 18),
         onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Upload key unavailable — please reconnect your device and try again.')),
+          const SnackBar(
+            content: Text(
+              'Upload key unavailable — please reconnect your device and try again.',
+            ),
+          ),
         ),
       );
     }
@@ -806,7 +912,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         icon: const SizedBox(
           width: 18,
           height: 18,
-          child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
+          child: CircularProgressIndicator(
+            strokeWidth: 1.5,
+            color: Colors.deepPurpleAccent,
+          ),
         ),
         onPressed: null,
       );
@@ -829,7 +938,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
 
   // ─── Accumulating progress banner ─────────────────────────────────────────
   static double _computeAccumulatedMinutes(List<Batch> batches) {
-    final totalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (sum, f) {
+    final totalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (
+      sum,
+      f,
+    ) {
       try {
         return sum + f.lengthSync();
       } catch (_) {
@@ -844,7 +956,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     // and when there's less than half a minute accumulated (not worth showing).
     if (_spState == SyncProcessState.syncing ||
         _spState == SyncProcessState.processing ||
-        _spState == SyncProcessState.stopping) return const SizedBox.shrink();
+        _spState == SyncProcessState.stopping)
+      return const SizedBox.shrink();
     if (_accumulatedMinutes < 0.5) return const SizedBox.shrink();
     if (_accumulatedMinutes >= 30.0) return const SizedBox.shrink();
 
@@ -868,11 +981,21 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Building next recording',
-                        style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
+                    Text(
+                      'Building next recording',
+                      style: TextStyle(
+                        color: Colors.grey.shade400,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                     const SizedBox(height: 2),
-                    Text('$accMin out of 30 minutes accumulated',
-                        style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                    Text(
+                      '$accMin out of 30 minutes accumulated',
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 11,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -885,7 +1008,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                   shape: BoxShape.circle,
                 ),
                 child: const Center(
-                  child: FaIcon(FontAwesomeIcons.hourglassHalf, color: Colors.deepPurpleAccent, size: 16),
+                  child: FaIcon(
+                    FontAwesomeIcons.hourglassHalf,
+                    color: Colors.deepPurpleAccent,
+                    size: 16,
+                  ),
                 ),
               ),
             ],
@@ -933,12 +1060,18 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         mainText = 'Sync and Process Now';
         subText = 'Syncs files from device and prepares conversations';
         iconBg = Colors.deepPurpleAccent;
-        iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
+        iconChild = const FaIcon(
+          FontAwesomeIcons.rotate,
+          color: Colors.white,
+          size: 16,
+        );
         onIconTap = _startPipeline;
 
       case SyncProcessState.syncing:
         mainText = _isForcePipeline ? 'Force Sync...' : 'Syncing segments';
-        final speedStr = _syncSpeed > 0 ? '  ·  ${_syncSpeed.toStringAsFixed(1)} KB/s' : '';
+        final speedStr = _syncSpeed > 0
+            ? '  ·  ${_syncSpeed.toStringAsFixed(1)} KB/s'
+            : '';
         subText = _totalCount > 0
             ? '$_syncedCount of $_totalCount segments synced$speedStr'
             : (_isForcePipeline ? 'Rotating segment…' : 'Scanning device…');
@@ -950,7 +1083,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         );
         onIconTap = () => unawaited(_showCancelModal());
         showProgress = true;
-        progressValue = _totalCount > 0 ? (_syncedCount / _totalCount).clamp(0.0, 1.0) : null;
+        progressValue = _totalCount > 0
+            ? (_syncedCount / _totalCount).clamp(0.0, 1.0)
+            : null;
 
       case SyncProcessState.processing:
         mainText = 'Preparing conversations';
@@ -966,7 +1101,9 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         );
         onIconTap = () => unawaited(_showCancelModal());
         showProgress = true;
-        progressValue = _totalMinutes > 0 ? (1.0 - _minutesRemaining / _totalMinutes).clamp(0.0, 1.0) : null;
+        progressValue = _totalMinutes > 0
+            ? (1.0 - _minutesRemaining / _totalMinutes).clamp(0.0, 1.0)
+            : null;
 
       case SyncProcessState.stopping:
         mainText = 'Stopping…';
@@ -986,21 +1123,35 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         mainText = 'Resume Sync and Processing';
         subText = 'Last run didn\'t finish';
         iconBg = Colors.amber.shade700;
-        iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
+        iconChild = const FaIcon(
+          FontAwesomeIcons.rotate,
+          color: Colors.white,
+          size: 16,
+        );
         onIconTap = _resumePipeline;
 
       case SyncProcessState.error:
-        mainText = _lastActiveStage == 'processing' ? 'Processing failed' : 'Sync failed';
+        mainText = _lastActiveStage == 'processing'
+            ? 'Processing failed'
+            : 'Sync failed';
         subText = 'Tap to retry';
         iconBg = Colors.redAccent;
-        iconChild = const FaIcon(FontAwesomeIcons.circleExclamation, color: Colors.white, size: 16);
+        iconChild = const FaIcon(
+          FontAwesomeIcons.circleExclamation,
+          color: Colors.white,
+          size: 16,
+        );
         onIconTap = _retryFromError;
 
       case SyncProcessState.successUi:
         mainText = 'Conversations ready';
         subText = 'Sync and processing complete';
         iconBg = Colors.green.shade600;
-        iconChild = const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.white, size: 16);
+        iconChild = const FaIcon(
+          FontAwesomeIcons.circleCheck,
+          color: Colors.white,
+          size: 16,
+        );
         onIconTap = null;
         showProgress = true;
         progressValue = 1.0;
@@ -1016,9 +1167,18 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(mainText, style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
+                  Text(
+                    mainText,
+                    style: TextStyle(
+                      color: Colors.grey.shade400,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
                   const SizedBox(height: 2),
-                  Text(subText, style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                  Text(
+                    subText,
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
+                  ),
                 ],
               ),
             ),
@@ -1028,7 +1188,10 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               child: Container(
                 width: 40,
                 height: 40,
-                decoration: BoxDecoration(color: iconBg, shape: BoxShape.circle),
+                decoration: BoxDecoration(
+                  color: iconBg,
+                  shape: BoxShape.circle,
+                ),
                 child: Center(child: iconChild),
               ),
             ),
@@ -1065,7 +1228,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     final map = <String, List<MarkerConversation>>{};
     for (final mc in _markerConversations) {
       final dt = mc.markerTime;
-      final dateStr = '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+      final dateStr =
+          '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
       map.putIfAbsent(dateStr, () => []).add(mc);
     }
     return map;
@@ -1081,8 +1245,12 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   }
 
   // ─── Default mode: batch card ──────────────────────────────────────────────
-  Widget _buildBatchCard(Batch batch, Map<String, List<MarkerConversation>> markerMap) {
-    final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
+  Widget _buildBatchCard(
+    Batch batch,
+    Map<String, List<MarkerConversation>> markerMap,
+  ) {
+    final conversations = [...batch.finalizedRecordings]
+      ..sort((a, b) => b.startTime.compareTo(a.startTime));
     if (conversations.isEmpty) return const SizedBox.shrink();
 
     return Card(
@@ -1096,10 +1264,19 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           children: [
             Text(
               batch.dateString,
-              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 12),
-            ...conversations.map((c) => _buildConversationTile(c, markerMap[c.file.path.split('/').last] ?? [])),
+            ...conversations.map(
+              (c) => _buildConversationTile(
+                c,
+                markerMap[c.file.path.split('/').last] ?? [],
+              ),
+            ),
             const SizedBox(height: 4),
             const Divider(color: Color(0xFF2C2C2E), height: 1),
             const SizedBox(height: 4),
@@ -1109,14 +1286,28 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                 TextButton.icon(
                   key: Key('export_all_${batch.dateString}'),
                   onPressed: () => _exportAll(batch, conversations),
-                  icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 13, color: Colors.grey.shade400),
-                  label: Text('Export All', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+                  icon: FaIcon(
+                    FontAwesomeIcons.shareFromSquare,
+                    size: 13,
+                    color: Colors.grey.shade400,
+                  ),
+                  label: Text(
+                    'Export All',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                  ),
                 ),
                 TextButton.icon(
                   key: Key('delete_day_${batch.dateString}'),
                   onPressed: () => _deleteDay(batch),
-                  icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
-                  label: Text('Delete Day', style: TextStyle(color: Colors.red.shade400, fontSize: 13)),
+                  icon: FaIcon(
+                    FontAwesomeIcons.trashCan,
+                    size: 13,
+                    color: Colors.red.shade400,
+                  ),
+                  label: Text(
+                    'Delete Day',
+                    style: TextStyle(color: Colors.red.shade400, fontSize: 13),
+                  ),
                 ),
               ],
             ),
@@ -1126,15 +1317,22 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
     );
   }
 
-  Widget _buildConversationTile(Conversation conversation, List<MarkerConversation> markers) {
+  Widget _buildConversationTile(
+    Conversation conversation,
+    List<MarkerConversation> markers,
+  ) {
     // Sort markers by time ascending so sub-entries read chronologically.
-    final sortedMarkers = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
+    final sortedMarkers = [...markers]
+      ..sort((a, b) => a.markerTime.compareTo(b.markerTime));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         InkWell(
           onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => ConversationPlayerPage(conversation: conversation)),
+            MaterialPageRoute(
+              builder: (_) =>
+                  ConversationPlayerPage(conversation: conversation),
+            ),
           ),
           borderRadius: BorderRadius.circular(8),
           child: Padding(
@@ -1147,22 +1345,37 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
                     children: [
                       Text(
                         conversation.timeRangeLabel,
-                        style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
                       const SizedBox(height: 3),
                       Text(
                         '${conversation.durationLabel}  ·  ${conversation.sizeLabel}',
-                        style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                        style: TextStyle(
+                          color: Colors.grey.shade500,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ),
                 ),
                 if (markers.isNotEmpty) ...[
-                  const FaIcon(FontAwesomeIcons.solidBookmark, color: Colors.amber, size: 13),
+                  const FaIcon(
+                    FontAwesomeIcons.solidBookmark,
+                    color: Colors.amber,
+                    size: 13,
+                  ),
                   const SizedBox(width: 8),
                 ],
                 _buildUploadIcon(conversation),
-                FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
+                FaIcon(
+                  FontAwesomeIcons.chevronRight,
+                  color: Colors.grey.shade600,
+                  size: 14,
+                ),
               ],
             ),
           ),
@@ -1207,10 +1420,19 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               ),
             ),
             if (!mc.isPending && mc.userSaved) ...[
-              const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.green, size: 12),
+              const FaIcon(
+                FontAwesomeIcons.circleCheck,
+                color: Colors.green,
+                size: 12,
+              ),
               const SizedBox(width: 6),
             ],
-            if (!mc.isPending) FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade700, size: 12),
+            if (!mc.isPending)
+              FaIcon(
+                FontAwesomeIcons.chevronRight,
+                color: Colors.grey.shade700,
+                size: 12,
+              ),
           ],
         ),
       ),
@@ -1220,7 +1442,8 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
   // ─── Marker mode: day card ─────────────────────────────────────────────────
   Widget _buildMarkerDayCard(String dateStr, List<MarkerConversation> markers) {
     // Sort ascending by markerTime so they read chronologically within the day.
-    final sorted = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
+    final sorted = [...markers]
+      ..sort((a, b) => a.markerTime.compareTo(b.markerTime));
     return Card(
       color: const Color(0xFF1C1C1E),
       margin: const EdgeInsets.only(bottom: 16),
@@ -1232,7 +1455,11 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
           children: [
             Text(
               dateStr,
-              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 12),
             ...sorted.map(_buildMarkerTile),
@@ -1277,10 +1504,19 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               ),
             ),
             if (!mc.isPending && mc.userSaved) ...[
-              const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.green, size: 14),
+              const FaIcon(
+                FontAwesomeIcons.circleCheck,
+                color: Colors.green,
+                size: 14,
+              ),
               const SizedBox(width: 8),
             ],
-            if (!mc.isPending) FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
+            if (!mc.isPending)
+              FaIcon(
+                FontAwesomeIcons.chevronRight,
+                color: Colors.grey.shade600,
+                size: 14,
+              ),
           ],
         ),
       ),
@@ -1295,12 +1531,19 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
       child: Row(
         children: [
-          const FaIcon(FontAwesomeIcons.circleExclamation, color: Colors.white, size: 20),
+          const FaIcon(
+            FontAwesomeIcons.circleExclamation,
+            color: Colors.white,
+            size: 20,
+          ),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
               'Device Storage $percentage% Full - Sync Now',
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
         ],
@@ -1316,12 +1559,19 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
         return Scaffold(
           backgroundColor: const Color(0xFF0D0D0D),
           appBar: AppBar(
-            title: const Text('Daily Conversations', style: TextStyle(color: Colors.white)),
+            title: const Text(
+              'Daily Conversations',
+              style: TextStyle(color: Colors.white),
+            ),
             backgroundColor: const Color(0xFF0D0D0D),
             actions: [
               if (!deviceProvider.isConnected)
                 IconButton(
-                  icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Colors.grey, size: 20),
+                  icon: const FaIcon(
+                    FontAwesomeIcons.bluetooth,
+                    color: Colors.grey,
+                    size: 20,
+                  ),
                   onPressed: () => Navigator.of(context).push(
                     MaterialPageRoute(builder: (c) => const FindDevicesPage()),
                   ),
@@ -1337,27 +1587,40 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               if (_markerConversations.isNotEmpty)
                 IconButton(
                   icon: FaIcon(
-                    _showMarkersOnly ? FontAwesomeIcons.solidBookmark : FontAwesomeIcons.bookmark,
+                    _showMarkersOnly
+                        ? FontAwesomeIcons.solidBookmark
+                        : FontAwesomeIcons.bookmark,
                     color: _showMarkersOnly ? Colors.amber : Colors.white,
                     size: 20,
                   ),
-                  onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
+                  onPressed: () =>
+                      setState(() => _showMarkersOnly = !_showMarkersOnly),
                 ),
               // Force sync button — disabled when syncing is in progress or on cooldown
               IconButton(
                 icon: FaIcon(
                   FontAwesomeIcons.boltLightning,
-                  color: (deviceProvider.isConnected && _spState == SyncProcessState.idle && !_forceSyncOnCooldown)
+                  color:
+                      (deviceProvider.isConnected &&
+                          _spState == SyncProcessState.idle &&
+                          !_forceSyncOnCooldown)
                       ? Colors.white
                       : Colors.grey.shade700,
                   size: 20,
                 ),
-                onPressed: (deviceProvider.isConnected && _spState == SyncProcessState.idle && !_forceSyncOnCooldown)
+                onPressed:
+                    (deviceProvider.isConnected &&
+                        _spState == SyncProcessState.idle &&
+                        !_forceSyncOnCooldown)
                     ? _forceSyncButtonPressed
                     : null,
               ),
               IconButton(
-                icon: const FaIcon(FontAwesomeIcons.gear, color: Colors.white, size: 20),
+                icon: const FaIcon(
+                  FontAwesomeIcons.gear,
+                  color: Colors.white,
+                  size: 20,
+                ),
                 onPressed: () => SettingsDrawer.show(context),
               ),
             ],
@@ -1369,106 +1632,151 @@ class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProg
               _buildAccumulatingBanner(),
               Expanded(
                 child: _isLoading
-                    ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
-                    : Builder(builder: (context) {
-                        // ── Marker mode ──────────────────────────────────────
-                        if (_showMarkersOnly) {
-                          final byDate = _groupMarkersByDate();
-                          final dates = byDate.keys.toList()..sort((a, b) => b.compareTo(a));
+                    ? const Center(
+                        child: CircularProgressIndicator(
+                          color: Colors.deepPurpleAccent,
+                        ),
+                      )
+                    : Builder(
+                        builder: (context) {
+                          // ── Marker mode ──────────────────────────────────────
+                          if (_showMarkersOnly) {
+                            final byDate = _groupMarkersByDate();
+                            final dates = byDate.keys.toList()
+                              ..sort((a, b) => b.compareTo(a));
+                            return RefreshIndicator(
+                              color: Colors.deepPurpleAccent,
+                              onRefresh: () async {},
+                              child: dates.isEmpty
+                                  ? ListView(
+                                      physics:
+                                          const AlwaysScrollableScrollPhysics(),
+                                      children: [
+                                        const SizedBox(height: 100),
+                                        Center(
+                                          child: Text(
+                                            'No marked recordings yet.\nPress the button on your Omi to tag a moment.',
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(
+                                              color: Colors.grey,
+                                              fontSize: 16,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : ListView.builder(
+                                      physics:
+                                          const AlwaysScrollableScrollPhysics(),
+                                      padding: const EdgeInsets.all(16),
+                                      itemCount: dates.length,
+                                      itemBuilder: (context, index) =>
+                                          _buildMarkerDayCard(
+                                            dates[index],
+                                            byDate[dates[index]]!,
+                                          ),
+                                    ),
+                            );
+                          }
+
+                          // ── Default mode ─────────────────────────────────────
+                          final markerMap = _buildMarkerMap();
+                          final visibleBatches = _batches
+                              .where((b) => b.finalizedRecordings.isNotEmpty)
+                              .toList();
                           return RefreshIndicator(
                             color: Colors.deepPurpleAccent,
-                            onRefresh: () async {},
-                            child: dates.isEmpty
+                            onRefresh: () {
+                              if (_spState != SyncProcessState.idle) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Sync already in progress'),
+                                  ),
+                                );
+                                return Future.value();
+                              }
+                              final completer = Completer<void>();
+                              _pipelineCompleter = completer;
+                              _startPipeline();
+                              return completer.future;
+                            },
+                            child: visibleBatches.isEmpty
                                 ? ListView(
-                                    physics: const AlwaysScrollableScrollPhysics(),
+                                    physics:
+                                        const AlwaysScrollableScrollPhysics(),
                                     children: [
                                       const SizedBox(height: 100),
                                       Center(
-                                        child: Text(
-                                          'No marked recordings yet.\nPress the button on your Omi to tag a moment.',
-                                          textAlign: TextAlign.center,
-                                          style: const TextStyle(color: Colors.grey, fontSize: 16),
+                                        child: Column(
+                                          children: [
+                                            const Text(
+                                              'No conversations found.\nSwipe down to sync device.',
+                                              textAlign: TextAlign.center,
+                                              style: TextStyle(
+                                                color: Colors.grey,
+                                                fontSize: 16,
+                                              ),
+                                            ),
+                                            if (deviceProvider.isConnected) ...[
+                                              const SizedBox(height: 32),
+                                              ElevatedButton.icon(
+                                                onPressed:
+                                                    _spState ==
+                                                        SyncProcessState.idle
+                                                    ? _startPipeline
+                                                    : null,
+                                                icon: const FaIcon(
+                                                  FontAwesomeIcons.rotate,
+                                                  size: 16,
+                                                ),
+                                                label: const Text(
+                                                  'Sync and Process',
+                                                ),
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor:
+                                                      Colors.deepPurpleAccent,
+                                                  foregroundColor: Colors.white,
+                                                ),
+                                              ),
+                                            ] else ...[
+                                              const SizedBox(height: 32),
+                                              ElevatedButton(
+                                                onPressed: () =>
+                                                    Navigator.of(context).push(
+                                                      MaterialPageRoute(
+                                                        builder: (c) =>
+                                                            const FindDevicesPage(),
+                                                      ),
+                                                    ),
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor:
+                                                      Colors.deepPurpleAccent,
+                                                  foregroundColor: Colors.white,
+                                                ),
+                                                child: const Text(
+                                                  'Connect Omi',
+                                                ),
+                                              ),
+                                            ],
+                                          ],
                                         ),
                                       ),
                                     ],
                                   )
                                 : ListView.builder(
-                                    physics: const AlwaysScrollableScrollPhysics(),
+                                    physics:
+                                        const AlwaysScrollableScrollPhysics(),
                                     padding: const EdgeInsets.all(16),
-                                    itemCount: dates.length,
+                                    itemCount: visibleBatches.length,
                                     itemBuilder: (context, index) =>
-                                        _buildMarkerDayCard(dates[index], byDate[dates[index]]!),
+                                        _buildBatchCard(
+                                          visibleBatches[index],
+                                          markerMap,
+                                        ),
                                   ),
                           );
-                        }
-
-                        // ── Default mode ─────────────────────────────────────
-                        final markerMap = _buildMarkerMap();
-                        final visibleBatches = _batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
-                        return RefreshIndicator(
-                          color: Colors.deepPurpleAccent,
-                          onRefresh: () {
-                            if (_spState != SyncProcessState.idle) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Sync already in progress')),
-                              );
-                              return Future.value();
-                            }
-                            final completer = Completer<void>();
-                            _pipelineCompleter = completer;
-                            _startPipeline();
-                            return completer.future;
-                          },
-                          child: visibleBatches.isEmpty
-                              ? ListView(
-                                  physics: const AlwaysScrollableScrollPhysics(),
-                                  children: [
-                                    const SizedBox(height: 100),
-                                    Center(
-                                      child: Column(
-                                        children: [
-                                          const Text(
-                                            'No conversations found.\nSwipe down to sync device.',
-                                            textAlign: TextAlign.center,
-                                            style: TextStyle(color: Colors.grey, fontSize: 16),
-                                          ),
-                                          if (deviceProvider.isConnected) ...[
-                                            const SizedBox(height: 32),
-                                            ElevatedButton.icon(
-                                              onPressed: _spState == SyncProcessState.idle ? _startPipeline : null,
-                                              icon: const FaIcon(FontAwesomeIcons.rotate, size: 16),
-                                              label: const Text('Sync and Process'),
-                                              style: ElevatedButton.styleFrom(
-                                                backgroundColor: Colors.deepPurpleAccent,
-                                                foregroundColor: Colors.white,
-                                              ),
-                                            ),
-                                          ] else ...[
-                                            const SizedBox(height: 32),
-                                            ElevatedButton(
-                                              onPressed: () => Navigator.of(context).push(
-                                                MaterialPageRoute(builder: (c) => const FindDevicesPage()),
-                                              ),
-                                              style: ElevatedButton.styleFrom(
-                                                backgroundColor: Colors.deepPurpleAccent,
-                                                foregroundColor: Colors.white,
-                                              ),
-                                              child: const Text('Connect Omi'),
-                                            ),
-                                          ],
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                )
-                              : ListView.builder(
-                                  physics: const AlwaysScrollableScrollPhysics(),
-                                  padding: const EdgeInsets.all(16),
-                                  itemCount: visibleBatches.length,
-                                  itemBuilder: (context, index) => _buildBatchCard(visibleBatches[index], markerMap),
-                                ),
-                        );
-                      }),
+                        },
+                      ),
               ),
             ],
           ),
