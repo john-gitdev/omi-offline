@@ -731,9 +731,24 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   @override
   Future<void> deleteAllSyncedWals() async {
+    final dev = _device;
+    if (dev == null) return;
     final synced = _wals.where((w) => w.status == WalStatus.synced).toList();
-    for (final wal in synced) {
-      await deleteWal(wal);
+    if (synced.isEmpty) return;
+
+    final connection = _connectionProvider != null
+        ? await _connectionProvider!(dev.id)
+        : await ServiceManager.instance().device.ensureConnection(dev.id);
+
+    // Only update local state if we successfully connected to the device to perform the deletion.
+    // This avoids local state desync where WALs appear deleted but remain on the SD card.
+    if (connection != null) {
+      // Parallelize file deletions to improve performance by overlapping BLE I/O wait times
+      await Future.wait(synced.map((wal) => connection.deleteFile(StorageFile(index: wal.fileNum, timestamp: 0, size: 0))));
+
+      final syncedIds = synced.map((w) => w.id).toSet();
+      _wals.removeWhere((w) => syncedIds.contains(w.id));
+      listener.onWalUpdated();
     }
   }
 
@@ -751,9 +766,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     } else {
       Logger.error('SDCardWalSync: CMD_CLEAR_STORAGE failed, falling back to per-file deletion');
       final files = await _listFiles(_device!.id);
-      for (final file in files) {
-        await connection.deleteFile(file);
-      }
+      // Parallelize file deletions to improve performance by overlapping BLE I/O wait times
+      await Future.wait(files.map((file) => connection.deleteFile(file)));
       _wals = [];
       listener.onWalUpdated();
     }
