@@ -160,6 +160,7 @@ flutter:
     - assets/images/herologo.png
     - assets/fonts/
     - assets/images/
+    - assets/models/
 
   fonts:
     - family: "SF Pro Display"
