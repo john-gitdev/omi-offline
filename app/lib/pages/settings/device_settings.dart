@@ -7,7 +7,6 @@ import 'package:flutter/services.dart';
 
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
@@ -583,36 +582,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
       child: Column(
         children: [
-          // Charging Help
-          GestureDetector(
-            onTap: () async {
-              const url = 'https://www.omi.me/pages/faq#11';
-              final uri = Uri.parse(url);
-              if (await canLaunchUrl(uri)) {
-                await launchUrl(uri, mode: LaunchMode.externalApplication);
-              }
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-              child: Row(
-                children: [
-                  const SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: FaIcon(FontAwesomeIcons.circleQuestion, color: Color(0xFF8E8E93), size: 20),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Text(
-                      'Charging Issues',
-                      style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
-                    ),
-                  ),
-                  const Icon(Icons.chevron_right, color: Color(0xFF3C3C43), size: 20),
-                ],
-              ),
-            ),
-          ),
           if (provider.isConnected) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             GestureDetector(
