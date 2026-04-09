@@ -350,6 +350,8 @@ class VadAudioProcessor {
         final ref = refs[i];
 
         if (ref.segmentFile.path != currentFilePath) {
+          // Note: reading the entire file into memory is a tradeoff (avoids thousands of native file seek/read calls).
+          // Segment files are typically small enough (a few MBs) to make this safe and dramatically faster.
           currentFileBytes = await ref.segmentFile.readAsBytes();
           currentFilePath = ref.segmentFile.path;
         }
@@ -357,7 +359,6 @@ class VadAudioProcessor {
         if (currentFileBytes == null) continue;
 
         final frameDataOffset = ref.byteOffset + 4;
-        // In Dart, sublist does not copy the underlying data but creates a view, which is extremely fast.
         final opusBytes = currentFileBytes.sublist(frameDataOffset, frameDataOffset + ref.frameLength);
 
         Int16List? pcmData;
