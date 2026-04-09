@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:omi/utils/logger.dart';
 import 'package:omi/pages/recordings/recordings_page.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/heypocket_service.dart';
@@ -55,7 +56,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     try {
-      final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
+      final deviceProvider = Provider.of<DeviceProvider>(
+        context,
+        listen: false,
+      );
       if (state == AppLifecycleState.paused) {
         deviceProvider.onAppPaused();
       } else if (state == AppLifecycleState.resumed) {
@@ -70,23 +74,25 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     final apiKey = SharedPreferencesUtil().heypocketApiKey;
     if (apiKey.isEmpty) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(HeyPocketService.testConnection(apiKey).then((ok) {
-        if (!ok) {
-          SharedPreferencesUtil().heypocketEnabled = false;
-        }
-      }).catchError((e) {
-        SharedPreferencesUtil().heypocketEnabled = false;
-        debugPrint('HeyPocket startup check failed: $e');
-      }));
+      unawaited(
+        HeyPocketService.testConnection(apiKey)
+            .then((ok) {
+              if (!ok) {
+                SharedPreferencesUtil().heypocketEnabled = false;
+              }
+            })
+            .catchError((e) {
+              SharedPreferencesUtil().heypocketEnabled = false;
+              Logger.error('HeyPocket startup check failed: $e');
+            }),
+      );
     });
   }
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
-      providers: [
-        ChangeNotifierProvider(create: (_) => DeviceProvider()),
-      ],
+      providers: [ChangeNotifierProvider(create: (_) => DeviceProvider())],
       child: MaterialApp(
         title: 'Offline Recorder',
         theme: ThemeData.dark(),
