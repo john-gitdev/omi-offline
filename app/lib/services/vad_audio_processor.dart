@@ -98,7 +98,7 @@ class VadAudioProcessor {
 
     final runOptions = OrtRunOptions();
     final outputs = _session!.run(runOptions, inputs);
-    final prob = (outputs[0]!.value as List<List<List<double>>>)[0][0][0];
+    final prob = (outputs[0]!.value as List<List<double>>)[0][0];
 
     _h = _flattenF32(outputs[1]!.value);
     _c = _flattenF32(outputs[2]!.value);
