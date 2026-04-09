@@ -159,7 +159,7 @@ class VadAudioProcessor {
         }
 
         if (offset + 4 + frameLength > fileLength) {
-          Logger.error('VadAudioProcessor: Incomplete frame at offset $offset in ${segmentFile.path}');
+          Logger.debug('VadAudioProcessor: Incomplete frame at offset $offset in ${segmentFile.path}');
           break;
         }
 
