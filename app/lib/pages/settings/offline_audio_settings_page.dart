@@ -38,6 +38,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _vadHangoverSeconds = SharedPreferencesUtil().vadHangoverSeconds;
     _vadPreSpeechSeconds = SharedPreferencesUtil().vadPreSpeechSeconds;
     _vadGapSeconds = SharedPreferencesUtil().vadGapSeconds;
+    _vadMaxConversationMinutes = SharedPreferencesUtil().vadMaxChunkMinutes;
   }
 
   void _markDirty() {
@@ -55,6 +56,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     SharedPreferencesUtil().vadHangoverSeconds = _vadHangoverSeconds;
     SharedPreferencesUtil().vadPreSpeechSeconds = _vadPreSpeechSeconds;
     SharedPreferencesUtil().vadGapSeconds = _vadGapSeconds;
+    SharedPreferencesUtil().vadMaxChunkMinutes = _vadMaxConversationMinutes;
 
     setState(() => _isDirty = false);
   }
@@ -358,6 +360,32 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                       selected: _vadGapSeconds == sec,
                       onTap: () {
                         setState(() => _vadGapSeconds = sec);
+                        _markDirty();
+                      },
+                    ),
+                ],
+              ),
+              const SizedBox(height: 32),
+
+              // Maximum Conversation Length
+              const Text(
+                'Max Conversation Length',
+                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Forces a cut if a conversation reaches this duration, even without silence.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  for (final mins in [30, 60, 120, 180])
+                    _WindowOption(
+                      label: mins >= 60 ? '${mins ~/ 60}h' : '${mins}m',
+                      selected: _vadMaxConversationMinutes == mins,
+                      onTap: () {
+                        setState(() => _vadMaxConversationMinutes = mins);
                         _markDirty();
                       },
                     ),

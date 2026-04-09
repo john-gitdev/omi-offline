@@ -43,7 +43,7 @@ class SharedPreferencesUtil {
   int get vadSplitSeconds => getInt('vadSplitSeconds', defaultValue: 120);
   set vadSplitSeconds(int v) => saveInt('vadSplitSeconds', v);
 
-  // Minimum speech duration (seconds) for a chunk to be saved. Shorter chunks
+  // Minimum speech duration (seconds) for a conversation to be saved. Shorter conversations
   // are discarded (e.g. a cough, a door slam).
   int get vadMinSpeechSeconds => getInt('vadMinSpeechSeconds', defaultValue: 5);
   set vadMinSpeechSeconds(int v) => saveInt('vadMinSpeechSeconds', v);
@@ -57,6 +57,10 @@ class SharedPreferencesUtil {
   // cut, regardless of VAD state.
   int get vadGapSeconds => getInt('vadGapSeconds', defaultValue: 30);
   set vadGapSeconds(int v) => saveInt('vadGapSeconds', v);
+
+  // Maximum continuous conversation length (minutes) before forcing a cut.
+  int get vadMaxConversationMinutes => getInt('vadMaxConversationMinutes', defaultValue: 60);
+  set vadMaxConversationMinutes(int v) => saveInt('vadMaxConversationMinutes', v);
 
   bool get autoSyncEnabled => getBool('autoSyncEnabled', defaultValue: true);
 
