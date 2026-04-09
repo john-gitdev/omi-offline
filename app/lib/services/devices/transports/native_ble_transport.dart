@@ -96,7 +96,7 @@ class NativeBleTransport extends DeviceTransport {
     _services = [];
 
     try {
-      _hostApi.unmanageDevice(_peripheralUuid);
+      await _hostApi.unmanageDevice(_peripheralUuid);
     } catch (e) {
       Logger.debug('[NativeBleTransport] unmanageDevice failed: $e');
     }
@@ -202,7 +202,7 @@ class NativeBleTransport extends DeviceTransport {
     // starts a fresh connection cycle (without this, native may silently ignore
     // a repeated manageDevice for an already-managed peripheral).
     try {
-      _hostApi.unmanageDevice(_peripheralUuid);
+      await _hostApi.unmanageDevice(_peripheralUuid);
     } catch (_) {}
     _closeAllStreams();
     await _connectionStateController.close();
@@ -239,6 +239,13 @@ class NativeBleTransport extends DeviceTransport {
 
   void _handleConnectionState(bool connected, String? error) {
     if (!connected) {
+      if (_state == DeviceTransportState.connecting && error != null) {
+        if (error == 'unmanaged' || error.startsWith('gatt_status_')) {
+          Logger.debug('[NativeBleTransport] Ignoring transient error during connect: $error');
+          return;
+        }
+      }
+
       // Remember active subscriptions before closing streams
       _activeSubscriptionKeys.clear();
       _activeSubscriptionKeys.addAll(_streamControllers.keys);
