@@ -14,7 +14,7 @@ class OfflineAudioSettingsPage extends StatefulWidget {
 class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late bool _autoSyncEnabled;
   late bool _use24HourTime;
-  late int _retentionDays;
+  late bool _adjustmentMode;
 
   late double _vadSpeechThreshold;
   late int _vadSplitSeconds;
@@ -31,7 +31,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     super.initState();
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
-    _retentionDays = SharedPreferencesUtil().recordingRetentionDays;
+    _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
 
     _vadSpeechThreshold = SharedPreferencesUtil().vadSpeechThreshold;
     _vadSplitSeconds = SharedPreferencesUtil().vadSplitSeconds;
@@ -49,7 +49,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   void _saveSettings() {
     SharedPreferencesUtil().autoSyncEnabled = _autoSyncEnabled;
     SharedPreferencesUtil().use24HourTime = _use24HourTime;
-    SharedPreferencesUtil().recordingRetentionDays = _retentionDays;
+    SharedPreferencesUtil().adjustmentMode = _adjustmentMode;
 
     SharedPreferencesUtil().vadSpeechThreshold = _vadSpeechThreshold;
     SharedPreferencesUtil().vadSplitSeconds = _vadSplitSeconds;
@@ -218,6 +218,43 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   ],
                 ),
               ),
+              const SizedBox(height: 16),
+
+              // Adjustment Mode
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Adjustment Mode',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        Switch(
+                          value: _adjustmentMode,
+                          activeThumbColor: Colors.deepPurpleAccent,
+                          onChanged: (value) {
+                            setState(() => _adjustmentMode = value);
+                            _markDirty();
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Raw audio files are kept on disk after processing. Use this when tweaking VAD settings — each day shows a Reprocess button to regenerate recordings from scratch.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
               const SizedBox(height: 32),
 
               // Conversation Detection
@@ -289,6 +326,11 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 'Minimum Conversation Length',
                 style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
               ),
+              const SizedBox(height: 4),
+              Text(
+                'Speech segments shorter than this are discarded. Increase to filter out brief accidental sounds.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              ),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -309,6 +351,11 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               const Text(
                 'Speech Holdover',
                 style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'How long to keep recording after speech stops, to avoid cutting off the end of sentences.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
               ),
               const SizedBox(height: 12),
               Row(
@@ -331,6 +378,11 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 'Pre-Speech Buffer',
                 style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
               ),
+              const SizedBox(height: 4),
+              Text(
+                'Audio captured before speech is detected, so the first word is never clipped.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+              ),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -351,6 +403,11 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               const Text(
                 'Segment Gap Threshold',
                 style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Speech segments closer together than this are merged into one conversation. Increase to join nearby exchanges; decrease to keep them separate.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
               ),
               const SizedBox(height: 12),
               Row(
@@ -391,31 +448,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                       },
                     ),
                 ],
-              ),
-              const SizedBox(height: 32),
-
-              // Retention
-              const Text(
-                'Keep Recordings For',
-                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Recordings older than this are deleted automatically. At 24 hrs/day: ~1 GB per 3 days, ~2.4 GB per 7 days.',
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [3, 7]
-                    .map((days) => _WindowOption(
-                          label: '$days days',
-                          selected: _retentionDays == days,
-                          onTap: () {
-                            setState(() => _retentionDays = days);
-                            _markDirty();
-                          },
-                        ))
-                    .toList(),
               ),
               const SizedBox(height: 32),
 
