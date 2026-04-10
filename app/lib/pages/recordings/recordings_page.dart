@@ -1787,27 +1787,26 @@ class _RecordingsPageState extends State<RecordingsPage>
           appBar: AppBar(
             backgroundColor: const Color(0xFF0D0D0D),
             elevation: 0,
-            leading: Padding(
-              padding: const EdgeInsets.only(left: 8.0),
-              child: !deviceProvider.isConnected
-                  ? IconButton(
-                      icon: const FaIcon(
-                        FontAwesomeIcons.bluetooth,
-                        color: Colors.grey,
-                        size: 20,
-                      ),
-                      onPressed: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (c) => const FindDevicesPage()),
-                      ),
-                    )
-                  : BatteryStatusIndicator(
-                      batteryLevel: deviceProvider.batteryLevel,
-                      isCharging: deviceProvider.isCharging,
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (c) => const DeviceSettings()),
-                      ),
+            centerTitle: false,
+            leadingWidth: 120,
+            leading: !deviceProvider.isConnected
+                ? IconButton(
+                    icon: const FaIcon(
+                      FontAwesomeIcons.bluetooth,
+                      color: Colors.grey,
+                      size: 20,
                     ),
-            ),
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                    ),
+                  )
+                : BatteryStatusIndicator(
+                    batteryLevel: deviceProvider.batteryLevel,
+                    isCharging: deviceProvider.isCharging,
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (c) => const DeviceSettings()),
+                    ),
+                  ),
             actions: [
               if (_markerConversations.isNotEmpty)
                 IconButton(
@@ -1821,14 +1820,6 @@ class _RecordingsPageState extends State<RecordingsPage>
                   onPressed: () =>
                       setState(() => _showMarkersOnly = !_showMarkersOnly),
                 ),
-              IconButton(
-                icon: FaIcon(
-                  FontAwesomeIcons.filter,
-                  color: _minFilterSeconds > 0 ? Colors.deepPurpleAccent : Colors.white,
-                  size: 18,
-                ),
-                onPressed: _showFilterSheet,
-              ),
               // Force sync button — disabled when syncing is in progress or on cooldown
               IconButton(
                 icon: FaIcon(
@@ -1849,6 +1840,14 @@ class _RecordingsPageState extends State<RecordingsPage>
                     : null,
               ),
               IconButton(
+                icon: FaIcon(
+                  FontAwesomeIcons.filter,
+                  color: _minFilterSeconds > 0 ? Colors.deepPurpleAccent : Colors.white,
+                  size: 18,
+                ),
+                onPressed: _showFilterSheet,
+              ),
+              IconButton(
                 icon: const FaIcon(
                   FontAwesomeIcons.gear,
                   color: Colors.white,
@@ -1867,7 +1866,7 @@ class _RecordingsPageState extends State<RecordingsPage>
                   'Conversations',
                   style: TextStyle(
                     color: Colors.white,
-                    fontSize: 32,
+                    fontSize: 24,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
