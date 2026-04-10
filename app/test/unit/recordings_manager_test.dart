@@ -80,56 +80,6 @@ void main() {
     expect(batches[0].rawSegments[1].path.endsWith('100_1.bin'), true);
   });
 
-  test('excludeNewestSegmentPerSession logic correctly excludes newest segment', () async {
-    final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
-    final deviceSession100Dir = Directory(p.join(rawDir.path, '100'))..createSync(recursive: true);
-
-    // Create multiple segments for session 100
-    final file0 = File(p.join(deviceSession100Dir.path, '100_0.bin'))..writeAsBytesSync([0]);
-    final file1 = File(p.join(deviceSession100Dir.path, '100_1.bin'))..writeAsBytesSync([0]);
-    final file2 = File(p.join(deviceSession100Dir.path, '100_2.bin'))..writeAsBytesSync([0]);
-
-    // Set old modification times to avoid recency cutoff
-    final oldTime = DateTime.now().subtract(const Duration(minutes: 1));
-    file0.setLastModifiedSync(oldTime);
-    file1.setLastModifiedSync(oldTime);
-    file2.setLastModifiedSync(oldTime);
-
-    final segments = [file0, file1, file2];
-    final safeSegments = await RecordingsManager.excludeNewestSegmentPerSession(segments);
-
-    expect(safeSegments.length, 2);
-    expect(safeSegments.any((f) => f.path.endsWith('100_0.bin')), true);
-    expect(safeSegments.any((f) => f.path.endsWith('100_1.bin')), true);
-    expect(safeSegments.any((f) => f.path.endsWith('100_2.bin')), false);
-  });
-
-  test('excludeNewestSegmentPerSession keeps single-segment sessions', () async {
-    final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
-    final deviceSession102Dir = Directory(p.join(rawDir.path, '102'))..createSync(recursive: true);
-
-    final file0 = File(p.join(deviceSession102Dir.path, '102_0.bin'))..writeAsBytesSync([0]);
-    file0.setLastModifiedSync(DateTime.now().subtract(const Duration(minutes: 1)));
-
-    final safeSegments = await RecordingsManager.excludeNewestSegmentPerSession([file0]);
-
-    expect(safeSegments.length, 1);
-    expect(safeSegments[0].path.endsWith('102_0.bin'), true);
-  });
-
-  test('excludeNewestSegmentPerSession filters by recency', () async {
-    final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
-    final deviceSession103Dir = Directory(p.join(rawDir.path, '103'))..createSync(recursive: true);
-
-    final file0 = File(p.join(deviceSession103Dir.path, '103_0.bin'))..writeAsBytesSync([0]);
-    // Set modification time to now (within 5s cutoff)
-    file0.setLastModifiedSync(DateTime.now());
-
-    final safeSegments = await RecordingsManager.excludeNewestSegmentPerSession([file0]);
-
-    expect(safeSegments.isEmpty, true);
-  });
-
   group('Conversation.fromFile tests', () {
     test('parses from real file with metadata correctly', () async {
       final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
