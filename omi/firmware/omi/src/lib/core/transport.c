@@ -466,8 +466,8 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_
 //
 
 #ifdef CONFIG_OMI_ENABLE_BATTERY
-#define BATTERY_REFRESH_INTERVAL_CONNECTED    10000 // 10 seconds while connected
-#define BATTERY_REFRESH_INTERVAL_DISCONNECTED 30000 // 30 seconds while offline
+#define BATTERY_REFRESH_INTERVAL_CONNECTED    60000  // 60 seconds while connected
+#define BATTERY_REFRESH_INTERVAL_DISCONNECTED 300000 // 5 minutes while offline
 #define CONFIG_OMI_BATTERY_CRITICAL_MV        3500  // mV
 uint8_t battery_percentage = 100;
 bool battery_ready = false;
@@ -1088,7 +1088,7 @@ int transport_start()
 #ifdef CONFIG_OMI_ENABLE_BUTTON
     button_init();
     register_button_service();
-    activate_button_work();
+    // Button work is now interrupt-driven; no startup polling needed.
 #endif
 
 // Initialize and register Haptic service if enabled
