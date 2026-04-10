@@ -12,7 +12,7 @@ import 'package:omi/utils/logger.dart';
 
 class VadAudioProcessor {
   // Silero VAD session + LSTM state (reset on gap detection)
-  final OrtSession? _session;
+  OrtSession? _session;
   Float32List _h = Float32List(2 * 1 * 64); // LSTM hidden state
   Float32List _c = Float32List(2 * 1 * 64); // LSTM cell state
   final List<double> _pcmWindow = []; // accumulates samples toward 512-window
@@ -57,6 +57,7 @@ class VadAudioProcessor {
     } catch (e) {
       Logger.error('VadAudioProcessor: Failed to load Silero VAD model, amplitude fallback active: $e');
     }
+    Logger.debug('VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'amplitude fallback active (threshold=${SharedPreferencesUtil().vadSpeechThreshold})'}');
     return VadAudioProcessor._(outputDir: outputDir, decoder: decoder, session: session);
   }
 
@@ -84,7 +85,7 @@ class VadAudioProcessor {
 
   bool _runVad(List<double> samples512) {
     if (_session == null) {
-      // Amplitude fallback when model didn't load.
+      // Amplitude fallback when model didn't load or was disabled after a failure.
       return samples512.any((s) => s.abs() > _speechThreshold);
     }
     final input = Float32List.fromList(samples512);
@@ -97,18 +98,23 @@ class VadAudioProcessor {
       'c': OrtValueTensor.createTensorWithDataList(_c, [2, 1, 64]),
     };
 
-    final runOptions = OrtRunOptions();
-    final outputs = _session!.run(runOptions, inputs);
-    final prob = (outputs[0]!.value as List<List<double>>)[0][0];
-
-    _h = _flattenF32(outputs[1]!.value);
-    _c = _flattenF32(outputs[2]!.value);
-    for (final o in outputs) {
-      o?.release();
+    OrtRunOptions? runOptions;
+    List<OrtValue?>? outputs;
+    try {
+      runOptions = OrtRunOptions();
+      outputs = _session!.run(runOptions, inputs);
+      final prob = (outputs[0]!.value as List<List<double>>)[0][0];
+      _h = _flattenF32(outputs[1]!.value);
+      _c = _flattenF32(outputs[2]!.value);
+      return prob > _speechThreshold;
+    } catch (e) {
+      Logger.error('VadAudioProcessor: Silero inference failed ($e) — disabling model, switching to amplitude fallback');
+      _session = null;
+      return samples512.any((s) => s.abs() > _speechThreshold);
+    } finally {
+      outputs?.forEach((o) => o?.release());
+      runOptions?.release();
     }
-    runOptions.release();
-
-    return prob > _speechThreshold;
   }
 
   Float32List _flattenF32(dynamic nested) {
