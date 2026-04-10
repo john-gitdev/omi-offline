@@ -1785,31 +1785,30 @@ class _RecordingsPageState extends State<RecordingsPage>
         return Scaffold(
           backgroundColor: const Color(0xFF0D0D0D),
           appBar: AppBar(
-            title: const Text(
-              'Daily Conversations',
-              style: TextStyle(color: Colors.white),
-            ),
             backgroundColor: const Color(0xFF0D0D0D),
+            elevation: 0,
+            leading: Padding(
+              padding: const EdgeInsets.only(left: 8.0),
+              child: !deviceProvider.isConnected
+                  ? IconButton(
+                      icon: const FaIcon(
+                        FontAwesomeIcons.bluetooth,
+                        color: Colors.grey,
+                        size: 20,
+                      ),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                      ),
+                    )
+                  : BatteryStatusIndicator(
+                      batteryLevel: deviceProvider.batteryLevel,
+                      isCharging: deviceProvider.isCharging,
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (c) => const DeviceSettings()),
+                      ),
+                    ),
+            ),
             actions: [
-              if (!deviceProvider.isConnected)
-                IconButton(
-                  icon: const FaIcon(
-                    FontAwesomeIcons.bluetooth,
-                    color: Colors.grey,
-                    size: 20,
-                  ),
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (c) => const FindDevicesPage()),
-                  ),
-                )
-              else
-                BatteryStatusIndicator(
-                  batteryLevel: deviceProvider.batteryLevel,
-                  isCharging: deviceProvider.isCharging,
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (c) => const DeviceSettings()),
-                  ),
-                ),
               if (_markerConversations.isNotEmpty)
                 IconButton(
                   icon: FaIcon(
@@ -1860,7 +1859,19 @@ class _RecordingsPageState extends State<RecordingsPage>
             ],
           ),
           body: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(24, 8, 24, 16),
+                child: Text(
+                  'Conversations',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 32,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
               _buildStorageWarning(deviceProvider.storageFullPercentage),
               _buildSyncProcessCard(),
               _buildAccumulatingBanner(),
