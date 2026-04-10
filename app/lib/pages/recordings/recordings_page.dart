@@ -201,13 +201,10 @@ class _RecordingsPageState extends State<RecordingsPage>
           unawaited(
             _reloadBatchesSilently().then((_) async {
               if (!mounted) return;
-              final allRaw = _batches.expand((b) => b.rawSegments).toList();
-              final processable =
-                  RecordingsManager.excludeNewestSegmentPerSession(allRaw);
+              final processable = _batches.expand((b) => b.rawSegments).toList();
               final lengths = await Future.wait(
                 processable.map((f) => f.length().catchError((_) => 0)),
-              );
-              final totalBytes = lengths.fold(0, (s, len) => s + len);
+              );              final totalBytes = lengths.fold(0, (s, len) => s + len);
               if (!mounted) return;
               setState(() {
                 _spState = SyncProcessState.processing;
@@ -572,31 +569,9 @@ class _RecordingsPageState extends State<RecordingsPage>
     }
 
     // Thunderbolt (force): flush everything including in-progress interval.
-    // Swipe (non-force): only process completed 30-min intervals, skip newest segment
-    // per DeviceSession (may still be written by firmware) — same behaviour as background auto-sync.
-    final List<Batch> batchesToProcess;
-    final bool backgroundMode;
-    if (_isForcePipeline) {
-      batchesToProcess = activeBatches;
-      backgroundMode = false;
-    } else {
-      batchesToProcess = activeBatches
-          .map((batch) {
-            final safe = RecordingsManager.excludeNewestSegmentPerSession(
-              batch.rawSegments,
-            );
-            return Batch(
-              dateString: batch.dateString,
-              date: batch.date,
-              rawSegments: safe,
-              finalizedRecordings: batch.finalizedRecordings,
-              markerTimestamps: batch.markerTimestamps,
-            );
-          })
-          .where((b) => b.rawSegments.isNotEmpty)
-          .toList();
-      backgroundMode = true;
-    }
+    // Swipe (non-force): allow VAD to keep in-progress conversations as 'raw' to be continued later.
+    final List<Batch> batchesToProcess = activeBatches;
+    final bool backgroundMode = !_isForcePipeline;
 
     if (batchesToProcess.isEmpty) {
       await _finishSuccess();

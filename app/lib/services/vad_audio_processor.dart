@@ -293,7 +293,13 @@ class VadAudioProcessor {
     return path;
   }
 
-  Future<String?> flushOnlyCompleted() => flushRemaining();
+  Future<String?> flushOnlyCompleted() async {
+    if (isCapturing) {
+      Logger.debug('VadAudioProcessor: flushOnlyCompleted — capture in progress, skipping flush to allow continuation.');
+      return null;
+    }
+    return flushRemaining();
+  }
 
   void _resetState() {
     _currentRefs = [];
