@@ -53,6 +53,37 @@ Applied on top of the base state above:
 
 ---
 
+## Firmware: Power / Battery Optimizations
+
+### Button: Interrupt-Driven (implemented)
+
+**Files:** `src/lib/core/button.c`, `src/main.c`, `src/lib/core/transport.c`
+
+Previously `check_button_level` unconditionally rescheduled itself every 40ms (25 Hz) via a Zephyr work queue, preventing the CPU from sleeping between presses.
+
+**Fix:** The GPIO interrupt (`button_gpio_callback`) now schedules the work item (`K_NO_WAIT`) only when a press arrives while `fsm_state == STATE_IDLE`. The work item reschedules itself at 40ms while an interaction is in progress (multi-tap window, hold timing), and stops rescheduling once the state machine returns to `STATE_IDLE`. The startup `activate_button_work()` calls in `main.c` and `transport.c` were removed.
+
+**Verify after flashing:** If presses are missed intermittently, try a 1–2ms delay in the interrupt before scheduling (mechanical debounce settling). The state machine's timing already handles debounce logic, so this is unlikely to be needed.
+
+### Battery ADC Poll Interval (implemented)
+
+**File:** `src/lib/core/transport.c`
+
+| State | Before | After |
+|-------|--------|-------|
+| Connected | 10 s | 60 s |
+| Disconnected | 30 s | 5 min |
+
+Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minute. The previous intervals were excessively frequent and prevented the ADC/peripheral from reaching low-power states.
+
+### Deferred Optimizations
+
+- **BT TX power** (`CONFIG_BT_CTLR_TX_PWR_ANTENNA=8` → 0 or 4 dBm): saves power during every radio tx. Requires testing with phone in pocket/bag to confirm no audio dropouts.
+- **BLE connection interval** (7.5–15ms → 30ms): large power savings from longer radio sleep. Requires empirical validation that Opus streaming (50 fps, 80 B/frame, MTU 498) doesn't overflow buffers or cause audio gaps at the longer interval. The `update_conn_params()` in `transport.c` hardcodes the interval at runtime and would need updating alongside the Kconfig values.
+- **Disable logging in production**: `CONFIG_SERIAL=n`, `CONFIG_LOG=n` in a `release.conf` overlay. RTT logging stays on for development builds. The log processing thread and UART clock domain add baseline power draw.
+
+---
+
 ## Firmware: SD Write Queue Configuration
 
 **Location:** `omi/firmware/omi/src/sd_card.c`
