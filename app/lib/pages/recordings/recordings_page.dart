@@ -1075,7 +1075,7 @@ class _RecordingsPageState extends State<RecordingsPage>
         _spState == SyncProcessState.processing ||
         _spState == SyncProcessState.stopping)
       return const SizedBox.shrink();
-    if (_accumulatedMinutes < 0.5) return const SizedBox.shrink();
+    if (_accumulatedMinutes < 1.0) return const SizedBox.shrink();
 
     final int accMin = _accumulatedMinutes.floor();
 
