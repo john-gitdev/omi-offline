@@ -150,7 +150,12 @@ void check_button_level(struct k_work *work_item)
         break;
     }
 
-    k_work_reschedule(&button_work, K_MSEC(BUTTON_CHECK_INTERVAL));
+    // Keep polling only while an interaction is in progress.
+    // Returning to STATE_IDLE lets the work item die; the GPIO interrupt
+    // will restart it on the next button press.
+    if (fsm_state != STATE_IDLE) {
+        k_work_reschedule(&button_work, K_MSEC(BUTTON_CHECK_INTERVAL));
+    }
     return;
 }
 
@@ -160,6 +165,13 @@ static void button_gpio_callback(const struct device *dev, struct gpio_callback 
 {
     was_pressed = (gpio_pin_get_dt(&usr_btn) == 1);
     transport_notify_button_state(was_pressed ? 1 : 0);
+
+    // Start the state machine work item on the first press from idle.
+    // The work item reschedules itself while active and stops when it returns
+    // to STATE_IDLE, so no continuous polling occurs between interactions.
+    if (was_pressed && fsm_state == STATE_IDLE) {
+        k_work_reschedule(&button_work, K_NO_WAIT);
+    }
 }
 
 int button_regist_callback()
