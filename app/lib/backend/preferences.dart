@@ -5,7 +5,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 
 class SharedPreferencesUtil {
-  static final SharedPreferencesUtil _instance = SharedPreferencesUtil._internal();
+  static final SharedPreferencesUtil _instance =
+      SharedPreferencesUtil._internal();
   static SharedPreferences? _preferences;
 
   factory SharedPreferencesUtil() {
@@ -17,12 +18,15 @@ class SharedPreferencesUtil {
   Future<void>? _heypocketUploadGuard;
 
   String get deviceIdHash => _preferences?.getString('deviceIdHash') ?? '';
-  set deviceIdHash(String value) => _preferences?.setString('deviceIdHash', value);
+  set deviceIdHash(String value) =>
+      _preferences?.setString('deviceIdHash', value);
 
   //--------------------------- Offline Audio Processing ---------------------//
 
-  bool get forceSyncSkipConfirm => getBool('force_sync_skip_confirm', defaultValue: false);
-  set forceSyncSkipConfirm(bool value) => saveBool('force_sync_skip_confirm', value);
+  bool get forceSyncSkipConfirm =>
+      getBool('force_sync_skip_confirm', defaultValue: false);
+  set forceSyncSkipConfirm(bool value) =>
+      saveBool('force_sync_skip_confirm', value);
 
   // When enabled, raw .bin segments are preserved after processing so days can
   // be reprocessed with different VAD settings via the Reprocess Day button.
@@ -32,17 +36,21 @@ class SharedPreferencesUtil {
   // Set to true the first time adjustment mode is turned ON; cleared only after
   // the cleanup banner's "Process & Delete" completes. Used to suppress the
   // cleanup banner when adjustment mode has never been enabled.
-  bool get adjustmentModeWasEnabled => getBool('adjustmentModeWasEnabled', defaultValue: false);
-  set adjustmentModeWasEnabled(bool value) => saveBool('adjustmentModeWasEnabled', value);
+  bool get adjustmentModeWasEnabled =>
+      getBool('adjustmentModeWasEnabled', defaultValue: false);
+  set adjustmentModeWasEnabled(bool value) =>
+      saveBool('adjustmentModeWasEnabled', value);
 
   // Silero VAD speech probability cutoff (0.0–1.0). Frames with probability
   // above this value are classified as speech.
-  double get vadSpeechThreshold => getDouble('vadSpeechThreshold', defaultValue: 0.5);
+  double get vadSpeechThreshold =>
+      getDouble('vadSpeechThreshold', defaultValue: 0.5);
   set vadSpeechThreshold(double v) => saveDouble('vadSpeechThreshold', v);
 
   // Frames of speech to continue counting after Silero reports silence,
   // to smooth out brief dropouts within a sentence.
-  double get vadHangoverSeconds => getDouble('vadHangoverSeconds', defaultValue: 0.5);
+  double get vadHangoverSeconds =>
+      getDouble('vadHangoverSeconds', defaultValue: 0.5);
   set vadHangoverSeconds(double v) => saveDouble('vadHangoverSeconds', v);
 
   // Continuous silence duration (seconds) that triggers a conversation cut.
@@ -56,7 +64,8 @@ class SharedPreferencesUtil {
 
   // Seconds of silence frames to prepend before a new conversation starts,
   // so speech doesn't begin abruptly.
-  double get vadPreSpeechSeconds => getDouble('vadPreSpeechSeconds', defaultValue: 1.0);
+  double get vadPreSpeechSeconds =>
+      getDouble('vadPreSpeechSeconds', defaultValue: 1.0);
   set vadPreSpeechSeconds(double v) => saveDouble('vadPreSpeechSeconds', v);
 
   // Gap between consecutive segment files (seconds) that forces a conversation
@@ -65,8 +74,10 @@ class SharedPreferencesUtil {
   set vadGapSeconds(int v) => saveInt('vadGapSeconds', v);
 
   // Maximum continuous conversation length (minutes) before forcing a cut.
-  int get vadMaxConversationMinutes => getInt('vadMaxConversationMinutes', defaultValue: 60);
-  set vadMaxConversationMinutes(int v) => saveInt('vadMaxConversationMinutes', v);
+  int get vadMaxConversationMinutes =>
+      getInt('vadMaxConversationMinutes', defaultValue: 60);
+  set vadMaxConversationMinutes(int v) =>
+      saveInt('vadMaxConversationMinutes', v);
 
   bool get autoSyncEnabled => getBool('autoSyncEnabled', defaultValue: true);
 
@@ -79,9 +90,11 @@ class SharedPreferencesUtil {
   // True while extraction/processing is in progress. Persisted so that on
   // restart after a crash we can detect incomplete processing and clean up
   // the temp directory to avoid duplicate recordings.
-  bool get extractionInProgress => getBool('extractionInProgress', defaultValue: false);
+  bool get extractionInProgress =>
+      getBool('extractionInProgress', defaultValue: false);
 
-  set extractionInProgress(bool value) => saveBool('extractionInProgress', value);
+  set extractionInProgress(bool value) =>
+      saveBool('extractionInProgress', value);
 
   //--------------------------- HeyPocket Integration ---------------------//
 
@@ -91,14 +104,17 @@ class SharedPreferencesUtil {
   bool get heypocketEnabled => getBool('heypocketEnabled', defaultValue: false);
   set heypocketEnabled(bool v) => saveBool('heypocketEnabled', v);
 
-  List<String> get heypocketUploadedFiles => getStringList('heypocketUploadedFiles');
-  set heypocketUploadedFiles(List<String> v) => saveStringList('heypocketUploadedFiles', v);
+  List<String> get heypocketUploadedFiles =>
+      getStringList('heypocketUploadedFiles');
+  set heypocketUploadedFiles(List<String> v) =>
+      saveStringList('heypocketUploadedFiles', v);
 
   // Epoch ms when the API key was first saved — used to limit auto-upload to new recordings only.
   int get heypocketKeySetAt => getInt('heypocketKeySetAt', defaultValue: 0);
   set heypocketKeySetAt(int v) => saveInt('heypocketKeySetAt', v);
 
-  bool isUploadedToHeypocket(String uploadKey) => heypocketUploadedFiles.contains(uploadKey);
+  bool isUploadedToHeypocket(String uploadKey) =>
+      heypocketUploadedFiles.contains(uploadKey);
 
   /// Serialized read-modify-write to prevent concurrent calls from losing updates.
   Future<void> markUploadedToHeypocket(String uploadKey) async {
@@ -151,13 +167,16 @@ class SharedPreferencesUtil {
 
   BtDevice get btDevice {
     final String device = getString('btDevice');
-    if (device.isEmpty) return BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0);
+    if (device.isEmpty)
+      return BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0);
     return BtDevice.fromJson(jsonDecode(device));
   }
 
-  set lastConnectedDeviceAddress(String value) => saveString('lastConnectedDeviceAddress', value);
+  set lastConnectedDeviceAddress(String value) =>
+      saveString('lastConnectedDeviceAddress', value);
 
-  String get lastConnectedDeviceAddress => getString('lastConnectedDeviceAddress');
+  String get lastConnectedDeviceAddress =>
+      getString('lastConnectedDeviceAddress');
 
   set deviceName(String value) => saveString('deviceName', value);
 
@@ -186,38 +205,47 @@ class SharedPreferencesUtil {
   // Developer Diagnostics
   bool get devLogsToFileEnabled => getBool('devLogsToFileEnabled');
 
-  set devLogsToFileEnabled(bool value) => saveBool('devLogsToFileEnabled', value);
+  set devLogsToFileEnabled(bool value) =>
+      saveBool('devLogsToFileEnabled', value);
 
   //--------------------------- Setters & Getters -----------------------------//
 
-  String getString(String key, {String defaultValue = ''}) => _preferences?.getString(key) ?? defaultValue;
+  String getString(String key, {String defaultValue = ''}) =>
+      _preferences?.getString(key) ?? defaultValue;
 
-  int getInt(String key, {int defaultValue = 0}) => _preferences?.getInt(key) ?? defaultValue;
+  int getInt(String key, {int defaultValue = 0}) =>
+      _preferences?.getInt(key) ?? defaultValue;
 
-  bool getBool(String key, {bool defaultValue = false}) => _preferences?.getBool(key) ?? defaultValue;
+  bool getBool(String key, {bool defaultValue = false}) =>
+      _preferences?.getBool(key) ?? defaultValue;
 
   double getDouble(String key, {double defaultValue = 0.0}) {
     final value = _preferences?.get(key);
-    if (value is double) return value;
-    if (value is int) return value.toDouble();
-    return defaultValue;
+    return (value is num) ? value.toDouble() : defaultValue;
   }
 
-  List<String> getStringList(String key, {List<String> defaultValue = const []}) =>
-      _preferences?.getStringList(key) ?? defaultValue;
+  List<String> getStringList(
+    String key, {
+    List<String> defaultValue = const [],
+  }) => _preferences?.getStringList(key) ?? defaultValue;
 
-  Future<bool> saveString(String key, String value) async => await _preferences?.setString(key, value) ?? false;
+  Future<bool> saveString(String key, String value) async =>
+      await _preferences?.setString(key, value) ?? false;
 
-  Future<bool> saveInt(String key, int value) async => await _preferences?.setInt(key, value) ?? false;
+  Future<bool> saveInt(String key, int value) async =>
+      await _preferences?.setInt(key, value) ?? false;
 
-  Future<bool> saveBool(String key, bool value) async => await _preferences?.setBool(key, value) ?? false;
+  Future<bool> saveBool(String key, bool value) async =>
+      await _preferences?.setBool(key, value) ?? false;
 
-  Future<bool> saveDouble(String key, double value) async => await _preferences?.setDouble(key, value) ?? false;
+  Future<bool> saveDouble(String key, double value) async =>
+      await _preferences?.setDouble(key, value) ?? false;
 
   Future<bool> saveStringList(String key, List<String> value) async =>
       await _preferences?.setStringList(key, value) ?? false;
 
-  Future<bool> remove(String key) async => await _preferences?.remove(key) ?? false;
+  Future<bool> remove(String key) async =>
+      await _preferences?.remove(key) ?? false;
 
   Future<bool> clear() async => await _preferences?.clear() ?? false;
 }
