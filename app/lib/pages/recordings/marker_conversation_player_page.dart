@@ -6,6 +6,10 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/utils/other/time_utils.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:ffmpeg_kit_flutter/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter/return_code.dart';
 
 enum _DragMode { none, left, right, seek }
 
@@ -30,6 +34,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   List<double> _waveform = [];
   bool _loadingWaveform = true;
   bool _loadingAudio = true;
+  bool _isExporting = false;
 
   Duration _position = Duration.zero;
   bool _isPlaying = false;
@@ -168,6 +173,47 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
     }
   }
 
+  Future<void> _exportConversation() async {
+    if (_isExporting) return;
+    setState(() => _isExporting = true);
+
+    try {
+      final dir = await getTemporaryDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final outputPath = '${dir.path}/export_$timestamp.m4a';
+      
+      final startSec = _cropStart.inMilliseconds / 1000.0;
+      final durationSec = (_cropEnd - _cropStart).inMilliseconds / 1000.0;
+
+      // -ss is the start offset, -t is the duration
+      // -c copy allows fast trimming without re-encoding
+      final command = '-y -i "${_segment.path}" -ss $startSec -t $durationSec -c copy "$outputPath"';
+      
+      final session = await FFmpegKit.execute(command);
+      final returnCode = await session.getReturnCode();
+
+      if (ReturnCode.isSuccess(returnCode)) {
+        await SharePlus.instance.share(
+          ShareParams(
+            files: [XFile(outputPath)],
+            subject: 'Conversation Export',
+          ),
+        );
+      } else {
+        final logs = await session.getLogs();
+        throw Exception('FFmpeg failed: ${logs.last.getMessage()}');
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Export failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
+    }
+  }
+
   // ── Playback controls ──────────────────────────────────────────────────────
 
   Future<void> _togglePlay() async {
@@ -230,6 +276,21 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
             style: const TextStyle(color: Colors.white, fontSize: 18),
           ),
           actions: [
+            if (_isExporting)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16),
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                ),
+              )
+            else
+              IconButton(
+                icon: const FaIcon(FontAwesomeIcons.shareFromSquare, size: 20, color: Colors.white),
+                onPressed: _exportConversation,
+                tooltip: 'Export',
+              ),
             IconButton(
               icon: FaIcon(
                 _isCropMode
