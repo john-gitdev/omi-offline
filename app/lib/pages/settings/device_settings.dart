@@ -1,3 +1,5 @@
+import 'package:file_picker/file_picker.dart';
+import 'package:omi/pages/settings/firmware/manual_firmware_flash_page.dart';
 import 'package:omi/gen/pigeon_communicator.g.dart';
 import "package:omi/widgets/dialog.dart";
 import 'dart:async';
@@ -245,17 +247,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             chipValue: device?.firmwareRevision ?? 'oo-1.0.9',
             showChevron: false,
           ),
-          if (provider.isDeviceStorageSupport) ...[
-            const Divider(height: 1, color: Color(0xFF3C3C43)),
-            _buildProfileStyleItem(
-              icon: FontAwesomeIcons.sdCard,
-              title: 'SD Card Sync',
-              onTap: () {
-                var page = const SyncPage();
-                routeToPage(context, page);
-              },
-            ),
-          ],
         ],
       ),
     );
@@ -285,6 +276,34 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             copyValue: modelNumber,
             showChevron: false,
           ),
+          const Divider(height: 1, color: Color(0xFF3C3C43)),
+          _buildProfileStyleItem(
+            icon: FontAwesomeIcons.microchip,
+            title: 'Flash Custom Firmware',
+            onTap: () async {
+              if (device == null) return;
+              final result = await FilePicker.platform.pickFiles(
+                type: FileType.custom,
+                allowedExtensions: ['zip'],
+                dialogTitle: 'Select firmware ZIP file',
+              );
+              if (result == null || result.files.isEmpty) return;
+              final file = result.files.first;
+              if (file.path == null) return;
+
+              if (!context.mounted) return;
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => ManualFirmwareFlashPage(
+                    zipFilePath: file.path!,
+                    fileName: file.name,
+                    device: device,
+                  ),
+                ),
+              );
+            },
+          ),
+
           const Divider(height: 1, color: Color(0xFF3C3C43)),
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.industry,
