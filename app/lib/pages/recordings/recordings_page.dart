@@ -1790,14 +1790,18 @@ class _RecordingsPageState extends State<RecordingsPage>
             centerTitle: false,
             leadingWidth: 120,
             leading: !deviceProvider.isConnected
-                ? IconButton(
-                    icon: const FaIcon(
-                      FontAwesomeIcons.bluetooth,
-                      color: Colors.grey,
-                      size: 20,
-                    ),
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                ? Container(
+                    alignment: Alignment.centerLeft,
+                    padding: const EdgeInsets.only(left: 8.0),
+                    child: IconButton(
+                      icon: const FaIcon(
+                        FontAwesomeIcons.bluetooth,
+                        color: Colors.grey,
+                        size: 20,
+                      ),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                      ),
                     ),
                   )
                 : BatteryStatusIndicator(
