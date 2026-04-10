@@ -834,6 +834,7 @@ class _RecordingsPageState extends State<RecordingsPage>
 
   Future<void> _reprocessDay(Batch batch) async {
     final messenger = ScaffoldMessenger.of(context);
+    if (_spState != SyncProcessState.idle) return;
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -847,8 +848,41 @@ class _RecordingsPageState extends State<RecordingsPage>
     );
     if (confirm != true) return;
     try {
-      await RecordingsManager.reprocessDay(batch, (_) {});
+      // Delete first, then immediately refresh so the day shows as empty.
+      await RecordingsManager.reprocessDay(batch);
       await _loadBatches();
+
+      // Find the freshly-loaded batch (raw segments still present).
+      final freshBatch = _batches.where((b) => b.dateString == batch.dateString && b.rawSegments.isNotEmpty).toList();
+      if (freshBatch.isEmpty) return;
+
+      final totalBytes = freshBatch.expand((b) => b.rawSegments).fold(0, (sum, f) {
+        try { return sum + f.lengthSync(); } catch (_) { return sum; }
+      });
+      _lastActiveStage = 'processing';
+      setState(() {
+        _totalMinutes = totalBytes / 252000.0;
+        _minutesRemaining = _totalMinutes;
+      });
+      _transitionTo(SyncProcessState.processing);
+      WakelockPlus.enable();
+      try {
+        await _manager.processAll(
+          freshBatch,
+          (progress) {
+            if (mounted) setState(() => _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes));
+          },
+          backgroundMode: false,
+          onRecordingFinalized: () { unawaited(_reloadBatchesSilently()); },
+        );
+      } catch (e) {
+        WakelockPlus.disable();
+        _transitionToError('processing', e.toString());
+        return;
+      }
+      WakelockPlus.disable();
+      await _reloadBatchesSilently();
+      await _finishSuccess();
     } catch (e) {
       if (mounted) {
         messenger.showSnackBar(

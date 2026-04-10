@@ -775,17 +775,13 @@ class RecordingsManager {
     }
   }
 
-  /// Deletes processed recordings for [batch] then immediately reprocesses
-  /// that day's raw segments using current VAD settings.
-  /// Only meaningful in adjustment mode (raw segments must still be on disk).
-  static Future<void> reprocessDay(Batch batch, Function(double) onProgress) async {
+  /// Deletes processed recordings for [batch] so the day can be reprocessed
+  /// on the next swipe or force sync with current VAD settings.
+  static Future<void> reprocessDay(Batch batch) async {
     if (_isProcessingAny) return;
     final manager = RecordingsManager();
     await manager.deleteDay(batch);
-    final batches = await manager.getBatches();
-    final target = batches.where((b) => b.dateString == batch.dateString && b.rawSegments.isNotEmpty).toList();
-    if (target.isEmpty) return;
-    await manager.processAll(target, onProgress, backgroundMode: false);
+    notifyRecordingsChanged();
   }
 
   /// Deletes all raw .bin segment files and their parent device-session folders.
