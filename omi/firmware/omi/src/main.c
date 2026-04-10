@@ -207,7 +207,7 @@ int main(void)
 
     ret = button_init();
     if (ret) LOG_ERR("BTN failed %d", ret);
-    activate_button_work();
+    // Button work is now interrupt-driven; no startup polling needed.
 
     ret = transport_start();
     if (ret) LOG_ERR("BLE failed %d", ret);
