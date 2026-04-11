@@ -15,8 +15,15 @@ pod install
 pod repo update
 Set-Location -Path ".."
 
-# TODO Install Android dependencies?
-# ...
+# Install Android dependencies
+Write-Host "Installing Android dependencies..."
+Set-Location -Path "android"
+if ($IsWindows) {
+    .\gradlew.bat dependencies
+} else {
+    bash ./gradlew dependencies
+}
+Set-Location -Path ".."
 
 # Create .env file from template
 Write-Host "Creating .env file..."
