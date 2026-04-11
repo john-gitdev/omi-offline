@@ -277,6 +277,13 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             showChevron: false,
           ),
           const Divider(height: 1, color: Color(0xFF3C3C43)),
+          _buildProfileStyleItem(
+            icon: FontAwesomeIcons.industry,
+            title: 'Manufacturer',
+            chipValue: manufacturer,
+            copyValue: manufacturer,
+            showChevron: false,
+          ),
         ],
       ),
     );
