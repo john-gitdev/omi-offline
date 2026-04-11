@@ -40,8 +40,7 @@ class RecordingsPage extends StatefulWidget {
   State<RecordingsPage> createState() => _RecordingsPageState();
 }
 
-class _RecordingsPageState extends State<RecordingsPage>
-    implements IWalSyncProgressListener {
+class _RecordingsPageState extends State<RecordingsPage> implements IWalSyncProgressListener {
   final RecordingsManager _manager = RecordingsManager();
   final _prefs = SharedPreferencesUtil();
 
@@ -60,8 +59,7 @@ class _RecordingsPageState extends State<RecordingsPage>
   double _totalMinutes = 0.0;
   int _markerCount = 0;
   double _syncSpeed = 0.0;
-  double _accumulatedMinutes =
-      0.0; // raw audio on disk not yet turned into a recording
+  double _accumulatedMinutes = 0.0; // raw audio on disk not yet turned into a recording
   String _lastCompletedStage = 'none'; // "none" | "syncing" | "processing"
   String _lastActiveStage = 'syncing'; // "syncing" | "processing"
   // ─── HeyPocket upload state ────────────────────────────────────────────────
@@ -70,16 +68,12 @@ class _RecordingsPageState extends State<RecordingsPage>
   String _lastHpKey = '';
 
   Timer? _pollTimer;
-  bool _isUserTriggered =
-      false; // true while user-initiated pipeline is running
-  Completer<void>?
-  _pipelineCompleter; // completed when the pipeline reaches a terminal state
+  bool _isUserTriggered = false; // true while user-initiated pipeline is running
+  Completer<void>? _pipelineCompleter; // completed when the pipeline reaches a terminal state
 
   // ─── Force sync state ──────────────────────────────────────────────────────
-  bool _isForcePipeline =
-      false; // true while a force-sync-initiated pipeline is running
-  bool _forceSyncOnCooldown =
-      false; // true for 1 min after the button is pressed
+  bool _isForcePipeline = false; // true while a force-sync-initiated pipeline is running
+  bool _forceSyncOnCooldown = false; // true for 1 min after the button is pressed
   Timer? _forceSyncCooldownTimer;
 
   // ─── Persistence keys ──────────────────────────────────────────────────────
@@ -204,13 +198,13 @@ class _RecordingsPageState extends State<RecordingsPage>
               final processable = _batches.expand((b) => b.rawSegments).toList();
               final lengths = await Future.wait(
                 processable.map((f) => f.length().catchError((_) => 0)),
-              );              final totalBytes = lengths.fold(0, (s, len) => s + len);
+              );
+              final totalBytes = lengths.fold(0, (s, len) => s + len);
               if (!mounted) return;
               setState(() {
                 _spState = SyncProcessState.processing;
                 _totalMinutes =
-                    totalBytes /
-                    252000.0; // segment on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
+                    totalBytes / 252000.0; // segment on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
                 _minutesRemaining = _totalMinutes;
                 _syncedCount = 0;
                 _syncSpeed = 0.0;
@@ -301,9 +295,7 @@ class _RecordingsPageState extends State<RecordingsPage>
       _syncSpeed = speedKBps ?? 0.0;
       // If _totalCount is 0 or mismatched (WAL list wasn't populated yet),
       // refresh it from estimatedTotalSegments now that syncAll/listFiles has progressed.
-      final currentEstimated = ServiceManager.instance().wal
-          .getSyncs()
-          .recordingsCount;
+      final currentEstimated = ServiceManager.instance().wal.getSyncs().recordingsCount;
       if (_totalCount <= 0 && currentEstimated > 0) {
         _totalCount = currentEstimated;
         Logger.debug(
@@ -353,8 +345,7 @@ class _RecordingsPageState extends State<RecordingsPage>
                 ),
                 const SizedBox(height: 16),
                 GestureDetector(
-                  onTap: () =>
-                      setDialogState(() => doNotShowAgain = !doNotShowAgain),
+                  onTap: () => setDialogState(() => doNotShowAgain = !doNotShowAgain),
                   child: Row(
                     children: [
                       SizedBox(
@@ -362,8 +353,7 @@ class _RecordingsPageState extends State<RecordingsPage>
                         height: 20,
                         child: Checkbox(
                           value: doNotShowAgain,
-                          onChanged: (v) =>
-                              setDialogState(() => doNotShowAgain = v ?? false),
+                          onChanged: (v) => setDialogState(() => doNotShowAgain = v ?? false),
                           activeColor: Colors.deepPurpleAccent,
                           side: const BorderSide(color: Colors.grey),
                         ),
@@ -419,8 +409,7 @@ class _RecordingsPageState extends State<RecordingsPage>
 
     final syncs = ServiceManager.instance().wal.getSyncs();
     setState(() {
-      _totalCount =
-          0; // will be backfilled by onWalSyncedProgress after rotation+list
+      _totalCount = 0; // will be backfilled by onWalSyncedProgress after rotation+list
       _syncedCount = 0;
       _syncSpeed = 0.0;
     });
@@ -560,9 +549,7 @@ class _RecordingsPageState extends State<RecordingsPage>
     _lastActiveStage = 'processing';
     _transitionTo(SyncProcessState.processing);
 
-    final activeBatches = _batches
-        .where((b) => b.rawSegments.isNotEmpty)
-        .toList();
+    final activeBatches = _batches.where((b) => b.rawSegments.isNotEmpty).toList();
     if (activeBatches.isEmpty) {
       await _finishSuccess();
       return;
@@ -661,9 +648,7 @@ class _RecordingsPageState extends State<RecordingsPage>
 
   // ─── Cancel modal ──────────────────────────────────────────────────────────
   Future<void> _showCancelModal() async {
-    if (_spState != SyncProcessState.syncing &&
-        _spState != SyncProcessState.processing)
-      return;
+    if (_spState != SyncProcessState.syncing && _spState != SyncProcessState.processing) return;
     final wasState = _spState;
     final confirm = await showDialog<bool>(
       context: context,
@@ -778,7 +763,11 @@ class _RecordingsPageState extends State<RecordingsPage>
     final unprocessed = daysWithBins.where((b) => b.finalizedRecordings.isEmpty).toList();
     if (unprocessed.isNotEmpty) {
       final totalBytes = unprocessed.expand((b) => b.rawSegments).fold(0, (sum, f) {
-        try { return sum + f.lengthSync(); } catch (_) { return sum; }
+        try {
+          return sum + f.lengthSync();
+        } catch (_) {
+          return sum;
+        }
       });
       setState(() {
         _totalMinutes = totalBytes / 252000.0;
@@ -801,7 +790,10 @@ class _RecordingsPageState extends State<RecordingsPage>
     await RecordingsManager.deleteAllRawSegments();
     _prefs.adjustmentModeWasEnabled = false;
 
-    setState(() { _minutesRemaining = 0; _lastCompletedStage = 'processing'; });
+    setState(() {
+      _minutesRemaining = 0;
+      _lastCompletedStage = 'processing';
+    });
     _persistProgress();
     await _reloadBatchesSilently();
     await _finishSuccess();
@@ -832,7 +824,11 @@ class _RecordingsPageState extends State<RecordingsPage>
       if (freshBatch.isEmpty) return;
 
       final totalBytes = freshBatch.expand((b) => b.rawSegments).fold(0, (sum, f) {
-        try { return sum + f.lengthSync(); } catch (_) { return sum; }
+        try {
+          return sum + f.lengthSync();
+        } catch (_) {
+          return sum;
+        }
       });
       _lastActiveStage = 'processing';
       setState(() {
@@ -845,10 +841,13 @@ class _RecordingsPageState extends State<RecordingsPage>
         await _manager.processAll(
           freshBatch,
           (progress) {
-            if (mounted) setState(() => _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes));
+            if (mounted)
+              setState(() => _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes));
           },
           backgroundMode: false,
-          onRecordingFinalized: () { unawaited(_reloadBatchesSilently()); },
+          onRecordingFinalized: () {
+            unawaited(_reloadBatchesSilently());
+          },
         );
       } catch (e) {
         WakelockPlus.disable();
@@ -880,14 +879,11 @@ class _RecordingsPageState extends State<RecordingsPage>
     if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty) return;
     final apiKey = _prefs.heypocketApiKey;
     final keySetAt = _prefs.heypocketKeySetAt;
-    final keySetTime = keySetAt > 0
-        ? DateTime.fromMillisecondsSinceEpoch(keySetAt)
-        : null;
+    final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
         if (_autoUploadActive >= 2) return;
-        if (keySetTime != null && conversation.startTime.isBefore(keySetTime))
-          continue;
+        if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
         final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
         if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
@@ -896,23 +892,20 @@ class _RecordingsPageState extends State<RecordingsPage>
         _autoUploadActive++;
         if (mounted) setState(() {});
         unawaited(
-          HeyPocketService.uploadRecording(apiKey, conversation)
-              .then((_) async {
-                await _prefs.markUploadedToHeypocket(uploadKey);
-              })
-              .catchError((e) {
-                Logger.error('HeyPocket auto-upload failed: $e');
-              })
-              .whenComplete(() {
-                _uploadingFiles.remove(uploadKey);
-                _autoUploadActive--;
-                if (mounted) {
-                  setState(() {});
-                  WidgetsBinding.instance.addPostFrameCallback(
-                    (_) => _tryAutoUploadNext(),
-                  );
-                }
-              }),
+          HeyPocketService.uploadRecording(apiKey, conversation).then((_) async {
+            await _prefs.markUploadedToHeypocket(uploadKey);
+          }).catchError((e) {
+            Logger.error('HeyPocket auto-upload failed: $e');
+          }).whenComplete(() {
+            _uploadingFiles.remove(uploadKey);
+            _autoUploadActive--;
+            if (mounted) {
+              setState(() {});
+              WidgetsBinding.instance.addPostFrameCallback(
+                (_) => _tryAutoUploadNext(),
+              );
+            }
+          }),
         );
       }
     }
@@ -933,9 +926,7 @@ class _RecordingsPageState extends State<RecordingsPage>
     if (_uploadingFiles.contains(uploadKey)) return;
 
     final alreadyUploaded = _prefs.isUploadedToHeypocket(uploadKey);
-    final title = alreadyUploaded
-        ? 'Re-upload Conversation'
-        : 'Upload Conversation';
+    final title = alreadyUploaded ? 'Re-upload Conversation' : 'Upload Conversation';
     final content = alreadyUploaded
         ? 'This conversation was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)'
         : 'Upload this conversation to HeyPocket?';
@@ -957,26 +948,23 @@ class _RecordingsPageState extends State<RecordingsPage>
     _uploadingFiles.add(uploadKey);
     setState(() {});
     unawaited(
-      HeyPocketService.uploadRecording(apiKey, conversation)
-          .then((_) {
-            _prefs.markUploadedToHeypocket(uploadKey);
-          })
-          .catchError((e) {
-            if (e is HeyPocketException) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('HeyPocket ${e.statusCode}: ${e.message}'),
-                  ),
-                );
-              }
-            }
-            Logger.error('HeyPocket upload failed: $e');
-          })
-          .whenComplete(() {
-            _uploadingFiles.remove(uploadKey);
-            if (mounted) setState(() {});
-          }),
+      HeyPocketService.uploadRecording(apiKey, conversation).then((_) {
+        _prefs.markUploadedToHeypocket(uploadKey);
+      }).catchError((e) {
+        if (e is HeyPocketException) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('HeyPocket ${e.statusCode}: ${e.message}'),
+              ),
+            );
+          }
+        }
+        Logger.error('HeyPocket upload failed: $e');
+      }).whenComplete(() {
+        _uploadingFiles.remove(uploadKey);
+        if (mounted) setState(() {});
+      }),
     );
   }
 
@@ -1048,8 +1036,7 @@ class _RecordingsPageState extends State<RecordingsPage>
     // and when there's less than half a minute accumulated (not worth showing).
     if (_spState == SyncProcessState.syncing ||
         _spState == SyncProcessState.processing ||
-        _spState == SyncProcessState.stopping)
-      return const SizedBox.shrink();
+        _spState == SyncProcessState.stopping) return const SizedBox.shrink();
     if (_accumulatedMinutes < 1.0) return const SizedBox.shrink();
 
     final int accMin = _accumulatedMinutes.floor();
@@ -1252,9 +1239,7 @@ class _RecordingsPageState extends State<RecordingsPage>
 
       case SyncProcessState.syncing:
         mainText = _isForcePipeline ? 'Force Sync...' : 'Syncing segments';
-        final speedStr = _syncSpeed > 0
-            ? '  ·  ${_syncSpeed.toStringAsFixed(1)} KB/s'
-            : '';
+        final speedStr = _syncSpeed > 0 ? '  ·  ${_syncSpeed.toStringAsFixed(1)} KB/s' : '';
         subText = _totalCount > 0
             ? '$_syncedCount of $_totalCount segments synced$speedStr'
             : (_isForcePipeline ? 'Rotating segment…' : 'Scanning device…');
@@ -1266,9 +1251,7 @@ class _RecordingsPageState extends State<RecordingsPage>
         );
         onIconTap = () => unawaited(_showCancelModal());
         showProgress = true;
-        progressValue = _totalCount > 0
-            ? (_syncedCount / _totalCount).clamp(0.0, 1.0)
-            : null;
+        progressValue = _totalCount > 0 ? (_syncedCount / _totalCount).clamp(0.0, 1.0) : null;
 
       case SyncProcessState.processing:
         mainText = 'Preparing conversations';
@@ -1284,9 +1267,7 @@ class _RecordingsPageState extends State<RecordingsPage>
         );
         onIconTap = () => unawaited(_showCancelModal());
         showProgress = true;
-        progressValue = _totalMinutes > 0
-            ? (1.0 - _minutesRemaining / _totalMinutes).clamp(0.0, 1.0)
-            : null;
+        progressValue = _totalMinutes > 0 ? (1.0 - _minutesRemaining / _totalMinutes).clamp(0.0, 1.0) : null;
 
       case SyncProcessState.stopping:
         mainText = 'Stopping…';
@@ -1314,9 +1295,7 @@ class _RecordingsPageState extends State<RecordingsPage>
         onIconTap = _resumePipeline;
 
       case SyncProcessState.error:
-        mainText = _lastActiveStage == 'processing'
-            ? 'Processing failed'
-            : 'Sync failed';
+        mainText = _lastActiveStage == 'processing' ? 'Processing failed' : 'Sync failed';
         subText = 'Tap to retry';
         iconBg = Colors.redAccent;
         iconChild = const FaIcon(
@@ -1411,20 +1390,23 @@ class _RecordingsPageState extends State<RecordingsPage>
     final map = <String, List<MarkerConversation>>{};
     for (final mc in _markerConversations) {
       final dt = mc.markerTime;
-      final dateStr =
-          '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+      final dateStr = '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
       map.putIfAbsent(dateStr, () => []).add(mc);
     }
     return map;
   }
 
   Future<void> _openMarkerConversation(MarkerConversation mc) async {
+    await _navigateToMarkerConversationPlayer(mc);
+    await _reloadBatchesSilently();
+  }
+
+  Future<void> _navigateToMarkerConversationPlayer(MarkerConversation mc) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => MarkerConversationPlayerPage(markerConversation: mc),
       ),
     );
-    await _reloadBatchesSilently();
   }
 
   // ─── Default mode: batch card ──────────────────────────────────────────────
@@ -1432,8 +1414,7 @@ class _RecordingsPageState extends State<RecordingsPage>
     Batch batch,
     Map<String, List<MarkerConversation>> markerMap,
   ) {
-    final conversations = [...batch.finalizedRecordings]
-      ..sort((a, b) => b.startTime.compareTo(a.startTime));
+    final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
     final filtered = _minFilterSeconds > 0
         ? conversations.where((c) => c.duration.inSeconds >= _minFilterSeconds).toList()
         : conversations;
@@ -1523,16 +1504,14 @@ class _RecordingsPageState extends State<RecordingsPage>
     List<MarkerConversation> markers,
   ) {
     // Sort markers by time ascending so sub-entries read chronologically.
-    final sortedMarkers = [...markers]
-      ..sort((a, b) => a.markerTime.compareTo(b.markerTime));
+    final sortedMarkers = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         InkWell(
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute(
-              builder: (_) =>
-                  ConversationPlayerPage(conversation: conversation),
+              builder: (_) => ConversationPlayerPage(conversation: conversation),
             ),
           ),
           borderRadius: BorderRadius.circular(8),
@@ -1643,8 +1622,7 @@ class _RecordingsPageState extends State<RecordingsPage>
   // ─── Marker mode: day card ─────────────────────────────────────────────────
   Widget _buildMarkerDayCard(String dateStr, List<MarkerConversation> markers) {
     // Sort ascending by markerTime so they read chronologically within the day.
-    final sorted = [...markers]
-      ..sort((a, b) => a.markerTime.compareTo(b.markerTime));
+    final sorted = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
     return Card(
       color: const Color(0xFF1C1C1E),
       margin: const EdgeInsets.only(bottom: 16),
@@ -1790,31 +1768,22 @@ class _RecordingsPageState extends State<RecordingsPage>
               if (_markerConversations.isNotEmpty)
                 IconButton(
                   icon: FaIcon(
-                    _showMarkersOnly
-                        ? FontAwesomeIcons.solidBookmark
-                        : FontAwesomeIcons.bookmark,
+                    _showMarkersOnly ? FontAwesomeIcons.solidBookmark : FontAwesomeIcons.bookmark,
                     color: _showMarkersOnly ? Colors.amber : Colors.white,
                     size: 20,
                   ),
-                  onPressed: () =>
-                      setState(() => _showMarkersOnly = !_showMarkersOnly),
+                  onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
                 ),
               // Force sync button — disabled when syncing is in progress or on cooldown
               IconButton(
                 icon: FaIcon(
                   FontAwesomeIcons.boltLightning,
-                  color:
-                      (deviceProvider.isConnected &&
-                          _spState == SyncProcessState.idle &&
-                          !_forceSyncOnCooldown)
+                  color: (deviceProvider.isConnected && _spState == SyncProcessState.idle && !_forceSyncOnCooldown)
                       ? Colors.white
                       : Colors.grey.shade700,
                   size: 20,
                 ),
-                onPressed:
-                    (deviceProvider.isConnected &&
-                        _spState == SyncProcessState.idle &&
-                        !_forceSyncOnCooldown)
+                onPressed: (deviceProvider.isConnected && _spState == SyncProcessState.idle && !_forceSyncOnCooldown)
                     ? _forceSyncButtonPressed
                     : null,
               ),
@@ -1866,15 +1835,13 @@ class _RecordingsPageState extends State<RecordingsPage>
                           // ── Marker mode ──────────────────────────────────────
                           if (_showMarkersOnly) {
                             final byDate = _groupMarkersByDate();
-                            final dates = byDate.keys.toList()
-                              ..sort((a, b) => b.compareTo(a));
+                            final dates = byDate.keys.toList()..sort((a, b) => b.compareTo(a));
                             return RefreshIndicator(
                               color: Colors.deepPurpleAccent,
                               onRefresh: () async {},
                               child: dates.isEmpty
                                   ? ListView(
-                                      physics:
-                                          const AlwaysScrollableScrollPhysics(),
+                                      physics: const AlwaysScrollableScrollPhysics(),
                                       children: [
                                         const SizedBox(height: 100),
                                         Center(
@@ -1890,24 +1857,20 @@ class _RecordingsPageState extends State<RecordingsPage>
                                       ],
                                     )
                                   : ListView.builder(
-                                      physics:
-                                          const AlwaysScrollableScrollPhysics(),
+                                      physics: const AlwaysScrollableScrollPhysics(),
                                       padding: const EdgeInsets.all(16),
                                       itemCount: dates.length,
-                                      itemBuilder: (context, index) =>
-                                          _buildMarkerDayCard(
-                                            dates[index],
-                                            byDate[dates[index]]!,
-                                          ),
+                                      itemBuilder: (context, index) => _buildMarkerDayCard(
+                                        dates[index],
+                                        byDate[dates[index]]!,
+                                      ),
                                     ),
                             );
                           }
 
                           // ── Default mode ─────────────────────────────────────
                           final markerMap = _buildMarkerMap();
-                          final visibleBatches = _batches
-                              .where((b) => b.finalizedRecordings.isNotEmpty)
-                              .toList();
+                          final visibleBatches = _batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
                           return RefreshIndicator(
                             color: Colors.deepPurpleAccent,
                             onRefresh: () {
@@ -1926,8 +1889,7 @@ class _RecordingsPageState extends State<RecordingsPage>
                             },
                             child: visibleBatches.isEmpty
                                 ? ListView(
-                                    physics:
-                                        const AlwaysScrollableScrollPhysics(),
+                                    physics: const AlwaysScrollableScrollPhysics(),
                                     children: [
                                       const SizedBox(height: 100),
                                       Center(
@@ -1944,11 +1906,7 @@ class _RecordingsPageState extends State<RecordingsPage>
                                             if (deviceProvider.isConnected) ...[
                                               const SizedBox(height: 32),
                                               ElevatedButton.icon(
-                                                onPressed:
-                                                    _spState ==
-                                                        SyncProcessState.idle
-                                                    ? _startPipeline
-                                                    : null,
+                                                onPressed: _spState == SyncProcessState.idle ? _startPipeline : null,
                                                 icon: const FaIcon(
                                                   FontAwesomeIcons.rotate,
                                                   size: 16,
@@ -1957,24 +1915,20 @@ class _RecordingsPageState extends State<RecordingsPage>
                                                   'Sync and Process',
                                                 ),
                                                 style: ElevatedButton.styleFrom(
-                                                  backgroundColor:
-                                                      Colors.deepPurpleAccent,
+                                                  backgroundColor: Colors.deepPurpleAccent,
                                                   foregroundColor: Colors.white,
                                                 ),
                                               ),
                                             ] else ...[
                                               const SizedBox(height: 32),
                                               ElevatedButton(
-                                                onPressed: () =>
-                                                    Navigator.of(context).push(
-                                                      MaterialPageRoute(
-                                                        builder: (c) =>
-                                                            const FindDevicesPage(),
-                                                      ),
-                                                    ),
+                                                onPressed: () => Navigator.of(context).push(
+                                                  MaterialPageRoute(
+                                                    builder: (c) => const FindDevicesPage(),
+                                                  ),
+                                                ),
                                                 style: ElevatedButton.styleFrom(
-                                                  backgroundColor:
-                                                      Colors.deepPurpleAccent,
+                                                  backgroundColor: Colors.deepPurpleAccent,
                                                   foregroundColor: Colors.white,
                                                 ),
                                                 child: const Text(
@@ -1988,15 +1942,13 @@ class _RecordingsPageState extends State<RecordingsPage>
                                     ],
                                   )
                                 : ListView.builder(
-                                    physics:
-                                        const AlwaysScrollableScrollPhysics(),
+                                    physics: const AlwaysScrollableScrollPhysics(),
                                     padding: const EdgeInsets.all(16),
                                     itemCount: visibleBatches.length,
-                                    itemBuilder: (context, index) =>
-                                        _buildBatchCard(
-                                          visibleBatches[index],
-                                          markerMap,
-                                        ),
+                                    itemBuilder: (context, index) => _buildBatchCard(
+                                      visibleBatches[index],
+                                      markerMap,
+                                    ),
                                   ),
                           );
                         },
