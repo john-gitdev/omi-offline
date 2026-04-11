@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 
 class SharedPreferencesUtil {
   static final SharedPreferencesUtil _instance = SharedPreferencesUtil._internal();
   static SharedPreferences? _preferences;
+  static const _secureStorage = FlutterSecureStorage();
 
   factory SharedPreferencesUtil() {
     return _instance;
@@ -15,6 +17,7 @@ class SharedPreferencesUtil {
   SharedPreferencesUtil._internal();
 
   Future<void>? _heypocketUploadGuard;
+  String _heypocketApiKey = '';
 
   String get deviceIdHash => _preferences?.getString('deviceIdHash') ?? '';
   set deviceIdHash(String value) => _preferences?.setString('deviceIdHash', value);
@@ -85,8 +88,11 @@ class SharedPreferencesUtil {
 
   //--------------------------- HeyPocket Integration ---------------------//
 
-  String get heypocketApiKey => getString('heypocketApiKey');
-  set heypocketApiKey(String v) => saveString('heypocketApiKey', v);
+  String get heypocketApiKey => _heypocketApiKey;
+  set heypocketApiKey(String v) {
+    _heypocketApiKey = v;
+    _secureStorage.write(key: 'heypocketApiKey', value: v);
+  }
 
   bool get heypocketEnabled => getBool('heypocketEnabled', defaultValue: false);
   set heypocketEnabled(bool v) => saveBool('heypocketEnabled', v);
@@ -122,6 +128,17 @@ class SharedPreferencesUtil {
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _preferences = prefs;
+
+    // Initialize secure storage and handle migration
+    _instance._heypocketApiKey = await _secureStorage.read(key: 'heypocketApiKey') ?? '';
+    if (prefs.containsKey('heypocketApiKey')) {
+      final legacyKey = prefs.getString('heypocketApiKey') ?? '';
+      if (legacyKey.isNotEmpty && _instance._heypocketApiKey.isEmpty) {
+        _instance._heypocketApiKey = legacyKey;
+        await _secureStorage.write(key: 'heypocketApiKey', value: legacyKey);
+      }
+      await prefs.remove('heypocketApiKey');
+    }
 
     // Set default values if not present
     if (!prefs.containsKey('vadSpeechThreshold')) {
