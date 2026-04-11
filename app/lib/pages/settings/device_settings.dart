@@ -277,41 +277,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             showChevron: false,
           ),
           const Divider(height: 1, color: Color(0xFF3C3C43)),
-          _buildProfileStyleItem(
-            icon: FontAwesomeIcons.microchip,
-            title: 'Flash Custom Firmware',
-            onTap: () async {
-              if (device == null) return;
-              final result = await FilePicker.platform.pickFiles(
-                type: FileType.custom,
-                allowedExtensions: ['zip'],
-                dialogTitle: 'Select firmware ZIP file',
-              );
-              if (result == null || result.files.isEmpty) return;
-              final file = result.files.first;
-              if (file.path == null) return;
-
-              if (!context.mounted) return;
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (context) => ManualFirmwareFlashPage(
-                    zipFilePath: file.path!,
-                    fileName: file.name,
-                    device: device,
-                  ),
-                ),
-              );
-            },
-          ),
-
-          const Divider(height: 1, color: Color(0xFF3C3C43)),
-          _buildProfileStyleItem(
-            icon: FontAwesomeIcons.industry,
-            title: 'Manufacturer',
-            chipValue: manufacturer,
-            copyValue: manufacturer,
-            showChevron: false,
-          ),
         ],
       ),
     );
@@ -772,6 +737,42 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                   const SizedBox(height: 32),
                   _buildSectionHeader('Hardware'),
                   _buildHardwareInfoSection(provider.pairedDevice),
+                  const SizedBox(height: 32),
+                  _buildSectionHeader('Firmware Update'),
+                  Container(
+                    decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+                    child: Column(
+                      children: [
+                        _buildProfileStyleItem(
+                          icon: FontAwesomeIcons.microchip,
+                          title: 'Flash Custom Firmware',
+                          onTap: () async {
+                            if (provider.pairedDevice == null) return;
+                            final result = await FilePicker.platform.pickFiles(
+                              type: FileType.custom,
+                              allowedExtensions: ['zip'],
+                              dialogTitle: 'Select firmware ZIP file',
+                            );
+                            if (result == null || result.files.isEmpty) return;
+                            final file = result.files.first;
+                            if (file.path == null) return;
+
+                            if (!context.mounted) return;
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (context) => ManualFirmwareFlashPage(
+                                  zipFilePath: file.path!,
+                                  fileName: file.name,
+                                  device: provider.pairedDevice!,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+
                   const SizedBox(height: 32),
                 ],
                 _buildActionsSection(provider),
