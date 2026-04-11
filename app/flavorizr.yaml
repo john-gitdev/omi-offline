@@ -4,10 +4,10 @@ flavors:
       name: "Omi Offline"
       icon: "assets/images/app_launcher_icon.png"
     android:
-      applicationId: "com.omi.offline"
+      applicationId: "com.omi.offline.app"
       icon: "assets/images/app_launcher_icon.png"
     ios:
-      bundleId: "com.omi.offline"
+      bundleId: "com.omi.offline.app"
       icon: "assets/images/app_launcher_icon.png"
   dev:
     app:
@@ -15,7 +15,7 @@ flavors:
       icon: "assets/images/app_launcher_icon.png"
     android:
       icon: "assets/images/app_launcher_icon.png"
-      applicationId: "com.omi.offline.dev"
+      applicationId: "com.omi.offline.app.dev"
     ios:
-      bundleId: "com.omi.offline.development"
+      bundleId: "com.omi.offline.app.development"
       icon: "assets/images/app_launcher_icon.png"

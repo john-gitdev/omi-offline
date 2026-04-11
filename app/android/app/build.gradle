@@ -56,12 +56,12 @@ android {
     productFlavors {
         prod {
             dimension "flavor-type"
-            applicationId "com.omi.offline"
+            applicationId "com.omi.offline.app"
             resValue "string", "app_name", "Omi Offline"
         }
         dev {
             dimension "flavor-type"
-            applicationId "com.omi.offline.dev"
+            applicationId "com.omi.offline.app.dev"
             resValue "string", "app_name", "Omi Offline Dev"
         }
     }
@@ -85,8 +85,7 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId "com.omi.offline"
+        applicationId "com.omi.offline.app"
         minSdkVersion 24
         targetSdkVersion 35
         versionCode flutterVersionCode.toInteger()

@@ -51,7 +51,7 @@ function SetupProvisioningProfile {
     
     $env:MATCH_PASSWORD = "omi"
     fastlane match development --readonly `
-        --app_identifier "com.omi.offline.development" `
+        --app_identifier "com.omi.offline.app.development" `
         --git_url "git@github.com:BasedHardware/omi-community-certs.git"
 }
 

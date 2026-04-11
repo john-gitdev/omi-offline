@@ -34,7 +34,7 @@ agent-flutter snapshot -i --json    # see what's on screen
 **Prerequisites:**
 - AVD name: `omi-dev` (check: `$ANDROID_HOME/emulator/emulator -list-avds`)
 - KVM access required: user must be in `kvm` group (`sg kvm -c "..."` if not in current session)
-- App package: `com.omi.offline.dev` (dev flavor)
+- App package: `com.omi.offline.app.dev` (dev flavor)
 - **System language must be English** — non-English IME breaks `fill` commands
 - Marionette already integrated: `marionette_flutter: ^0.3.0` in pubspec.yaml
 
@@ -65,7 +65,7 @@ agent-flutter snapshot -i --json    # see what's on screen
 ### Recovery
 ```bash
 # "No isolate with Marionette" → bring app to foreground + reconnect
-adb -s emulator-5554 shell am start -n com.omi.offline.dev/com.omi.offline.MainActivity
+adb -s emulator-5554 shell am start -n com.omi.offline.app.dev/com.omi.offline.MainActivity
 agent-flutter disconnect && agent-flutter connect
 
 # Unhealthy widget tree → hot restart
