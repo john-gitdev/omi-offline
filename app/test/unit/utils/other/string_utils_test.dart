@@ -42,5 +42,27 @@ void main() {
     test('converts more than 100 hours correctly', () {
       expect(convertToHHMMSS(360000), '100:00:00');
     });
+
+    test('formats negative seconds by treating modulo output conceptually', () {
+      // Note: This test captures the existing behavior of the `convertToHHMMSS`
+      // function for negative values. Given the formula:
+      // hours = seconds ~/ 3600
+      // minutes = (seconds % 3600) ~/ 60
+      // remainingSeconds = seconds % 60
+      //
+      // For seconds = -1:
+      // hours = 0
+      // minutes = (-1 % 3600) ~/ 60 = 3599 ~/ 60 = 59
+      // remainingSeconds = -1 % 60 = 59
+      // Result: '00:59:59'
+      //
+      // For seconds = -3661:
+      // hours = -3661 ~/ 3600 = -1
+      // minutes = (-3661 % 3600) ~/ 60 = 3539 ~/ 60 = 58
+      // remainingSeconds = -3661 % 60 = 59
+      // Result: '-1:58:59'
+      expect(convertToHHMMSS(-1), '00:59:59');
+      expect(convertToHHMMSS(-3661), '-1:58:59');
+    });
   });
 }
