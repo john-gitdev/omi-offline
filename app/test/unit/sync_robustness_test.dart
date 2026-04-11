@@ -129,6 +129,11 @@ void main() {
       const MethodChannel('disk_space_2'),
       (call) async => 1000.0,
     );
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
+      (call) async => null,
+    );
     tempDir = Directory.systemTemp.createTempSync('sync_test');
     mockPathProvider = MockPathProvider()..tempPath = tempDir.path;
     PathProviderPlatform.instance = mockPathProvider;
@@ -350,6 +355,11 @@ void main() {
           .setMockMethodCallHandler(
         const MethodChannel('disk_space_2'),
         (call) async => 1000.0,
+      );
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
+        (call) async => null,
       );
       mockConn = MockDeviceConnection();
       sync = SDCardWalSyncImpl(
