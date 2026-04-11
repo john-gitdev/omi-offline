@@ -18,26 +18,6 @@ static uint8_t ndef_msg_buf[NDEF_MSG_BUF_SIZE];
 static char device_id[MAX_DEVICE_ID_LENGTH];
 static char uri_buffer[MAX_URI_LENGTH];
 
-// int get_device_id(char *device_id_out, size_t len)
-// {
-//     if (len < MAX_DEVICE_ID_LENGTH) {
-//         return -EINVAL;
-//     }
-
-//     uint8_t dev_id[8];
-//     ssize_t ret;
-
-//     ret = hwinfo_get_device_id(dev_id, sizeof(dev_id));
-//     if (ret < 0) {
-//         LOG_ERR("Failed to get device ID, error: %d", ret);
-//         return ret;
-//     }
-
-//     snprintf(device_id_out, len, "%02X%02X%02X", dev_id[5], dev_id[6], dev_id[7]);
-//     LOG_INF("Device ID: %s", device_id_out);
-
-//     return 0;
-// }
 int get_device_id(char *device_id_out, size_t len)
 {
     if (len < MAX_DEVICE_ID_LENGTH) {
