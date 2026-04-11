@@ -49,7 +49,12 @@ function SetupProvisioningProfile {
         brew install fastlane
     }
     
-    $env:MATCH_PASSWORD = "omi"
+    if (-not $env:MATCH_PASSWORD) {
+        Write-Host "Fastlane Match Password is required to sync certificates."
+        $securePassword = Read-Host "Enter Fastlane Match Password" -AsSecureString
+        $env:MATCH_PASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword))
+    }
+
     fastlane match development --readonly `
         --app_identifier "com.omi.offline.development" `
         --git_url "git@github.com:BasedHardware/omi-community-certs.git"

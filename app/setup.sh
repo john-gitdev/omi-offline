@@ -71,7 +71,14 @@ function setup_provisioning_profile() {
         brew install fastlane
     fi
 
-    MATCH_PASSWORD=omi fastlane match development --readonly \
+    if [ -z "${MATCH_PASSWORD:-}" ]; then
+        echo "Fastlane Match Password is required to sync certificates."
+        read -sp "Enter Fastlane Match Password: " MATCH_PASSWORD
+        echo
+        export MATCH_PASSWORD
+    fi
+
+    fastlane match development --readonly \
         --app_identifier com.omi.offline.development \
         --git_url "git@github.com:BasedHardware/omi-community-certs.git"
 }
