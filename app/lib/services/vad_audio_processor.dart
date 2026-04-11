@@ -367,7 +367,7 @@ class VadAudioProcessor {
       batchBuffer.clear();
       batchFrameCount = 0;
       hasEncodedAnyFrames = true;
-      await AacEncoder.encodeBuffer(sessionId!, Uint8List.fromList(bytes));
+      await AacEncoder.encodeBuffer(sessionId!, bytes);
     }
 
     String? currentFilePath;
