@@ -61,22 +61,6 @@ function generate_device_suffix() {
 }
 
 
-######################################
-# Setup provisioning profile
-######################################
-function setup_provisioning_profile() {
-    # Only install fastlane if it doesn't exist
-    if ! command -v fastlane &> /dev/null; then
-        echo "Installing fastlane..."
-        brew install fastlane
-    fi
-
-    MATCH_PASSWORD=omi fastlane match development --readonly \
-        --app_identifier com.omi.offline.development \
-        --git_url "git@github.com:BasedHardware/omi-community-certs.git"
-}
-
-
 #################
 # Set up App .env
 #################
