@@ -41,11 +41,21 @@ String formatChatTimestamp(DateTime dateTime) {
 }
 
 String countryFlagFromCode(String countryCode) {
+  if (countryCode.length != 2) return countryCode;
+
+  final upper = countryCode.toUpperCase();
+
+  final char1 = upper.codeUnitAt(0);
+  final char2 = upper.codeUnitAt(1);
+  if (char1 < 0x41 || char1 > 0x5A || char2 < 0x41 || char2 > 0x5A) {
+    return countryCode;
+  }
+
   const flagOffset = 0x1F1E6;
   const asciiOffset = 0x41;
 
-  final firstChar = countryCode.codeUnitAt(0) - asciiOffset + flagOffset;
-  final secondChar = countryCode.codeUnitAt(1) - asciiOffset + flagOffset;
+  final firstChar = char1 - asciiOffset + flagOffset;
+  final secondChar = char2 - asciiOffset + flagOffset;
 
   return String.fromCharCode(firstChar) + String.fromCharCode(secondChar);
 }
