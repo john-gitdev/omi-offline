@@ -1,0 +1,164 @@
+import 'package:flutter/material.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:omi/pages/recordings/recordings_types.dart';
+
+class SyncProcessCard extends StatelessWidget {
+  final SyncCardData data;
+
+  /// Called when the action button is tapped in idle/resume/error states.
+  final VoidCallback? onActionTap;
+
+  /// Called when the cancel button is tapped in syncing/processing states.
+  final VoidCallback? onCancelTap;
+
+  const SyncProcessCard({
+    super.key,
+    required this.data,
+    this.onActionTap,
+    this.onCancelTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (data.state == SyncProcessState.idle) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: _buildContent(),
+    );
+  }
+
+  Widget _buildContent() {
+    final String mainText;
+    final String subText;
+    final Color iconBg;
+    final Widget iconChild;
+    VoidCallback? onIconTap;
+    bool showProgress = false;
+    double? progressValue;
+    Color progressColor = Colors.deepPurpleAccent;
+
+    switch (data.state) {
+      case SyncProcessState.idle:
+        mainText = 'Sync and Process Now';
+        subText = 'Syncs files from device and prepares conversations';
+        iconBg = Colors.deepPurpleAccent;
+        iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
+        onIconTap = onActionTap;
+
+      case SyncProcessState.syncing:
+        mainText = data.isForcePipeline ? 'Force Sync...' : 'Syncing segments';
+        final speedStr = data.syncSpeed > 0 ? '  ·  ${data.syncSpeed.toStringAsFixed(1)} KB/s' : '';
+        subText = data.totalCount > 0
+            ? '${data.syncedCount} of ${data.totalCount} segments synced$speedStr'
+            : (data.isForcePipeline ? 'Rotating segment…' : 'Scanning device…');
+        iconBg = Colors.deepPurpleAccent;
+        iconChild = const SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+        );
+        onIconTap = onCancelTap;
+        showProgress = true;
+        progressValue = data.totalCount > 0 ? (data.syncedCount / data.totalCount).clamp(0.0, 1.0) : null;
+
+      case SyncProcessState.processing:
+        mainText = 'Preparing conversations';
+        subText = data.minutesRemaining >= 1
+            ? '${data.minutesRemaining.ceil()} min of audio remaining'
+            : '< 1 min of audio remaining';
+        iconBg = Colors.deepPurpleAccent;
+        iconChild = const SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+        );
+        onIconTap = onCancelTap;
+        showProgress = true;
+        progressValue = data.totalMinutes > 0
+            ? (1.0 - data.minutesRemaining / data.totalMinutes).clamp(0.0, 1.0)
+            : null;
+
+      case SyncProcessState.stopping:
+        mainText = 'Stopping…';
+        subText = 'Finishing current step';
+        iconBg = Colors.grey.shade700;
+        iconChild = const SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+        );
+        onIconTap = null;
+        showProgress = true;
+        progressValue = null;
+        progressColor = Colors.grey.shade600;
+
+      case SyncProcessState.resume:
+        mainText = 'Resume Sync and Processing';
+        subText = 'Last run didn\'t finish';
+        iconBg = Colors.amber.shade700;
+        iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
+        onIconTap = onActionTap;
+
+      case SyncProcessState.error:
+        mainText = data.lastActiveStage == 'processing' ? 'Processing failed' : 'Sync failed';
+        subText = 'Tap to retry';
+        iconBg = Colors.redAccent;
+        iconChild = const FaIcon(FontAwesomeIcons.circleExclamation, color: Colors.white, size: 16);
+        onIconTap = onActionTap;
+
+      case SyncProcessState.successUi:
+        mainText = 'Conversations ready';
+        subText = 'Sync and processing complete';
+        iconBg = Colors.green.shade600;
+        iconChild = const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.white, size: 16);
+        onIconTap = null;
+        showProgress = true;
+        progressValue = 1.0;
+        progressColor = Colors.green;
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(mainText, style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
+                  const SizedBox(height: 2),
+                  Text(subText, style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            GestureDetector(
+              onTap: onIconTap,
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(color: iconBg, shape: BoxShape.circle),
+                child: Center(child: iconChild),
+              ),
+            ),
+          ],
+        ),
+        if (showProgress) ...[
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: progressValue,
+            backgroundColor: Colors.grey.shade800,
+            color: progressColor,
+          ),
+        ],
+      ],
+    );
+  }
+}
