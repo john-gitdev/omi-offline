@@ -939,9 +939,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       await connection.deleteFile(
         StorageFile(index: wal.fileNum, timestamp: 0, size: 0),
       );
+      _wals.removeWhere((w) => w.id == wal.id);
     }
 
-    _wals.removeWhere((w) => w.status == WalStatus.synced);
     listener.onWalUpdated();
   }
 
@@ -967,8 +967,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       final files = await _listFiles(_device!.id);
       for (final file in files) {
         await connection.deleteFile(file);
+        _wals.removeWhere(
+          (w) => w.fileNum == file.index && w.storage == WalStorage.sdcard,
+        );
       }
-      _wals = [];
       listener.onWalUpdated();
     }
   }
