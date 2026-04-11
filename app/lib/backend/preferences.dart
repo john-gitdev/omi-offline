@@ -151,7 +151,9 @@ class SharedPreferencesUtil {
 
   BtDevice get btDevice {
     final String device = getString('btDevice');
-    if (device.isEmpty) return BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0);
+    if (device.isEmpty) {
+      return BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0);
+    }
     return BtDevice.fromJson(jsonDecode(device));
   }
 
@@ -198,9 +200,7 @@ class SharedPreferencesUtil {
 
   double getDouble(String key, {double defaultValue = 0.0}) {
     final value = _preferences?.get(key);
-    if (value is double) return value;
-    if (value is int) return value.toDouble();
-    return defaultValue;
+    return (value is num) ? value.toDouble() : defaultValue;
   }
 
   List<String> getStringList(String key, {List<String> defaultValue = const []}) =>
