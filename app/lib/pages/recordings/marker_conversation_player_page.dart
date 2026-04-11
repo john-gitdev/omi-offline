@@ -6,10 +6,6 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/utils/other/time_utils.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
-import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 
 enum _DragMode { none, left, right, seek }
 
@@ -34,7 +30,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   List<double> _waveform = [];
   bool _loadingWaveform = true;
   bool _loadingAudio = true;
-  bool _isExporting = false;
 
   Duration _position = Duration.zero;
   bool _isPlaying = false;
@@ -42,7 +37,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
 
   _DragMode _dragMode = _DragMode.none;
   late bool _userSaved;
-  bool _isCropMode = false;
 
   static const double _kHandleHitSlop = 24.0;
 
@@ -145,10 +139,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   }
 
   Future<void> _saveConversation() async {
-    setState(() {
-      _userSaved = true;
-      _isCropMode = false;
-    });
+    setState(() => _userSaved = true);
     await _saveEdl();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -158,59 +149,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
           backgroundColor: Color(0xFF1C1C1E),
         ),
       );
-    }
-  }
-
-  void _toggleCropMode() {
-    if (_isCropMode) {
-      _saveConversation();
-    } else {
-      setState(() {
-        _isCropMode = true;
-        _cropStart = Duration.zero;
-        _cropEnd = _totalDuration;
-      });
-    }
-  }
-
-  Future<void> _exportConversation() async {
-    if (_isExporting) return;
-    setState(() => _isExporting = true);
-
-    try {
-      final dir = await getTemporaryDirectory();
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final outputPath = '${dir.path}/export_$timestamp.m4a';
-      
-      final startSec = _cropStart.inMilliseconds / 1000.0;
-      final durationSec = (_cropEnd - _cropStart).inMilliseconds / 1000.0;
-
-      // -ss is the start offset, -t is the duration
-      // -c copy allows fast trimming without re-encoding
-      final command = '-y -i "${_segment.path}" -ss $startSec -t $durationSec -c copy "$outputPath"';
-      
-      final session = await FFmpegKit.execute(command);
-      final returnCode = await session.getReturnCode();
-
-      if (ReturnCode.isSuccess(returnCode)) {
-        await SharePlus.instance.share(
-          ShareParams(
-            files: [XFile(outputPath)],
-            subject: 'Conversation Export',
-          ),
-        );
-      } else {
-        final logs = await session.getLogs();
-        throw Exception('FFmpeg failed: ${logs.last.getMessage()}');
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Export failed: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isExporting = false);
     }
   }
 
@@ -261,244 +199,208 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
     final visibleEndRatio = totalMs > 0 ? (_cropEnd.inMilliseconds / totalMs).clamp(0.0, 1.0) : 1.0;
     final markerOffsetRatio = totalMs > 0 ? (_markerOffset.inMilliseconds / totalMs).clamp(0.0, 1.0) : 0.0;
 
-    return PopScope(
-      canPop: true,
-      onPopInvokedWithResult: (didPop, result) {
-        // Discard changes logic: we just don't call _saveEdl()
-      },
-      child: Scaffold(
+    return Scaffold(
+      backgroundColor: const Color(0xFF0D0D0D),
+      appBar: AppBar(
         backgroundColor: const Color(0xFF0D0D0D),
-        appBar: AppBar(
-          backgroundColor: const Color(0xFF0D0D0D),
-          elevation: 0,
-          title: Text(
-            'marker at ${widget.markerConversation.markerTimeLabel}',
-            style: const TextStyle(color: Colors.white, fontSize: 18),
-          ),
-          actions: [
-            if (_isExporting)
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 16),
-                child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                ),
-              )
-            else
-              IconButton(
-                icon: const FaIcon(FontAwesomeIcons.shareFromSquare, size: 20, color: Colors.white),
-                onPressed: _exportConversation,
-                tooltip: 'Export',
-              ),
-            IconButton(
-              icon: FaIcon(
-                _isCropMode
-                    ? FontAwesomeIcons.floppyDisk
-                    : (_userSaved ? FontAwesomeIcons.circleCheck : FontAwesomeIcons.scissors),
-                size: 20,
-                color: _isCropMode ? Colors.amber : (_userSaved ? Colors.green : Colors.white),
-              ),
-              onPressed: _toggleCropMode,
-              tooltip: _isCropMode ? 'Save' : (_userSaved ? 'Saved' : 'Crop'),
-            ),
-          ],
+        elevation: 0,
+        title: Text(
+          'marker at ${widget.markerConversation.markerTimeLabel}',
+          style: const TextStyle(color: Colors.white, fontSize: 18),
         ),
-        body: _loadingAudio
-            ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
-            : Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    // Time range label (live — updates during crop drag)
-                    Text(
-                      _liveTimeRangeLabel,
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 14),
-                    ),
-                    const SizedBox(height: 32),
-
-                    // Waveform
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 40),
-                      child: SizedBox(
-                        height: 100,
-                        child: _loadingWaveform
-                            ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
-                            : LayoutBuilder(
-                                builder: (ctx, constraints) {
-                                  final width = constraints.maxWidth;
-                                  final tMs = _totalDuration.inMilliseconds.toDouble();
-                                  return GestureDetector(
-                                    onTapDown: (d) {
-                                      if (tMs == 0) return;
-                                      final r = (d.localPosition.dx / width).clamp(0.0, 1.0);
-                                      _player.seek(Duration(milliseconds: (r * tMs).round()));
-                                    },
-                                    onHorizontalDragStart: (d) {
-                                      if (tMs == 0) return;
-                                      final x = d.localPosition.dx;
-                                      if (_isCropMode) {
-                                        final vsX = (_cropStart.inMilliseconds / tMs) * width;
-                                        final veX = (_cropEnd.inMilliseconds / tMs) * width;
-                                        if ((x - vsX).abs() < _kHandleHitSlop) {
-                                          setState(() => _dragMode = _DragMode.left);
-                                        } else if ((x - veX).abs() < _kHandleHitSlop) {
-                                          setState(() => _dragMode = _DragMode.right);
-                                        } else {
-                                          setState(() => _dragMode = _DragMode.seek);
-                                        }
-                                      } else {
-                                        setState(() => _dragMode = _DragMode.seek);
-                                      }
-                                    },
-                                    onHorizontalDragUpdate: (d) {
-                                      if (tMs == 0) return;
-                                      final r = (d.localPosition.dx / width).clamp(0.0, 1.0);
-                                      final ms = (r * tMs).round();
-                                      if (_dragMode == _DragMode.left) {
-                                        final newStart = Duration(milliseconds: ms);
-                                        const minWindow = Duration(seconds: 5);
-                                        if (newStart >= Duration.zero && newStart < _cropEnd - minWindow) {
-                                          setState(() => _cropStart = newStart);
-                                        }
-                                      } else if (_dragMode == _DragMode.right) {
-                                        final newEnd = Duration(milliseconds: ms);
-                                        const minWindow = Duration(seconds: 5);
-                                        if (newEnd <= _totalDuration && newEnd > _cropStart + minWindow) {
-                                          setState(() => _cropEnd = newEnd);
-                                        }
-                                      } else {
-                                        _player.seek(Duration(milliseconds: ms));
-                                      }
-                                    },
-                                    onHorizontalDragEnd: (_) async {
-                                      if (_dragMode == _DragMode.left || _dragMode == _DragMode.right) {
-                                        if (_position < _cropStart || _position > _cropEnd) {
-                                          await _player.seek(_cropStart);
-                                        }
-                                      }
-                                      if (mounted) setState(() => _dragMode = _DragMode.none);
-                                    },
-                                    child: CustomPaint(
-                                      painter: _MarkerWaveformPainter(
-                                        amplitudes: _waveform,
-                                        progress: progressRatio,
-                                        visibleStartRatio: visibleStartRatio,
-                                        visibleEndRatio: visibleEndRatio,
-                                        markerRatio: markerOffsetRatio,
-                                        activeDragMode: _dragMode,
-                                        isCropMode: _isCropMode,
-                                      ),
-                                      size: Size(width, 100),
-                                    ),
-                                  );
-                                },
-                              ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 12),
-
-                    // Time labels
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 24),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(_fmt(_position), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                          Text(_fmt(_totalDuration), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-
-                    // Progress slider
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      child: SliderTheme(
-                        data: SliderTheme.of(context).copyWith(
-                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                          trackHeight: 3,
-                          overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                          activeTrackColor: Colors.deepPurpleAccent,
-                          inactiveTrackColor: Colors.grey.shade800,
-                          thumbColor: Colors.deepPurpleAccent,
-                          overlayColor: Colors.deepPurpleAccent.withValues(alpha: 0.2),
-                        ),
-                        child: Slider(
-                          value: progressRatio,
-                          onChanged: (v) {
-                            _player.seek(Duration(milliseconds: (v * totalMs).round()));
-                          },
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-
-                    // Transport controls
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        _SeekBtn(icon: FontAwesomeIcons.rotateLeft, seconds: 30, onTap: () => _seekRelative(-30)),
-                        const SizedBox(width: 40),
-                        GestureDetector(
-                          onTap: _togglePlay,
-                          child: Container(
-                            width: 72,
-                            height: 72,
-                            decoration: const BoxDecoration(color: Colors.deepPurpleAccent, shape: BoxShape.circle),
-                            child: Center(
-                              child: FaIcon(
-                                _isPlaying ? FontAwesomeIcons.pause : FontAwesomeIcons.play,
-                                color: Colors.white,
-                                size: 26,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 40),
-                        _SeekBtn(icon: FontAwesomeIcons.rotateRight, seconds: 30, onTap: () => _seekRelative(30)),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
-
-                    // Speed selector
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [1.0, 1.5, 2.0].map((s) {
-                        final selected = _speed == s;
-                        return GestureDetector(
-                          onTap: () => _setSpeed(s),
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 6),
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: selected ? Colors.deepPurpleAccent : const Color(0xFF2C2C2E),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Text(
-                              s == 1.0
-                                  ? '1×'
-                                  : s == 1.5
-                                      ? '1.5×'
-                                      : '2×',
-                              style: TextStyle(
-                                color: selected ? Colors.white : Colors.grey.shade400,
-                                fontSize: 13,
-                                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                              ),
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                    const SizedBox(height: 32),
-
-                  ],
-                ),
-              ),
+        actions: [
+          IconButton(
+            icon: FaIcon(
+              _userSaved ? FontAwesomeIcons.circleCheck : FontAwesomeIcons.floppyDisk,
+              size: 20,
+              color: _userSaved ? Colors.green : Colors.grey.shade400,
+            ),
+            onPressed: _userSaved ? null : _saveConversation,
+            tooltip: _userSaved ? 'Saved' : 'Save',
+          ),
+        ],
       ),
+      body: _loadingAudio
+          ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
+          : Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  // Time range label (live — updates during crop drag)
+                  Text(
+                    _liveTimeRangeLabel,
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 14),
+                  ),
+                  const SizedBox(height: 32),
+
+                  // Waveform
+                  SizedBox(
+                    height: 100,
+                    child: _loadingWaveform
+                        ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
+                        : LayoutBuilder(
+                            builder: (ctx, constraints) {
+                              final width = constraints.maxWidth;
+                              final tMs = _totalDuration.inMilliseconds.toDouble();
+                              return GestureDetector(
+                                onTapDown: (d) {
+                                  if (tMs == 0) return;
+                                  final r = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                                  _player.seek(Duration(milliseconds: (r * tMs).round()));
+                                },
+                                onHorizontalDragStart: (d) {
+                                  if (tMs == 0) return;
+                                  final x = d.localPosition.dx;
+                                  final vsX = (_cropStart.inMilliseconds / tMs) * width;
+                                  final veX = (_cropEnd.inMilliseconds / tMs) * width;
+                                  if ((x - vsX).abs() < _kHandleHitSlop) {
+                                    setState(() => _dragMode = _DragMode.left);
+                                  } else if ((x - veX).abs() < _kHandleHitSlop) {
+                                    setState(() => _dragMode = _DragMode.right);
+                                  } else {
+                                    setState(() => _dragMode = _DragMode.seek);
+                                  }
+                                },
+                                onHorizontalDragUpdate: (d) {
+                                  if (tMs == 0) return;
+                                  final r = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                                  final ms = (r * tMs).round();
+                                  if (_dragMode == _DragMode.left) {
+                                    final newStart = Duration(milliseconds: ms);
+                                    const minWindow = Duration(seconds: 5);
+                                    if (newStart >= Duration.zero && newStart < _cropEnd - minWindow) {
+                                      setState(() => _cropStart = newStart);
+                                    }
+                                  } else if (_dragMode == _DragMode.right) {
+                                    final newEnd = Duration(milliseconds: ms);
+                                    const minWindow = Duration(seconds: 5);
+                                    if (newEnd <= _totalDuration && newEnd > _cropStart + minWindow) {
+                                      setState(() => _cropEnd = newEnd);
+                                    }
+                                  } else {
+                                    _player.seek(Duration(milliseconds: ms));
+                                  }
+                                },
+                                onHorizontalDragEnd: (_) async {
+                                  if (_dragMode == _DragMode.left || _dragMode == _DragMode.right) {
+                                    if (_position < _cropStart || _position > _cropEnd) {
+                                      await _player.seek(_cropStart);
+                                    }
+                                    await _saveEdl();
+                                  }
+                                  if (mounted) setState(() => _dragMode = _DragMode.none);
+                                },
+                                child: CustomPaint(
+                                  painter: _MarkerWaveformPainter(
+                                    amplitudes: _waveform,
+                                    progress: progressRatio,
+                                    visibleStartRatio: visibleStartRatio,
+                                    visibleEndRatio: visibleEndRatio,
+                                    markerRatio: markerOffsetRatio,
+                                    activeDragMode: _dragMode,
+                                  ),
+                                  size: Size(width, 100),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  // Time labels
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(_fmt(_position), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                      Text(_fmt(_totalDuration), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+
+                  // Progress slider
+                  SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                      trackHeight: 3,
+                      overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                      activeTrackColor: Colors.deepPurpleAccent,
+                      inactiveTrackColor: Colors.grey.shade800,
+                      thumbColor: Colors.deepPurpleAccent,
+                      overlayColor: Colors.deepPurpleAccent.withValues(alpha: 0.2),
+                    ),
+                    child: Slider(
+                      value: progressRatio,
+                      onChanged: (v) {
+                        _player.seek(Duration(milliseconds: (v * totalMs).round()));
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+
+                  // Transport controls
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _SeekBtn(icon: FontAwesomeIcons.rotateLeft, seconds: 30, onTap: () => _seekRelative(-30)),
+                      const SizedBox(width: 40),
+                      GestureDetector(
+                        onTap: _togglePlay,
+                        child: Container(
+                          width: 72,
+                          height: 72,
+                          decoration: const BoxDecoration(color: Colors.deepPurpleAccent, shape: BoxShape.circle),
+                          child: Center(
+                            child: FaIcon(
+                              _isPlaying ? FontAwesomeIcons.pause : FontAwesomeIcons.play,
+                              color: Colors.white,
+                              size: 26,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 40),
+                      _SeekBtn(icon: FontAwesomeIcons.rotateRight, seconds: 30, onTap: () => _seekRelative(30)),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+
+                  // Speed selector
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [1.0, 1.5, 2.0].map((s) {
+                      final selected = _speed == s;
+                      return GestureDetector(
+                        onTap: () => _setSpeed(s),
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 6),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: selected ? Colors.deepPurpleAccent : const Color(0xFF2C2C2E),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            s == 1.0
+                                ? '1×'
+                                : s == 1.5
+                                    ? '1.5×'
+                                    : '2×',
+                            style: TextStyle(
+                              color: selected ? Colors.white : Colors.grey.shade400,
+                              fontSize: 13,
+                              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 32),
+
+                ],
+              ),
+            ),
     );
   }
 }
@@ -512,7 +414,6 @@ class _MarkerWaveformPainter extends CustomPainter {
   final double visibleEndRatio;
   final double markerRatio;
   final _DragMode activeDragMode;
-  final bool isCropMode;
 
   const _MarkerWaveformPainter({
     required this.amplitudes,
@@ -521,7 +422,6 @@ class _MarkerWaveformPainter extends CustomPainter {
     required this.visibleEndRatio,
     required this.markerRatio,
     required this.activeDragMode,
-    required this.isCropMode,
   });
 
   @override
@@ -551,7 +451,7 @@ class _MarkerWaveformPainter extends CustomPainter {
       final barHeight = amplitude * size.height;
       final top = (size.height - barHeight) / 2;
 
-      final inWindow = !isCropMode || (i >= visStartBar && i < visEndBar);
+      final inWindow = i >= visStartBar && i < visEndBar;
       final Paint paint;
       if (!inWindow) {
         paint = outsideWindow;
@@ -574,11 +474,9 @@ class _MarkerWaveformPainter extends CustomPainter {
         ..strokeWidth = 2,
     );
 
-    if (isCropMode) {
-      // Crop handles — vertical line + pill tab at top
-      _drawHandle(canvas, size, visibleStartRatio * size.width, activeDragMode == _DragMode.left);
-      _drawHandle(canvas, size, visibleEndRatio * size.width, activeDragMode == _DragMode.right);
-    }
+    // Crop handles — vertical line + pill tab at top
+    _drawHandle(canvas, size, visibleStartRatio * size.width, activeDragMode == _DragMode.left);
+    _drawHandle(canvas, size, visibleEndRatio * size.width, activeDragMode == _DragMode.right);
   }
 
   void _drawHandle(Canvas canvas, Size size, double x, bool isActive) {
@@ -606,10 +504,8 @@ class _MarkerWaveformPainter extends CustomPainter {
       old.amplitudes != amplitudes ||
       old.visibleStartRatio != visibleStartRatio ||
       old.visibleEndRatio != visibleEndRatio ||
-      old.activeDragMode != activeDragMode ||
-      old.isCropMode != isCropMode;
+      old.activeDragMode != activeDragMode;
 }
-
 
 // ── Seek button ───────────────────────────────────────────────────────────────
 

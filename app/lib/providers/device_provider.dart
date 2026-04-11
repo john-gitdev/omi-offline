@@ -26,6 +26,9 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   int _lastNotifiedBatteryLevel = -1;
   DateTime? _lastBatteryNotifyTime;
   bool _hasLowBatteryAlerted = false;
+  bool _isFirmwareUpdateInProgress = false;
+  bool get isFirmwareUpdateInProgress => _isFirmwareUpdateInProgress;
+
   Timer? _reconnectionTimer;
   DateTime? _reconnectAt;
   final int _connectionCheckSeconds = 30; // Scan every 30s instead of 15s
@@ -220,6 +223,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     scan(t) async {
       final reconnectAt = _reconnectAt;
       if (reconnectAt != null && reconnectAt.isAfter(DateTime.now())) return;
+      if (_isFirmwareUpdateInProgress) return;
       if (boundDeviceOnly && SharedPreferencesUtil().btDevice.id.isEmpty) {
         t.cancel();
         return;
@@ -492,10 +496,25 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   @override
   void onStatusChanged(DeviceServiceStatus status) {}
 
+
   prepareDFU() {
-    final dev = connectedDevice;
-    if (dev == null) return;
-    _bleDisconnectDevice(dev);
-    _reconnectAt = DateTime.now().add(const Duration(seconds: 30));
+    if (connectedDevice == null) {
+      return;
+    }
+    setFirmwareUpdateInProgress(true);
+    _bleDisconnectDevice(connectedDevice!);
   }
+
+  // Reset firmware update state when update completes or fails
+  void resetFirmwareUpdateState() {
+    _isFirmwareUpdateInProgress = false;
+    notifyListeners();
+  }
+
+  // Set firmware update state when starting an update
+  void setFirmwareUpdateInProgress(bool inProgress) {
+    _isFirmwareUpdateInProgress = inProgress;
+    notifyListeners();
+  }
+
 }

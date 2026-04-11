@@ -57,13 +57,6 @@
 -keep class tvo.webrtc.** { *; }
 -dontwarn tvo.webrtc.**
 
-# FFmpeg Kit rules
--keep class com.arthenica.ffmpegkit.** { *; }
--keep class com.arthenica.ffmpegkit.FFmpegKitConfig {
-    native <methods>;
-}
--dontwarn com.arthenica.ffmpegkit.**
-
 # Lombok annotations
 -dontwarn lombok.Generated
 -dontwarn lombok.**

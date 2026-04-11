@@ -237,34 +237,31 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
             const SizedBox(height: 48),
 
             // Waveform
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 40),
-              child: SizedBox(
-                height: 120,
-                child: _loadingWaveform
-                    ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
-                    : _waveform.isEmpty
-                        ? Center(
-                            child:
-                                Text('Waveform unavailable', style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
-                          )
-                        : LayoutBuilder(
-                            builder: (ctx, constraints) => GestureDetector(
-                              onTapDown: (d) {
-                                final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
-                                _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
-                              },
-                              onHorizontalDragUpdate: (d) {
-                                final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
-                                _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
-                              },
-                              child: CustomPaint(
-                                painter: _WaveformPainter(amplitudes: _waveform, progress: progressRatio),
-                                size: Size(constraints.maxWidth, 120),
-                              ),
+            SizedBox(
+              height: 120,
+              child: _loadingWaveform
+                  ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
+                  : _waveform.isEmpty
+                      ? Center(
+                          child:
+                              Text('Waveform unavailable', style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                        )
+                      : LayoutBuilder(
+                          builder: (ctx, constraints) => GestureDetector(
+                            onTapDown: (d) {
+                              final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
+                              _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
+                            },
+                            onHorizontalDragUpdate: (d) {
+                              final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
+                              _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
+                            },
+                            child: CustomPaint(
+                              painter: _WaveformPainter(amplitudes: _waveform, progress: progressRatio),
+                              size: Size(constraints.maxWidth, 120),
                             ),
                           ),
-              ),
+                        ),
             ),
 
             const SizedBox(height: 16),

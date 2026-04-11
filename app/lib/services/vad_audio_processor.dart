@@ -293,13 +293,7 @@ class VadAudioProcessor {
     return path;
   }
 
-  Future<String?> flushOnlyCompleted() async {
-    if (isCapturing) {
-      Logger.debug('VadAudioProcessor: flushOnlyCompleted — capture in progress, skipping flush to allow continuation.');
-      return null;
-    }
-    return flushRemaining();
-  }
+  Future<String?> flushOnlyCompleted() => flushRemaining();
 
   void _resetState() {
     _currentRefs = [];
@@ -367,7 +361,7 @@ class VadAudioProcessor {
       batchBuffer.clear();
       batchFrameCount = 0;
       hasEncodedAnyFrames = true;
-      await AacEncoder.encodeBuffer(sessionId!, bytes);
+      await AacEncoder.encodeBuffer(sessionId!, Uint8List.fromList(bytes));
     }
 
     String? currentFilePath;

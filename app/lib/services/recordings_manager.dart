@@ -650,13 +650,24 @@ class RecordingsManager {
     if (_isProcessingAny) return;
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
-    final activeBatches = batches
+    final safeBatches = batches
+        .map((batch) {
+          if (batch.rawSegments.isEmpty) return batch;
+          final safeSegments = excludeNewestSegmentPerSession(batch.rawSegments);
+          return Batch(
+            dateString: batch.dateString,
+            date: batch.date,
+            rawSegments: safeSegments,
+            finalizedRecordings: batch.finalizedRecordings,
+            markerTimestamps: batch.markerTimestamps,
+          );
+        })
         .where((b) => b.rawSegments.isNotEmpty)
         .where((b) => !SharedPreferencesUtil().adjustmentMode || b.finalizedRecordings.isEmpty)
         .toList();
-    if (activeBatches.isEmpty) return;
+    if (safeBatches.isEmpty) return;
     try {
-      await manager.processAll(activeBatches, (_) {}, backgroundMode: true);
+      await manager.processAll(safeBatches, (_) {}, backgroundMode: true);
     } catch (e) {
       Logger.error('RecordingsManager: Background processAllCompletedSessions error: $e');
     }
@@ -681,6 +692,58 @@ class RecordingsManager {
       Logger.error('RecordingsManager: forceProcessAll error: $e');
     }
   }
+
+  /// Returns [segments] with the highest segmentIndex file excluded per DeviceSession.
+  /// Files are named `{deviceSessionId}_{segmentIndex}.bin`; the last segment per DeviceSession
+  /// may still be actively written by the firmware, so we skip it.
+  static List<File> excludeNewestSegmentPerSession(List<File> segments) {
+    // Also exclude any segment modified within the last 5 seconds to avoid
+    // processing a file that is still being written to by the sync layer.
+    final recencyCutoff = DateTime.now().subtract(const Duration(seconds: 5));
+    final Map<String, List<File>> byDeviceSession = {};
+    for (final f in segments) {
+      try {
+        if (f.lastModifiedSync().isAfter(recencyCutoff)) continue;
+      } catch (_) {
+        continue; // File may have been deleted
+      }
+      final name = f.path.split('/').last;
+      final deviceSessionId = name.split('_').first;
+      byDeviceSession.putIfAbsent(deviceSessionId, () => []).add(f);
+    }
+    final result = <File>[];
+    for (final deviceSessionSegments in byDeviceSession.values) {
+      // Sort by segmentIndex numerically, then drop the last (highest) one.
+      deviceSessionSegments.sort((a, b) {
+        final aParts = a.path.split('/').last.replaceAll('.bin', '').split('_');
+        final bParts = b.path.split('/').last.replaceAll('.bin', '').split('_');
+        final aSegment = int.tryParse(aParts.length > 1 ? aParts[1] : '0') ?? 0;
+        final bSegment = int.tryParse(bParts.length > 1 ? bParts[1] : '0') ?? 0;
+        return aSegment.compareTo(bSegment);
+      });
+      // Only exclude the newest segment when a session has 2+ segments.
+      // Single-segment sessions are completed SD-card file transfers — safe to process.
+      // Very-recently-written files are already filtered by the recency cutoff above.
+      if (deviceSessionSegments.length > 1) {
+        result.addAll(deviceSessionSegments.take(deviceSessionSegments.length - 1));
+      } else {
+        result.addAll(deviceSessionSegments);
+      }
+    }
+    // Re-sort numerically by (deviceSessionId, segmentIndex).
+    result.sort((a, b) {
+      final aParts = a.path.split('/').last.replaceAll('.bin', '').split('_');
+      final bParts = b.path.split('/').last.replaceAll('.bin', '').split('_');
+      final aSession = int.tryParse(aParts[0]) ?? 0;
+      final bSession = int.tryParse(bParts[0]) ?? 0;
+      if (aSession != bSession) return aSession.compareTo(bSession);
+      final aSegment = int.tryParse(aParts.length > 1 ? aParts[1] : '0') ?? 0;
+      final bSegment = int.tryParse(bParts.length > 1 ? bParts[1] : '0') ?? 0;
+      return aSegment.compareTo(bSegment);
+    });
+    return result;
+  }
+
 
   /// Deletes orphaned `.tmp.m4a` files left by interrupted encoding runs.
   /// Call once at app startup before processing begins.

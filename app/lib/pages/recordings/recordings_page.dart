@@ -201,10 +201,13 @@ class _RecordingsPageState extends State<RecordingsPage>
           unawaited(
             _reloadBatchesSilently().then((_) async {
               if (!mounted) return;
-              final processable = _batches.expand((b) => b.rawSegments).toList();
+              final allRaw = _batches.expand((b) => b.rawSegments).toList();
+              final processable =
+                  RecordingsManager.excludeNewestSegmentPerSession(allRaw);
               final lengths = await Future.wait(
                 processable.map((f) => f.length().catchError((_) => 0)),
-              );              final totalBytes = lengths.fold(0, (s, len) => s + len);
+              );
+              final totalBytes = lengths.fold(0, (s, len) => s + len);
               if (!mounted) return;
               setState(() {
                 _spState = SyncProcessState.processing;
@@ -569,9 +572,31 @@ class _RecordingsPageState extends State<RecordingsPage>
     }
 
     // Thunderbolt (force): flush everything including in-progress interval.
-    // Swipe (non-force): allow VAD to keep in-progress conversations as 'raw' to be continued later.
-    final List<Batch> batchesToProcess = activeBatches;
-    final bool backgroundMode = !_isForcePipeline;
+    // Swipe (non-force): only process completed 30-min intervals, skip newest segment
+    // per DeviceSession (may still be written by firmware) — same behaviour as background auto-sync.
+    final List<Batch> batchesToProcess;
+    final bool backgroundMode;
+    if (_isForcePipeline) {
+      batchesToProcess = activeBatches;
+      backgroundMode = false;
+    } else {
+      batchesToProcess = activeBatches
+          .map((batch) {
+            final safe = RecordingsManager.excludeNewestSegmentPerSession(
+              batch.rawSegments,
+            );
+            return Batch(
+              dateString: batch.dateString,
+              date: batch.date,
+              rawSegments: safe,
+              finalizedRecordings: batch.finalizedRecordings,
+              markerTimestamps: batch.markerTimestamps,
+            );
+          })
+          .where((b) => b.rawSegments.isNotEmpty)
+          .toList();
+      backgroundMode = true;
+    }
 
     if (batchesToProcess.isEmpty) {
       await _finishSuccess();
@@ -1762,13 +1787,10 @@ class _RecordingsPageState extends State<RecordingsPage>
           appBar: AppBar(
             backgroundColor: const Color(0xFF0D0D0D),
             elevation: 0,
-            centerTitle: false,
-            leadingWidth: 120,
-            leading: !deviceProvider.isConnected
-                ? Container(
-                    alignment: Alignment.centerLeft,
-                    padding: const EdgeInsets.only(left: 8.0),
-                    child: IconButton(
+            leading: Padding(
+              padding: const EdgeInsets.only(left: 8.0),
+              child: !deviceProvider.isConnected
+                  ? IconButton(
                       icon: const FaIcon(
                         FontAwesomeIcons.bluetooth,
                         color: Colors.grey,
@@ -1777,15 +1799,15 @@ class _RecordingsPageState extends State<RecordingsPage>
                       onPressed: () => Navigator.of(context).push(
                         MaterialPageRoute(builder: (c) => const FindDevicesPage()),
                       ),
+                    )
+                  : BatteryStatusIndicator(
+                      batteryLevel: deviceProvider.batteryLevel,
+                      isCharging: deviceProvider.isCharging,
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (c) => const DeviceSettings()),
+                      ),
                     ),
-                  )
-                : BatteryStatusIndicator(
-                    batteryLevel: deviceProvider.batteryLevel,
-                    isCharging: deviceProvider.isCharging,
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (c) => const DeviceSettings()),
-                    ),
-                  ),
+            ),
             actions: [
               if (_markerConversations.isNotEmpty)
                 IconButton(
@@ -1799,6 +1821,14 @@ class _RecordingsPageState extends State<RecordingsPage>
                   onPressed: () =>
                       setState(() => _showMarkersOnly = !_showMarkersOnly),
                 ),
+              IconButton(
+                icon: FaIcon(
+                  FontAwesomeIcons.filter,
+                  color: _minFilterSeconds > 0 ? Colors.deepPurpleAccent : Colors.white,
+                  size: 18,
+                ),
+                onPressed: _showFilterSheet,
+              ),
               // Force sync button — disabled when syncing is in progress or on cooldown
               IconButton(
                 icon: FaIcon(
@@ -1819,14 +1849,6 @@ class _RecordingsPageState extends State<RecordingsPage>
                     : null,
               ),
               IconButton(
-                icon: FaIcon(
-                  FontAwesomeIcons.filter,
-                  color: _minFilterSeconds > 0 ? Colors.deepPurpleAccent : Colors.white,
-                  size: 18,
-                ),
-                onPressed: _showFilterSheet,
-              ),
-              IconButton(
                 icon: const FaIcon(
                   FontAwesomeIcons.gear,
                   color: Colors.white,
@@ -1845,7 +1867,7 @@ class _RecordingsPageState extends State<RecordingsPage>
                   'Conversations',
                   style: TextStyle(
                     color: Colors.white,
-                    fontSize: 24,
+                    fontSize: 32,
                     fontWeight: FontWeight.bold,
                   ),
                 ),

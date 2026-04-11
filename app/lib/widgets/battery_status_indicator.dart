@@ -62,8 +62,8 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
   }
 
   Widget _dot() => Container(
-        width: 12,
-        height: 12,
+        width: 8,
+        height: 8,
         decoration: BoxDecoration(color: _dotColor, shape: BoxShape.circle),
       );
 
@@ -71,10 +71,9 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: widget.onTap,
-      child: Container(
-        // Use a container with specific alignment instead of padding to avoid overflow
-        alignment: Alignment.centerLeft,
-        padding: const EdgeInsets.only(left: 16.0),
+      child: Padding(
+        // Vertical padding to match IconButton's 48-px minimum tap target.
+        padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 14.0),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -89,15 +88,10 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
               )
             else
               _dot(),
-            const SizedBox(width: 6),
+            const SizedBox(width: 4),
             Text(
               widget.batteryLevel >= 0 ? '${widget.batteryLevel}%' : '--',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                height: 1.1, // Tighten line height to prevent vertical overflow
-              ),
+              style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500),
             ),
           ],
         ),
