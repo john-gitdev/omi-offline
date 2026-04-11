@@ -131,6 +131,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       if (state == mcumgr.FirmwareUpgradeState.success) {
         Logger.debug('update success');
         killMcuUpdateManager();
+        Provider.of<DeviceProvider>(context, listen: false).resetFirmwareUpdateState();
         setState(() {
           isInstalling = false;
           isInstalled = true;
