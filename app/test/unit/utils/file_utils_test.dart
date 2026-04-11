@@ -80,14 +80,12 @@ void main() {
     });
 
     test('rethrows error on failure', () async {
-      // Since WavBytes.fromPcm currently doesn't seem to throw on common inputs,
-      // we can try to force an error if possible, or just note it.
-      // Looking at WavBytes.fromPcm, it doesn't do much validation.
-
-      // However, if we mock getTemporaryDirectory to fail, it should rethrow.
       mockPathProvider.tempPath = null;
 
-      expect(() => FileUtils.convertPcmToWavFile(Uint8List(0), 16000, 1), throwsA(anything));
+      await expectLater(
+        () async => await FileUtils.convertPcmToWavFile(Uint8List(0), 16000, 1),
+        throwsA(anything),
+      );
     });
   });
 }
