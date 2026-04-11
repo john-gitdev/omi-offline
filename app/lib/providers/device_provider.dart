@@ -223,6 +223,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     scan(t) async {
       final reconnectAt = _reconnectAt;
       if (reconnectAt != null && reconnectAt.isAfter(DateTime.now())) return;
+      if (_isFirmwareUpdateInProgress) return;
       if (boundDeviceOnly && SharedPreferencesUtil().btDevice.id.isEmpty) {
         t.cancel();
         return;
