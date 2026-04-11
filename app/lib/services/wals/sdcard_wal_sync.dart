@@ -43,6 +43,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Completer<void>? _cancelCompleter;
   IWalSyncProgressListener? _globalProgressListener;
 
+  static const double _diskSpaceSafetyMargin = 1.1;
+  static const int _bytesPerMegabyte = 1024 * 1024;
+
   @override
   bool get isSyncing => _isSyncing;
   @override
@@ -518,10 +521,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     try {
       final double? freeSpaceMb = await DiskSpace.getFreeDiskSpace;
       if (freeSpaceMb != null) {
-        final double requiredMb = (totalBytesToDownload * 1.1) / (1024 * 1024);
+        final double requiredMb =
+            (totalBytesToDownload * _diskSpaceSafetyMargin) / _bytesPerMegabyte;
         if (freeSpaceMb < requiredMb) throw Exception("Phone Storage Full");
       }
-    } catch (_) { rethrow; }
+    } catch (_) {
+      rethrow;
+    }
   }
 
   void _updateSpeed(int bytesDownloaded) {
