@@ -72,7 +72,7 @@ void main() {
       final util = SharedPreferencesUtil();
 
       const newKey = 'pk_new_123';
-      util.heypocketApiKey = newKey;
+      await util.setHeypocketApiKey(newKey);
 
       expect(util.heypocketApiKey, newKey);
       expect(secureStorageMock['heypocketApiKey'], newKey);

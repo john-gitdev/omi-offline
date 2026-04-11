@@ -40,11 +40,11 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     super.dispose();
   }
 
-  void _onKeyChanged() {
+  Future<void> _onKeyChanged() async {
     final text = _controller.text;
     if (text.isEmpty) {
       _debounce?.cancel();
-      _prefs.heypocketApiKey = '';
+      await _prefs.setHeypocketApiKey('');
       _prefs.heypocketEnabled = false;
       setState(() => _connState = _ConnectionState.idle);
       return;
@@ -63,7 +63,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
         if (_prefs.heypocketKeySetAt == 0) {
           _prefs.heypocketKeySetAt = DateTime.now().millisecondsSinceEpoch;
         }
-        _prefs.heypocketApiKey = key;
+        await _prefs.setHeypocketApiKey(key);
         setState(() => _connState = _ConnectionState.connected);
       } else {
         _prefs.heypocketEnabled = false;
