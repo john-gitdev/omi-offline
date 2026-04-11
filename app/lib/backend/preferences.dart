@@ -89,9 +89,9 @@ class SharedPreferencesUtil {
   //--------------------------- HeyPocket Integration ---------------------//
 
   String get heypocketApiKey => _heypocketApiKey;
-  set heypocketApiKey(String v) {
+  Future<void> setHeypocketApiKey(String v) async {
     _heypocketApiKey = v;
-    _secureStorage.write(key: 'heypocketApiKey', value: v);
+    await _secureStorage.write(key: 'heypocketApiKey', value: v);
   }
 
   bool get heypocketEnabled => getBool('heypocketEnabled', defaultValue: false);
@@ -215,9 +215,7 @@ class SharedPreferencesUtil {
 
   double getDouble(String key, {double defaultValue = 0.0}) {
     final value = _preferences?.get(key);
-    if (value is double) return value;
-    if (value is int) return value.toDouble();
-    return defaultValue;
+    return (value is num) ? value.toDouble() : defaultValue;
   }
 
   List<String> getStringList(String key, {List<String> defaultValue = const []}) =>
