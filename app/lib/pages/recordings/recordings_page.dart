@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:omi/utils/logger.dart';
@@ -15,22 +14,15 @@ import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/pages/settings/settings_drawer.dart';
 import 'package:omi/pages/settings/find_devices_page.dart';
 import 'package:omi/pages/settings/device_settings.dart';
-import 'package:omi/pages/recordings/recording_player_page.dart';
 import 'package:omi/pages/recordings/marker_conversation_player_page.dart';
+import 'package:omi/pages/recordings/recordings_types.dart';
+import 'package:omi/pages/recordings/recordings_banners.dart';
+import 'package:omi/pages/recordings/sync_process_card.dart';
+import 'package:omi/pages/recordings/batch_card.dart';
+import 'package:omi/pages/recordings/marker_day_card.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:omi/widgets/battery_status_indicator.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
-
-// ─── State machine ──────────────────────────────────────────────────────────
-enum SyncProcessState {
-  idle,
-  syncing,
-  processing,
-  stopping,
-  resume,
-  error,
-  successUi,
-}
 
 // ─── Page ───────────────────────────────────────────────────────────────────
 class RecordingsPage extends StatefulWidget {
@@ -980,55 +972,7 @@ class _RecordingsPageState extends State<RecordingsPage>
     );
   }
 
-  Widget _buildUploadIcon(Conversation conversation) {
-    if (_prefs.heypocketApiKey.isEmpty) return const SizedBox.shrink();
-    final uploadKey = conversation.uploadKey;
-    if (uploadKey == null) {
-      return IconButton(
-        padding: const EdgeInsets.symmetric(horizontal: 6),
-        constraints: const BoxConstraints(),
-        icon: Icon(Icons.cloud_off, color: Colors.grey.shade600, size: 18),
-        onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Upload key unavailable — please reconnect your device and try again.',
-            ),
-          ),
-        ),
-      );
-    }
-    if (_uploadingFiles.contains(uploadKey)) {
-      return IconButton(
-        padding: const EdgeInsets.symmetric(horizontal: 6),
-        constraints: const BoxConstraints(),
-        icon: const SizedBox(
-          width: 18,
-          height: 18,
-          child: CircularProgressIndicator(
-            strokeWidth: 1.5,
-            color: Colors.deepPurpleAccent,
-          ),
-        ),
-        onPressed: null,
-      );
-    }
-    if (_prefs.isUploadedToHeypocket(uploadKey)) {
-      return IconButton(
-        padding: const EdgeInsets.symmetric(horizontal: 6),
-        constraints: const BoxConstraints(),
-        icon: const Icon(Icons.cloud_done, color: Colors.green, size: 18),
-        onPressed: () => _handleUploadTap(conversation),
-      );
-    }
-    return IconButton(
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      constraints: const BoxConstraints(),
-      icon: const Icon(Icons.cloud_upload, color: Colors.redAccent, size: 18),
-      onPressed: () => _handleUploadTap(conversation),
-    );
-  }
-
-  // ─── Accumulating progress banner ─────────────────────────────────────────
+  // ─── Accumulated minutes ───────────────────────────────────────────────────
   static double _computeAccumulatedMinutes(List<Batch> batches) {
     final totalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (
       sum,
@@ -1041,74 +985,6 @@ class _RecordingsPageState extends State<RecordingsPage>
       }
     });
     return totalBytes / 252000.0; // 84 B/frame × 50 fps × 60 s
-  }
-
-  Widget _buildAccumulatingBanner() {
-    // Hide while actively syncing/processing (the sync card already covers this)
-    // and when there's less than half a minute accumulated (not worth showing).
-    if (_spState == SyncProcessState.syncing ||
-        _spState == SyncProcessState.processing ||
-        _spState == SyncProcessState.stopping)
-      return const SizedBox.shrink();
-    if (_accumulatedMinutes < 1.0) return const SizedBox.shrink();
-
-    final int accMin = _accumulatedMinutes.floor();
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.05),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Conversation in progress',
-                      style: TextStyle(
-                        color: Colors.grey.shade400,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '$accMin ${accMin == 1 ? 'minute' : 'minutes'} accumulated',
-                      style: TextStyle(
-                        color: Colors.grey.shade600,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: Colors.deepPurpleAccent.withValues(alpha: 0.2),
-                  shape: BoxShape.circle,
-                ),
-                child: const Center(
-                  child: FaIcon(
-                    FontAwesomeIcons.hourglassHalf,
-                    color: Colors.deepPurpleAccent,
-                    size: 16,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
   }
 
   // ─── Duration filter sheet ─────────────────────────────────────────────────
@@ -1167,231 +1043,6 @@ class _RecordingsPageState extends State<RecordingsPage>
     );
   }
 
-  // ─── Adjustment mode cleanup banner ────────────────────────────────────────
-  Widget _buildAdjustmentCleanupBanner() {
-    if (_prefs.adjustmentMode) return const SizedBox.shrink();
-    if (!_prefs.adjustmentModeWasEnabled) return const SizedBox.shrink();
-    if (_spState != SyncProcessState.idle) return const SizedBox.shrink();
-    final pendingDays = _batches.where((b) => b.rawSegments.isNotEmpty).length;
-    if (pendingDays == 0) return const SizedBox.shrink();
-
-    return GestureDetector(
-      onTap: _runAdjustmentCleanup,
-      child: Container(
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.orange.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.orange.withValues(alpha: 0.3), width: 1),
-        ),
-        child: Row(
-          children: [
-            const FaIcon(FontAwesomeIcons.triangleExclamation, color: Colors.orange, size: 16),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Raw audio pending cleanup',
-                    style: TextStyle(color: Colors.orange, fontWeight: FontWeight.w500, fontSize: 14),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '$pendingDays ${pendingDays == 1 ? 'day' : 'days'} of raw files still on disk. Tap to process & delete.',
-                    style: TextStyle(color: Colors.orange.shade300, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ─── Unified status card ───────────────────────────────────────────────────
-  Widget _buildSyncProcessCard() {
-    if (_spState == SyncProcessState.idle) {
-      return const SizedBox.shrink();
-    }
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.05),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: _buildCardContent(),
-    );
-  }
-
-  Widget _buildCardContent() {
-    final String mainText;
-    final String subText;
-    final Color iconBg;
-    final Widget iconChild;
-    VoidCallback? onIconTap;
-    bool showProgress = false;
-    double? progressValue;
-    Color progressColor = Colors.deepPurpleAccent;
-
-    switch (_spState) {
-      case SyncProcessState.idle:
-        mainText = 'Sync and Process Now';
-        subText = 'Syncs files from device and prepares conversations';
-        iconBg = Colors.deepPurpleAccent;
-        iconChild = const FaIcon(
-          FontAwesomeIcons.rotate,
-          color: Colors.white,
-          size: 16,
-        );
-        onIconTap = _startPipeline;
-
-      case SyncProcessState.syncing:
-        mainText = _isForcePipeline ? 'Force Sync...' : 'Syncing segments';
-        final speedStr = _syncSpeed > 0
-            ? '  ·  ${_syncSpeed.toStringAsFixed(1)} KB/s'
-            : '';
-        subText = _totalCount > 0
-            ? '$_syncedCount of $_totalCount segments synced$speedStr'
-            : (_isForcePipeline ? 'Rotating segment…' : 'Scanning device…');
-        iconBg = Colors.deepPurpleAccent;
-        iconChild = const SizedBox(
-          width: 16,
-          height: 16,
-          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-        );
-        onIconTap = () => unawaited(_showCancelModal());
-        showProgress = true;
-        progressValue = _totalCount > 0
-            ? (_syncedCount / _totalCount).clamp(0.0, 1.0)
-            : null;
-
-      case SyncProcessState.processing:
-        mainText = 'Preparing conversations';
-        final minStr = _minutesRemaining >= 1
-            ? '${_minutesRemaining.ceil()} min of audio remaining'
-            : '< 1 min of audio remaining';
-        subText = minStr;
-        iconBg = Colors.deepPurpleAccent;
-        iconChild = const SizedBox(
-          width: 16,
-          height: 16,
-          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-        );
-        onIconTap = () => unawaited(_showCancelModal());
-        showProgress = true;
-        progressValue = _totalMinutes > 0
-            ? (1.0 - _minutesRemaining / _totalMinutes).clamp(0.0, 1.0)
-            : null;
-
-      case SyncProcessState.stopping:
-        mainText = 'Stopping…';
-        subText = 'Finishing current step';
-        iconBg = Colors.grey.shade700;
-        iconChild = const SizedBox(
-          width: 16,
-          height: 16,
-          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-        );
-        onIconTap = null;
-        showProgress = true;
-        progressValue = null;
-        progressColor = Colors.grey.shade600;
-
-      case SyncProcessState.resume:
-        mainText = 'Resume Sync and Processing';
-        subText = 'Last run didn\'t finish';
-        iconBg = Colors.amber.shade700;
-        iconChild = const FaIcon(
-          FontAwesomeIcons.rotate,
-          color: Colors.white,
-          size: 16,
-        );
-        onIconTap = _resumePipeline;
-
-      case SyncProcessState.error:
-        mainText = _lastActiveStage == 'processing'
-            ? 'Processing failed'
-            : 'Sync failed';
-        subText = 'Tap to retry';
-        iconBg = Colors.redAccent;
-        iconChild = const FaIcon(
-          FontAwesomeIcons.circleExclamation,
-          color: Colors.white,
-          size: 16,
-        );
-        onIconTap = _retryFromError;
-
-      case SyncProcessState.successUi:
-        mainText = 'Conversations ready';
-        subText = 'Sync and processing complete';
-        iconBg = Colors.green.shade600;
-        iconChild = const FaIcon(
-          FontAwesomeIcons.circleCheck,
-          color: Colors.white,
-          size: 16,
-        );
-        onIconTap = null;
-        showProgress = true;
-        progressValue = 1.0;
-        progressColor = Colors.green;
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    mainText,
-                    style: TextStyle(
-                      color: Colors.grey.shade400,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subText,
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            GestureDetector(
-              onTap: onIconTap,
-              child: Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: iconBg,
-                  shape: BoxShape.circle,
-                ),
-                child: Center(child: iconChild),
-              ),
-            ),
-          ],
-        ),
-        if (showProgress) ...[
-          const SizedBox(height: 8),
-          LinearProgressIndicator(
-            value: progressValue,
-            backgroundColor: Colors.grey.shade800,
-            color: progressColor,
-          ),
-        ],
-      ],
-    );
-  }
-
   // ─── Marker helpers ────────────────────────────────────────────────────────
   /// Maps m4a filename → list of MarkerConversations whose marker time falls within that file.
   /// A marker only appears under the single conversation that contains its timestamp,
@@ -1425,331 +1076,6 @@ class _RecordingsPageState extends State<RecordingsPage>
       ),
     );
     await _reloadBatchesSilently();
-  }
-
-  // ─── Default mode: batch card ──────────────────────────────────────────────
-  Widget _buildBatchCard(
-    Batch batch,
-    Map<String, List<MarkerConversation>> markerMap,
-  ) {
-    final conversations = [...batch.finalizedRecordings]
-      ..sort((a, b) => b.startTime.compareTo(a.startTime));
-    final filtered = _minFilterSeconds > 0
-        ? conversations.where((c) => c.duration.inSeconds >= _minFilterSeconds).toList()
-        : conversations;
-    if (filtered.isEmpty) return const SizedBox.shrink();
-
-    return Card(
-      color: const Color(0xFF1C1C1E),
-      margin: const EdgeInsets.only(bottom: 16),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              batch.dateString,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 12),
-            ...filtered.map(
-              (c) => _buildConversationTile(
-                c,
-                markerMap[c.file.path.split('/').last] ?? [],
-              ),
-            ),
-            const SizedBox(height: 4),
-            const Divider(color: Color(0xFF2C2C2E), height: 1),
-            const SizedBox(height: 4),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                TextButton.icon(
-                  key: Key('export_all_${batch.dateString}'),
-                  onPressed: () => _exportAll(batch, filtered),
-                  icon: FaIcon(
-                    FontAwesomeIcons.shareFromSquare,
-                    size: 13,
-                    color: Colors.grey.shade400,
-                  ),
-                  label: Text(
-                    'Export All',
-                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                  ),
-                ),
-                if (_prefs.adjustmentMode && batch.rawSegments.isNotEmpty)
-                  TextButton.icon(
-                    key: Key('reprocess_day_${batch.dateString}'),
-                    onPressed: () => _reprocessDay(batch),
-                    icon: FaIcon(
-                      FontAwesomeIcons.rotateRight,
-                      size: 13,
-                      color: Colors.deepPurpleAccent,
-                    ),
-                    label: const Text(
-                      'Reprocess Day',
-                      style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13),
-                    ),
-                  )
-                else
-                  TextButton.icon(
-                    key: Key('delete_day_${batch.dateString}'),
-                    onPressed: () => _deleteDay(batch),
-                    icon: FaIcon(
-                      FontAwesomeIcons.trashCan,
-                      size: 13,
-                      color: Colors.red.shade400,
-                    ),
-                    label: Text(
-                      'Delete Day',
-                      style: TextStyle(color: Colors.red.shade400, fontSize: 13),
-                    ),
-                  ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildConversationTile(
-    Conversation conversation,
-    List<MarkerConversation> markers,
-  ) {
-    // Sort markers by time ascending so sub-entries read chronologically.
-    final sortedMarkers = [...markers]
-      ..sort((a, b) => a.markerTime.compareTo(b.markerTime));
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        InkWell(
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) =>
-                  ConversationPlayerPage(conversation: conversation),
-            ),
-          ),
-          borderRadius: BorderRadius.circular(8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        conversation.timeRangeLabel,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        '${conversation.durationLabel}  ·  ${conversation.sizeLabel}',
-                        style: TextStyle(
-                          color: Colors.grey.shade500,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (markers.isNotEmpty) ...[
-                  const FaIcon(
-                    FontAwesomeIcons.solidBookmark,
-                    color: Colors.amber,
-                    size: 13,
-                  ),
-                  const SizedBox(width: 8),
-                ],
-                _buildUploadIcon(conversation),
-                FaIcon(
-                  FontAwesomeIcons.chevronRight,
-                  color: Colors.grey.shade600,
-                  size: 14,
-                ),
-              ],
-            ),
-          ),
-        ),
-        // Sub-entries: one per marker, indented, tap → marker player
-        ...sortedMarkers.map((mc) => _buildMarkerSubEntry(mc)),
-      ],
-    );
-  }
-
-  Widget _buildMarkerSubEntry(MarkerConversation mc) {
-    return InkWell(
-      onTap: mc.isPending ? null : () => _openMarkerConversation(mc),
-      borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.only(left: 16, top: 6, bottom: 6, right: 4),
-        child: Row(
-          children: [
-            FaIcon(
-              FontAwesomeIcons.solidBookmark,
-              color: mc.isPending ? Colors.grey.shade600 : Colors.amber,
-              size: 11,
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    mc.isPending ? 'Processing…' : mc.timeRangeLabel,
-                    style: TextStyle(
-                      color: mc.isPending ? Colors.grey.shade600 : Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  Text(
-                    'marker at ${mc.markerTimeLabel}',
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
-                  ),
-                ],
-              ),
-            ),
-            if (!mc.isPending && mc.userSaved) ...[
-              const FaIcon(
-                FontAwesomeIcons.circleCheck,
-                color: Colors.green,
-                size: 12,
-              ),
-              const SizedBox(width: 6),
-            ],
-            if (!mc.isPending)
-              FaIcon(
-                FontAwesomeIcons.chevronRight,
-                color: Colors.grey.shade700,
-                size: 12,
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ─── Marker mode: day card ─────────────────────────────────────────────────
-  Widget _buildMarkerDayCard(String dateStr, List<MarkerConversation> markers) {
-    // Sort ascending by markerTime so they read chronologically within the day.
-    final sorted = [...markers]
-      ..sort((a, b) => a.markerTime.compareTo(b.markerTime));
-    return Card(
-      color: const Color(0xFF1C1C1E),
-      margin: const EdgeInsets.only(bottom: 16),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              dateStr,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 12),
-            ...sorted.map(_buildMarkerTile),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMarkerTile(MarkerConversation mc) {
-    return InkWell(
-      onTap: mc.isPending ? null : () => _openMarkerConversation(mc),
-      borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
-        child: Row(
-          children: [
-            FaIcon(
-              FontAwesomeIcons.solidBookmark,
-              color: mc.isPending ? Colors.grey.shade600 : Colors.amber,
-              size: 14,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    mc.isPending ? 'Processing…' : mc.timeRangeLabel,
-                    style: TextStyle(
-                      color: mc.isPending ? Colors.grey.shade600 : Colors.white,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    'marker at ${mc.markerTimeLabel}',
-                    style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-            if (!mc.isPending && mc.userSaved) ...[
-              const FaIcon(
-                FontAwesomeIcons.circleCheck,
-                color: Colors.green,
-                size: 14,
-              ),
-              const SizedBox(width: 8),
-            ],
-            if (!mc.isPending)
-              FaIcon(
-                FontAwesomeIcons.chevronRight,
-                color: Colors.grey.shade600,
-                size: 14,
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStorageWarning(int percentage) {
-    if (percentage < 90) return const SizedBox.shrink();
-    return Container(
-      width: double.infinity,
-      color: Colors.red.shade900,
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-      child: Row(
-        children: [
-          const FaIcon(
-            FontAwesomeIcons.circleExclamation,
-            color: Colors.white,
-            size: 20,
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              'Device Storage $percentage% Full - Sync Now',
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   // ─── Build ─────────────────────────────────────────────────────────────────
@@ -1850,10 +1176,33 @@ class _RecordingsPageState extends State<RecordingsPage>
                   ),
                 ),
               ),
-              _buildStorageWarning(deviceProvider.storageFullPercentage),
-              _buildSyncProcessCard(),
-              _buildAccumulatingBanner(),
-              _buildAdjustmentCleanupBanner(),
+              StorageWarningBanner(percentage: deviceProvider.storageFullPercentage),
+              SyncProcessCard(
+                data: SyncCardData(
+                  state: _spState,
+                  isForcePipeline: _isForcePipeline,
+                  syncedCount: _syncedCount,
+                  totalCount: _totalCount,
+                  syncSpeed: _syncSpeed,
+                  minutesRemaining: _minutesRemaining,
+                  totalMinutes: _totalMinutes,
+                  lastActiveStage: _lastActiveStage,
+                ),
+                onCancelTap: () => unawaited(_showCancelModal()),
+                onActionTap: () {
+                  if (_spState == SyncProcessState.idle) _startPipeline();
+                  else if (_spState == SyncProcessState.resume) _resumePipeline();
+                  else if (_spState == SyncProcessState.error) _retryFromError();
+                },
+              ),
+              AccumulatingBanner(spState: _spState, accumulatedMinutes: _accumulatedMinutes),
+              AdjustmentCleanupBanner(
+                adjustmentMode: _prefs.adjustmentMode,
+                adjustmentModeWasEnabled: _prefs.adjustmentModeWasEnabled,
+                spState: _spState,
+                pendingDays: _batches.where((b) => b.rawSegments.isNotEmpty).length,
+                onTap: _runAdjustmentCleanup,
+              ),
               Expanded(
                 child: _isLoading
                     ? const Center(
@@ -1895,9 +1244,10 @@ class _RecordingsPageState extends State<RecordingsPage>
                                       padding: const EdgeInsets.all(16),
                                       itemCount: dates.length,
                                       itemBuilder: (context, index) =>
-                                          _buildMarkerDayCard(
-                                            dates[index],
-                                            byDate[dates[index]]!,
+                                          MarkerDayCard(
+                                            dateStr: dates[index],
+                                            markers: byDate[dates[index]]!,
+                                            onMarkerTap: _openMarkerConversation,
                                           ),
                                     ),
                             );
@@ -1992,11 +1342,21 @@ class _RecordingsPageState extends State<RecordingsPage>
                                         const AlwaysScrollableScrollPhysics(),
                                     padding: const EdgeInsets.all(16),
                                     itemCount: visibleBatches.length,
-                                    itemBuilder: (context, index) =>
-                                        _buildBatchCard(
-                                          visibleBatches[index],
-                                          markerMap,
-                                        ),
+                                    itemBuilder: (context, index) => BatchCard(
+                                      batch: visibleBatches[index],
+                                      markerMap: markerMap,
+                                      minFilterSeconds: _minFilterSeconds,
+                                      adjustmentMode: _prefs.adjustmentMode,
+                                      heypocketApiKey: _prefs.heypocketApiKey,
+                                      isUploaded: _prefs.isUploadedToHeypocket,
+                                      isUploading: _uploadingFiles.contains,
+                                      onUploadTap: _handleUploadTap,
+                                      onMarkerTap: _openMarkerConversation,
+                                      onExportAll: (conversations) =>
+                                          _exportAll(visibleBatches[index], conversations),
+                                      onDeleteDay: () => _deleteDay(visibleBatches[index]),
+                                      onReprocessDay: () => _reprocessDay(visibleBatches[index]),
+                                    ),
                                   ),
                           );
                         },
