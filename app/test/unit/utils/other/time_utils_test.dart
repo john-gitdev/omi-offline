@@ -1,11 +1,18 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/services.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/other/time_utils.dart';
 
 void main() {
   group('Time Utils Test', () {
     setUp(() async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
+        (call) async => null,
+      );
       SharedPreferences.setMockInitialValues({});
       await SharedPreferencesUtil.init();
     });

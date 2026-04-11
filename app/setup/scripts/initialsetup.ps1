@@ -15,9 +15,6 @@ pod install
 pod repo update
 Set-Location -Path ".."
 
-# TODO Install Android dependencies?
-# ...
-
 # Create .env file from template
 Write-Host "Creating .env file..."
 Copy-Item -Path ".env.template" -Destination ".dev.env"
