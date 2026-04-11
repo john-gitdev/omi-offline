@@ -732,9 +732,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   @override
   Future<void> deleteAllSyncedWals() async {
     final synced = _wals.where((w) => w.status == WalStatus.synced).toList();
-    for (final wal in synced) {
-      await deleteWal(wal);
-    }
+    await Future.wait(synced.map((wal) => deleteWal(wal)));
   }
 
   @override
@@ -751,9 +749,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     } else {
       Logger.error('SDCardWalSync: CMD_CLEAR_STORAGE failed, falling back to per-file deletion');
       final files = await _listFiles(_device!.id);
-      for (final file in files) {
-        await connection.deleteFile(file);
-      }
+      await Future.wait(files.map((file) => connection.deleteFile(file)));
       _wals = [];
       listener.onWalUpdated();
     }
