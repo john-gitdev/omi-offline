@@ -921,31 +921,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   @override
-  Future<void> deleteAllSyncedWals() async {
-    final dev = _device;
-    if (dev == null) return;
-    final connection = _connectionProvider != null
-        ? await _connectionProvider!(dev.id)
-        : await ServiceManager.instance().device.ensureConnection(dev.id);
-    if (connection == null) return;
-
-    final synced = _wals.where((w) => w.status == WalStatus.synced).toList();
-    if (synced.isEmpty) return;
-
-    Logger.debug(
-      'SDCardWalSync: deleteAllSyncedWals — deleting ${synced.length} files sequentially',
-    );
-    for (final wal in synced) {
-      await connection.deleteFile(
-        StorageFile(index: wal.fileNum, timestamp: 0, size: 0),
-      );
-      _wals.removeWhere((w) => w.id == wal.id);
-    }
-
-    listener.onWalUpdated();
-  }
-
-  @override
   Future<void> deleteAllPendingWals() async {
     if (_device == null) return;
     final connection = await ServiceManager.instance().device.ensureConnection(

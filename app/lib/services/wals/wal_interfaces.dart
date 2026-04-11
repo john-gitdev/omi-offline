@@ -71,7 +71,6 @@ abstract class SDCardWalSync implements IWalSync {
   /// and uses the supplied list directly (avoids a redundant call when the
   /// caller already has a fresh file listing, e.g. from [_onDeviceConnected]).
   Future<void> setDevice(BtDevice? device, {List<StorageFile>? prefetchedFiles});
-  Future<void> deleteAllSyncedWals();
   Future<void> deleteAllPendingWals();
   bool get isSyncing;
   Future<void>? get cancelFuture;
