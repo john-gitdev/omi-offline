@@ -6,6 +6,7 @@ import 'package:omi/services/recordings_manager.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 class MockPathProvider extends Fake with MockPlatformInterfaceMixin implements PathProviderPlatform {
@@ -21,6 +22,12 @@ void main() {
   late MockPathProvider mockPathProvider;
 
   setUp(() async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
+      (call) async => null,
+    );
     tempDir = Directory.systemTemp.createTempSync('recordings_test');
     mockPathProvider = MockPathProvider()..tempPath = tempDir.path;
     PathProviderPlatform.instance = mockPathProvider;
