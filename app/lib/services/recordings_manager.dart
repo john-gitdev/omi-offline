@@ -308,12 +308,12 @@ class RecordingsManager {
         final folderEntities = await folder.list().toList();
         final files = folderEntities.whereType<File>().where((f) => f.path.endsWith('.bin')).toList();
 
-        for (var file in files) {
+        await Future.wait(files.map((file) async {
           final date = await file.lastModified();
           final dateString =
               '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
           rawSegmentsByDate.putIfAbsent(dateString, () => []).add(file);
-        }
+        }));
       }
     }
 
@@ -418,7 +418,8 @@ class RecordingsManager {
         if (!await tempDir.exists()) return;
         // Move .meta sidecars before .m4a/.wav so the sidecar is always present
         // by the time onRecordingFinalized fires and the scan reads the file.
-        final entities = tempDir.listSync().whereType<File>().toList()
+        final folderEntities = await tempDir.list().toList();
+        final entities = folderEntities.whereType<File>().toList()
           ..sort((a, b) {
             final aIsMeta = a.path.endsWith('.meta') ? 0 : 1;
             final bIsMeta = b.path.endsWith('.meta') ? 0 : 1;
