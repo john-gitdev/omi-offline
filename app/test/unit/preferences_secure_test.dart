@@ -15,7 +15,7 @@ void main() {
       secureStorageMock.clear();
 
       // Mock FlutterSecureStorage platform channel
-      const MethodChannel channel = MethodChannel('plugins.it_vantage.com/flutter_secure_storage');
+      const MethodChannel channel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
         if (call.method == 'read') {
           return secureStorageMock[call.arguments['key']];
@@ -72,7 +72,7 @@ void main() {
       final util = SharedPreferencesUtil();
 
       const newKey = 'pk_new_123';
-      util.heypocketApiKey = newKey;
+      await util.setHeypocketApiKey(newKey);
 
       expect(util.heypocketApiKey, newKey);
       expect(secureStorageMock['heypocketApiKey'], newKey);

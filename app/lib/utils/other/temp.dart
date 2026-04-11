@@ -15,15 +15,17 @@ Future routeToPage(BuildContext context, Widget page, {bool replace = false}) {
     return Future.value();
   }
 
-  var route = Platform.isIOS ? CupertinoPageRoute(builder: (c) => page) : MaterialPageRoute(builder: (c) => page);
+  var route = Platform.isIOS
+      ? CupertinoPageRoute(builder: (c) => page)
+      : MaterialPageRoute(builder: (c) => page);
   if (replace) {
     return Navigator.of(context).pushAndRemoveUntil(route, (route) => false);
   }
   return Navigator.of(context).push(route);
 }
 
-String formatChatTimestamp(DateTime dateTime) {
-  final now = DateTime.now();
+String formatChatTimestamp(DateTime dateTime, {DateTime? now}) {
+  now ??= DateTime.now();
   final today = DateTime(now.year, now.month, now.day);
   final messageDate = DateTime(dateTime.year, dateTime.month, dateTime.day);
   final timeStr = dateTimeFormat('h:mm a', dateTime);
@@ -38,14 +40,4 @@ String formatChatTimestamp(DateTime dateTime) {
     // Other days
     return dateTimeFormat('MMM d, h:mm a', dateTime);
   }
-}
-
-String countryFlagFromCode(String countryCode) {
-  const flagOffset = 0x1F1E6;
-  const asciiOffset = 0x41;
-
-  final firstChar = countryCode.codeUnitAt(0) - asciiOffset + flagOffset;
-  final secondChar = countryCode.codeUnitAt(1) - asciiOffset + flagOffset;
-
-  return String.fromCharCode(firstChar) + String.fromCharCode(secondChar);
 }

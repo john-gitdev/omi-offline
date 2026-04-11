@@ -43,4 +43,17 @@ void main() {
       expect(convertToHHMMSS(360000), '100:00:00');
     });
   });
+
+  group('String Utils - tryDecodingText', () {
+    test('decodes valid utf-8 string correctly', () {
+      final text = 'Hello world';
+      expect(tryDecodingText(text), text);
+    });
+
+    test('returns original string if utf-8 decoding fails', () {
+      // Create a malformed UTF-8 string by using an invalid starting byte
+      final text = String.fromCharCodes([0xFF]);
+      expect(tryDecodingText(text), text);
+    });
+  });
 }
