@@ -1,0 +1,101 @@
+import 'package:flutter/material.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:omi/services/recordings_manager.dart';
+
+class MarkerDayCard extends StatelessWidget {
+  final String dateStr;
+  final List<MarkerConversation> markers;
+  final Function(MarkerConversation) onOpenMarkerConversation;
+
+  const MarkerDayCard({
+    super.key,
+    required this.dateStr,
+    required this.markers,
+    required this.onOpenMarkerConversation,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Sort ascending by markerTime so they read chronologically within the day.
+    final sorted = [...markers]
+      ..sort((a, b) => a.markerTime.compareTo(b.markerTime));
+
+    return Card(
+      color: const Color(0xFF1C1C1E),
+      margin: const EdgeInsets.only(bottom: 16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              dateStr,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 12),
+            ...sorted.map((mc) => _buildMarkerTile(mc)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMarkerTile(MarkerConversation mc) {
+    return InkWell(
+      onTap: mc.isPending ? null : () => onOpenMarkerConversation(mc),
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+        child: Row(
+          children: [
+            FaIcon(
+              FontAwesomeIcons.solidBookmark,
+              color: mc.isPending ? Colors.grey.shade600 : Colors.amber,
+              size: 14,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    mc.isPending ? 'Processing…' : mc.timeRangeLabel,
+                    style: TextStyle(
+                      color: mc.isPending ? Colors.grey.shade600 : Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    'marker at ${mc.markerTimeLabel}',
+                    style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            if (!mc.isPending && mc.userSaved) ...[
+              const FaIcon(
+                FontAwesomeIcons.circleCheck,
+                color: Colors.green,
+                size: 14,
+              ),
+              const SizedBox(width: 8),
+            ],
+            if (!mc.isPending)
+              FaIcon(
+                FontAwesomeIcons.chevronRight,
+                color: Colors.grey.shade600,
+                size: 14,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
