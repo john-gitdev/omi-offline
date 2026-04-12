@@ -6,6 +6,7 @@ import 'package:omi/services/recordings_manager.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:omi/backend/preferences.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
@@ -15,6 +16,19 @@ class MockPathProvider extends Fake with MockPlatformInterfaceMixin implements P
   Future<String?> getApplicationDocumentsPath() async => tempPath;
   @override
   Future<String?> getTemporaryPath() async => tempPath;
+}
+
+class MockErrorFile extends Fake implements File {
+  @override
+  String get path => 'invalid_0.bin';
+
+  @override
+  DateTime lastModifiedSync() {
+    throw const FileSystemException('Mocked processing failure');
+  }
+
+  @override
+  int lengthSync() => 0; // needed for rawTotalBytes check to not throw prematurely
 }
 
 void main() {
@@ -38,6 +52,27 @@ void main() {
     if (tempDir.existsSync()) {
       tempDir.deleteSync(recursive: true);
     }
+  });
+
+  test('processAll handles processing errors and rethrows', () async {
+    final manager = RecordingsManager();
+    final batch = Batch(
+      dateString: '2026-03-11',
+      date: DateTime.now(),
+      rawSegments: [MockErrorFile()],
+      finalizedRecordings: [],
+    );
+
+    // This intentionally throws an error, triggering the catch and rethrow logic in processAll.
+    // We expect a FileSystemException (or ArgumentError if ONNX fails first) to be rethrown,
+    // and for the finally block to reset the processing states.
+    await expectLater(
+      () => manager.processAll([batch], (_) {}),
+      throwsA(isA<Object>()), // Catching Object to handle both ArgumentError (ONNX fallback) and FileSystemException (mock)
+    );
+
+    expect(RecordingsManager.isProcessingAny, false);
+    expect(SharedPreferencesUtil().extractionInProgress, false);
   });
 
   test('getBatches identifies and groups segments correctly', () async {
