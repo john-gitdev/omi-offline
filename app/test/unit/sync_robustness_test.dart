@@ -120,12 +120,12 @@ class MockDeviceConnection extends Fake implements DeviceConnection {
 class MockBtDevice extends Fake implements BtDevice {
   @override
   String get id => 'test-device-id';
-  
+
   final MockDeviceConnection connection = MockDeviceConnection();
-  
+
   @override
   DeviceConnection? get connectionInstance => connection;
-  
+
   @override
   BleAudioCodec get codec => BleAudioCodec.opus;
 }
@@ -403,7 +403,7 @@ void main() {
     test('Conversation.fromFile handles missing uploadKey in meta', () async {
       final audioFile = File('${tempDir.path}/recording_1773961625000.m4a')..createSync(recursive: true);
       final metaFile = File('${tempDir.path}/recording_1773961625000.meta')..createSync(recursive: true);
-      
+
       // Write short meta (only 8 bytes, no upload key)
       final bd = ByteData(8);
       bd.setUint32(0, 1000, Endian.little); // samples
@@ -419,17 +419,17 @@ void main() {
     test('Conversation.fromFile parses long uploadKey correctly', () async {
       final audioFile = File('${tempDir.path}/rec_long.m4a')..createSync(recursive: true);
       final metaFile = File('${tempDir.path}/rec_long.meta')..createSync(recursive: true);
-      
+
       final key = 'ABCDEF_recording_123456789.m4a';
       final keyBytes = key.codeUnits;
-      
+
       final builder = BytesBuilder();
       final bd = ByteData(408);
       bd.setUint32(4, 5000, Endian.little); // 5s duration
       builder.add(bd.buffer.asUint8List());
       builder.addByte(keyBytes.length);
       builder.add(keyBytes);
-      
+
       metaFile.writeAsBytesSync(builder.toBytes());
 
       final conv = Conversation.fromFile(audioFile);
