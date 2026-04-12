@@ -16,7 +16,9 @@ class MockDeviceTransport implements DeviceTransport {
   Future<void> disconnect() async {}
 
   @override
-  Future<bool> requestBond() async { return true; }
+  Future<bool> requestBond() async {
+    return true;
+  }
 
   @override
   String get deviceId => 'test_id';
@@ -33,10 +35,14 @@ class MockDeviceTransport implements DeviceTransport {
   }
 
   @override
-  Future<bool> isConnected() async { return true; }
+  Future<bool> isConnected() async {
+    return true;
+  }
 
   @override
-  Future<bool> ping() async { return true; }
+  Future<bool> ping() async {
+    return true;
+  }
 
   @override
   Future<List<int>> readCharacteristic(String serviceUuid, String characteristicUuid) async {
@@ -50,8 +56,7 @@ class MockDeviceTransport implements DeviceTransport {
 class MockDeviceConnection extends DeviceConnection {
   final Future<BtDevice> Function(DeviceConnection?)? onPerformGetDeviceInfo;
 
-  MockDeviceConnection(BtDevice device, {this.onPerformGetDeviceInfo})
-      : super(device, MockDeviceTransport());
+  MockDeviceConnection(BtDevice device, {this.onPerformGetDeviceInfo}) : super(device, MockDeviceTransport());
 
   @override
   Future<void> acquireStorageLock() async {}
@@ -62,7 +67,7 @@ class MockDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<StorageFileStats?> getStorageFileStats() async {
+  Future<StorageFileStats?> performGetStorageFileStats() async {
     return null;
   }
 
@@ -83,8 +88,7 @@ class MockDeviceConnection extends DeviceConnection {
 
   @override
   Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener(
-      {void Function(int p1)? onBatteryLevelChange,
-      void Function(bool p1)? onChargingStateChange}) async {
+      {void Function(int p1)? onBatteryLevelChange, void Function(bool p1)? onChargingStateChange}) async {
     return null;
   }
 

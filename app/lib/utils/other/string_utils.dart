@@ -56,7 +56,8 @@ String decodeBase64(String data) {
 String tryDecodingText(String text) {
   try {
     return utf8.decode(text.toString().codeUnits);
-  } catch (e) {
+  } on FormatException catch (_) {
+    // explicit exception catch to help LCOV
     return text;
   }
 }
