@@ -680,23 +680,25 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
-        if (_autoUploadActive >= 2) return;
+        if (_autoUploadActive >= 3) continue;
         if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
         final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
         if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
         if (_uploadingFiles.contains(uploadKey)) continue;
-        
+
         _uploadingFiles.add(uploadKey);
         _autoUploadActive++;
-        notifyListeners();
-        
+
         unawaited(
           HeyPocketService.uploadRecording(apiKey, conversation)
               .then((_) async {
                 await _prefs.markUploadedToHeypocket(uploadKey);
               })
               .catchError((e) {
+                if (e is HeyPocketException && e.statusCode == 401) {
+                  _prefs.heypocketEnabled = false;
+                }
                 Logger.error('HeyPocket auto-upload failed: $e');
               })
               .whenComplete(() {
@@ -710,6 +712,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         );
       }
     }
+    if (!_isDisposed) notifyListeners();
   }
 
   Future<void> uploadConversation(Conversation conversation) async {
