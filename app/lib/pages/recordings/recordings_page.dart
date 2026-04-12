@@ -1,16 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:omi/utils/logger.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/heypocket_service.dart';
-import 'package:omi/services/services.dart';
 import 'package:omi/backend/preferences.dart';
-import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/pages/settings/settings_drawer.dart';
 import 'package:omi/pages/settings/find_devices_page.dart';
 import 'package:omi/pages/settings/device_settings.dart';
@@ -20,9 +17,9 @@ import 'package:omi/pages/recordings/recordings_banners.dart';
 import 'package:omi/pages/recordings/sync_process_card.dart';
 import 'package:omi/pages/recordings/batch_card.dart';
 import 'package:omi/pages/recordings/marker_day_card.dart';
+import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:omi/widgets/battery_status_indicator.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
 
 // ─── Page ───────────────────────────────────────────────────────────────────
 class RecordingsPage extends StatefulWidget {
@@ -32,296 +29,28 @@ class RecordingsPage extends StatefulWidget {
   State<RecordingsPage> createState() => _RecordingsPageState();
 }
 
-class _RecordingsPageState extends State<RecordingsPage>
-    implements IWalSyncProgressListener {
-  final RecordingsManager _manager = RecordingsManager();
+class _RecordingsPageState extends State<RecordingsPage> {
   final _prefs = SharedPreferencesUtil();
+  late final RecordingsController _controller;
 
-  // ─── Batch data ────────────────────────────────────────────────────────────
-  List<Batch> _batches = [];
-  List<MarkerConversation> _markerConversations = [];
-  bool _isLoading = true;
   bool _showMarkersOnly = false;
   int _minFilterSeconds = 0; // 0 = no filter
 
-  // ─── Unified sync+process state ────────────────────────────────────────────
-  SyncProcessState _spState = SyncProcessState.idle;
-  int _syncedCount = 0;
-  int _totalCount = 0;
-  double _minutesRemaining = 0.0;
-  double _totalMinutes = 0.0;
-  int _markerCount = 0;
-  double _syncSpeed = 0.0;
-  double _accumulatedMinutes =
-      0.0; // raw audio on disk not yet turned into a recording
-  String _lastCompletedStage = 'none'; // "none" | "syncing" | "processing"
-  String _lastActiveStage = 'syncing'; // "syncing" | "processing"
-  // ─── HeyPocket upload state ────────────────────────────────────────────────
-  final Set<String> _uploadingFiles = {};
-  int _autoUploadActive = 0;
-  String _lastHpKey = '';
-
-  Timer? _pollTimer;
-  bool _isUserTriggered =
-      false; // true while user-initiated pipeline is running
-  Completer<void>?
-  _pipelineCompleter; // completed when the pipeline reaches a terminal state
-
-  // ─── Force sync state ──────────────────────────────────────────────────────
-  bool _isForcePipeline =
-      false; // true while a force-sync-initiated pipeline is running
-  bool _forceSyncOnCooldown =
-      false; // true for 1 min after the button is pressed
-  Timer? _forceSyncCooldownTimer;
-
-  // ─── Persistence keys ──────────────────────────────────────────────────────
-  static const _kSpState = 'sp_state';
-  static const _kSpSyncedCount = 'sp_synced_count';
-  static const _kSpTotalCount = 'sp_total_count';
-  static const _kSpMinutesRemaining = 'sp_minutes_remaining';
-  static const _kSpMarkerCount = 'sp_marker_count';
-  static const _kSpLastCompleted = 'sp_last_completed_stage';
-  static const _kSpLastActive = 'sp_last_active_stage';
-
-  // ─── Lifecycle ─────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
-    _lastHpKey = _prefs.heypocketApiKey;
-    _restoreState();
-    _loadBatches();
-    ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(this);
-    RecordingsManager.recordingsChangeNotifier.addListener(
-      _onRecordingsChanged,
-    );
-    _pollTimer = Timer.periodic(
-      const Duration(milliseconds: 500),
-      (_) => _poll(),
-    );
-  }
-
-  void _onRecordingsChanged() {
-    if (mounted) {
-      _restoreState();
-      _loadBatches();
-    }
-  }
-
-  void _restoreState() {
-    final saved = _prefs.getString(_kSpState, defaultValue: 'idle');
-    // Disable auto-resume for debugging as requested.
-    if (saved == 'error') {
-      _spState = SyncProcessState.error;
-    } else {
-      _spState = SyncProcessState.idle;
-    }
-    _syncedCount = _prefs.getInt(_kSpSyncedCount);
-    _totalCount = _prefs.getInt(_kSpTotalCount);
-    _minutesRemaining = _prefs.getDouble(_kSpMinutesRemaining);
-    _markerCount = _prefs.getInt(_kSpMarkerCount);
-    _lastCompletedStage = _prefs.getString(
-      _kSpLastCompleted,
-      defaultValue: 'none',
-    );
-    _lastActiveStage = _prefs.getString(
-      _kSpLastActive,
-      defaultValue: 'syncing',
-    );
-
-    // Cold-start: if a background job is already running when the page opens,
-    // reflect it immediately rather than waiting for the first poll tick.
-    if (_spState == SyncProcessState.idle) {
-      final syncs = ServiceManager.instance().wal.getSyncs();
-      if (syncs.isSyncing) {
-        _spState = SyncProcessState.syncing;
-        _totalCount = syncs.estimatedTotalSegments;
-      } else if (RecordingsManager.isProcessingAny) {
-        _spState = SyncProcessState.processing;
-      }
-    }
+    _controller = RecordingsController()..init();
   }
 
   @override
   void dispose() {
-    _pollTimer?.cancel();
-    _forceSyncCooldownTimer?.cancel();
-    ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(null);
-    RecordingsManager.recordingsChangeNotifier.removeListener(
-      _onRecordingsChanged,
-    );
+    _controller.dispose();
     super.dispose();
   }
 
-  // ─── Poll ──────────────────────────────────────────────────────────────────
-  void _poll() {
-    if (!mounted) return;
-
-    final syncs = ServiceManager.instance().wal.getSyncs();
-    final serviceIsSyncing = syncs.isSyncing;
-    final serviceIsProcessing = RecordingsManager.isProcessingAny;
-
-    // Safety net: STOPPING → IDLE once underlying ops stop.
-    if (_spState == SyncProcessState.stopping) {
-      if (!serviceIsSyncing && !serviceIsProcessing) {
-        _transitionTo(SyncProcessState.idle);
-        unawaited(_reloadBatchesSilently());
-      }
-      _pollHeyPocket();
-      return;
-    }
-
-    if (!_isUserTriggered) {
-      // ── Background sync started ──────────────────────────────────────────
-      if (serviceIsSyncing && _spState == SyncProcessState.idle) {
-        setState(() {
-          _spState = SyncProcessState.syncing;
-          _totalCount = syncs.estimatedTotalSegments;
-          _syncedCount = 0;
-          _syncSpeed = 0.0;
-        });
-      }
-
-      // ── Background processing started (without prior sync) ──────────────
-      if (serviceIsProcessing && _spState == SyncProcessState.idle) {
-        setState(() => _spState = SyncProcessState.processing);
-      }
-
-      // ── Background sync finished ─────────────────────────────────────────
-      if (!serviceIsSyncing && _spState == SyncProcessState.syncing) {
-        if (serviceIsProcessing) {
-          // Background processing auto-started after sync — show it.
-          unawaited(
-            _reloadBatchesSilently().then((_) async {
-              if (!mounted) return;
-              final processable = _batches.expand((b) => b.rawSegments).toList();
-              final lengths = await Future.wait(
-                processable.map((f) => f.length().catchError((_) => 0)),
-              );              final totalBytes = lengths.fold(0, (s, len) => s + len);
-              if (!mounted) return;
-              setState(() {
-                _spState = SyncProcessState.processing;
-                _totalMinutes =
-                    totalBytes /
-                    252000.0; // segment on-disk: 4-byte prefix + ~80 B Opus = ~84 B/frame × 50 fps × 60 s
-                _minutesRemaining = _totalMinutes;
-                _syncedCount = 0;
-                _syncSpeed = 0.0;
-              });
-            }),
-          );
-        } else {
-          setState(() {
-            _spState = SyncProcessState.idle;
-            _syncedCount = 0;
-            _totalCount = 0;
-            _syncSpeed = 0.0;
-          });
-          unawaited(_reloadBatchesSilently());
-        }
-      }
-
-      // ── Background processing finished ───────────────────────────────────
-      if (!serviceIsProcessing && _spState == SyncProcessState.processing) {
-        setState(() {
-          _spState = SyncProcessState.idle;
-          _minutesRemaining = 0;
-          _totalMinutes = 0;
-        });
-        _loadBatches();
-      }
-    }
-
-    _pollHeyPocket();
-  }
-
-  void _pollHeyPocket() {
-    final currentKey = _prefs.heypocketApiKey;
-    if (currentKey != _lastHpKey) {
-      _lastHpKey = currentKey;
-      setState(() {});
-      if (currentKey.isNotEmpty) _tryAutoUploadNext();
-    }
-  }
-
-  // ─── State transitions ─────────────────────────────────────────────────────
-  void _transitionTo(SyncProcessState newState) {
-    if (!mounted) return;
-    setState(() => _spState = newState);
-    // Don't persist transient SUCCESS_UI; it reverts to idle automatically.
-    if (newState != SyncProcessState.successUi) {
-      _prefs.saveString(_kSpState, newState.name);
-    }
-    _prefs.saveString(_kSpLastCompleted, _lastCompletedStage);
-    _prefs.saveString(_kSpLastActive, _lastActiveStage);
-    // Complete the refresh-indicator future when the pipeline reaches a terminal state.
-    if (newState == SyncProcessState.idle ||
-        newState == SyncProcessState.error ||
-        newState == SyncProcessState.successUi) {
-      _pipelineCompleter?.complete();
-      _pipelineCompleter = null;
-    }
-  }
-
-  void _transitionToError(String activeStage, String message) {
-    if (!mounted) return;
-    _isForcePipeline = false;
-    _lastActiveStage = activeStage;
-    Logger.error('RecordingsPage: Pipeline error [$activeStage]: $message');
-    setState(() => _spState = SyncProcessState.error);
-    _prefs.saveString(_kSpState, 'error');
-    _prefs.saveString(_kSpLastActive, activeStage);
-    _pipelineCompleter?.complete();
-    _pipelineCompleter = null;
-  }
-
-  void _persistProgress() {
-    _prefs.saveInt(_kSpSyncedCount, _syncedCount);
-    _prefs.saveInt(_kSpTotalCount, _totalCount);
-    _prefs.saveDouble(_kSpMinutesRemaining, _minutesRemaining);
-    _prefs.saveInt(_kSpMarkerCount, _markerCount);
-  }
-
-  // ─── IWalSyncProgressListener ──────────────────────────────────────────────
-  @override
-  void onWalSyncedProgress(
-    double percentage, {
-    double? speedKBps,
-    SyncPhase? phase,
-  }) {
-    if (!mounted) return;
-    setState(() {
-      _syncSpeed = speedKBps ?? 0.0;
-      // If _totalCount is 0 or mismatched (WAL list wasn't populated yet),
-      // refresh it from estimatedTotalSegments now that syncAll/listFiles has progressed.
-      final currentEstimated = ServiceManager.instance().wal
-          .getSyncs()
-          .recordingsCount;
-      if (_totalCount <= 0 && currentEstimated > 0) {
-        _totalCount = currentEstimated;
-        Logger.debug(
-          'RecordingsPage: Backfilled totalCount from service: $_totalCount',
-        );
-      }
-
-      if (_totalCount > 0) {
-        _syncedCount = (percentage * _totalCount).round().clamp(0, _totalCount);
-      } else {
-        _syncedCount = 0;
-      }
-    });
-  }
-
-  // ─── Pipeline entry points ─────────────────────────────────────────────────
-  void _startPipeline() {
-    if (_spState != SyncProcessState.idle) return;
-    _poll(); // flush any background ops the 500ms timer hasn't caught yet
-    if (_spState != SyncProcessState.idle) return;
-    unawaited(_runPipeline());
-  }
-
   Future<void> _forceSyncButtonPressed() async {
-    if (_spState != SyncProcessState.idle) return;
-    if (_forceSyncOnCooldown) return;
+    if (_controller.spState != SyncProcessState.idle) return;
+    if (_controller.forceSyncOnCooldown) return;
 
     final skipConfirm = _prefs.forceSyncSkipConfirm;
     if (!skipConfirm) {
@@ -331,10 +60,7 @@ class _RecordingsPageState extends State<RecordingsPage>
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, setDialogState) => AlertDialog(
             backgroundColor: const Color(0xFF1C1C1E),
-            title: const Text(
-              'Force Sync',
-              style: TextStyle(color: Colors.white),
-            ),
+            title: const Text('Force Sync', style: TextStyle(color: Colors.white)),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -345,8 +71,7 @@ class _RecordingsPageState extends State<RecordingsPage>
                 ),
                 const SizedBox(height: 16),
                 GestureDetector(
-                  onTap: () =>
-                      setDialogState(() => doNotShowAgain = !doNotShowAgain),
+                  onTap: () => setDialogState(() => doNotShowAgain = !doNotShowAgain),
                   child: Row(
                     children: [
                       SizedBox(
@@ -354,8 +79,7 @@ class _RecordingsPageState extends State<RecordingsPage>
                         height: 20,
                         child: Checkbox(
                           value: doNotShowAgain,
-                          onChanged: (v) =>
-                              setDialogState(() => doNotShowAgain = v ?? false),
+                          onChanged: (v) => setDialogState(() => doNotShowAgain = v ?? false),
                           activeColor: Colors.deepPurpleAccent,
                           side: const BorderSide(color: Colors.grey),
                         ),
@@ -373,17 +97,11 @@ class _RecordingsPageState extends State<RecordingsPage>
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text(
-                  'Cancel',
-                  style: TextStyle(color: Colors.grey),
-                ),
+                child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
               ),
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(true),
-                child: const Text(
-                  'Yes',
-                  style: TextStyle(color: Colors.deepPurpleAccent),
-                ),
+                child: const Text('Yes', style: TextStyle(color: Colors.deepPurpleAccent)),
               ),
             ],
           ),
@@ -393,270 +111,13 @@ class _RecordingsPageState extends State<RecordingsPage>
       if (doNotShowAgain) _prefs.forceSyncSkipConfirm = true;
     }
 
-    // Start cooldown the moment the user confirms
-    setState(() => _forceSyncOnCooldown = true);
-    _forceSyncCooldownTimer?.cancel();
-    _forceSyncCooldownTimer = Timer(const Duration(minutes: 1), () {
-      if (mounted) setState(() => _forceSyncOnCooldown = false);
-    });
-
-    unawaited(_runForcePipeline());
+    unawaited(_controller.startForcePipeline());
   }
 
-  Future<void> _runForcePipeline() async {
-    _isUserTriggered = true;
-    _isForcePipeline = true;
-    _lastActiveStage = 'syncing';
-    _transitionTo(SyncProcessState.syncing);
-
-    final syncs = ServiceManager.instance().wal.getSyncs();
-    setState(() {
-      _totalCount =
-          0; // will be backfilled by onWalSyncedProgress after rotation+list
-      _syncedCount = 0;
-      _syncSpeed = 0.0;
-    });
-    _persistProgress();
-    WakelockPlus.enable();
-
-    try {
-      await syncs.rotateAndSync(progress: this);
-    } catch (e) {
-      _isUserTriggered = false;
-      _isForcePipeline = false;
-      WakelockPlus.disable();
-      if (_spState == SyncProcessState.stopping) {
-        _transitionTo(SyncProcessState.idle);
-        unawaited(_reloadBatchesSilently());
-      } else {
-        _transitionToError('syncing', e.toString());
-      }
-      return;
-    }
-    WakelockPlus.disable();
-
-    if (_spState == SyncProcessState.stopping) {
-      _isForcePipeline = false;
-      _transitionTo(SyncProcessState.idle);
-      unawaited(_reloadBatchesSilently());
-      return;
-    }
-
-    setState(() {
-      _syncedCount = _totalCount;
-      _lastCompletedStage = 'syncing';
-    });
-    _prefs.saveString(_kSpLastCompleted, 'syncing');
-    await _reloadBatchesSilently();
-    setState(() {
-      _markerCount = _batches.fold(
-        0,
-        (sum, b) => sum + b.markerTimestamps.length,
-      );
-    });
-    _persistProgress();
-
-    await _runProcessing();
-    _isUserTriggered = false;
-  }
-
-  void _resumePipeline() {
-    if (_spState != SyncProcessState.resume) return;
-    if (_lastCompletedStage == 'syncing') {
-      unawaited(_runProcessing());
-    } else {
-      unawaited(_runPipeline());
-    }
-  }
-
-  void _retryFromError() {
-    if (_spState != SyncProcessState.error) return;
-    if (_lastActiveStage == 'processing' && _lastCompletedStage == 'syncing') {
-      unawaited(_runProcessing());
-    } else {
-      unawaited(_runPipeline());
-    }
-  }
-
-  // ─── Pipeline stages ───────────────────────────────────────────────────────
-  Future<void> _runPipeline() async {
-    _isUserTriggered = true;
-    _lastActiveStage = 'syncing';
-    _transitionTo(SyncProcessState.syncing);
-
-    // Give the firmware 1s to settle its internal file list cache before we start requesting reads
-    await Future.delayed(const Duration(seconds: 1));
-
-    final syncs = ServiceManager.instance().wal.getSyncs();
-    final estimatedTotal = syncs.estimatedTotalSegments;
-    Logger.debug(
-      'RecordingsPage: _runPipeline start — estimatedTotalSegments=$estimatedTotal',
-    );
-    setState(() {
-      _totalCount = estimatedTotal;
-      _syncedCount = 0;
-      _syncSpeed = 0.0;
-    });
-    _persistProgress();
-    WakelockPlus.enable();
-
-    try {
-      final result = await syncs.syncAll(progress: this);
-      if (result == null) {
-        // Background sync was already running — our call was a no-op.
-        // Don't fall through to processing; let the background pipeline finish.
-        _isUserTriggered = false;
-        WakelockPlus.disable();
-        _transitionTo(SyncProcessState.idle);
-        return;
-      }
-    } catch (e) {
-      _isUserTriggered = false;
-      WakelockPlus.disable();
-      if (_spState == SyncProcessState.stopping) {
-        _transitionTo(SyncProcessState.idle);
-        unawaited(_reloadBatchesSilently());
-      } else {
-        _transitionToError('syncing', e.toString());
-      }
-      return;
-    }
-    WakelockPlus.disable();
-
-    if (_spState == SyncProcessState.stopping) {
-      _transitionTo(SyncProcessState.idle);
-      unawaited(_reloadBatchesSilently());
-      return;
-    }
-
-    // Sync complete — mark and gather markers
-    setState(() {
-      _syncedCount = _totalCount;
-      _lastCompletedStage = 'syncing';
-    });
-    _prefs.saveString(_kSpLastCompleted, 'syncing');
-    await _reloadBatchesSilently();
-    setState(() {
-      _markerCount = _batches.fold(
-        0,
-        (sum, b) => sum + b.markerTimestamps.length,
-      );
-    });
-    _persistProgress();
-
-    await _runProcessing();
-    _isUserTriggered = false;
-  }
-
-  Future<void> _runProcessing() async {
-    _lastActiveStage = 'processing';
-    _transitionTo(SyncProcessState.processing);
-
-    final activeBatches = _batches
-        .where((b) => b.rawSegments.isNotEmpty)
-        .toList();
-    if (activeBatches.isEmpty) {
-      await _finishSuccess();
-      return;
-    }
-
-    // Thunderbolt (force): flush everything including in-progress interval.
-    // Swipe (non-force): allow VAD to keep in-progress conversations as 'raw' to be continued later.
-    final List<Batch> batchesToProcess = activeBatches;
-    final bool backgroundMode = !_isForcePipeline;
-
-    if (batchesToProcess.isEmpty) {
-      await _finishSuccess();
-      return;
-    }
-
-    // Compute total audio minutes from segments to be processed.
-    final allRaw = batchesToProcess.expand((b) => b.rawSegments).toList();
-    final totalBytes = allRaw.fold(0, (sum, f) {
-      try {
-        return sum + f.lengthSync();
-      } catch (_) {
-        return sum;
-      }
-    });
-    final totalMin = totalBytes / 252000.0; // ~84 B/frame × 50 fps × 60 s
-    setState(() {
-      _totalMinutes = totalMin;
-      _minutesRemaining = totalMin;
-    });
-    _persistProgress();
-
-    WakelockPlus.enable();
-    try {
-      await _manager.processAll(
-        batchesToProcess,
-        (progress) {
-          if (mounted) {
-            setState(() {
-              _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(
-                0.0,
-                _totalMinutes,
-              );
-            });
-          }
-        },
-        backgroundMode: backgroundMode,
-        onRecordingFinalized: () {
-          unawaited(_reloadBatchesSilently());
-        },
-      );
-    } catch (e) {
-      WakelockPlus.disable();
-      if (_spState == SyncProcessState.stopping) {
-        _transitionTo(SyncProcessState.idle);
-        unawaited(_reloadBatchesSilently());
-      } else {
-        _transitionToError('processing', e.toString());
-      }
-      return;
-    }
-    WakelockPlus.disable();
-
-    if (_spState == SyncProcessState.stopping) {
-      _transitionTo(SyncProcessState.idle);
-      unawaited(_reloadBatchesSilently());
-      return;
-    }
-
-    setState(() {
-      _minutesRemaining = 0;
-      _lastCompletedStage = 'processing';
-    });
-    _persistProgress();
-    await _reloadBatchesSilently();
-    await _finishSuccess();
-  }
-
-  Future<void> _finishSuccess() async {
-    _isForcePipeline = false;
-    _transitionTo(SyncProcessState.successUi);
-    await Future.delayed(const Duration(milliseconds: 10000));
-    if (!mounted) return;
-    setState(() {
-      _lastCompletedStage = 'none';
-      _syncedCount = 0;
-      _totalCount = 0;
-      _markerCount = 0;
-      _minutesRemaining = 0;
-      _totalMinutes = 0;
-    });
-    _prefs.saveString(_kSpLastCompleted, 'none');
-    _persistProgress();
-    _transitionTo(SyncProcessState.idle);
-    _loadBatches();
-  }
-
-  // ─── Cancel modal ──────────────────────────────────────────────────────────
   Future<void> _showCancelModal() async {
-    if (_spState != SyncProcessState.syncing &&
-        _spState != SyncProcessState.processing)
+    if (_controller.spState != SyncProcessState.syncing &&
+        _controller.spState != SyncProcessState.processing)
       return;
-    final wasState = _spState;
     final confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -669,54 +130,9 @@ class _RecordingsPageState extends State<RecordingsPage>
       ),
     );
     if (confirm != true) return;
-    Logger.debug(
-      'RecordingsPage: Cancel confirmed (was $wasState) — cancelling sync + processing.',
-    );
-    _transitionTo(SyncProcessState.stopping);
-    ServiceManager.instance().wal.getSyncs().cancelSync();
-    RecordingsManager.cancelProcessing();
+    _controller.cancelPipeline();
   }
 
-  // ─── Batch loading ─────────────────────────────────────────────────────────
-  Future<void> _loadBatches() async {
-    setState(() => _isLoading = true);
-    try {
-      final results = await Future.wait([
-        _manager.getBatches(),
-        _manager.getMarkerConversations(),
-      ]);
-      if (mounted) {
-        setState(() {
-          _batches = results[0] as List<Batch>;
-          _markerConversations = results[1] as List<MarkerConversation>;
-          _isLoading = false;
-          _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
-        });
-        _tryAutoUploadNext();
-      }
-    } catch (e) {
-      Logger.error('RecordingsPage: Failed to load batches: $e');
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _reloadBatchesSilently() async {
-    try {
-      final results = await Future.wait([
-        _manager.getBatches(),
-        _manager.getMarkerConversations(),
-      ]);
-      if (mounted) {
-        setState(() {
-          _batches = results[0] as List<Batch>;
-          _markerConversations = results[1] as List<MarkerConversation>;
-          _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
-        });
-      }
-    } catch (_) {}
-  }
-
-  // ─── Delete / export ───────────────────────────────────────────────────────
   Future<void> _deleteDay(Batch batch) async {
     final messenger = ScaffoldMessenger.of(context);
     bool? confirm = await showDialog<bool>(
@@ -732,20 +148,15 @@ class _RecordingsPageState extends State<RecordingsPage>
     );
     if (confirm != true) return;
     try {
-      await _manager.deleteDay(batch);
-      await _loadBatches();
+      await _controller.deleteDay(batch);
     } catch (e) {
-      if (mounted) {
-        messenger.showSnackBar(
-          SnackBar(content: Text('Error deleting day: $e')),
-        );
-      }
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Error deleting day: $e')));
     }
   }
 
   Future<void> _runAdjustmentCleanup() async {
-    if (_spState != SyncProcessState.idle) return;
-    final daysWithBins = _batches.where((b) => b.rawSegments.isNotEmpty).toList();
+    if (_controller.spState != SyncProcessState.idle) return;
+    final daysWithBins = _controller.batches.where((b) => b.rawSegments.isNotEmpty).toList();
     if (daysWithBins.isEmpty) return;
 
     final confirm = await showDialog<bool>(
@@ -762,46 +173,12 @@ class _RecordingsPageState extends State<RecordingsPage>
       ),
     );
     if (confirm != true) return;
-
-    _lastActiveStage = 'processing';
-    _transitionTo(SyncProcessState.processing);
-
-    // Process days that have bins but no recordings yet.
-    final unprocessed = daysWithBins.where((b) => b.finalizedRecordings.isEmpty).toList();
-    if (unprocessed.isNotEmpty) {
-      final totalBytes = unprocessed.expand((b) => b.rawSegments).fold(0, (sum, f) {
-        try { return sum + f.lengthSync(); } catch (_) { return sum; }
-      });
-      setState(() {
-        _totalMinutes = totalBytes / 252000.0;
-        _minutesRemaining = _totalMinutes;
-      });
-      WakelockPlus.enable();
-      try {
-        await _manager.processAll(unprocessed, (progress) {
-          if (mounted) setState(() => _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes));
-        }, backgroundMode: false);
-      } catch (e) {
-        WakelockPlus.disable();
-        _transitionToError('processing', e.toString());
-        return;
-      }
-      WakelockPlus.disable();
-    }
-
-    // Delete all remaining bins (including already-processed days).
-    await RecordingsManager.deleteAllRawSegments();
-    _prefs.adjustmentModeWasEnabled = false;
-
-    setState(() { _minutesRemaining = 0; _lastCompletedStage = 'processing'; });
-    _persistProgress();
-    await _reloadBatchesSilently();
-    await _finishSuccess();
+    unawaited(_controller.runAdjustmentCleanup());
   }
 
   Future<void> _reprocessDay(Batch batch) async {
     final messenger = ScaffoldMessenger.of(context);
-    if (_spState != SyncProcessState.idle) return;
+    if (_controller.spState != SyncProcessState.idle) return;
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -815,47 +192,9 @@ class _RecordingsPageState extends State<RecordingsPage>
     );
     if (confirm != true) return;
     try {
-      // Delete first, then immediately refresh so the day shows as empty.
-      await RecordingsManager.reprocessDay(batch);
-      await _loadBatches();
-
-      // Find the freshly-loaded batch (raw segments still present).
-      final freshBatch = _batches.where((b) => b.dateString == batch.dateString && b.rawSegments.isNotEmpty).toList();
-      if (freshBatch.isEmpty) return;
-
-      final totalBytes = freshBatch.expand((b) => b.rawSegments).fold(0, (sum, f) {
-        try { return sum + f.lengthSync(); } catch (_) { return sum; }
-      });
-      _lastActiveStage = 'processing';
-      setState(() {
-        _totalMinutes = totalBytes / 252000.0;
-        _minutesRemaining = _totalMinutes;
-      });
-      _transitionTo(SyncProcessState.processing);
-      WakelockPlus.enable();
-      try {
-        await _manager.processAll(
-          freshBatch,
-          (progress) {
-            if (mounted) setState(() => _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes));
-          },
-          backgroundMode: false,
-          onRecordingFinalized: () { unawaited(_reloadBatchesSilently()); },
-        );
-      } catch (e) {
-        WakelockPlus.disable();
-        _transitionToError('processing', e.toString());
-        return;
-      }
-      WakelockPlus.disable();
-      await _reloadBatchesSilently();
-      await _finishSuccess();
+      await _controller.reprocessDay(batch);
     } catch (e) {
-      if (mounted) {
-        messenger.showSnackBar(
-          SnackBar(content: Text('Error reprocessing day: $e')),
-        );
-      }
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Error reprocessing day: $e')));
     }
   }
 
@@ -867,67 +206,18 @@ class _RecordingsPageState extends State<RecordingsPage>
     );
   }
 
-  // ─── HeyPocket ─────────────────────────────────────────────────────────────
-  void _tryAutoUploadNext() {
-    if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty) return;
-    final apiKey = _prefs.heypocketApiKey;
-    final keySetAt = _prefs.heypocketKeySetAt;
-    final keySetTime = keySetAt > 0
-        ? DateTime.fromMillisecondsSinceEpoch(keySetAt)
-        : null;
-    for (final batch in _batches) {
-      for (final conversation in batch.finalizedRecordings) {
-        if (_autoUploadActive >= 2) return;
-        if (keySetTime != null && conversation.startTime.isBefore(keySetTime))
-          continue;
-        final uploadKey = conversation.uploadKey;
-        if (uploadKey == null) continue;
-        if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
-        if (_uploadingFiles.contains(uploadKey)) continue;
-        _uploadingFiles.add(uploadKey);
-        _autoUploadActive++;
-        if (mounted) setState(() {});
-        unawaited(
-          HeyPocketService.uploadRecording(apiKey, conversation)
-              .then((_) async {
-                await _prefs.markUploadedToHeypocket(uploadKey);
-              })
-              .catchError((e) {
-                Logger.error('HeyPocket auto-upload failed: $e');
-              })
-              .whenComplete(() {
-                _uploadingFiles.remove(uploadKey);
-                _autoUploadActive--;
-                if (mounted) {
-                  setState(() {});
-                  WidgetsBinding.instance.addPostFrameCallback(
-                    (_) => _tryAutoUploadNext(),
-                  );
-                }
-              }),
-        );
-      }
-    }
-  }
-
   Future<void> _handleUploadTap(Conversation conversation) async {
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Upload key unavailable — please reconnect your device and try again.',
-          ),
-        ),
+        const SnackBar(content: Text('Upload key unavailable — please reconnect your device and try again.')),
       );
       return;
     }
-    if (_uploadingFiles.contains(uploadKey)) return;
+    if (_controller.uploadingFiles.contains(uploadKey)) return;
 
     final alreadyUploaded = _prefs.isUploadedToHeypocket(uploadKey);
-    final title = alreadyUploaded
-        ? 'Re-upload Conversation'
-        : 'Upload Conversation';
+    final title = alreadyUploaded ? 'Re-upload Conversation' : 'Upload Conversation';
     final content = alreadyUploaded
         ? 'This conversation was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)'
         : 'Upload this conversation to HeyPocket?';
@@ -945,58 +235,22 @@ class _RecordingsPageState extends State<RecordingsPage>
     );
     if (confirm != true) return;
 
-    final apiKey = _prefs.heypocketApiKey;
-    _uploadingFiles.add(uploadKey);
-    setState(() {});
-    unawaited(
-      HeyPocketService.uploadRecording(apiKey, conversation)
-          .then((_) {
-            _prefs.markUploadedToHeypocket(uploadKey);
-          })
-          .catchError((e) {
-            if (e is HeyPocketException) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('HeyPocket ${e.statusCode}: ${e.message}'),
-                  ),
-                );
-              }
-            }
-            Logger.error('HeyPocket upload failed: $e');
-          })
-          .whenComplete(() {
-            _uploadingFiles.remove(uploadKey);
-            if (mounted) setState(() {});
-          }),
-    );
-  }
-
-  // ─── Accumulated minutes ───────────────────────────────────────────────────
-  static double _computeAccumulatedMinutes(List<Batch> batches) {
-    final totalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (
-      sum,
-      f,
-    ) {
-      try {
-        return sum + f.lengthSync();
-      } catch (_) {
-        return sum;
+    unawaited(_controller.uploadConversation(conversation).catchError((e) {
+      if (e is HeyPocketException && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('HeyPocket ${e.statusCode}: ${e.message}')),
+        );
       }
-    });
-    return totalBytes / 252000.0; // 84 B/frame × 50 fps × 60 s
+    }));
   }
 
-  // ─── Duration filter sheet ─────────────────────────────────────────────────
   void _showFilterSheet() {
     const options = [0, 30, 60, 120, 300, 600];
     const labels = ['Off', '30s', '1m', '2m', '5m', '10m'];
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF1C1C1E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       builder: (ctx) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
@@ -1043,27 +297,21 @@ class _RecordingsPageState extends State<RecordingsPage>
     );
   }
 
-  // ─── Marker helpers ────────────────────────────────────────────────────────
-  /// Maps m4a filename → list of MarkerConversations whose marker time falls within that file.
-  /// A marker only appears under the single conversation that contains its timestamp,
-  /// even if its visible window spans multiple segments.
   Map<String, List<MarkerConversation>> _buildMarkerMap() {
     final map = <String, List<MarkerConversation>>{};
-    for (final mc in _markerConversations) {
-      if (mc.segment == null) continue; // pending — no segment to key on
+    for (final mc in _controller.markerConversations) {
+      if (mc.segment == null) continue;
       final key = mc.segment!.path.split('/').last;
       map.putIfAbsent(key, () => []).add(mc);
     }
     return map;
   }
 
-  /// Groups _markerConversations by YYYY-MM-DD, preserving sort order (newest first).
   Map<String, List<MarkerConversation>> _groupMarkersByDate() {
     final map = <String, List<MarkerConversation>>{};
-    for (final mc in _markerConversations) {
+    for (final mc in _controller.markerConversations) {
       final dt = mc.markerTime;
-      final dateStr =
-          '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+      final dateStr = '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
       map.putIfAbsent(dateStr, () => []).add(mc);
     }
     return map;
@@ -1071,301 +319,230 @@ class _RecordingsPageState extends State<RecordingsPage>
 
   Future<void> _openMarkerConversation(MarkerConversation mc) async {
     await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => MarkerConversationPlayerPage(markerConversation: mc),
-      ),
+      MaterialPageRoute(builder: (_) => MarkerConversationPlayerPage(markerConversation: mc)),
     );
-    await _reloadBatchesSilently();
+    await _controller.reloadBatchesSilently();
   }
 
-  // ─── Build ─────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    return Consumer<DeviceProvider>(
-      builder: (context, deviceProvider, child) {
-        return Scaffold(
-          backgroundColor: const Color(0xFF0D0D0D),
-          appBar: AppBar(
+    return ChangeNotifierProvider.value(
+      value: _controller,
+      child: Consumer2<DeviceProvider, RecordingsController>(
+        builder: (context, deviceProvider, controller, child) {
+          return Scaffold(
             backgroundColor: const Color(0xFF0D0D0D),
-            elevation: 0,
-            centerTitle: false,
-            leadingWidth: 120,
-            leading: !deviceProvider.isConnected
-                ? Container(
-                    alignment: Alignment.centerLeft,
-                    padding: const EdgeInsets.only(left: 8.0),
-                    child: IconButton(
-                      icon: const FaIcon(
-                        FontAwesomeIcons.bluetooth,
-                        color: Colors.grey,
-                        size: 20,
+            appBar: AppBar(
+              backgroundColor: const Color(0xFF0D0D0D),
+              elevation: 0,
+              centerTitle: false,
+              leadingWidth: 120,
+              leading: !deviceProvider.isConnected
+                  ? Container(
+                      alignment: Alignment.centerLeft,
+                      padding: const EdgeInsets.only(left: 8.0),
+                      child: IconButton(
+                        icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Colors.grey, size: 20),
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                        ),
                       ),
-                      onPressed: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                    )
+                  : BatteryStatusIndicator(
+                      batteryLevel: deviceProvider.batteryLevel,
+                      isCharging: deviceProvider.isCharging,
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (c) => const DeviceSettings()),
                       ),
                     ),
-                  )
-                : BatteryStatusIndicator(
-                    batteryLevel: deviceProvider.batteryLevel,
-                    isCharging: deviceProvider.isCharging,
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (c) => const DeviceSettings()),
+              actions: [
+                if (controller.markerConversations.isNotEmpty)
+                  IconButton(
+                    icon: FaIcon(
+                      _showMarkersOnly ? FontAwesomeIcons.solidBookmark : FontAwesomeIcons.bookmark,
+                      color: _showMarkersOnly ? Colors.amber : Colors.white,
+                      size: 20,
                     ),
+                    onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
                   ),
-            actions: [
-              if (_markerConversations.isNotEmpty)
                 IconButton(
                   icon: FaIcon(
-                    _showMarkersOnly
-                        ? FontAwesomeIcons.solidBookmark
-                        : FontAwesomeIcons.bookmark,
-                    color: _showMarkersOnly ? Colors.amber : Colors.white,
+                    FontAwesomeIcons.boltLightning,
+                    color: (deviceProvider.isConnected &&
+                            controller.spState == SyncProcessState.idle &&
+                            !controller.forceSyncOnCooldown)
+                        ? Colors.white
+                        : Colors.grey.shade700,
                     size: 20,
                   ),
-                  onPressed: () =>
-                      setState(() => _showMarkersOnly = !_showMarkersOnly),
+                  onPressed: (deviceProvider.isConnected &&
+                          controller.spState == SyncProcessState.idle &&
+                          !controller.forceSyncOnCooldown)
+                      ? _forceSyncButtonPressed
+                      : null,
                 ),
-              // Force sync button — disabled when syncing is in progress or on cooldown
-              IconButton(
-                icon: FaIcon(
-                  FontAwesomeIcons.boltLightning,
-                  color:
-                      (deviceProvider.isConnected &&
-                          _spState == SyncProcessState.idle &&
-                          !_forceSyncOnCooldown)
-                      ? Colors.white
-                      : Colors.grey.shade700,
-                  size: 20,
+                IconButton(
+                  icon: FaIcon(
+                    FontAwesomeIcons.filter,
+                    color: _minFilterSeconds > 0 ? Colors.deepPurpleAccent : Colors.white,
+                    size: 18,
+                  ),
+                  onPressed: _showFilterSheet,
                 ),
-                onPressed:
-                    (deviceProvider.isConnected &&
-                        _spState == SyncProcessState.idle &&
-                        !_forceSyncOnCooldown)
-                    ? _forceSyncButtonPressed
-                    : null,
-              ),
-              IconButton(
-                icon: FaIcon(
-                  FontAwesomeIcons.filter,
-                  color: _minFilterSeconds > 0 ? Colors.deepPurpleAccent : Colors.white,
-                  size: 18,
+                IconButton(
+                  icon: const FaIcon(FontAwesomeIcons.gear, color: Colors.white, size: 20),
+                  onPressed: () => SettingsDrawer.show(context),
                 ),
-                onPressed: _showFilterSheet,
-              ),
-              IconButton(
-                icon: const FaIcon(
-                  FontAwesomeIcons.gear,
-                  color: Colors.white,
-                  size: 20,
-                ),
-                onPressed: () => SettingsDrawer.show(context),
-              ),
-            ],
-          ),
-          body: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Padding(
-                padding: EdgeInsets.fromLTRB(24, 8, 24, 16),
-                child: Text(
-                  'Conversations',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
+              ],
+            ),
+            body: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(24, 8, 24, 16),
+                  child: Text(
+                    'Conversations',
+                    style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
                   ),
                 ),
-              ),
-              StorageWarningBanner(percentage: deviceProvider.storageFullPercentage),
-              SyncProcessCard(
-                data: SyncCardData(
-                  state: _spState,
-                  isForcePipeline: _isForcePipeline,
-                  syncedCount: _syncedCount,
-                  totalCount: _totalCount,
-                  syncSpeed: _syncSpeed,
-                  minutesRemaining: _minutesRemaining,
-                  totalMinutes: _totalMinutes,
-                  lastActiveStage: _lastActiveStage,
+                StorageWarningBanner(percentage: deviceProvider.storageFullPercentage),
+                SyncProcessCard(
+                  data: SyncCardData(
+                    state: controller.spState,
+                    isForcePipeline: controller.isForcePipeline,
+                    syncedCount: controller.syncedCount,
+                    totalCount: controller.totalCount,
+                    syncSpeed: controller.syncSpeed,
+                    minutesRemaining: controller.minutesRemaining,
+                    totalMinutes: controller.totalMinutes,
+                    lastActiveStage: controller.lastActiveStage,
+                  ),
+                  onCancelTap: () => unawaited(_showCancelModal()),
+                  onActionTap: () {
+                    if (controller.spState == SyncProcessState.idle) controller.startPipeline();
+                    else if (controller.spState == SyncProcessState.resume) controller.resumePipeline();
+                    else if (controller.spState == SyncProcessState.error) controller.retryFromError();
+                  },
                 ),
-                onCancelTap: () => unawaited(_showCancelModal()),
-                onActionTap: () {
-                  if (_spState == SyncProcessState.idle) _startPipeline();
-                  else if (_spState == SyncProcessState.resume) _resumePipeline();
-                  else if (_spState == SyncProcessState.error) _retryFromError();
-                },
-              ),
-              AccumulatingBanner(spState: _spState, accumulatedMinutes: _accumulatedMinutes),
-              AdjustmentCleanupBanner(
-                adjustmentMode: _prefs.adjustmentMode,
-                adjustmentModeWasEnabled: _prefs.adjustmentModeWasEnabled,
-                spState: _spState,
-                pendingDays: _batches.where((b) => b.rawSegments.isNotEmpty).length,
-                onTap: _runAdjustmentCleanup,
-              ),
-              Expanded(
-                child: _isLoading
-                    ? const Center(
-                        child: CircularProgressIndicator(
-                          color: Colors.deepPurpleAccent,
-                        ),
-                      )
-                    : Builder(
-                        builder: (context) {
-                          // ── Marker mode ──────────────────────────────────────
-                          if (_showMarkersOnly) {
-                            final byDate = _groupMarkersByDate();
-                            final dates = byDate.keys.toList()
-                              ..sort((a, b) => b.compareTo(a));
+                AccumulatingBanner(spState: controller.spState, accumulatedMinutes: controller.accumulatedMinutes),
+                AdjustmentCleanupBanner(
+                  adjustmentMode: _prefs.adjustmentMode,
+                  adjustmentModeWasEnabled: _prefs.adjustmentModeWasEnabled,
+                  spState: controller.spState,
+                  pendingDays: controller.batches.where((b) => b.rawSegments.isNotEmpty).length,
+                  onTap: _runAdjustmentCleanup,
+                ),
+                Expanded(
+                  child: controller.isLoading
+                      ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
+                      : Builder(
+                          builder: (context) {
+                            if (_showMarkersOnly) {
+                              final byDate = _groupMarkersByDate();
+                              final dates = byDate.keys.toList()..sort((a, b) => b.compareTo(a));
+                              return RefreshIndicator(
+                                color: Colors.deepPurpleAccent,
+                                onRefresh: () async {},
+                                child: dates.isEmpty
+                                    ? ListView(
+                                        physics: const AlwaysScrollableScrollPhysics(),
+                                        children: [
+                                          const SizedBox(height: 100),
+                                          Center(
+                                            child: const Text(
+                                              'No marked recordings yet.\nPress the button on your Omi to tag a moment.',
+                                              textAlign: TextAlign.center,
+                                              style: TextStyle(color: Colors.grey, fontSize: 16),
+                                            ),
+                                          ),
+                                        ],
+                                      )
+                                    : ListView.builder(
+                                        physics: const AlwaysScrollableScrollPhysics(),
+                                        padding: const EdgeInsets.all(16),
+                                        itemCount: dates.length,
+                                        itemBuilder: (context, index) => MarkerDayCard(
+                                          dateStr: dates[index],
+                                          markers: byDate[dates[index]]!,
+                                          onMarkerTap: _openMarkerConversation,
+                                        ),
+                                      ),
+                              );
+                            }
+
+                            final markerMap = _buildMarkerMap();
+                            final visibleBatches = controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
                             return RefreshIndicator(
                               color: Colors.deepPurpleAccent,
-                              onRefresh: () async {},
-                              child: dates.isEmpty
+                              onRefresh: () {
+                                if (controller.spState != SyncProcessState.idle) {
+                                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sync already in progress')));
+                                  return Future.value();
+                                }
+                                return controller.startPipeline();
+                              },
+                              child: visibleBatches.isEmpty
                                   ? ListView(
-                                      physics:
-                                          const AlwaysScrollableScrollPhysics(),
+                                      physics: const AlwaysScrollableScrollPhysics(),
                                       children: [
                                         const SizedBox(height: 100),
                                         Center(
-                                          child: Text(
-                                            'No marked recordings yet.\nPress the button on your Omi to tag a moment.',
-                                            textAlign: TextAlign.center,
-                                            style: const TextStyle(
-                                              color: Colors.grey,
-                                              fontSize: 16,
-                                            ),
+                                          child: Column(
+                                            children: [
+                                              const Text(
+                                                'No conversations found.\nSwipe down to sync device.',
+                                                textAlign: TextAlign.center,
+                                                style: TextStyle(color: Colors.grey, fontSize: 16),
+                                              ),
+                                              if (deviceProvider.isConnected) ...[
+                                                const SizedBox(height: 32),
+                                                ElevatedButton.icon(
+                                                  onPressed: controller.spState == SyncProcessState.idle ? controller.startPipeline : null,
+                                                  icon: const FaIcon(FontAwesomeIcons.rotate, size: 16),
+                                                  label: const Text('Sync and Process'),
+                                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent, foregroundColor: Colors.white),
+                                                ),
+                                              ] else ...[
+                                                const SizedBox(height: 32),
+                                                ElevatedButton(
+                                                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (c) => const FindDevicesPage())),
+                                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent, foregroundColor: Colors.white),
+                                                  child: const Text('Connect Omi'),
+                                                ),
+                                              ],
+                                            ],
                                           ),
                                         ),
                                       ],
                                     )
                                   : ListView.builder(
-                                      physics:
-                                          const AlwaysScrollableScrollPhysics(),
+                                      physics: const AlwaysScrollableScrollPhysics(),
                                       padding: const EdgeInsets.all(16),
-                                      itemCount: dates.length,
-                                      itemBuilder: (context, index) =>
-                                          MarkerDayCard(
-                                            dateStr: dates[index],
-                                            markers: byDate[dates[index]]!,
-                                            onMarkerTap: _openMarkerConversation,
-                                          ),
+                                      itemCount: visibleBatches.length,
+                                      itemBuilder: (context, index) => BatchCard(
+                                        batch: visibleBatches[index],
+                                        markerMap: markerMap,
+                                        minFilterSeconds: _minFilterSeconds,
+                                        adjustmentMode: _prefs.adjustmentMode,
+                                        heypocketApiKey: _prefs.heypocketApiKey,
+                                        isUploaded: _prefs.isUploadedToHeypocket,
+                                        isUploading: controller.uploadingFiles.contains,
+                                        onUploadTap: _handleUploadTap,
+                                        onMarkerTap: _openMarkerConversation,
+                                        onExportAll: (conversations) => _exportAll(visibleBatches[index], conversations),
+                                        onDeleteDay: () => _deleteDay(visibleBatches[index]),
+                                        onReprocessDay: () => _reprocessDay(visibleBatches[index]),
+                                      ),
                                     ),
                             );
-                          }
-
-                          // ── Default mode ─────────────────────────────────────
-                          final markerMap = _buildMarkerMap();
-                          final visibleBatches = _batches
-                              .where((b) => b.finalizedRecordings.isNotEmpty)
-                              .toList();
-                          return RefreshIndicator(
-                            color: Colors.deepPurpleAccent,
-                            onRefresh: () {
-                              if (_spState != SyncProcessState.idle) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('Sync already in progress'),
-                                  ),
-                                );
-                                return Future.value();
-                              }
-                              final completer = Completer<void>();
-                              _pipelineCompleter = completer;
-                              _startPipeline();
-                              return completer.future;
-                            },
-                            child: visibleBatches.isEmpty
-                                ? ListView(
-                                    physics:
-                                        const AlwaysScrollableScrollPhysics(),
-                                    children: [
-                                      const SizedBox(height: 100),
-                                      Center(
-                                        child: Column(
-                                          children: [
-                                            const Text(
-                                              'No conversations found.\nSwipe down to sync device.',
-                                              textAlign: TextAlign.center,
-                                              style: TextStyle(
-                                                color: Colors.grey,
-                                                fontSize: 16,
-                                              ),
-                                            ),
-                                            if (deviceProvider.isConnected) ...[
-                                              const SizedBox(height: 32),
-                                              ElevatedButton.icon(
-                                                onPressed:
-                                                    _spState ==
-                                                        SyncProcessState.idle
-                                                    ? _startPipeline
-                                                    : null,
-                                                icon: const FaIcon(
-                                                  FontAwesomeIcons.rotate,
-                                                  size: 16,
-                                                ),
-                                                label: const Text(
-                                                  'Sync and Process',
-                                                ),
-                                                style: ElevatedButton.styleFrom(
-                                                  backgroundColor:
-                                                      Colors.deepPurpleAccent,
-                                                  foregroundColor: Colors.white,
-                                                ),
-                                              ),
-                                            ] else ...[
-                                              const SizedBox(height: 32),
-                                              ElevatedButton(
-                                                onPressed: () =>
-                                                    Navigator.of(context).push(
-                                                      MaterialPageRoute(
-                                                        builder: (c) =>
-                                                            const FindDevicesPage(),
-                                                      ),
-                                                    ),
-                                                style: ElevatedButton.styleFrom(
-                                                  backgroundColor:
-                                                      Colors.deepPurpleAccent,
-                                                  foregroundColor: Colors.white,
-                                                ),
-                                                child: const Text(
-                                                  'Connect Omi',
-                                                ),
-                                              ),
-                                            ],
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  )
-                                : ListView.builder(
-                                    physics:
-                                        const AlwaysScrollableScrollPhysics(),
-                                    padding: const EdgeInsets.all(16),
-                                    itemCount: visibleBatches.length,
-                                    itemBuilder: (context, index) => BatchCard(
-                                      batch: visibleBatches[index],
-                                      markerMap: markerMap,
-                                      minFilterSeconds: _minFilterSeconds,
-                                      adjustmentMode: _prefs.adjustmentMode,
-                                      heypocketApiKey: _prefs.heypocketApiKey,
-                                      isUploaded: _prefs.isUploadedToHeypocket,
-                                      isUploading: _uploadingFiles.contains,
-                                      onUploadTap: _handleUploadTap,
-                                      onMarkerTap: _openMarkerConversation,
-                                      onExportAll: (conversations) =>
-                                          _exportAll(visibleBatches[index], conversations),
-                                      onDeleteDay: () => _deleteDay(visibleBatches[index]),
-                                      onReprocessDay: () => _reprocessDay(visibleBatches[index]),
-                                    ),
-                                  ),
-                          );
-                        },
-                      ),
-              ),
-            ],
-          ),
-        );
-      },
+                          },
+                        ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 }
