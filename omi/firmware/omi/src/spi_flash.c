@@ -26,11 +26,6 @@ int flash_off(void)
 {
     int ret;
 
-    // if (!device_is_ready(spi_flash_dev)) {
-    //     LOG_ERR("SPI Flash device (%s) not ready, cannot suspend.", spi_flash_dev->name);
-    //     return -ENODEV;
-    // }
-
     LOG_INF("Suspending SPI Flash device (%s)...", spi_flash_dev->name);
     ret = pm_device_action_run(spi_flash_dev, PM_DEVICE_ACTION_SUSPEND);
     if (ret < 0 && ret != -EALREADY) {
