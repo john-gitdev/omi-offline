@@ -266,8 +266,8 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       downloadProgress = 0;
     });
 
+    final client = http.Client();
     try {
-      final client = http.Client();
       final request = http.Request('GET', Uri.parse(zipUrl));
       final r = await client.send(request);
       final completer = Completer<void>();
@@ -288,7 +288,6 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
           }
         },
         onDone: () async {
-          client.close();
           try {
             Logger.debug('downloadPercentage: 100');
             File file = File('$dir/firmware.zip');
@@ -310,7 +309,6 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
           }
         },
         onError: (error) {
-          client.close();
           Logger.debug('Download error: $error');
           setState(() {
             isDownloading = false;
@@ -331,6 +329,8 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       }
       final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
       deviceProvider.resetFirmwareUpdateState();
+    } finally {
+      client.close();
     }
   }
 }
