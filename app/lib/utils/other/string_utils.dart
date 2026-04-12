@@ -2,6 +2,8 @@
 
 import 'dart:convert';
 
+String capitalize(String s) => s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1)}';
+
 String extractJson(String input) {
   int braceCount = 0;
   int startIndex = -1;

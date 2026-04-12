@@ -2,6 +2,29 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/utils/other/string_utils.dart';
 
 void main() {
+  group('String Utils - capitalize', () {
+    test('capitalizes normal string correctly', () {
+      expect(capitalize('hello'), 'Hello');
+    });
+
+    test('returns empty string if input is empty', () {
+      expect(capitalize(''), '');
+    });
+
+    test('returns same string if already capitalized', () {
+      expect(capitalize('Hello'), 'Hello');
+    });
+
+    test('capitalizes single character correctly', () {
+      expect(capitalize('a'), 'A');
+    });
+
+    test('handles numbers and special characters gracefully', () {
+      expect(capitalize('1hello'), '1hello');
+      expect(capitalize('!hello'), '!hello');
+    });
+  });
+
   group('String Utils - convertToHHMMSS', () {
     test('converts 0 seconds correctly', () {
       expect(convertToHHMMSS(0), '00:00:00');
