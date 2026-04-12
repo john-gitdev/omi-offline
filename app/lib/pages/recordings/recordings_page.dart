@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
@@ -332,50 +330,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
     await _controller.reloadBatchesSilently();
   }
 
-  Future<void> _assignUnknownDate(Conversation conversation) async {
-    final DateTime? date = await showDatePicker(
-      context: context,
-      initialDate: DateTime.now(),
-      firstDate: DateTime(2023),
-      lastDate: DateTime.now(),
-    );
-    if (!mounted || date == null) return;
-
-    final TimeOfDay? time = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.now(),
-    );
-    if (!mounted || time == null) return;
-
-    final newStart = DateTime(date.year, date.month, date.day, time.hour, time.minute);
-    final newTimestamp = newStart.millisecondsSinceEpoch;
-    final dateStr =
-        '${newStart.year}-${newStart.month.toString().padLeft(2, '0')}-${newStart.day.toString().padLeft(2, '0')}';
-
-    final docsDir = conversation.file.parent.parent.parent.path; // recordings/
-    final targetDir = Directory('$docsDir/$dateStr');
-    if (!await targetDir.exists()) await targetDir.create(recursive: true);
-
-    final newM4aPath = '${targetDir.path}/recording_$newTimestamp.m4a';
-    final newMetaPath = '${targetDir.path}/recording_$newTimestamp.meta';
-
-    try {
-      // Rename .meta first so it's present when the scan picks up the .m4a
-      final basePath = conversation.file.path.substring(0, conversation.file.path.lastIndexOf('.'));
-      final metaFile = File('$basePath.meta');
-      if (await metaFile.exists()) await metaFile.rename(newMetaPath);
-      await conversation.file.rename(newM4aPath);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to assign date.')));
-      }
-      return;
-    }
-
-    RecordingsManager.notifyRecordingsChanged();
-    await _controller.reloadBatchesSilently();
-  }
-
   Widget _buildUnorganizedSection(List<Conversation> unknown) {
     if (unknown.isEmpty) return const SizedBox.shrink();
     return Column(
@@ -420,11 +374,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                   style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
                             ],
                           ),
-                        ),
-                        IconButton(
-                          icon: const FaIcon(FontAwesomeIcons.calendarDays, color: Colors.amber, size: 16),
-                          tooltip: 'Assign date',
-                          onPressed: () => _assignUnknownDate(conv),
                         ),
                         FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
                       ],
