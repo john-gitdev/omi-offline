@@ -67,14 +67,23 @@ class MockDeviceConnection extends Fake implements DeviceConnection {
   @override
   Future<bool> releaseStorageLock() async => true;
 
+  int currentFileNum = 0;
+  int writeCount = 0;
+
   @override
-  Future<bool> writeToStorage(int numFile, int command, int offset) async => true;
+  Future<bool> writeToStorage(int numFile, int command, int offset) async {
+    currentFileNum = numFile;
+    writeCount++;
+    return true;
+  }
 
   @override
   Future<bool> deleteFile(StorageFile file) async => true;
 
+  List<StorageFile> files = [];
+
   @override
-  Future<List<StorageFile>> listFiles() async => [];
+  Future<List<StorageFile>> listFiles() async => files;
 
   @override
   Future<bool> stopStorageSync() async => true;
@@ -103,6 +112,9 @@ class MockDeviceConnection extends Fake implements DeviceConnection {
 
   @override
   Future<List<int>> performGetStorageList() async => [0, 0];
+
+  @override
+  Future<BleAudioCodec?> getAudioCodec() async => BleAudioCodec.opus;
 }
 
 class MockBtDevice extends Fake implements BtDevice {
@@ -311,6 +323,57 @@ void main() {
       }
 
       await expectLater(syncFuture, throwsA(isA<Exception>()));
+    });
+
+    test('syncAll continues next file and returns partial on gap exception limit', () async {
+      // 1. We mock listFiles but SDCardWalSync needs some fields setup to pass _buildWalsFromFiles logic.
+      // Let's use `StorageFile` with adequate sizes.
+      mockConn.files = [
+        StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 3000000), // large enough to pass threshold
+        StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 1000000)
+      ];
+
+      // Also inject these files manually using setDevice's prefetchedFiles.
+      sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      // Start syncAll.
+      final syncAllFuture = sync.syncAll();
+
+      // Wait for it to fetch files and start the first transfer
+      await Future.delayed(const Duration(milliseconds: 200));
+      await pump(10);
+
+      // Wait for the outer loop to delete file and move to next file.
+      // We continuously feed mock events to prevent the 15s inactivity timeout.
+      // For File 1, we purposefully inject gap errors by shifting the incoming offset.
+      // For File 2, we simulate a successful transmission.
+      bool isFinished = false;
+      syncAllFuture.then((_) => isFinished = true).catchError((_) => isFinished = true);
+
+      while (!isFinished) {
+         await Future.delayed(const Duration(milliseconds: 50));
+         if (mockConn.currentFileNum == 1) {
+            mockConn.add(ackPacket(0x00));
+            await pump();
+            // Inject an increasing gap sequence so `_readStorageBytesToFile` fails 4 times.
+            mockConn.add(dataPacket(mockConn.writeCount * 100, List<int>.filled(5, 0xCC)));
+            await pump();
+         } else if (mockConn.currentFileNum == 2) {
+            mockConn.add(ackPacket(0x00));
+            await pump();
+            mockConn.add(dataPacket(0, List<int>.filled(10, 0xDD)));
+            await pump();
+            mockConn.add(eotPacket());
+            await pump();
+         }
+      }
+
+      final response = await syncAllFuture;
+
+      // Assert that it didn't crash and returned isPartial = true
+      expect(response, isNotNull);
+      expect(response!.isPartial, isTrue);
     });
 
     test('Malformed DATA packet (< 5 bytes) is logged and ignored, sync continues', () async {
