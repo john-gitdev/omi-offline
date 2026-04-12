@@ -64,7 +64,9 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   Future<List<double>> _computeWaveform(File file) async {
     try {
       // Check for .meta sidecar (written alongside .m4a files)
-      final basePath = file.path.contains('.') ? file.path.substring(0, file.path.lastIndexOf('.')) : file.path;
+      final basePath = file.path.contains('.')
+          ? file.path.substring(0, file.path.lastIndexOf('.'))
+          : file.path;
       final metaFile = File('$basePath.meta');
       if (await metaFile.exists()) {
         final metaBytes = await metaFile.readAsBytes();
@@ -254,8 +256,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
                     ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
                     : _waveform.isEmpty
                         ? Center(
-                            child: Text('Waveform unavailable',
-                                style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                            child:
+                                Text('Waveform unavailable', style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
                           )
                         : LayoutBuilder(
                             builder: (ctx, constraints) => GestureDetector(

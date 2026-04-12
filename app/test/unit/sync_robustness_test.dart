@@ -136,11 +136,13 @@ void main() {
 
   setUp(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
       const MethodChannel('disk_space_2'),
       (call) async => 1000.0,
     );
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
       const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
       (call) async => null,
     );
@@ -198,11 +200,13 @@ void main() {
 
     setUp(() {
       TestWidgetsFlutterBinding.ensureInitialized();
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
         const MethodChannel('disk_space_2'),
         (call) async => 1000.0,
       );
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
         const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
         (call) async => null,
       );
@@ -325,10 +329,7 @@ void main() {
       // 1. We mock listFiles but SDCardWalSync needs some fields setup to pass _buildWalsFromFiles logic.
       // Let's use `StorageFile` with adequate sizes.
       mockConn.files = [
-        StorageFile(
-            index: 1,
-            timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-            size: 3000000), // large enough to pass threshold
+        StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 3000000), // large enough to pass threshold
         StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 1000000)
       ];
 
@@ -354,21 +355,21 @@ void main() {
           .catchError((_) => isFinished = true);
 
       while (!isFinished) {
-        await Future.delayed(const Duration(milliseconds: 50));
-        if (mockConn.currentFileNum == 1) {
-          mockConn.add(ackPacket(0x00));
-          await pump();
-          // Inject an increasing gap sequence so `_readStorageBytesToFile` fails 4 times.
-          mockConn.add(dataPacket(mockConn.writeCount * 100, List<int>.filled(5, 0xCC)));
-          await pump();
-        } else if (mockConn.currentFileNum == 2) {
-          mockConn.add(ackPacket(0x00));
-          await pump();
-          mockConn.add(dataPacket(0, List<int>.filled(10, 0xDD)));
-          await pump();
-          mockConn.add(eotPacket());
-          await pump();
-        }
+         await Future.delayed(const Duration(milliseconds: 50));
+         if (mockConn.currentFileNum == 1) {
+            mockConn.add(ackPacket(0x00));
+            await pump();
+            // Inject an increasing gap sequence so `_readStorageBytesToFile` fails 4 times.
+            mockConn.add(dataPacket(mockConn.writeCount * 100, List<int>.filled(5, 0xCC)));
+            await pump();
+         } else if (mockConn.currentFileNum == 2) {
+            mockConn.add(ackPacket(0x00));
+            await pump();
+            mockConn.add(dataPacket(0, List<int>.filled(10, 0xDD)));
+            await pump();
+            mockConn.add(eotPacket());
+            await pump();
+         }
       }
 
       final response = await syncAllFuture;

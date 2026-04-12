@@ -50,11 +50,7 @@ class VadAudioProcessor {
   static const int _vadWindowSamples = 512; // Silero VAD input size
 
   static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
-    try {
-      OrtEnv.instance.init();
-    } catch (e) {
-      Logger.error("VadAudioProcessor: Failed to init OrtEnv: $e");
-    }
+    try { OrtEnv.instance.init(); } catch (e) { Logger.error("VadAudioProcessor: Failed to init OrtEnv: $e"); }
     OrtSession? session;
     try {
       final data = await rootBundle.load('assets/models/silero_vad.onnx');
@@ -63,8 +59,7 @@ class VadAudioProcessor {
     } catch (e) {
       Logger.error('VadAudioProcessor: Failed to load Silero VAD model, amplitude fallback active: $e');
     }
-    Logger.debug(
-        'VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'amplitude fallback active (threshold=${SharedPreferencesUtil().vadSpeechThreshold})'}');
+    Logger.debug('VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'amplitude fallback active (threshold=${SharedPreferencesUtil().vadSpeechThreshold})'}');
     return VadAudioProcessor._(outputDir: outputDir, decoder: decoder, session: session);
   }
 
@@ -115,8 +110,7 @@ class VadAudioProcessor {
       _c = _flattenF32(outputs[2]!.value);
       return prob > _speechThreshold;
     } catch (e) {
-      Logger.error(
-          'VadAudioProcessor: Silero inference failed ($e) — disabling model, switching to amplitude fallback');
+      Logger.error('VadAudioProcessor: Silero inference failed ($e) — disabling model, switching to amplitude fallback');
       _session = null;
       return samples512.any((s) => s.abs() > _speechThreshold);
     } finally {
@@ -303,8 +297,7 @@ class VadAudioProcessor {
 
   Future<String?> flushOnlyCompleted() async {
     if (isCapturing) {
-      Logger.debug(
-          'VadAudioProcessor: flushOnlyCompleted — capture in progress, skipping flush to allow continuation.');
+      Logger.debug('VadAudioProcessor: flushOnlyCompleted — capture in progress, skipping flush to allow continuation.');
       return null;
     }
     return flushRemaining();

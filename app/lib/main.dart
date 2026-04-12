@@ -75,15 +75,17 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     if (apiKey.isEmpty) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(
-        HeyPocketService.testConnection(apiKey).then((ok) {
-          if (!ok) {
-            SharedPreferencesUtil().heypocketEnabled = false;
-          }
-        }).catchError((e) {
-          // Network errors (timeout, no connection) should not disable the
-          // integration — we simply cannot verify the key right now.
-          Logger.error('HeyPocket startup check failed: $e');
-        }),
+        HeyPocketService.testConnection(apiKey)
+            .then((ok) {
+              if (!ok) {
+                SharedPreferencesUtil().heypocketEnabled = false;
+              }
+            })
+            .catchError((e) {
+              // Network errors (timeout, no connection) should not disable the
+              // integration — we simply cannot verify the key right now.
+              Logger.error('HeyPocket startup check failed: $e');
+            }),
       );
     });
   }
