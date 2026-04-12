@@ -207,6 +207,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _handleUploadTap(Conversation conversation) async {
+    if (_prefs.adjustmentMode) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Uploads paused — turn off Adjustment Mode first')),
+      );
+      return;
+    }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -330,6 +336,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
       value: _controller,
       child: Consumer2<DeviceProvider, RecordingsController>(
         builder: (context, deviceProvider, controller, child) {
+          final snack = controller.consumePendingSnack();
+          if (snack != null) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(snack)));
+            });
+          }
           return Scaffold(
             backgroundColor: const Color(0xFF0D0D0D),
             appBar: AppBar(

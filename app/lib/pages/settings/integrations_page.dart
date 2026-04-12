@@ -28,8 +28,22 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     _controller.text = saved;
     if (saved.isNotEmpty) {
       _connState = _ConnectionState.connected;
+      _recheckConnectionOnLaunch();
     }
     _controller.addListener(_onKeyChanged);
+  }
+
+  Future<void> _recheckConnectionOnLaunch() async {
+    final key = _prefs.heypocketApiKey;
+    if (key.isEmpty) return;
+    final valid = await HeyPocketService.testConnection(key).catchError((_) => true);
+    if (!valid && mounted) {
+      _prefs.heypocketEnabled = false;
+      setState(() => _connState = _ConnectionState.error);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('HeyPocket: API key is no longer valid — please update it')),
+      );
+    }
   }
 
   @override
@@ -60,9 +74,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
       final result = await HeyPocketService.testConnection(key);
       if (_controller.text != key) return; // stale
       if (result) {
-        if (_prefs.heypocketKeySetAt == 0) {
-          _prefs.heypocketKeySetAt = DateTime.now().millisecondsSinceEpoch;
-        }
+        _prefs.heypocketKeySetAt = DateTime.now().millisecondsSinceEpoch;
         await _prefs.setHeypocketApiKey(key);
         setState(() => _connState = _ConnectionState.connected);
       } else {

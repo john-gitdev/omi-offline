@@ -125,6 +125,27 @@ class SharedPreferencesUtil {
     }
   }
 
+  /// Removes [keys] from the uploaded-files list. Serialized through the same
+  /// guard as [markUploadedToHeypocket] to avoid lost-update races.
+  Future<void> removeUploadedFromHeypocket(Set<String> keys) async {
+    if (keys.isEmpty) return;
+    while (_heypocketUploadGuard != null) {
+      await _heypocketUploadGuard;
+    }
+    final completer = Completer<void>();
+    _heypocketUploadGuard = completer.future;
+    try {
+      final current = heypocketUploadedFiles;
+      final pruned = current.where((k) => !keys.contains(k)).toList();
+      if (pruned.length != current.length) {
+        await saveStringList('heypocketUploadedFiles', pruned);
+      }
+    } finally {
+      _heypocketUploadGuard = null;
+      completer.complete();
+    }
+  }
+
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _preferences = prefs;

@@ -8,6 +8,7 @@ class UploadIconButton extends StatelessWidget {
   final bool apiKeyEmpty;
   final bool isUploading;
   final bool isUploaded;
+  final bool adjustmentMode;
   final VoidCallback? onTap;
 
   const UploadIconButton({
@@ -16,12 +17,22 @@ class UploadIconButton extends StatelessWidget {
     required this.apiKeyEmpty,
     required this.isUploading,
     required this.isUploaded,
+    required this.adjustmentMode,
     this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     if (apiKeyEmpty) return const SizedBox.shrink();
+    if (adjustmentMode) {
+      return IconButton(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        constraints: const BoxConstraints(),
+        icon: Icon(Icons.cloud_off, color: Colors.grey.shade700, size: 18),
+        tooltip: 'Uploads paused in Adjustment Mode',
+        onPressed: onTap,
+      );
+    }
     if (uploadKey == null) {
       return IconButton(
         padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -236,6 +247,7 @@ class BatchCard extends StatelessWidget {
                   apiKeyEmpty: heypocketApiKey.isEmpty,
                   isUploading: uploadKey != null && isUploading(uploadKey),
                   isUploaded: uploadKey != null && isUploaded(uploadKey),
+                  adjustmentMode: adjustmentMode,
                   onTap: () => onUploadTap(c),
                 ),
                 onMarkerTap: onMarkerTap,
