@@ -152,6 +152,9 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
       await _prefs.markUploadedToHeypocket(uploadKey);
       if (mounted) setState(() {});
     } on HeyPocketException catch (e) {
+      if (e.statusCode == 401) {
+        SharedPreferencesUtil().heypocketEnabled = false;
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('HeyPocket: ${e.message}')));
       }
