@@ -59,6 +59,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   int _autoUploadActive = 0;
   String _lastHpKey = '';
 
+  String? _pendingSnackMessage;
+  String? consumePendingSnack() {
+    final msg = _pendingSnackMessage;
+    _pendingSnackMessage = null;
+    return msg;
+  }
+
   Timer? _pollTimer;
   bool _isUserTriggered = false;
   Completer<void>? _pipelineCompleter;
@@ -580,6 +587,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> deleteDay(Batch batch) async {
+    final keys = batch.finalizedRecordings.map((c) => c.uploadKey).whereType<String>().toSet();
+    await _prefs.removeUploadedFromHeypocket(keys);
     await _manager.deleteDay(batch);
     await _loadBatches();
   }
@@ -632,7 +641,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   Future<void> reprocessDay(Batch batch) async {
     if (_spState != SyncProcessState.idle) return;
-    
+
+    final keys = batch.finalizedRecordings.map((c) => c.uploadKey).whereType<String>().toSet();
+    await _prefs.removeUploadedFromHeypocket(keys);
     await RecordingsManager.reprocessDay(batch);
     await _loadBatches();
 
@@ -673,6 +684,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   void tryAutoUploadNext() {
+    if (_prefs.adjustmentMode) return;
     if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty) return;
     final apiKey = _prefs.heypocketApiKey;
     final keySetAt = _prefs.heypocketKeySetAt;
@@ -680,23 +692,27 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
-        if (_autoUploadActive >= 2) return;
+        if (_autoUploadActive >= 3) continue;
         if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
         final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
         if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
         if (_uploadingFiles.contains(uploadKey)) continue;
-        
+        if (conversation.duration == Duration.zero || conversation.fileSizeBytes == 0) continue;
+
         _uploadingFiles.add(uploadKey);
         _autoUploadActive++;
-        notifyListeners();
-        
+
         unawaited(
           HeyPocketService.uploadRecording(apiKey, conversation)
               .then((_) async {
                 await _prefs.markUploadedToHeypocket(uploadKey);
               })
               .catchError((e) {
+                if (e is HeyPocketException && e.statusCode == 401) {
+                  _prefs.heypocketEnabled = false;
+                  _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
+                }
                 Logger.error('HeyPocket auto-upload failed: $e');
               })
               .whenComplete(() {
@@ -710,6 +726,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         );
       }
     }
+    if (!_isDisposed) notifyListeners();
   }
 
   Future<void> uploadConversation(Conversation conversation) async {
@@ -724,6 +741,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     try {
       await HeyPocketService.uploadRecording(apiKey, conversation);
       await _prefs.markUploadedToHeypocket(uploadKey);
+    } catch (e) {
+      if (e is HeyPocketException && e.statusCode == 401) {
+        _prefs.heypocketEnabled = false;
+        _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
+      }
+      rethrow;
     } finally {
       _uploadingFiles.remove(uploadKey);
       notifyListeners();

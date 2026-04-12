@@ -241,7 +241,36 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                         Switch(
                           value: _adjustmentMode,
                           activeThumbColor: Colors.deepPurpleAccent,
-                          onChanged: (value) {
+                          onChanged: (value) async {
+                            if (value) {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (c) => AlertDialog(
+                                  backgroundColor: const Color(0xFF1C1C1E),
+                                  title: const Text('Enable Adjustment Mode?',
+                                      style: TextStyle(color: Colors.white)),
+                                  content: const Text(
+                                    'Raw audio is kept on disk so you can reprocess days with different settings.\n\n'
+                                    'Uploads to HeyPocket and other integrations are paused while adjustment mode is on — '
+                                    'recordings may still change before you\'re done. '
+                                    'They resume automatically once you turn it off.',
+                                    style: TextStyle(color: Colors.white70, fontSize: 14),
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.of(c).pop(false),
+                                      child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                                    ),
+                                    TextButton(
+                                      onPressed: () => Navigator.of(c).pop(true),
+                                      child: const Text('Enable',
+                                          style: TextStyle(color: Colors.deepPurpleAccent)),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (confirm != true) return;
+                            }
                             setState(() => _adjustmentMode = value);
                             _markDirty();
                           },
