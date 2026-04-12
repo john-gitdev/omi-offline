@@ -16,7 +16,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   List<Batch> _batches = [];
   List<Batch> get batches => _batches;
-  
+
   List<MarkerConversation> _markerConversations = [];
   List<MarkerConversation> get markerConversations => _markerConversations;
 
@@ -239,7 +239,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
     _prefs.saveString(_kSpLastCompleted, _lastCompletedStage);
     _prefs.saveString(_kSpLastActive, _lastActiveStage);
-    
+
     if (newState == SyncProcessState.idle ||
         newState == SyncProcessState.error ||
         newState == SyncProcessState.successUi) {
@@ -272,7 +272,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
     if (_isDisposed) return;
     _syncSpeed = speedKBps ?? 0.0;
-    
+
     final currentEstimated = ServiceManager.instance().wal.getSyncs().recordingsCount;
     if (_totalCount <= 0 && currentEstimated > 0) {
       _totalCount = currentEstimated;
@@ -291,7 +291,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_spState != SyncProcessState.idle) return;
     _poll();
     if (_spState != SyncProcessState.idle) return;
-    
+
     _pipelineCompleter = Completer<void>();
     unawaited(_runPipeline());
     return _pipelineCompleter?.future;
@@ -303,7 +303,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     _forceSyncOnCooldown = true;
     notifyListeners();
-    
+
     _forceSyncCooldownTimer?.cancel();
     _forceSyncCooldownTimer = Timer(const Duration(minutes: 1), () {
       if (!_isDisposed) {
@@ -357,10 +357,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _syncedCount = _totalCount;
     _lastCompletedStage = 'syncing';
     notifyListeners();
-    
+
     _prefs.saveString(_kSpLastCompleted, 'syncing');
     await reloadBatchesSilently();
-    
+
     _markerCount = _batches.fold(0, (sum, b) => sum + b.markerTimestamps.length);
     notifyListeners();
     _persistProgress();
@@ -399,7 +399,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final syncs = ServiceManager.instance().wal.getSyncs();
     final estimatedTotal = syncs.estimatedTotalSegments;
     Logger.debug('RecordingsController: _runPipeline start — estimatedTotalSegments=$estimatedTotal');
-    
+
     _totalCount = estimatedTotal;
     _syncedCount = 0;
     _syncSpeed = 0.0;
@@ -437,10 +437,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _syncedCount = _totalCount;
     _lastCompletedStage = 'syncing';
     notifyListeners();
-    
+
     _prefs.saveString(_kSpLastCompleted, 'syncing');
     await reloadBatchesSilently();
-    
+
     _markerCount = _batches.fold(0, (sum, b) => sum + b.markerTimestamps.length);
     notifyListeners();
     _persistProgress();
@@ -470,7 +470,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
     });
     final totalMin = totalBytes / 252000.0;
-    
+
     _totalMinutes = totalMin;
     _minutesRemaining = totalMin;
     notifyListeners();
@@ -512,7 +512,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _minutesRemaining = 0;
     _lastCompletedStage = 'processing';
     notifyListeners();
-    
+
     _persistProgress();
     await reloadBatchesSilently();
     await _finishSuccess();
@@ -523,7 +523,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _transitionTo(SyncProcessState.successUi);
     await Future.delayed(const Duration(milliseconds: 10000));
     if (_isDisposed) return;
-    
+
     _lastCompletedStage = 'none';
     _syncedCount = 0;
     _totalCount = 0;
@@ -531,7 +531,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _minutesRemaining = 0;
     _totalMinutes = 0;
     notifyListeners();
-    
+
     _prefs.saveString(_kSpLastCompleted, 'none');
     _persistProgress();
     _transitionTo(SyncProcessState.idle);
@@ -606,11 +606,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       final totalBytes = unprocessed.expand((b) => b.rawSegments).fold(0, (sum, f) {
         try { return sum + f.lengthSync(); } catch (_) { return sum; }
       });
-      
+
       _totalMinutes = totalBytes / 252000.0;
       _minutesRemaining = _totalMinutes;
       notifyListeners();
-      
+
       WakelockPlus.enable();
       try {
         await _manager.processAll(unprocessed, (progress) {
@@ -633,7 +633,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _minutesRemaining = 0;
     _lastCompletedStage = 'processing';
     notifyListeners();
-    
+
     _persistProgress();
     await reloadBatchesSilently();
     await _finishSuccess();
@@ -653,13 +653,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final totalBytes = freshBatch.expand((b) => b.rawSegments).fold(0, (sum, f) {
       try { return sum + f.lengthSync(); } catch (_) { return sum; }
     });
-    
+
     _lastActiveStage = 'processing';
     _totalMinutes = totalBytes / 252000.0;
     _minutesRemaining = _totalMinutes;
     _transitionTo(SyncProcessState.processing);
     notifyListeners();
-    
+
     WakelockPlus.enable();
     try {
       await _manager.processAll(
@@ -689,7 +689,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final apiKey = _prefs.heypocketApiKey;
     final keySetAt = _prefs.heypocketKeySetAt;
     final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
-    
+
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
         if (_autoUploadActive >= 3) continue;
