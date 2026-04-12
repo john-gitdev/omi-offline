@@ -53,7 +53,7 @@ class NativeBleTransport extends DeviceTransport {
     _deviceReadyCompleter = Completer<List<BleService>>();
 
     try {
-      _hostApi.manageDevice(_peripheralUuid, requiresBond);
+      await _hostApi.manageDevice(_peripheralUuid, requiresBond);
     } catch (e) {
       Logger.debug('[NativeBleTransport] manageDevice failed: $e');
       _deviceReadyCompleter = null;
