@@ -54,13 +54,13 @@ class DeviceUtils {
     if (deviceType != null) {
       switch (deviceType) {
         case DeviceType.limitless:
-          return Assets.images.limitless.path;
+          return Assets.images.omiWithoutRope.path;
         case DeviceType.bee:
           return Assets.images.beeDevice.path;
         case DeviceType.openglass:
           return Assets.images.omiGlass.path;
         case DeviceType.frame:
-          return Assets.images.omiDevkitWithoutRope.path;
+          return Assets.images.omiWithoutRope.path;
         case DeviceType.appleWatch:
           return Assets.images.appleWatch.path;
         case DeviceType.plaud:
@@ -79,7 +79,7 @@ class DeviceUtils {
             }
 
             if (upperModel.contains('DEVKIT') || (upperModel.contains('FRIEND'))) {
-              return Assets.images.omiDevkitWithoutRope.path;
+              return Assets.images.omiWithoutRope.path;
             }
 
             if (upperModel.contains('NEO')) {
@@ -94,7 +94,7 @@ class DeviceUtils {
             }
 
             if (upperName.contains('DEVKIT') || upperName.contains('DEV') || (upperName.contains('FRIEND'))) {
-              return Assets.images.omiDevkitWithoutRope.path;
+              return Assets.images.omiWithoutRope.path;
             }
 
             if (upperName.contains('NEO')) {
@@ -117,13 +117,13 @@ class DeviceUtils {
         return Assets.images.friendPendant.path;
       }
       if (upperModel.contains('OMI DEVKIT 2') || upperModel.contains('FRIEND')) {
-        return Assets.images.omiDevkitWithoutRope.path;
+        return Assets.images.omiWithoutRope.path;
       }
       if (upperModel.contains('GLASS')) {
         return Assets.images.omiGlass.path;
       }
       if (upperModel.contains('FRAME')) {
-        return Assets.images.omiDevkitWithoutRope.path;
+        return Assets.images.omiWithoutRope.path;
       }
       if (upperModel.contains('BEE')) {
         return Assets.images.beeDevice.path;
@@ -153,7 +153,7 @@ class DeviceUtils {
         return Assets.images.friendPendant.path;
       }
       if (upperName.contains('OMI DEVKIT') || upperName.contains('OMI DEV') || upperName.contains('FRIEND')) {
-        return Assets.images.omiDevkitWithoutRope.path;
+        return Assets.images.omiWithoutRope.path;
       }
       if (upperName.contains('BEE')) {
         return Assets.images.beeDevice.path;
@@ -165,7 +165,7 @@ class DeviceUtils {
         return Assets.images.fieldy.path;
       }
       if (upperName.contains('LIMITLESS')) {
-        return Assets.images.limitless.path;
+        return Assets.images.omiWithoutRope.path;
       }
       if (upperName.contains('NEO')) {
         return Assets.images.neoOne.path;
