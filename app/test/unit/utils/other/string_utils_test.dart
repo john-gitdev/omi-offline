@@ -115,9 +115,18 @@ void main() {
     });
 
     test('returns original string if utf-8 decoding fails', () {
-      // Create a malformed UTF-8 string by using an invalid starting byte
+      // Create a string that when converted to codeUnits creates an invalid UTF-8 byte sequence
+      // This throws a FormatException during utf8.decode(codeUnits)
       final text = String.fromCharCodes([0xFF]);
       expect(tryDecodingText(text), text);
+    });
+
+    test('returns original string if input contains invalid utf-8 sequences', () {
+      // In Dart, String.codeUnits creates a list. utf8.decode throws FormatException
+      // if it encounters invalid utf-8 sequences. This tests the catch block error path.
+      final invalidUtf8Bytes = [0xC3, 0x28]; // Invalid sequence
+      final invalidText = String.fromCharCodes(invalidUtf8Bytes);
+      expect(tryDecodingText(invalidText), invalidText);
     });
   });
 }
