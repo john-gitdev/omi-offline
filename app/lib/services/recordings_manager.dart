@@ -17,6 +17,10 @@ class Conversation {
   const Conversation({required this.file, required this.startTime, required this.duration, this.uploadKey});
 
   DateTime get endTime => startTime.add(duration);
+
+  /// True when this recording was saved with an unknown timestamp (device had no RTC sync).
+  bool get isUnknown => file.path.split('/').last.startsWith('unknown_');
+
   int get fileSizeBytes {
     try {
       return file.lengthSync();
@@ -483,7 +487,8 @@ class RecordingsManager {
               break;
             }
 
-            await processor.processSegmentFile(file, segmentStartTime);
+            final isDerived = timerStart == null || timerStart <= kMinValidEpoch;
+            await processor.processSegmentFile(file, segmentStartTime, isDerivedTimestamp: isDerived);
             await moveTempFilesToLive();
 
             if (backgroundMode && !processor.isCapturing) {

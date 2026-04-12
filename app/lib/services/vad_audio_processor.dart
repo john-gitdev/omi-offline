@@ -29,6 +29,7 @@ class VadAudioProcessor {
   int _skippedFramesInRecording = 0; // non-speech frames in current conversation (keeps timestamps correct)
   DateTime? _recordingStartTime;
   DateTime? _lastSegmentEndTime;
+  bool _isDerivedTimestamp = false; // true when segment had no valid device RTC timestamp
 
   // VAD state counters
   int _consecutiveSilenceFrames = 0;
@@ -133,8 +134,10 @@ class VadAudioProcessor {
     return Float32List.fromList(flat);
   }
 
-  Future<List<String>> processSegmentFile(File segmentFile, DateTime segmentStartTime) async {
+  Future<List<String>> processSegmentFile(File segmentFile, DateTime segmentStartTime,
+      {bool isDerivedTimestamp = false}) async {
     final savedFiles = <String>[];
+    _isDerivedTimestamp = isDerivedTimestamp;
 
     try {
       if (!await segmentFile.exists()) return [];
@@ -314,9 +317,12 @@ class VadAudioProcessor {
   }
 
   @visibleForTesting
-  Future<String?> saveRecordingTest(List<FrameRef> refs, DateTime startTime) => _saveRecording(refs, startTime);
+  Future<String?> saveRecordingTest(List<FrameRef> refs, DateTime startTime, {bool isDerivedTimestamp = false}) =>
+      _saveRecording(refs, startTime, isDerivedTimestamp: isDerivedTimestamp);
 
-  Future<String?> _saveRecording(List<FrameRef> refs, DateTime startTime) async {
+  Future<String?> _saveRecording(List<FrameRef> refs, DateTime startTime, {bool? isDerivedTimestamp}) async {
+    final derived = isDerivedTimestamp ?? _isDerivedTimestamp;
+    final prefix = derived ? 'unknown' : 'recording';
     final directory = await getApplicationDocumentsDirectory();
     final timestamp = startTime.millisecondsSinceEpoch;
 
@@ -335,10 +341,10 @@ class VadAudioProcessor {
     }
 
     if (refs.length < 5) {
-      return await _saveWav(refs, dateFolderPath, timestamp);
+      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix);
     }
 
-    final m4aPath = '${dateFolder.path}/recording_$timestamp.m4a';
+    final m4aPath = '${dateFolder.path}/${prefix}_$timestamp.m4a';
 
     const waveformBuckets = 200;
     const windowSize = 800;
@@ -363,7 +369,7 @@ class VadAudioProcessor {
     }
 
     if (aacFailed) {
-      return await _saveWav(refs, dateFolderPath, timestamp);
+      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix);
     }
 
     Future<void> flushBatch() async {
@@ -441,11 +447,11 @@ class VadAudioProcessor {
       await AacEncoder.finishEncoder(sessionId!);
     } on Exception catch (e) {
       Logger.error('VadAudioProcessor: AAC encoding failed, falling back to WAV: $e');
-      final corruptFile = File('${dateFolder.path}/recording_$timestamp.m4a');
+      final corruptFile = File('${dateFolder.path}/${prefix}_$timestamp.m4a');
       try {
         if (await corruptFile.exists()) await corruptFile.delete();
       } catch (_) {}
-      return await _saveWav(refs, dateFolderPath, timestamp);
+      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix);
     }
 
     final finalAmplitudes = List<double>.filled(waveformBuckets, 0.0);
@@ -470,7 +476,7 @@ class VadAudioProcessor {
       final peak16 = (finalAmplitudes[i] * 65535.0).round().clamp(0, 65535);
       metaBytes.setUint16(8 + i * 2, peak16, Endian.little);
     }
-    final metaPath = '${dateFolder.path}/recording_$timestamp.meta';
+    final metaPath = '${dateFolder.path}/${prefix}_$timestamp.meta';
     final List<int> metaOut = [...metaBytes.buffer.asUint8List()];
     final rawId = SharedPreferencesUtil().btDevice.id;
     if (rawId.isNotEmpty) {
@@ -491,8 +497,9 @@ class VadAudioProcessor {
     return m4aPath;
   }
 
-  Future<String> _saveWav(List<FrameRef> refs, String dateFolderPath, int timestamp) async {
-    final wavPath = '$dateFolderPath/recording_$timestamp.wav';
+  Future<String> _saveWav(List<FrameRef> refs, String dateFolderPath, int timestamp,
+      {String prefix = 'recording'}) async {
+    final wavPath = '$dateFolderPath/${prefix}_$timestamp.wav';
     final wavFile = File(wavPath);
     final IOSink sink = wavFile.openWrite();
 
