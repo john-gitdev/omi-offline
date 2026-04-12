@@ -32,7 +32,8 @@ class StorageWarningBanner extends StatelessWidget {
 class AccumulatingBanner extends StatelessWidget {
   final SyncProcessState spState;
   final double accumulatedMinutes;
-  const AccumulatingBanner({super.key, required this.spState, required this.accumulatedMinutes});
+  final VoidCallback? onTap;
+  const AccumulatingBanner({super.key, required this.spState, required this.accumulatedMinutes, this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -68,15 +69,18 @@ class AccumulatingBanner extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: Colors.deepPurpleAccent.withValues(alpha: 0.2),
-              shape: BoxShape.circle,
-            ),
-            child: const Center(
-              child: FaIcon(FontAwesomeIcons.hourglassHalf, color: Colors.deepPurpleAccent, size: 16),
+          GestureDetector(
+            onTap: onTap,
+            child: Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: Colors.deepPurpleAccent.withValues(alpha: 0.2),
+                shape: BoxShape.circle,
+              ),
+              child: const Center(
+                child: FaIcon(FontAwesomeIcons.hourglassHalf, color: Colors.deepPurpleAccent, size: 16),
+              ),
             ),
           ),
         ],

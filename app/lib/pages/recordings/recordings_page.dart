@@ -493,7 +493,44 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     else if (controller.spState == SyncProcessState.error) controller.retryFromError();
                   },
                 ),
-                AccumulatingBanner(spState: controller.spState, accumulatedMinutes: controller.accumulatedMinutes),
+                AccumulatingBanner(
+                  spState: controller.spState,
+                  accumulatedMinutes: controller.accumulatedMinutes,
+                  onTap: () {
+                    if (controller.spState != SyncProcessState.idle) return;
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        backgroundColor: const Color(0xFF1C1C1E),
+                        title: const Text('Process Audio', style: TextStyle(color: Colors.white)),
+                        content: const Text(
+                          'You can process the accumulated audio now. Processing normally will respect the conversation pause limits, while Force Processing will finalize everything immediately.',
+                          style: TextStyle(color: Colors.white70, fontSize: 14),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(ctx).pop(),
+                            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                          ),
+                          TextButton(
+                            onPressed: () {
+                              Navigator.of(ctx).pop();
+                              controller.startProcessingWithoutSync();
+                            },
+                            child: const Text('Process Normally', style: TextStyle(color: Colors.deepPurpleAccent)),
+                          ),
+                          TextButton(
+                            onPressed: () {
+                              Navigator.of(ctx).pop();
+                              controller.startForceProcessingWithoutSync();
+                            },
+                            child: const Text('Force Process', style: TextStyle(color: Colors.deepPurpleAccent)),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
                 AdjustmentCleanupBanner(
                   adjustmentMode: _prefs.adjustmentMode,
                   adjustmentModeWasEnabled: _prefs.adjustmentModeWasEnabled,
