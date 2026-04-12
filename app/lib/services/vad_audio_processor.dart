@@ -10,6 +10,8 @@ import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/services/frame_ref.dart';
 import 'package:omi/utils/logger.dart';
 
+import "package:meta/meta.dart";
+
 class VadAudioProcessor {
   // Silero VAD session + LSTM state (reset on gap detection)
   OrtSession? _session;
@@ -48,7 +50,7 @@ class VadAudioProcessor {
   static const int _vadWindowSamples = 512; // Silero VAD input size
 
   static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
-    OrtEnv.instance.init();
+    try { OrtEnv.instance.init(); } catch (e) { Logger.error("VadAudioProcessor: Failed to init OrtEnv: $e"); }
     OrtSession? session;
     try {
       final data = await rootBundle.load('assets/models/silero_vad.onnx');
@@ -310,6 +312,9 @@ class VadAudioProcessor {
     _currentChunkDurationMs = 0;
     _recordingStartTime = null;
   }
+
+  @visibleForTesting
+  Future<String?> saveRecordingTest(List<FrameRef> refs, DateTime startTime) => _saveRecording(refs, startTime);
 
   Future<String?> _saveRecording(List<FrameRef> refs, DateTime startTime) async {
     final directory = await getApplicationDocumentsDirectory();
