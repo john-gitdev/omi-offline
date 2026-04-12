@@ -181,14 +181,14 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
       final dir = await getTemporaryDirectory();
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final outputPath = '${dir.path}/export_$timestamp.m4a';
-      
+
       final startSec = _cropStart.inMilliseconds / 1000.0;
       final durationSec = (_cropEnd - _cropStart).inMilliseconds / 1000.0;
 
       // -ss is the start offset, -t is the duration
       // -c copy allows fast trimming without re-encoding
       final command = '-y -i "${_segment.path}" -ss $startSec -t $durationSec -c copy "$outputPath"';
-      
+
       final session = await FFmpegKit.execute(command);
       final returnCode = await session.getReturnCode();
 
@@ -635,4 +635,3 @@ class _SeekBtn extends StatelessWidget {
     );
   }
 }
-
