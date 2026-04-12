@@ -297,6 +297,33 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     return _pipelineCompleter?.future;
   }
 
+  Future<void> startProcessingWithoutSync() async {
+    if (_spState != SyncProcessState.idle) return;
+    _poll();
+    if (_spState != SyncProcessState.idle) return;
+
+    _pipelineCompleter = Completer<void>();
+    _isForcePipeline = false;
+    _isUserTriggered = true;
+    unawaited(_runProcessing().whenComplete(() => _isUserTriggered = false));
+    return _pipelineCompleter?.future;
+  }
+
+  Future<void> startForceProcessingWithoutSync() async {
+    if (_spState != SyncProcessState.idle) return;
+    _poll();
+    if (_spState != SyncProcessState.idle) return;
+
+    _pipelineCompleter = Completer<void>();
+    _isForcePipeline = true;
+    _isUserTriggered = true;
+    unawaited(_runProcessing().whenComplete(() {
+      _isUserTriggered = false;
+      _isForcePipeline = false;
+    }));
+    return _pipelineCompleter?.future;
+  }
+
   Future<void> startForcePipeline() async {
     if (_spState != SyncProcessState.idle) return;
     if (_forceSyncOnCooldown) return;
