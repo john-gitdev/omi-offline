@@ -82,7 +82,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
               }
             })
             .catchError((e) {
-              SharedPreferencesUtil().heypocketEnabled = false;
+              // Network errors (timeout, no connection) should not disable the
+              // integration — we simply cannot verify the key right now.
               Logger.error('HeyPocket startup check failed: $e');
             }),
       );
