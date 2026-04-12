@@ -18,9 +18,11 @@ class StorageFile {
 class StorageFileStats {
   final int totalUsedBytes;
   final int fileCount;
+  final int freeBytes;
 
   StorageFileStats({
     required this.totalUsedBytes,
     required this.fileCount,
+    required this.freeBytes,
   });
 }

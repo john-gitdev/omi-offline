@@ -37,8 +37,7 @@ class _FakeLogger_0 extends _i1.SmartFake implements _i2.Logger {
 /// A class which mocks [FlutterSoundPlayer].
 ///
 /// See the documentation for Mockito's code generation for more information.
-class MockFlutterSoundPlayer extends _i1.Mock
-    implements _i3.FlutterSoundPlayer {
+class MockFlutterSoundPlayer extends _i1.Mock implements _i3.FlutterSoundPlayer {
   MockFlutterSoundPlayer() {
     _i1.throwOnMissingStub(this);
   }
@@ -237,9 +236,7 @@ class MockFlutterSoundPlayer extends _i1.Mock
       ) as bool);
 
   @override
-  _i4.Future<_i3.FlutterSoundPlayer?> openPlayer(
-          {dynamic isBGService = false}) =>
-      (super.noSuchMethod(
+  _i4.Future<_i3.FlutterSoundPlayer?> openPlayer({dynamic isBGService = false}) => (super.noSuchMethod(
         Invocation.method(
           #openPlayer,
           [],
@@ -264,8 +261,7 @@ class MockFlutterSoundPlayer extends _i1.Mock
           #getPlayerState,
           [],
         ),
-        returnValue:
-            _i4.Future<_i3.PlayerState>.value(_i3.PlayerState.isStopped),
+        returnValue: _i4.Future<_i3.PlayerState>.value(_i3.PlayerState.isStopped),
       ) as _i4.Future<_i3.PlayerState>);
 
   @override
@@ -274,8 +270,7 @@ class MockFlutterSoundPlayer extends _i1.Mock
           #getProgress,
           [],
         ),
-        returnValue:
-            _i4.Future<Map<String, Duration>>.value(<String, Duration>{}),
+        returnValue: _i4.Future<Map<String, Duration>>.value(<String, Duration>{}),
       ) as _i4.Future<Map<String, Duration>>);
 
   @override
@@ -288,8 +283,7 @@ class MockFlutterSoundPlayer extends _i1.Mock
       ) as _i4.Future<bool>);
 
   @override
-  _i4.Future<void> setSubscriptionDuration(Duration? duration) =>
-      (super.noSuchMethod(
+  _i4.Future<void> setSubscriptionDuration(Duration? duration) => (super.noSuchMethod(
         Invocation.method(
           #setSubscriptionDuration,
           [duration],
@@ -380,8 +374,7 @@ class MockFlutterSoundPlayer extends _i1.Mock
       ) as _i4.Future<void>);
 
   @override
-  _i4.Future<int> feedF32FromStream(List<_i5.Float32List>? buffer) =>
-      (super.noSuchMethod(
+  _i4.Future<int> feedF32FromStream(List<_i5.Float32List>? buffer) => (super.noSuchMethod(
         Invocation.method(
           #feedF32FromStream,
           [buffer],
@@ -390,8 +383,7 @@ class MockFlutterSoundPlayer extends _i1.Mock
       ) as _i4.Future<int>);
 
   @override
-  _i4.Future<int> feedInt16FromStream(List<_i5.Int16List>? buffer) =>
-      (super.noSuchMethod(
+  _i4.Future<int> feedInt16FromStream(List<_i5.Int16List>? buffer) => (super.noSuchMethod(
         Invocation.method(
           #feedInt16FromStream,
           [buffer],
@@ -400,8 +392,7 @@ class MockFlutterSoundPlayer extends _i1.Mock
       ) as _i4.Future<int>);
 
   @override
-  _i4.Future<int> feedUint8FromStream(_i5.Uint8List? buffer) =>
-      (super.noSuchMethod(
+  _i4.Future<int> feedUint8FromStream(_i5.Uint8List? buffer) => (super.noSuchMethod(
         Invocation.method(
           #feedUint8FromStream,
           [buffer],

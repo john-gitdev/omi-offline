@@ -120,12 +120,12 @@ class MockDeviceConnection extends Fake implements DeviceConnection {
 class MockBtDevice extends Fake implements BtDevice {
   @override
   String get id => 'test-device-id';
-  
+
   final MockDeviceConnection connection = MockDeviceConnection();
-  
+
   @override
   DeviceConnection? get connectionInstance => connection;
-  
+
   @override
   BleAudioCodec get codec => BleAudioCodec.opus;
 }
@@ -136,13 +136,11 @@ void main() {
 
   setUp(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       const MethodChannel('disk_space_2'),
       (call) async => 1000.0,
     );
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
       (call) async => null,
     );
@@ -200,13 +198,11 @@ void main() {
 
     setUp(() {
       TestWidgetsFlutterBinding.ensureInitialized();
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
         const MethodChannel('disk_space_2'),
         (call) async => 1000.0,
       );
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
         const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
         (call) async => null,
       );
@@ -329,7 +325,10 @@ void main() {
       // 1. We mock listFiles but SDCardWalSync needs some fields setup to pass _buildWalsFromFiles logic.
       // Let's use `StorageFile` with adequate sizes.
       mockConn.files = [
-        StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 3000000), // large enough to pass threshold
+        StorageFile(
+            index: 1,
+            timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+            size: 3000000), // large enough to pass threshold
         StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 1000000)
       ];
 
@@ -355,21 +354,21 @@ void main() {
           .catchError((_) => isFinished = true);
 
       while (!isFinished) {
-         await Future.delayed(const Duration(milliseconds: 50));
-         if (mockConn.currentFileNum == 1) {
-            mockConn.add(ackPacket(0x00));
-            await pump();
-            // Inject an increasing gap sequence so `_readStorageBytesToFile` fails 4 times.
-            mockConn.add(dataPacket(mockConn.writeCount * 100, List<int>.filled(5, 0xCC)));
-            await pump();
-         } else if (mockConn.currentFileNum == 2) {
-            mockConn.add(ackPacket(0x00));
-            await pump();
-            mockConn.add(dataPacket(0, List<int>.filled(10, 0xDD)));
-            await pump();
-            mockConn.add(eotPacket());
-            await pump();
-         }
+        await Future.delayed(const Duration(milliseconds: 50));
+        if (mockConn.currentFileNum == 1) {
+          mockConn.add(ackPacket(0x00));
+          await pump();
+          // Inject an increasing gap sequence so `_readStorageBytesToFile` fails 4 times.
+          mockConn.add(dataPacket(mockConn.writeCount * 100, List<int>.filled(5, 0xCC)));
+          await pump();
+        } else if (mockConn.currentFileNum == 2) {
+          mockConn.add(ackPacket(0x00));
+          await pump();
+          mockConn.add(dataPacket(0, List<int>.filled(10, 0xDD)));
+          await pump();
+          mockConn.add(eotPacket());
+          await pump();
+        }
       }
 
       final response = await syncAllFuture;
@@ -403,7 +402,7 @@ void main() {
     test('Conversation.fromFile handles missing uploadKey in meta', () async {
       final audioFile = File('${tempDir.path}/recording_1773961625000.m4a')..createSync(recursive: true);
       final metaFile = File('${tempDir.path}/recording_1773961625000.meta')..createSync(recursive: true);
-      
+
       // Write short meta (only 8 bytes, no upload key)
       final bd = ByteData(8);
       bd.setUint32(0, 1000, Endian.little); // samples
@@ -419,17 +418,17 @@ void main() {
     test('Conversation.fromFile parses long uploadKey correctly', () async {
       final audioFile = File('${tempDir.path}/rec_long.m4a')..createSync(recursive: true);
       final metaFile = File('${tempDir.path}/rec_long.meta')..createSync(recursive: true);
-      
+
       final key = 'ABCDEF_recording_123456789.m4a';
       final keyBytes = key.codeUnits;
-      
+
       final builder = BytesBuilder();
       final bd = ByteData(408);
       bd.setUint32(4, 5000, Endian.little); // 5s duration
       builder.add(bd.buffer.asUint8List());
       builder.addByte(keyBytes.length);
       builder.add(keyBytes);
-      
+
       metaFile.writeAsBytesSync(builder.toBytes());
 
       final conv = Conversation.fromFile(audioFile);

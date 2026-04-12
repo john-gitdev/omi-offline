@@ -151,8 +151,8 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     updateManager.logger.logMessageStream
         .where((log) => log.level.rawValue > 1) // Filter debug messages
         .listen((log) {
-          Logger.debug('dfu log: ${log.message}');
-        });
+      Logger.debug('dfu log: ${log.message}');
+    });
 
     await updateManager.update(images, configuration: configuration);
   }

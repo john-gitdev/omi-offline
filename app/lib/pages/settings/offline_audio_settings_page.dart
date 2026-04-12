@@ -247,8 +247,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                                 context: context,
                                 builder: (c) => AlertDialog(
                                   backgroundColor: const Color(0xFF1C1C1E),
-                                  title: const Text('Enable Adjustment Mode?',
-                                      style: TextStyle(color: Colors.white)),
+                                  title: const Text('Enable Adjustment Mode?', style: TextStyle(color: Colors.white)),
                                   content: const Text(
                                     'Raw audio is kept on disk so you can reprocess days with different settings.\n\n'
                                     'Uploads to HeyPocket and other integrations are paused while adjustment mode is on — '
@@ -263,8 +262,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                                     ),
                                     TextButton(
                                       onPressed: () => Navigator.of(c).pop(true),
-                                      child: const Text('Enable',
-                                          style: TextStyle(color: Colors.deepPurpleAccent)),
+                                      child: const Text('Enable', style: TextStyle(color: Colors.deepPurpleAccent)),
                                     ),
                                   ],
                                 ),
