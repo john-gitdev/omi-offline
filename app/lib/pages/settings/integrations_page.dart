@@ -40,6 +40,9 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     if (!valid && mounted) {
       _prefs.heypocketEnabled = false;
       setState(() => _connState = _ConnectionState.error);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('HeyPocket: API key is no longer valid — please update it')),
+      );
     }
   }
 
