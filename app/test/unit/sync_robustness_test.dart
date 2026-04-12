@@ -349,7 +349,10 @@ void main() {
       // For File 1, we purposefully inject gap errors by shifting the incoming offset.
       // For File 2, we simulate a successful transmission.
       bool isFinished = false;
-      syncAllFuture.then((_) => isFinished = true).catchError((_) => isFinished = true);
+      syncAllFuture
+          .timeout(const Duration(seconds: 10))
+          .then((_) => isFinished = true)
+          .catchError((_) => isFinished = true);
 
       while (!isFinished) {
          await Future.delayed(const Duration(milliseconds: 50));
