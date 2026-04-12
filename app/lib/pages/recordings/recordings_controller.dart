@@ -59,6 +59,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   int _autoUploadActive = 0;
   String _lastHpKey = '';
 
+  String? _pendingSnackMessage;
+  String? consumePendingSnack() {
+    final msg = _pendingSnackMessage;
+    _pendingSnackMessage = null;
+    return msg;
+  }
+
   Timer? _pollTimer;
   bool _isUserTriggered = false;
   Completer<void>? _pipelineCompleter;
@@ -699,6 +706,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               .catchError((e) {
                 if (e is HeyPocketException && e.statusCode == 401) {
                   _prefs.heypocketEnabled = false;
+                  _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
                 }
                 Logger.error('HeyPocket auto-upload failed: $e');
               })
