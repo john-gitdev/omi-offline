@@ -770,8 +770,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           wal.walOffset = _lastSegmentBoundaryOffset;
           wal.isSyncing = false;
           listener.onWalUpdated();
-          if (_isCancelled) rethrow; // cancellation aborts remaining files
-          anyPartial = true; // all other errors: mark partial and continue
+          anyPartial = true;
+          if (_isCancelled) break; // cancellation aborts remaining files gracefully
         }
       }
     } finally {
