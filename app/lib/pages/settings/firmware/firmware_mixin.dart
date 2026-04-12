@@ -12,8 +12,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 
+import 'package:http/http.dart' as http;
 import 'package:omi/backend/http/api/device.dart';
-import 'package:omi/backend/http/shared.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/utils/device.dart';
@@ -267,7 +267,8 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     });
 
     try {
-      final r = await makeRawApiCall(method: 'GET', url: zipUrl);
+      final request = http.Request('GET', Uri.parse(zipUrl));
+      final r = await http.Client().send(request);
       final completer = Completer<void>();
       final int? totalBytes = r.contentLength;
 
