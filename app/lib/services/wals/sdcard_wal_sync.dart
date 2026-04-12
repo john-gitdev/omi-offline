@@ -940,12 +940,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         'SDCardWalSync: CMD_CLEAR_STORAGE failed, falling back to per-file deletion',
       );
       final files = await _listFiles(_device!.id);
-      for (final file in files) {
-        await connection.deleteFile(file);
-        _wals.removeWhere(
-          (w) => w.fileNum == file.index && w.storage == WalStorage.sdcard,
-        );
-      }
+      await Future.wait(
+        files.map((file) async {
+          await connection.deleteFile(file);
+          _wals.removeWhere(
+            (w) => w.fileNum == file.index && w.storage == WalStorage.sdcard,
+          );
+        }),
+      );
       listener.onWalUpdated();
     }
   }
