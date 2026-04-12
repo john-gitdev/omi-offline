@@ -9,9 +9,11 @@ import 'package:omi/utils/file.dart';
 import 'package:omi/utils/audio/wav_bytes.dart';
 
 class FakePathProviderPlatform extends Fake with MockPlatformInterfaceMixin implements PathProviderPlatform {
+  String? tempPath = Directory.systemTemp.path;
+
   @override
   Future<String?> getTemporaryPath() async {
-    return Directory.systemTemp.path;
+    return tempPath;
   }
 }
 
@@ -65,6 +67,16 @@ void main() {
       },
     );
 
+    test('rethrows error on failure for saveAudioBytesToTempFile', () async {
+      PathProviderPlatform.instance = FakePathProviderPlatform()..tempPath = null;
+      await expectLater(
+        () async => await FileUtils.saveAudioBytesToTempFile([], 12345, 80),
+        throwsA(anything),
+      );
+      // Restore platform instance for other tests
+      PathProviderPlatform.instance = FakePathProviderPlatform();
+    });
+
     test(
       'convertPcmToWavFile correctly creates WAV file from PCM data',
       () async {
@@ -107,5 +119,15 @@ void main() {
         }
       },
     );
+
+    test('convertPcmToWavFile rethrows error on failure', () async {
+      PathProviderPlatform.instance = FakePathProviderPlatform()..tempPath = null;
+      await expectLater(
+        () async => await FileUtils.convertPcmToWavFile(Uint8List(0), 16000, 1),
+        throwsA(anything),
+      );
+      // Restore platform instance for other tests
+      PathProviderPlatform.instance = FakePathProviderPlatform();
+    });
   });
 }
