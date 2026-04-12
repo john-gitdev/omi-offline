@@ -330,6 +330,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
       value: _controller,
       child: Consumer2<DeviceProvider, RecordingsController>(
         builder: (context, deviceProvider, controller, child) {
+          final snack = controller.consumePendingSnack();
+          if (snack != null) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(snack)));
+            });
+          }
           return Scaffold(
             backgroundColor: const Color(0xFF0D0D0D),
             appBar: AppBar(
