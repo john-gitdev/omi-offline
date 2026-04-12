@@ -132,6 +132,50 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
     }
   }
 
+  Future<void> _assignDate() async {
+    final DateTime? date = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime(2023),
+      lastDate: DateTime.now(),
+    );
+    if (!mounted || date == null) return;
+
+    final TimeOfDay? time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
+    if (!mounted || time == null) return;
+
+    final newStart = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    final newTimestamp = newStart.millisecondsSinceEpoch;
+    final dateStr =
+        '${newStart.year}-${newStart.month.toString().padLeft(2, '0')}-${newStart.day.toString().padLeft(2, '0')}';
+
+    final docsDir = widget.conversation.file.parent.parent.parent.path;
+    final targetDir = Directory('$docsDir/$dateStr');
+    if (!await targetDir.exists()) await targetDir.create(recursive: true);
+
+    final newM4aPath = '${targetDir.path}/recording_$newTimestamp.m4a';
+    final newMetaPath = '${targetDir.path}/recording_$newTimestamp.meta';
+
+    try {
+      await _player.stop();
+      final basePath = widget.conversation.file.path.substring(0, widget.conversation.file.path.lastIndexOf('.'));
+      final metaFile = File('$basePath.meta');
+      if (await metaFile.exists()) await metaFile.rename(newMetaPath);
+      await widget.conversation.file.rename(newM4aPath);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to assign date.')));
+      }
+      return;
+    }
+
+    RecordingsManager.notifyRecordingsChanged();
+    if (mounted) Navigator.of(context).pop();
+  }
+
   Future<void> _export() async {
     await SharePlus.instance.share(
       ShareParams(
@@ -221,6 +265,12 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           style: const TextStyle(color: Colors.white, fontSize: 18),
         ),
         actions: [
+          if (widget.conversation.isUnknown)
+            IconButton(
+              icon: const FaIcon(FontAwesomeIcons.calendarDays, color: Colors.amber, size: 20),
+              onPressed: _assignDate,
+              tooltip: 'Assign date',
+            ),
           _buildUploadAction(),
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.shareFromSquare, color: Colors.white, size: 20),
