@@ -22,7 +22,8 @@ void main() {
     test('handles manageDevice error', () async {
       bool manageDeviceCalled = false;
 
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockDecodedMessageHandler<Object?>(
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockDecodedMessageHandler<Object?>(
         BasicMessageChannel<Object?>(
           'dev.flutter.pigeon.omi_pigeon.BleHostApi.manageDevice',
           BleHostApi.pigeonChannelCodec,
@@ -33,7 +34,8 @@ void main() {
         },
       );
 
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockDecodedMessageHandler<Object?>(
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockDecodedMessageHandler<Object?>(
         BasicMessageChannel<Object?>(
           'dev.flutter.pigeon.omi_pigeon.BleHostApi.unmanageDevice',
           BleHostApi.pigeonChannelCodec,

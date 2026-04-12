@@ -604,11 +604,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final unprocessed = daysWithBins.where((b) => b.finalizedRecordings.isEmpty).toList();
     if (unprocessed.isNotEmpty) {
       final totalBytes = unprocessed.expand((b) => b.rawSegments).fold(0, (sum, f) {
-        try {
-          return sum + f.lengthSync();
-        } catch (_) {
-          return sum;
-        }
+        try { return sum + f.lengthSync(); } catch (_) { return sum; }
       });
 
       _totalMinutes = totalBytes / 252000.0;
@@ -655,11 +651,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (freshBatch.isEmpty) return;
 
     final totalBytes = freshBatch.expand((b) => b.rawSegments).fold(0, (sum, f) {
-      try {
-        return sum + f.lengthSync();
-      } catch (_) {
-        return sum;
-      }
+      try { return sum + f.lengthSync(); } catch (_) { return sum; }
     });
 
     _lastActiveStage = 'processing';
@@ -679,9 +671,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
           }
         },
         backgroundMode: false,
-        onRecordingFinalized: () {
-          unawaited(reloadBatchesSilently());
-        },
+        onRecordingFinalized: () { unawaited(reloadBatchesSilently()); },
       );
     } catch (e) {
       WakelockPlus.disable();
@@ -714,22 +704,25 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _autoUploadActive++;
 
         unawaited(
-          HeyPocketService.uploadRecording(apiKey, conversation).then((_) async {
-            await _prefs.markUploadedToHeypocket(uploadKey);
-          }).catchError((e) {
-            if (e is HeyPocketException && e.statusCode == 401) {
-              _prefs.heypocketEnabled = false;
-              _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
-            }
-            Logger.error('HeyPocket auto-upload failed: $e');
-          }).whenComplete(() {
-            _uploadingFiles.remove(uploadKey);
-            _autoUploadActive--;
-            if (!_isDisposed) {
-              notifyListeners();
-              WidgetsBinding.instance.addPostFrameCallback((_) => tryAutoUploadNext());
-            }
-          }),
+          HeyPocketService.uploadRecording(apiKey, conversation)
+              .then((_) async {
+                await _prefs.markUploadedToHeypocket(uploadKey);
+              })
+              .catchError((e) {
+                if (e is HeyPocketException && e.statusCode == 401) {
+                  _prefs.heypocketEnabled = false;
+                  _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
+                }
+                Logger.error('HeyPocket auto-upload failed: $e');
+              })
+              .whenComplete(() {
+                _uploadingFiles.remove(uploadKey);
+                _autoUploadActive--;
+                if (!_isDisposed) {
+                  notifyListeners();
+                  WidgetsBinding.instance.addPostFrameCallback((_) => tryAutoUploadNext());
+                }
+              }),
         );
       }
     }

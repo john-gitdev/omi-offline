@@ -270,7 +270,8 @@ class BatchCard extends StatelessWidget {
                     key: Key('reprocess_day_${batch.dateString}'),
                     onPressed: onReprocessDay,
                     icon: const FaIcon(FontAwesomeIcons.rotateRight, size: 13, color: Colors.deepPurpleAccent),
-                    label: const Text('Reprocess Day', style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13)),
+                    label: const Text('Reprocess Day',
+                        style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13)),
                   )
                 else
                   TextButton.icon(

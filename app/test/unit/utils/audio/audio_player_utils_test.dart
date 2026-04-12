@@ -135,8 +135,7 @@ void main() {
 
         expect(
           () => utils.shareAsAudio(wal),
-          throwsA(isA<Exception>()
-              .having((e) => e.toString(), 'message', contains('Audio file not available for sharing'))),
+          throwsA(isA<Exception>().having((e) => e.toString(), 'message', contains('Audio file not available for sharing'))),
         );
       });
     });

@@ -324,8 +324,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                       child: SizedBox(
                         height: 100,
                         child: _loadingWaveform
-                            ? const Center(
-                                child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
+                            ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
                             : LayoutBuilder(
                                 builder: (ctx, constraints) {
                                   final width = constraints.maxWidth;
@@ -495,6 +494,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                       }).toList(),
                     ),
                     const SizedBox(height: 32),
+
                   ],
                 ),
               ),
@@ -609,6 +609,7 @@ class _MarkerWaveformPainter extends CustomPainter {
       old.activeDragMode != activeDragMode ||
       old.isCropMode != isCropMode;
 }
+
 
 // ── Seek button ───────────────────────────────────────────────────────────────
 
