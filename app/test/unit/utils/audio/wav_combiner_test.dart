@@ -242,5 +242,16 @@ void main() {
       final combinedData = outFile.readAsBytesSync();
       expect(combinedData.length, 44 + 350);
     });
+
+    test('throws exception when input files do not exist', () async {
+      final file1 = createWavFile('file1.wav', createMockWavData(dataSize: 100));
+      final missingFile = File('${tempDir.path}/missing.wav');
+      final outPath = '${tempDir.path}/out_missing.wav';
+
+      await expectLater(
+        () => WavCombiner.combineWavFiles([file1, missingFile], outPath),
+        throwsA(isA<FileSystemException>()),
+      );
+    });
   });
 }
