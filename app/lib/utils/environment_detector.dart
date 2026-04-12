@@ -7,8 +7,12 @@ import 'package:omi/utils/logger.dart';
 class EnvironmentDetector {
   static const _channel = MethodChannel('com.omi/environment');
 
+  @visibleForTesting
+  static bool? platformIsIOSForTesting;
+
   static Future<bool> isTestFlight() async {
-    if (!Platform.isIOS) return false;
+    final bool isIOS = platformIsIOSForTesting ?? Platform.isIOS;
+    if (!isIOS) return false;
     try {
       final bool result = await _channel.invokeMethod('isTestFlight');
       return result;
