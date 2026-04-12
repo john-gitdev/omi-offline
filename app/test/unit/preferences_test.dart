@@ -110,6 +110,121 @@ void main() {
       expect(prefsUtil.vadSpeechThreshold, 0.8);
     });
 
+    test('All other properties read and write correctly with expected defaults', () async {
+      // Offline Audio Processing
+      expect(prefsUtil.forceSyncSkipConfirm, false);
+      prefsUtil.forceSyncSkipConfirm = true;
+      expect(prefsUtil.forceSyncSkipConfirm, true);
+
+      expect(prefsUtil.adjustmentMode, false);
+      prefsUtil.adjustmentMode = true;
+      expect(prefsUtil.adjustmentMode, true);
+
+      expect(prefsUtil.adjustmentModeWasEnabled, false);
+      prefsUtil.adjustmentModeWasEnabled = true;
+      expect(prefsUtil.adjustmentModeWasEnabled, true);
+
+      expect(prefsUtil.vadHangoverSeconds, 0.5);
+      prefsUtil.vadHangoverSeconds = 0.7;
+      expect(prefsUtil.vadHangoverSeconds, 0.7);
+
+      expect(prefsUtil.vadSplitSeconds, 120);
+      prefsUtil.vadSplitSeconds = 60;
+      expect(prefsUtil.vadSplitSeconds, 60);
+
+      expect(prefsUtil.vadMinSpeechSeconds, 3);
+      prefsUtil.vadMinSpeechSeconds = 5;
+      expect(prefsUtil.vadMinSpeechSeconds, 5);
+
+      expect(prefsUtil.vadPreSpeechSeconds, 1.0);
+      prefsUtil.vadPreSpeechSeconds = 2.0;
+      expect(prefsUtil.vadPreSpeechSeconds, 2.0);
+
+      expect(prefsUtil.vadGapSeconds, 30);
+      prefsUtil.vadGapSeconds = 45;
+      expect(prefsUtil.vadGapSeconds, 45);
+
+      expect(prefsUtil.vadMaxConversationMinutes, 60);
+      prefsUtil.vadMaxConversationMinutes = 90;
+      expect(prefsUtil.vadMaxConversationMinutes, 90);
+
+      expect(prefsUtil.autoSyncEnabled, true);
+      prefsUtil.autoSyncEnabled = false;
+      expect(prefsUtil.autoSyncEnabled, false);
+
+      expect(prefsUtil.extractionInProgress, false);
+      prefsUtil.extractionInProgress = true;
+      expect(prefsUtil.extractionInProgress, true);
+
+      // Device
+      expect(prefsUtil.lastConnectedDeviceAddress, '');
+      prefsUtil.lastConnectedDeviceAddress = 'AA:BB:CC';
+      expect(prefsUtil.lastConnectedDeviceAddress, 'AA:BB:CC');
+
+      expect(prefsUtil.deviceName, '');
+      prefsUtil.deviceName = 'TestDevice';
+      expect(prefsUtil.deviceName, 'TestDevice');
+
+      expect(prefsUtil.deviceIsV2, false);
+      prefsUtil.deviceIsV2 = true;
+      expect(prefsUtil.deviceIsV2, true);
+
+      expect(prefsUtil.doubleTapAction, 0);
+      prefsUtil.doubleTapAction = 1;
+      expect(prefsUtil.doubleTapAction, 1);
+
+      expect(prefsUtil.doubleTapPausesMuting, true); // Since doubleTapAction is 1
+      prefsUtil.doubleTapPausesMuting = false;
+      expect(prefsUtil.doubleTapAction, 0);
+      expect(prefsUtil.doubleTapPausesMuting, false);
+
+      expect(prefsUtil.lastBatteryLevel, -1);
+      prefsUtil.lastBatteryLevel = 50;
+      expect(prefsUtil.lastBatteryLevel, 50);
+
+      expect(prefsUtil.devLogsToFileEnabled, false);
+      prefsUtil.devLogsToFileEnabled = true;
+      expect(prefsUtil.devLogsToFileEnabled, true);
+    });
+
+    test('HeyPocket uploaded files management and concurrency works correctly', () async {
+      // Basic properties
+      expect(prefsUtil.heypocketEnabled, false);
+      prefsUtil.heypocketEnabled = true;
+      expect(prefsUtil.heypocketEnabled, true);
+
+      expect(prefsUtil.heypocketKeySetAt, 0);
+      prefsUtil.heypocketKeySetAt = 123456789;
+      expect(prefsUtil.heypocketKeySetAt, 123456789);
+
+      expect(prefsUtil.heypocketUploadedFiles, []);
+      prefsUtil.heypocketUploadedFiles = ['file1'];
+      expect(prefsUtil.heypocketUploadedFiles, ['file1']);
+      expect(prefsUtil.isUploadedToHeypocket('file1'), true);
+      expect(prefsUtil.isUploadedToHeypocket('file2'), false);
+
+      // Concurrency guarded methods
+      await prefsUtil.markUploadedToHeypocket('file2');
+      expect(prefsUtil.heypocketUploadedFiles, ['file1', 'file2']);
+      expect(prefsUtil.isUploadedToHeypocket('file2'), true);
+
+      // Duplicate addition does not affect list
+      await prefsUtil.markUploadedToHeypocket('file2');
+      expect(prefsUtil.heypocketUploadedFiles, ['file1', 'file2']);
+
+      // Remove keys
+      await prefsUtil.removeUploadedFromHeypocket({'file1'});
+      expect(prefsUtil.heypocketUploadedFiles, ['file2']);
+
+      // Remove non-existent key
+      await prefsUtil.removeUploadedFromHeypocket({'file3'});
+      expect(prefsUtil.heypocketUploadedFiles, ['file2']);
+
+      // Remove empty set
+      await prefsUtil.removeUploadedFromHeypocket({});
+      expect(prefsUtil.heypocketUploadedFiles, ['file2']);
+    });
+
     test('BtDevice serialization and deserialization work correctly', () async {
       // Default should return an empty BtDevice
       final defaultDevice = prefsUtil.btDevice;
