@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/services/vad_audio_processor.dart';
-import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/services/frame_ref.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
@@ -149,9 +148,10 @@ void main() {
 
     final savedPath = await processor.saveRecordingTest(refs, DateTime.now());
 
+    // Dummy zero bytes cannot be Opus-decoded, so no PCM frames are encoded.
+    // hasEncodedAnyFrames stays false → empty segment is discarded before finishEncoder is called.
     expect(startEncoderCalled, isTrue, reason: 'AAC startEncoder should have been called');
-    // If it deletes the file it will return null since it's an empty m4a segment.
-    // If it reaches exception block it might fall back to WAV or return null.
-    // Either way we verify that it runs without unhandled exception.
+    expect(finishEncoderCalled, isFalse, reason: 'finishEncoder is not reached when no frames are encoded');
+    expect(savedPath, isNull, reason: 'Empty segment is discarded, returning null');
   });
 }
