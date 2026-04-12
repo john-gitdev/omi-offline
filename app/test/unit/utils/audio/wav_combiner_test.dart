@@ -248,7 +248,7 @@ void main() {
       final missingFile = File('${tempDir.path}/missing.wav');
       final outPath = '${tempDir.path}/out_missing.wav';
 
-      expect(
+      await expectLater(
         () => WavCombiner.combineWavFiles([file1, missingFile], outPath),
         throwsA(isA<FileSystemException>()),
       );
