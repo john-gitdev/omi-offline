@@ -115,9 +115,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _showCancelModal() async {
-    if (_controller.spState != SyncProcessState.syncing &&
-        _controller.spState != SyncProcessState.processing)
-      return;
+    if (_controller.spState != SyncProcessState.syncing && _controller.spState != SyncProcessState.processing) return;
     final confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -431,8 +429,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   ),
                   onCancelTap: () => unawaited(_showCancelModal()),
                   onActionTap: () {
-                    if (controller.spState == SyncProcessState.idle) controller.startPipeline();
-                    else if (controller.spState == SyncProcessState.resume) controller.resumePipeline();
+                    if (controller.spState == SyncProcessState.idle)
+                      controller.startPipeline();
+                    else if (controller.spState == SyncProcessState.resume)
+                      controller.resumePipeline();
                     else if (controller.spState == SyncProcessState.error) controller.retryFromError();
                   },
                 ),
@@ -483,12 +483,14 @@ class _RecordingsPageState extends State<RecordingsPage> {
                             }
 
                             final markerMap = _buildMarkerMap();
-                            final visibleBatches = controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
+                            final visibleBatches =
+                                controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
                             return RefreshIndicator(
                               color: Colors.deepPurpleAccent,
                               onRefresh: () {
                                 if (controller.spState != SyncProcessState.idle) {
-                                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sync already in progress')));
+                                  ScaffoldMessenger.of(context)
+                                      .showSnackBar(const SnackBar(content: Text('Sync already in progress')));
                                   return Future.value();
                                 }
                                 return controller.startPipeline();
@@ -509,16 +511,23 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                               if (deviceProvider.isConnected) ...[
                                                 const SizedBox(height: 32),
                                                 ElevatedButton.icon(
-                                                  onPressed: controller.spState == SyncProcessState.idle ? controller.startPipeline : null,
+                                                  onPressed: controller.spState == SyncProcessState.idle
+                                                      ? controller.startPipeline
+                                                      : null,
                                                   icon: const FaIcon(FontAwesomeIcons.rotate, size: 16),
                                                   label: const Text('Sync and Process'),
-                                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent, foregroundColor: Colors.white),
+                                                  style: ElevatedButton.styleFrom(
+                                                      backgroundColor: Colors.deepPurpleAccent,
+                                                      foregroundColor: Colors.white),
                                                 ),
                                               ] else ...[
                                                 const SizedBox(height: 32),
                                                 ElevatedButton(
-                                                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (c) => const FindDevicesPage())),
-                                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent, foregroundColor: Colors.white),
+                                                  onPressed: () => Navigator.of(context)
+                                                      .push(MaterialPageRoute(builder: (c) => const FindDevicesPage())),
+                                                  style: ElevatedButton.styleFrom(
+                                                      backgroundColor: Colors.deepPurpleAccent,
+                                                      foregroundColor: Colors.white),
                                                   child: const Text('Connect Omi'),
                                                 ),
                                               ],
@@ -541,7 +550,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                         isUploading: controller.uploadingFiles.contains,
                                         onUploadTap: _handleUploadTap,
                                         onMarkerTap: _openMarkerConversation,
-                                        onExportAll: (conversations) => _exportAll(visibleBatches[index], conversations),
+                                        onExportAll: (conversations) =>
+                                            _exportAll(visibleBatches[index], conversations),
                                         onDeleteDay: () => _deleteDay(visibleBatches[index]),
                                         onReprocessDay: () => _reprocessDay(visibleBatches[index]),
                                       ),

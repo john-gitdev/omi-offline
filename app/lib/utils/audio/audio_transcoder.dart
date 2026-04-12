@@ -124,7 +124,6 @@ class OpusToWavTranscoder implements IAudioTranscoder {
     ).asBytes();
   }
 
-
   @override
   String get outputFormat => 'wav';
 

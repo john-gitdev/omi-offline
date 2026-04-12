@@ -80,9 +80,8 @@ class SyncProcessCard extends StatelessWidget {
         );
         onIconTap = onCancelTap;
         showProgress = true;
-        progressValue = data.totalMinutes > 0
-            ? (1.0 - data.minutesRemaining / data.totalMinutes).clamp(0.0, 1.0)
-            : null;
+        progressValue =
+            data.totalMinutes > 0 ? (1.0 - data.minutesRemaining / data.totalMinutes).clamp(0.0, 1.0) : null;
 
       case SyncProcessState.stopping:
         mainText = 'Stopping…';

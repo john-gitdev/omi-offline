@@ -9,9 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:omi/backend/preferences.dart';
 import 'dart:typed_data';
 
-class MockPathProviderPlatform extends Fake
-    with MockPlatformInterfaceMixin
-    implements PathProviderPlatform {
+class MockPathProviderPlatform extends Fake with MockPlatformInterfaceMixin implements PathProviderPlatform {
   late String tempPath;
 
   MockPathProviderPlatform() {
@@ -80,9 +78,9 @@ void main() {
 
     final bytes = BytesBuilder();
     for (int i = 0; i < 5; i++) {
-       final lengthBytes = ByteData(4)..setUint32(0, 50, Endian.little);
-       bytes.add(lengthBytes.buffer.asUint8List());
-       bytes.add(List.filled(50, 0));
+      final lengthBytes = ByteData(4)..setUint32(0, 50, Endian.little);
+      bytes.add(lengthBytes.buffer.asUint8List());
+      bytes.add(List.filled(50, 0));
     }
     await dummyFile.writeAsBytes(bytes.toBytes());
 
@@ -131,9 +129,9 @@ void main() {
 
     final bytes = BytesBuilder();
     for (int i = 0; i < 5; i++) {
-       final lengthBytes = ByteData(4)..setUint32(0, 50, Endian.little);
-       bytes.add(lengthBytes.buffer.asUint8List());
-       bytes.add(List.filled(50, 0));
+      final lengthBytes = ByteData(4)..setUint32(0, 50, Endian.little);
+      bytes.add(lengthBytes.buffer.asUint8List());
+      bytes.add(List.filled(50, 0));
     }
     await dummyFile.writeAsBytes(bytes.toBytes());
 
