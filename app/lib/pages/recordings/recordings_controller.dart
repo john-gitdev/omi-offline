@@ -686,6 +686,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         if (uploadKey == null) continue;
         if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
         if (_uploadingFiles.contains(uploadKey)) continue;
+        if (conversation.duration == Duration.zero || conversation.fileSizeBytes == 0) continue;
 
         _uploadingFiles.add(uploadKey);
         _autoUploadActive++;
