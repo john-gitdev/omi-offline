@@ -138,9 +138,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
-        context,
-        () => Navigator.of(context).pop(false),
-        () => Navigator.of(context).pop(true),
+        c,
+        () => Navigator.of(c).pop(false),
+        () => Navigator.of(c).pop(true),
         'Delete Day',
         'This will permanently delete all processed recordings for ${batch.dateString}. This cannot be undone.',
         confirmText: 'Delete',
@@ -182,9 +182,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
-        context,
-        () => Navigator.of(context).pop(false),
-        () => Navigator.of(context).pop(true),
+        c,
+        () => Navigator.of(c).pop(false),
+        () => Navigator.of(c).pop(true),
         'Reprocess Day',
         'This will delete all processed recordings for ${batch.dateString} and reprocess from raw audio using your current VAD settings.',
         confirmText: 'Reprocess',

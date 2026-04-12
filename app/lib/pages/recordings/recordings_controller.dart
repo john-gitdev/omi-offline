@@ -102,6 +102,18 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   void _onRecordingsChanged() {
     if (_isDisposed) return;
+    // Don't clobber live pipeline state — _restoreState only knows 'error' or 'idle'.
+    // If the pipeline is active, just reload the batch list.
+    const _activePipelineStates = {
+      SyncProcessState.syncing,
+      SyncProcessState.processing,
+      SyncProcessState.stopping,
+      SyncProcessState.successUi,
+    };
+    if (_activePipelineStates.contains(_spState)) {
+      unawaited(reloadBatchesSilently());
+      return;
+    }
     _restoreState();
     _loadBatches();
   }
@@ -353,18 +365,20 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void resumePipeline() {
     if (_spState != SyncProcessState.resume) return;
     if (_lastCompletedStage == 'syncing') {
-      unawaited(_runProcessing());
+      _isUserTriggered = true;
+      unawaited(_runProcessing().whenComplete(() => _isUserTriggered = false));
     } else {
-      unawaited(_runPipeline());
+      unawaited(_runPipeline()); // _runPipeline manages _isUserTriggered itself
     }
   }
 
   void retryFromError() {
     if (_spState != SyncProcessState.error) return;
     if (_lastActiveStage == 'processing' && _lastCompletedStage == 'syncing') {
-      unawaited(_runProcessing());
+      _isUserTriggered = true;
+      unawaited(_runProcessing().whenComplete(() => _isUserTriggered = false));
     } else {
-      unawaited(_runPipeline());
+      unawaited(_runPipeline()); // _runPipeline manages _isUserTriggered itself
     }
   }
 
