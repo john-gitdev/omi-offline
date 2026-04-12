@@ -23,6 +23,9 @@ class AudioPlayerUtils extends ChangeNotifier {
 
   AudioPlayerUtils._internal();
 
+  @visibleForTesting
+  FlutterSoundPlayer? audioPlayerMock;
+
   FlutterSoundPlayer? _audioPlayer;
   String? _currentPlayingId;
   bool _isProcessingAudio = false;
@@ -47,6 +50,11 @@ class AudioPlayerUtils extends ChangeNotifier {
   /// Lazily initialize the audio player only when needed
   Future<void> _ensurePlayerInitialized() async {
     if (_audioPlayer != null) return;
+
+    if (audioPlayerMock != null) {
+      _audioPlayer = audioPlayerMock;
+      return;
+    }
 
     _audioPlayer = FlutterSoundPlayer();
 
@@ -414,6 +422,12 @@ class AudioPlayerUtils extends ChangeNotifier {
     }
 
     return await _getOrCreateAudioFile(wal, forSharing: false);
+  }
+
+  @visibleForTesting
+  Future<void> stopPlaybackForTesting() async {
+    await _stopPlayback();
+    _audioPlayer = null;
   }
 
   @override
