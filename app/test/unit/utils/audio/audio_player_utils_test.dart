@@ -47,10 +47,10 @@ void main() {
       when(mockPlayer.onProgress).thenAnswer((_) => progressController.stream);
     });
 
-    tearDown(() {
+    tearDown(() async {
       progressController.close();
       utils.audioPlayerMock = null;
-      utils.stopPlaybackForTesting();
+      await utils.stopPlaybackForTesting();
     });
 
     test('singleton instance is the same', () {
