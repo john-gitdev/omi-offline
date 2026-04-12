@@ -28,8 +28,19 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     _controller.text = saved;
     if (saved.isNotEmpty) {
       _connState = _ConnectionState.connected;
+      _recheckConnectionOnLaunch();
     }
     _controller.addListener(_onKeyChanged);
+  }
+
+  Future<void> _recheckConnectionOnLaunch() async {
+    final key = _prefs.heypocketApiKey;
+    if (key.isEmpty) return;
+    final valid = await HeyPocketService.testConnection(key).catchError((_) => true);
+    if (!valid && mounted) {
+      _prefs.heypocketEnabled = false;
+      setState(() => _connState = _ConnectionState.error);
+    }
   }
 
   @override
