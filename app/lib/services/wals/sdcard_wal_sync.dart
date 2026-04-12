@@ -253,9 +253,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   Future<BleAudioCodec> _getAudioCodec(String deviceId) async {
-    var connection = await ServiceManager.instance().device.ensureConnection(
-      deviceId,
-    );
+    var connection = _connectionProvider != null
+        ? await _connectionProvider!(deviceId)
+        : await ServiceManager.instance().device.ensureConnection(deviceId);
     if (connection == null) return BleAudioCodec.pcm8;
     return await connection.getAudioCodec() ?? BleAudioCodec.pcm8;
   }
@@ -656,9 +656,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return null;
     }
     final dev = _device!;
-    final connection = await ServiceManager.instance().device.ensureConnection(
-      dev.id,
-    );
+    final connection = _connectionProvider != null
+        ? await _connectionProvider!(dev.id)
+        : await ServiceManager.instance().device.ensureConnection(dev.id);
     if (connection == null) throw Exception('No connection');
 
     bool anyPartial = false;
