@@ -91,7 +91,8 @@ void main() {
       expect(result.$3, '1.1.0');
     });
 
-    test('returns incompatible message when app version is too low', () async {
+    test('returns incompatible message with App Store when app version is too low on iOS', () async {
+      DeviceUtils.debugDefaultTargetPlatformIsAndroidOverride = false;
       PackageInfo.setMockInitialValues(
         appName: 'TestApp',
         packageName: 'com.test',
@@ -112,8 +113,55 @@ void main() {
         },
       );
       expect(result.$1, contains('not compatible with this version of App'));
+      expect(result.$1, contains('App Store'));
       expect(result.$2, false);
       expect(result.$3, '1.1.0');
+    });
+
+    test('returns incompatible message with Play Store when app version is too low on Android', () async {
+      DeviceUtils.debugDefaultTargetPlatformIsAndroidOverride = true;
+      PackageInfo.setMockInitialValues(
+        appName: 'TestApp',
+        packageName: 'com.test',
+        version: '1.0.0',
+        buildNumber: '1',
+        buildSignature: '',
+        installerStore: '',
+      );
+
+      final result = await DeviceUtils.shouldUpdateFirmware(
+        currentFirmware: '1.0.0',
+        latestFirmwareDetails: {
+          'version': '1.1.0',
+          'draft': false,
+          'min_version': '1.0.0',
+          'min_app_version': '2.0.0',
+          'min_app_version_code': '10',
+        },
+      );
+      expect(result.$1, contains('not compatible with this version of App'));
+      expect(result.$1, contains('Play Store'));
+      expect(result.$2, false);
+      expect(result.$3, '1.1.0');
+    });
+
+    test('returns Not Available when draft is missing and handled correctly', () async {
+      final result = await DeviceUtils.shouldUpdateFirmware(
+        currentFirmware: '0.9.0',
+        latestFirmwareDetails: {
+          'version': '1.1.0',
+          'min_version': '1.0.0',
+        }, // 'draft' is missing
+      );
+
+      // Since current (0.9.0) < min (1.0.0), it should return '0'
+      expect(result.$1, '0');
+      expect(result.$2, false);
+      expect(result.$3, '1.1.0');
+    });
+
+    tearDown(() {
+      DeviceUtils.debugDefaultTargetPlatformIsAndroidOverride = null;
     });
   });
 

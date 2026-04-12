@@ -106,6 +106,19 @@ void main() {
     test('throws FormatException for invalid padding with underscores', () {
       expect(() => decodeBase64('YQ__'), throwsA(isA<FormatException>()));
     });
+
+    test('returns original string if input contains invalid utf-8 sequences', () {
+      // In Dart, String.codeUnits creates a list. utf8.decode throws FormatException
+      // if it encounters invalid utf-8 sequences. This tests the catch block error path.
+      final invalidUtf8Bytes = [0xC3, 0x28]; // Invalid sequence
+      final invalidText = String.fromCharCodes(invalidUtf8Bytes);
+      expect(tryDecodingText(invalidText), invalidText);
+    });
+
+    test('returns original string if input contains incomplete utf-8 sequences', () {
+      final incompleteText = String.fromCharCodes([0xC3]);
+      expect(tryDecodingText(incompleteText), incompleteText);
+    });
   });
 
   group('String Utils - tryDecodingText', () {

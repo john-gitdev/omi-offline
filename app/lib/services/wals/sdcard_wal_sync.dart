@@ -513,22 +513,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             final Uint8List batch = batchBuilder.toBytes();
 
             // 2. Scan for Markers (0xFE) without stripping/modifying any bytes (READ-ONLY)
+            // Optimization: Create a single ByteData view for the entire batch to avoid
+            // allocating thousands of short-lived ByteData objects during the linear scan.
+            final batchBd = ByteData.sublistView(batch);
             int scanOff = 0;
             while (scanOff + 4 <= batch.length) {
-              final bd = ByteData.sublistView(batch, scanOff, scanOff + 4);
-              int packageSize = bd.getUint32(0, Endian.little);
+              int packageSize = batchBd.getUint32(scanOff, Endian.little);
 
               if (packageSize == 0xFFFFFFFE) {
                 if (scanOff + 20 <= batch.length) {
-                  final metaBd = ByteData.sublistView(
-                    batch,
-                    scanOff + 4,
-                    scanOff + 20,
-                  );
                   if (lastDeviceSessionId != null) {
                     await _saveMarker(
                       lastDeviceSessionId,
-                      metaBd.getUint32(0, Endian.little),
+                      batchBd.getUint32(scanOff + 4, Endian.little),
                     );
                   }
                   scanOff += 20;

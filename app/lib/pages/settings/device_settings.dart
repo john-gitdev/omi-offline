@@ -115,7 +115,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             });
           }
         }
-
       }
     }
   }
@@ -247,6 +246,22 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             chipValue: device?.firmwareRevision ?? 'oo-1.0.9',
             showChevron: false,
           ),
+          if (provider.storageStats != null && provider.storageStats!.freeBytes > 0) ...[
+            const Divider(height: 1, color: Color(0xFF3C3C43)),
+            _buildProfileStyleItem(
+              icon: FontAwesomeIcons.microchip,
+              title: 'Storage Free Space',
+              chipValue: '${(provider.storageStats!.freeBytes / 1024 / 1024).toStringAsFixed(1)} MB',
+              showChevron: false,
+            ),
+            const Divider(height: 1, color: Color(0xFF3C3C43)),
+            _buildProfileStyleItem(
+              icon: FontAwesomeIcons.fileAudio,
+              title: 'File Count',
+              chipValue: '${provider.storageStats!.fileCount}',
+              showChevron: false,
+            ),
+          ],
         ],
       ),
     );
@@ -779,7 +794,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                       ],
                     ),
                   ),
-
                   const SizedBox(height: 32),
                 ],
                 _buildActionsSection(provider),

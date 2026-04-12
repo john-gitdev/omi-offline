@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:version/version.dart';
 
@@ -7,6 +8,9 @@ import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/gen/assets.gen.dart';
 
 class DeviceUtils {
+  @visibleForTesting
+  static bool? debugDefaultTargetPlatformIsAndroidOverride;
+
   static Future<(String, bool, String)> shouldUpdateFirmware({
     required String currentFirmware,
     required Map latestFirmwareDetails,
@@ -18,7 +22,7 @@ class DeviceUtils {
     if (latestFirmwareDetails.isEmpty || latestFirmwareDetails['version'] == null) {
       return ('Latest Version Not Available', false, '');
     }
-    if (latestFirmwareDetails['version'] == null || latestFirmwareDetails['draft']) {
+    if (latestFirmwareDetails['version'] == null || (latestFirmwareDetails['draft'] ?? false)) {
       return ('Latest Version Not Available', false, '');
     }
 
@@ -34,7 +38,7 @@ class DeviceUtils {
         if (Version.parse(packageInfo.version) <= Version.parse(latestFirmwareDetails['min_app_version']) &&
             int.parse(packageInfo.buildNumber) < int.parse(latestFirmwareDetails['min_app_version_code'])) {
           return (
-            'The latest version of firmware is not compatible with this version of App (${packageInfo.version}+${packageInfo.buildNumber}). Please update the app from ${Platform.isAndroid ? 'Play Store' : 'App Store'}',
+            'The latest version of firmware is not compatible with this version of App (${packageInfo.version}+${packageInfo.buildNumber}). Please update the app from ${(debugDefaultTargetPlatformIsAndroidOverride ?? Platform.isAndroid) ? 'Play Store' : 'App Store'}',
             false,
             latestVersionStr,
           );

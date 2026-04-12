@@ -23,6 +23,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   int batteryLevel = -1;
   bool isCharging = false;
   int storageFullPercentage = -1;
+  StorageFileStats? storageStats;
   int _lastNotifiedBatteryLevel = -1;
   DateTime? _lastBatteryNotifyTime;
   bool _hasLowBatteryAlerted = false;
@@ -200,9 +201,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     final currentTime = now ?? DateTime.now();
     final delta = (_lastNotifiedBatteryLevel - value).abs();
     final batteryNotifyTime = _lastBatteryNotifyTime;
-    final elapsed = batteryNotifyTime == null ? const Duration(minutes: 999) : currentTime.difference(batteryNotifyTime);
-    final crossedLowBatteryThreshold = (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
-    final shouldNotify = _lastNotifiedBatteryLevel == -1 || delta >= 5 || elapsed.inMinutes >= 15 || crossedLowBatteryThreshold;
+    final elapsed =
+        batteryNotifyTime == null ? const Duration(minutes: 999) : currentTime.difference(batteryNotifyTime);
+    final crossedLowBatteryThreshold =
+        (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
+    final shouldNotify =
+        _lastNotifiedBatteryLevel == -1 || delta >= 5 || elapsed.inMinutes >= 15 || crossedLowBatteryThreshold;
     if (shouldNotify) {
       _lastNotifiedBatteryLevel = value;
       _lastBatteryNotifyTime = currentTime;
@@ -235,6 +239,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
         t.cancel();
       }
     }
+
     _reconnectionTimer = Timer.periodic(Duration(seconds: _connectionCheckSeconds), scan);
     scan(_reconnectionTimer);
   }
@@ -366,6 +371,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       return;
     }
     storageFullPercentage = -1;
+    storageStats = null;
     isCharging = false;
     notifyListeners();
     await setConnectedDevice(null);
@@ -424,12 +430,24 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     if (_disposed || connectedDevice?.id != device.id) return;
     isDeviceStorageSupport = files.isNotEmpty;
 
-    if (files.isNotEmpty) {
-      final usedBytes = files.fold(0, (sum, f) => sum + f.size);
-      const totalBytes = 480 * 1024 * 1024;
-      storageFullPercentage = ((usedBytes / totalBytes) * 100).round().clamp(0, 100);
+    final stats = await connection.getStorageFileStats();
+    storageStats = stats;
+    if (stats != null) {
+      final usedBytes = stats.totalUsedBytes;
+      final totalBytes = usedBytes + stats.freeBytes;
+      if (totalBytes > 0) {
+        storageFullPercentage = ((usedBytes / totalBytes) * 100).round().clamp(0, 100);
+      } else {
+        storageFullPercentage = 0;
+      }
     } else {
-      storageFullPercentage = 0;
+      if (files.isNotEmpty) {
+        final usedBytes = files.fold(0, (sum, f) => sum + f.size);
+        const totalBytes = 480 * 1024 * 1024;
+        storageFullPercentage = ((usedBytes / totalBytes) * 100).round().clamp(0, 100);
+      } else {
+        storageFullPercentage = 0;
+      }
     }
     notifyListeners();
 
@@ -496,7 +514,6 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   @override
   void onStatusChanged(DeviceServiceStatus status) {}
 
-
   prepareDFU() {
     if (connectedDevice == null) {
       return;
@@ -516,5 +533,4 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _isFirmwareUpdateInProgress = inProgress;
     notifyListeners();
   }
-
 }
