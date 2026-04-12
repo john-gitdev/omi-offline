@@ -42,6 +42,70 @@ void main() {
     test('converts more than 100 hours correctly', () {
       expect(convertToHHMMSS(360000), '100:00:00');
     });
+
+    test('handles negative values idiosyncratically due to Dart modulo operator', () {
+      expect(convertToHHMMSS(-1), '00:59:59');
+    });
+  });
+
+  group('String Utils - extractJson', () {
+    test('extracts standard JSON correctly', () {
+      final input = 'Here is some text {"key": "value"} and more text';
+      expect(extractJson(input), '{"key": "value"}');
+    });
+
+    test('extracts nested JSON correctly', () {
+      final input = 'Data: {"outer": {"inner": 1}} end';
+      expect(extractJson(input), '{"outer": {"inner": 1}}');
+    });
+
+    test('returns empty string if no JSON is present', () {
+      expect(extractJson('Just some normal text'), '');
+    });
+
+    test('returns empty string for empty input', () {
+      expect(extractJson(''), '');
+    });
+
+    test('returns empty string for missing closing brace', () {
+      expect(extractJson('Text {"key": "value"'), '');
+    });
+
+    test('returns empty string for missing opening brace', () {
+      expect(extractJson('Text "key": "value"}'), '');
+    });
+  });
+
+  group('String Utils - padBase64', () {
+    test('pads base64 strings with remainder 1 correctly', () {
+      expect(padBase64('a'), 'a___');
+    });
+
+    test('pads base64 strings with remainder 2 correctly', () {
+      expect(padBase64('ab'), 'ab__');
+    });
+
+    test('pads base64 strings with remainder 3 correctly', () {
+      expect(padBase64('abc'), 'abc_');
+    });
+
+    test('does not pad base64 strings with remainder 0', () {
+      expect(padBase64('abcd'), 'abcd');
+    });
+  });
+
+  group('String Utils - decodeBase64', () {
+    test('decodes valid non-padded base64 correctly', () {
+      expect(decodeBase64('YWJj'), 'abc');
+    });
+
+    test('decodes valid padded base64 correctly', () {
+      expect(decodeBase64('YQ=='), 'a');
+    });
+
+    test('throws FormatException for invalid padding with underscores', () {
+      expect(() => decodeBase64('YQ__'), throwsA(isA<FormatException>()));
+    });
   });
 
   group('String Utils - tryDecodingText', () {
