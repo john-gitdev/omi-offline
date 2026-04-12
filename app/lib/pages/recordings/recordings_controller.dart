@@ -587,6 +587,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> deleteDay(Batch batch) async {
+    final keys = batch.finalizedRecordings.map((c) => c.uploadKey).whereType<String>().toSet();
+    await _prefs.removeUploadedFromHeypocket(keys);
     await _manager.deleteDay(batch);
     await _loadBatches();
   }
@@ -639,7 +641,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   Future<void> reprocessDay(Batch batch) async {
     if (_spState != SyncProcessState.idle) return;
-    
+
+    final keys = batch.finalizedRecordings.map((c) => c.uploadKey).whereType<String>().toSet();
+    await _prefs.removeUploadedFromHeypocket(keys);
     await RecordingsManager.reprocessDay(batch);
     await _loadBatches();
 
@@ -736,6 +740,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     try {
       await HeyPocketService.uploadRecording(apiKey, conversation);
       await _prefs.markUploadedToHeypocket(uploadKey);
+    } catch (e) {
+      if (e is HeyPocketException && e.statusCode == 401) {
+        _prefs.heypocketEnabled = false;
+        _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
+      }
+      rethrow;
     } finally {
       _uploadingFiles.remove(uploadKey);
       notifyListeners();
