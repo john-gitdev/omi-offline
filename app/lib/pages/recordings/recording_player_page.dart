@@ -142,6 +142,14 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   }
 
   Future<void> _handleUpload() async {
+    if (_prefs.adjustmentMode) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Uploads paused — turn off Adjustment Mode first')),
+        );
+      }
+      return;
+    }
     final apiKey = _prefs.heypocketApiKey;
     if (apiKey.isEmpty || _isUploading) return;
     final uploadKey = widget.conversation.uploadKey;

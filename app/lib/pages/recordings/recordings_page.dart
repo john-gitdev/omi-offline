@@ -207,6 +207,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _handleUploadTap(Conversation conversation) async {
+    if (_prefs.adjustmentMode) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Uploads paused — turn off Adjustment Mode first')),
+      );
+      return;
+    }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) {
       ScaffoldMessenger.of(context).showSnackBar(
