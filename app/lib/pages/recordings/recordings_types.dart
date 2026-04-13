@@ -16,7 +16,7 @@ class SyncCardData {
   final int totalCount;
   final double syncSpeed;
   final double minutesRemaining;
-  final double totalMinutes;
+  final double processingProgress;
   final String lastActiveStage;
 
   const SyncCardData({
@@ -26,7 +26,7 @@ class SyncCardData {
     required this.totalCount,
     required this.syncSpeed,
     required this.minutesRemaining,
-    required this.totalMinutes,
+    required this.processingProgress,
     required this.lastActiveStage,
   });
 }
