@@ -15,7 +15,6 @@ class OfflineAudioSettingsPage extends StatefulWidget {
 }
 
 class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
-  late bool _autoSyncEnabled;
   late int _backgroundSyncIntervalMinutes;
   late bool _use24HourTime;
   late bool _adjustmentMode;
@@ -42,7 +41,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   @override
   void initState() {
     super.initState();
-    _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
     _backgroundSyncIntervalMinutes = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
     _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
