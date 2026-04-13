@@ -285,8 +285,41 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                   height: 20,
                   child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                 ),
-              )
-            else
+              ),
+            IconButton(
+              icon: const FaIcon(FontAwesomeIcons.trashCan, color: Colors.redAccent, size: 20),
+              onPressed: () async {
+              bool? confirm = await showDialog<bool>(
+                context: context,
+                builder: (c) => AlertDialog(
+                  backgroundColor: Colors.grey.shade900,
+                  title: const Text('Delete Marker', style: TextStyle(color: Colors.white)),
+                  content: const Text('This will permanently delete this marker conversation.', style: TextStyle(color: Colors.white70)),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(c).pop(false),
+                      child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(c).pop(true),
+                      child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+                    ),
+                  ],
+                ),
+              );
+              if (confirm == true) {
+                await _player.stop();
+                await RecordingsManager.deleteMarkerConversation(widget.markerConversation);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Deleted marker at ${widget.markerConversation.markerTimeLabel}')),
+                  );
+                  Navigator.of(context).pop();
+                }
+              }
+              },
+              tooltip: 'Delete',
+              ),
               IconButton(
                 icon: const FaIcon(FontAwesomeIcons.shareFromSquare, size: 20, color: Colors.white),
                 onPressed: _exportConversation,

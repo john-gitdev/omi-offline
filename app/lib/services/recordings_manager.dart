@@ -1181,6 +1181,36 @@ class RecordingsManager {
     }
   }
 
+  /// Deletes a single processed conversation and its associated meta/bin files.
+  static Future<void> deleteConversation(Conversation conversation) async {
+    final file = conversation.file;
+    if (await file.exists()) {
+      await file.delete();
+    }
+    final metaPath = '${file.path.substring(0, file.path.lastIndexOf('.'))}.meta';
+    final metaFile = File(metaPath);
+    if (await metaFile.exists()) {
+      await metaFile.delete();
+    }
+    try {
+      final ts = file.path.split('/').last.split('_').last.split('.').first;
+      final binPath = '${file.parent.path}/recording_fs320_$ts.bin';
+      final binFile = File(binPath);
+      if (await binFile.exists()) {
+        await binFile.delete();
+      }
+    } catch (_) {}
+    Logger.debug('RecordingsManager: Deleted conversation ${file.path}');
+  }
+
+  /// Deletes a marker conversation.
+  static Future<void> deleteMarkerConversation(MarkerConversation mc) async {
+    if (await mc.edlFile.exists()) {
+      await mc.edlFile.delete();
+      Logger.debug('RecordingsManager: Deleted marker conversation ${mc.edlFile.path}');
+    }
+  }
+
   /// Deletes processed recordings (.m4a/.wav/.meta/.bin) for a day.
   /// Raw segments are intentionally preserved.
   /// Safe to call while nothing is playing.
