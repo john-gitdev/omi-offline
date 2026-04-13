@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -35,6 +36,17 @@ class VadAudioProcessor {
   int _consecutiveSilenceFrames = 0;
   int _hangoverFrames = 0; // frames remaining in hangover
   int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
+
+  // Marker-forced recording state
+  bool _forcedByMarker = false;
+  DateTime? _lastSplitTime; // wall time of the most recent silence split
+
+  // Rolling pre-buffer for marker lookback — receives every audio frame regardless of VAD state,
+  // never reset by splits. Sized to markerLookbackSeconds.
+  final ListQueue<FrameRef> _rbRefs = ListQueue();
+  final ListQueue<DateTime> _rbTimes = ListQueue();
+  final int _maxRollingFrames;
+  final int _markerLookbackMs;
 
   // Settings — cached at construction time for the lifetime of one processAll pass
   final double _speechThreshold;
@@ -77,14 +89,16 @@ class VadAudioProcessor {
         _minSpeechMs = SharedPreferencesUtil().vadMinSpeechSeconds * 1000,
         _preSpeechBufferMs = (SharedPreferencesUtil().vadPreSpeechSeconds * 1000).round(),
         _gapThresholdMs = SharedPreferencesUtil().vadGapSeconds * 1000,
-        _maxChunkMs = SharedPreferencesUtil().vadMaxConversationMinutes * 60 * 1000;
+        _maxChunkMs = SharedPreferencesUtil().vadMaxConversationMinutes * 60 * 1000,
+        _markerLookbackMs = SharedPreferencesUtil().markerLookbackSeconds * 1000,
+        _maxRollingFrames = SharedPreferencesUtil().markerLookbackSeconds * 1000 ~/ frameDurationMs;
 
   void destroy() {
     _decoder?.destroy();
     _session?.release();
   }
 
-  bool get isCapturing => _currentRefs.isNotEmpty && _speechFrameCount > 0;
+  bool get isCapturing => (_currentRefs.isNotEmpty && _speechFrameCount > 0) || _forcedByMarker;
 
   bool _runVad(List<double> samples512) {
     if (_session == null) {
@@ -171,13 +185,52 @@ class VadAudioProcessor {
 
         final frameLength = byteData.getUint32(offset, Endian.little);
 
-        // Skip null/sentinel words and marker packets (0xFFFFFFFE = button-tap marker, 20 bytes total).
+        // Skip null/sentinel words.
         if (frameLength == 0 || frameLength == 0xFFFFFFFF) {
           offset += 4;
           continue;
         }
+
+        // Marker packet (0xFFFFFFFE = button-tap marker, 20 bytes: 4-byte header + 16-byte payload).
+        // Payload layout: [0..3] UTC epoch seconds (u32 LE), [4..7] uptime ms, [8..11] session id.
         if (frameLength == 0xFFFFFFFE) {
-          offset += 20; // 4-byte header + 16-byte marker payload
+          if (offset + 8 <= fileLength) {
+            final markerUtcSeconds = byteData.getUint32(offset + 4, Endian.little);
+            const kMinValidMarkerEpoch = 946684800;
+            if (markerUtcSeconds > kMinValidMarkerEpoch) {
+              final markerFrameTime = segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
+              if (isCapturing) {
+                // Marker fired inside an active conversation — prevent the trailing silence from
+                // splitting the recording at the tap point. The recording continues to the next
+                // natural silence threshold.
+                _consecutiveSilenceFrames = 0;
+                Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — in active conversation, silence counter reset.');
+              } else {
+                // Marker fired during silence — force a lookback recording.
+                final msSinceLastSplit = _lastSplitTime != null
+                    ? markerFrameTime.difference(_lastSplitTime!).inMilliseconds
+                    : _markerLookbackMs;
+                final actualLookbackMs = min(msSinceLastSplit, _markerLookbackMs);
+                final actualLookbackFrames = actualLookbackMs ~/ frameDurationMs;
+
+                final rbRefsList = _rbRefs.toList();
+                final rbTimesList = _rbTimes.toList();
+                final startIdx = (rbRefsList.length - actualLookbackFrames).clamp(0, rbRefsList.length);
+
+                _currentRefs = rbRefsList.sublist(startIdx);
+                _recordingStartTime = startIdx < rbTimesList.length ? rbTimesList[startIdx] : markerFrameTime;
+                _speechFrameCount = 0;
+                _skippedFramesInRecording = 0;
+                _hangoverFrames = 0;
+                _consecutiveSilenceFrames = 0;
+                _currentChunkDurationMs = _currentRefs.length * frameDurationMs;
+                _forcedByMarker = true;
+                Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — forced lookback recording '
+                    '(${actualLookbackMs}ms, ${_currentRefs.length} frames).');
+              }
+            }
+          }
+          offset += 20;
           continue;
         }
 
@@ -218,31 +271,35 @@ class VadAudioProcessor {
           effectiveSpeech = true;
         }
 
+        final frameRef = FrameRef(segmentFile: segmentFile, byteOffset: offset, frameLength: frameLength);
         if (effectiveSpeech) {
           _speechFrameCount++;
           _consecutiveSilenceFrames = 0;
-          _currentRefs.add(FrameRef(
-            segmentFile: segmentFile,
-            byteOffset: offset,
-            frameLength: frameLength,
-          ));
+          _currentRefs.add(frameRef);
           _currentChunkDurationMs += frameDurationMs;
         } else {
           _consecutiveSilenceFrames++;
-          _currentRefs.add(FrameRef(
-            segmentFile: segmentFile,
-            byteOffset: offset,
-            frameLength: frameLength,
-          ));
+          _currentRefs.add(frameRef);
           _currentChunkDurationMs += frameDurationMs;
+        }
+
+        // Rolling pre-buffer — every audio frame, independent of VAD state and splits.
+        final frameTime = segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
+        _rbRefs.addLast(frameRef);
+        _rbTimes.addLast(frameTime);
+        if (_rbRefs.length > _maxRollingFrames) {
+          _rbRefs.removeFirst();
+          _rbTimes.removeFirst();
         }
 
         final silenceMs = _consecutiveSilenceFrames * frameDurationMs;
         if (silenceMs >= _silenceDurationToSplitMs) {
-          if (_speechFrameCount * frameDurationMs >= _minSpeechMs) {
+          if (_speechFrameCount * frameDurationMs >= _minSpeechMs || _forcedByMarker) {
             final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
             if (filePath != null) savedFiles.add(filePath);
           }
+          _lastSplitTime = segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
+          _forcedByMarker = false;
           final preSpeechFrames = _preSpeechBufferMs ~/ frameDurationMs;
           final bufferToKeep = min(preSpeechFrames, _consecutiveSilenceFrames);
           _currentRefs = _currentRefs.sublist(_currentRefs.length - bufferToKeep);
@@ -258,6 +315,8 @@ class VadAudioProcessor {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
           final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
           if (filePath != null) savedFiles.add(filePath);
+          _lastSplitTime = segmentStartTime.add(Duration(milliseconds: (frameIndex + 1) * frameDurationMs));
+          _forcedByMarker = false;
           _currentRefs = [];
           _speechFrameCount = 0;
           _skippedFramesInRecording = 0;
@@ -283,7 +342,7 @@ class VadAudioProcessor {
   }
 
   Future<String?> flushRemaining() async {
-    if (_currentRefs.isEmpty || _speechFrameCount * frameDurationMs < _minSpeechMs) {
+    if (_currentRefs.isEmpty || (_speechFrameCount * frameDurationMs < _minSpeechMs && !_forcedByMarker)) {
       if (_currentRefs.isNotEmpty) {
         Logger.debug(
           'VadAudioProcessor: flushRemaining discarding ${_currentRefs.length} frames '
@@ -314,6 +373,7 @@ class VadAudioProcessor {
     _consecutiveSilenceFrames = 0;
     _currentChunkDurationMs = 0;
     _recordingStartTime = null;
+    _forcedByMarker = false;
   }
 
   @visibleForTesting
