@@ -156,7 +156,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
     final targetDir = Directory('$docsDir/$dateStr');
     if (!await targetDir.exists()) await targetDir.create(recursive: true);
 
-    final newM4aPath = '${targetDir.path}/recording_$newTimestamp.m4a';
+    final extension = widget.conversation.file.path.split('.').last;
+    final newFilePath = '${targetDir.path}/recording_$newTimestamp.$extension';
     final newMetaPath = '${targetDir.path}/recording_$newTimestamp.meta';
 
     try {
@@ -164,7 +165,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
       final basePath = widget.conversation.file.path.substring(0, widget.conversation.file.path.lastIndexOf('.'));
       final metaFile = File('$basePath.meta');
       if (await metaFile.exists()) await metaFile.rename(newMetaPath);
-      await widget.conversation.file.rename(newM4aPath);
+      await widget.conversation.file.rename(newFilePath);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to assign date.')));

@@ -25,8 +25,11 @@ class HeyPocketService {
     }
   }
 
-  static String _mimeType(String path) =>
-      path.endsWith('.wav') ? 'audio/wav' : 'audio/mp4';
+  static String _mimeType(String path) {
+    if (path.endsWith('.wav')) return 'audio/wav';
+    if (path.endsWith('.ogg')) return 'audio/ogg';
+    return 'audio/mp4';
+  }
 
   static String _title(DateTime dt) {
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

@@ -180,7 +180,8 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
     try {
       final dir = await getTemporaryDirectory();
       final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final outputPath = '${dir.path}/export_$timestamp.m4a';
+      final extension = _segment.path.split('.').last;
+      final outputPath = '${dir.path}/export_$timestamp.$extension';
 
       final startSec = _cropStart.inMilliseconds / 1000.0;
       final durationSec = (_cropEnd - _cropStart).inMilliseconds / 1000.0;

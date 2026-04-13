@@ -86,6 +86,7 @@ class Conversation {
     // Size-based duration estimate — only valid for WAV files.
     // For M4A/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
     final isWav = file.path.endsWith('.wav');
+    final isOgg = file.path.endsWith('.ogg');
     int fileSize = 0;
     try {
       fileSize = file.lengthSync();
@@ -149,6 +150,7 @@ class Conversation {
     // Size-based duration estimate — only valid for WAV files.
     // For M4A/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
     final isWav = file.path.endsWith('.wav');
+    final isOgg = file.path.endsWith('.ogg');
     int fileSize = 0;
     try {
       fileSize = await file.length();
@@ -415,7 +417,10 @@ class RecordingsManager {
         });
         for (final file in allEntities) {
           final fileName = file.path.split('/').last;
-          if (!fileName.endsWith('.m4a') && !fileName.endsWith('.wav') && !fileName.endsWith('.meta')) continue;
+          if (!fileName.endsWith('.m4a') &&
+              !fileName.endsWith('.wav') &&
+              !fileName.endsWith('.ogg') &&
+              !fileName.endsWith('.meta')) continue;
           final parts = fileName.split('_');
           final millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
           if (millis == null || millis <= 0) continue;
@@ -506,8 +511,10 @@ class RecordingsManager {
       for (var folder in dateFolders) {
         final dateString = folder.path.split('/').last;
         final folderEntities = await folder.list().toList();
-        final files =
-            folderEntities.whereType<File>().where((f) => f.path.endsWith('.m4a') || f.path.endsWith('.wav')).toList();
+        final files = folderEntities
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.m4a') || f.path.endsWith('.wav') || f.path.endsWith('.ogg'))
+            .toList();
         final conversations = await Future.wait(files.map((f) => Conversation.fromFileAsync(f)));
         processedByDate[dateString] = conversations;
       }
@@ -627,7 +634,7 @@ class RecordingsManager {
             } on FileSystemException catch (_) {}
             onRecordingFinalized?.call();
             notifyRecordingsChanged();
-          } else if (fileName.endsWith('.wav')) {
+          } else if (fileName.endsWith('.wav') || fileName.endsWith('.ogg')) {
             onRecordingFinalized?.call();
             notifyRecordingsChanged();
           }
@@ -775,10 +782,10 @@ class RecordingsManager {
     final liveDir = Directory(liveRecordingsDirPath);
     if (!await liveDir.exists() || markerTimestamps.isEmpty) return;
 
-    // Build sorted list of (file, startMs, endMs) from m4a + .meta pairs.
+    // Build sorted list of (file, startMs, endMs) from m4a/ogg + .meta pairs.
     final recordings = <({File file, int startMs, int endMs, int durationMs})>[];
     for (final entity in await liveDir.list().toList()) {
-      if (entity is! File || !entity.path.endsWith('.m4a')) continue;
+      if (entity is! File || (!entity.path.endsWith('.m4a') && !entity.path.endsWith('.ogg'))) continue;
       final name = entity.path.split('/').last;
       final startMs = int.tryParse(name.contains('_') ? name.split('_').last.split('.').first : '');
       if (startMs == null || startMs <= 0) continue;
@@ -956,7 +963,7 @@ class RecordingsManager {
     final recordingsDir = Directory('${directory.path}/recordings');
     if (!await recordingsDir.exists()) return;
     await for (final entity in recordingsDir.list(recursive: true)) {
-      if (entity is File && entity.path.endsWith('.tmp.m4a')) {
+      if (entity is File && (entity.path.endsWith('.tmp.m4a') || entity.path.endsWith('.tmp.ogg'))) {
         try {
           await entity.delete();
           Logger.debug('RecordingsManager: Deleted orphaned temp file ${entity.path}');
