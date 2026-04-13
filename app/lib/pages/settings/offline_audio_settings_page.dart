@@ -92,7 +92,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     await prefs.setOmiRefreshToken(_omiRefreshTokenController.text.trim());
     await prefs.setOmiFirebaseApiKey(_omiFirebaseApiKeyController.text.trim());
 
-    setState(() => _isDirty = false);
+    if (mounted) setState(() => _isDirty = false);
   }
 
   Future<void> _saveAndPop() async {
@@ -651,12 +651,17 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                             onPressed: _omiTestingConnection
                                 ? null
                                 : () async {
-                                    await _saveSettings();
+                                    final refreshToken = _omiRefreshTokenController.text.trim();
+                                    final apiKey = _omiFirebaseApiKeyController.text.trim();
+                                    if (!mounted) return;
                                     setState(() {
                                       _omiTestingConnection = true;
                                       _omiTestResult = null;
                                     });
-                                    final ok = await OmiApiClient.testConnection();
+                                    final ok = await OmiApiClient.testConnection(
+                                      refreshToken: refreshToken,
+                                      apiKey: apiKey,
+                                    );
                                     if (mounted) {
                                       setState(() {
                                         _omiTestingConnection = false;

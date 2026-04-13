@@ -115,13 +115,23 @@ class OmiApiClient {
     throw const OmiSyncException('Sync job timed out after 60s of polling');
   }
 
-  /// Verifies credentials by attempting a token refresh. Returns true if successful.
-  static Future<bool> testConnection() async {
+  /// Verifies credentials by attempting a token refresh with the supplied values.
+  /// Does not read from or write to saved preferences, so callers can test
+  /// unsaved credentials without overwriting the working ones.
+  static Future<bool> testConnection({
+    required String refreshToken,
+    required String apiKey,
+  }) async {
+    if (refreshToken.isEmpty || apiKey.isEmpty) return false;
     try {
-      // Force a refresh regardless of expiry so we can validate the credentials.
-      SharedPreferencesUtil().omiTokenExpiry = 0;
-      await refreshTokenIfNeeded();
-      return true;
+      final res = await http
+          .post(
+            Uri.parse('$_tokenUrl?key=${Uri.encodeComponent(apiKey)}'),
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'grant_type=refresh_token&refresh_token=${Uri.encodeComponent(refreshToken)}',
+          )
+          .timeout(const Duration(seconds: 10));
+      return res.statusCode == 200;
     } catch (_) {
       return false;
     }
