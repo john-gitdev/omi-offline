@@ -15,6 +15,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late bool _autoSyncEnabled;
   late bool _use24HourTime;
   late bool _adjustmentMode;
+  late bool _convertOpusToM4a;
 
   late double _vadSpeechThreshold;
   late int _vadSplitSeconds;
@@ -33,6 +34,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
     _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
+    _convertOpusToM4a = SharedPreferencesUtil().convertOpusToM4a;
 
     _vadSpeechThreshold = SharedPreferencesUtil().vadSpeechThreshold;
     _vadSplitSeconds = SharedPreferencesUtil().vadSplitSeconds;
@@ -53,6 +55,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     SharedPreferencesUtil().use24HourTime = _use24HourTime;
     SharedPreferencesUtil().adjustmentMode = _adjustmentMode;
     if (_adjustmentMode) SharedPreferencesUtil().adjustmentModeWasEnabled = true;
+    SharedPreferencesUtil().convertOpusToM4a = _convertOpusToM4a;
 
     SharedPreferencesUtil().vadSpeechThreshold = _vadSpeechThreshold;
     SharedPreferencesUtil().vadSplitSeconds = _vadSplitSeconds;
@@ -283,6 +286,43 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     const SizedBox(height: 8),
                     Text(
                       'Raw audio files are kept on disk after processing. Use this when tweaking VAD settings — each day shows a Reprocess button to regenerate recordings from scratch.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Convert to M4A toggle
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Convert to M4A',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        Switch(
+                          value: _convertOpusToM4a,
+                          activeThumbColor: Colors.deepPurpleAccent,
+                          onChanged: (value) {
+                            setState(() => _convertOpusToM4a = value);
+                            _markDirty();
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'When enabled, recordings are converted to M4A for maximum compatibility. When disabled, they are saved in the original Opus format (using OGG on Android or WAV on iOS).',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],
