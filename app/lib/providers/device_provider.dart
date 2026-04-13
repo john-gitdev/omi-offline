@@ -36,7 +36,6 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   final int _connectionCheckSeconds = 30; // Scan every 30s instead of 15s
 
   Timer? _backgroundSyncTimer;
-  static const int _backgroundSyncMinutes = 30;
 
   Timer? _reconnectDelayTimer;
   Timer? _disconnectNotificationTimer;
@@ -297,9 +296,13 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     notifyListeners();
   }
 
+  void restartBackgroundSyncTimer() => _startBackgroundSyncTimer();
+
   void _startBackgroundSyncTimer() {
     _backgroundSyncTimer?.cancel();
-    _backgroundSyncTimer = Timer.periodic(const Duration(minutes: _backgroundSyncMinutes), (_) async {
+    final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
+    if (interval <= 0) return; // Manual only
+    _backgroundSyncTimer = Timer.periodic(Duration(minutes: interval), (_) async {
       if (_disposed) return;
       if (!isConnected) {
         if (!isConnecting) {

@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/omi_api_client.dart';
+import 'package:provider/provider.dart';
+import 'package:omi/providers/device_provider.dart';
 
 class OfflineAudioSettingsPage extends StatefulWidget {
   const OfflineAudioSettingsPage({super.key});
@@ -14,6 +16,7 @@ class OfflineAudioSettingsPage extends StatefulWidget {
 
 class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late bool _autoSyncEnabled;
+  late int _backgroundSyncIntervalMinutes;
   late bool _use24HourTime;
   late bool _adjustmentMode;
   late bool _convertOpusToM4a;
@@ -40,6 +43,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   void initState() {
     super.initState();
     _autoSyncEnabled = SharedPreferencesUtil().autoSyncEnabled;
+    _backgroundSyncIntervalMinutes = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
     _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
     _convertOpusToM4a = SharedPreferencesUtil().convertOpusToM4a;
@@ -72,7 +76,10 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
   Future<void> _saveSettings() async {
     final prefs = SharedPreferencesUtil();
-    prefs.autoSyncEnabled = _autoSyncEnabled;
+    prefs.backgroundSyncIntervalMinutes = _backgroundSyncIntervalMinutes;
+    if (context.mounted) {
+      Provider.of<DeviceProvider>(context, listen: false).restartBackgroundSyncTimer();
+    }
     prefs.use24HourTime = _use24HourTime;
     prefs.adjustmentMode = _adjustmentMode;
     if (_adjustmentMode) prefs.adjustmentModeWasEnabled = true;
@@ -170,7 +177,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Auto Sync toggle
+              // Auto Sync interval
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -184,22 +191,33 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         const Text(
-                          'Auto Sync',
+                          'Auto Sync Interval',
                           style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                         ),
-                        Switch(
-                          value: _autoSyncEnabled,
-                          activeThumbColor: Colors.deepPurpleAccent,
+                        DropdownButton<int>(
+                          value: _backgroundSyncIntervalMinutes,
+                          dropdownColor: const Color(0xFF2C2C2E),
+                          icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                          underline: const SizedBox(),
+                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          items: const [
+                            DropdownMenuItem(value: 15, child: Text('15 Minutes')),
+                            DropdownMenuItem(value: 30, child: Text('30 Minutes')),
+                            DropdownMenuItem(value: 60, child: Text('1 Hour')),
+                            DropdownMenuItem(value: -1, child: Text('Manual Only')),
+                          ],
                           onChanged: (value) {
-                            setState(() => _autoSyncEnabled = value);
-                            _markDirty();
+                            if (value != null) {
+                              setState(() => _backgroundSyncIntervalMinutes = value);
+                              _markDirty();
+                            }
                           },
                         ),
                       ],
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'When enabled, your Omi will automatically connect, sync, and process recordings every 30 minutes.',
+                      'Shorter intervals reduce the risk of data loss but increase battery drain on your Omi device and phone.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],
