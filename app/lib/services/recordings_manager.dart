@@ -318,8 +318,6 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
   );
 
   try {
-    int lastSafeToDeleteIndex = -1;
-
     for (int i = 0; i < params.segmentPaths.length; i++) {
       if (cancelled) {
         break;
@@ -334,8 +332,10 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       // Ask the main isolate to move any completed recordings out of temp.
       params.sendPort.send({'type': 'move'});
 
-      if (params.backgroundMode && !processor.isCapturing) {
-        lastSafeToDeleteIndex = i;
+      // Delete segment files that are fully processed and no longer referenced by any buffer.
+      final safeToDelete = processor.consumeSafeToDeletePaths();
+      if (safeToDelete.isNotEmpty) {
+        params.sendPort.send({'type': 'delete_segments', 'paths': safeToDelete.toList()});
       }
 
       params.sendPort.send({'type': 'progress', 'value': ((i + 1) / params.segmentPaths.length) * 0.9});
@@ -345,11 +345,19 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       await processor.flushOnlyCompleted();
     } else {
       await processor.flushRemaining();
-      if (!cancelled) lastSafeToDeleteIndex = params.segmentPaths.length - 1;
     }
 
     params.sendPort.send({'type': 'move'});
-    params.sendPort.send({'type': 'done', 'index': lastSafeToDeleteIndex});
+
+    // Final pass: release any files still held only in the rolling pre-buffer.
+    // In force mode, no further marker lookbacks will occur so forceAll is safe.
+    // In background mode, respect the buffer so the next run can pick up mid-session.
+    final finalSafe = processor.consumeSafeToDeletePaths(forceAll: !params.backgroundMode && !cancelled);
+    if (finalSafe.isNotEmpty) {
+      params.sendPort.send({'type': 'delete_segments', 'paths': finalSafe.toList()});
+    }
+
+    params.sendPort.send({'type': 'done'});
   } catch (e, st) {
     params.sendPort.send({'type': 'error', 'message': '$e\n$st'});
   } finally {
@@ -664,7 +672,7 @@ class RecordingsManager {
         Logger.error('RecordingsManager: Failed to pre-load VAD model ($e) — amplitude fallback active.');
       }
 
-      int lastSafeToDeleteIndex = -1;
+      final Set<String> deletedSegmentFolders = {};
 
       try {
         final receivePort = ReceivePort();
@@ -702,10 +710,21 @@ class RecordingsManager {
               if (_cancelRequested) _activeIsolateControlPort?.send('cancel');
             case 'move':
               await moveTempFilesToLive();
+            case 'delete_segments':
+              if (!SharedPreferencesUtil().adjustmentMode) {
+                final paths = (msg['paths'] as List).cast<String>();
+                for (final path in paths) {
+                  final f = File(path);
+                  if (await f.exists()) {
+                    Logger.debug('RecordingsManager: Deleting raw segment: $path');
+                    await f.delete();
+                    deletedSegmentFolders.add(f.parent.path);
+                  }
+                }
+              }
             case 'progress':
               onProgress(msg['value'] as double);
             case 'done':
-              lastSafeToDeleteIndex = msg['index'] as int;
               isolateDone = true;
               receivePort.close();
             case 'error':
@@ -733,24 +752,13 @@ class RecordingsManager {
         rethrow;
       }
 
-      // Raw segment deletion — skipped in adjustment mode so days can be reprocessed.
-      if (lastSafeToDeleteIndex >= 0 && !SharedPreferencesUtil().adjustmentMode) {
-        final deviceSessionFolders = <String>{};
-        for (int i = 0; i <= lastSafeToDeleteIndex; i++) {
-          final file = allSegments[i];
-          if (await file.exists()) {
-            Logger.debug("RecordingsManager: Deleting completed raw segment: ${file.path}");
-            await file.delete();
-            deviceSessionFolders.add(file.parent.path);
-          }
-        }
-        for (final folderPath in deviceSessionFolders) {
-          final folder = Directory(folderPath);
-          if (await folder.exists()) {
-            try {
-              if (await folder.list().isEmpty) await folder.delete();
-            } catch (_) {}
-          }
+      // Clean up any device-session folders that are now empty after progressive deletion.
+      for (final folderPath in deletedSegmentFolders) {
+        final folder = Directory(folderPath);
+        if (await folder.exists()) {
+          try {
+            if (await folder.list().isEmpty) await folder.delete();
+          } catch (_) {}
         }
       }
       onProgress(1.0);
