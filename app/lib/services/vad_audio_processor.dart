@@ -13,6 +13,52 @@ import 'package:omi/utils/logger.dart';
 
 import "package:meta/meta.dart";
 
+/// All VAD/processing settings captured from SharedPreferences in the main isolate
+/// before spawning the processing isolate. All fields are primitives — safe to send
+/// across isolate boundaries.
+class ProcessingSettings {
+  final double speechThreshold;
+  final int hangoverFrameCount;
+  final int silenceDurationToSplitMs;
+  final int minSpeechMs;
+  final int preSpeechBufferMs;
+  final int gapThresholdMs;
+  final int maxChunkMs;
+  final int markerLookbackMs;
+  final int maxRollingFrames;
+  final String deviceId; // used to generate upload key in .meta sidecar
+
+  const ProcessingSettings({
+    required this.speechThreshold,
+    required this.hangoverFrameCount,
+    required this.silenceDurationToSplitMs,
+    required this.minSpeechMs,
+    required this.preSpeechBufferMs,
+    required this.gapThresholdMs,
+    required this.maxChunkMs,
+    required this.markerLookbackMs,
+    required this.maxRollingFrames,
+    required this.deviceId,
+  });
+
+  factory ProcessingSettings.fromPrefs() {
+    final p = SharedPreferencesUtil();
+    const frameDurationMs = VadAudioProcessor.frameDurationMs;
+    return ProcessingSettings(
+      speechThreshold: p.vadSpeechThreshold,
+      hangoverFrameCount: (p.vadHangoverSeconds * 1000).round() ~/ frameDurationMs,
+      silenceDurationToSplitMs: p.vadSplitSeconds * 1000,
+      minSpeechMs: p.vadMinSpeechSeconds * 1000,
+      preSpeechBufferMs: (p.vadPreSpeechSeconds * 1000).round(),
+      gapThresholdMs: p.vadGapSeconds * 1000,
+      maxChunkMs: p.vadMaxConversationMinutes * 60 * 1000,
+      markerLookbackMs: p.markerLookbackSeconds * 1000,
+      maxRollingFrames: p.markerLookbackSeconds * 1000 ~/ frameDurationMs,
+      deviceId: p.btDevice.id,
+    );
+  }
+}
+
 class VadAudioProcessor {
   // Silero VAD session + LSTM state (reset on gap detection)
   OrtSession? _session;
@@ -55,13 +101,16 @@ class VadAudioProcessor {
   final int _preSpeechBufferMs;
   final int _gapThresholdMs;
   final int _maxChunkMs;
+  final String _deviceId;
 
   static const int sampleRate = 16000;
   static const int channels = 1;
   static const int frameDurationMs = 20; // 20 ms per Opus frame
   static const int _vadWindowSamples = 512; // Silero VAD input size
 
+  /// Creates a processor in the main isolate, reading settings from SharedPreferences.
   static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
+    final settings = ProcessingSettings.fromPrefs();
     try {
       OrtEnv.instance.init();
     } catch (e) {
@@ -76,26 +125,37 @@ class VadAudioProcessor {
       Logger.error('VadAudioProcessor: Failed to load Silero VAD model, amplitude fallback active: $e');
     }
     Logger.debug(
-        'VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'amplitude fallback active (threshold=${SharedPreferencesUtil().vadSpeechThreshold})'}');
-    return VadAudioProcessor._(outputDir: outputDir, decoder: decoder, session: session);
+        'VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'amplitude fallback active (threshold=${settings.speechThreshold})'}');
+    return VadAudioProcessor._(outputDir: outputDir, decoder: decoder, session: session, settings: settings);
   }
 
-  VadAudioProcessor._({String? outputDir, SimpleOpusDecoder? decoder, OrtSession? session})
+  /// Creates a processor from pre-captured settings — safe to call in a background isolate.
+  /// The caller is responsible for initialising OrtEnv and creating [session] / [decoder] before
+  /// calling this constructor.
+  VadAudioProcessor.fromSettings({
+    required ProcessingSettings settings,
+    String? outputDir,
+    OrtSession? session,
+    SimpleOpusDecoder? decoder,
+  }) : this._(outputDir: outputDir, decoder: decoder, session: session, settings: settings);
+
+  VadAudioProcessor._({String? outputDir, SimpleOpusDecoder? decoder, OrtSession? session, required ProcessingSettings settings})
       : _session = session,
         _decoder = decoder ??
             (Platform.isIOS || Platform.isAndroid
                 ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
                 : null),
         _outputDir = outputDir,
-        _speechThreshold = SharedPreferencesUtil().vadSpeechThreshold,
-        _hangoverFrameCount = (SharedPreferencesUtil().vadHangoverSeconds * 1000).round() ~/ frameDurationMs,
-        _silenceDurationToSplitMs = SharedPreferencesUtil().vadSplitSeconds * 1000,
-        _minSpeechMs = SharedPreferencesUtil().vadMinSpeechSeconds * 1000,
-        _preSpeechBufferMs = (SharedPreferencesUtil().vadPreSpeechSeconds * 1000).round(),
-        _gapThresholdMs = SharedPreferencesUtil().vadGapSeconds * 1000,
-        _maxChunkMs = SharedPreferencesUtil().vadMaxConversationMinutes * 60 * 1000,
-        _markerLookbackMs = SharedPreferencesUtil().markerLookbackSeconds * 1000,
-        _maxRollingFrames = SharedPreferencesUtil().markerLookbackSeconds * 1000 ~/ frameDurationMs;
+        _speechThreshold = settings.speechThreshold,
+        _hangoverFrameCount = settings.hangoverFrameCount,
+        _silenceDurationToSplitMs = settings.silenceDurationToSplitMs,
+        _minSpeechMs = settings.minSpeechMs,
+        _preSpeechBufferMs = settings.preSpeechBufferMs,
+        _gapThresholdMs = settings.gapThresholdMs,
+        _maxChunkMs = settings.maxChunkMs,
+        _markerLookbackMs = settings.markerLookbackMs,
+        _maxRollingFrames = settings.maxRollingFrames,
+        _deviceId = settings.deviceId;
 
   void destroy() {
     _decoder?.destroy();
@@ -388,13 +448,13 @@ class VadAudioProcessor {
   Future<String?> _saveRecording(List<FrameRef> refs, DateTime startTime, {bool? isDerivedTimestamp}) async {
     final derived = isDerivedTimestamp ?? _isDerivedTimestamp;
     final prefix = derived ? 'unknown' : 'recording';
-    final directory = await getApplicationDocumentsDirectory();
     final timestamp = startTime.millisecondsSinceEpoch;
 
     String dateFolderPath;
     if (_outputDir != null) {
       dateFolderPath = _outputDir!;
     } else {
+      final directory = await getApplicationDocumentsDirectory();
       final dateString =
           '${startTime.year}-${startTime.month.toString().padLeft(2, '0')}-${startTime.day.toString().padLeft(2, '0')}';
       dateFolderPath = '${directory.path}/recordings/$dateString';
@@ -543,7 +603,7 @@ class VadAudioProcessor {
     }
     final metaPath = '${dateFolder.path}/${prefix}_$timestamp.meta';
     final List<int> metaOut = [...metaBytes.buffer.asUint8List()];
-    final rawId = SharedPreferencesUtil().btDevice.id;
+    final rawId = _deviceId;
     if (rawId.isNotEmpty) {
       final deviceId = rawId.replaceAll(':', '').toUpperCase();
       if (deviceId.length >= 6) {
