@@ -198,6 +198,7 @@ class VadAudioProcessor {
       _session = null;
       return samples512.any((s) => s.abs() > _speechThreshold);
     } finally {
+      for (final t in inputs.values) { t.release(); }
       outputs?.forEach((o) => o?.release());
       runOptions?.release();
     }
@@ -450,8 +451,8 @@ class VadAudioProcessor {
       return safe;
     }
     final referenced = <String>{};
-    for (final ref in _currentRefs) referenced.add(ref.segmentFile.path);
-    for (final ref in _rbRefs) referenced.add(ref.segmentFile.path);
+    for (final ref in _currentRefs) { referenced.add(ref.segmentFile.path); }
+    for (final ref in _rbRefs) { referenced.add(ref.segmentFile.path); }
     final safe = _processedFiles.difference(referenced);
     _processedFiles.removeAll(safe);
     return safe;
