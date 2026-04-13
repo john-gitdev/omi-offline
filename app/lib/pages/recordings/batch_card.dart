@@ -72,14 +72,16 @@ class UploadIconButton extends StatelessWidget {
 
 class MarkerSubEntry extends StatelessWidget {
   final MarkerConversation mc;
-  final VoidCallback? onTap;
+  final void Function()? onTap;
+  final void Function()? onLongPress;
 
-  const MarkerSubEntry({super.key, required this.mc, this.onTap});
+  const MarkerSubEntry({super.key, required this.mc, this.onTap, this.onLongPress});
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       onTap: mc.isPending ? null : onTap,
+      onLongPress: onLongPress,
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.only(left: 16, top: 6, bottom: 6, right: 4),
@@ -127,6 +129,9 @@ class ConversationTile extends StatelessWidget {
   final List<MarkerConversation> markers;
   final Widget uploadIcon;
   final void Function(MarkerConversation) onMarkerTap;
+  final void Function(Conversation) onConversationTap;
+  final void Function(Conversation) onDeleteConversation;
+  final void Function(MarkerConversation) onDeleteMarkerConversation;
 
   const ConversationTile({
     super.key,
@@ -134,6 +139,9 @@ class ConversationTile extends StatelessWidget {
     required this.markers,
     required this.uploadIcon,
     required this.onMarkerTap,
+    required this.onConversationTap,
+    required this.onDeleteConversation,
+    required this.onDeleteMarkerConversation,
   });
 
   @override
@@ -143,9 +151,8 @@ class ConversationTile extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         InkWell(
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => ConversationPlayerPage(conversation: conversation)),
-          ),
+          onTap: () => onConversationTap(conversation),
+          onLongPress: () => onDeleteConversation(conversation),
           borderRadius: BorderRadius.circular(8),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
@@ -177,7 +184,7 @@ class ConversationTile extends StatelessWidget {
             ),
           ),
         ),
-        ...sortedMarkers.map((mc) => MarkerSubEntry(mc: mc, onTap: () => onMarkerTap(mc))),
+        ...sortedMarkers.map((mc) => MarkerSubEntry(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
       ],
     );
   }
@@ -192,10 +199,13 @@ class BatchCard extends StatelessWidget {
   final bool Function(String) isUploaded;
   final bool Function(String) isUploading;
   final void Function(Conversation) onUploadTap;
+  final void Function(Conversation) onConversationTap;
   final void Function(MarkerConversation) onMarkerTap;
   final void Function(List<Conversation>) onExportAll;
   final VoidCallback onDeleteDay;
   final VoidCallback onReprocessDay;
+  final void Function(Conversation) onDeleteConversation;
+  final void Function(MarkerConversation) onDeleteMarkerConversation;
 
   const BatchCard({
     super.key,
@@ -207,10 +217,13 @@ class BatchCard extends StatelessWidget {
     required this.isUploaded,
     required this.isUploading,
     required this.onUploadTap,
+    required this.onConversationTap,
     required this.onMarkerTap,
     required this.onExportAll,
     required this.onDeleteDay,
     required this.onReprocessDay,
+    required this.onDeleteConversation,
+    required this.onDeleteMarkerConversation,
   });
 
   @override
@@ -242,6 +255,9 @@ class BatchCard extends StatelessWidget {
               return ConversationTile(
                 conversation: c,
                 markers: markers,
+                onConversationTap: onConversationTap,
+                onDeleteConversation: onDeleteConversation,
+                onDeleteMarkerConversation: onDeleteMarkerConversation,
                 uploadIcon: UploadIconButton(
                   uploadKey: uploadKey,
                   apiKeyEmpty: heypocketApiKey.isEmpty,

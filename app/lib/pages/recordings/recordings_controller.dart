@@ -650,6 +650,20 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await _loadBatches();
   }
 
+  Future<void> deleteConversation(Conversation conversation) async {
+    final key = conversation.uploadKey;
+    if (key != null) {
+      await _prefs.removeUploadedFromHeypocket({key});
+    }
+    await RecordingsManager.deleteConversation(conversation);
+    await _loadBatches();
+  }
+
+  Future<void> deleteMarkerConversation(MarkerConversation mc) async {
+    await RecordingsManager.deleteMarkerConversation(mc);
+    await _loadBatches();
+  }
+
   Future<void> runAdjustmentCleanup() async {
     if (_spState != SyncProcessState.idle) return;
     final daysWithBins = _batches.where((b) => b.rawSegments.isNotEmpty).toList();

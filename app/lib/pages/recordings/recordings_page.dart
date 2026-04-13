@@ -168,6 +168,59 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
   }
 
+  Future<void> _deleteConversation(Conversation conversation) async {
+    final messenger = ScaffoldMessenger.of(context);
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        c,
+        () => Navigator.of(c).pop(false),
+        () => Navigator.of(c).pop(true),
+        'Delete Conversation',
+        'This will permanently delete this conversation. This cannot be undone.',
+        confirmText: 'Delete',
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await _controller.deleteConversation(conversation);
+    } catch (e) {
+      if (mounted)
+        messenger.showSnackBar(
+          SnackBar(content: Text('Error deleting conversation: $e')),
+        );
+    }
+  }
+
+  Future<void> _deleteMarkerConversation(MarkerConversation mc) async {
+    final messenger = ScaffoldMessenger.of(context);
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        c,
+        () => Navigator.of(c).pop(false),
+        () => Navigator.of(c).pop(true),
+        'Delete Marker',
+        'This will permanently delete this marker conversation.',
+        confirmText: 'Delete',
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await _controller.deleteMarkerConversation(mc);
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Deleted marker at ${mc.markerTimeLabel}')),
+        );
+      }
+    } catch (e) {
+      if (mounted)
+        messenger.showSnackBar(
+          SnackBar(content: Text('Error deleting marker: $e')),
+        );
+    }
+  }
+
   Future<void> _runAdjustmentCleanup() async {
     if (_controller.spState != SyncProcessState.idle) return;
     final daysWithBins = _controller.batches
@@ -375,6 +428,15 @@ class _RecordingsPageState extends State<RecordingsPage> {
     await _controller.reloadBatchesSilently();
   }
 
+  Future<void> _openConversation(Conversation conv) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ConversationPlayerPage(conversation: conv),
+      ),
+    );
+    await _controller.reloadBatchesSilently();
+  }
+
   Widget _buildUnorganizedSection(List<Conversation> unknown) {
     if (unknown.isEmpty) return const SizedBox.shrink();
     return Column(
@@ -414,11 +476,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
               borderRadius: BorderRadius.circular(8),
               child: InkWell(
                 borderRadius: BorderRadius.circular(8),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => ConversationPlayerPage(conversation: conv),
-                  ),
-                ),
+                onTap: () => _openConversation(conv),
+                onLongPress: () => _deleteConversation(conv),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
                     vertical: 10,
@@ -710,6 +769,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                               markers: byDate[dates[index]]!,
                                               onMarkerTap:
                                                   _openMarkerConversation,
+                                              onDeleteMarkerConversation:
+                                                  _deleteMarkerConversation,
                                             ),
                                       ),
                               );
@@ -832,6 +893,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                               .uploadingFiles
                                               .contains,
                                           onUploadTap: _handleUploadTap,
+                                          onConversationTap: _openConversation,
                                           onMarkerTap: _openMarkerConversation,
                                           onExportAll: (conversations) =>
                                               _exportAll(
@@ -844,18 +906,20 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           onReprocessDay: () => _reprocessDay(
                                             visibleBatches[batchIndex],
                                           ),
-                                        );
-                                      },
-                                    ),
-                            );
-                          },
-                        ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
+                                          onDeleteConversation: _deleteConversation,
+                                          onDeleteMarkerConversation: _deleteMarkerConversation,
+                                          );
+                                          },
+                                          ),
+                                          );
+                                          },
+                                          ),
+                                          ),
+                                          ],
+                                          ),
+                                          );
+                                          },
+                                          ),
+                                          );
+                                          }
+                                          }

@@ -5,13 +5,15 @@ import 'package:omi/services/recordings_manager.dart';
 class MarkerTile extends StatelessWidget {
   final MarkerConversation mc;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
 
-  const MarkerTile({super.key, required this.mc, this.onTap});
+  const MarkerTile({super.key, required this.mc, this.onTap, this.onLongPress});
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       onTap: mc.isPending ? null : onTap,
+      onLongPress: mc.isPending ? null : onLongPress,
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
@@ -59,12 +61,14 @@ class MarkerDayCard extends StatelessWidget {
   final String dateStr;
   final List<MarkerConversation> markers;
   final void Function(MarkerConversation) onMarkerTap;
+  final void Function(MarkerConversation) onDeleteMarkerConversation;
 
   const MarkerDayCard({
     super.key,
     required this.dateStr,
     required this.markers,
     required this.onMarkerTap,
+    required this.onDeleteMarkerConversation,
   });
 
   @override
@@ -84,7 +88,7 @@ class MarkerDayCard extends StatelessWidget {
               style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
-            ...sorted.map((mc) => MarkerTile(mc: mc, onTap: () => onMarkerTap(mc))),
+            ...sorted.map((mc) => MarkerTile(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
           ],
         ),
       ),

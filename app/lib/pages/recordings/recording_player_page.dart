@@ -274,6 +274,40 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
             ),
           _buildUploadAction(),
           IconButton(
+            icon: const FaIcon(FontAwesomeIcons.trashCan, color: Colors.redAccent, size: 20),
+            onPressed: () async {
+              bool? confirm = await showDialog<bool>(
+                context: context,
+                builder: (c) => AlertDialog(
+                  backgroundColor: Colors.grey.shade900,
+                  title: const Text('Delete Conversation', style: TextStyle(color: Colors.white)),
+                  content: const Text('This will permanently delete this conversation. This cannot be undone.', style: TextStyle(color: Colors.white70)),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(c).pop(false),
+                      child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(c).pop(true),
+                      child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+                    ),
+                  ],
+                ),
+              );
+              if (confirm == true) {
+                await _player.stop();
+                await RecordingsManager.deleteConversation(widget.conversation);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Deleted conversation from ${widget.conversation.timeRangeLabel}')),
+                  );
+                  Navigator.of(context).pop();
+                }
+              }
+            },
+            tooltip: 'Delete',
+          ),
+          IconButton(
             icon: const FaIcon(FontAwesomeIcons.shareFromSquare, color: Colors.white, size: 20),
             onPressed: _export,
             tooltip: 'Export',
