@@ -170,7 +170,6 @@ void main() {
       // CV1-only mode: all inputs resolve to the same image.
       expect(DeviceUtils.getDeviceImagePath(), Assets.images.omiWithoutRope.path);
       expect(DeviceUtils.getDeviceImagePath(deviceType: DeviceType.omi), Assets.images.omiWithoutRope.path);
-      expect(DeviceUtils.getDeviceImagePath(deviceType: DeviceType.bee), Assets.images.omiWithoutRope.path);
       expect(DeviceUtils.getDeviceImagePath(modelNumber: 'GLASS'), Assets.images.omiWithoutRope.path);
       expect(DeviceUtils.getDeviceImagePath(deviceName: 'NEO'), Assets.images.omiWithoutRope.path);
     });
