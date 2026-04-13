@@ -30,7 +30,7 @@ void main() {
         ),
         (message) async {
           manageDeviceCalled = true;
-          return <Object?>['ERROR', 'Simulated connection failure', null];
+          throw PlatformException(code: 'ERROR', message: 'Simulated connection failure');
         },
       );
 
@@ -50,16 +50,33 @@ void main() {
 
       bool exceptionCaught = false;
 
-      try {
-        final future = transport.connect();
-        await future;
-      } catch (e) {
-        if (e is PlatformException) {
-          exceptionCaught = true;
-          expect(e.code, 'ERROR');
-          expect(e.message, 'Simulated connection failure');
-        }
-      }
+      // Because the code completes the completer with an error AND rethrows, we need to handle the rethrown error.
+      // And the unawaited future of completer.completeError causes an uncaught error in Dart zone unless handled.
+      // So we will use a zone.
+      await runZonedGuarded(
+        () async {
+          try {
+            await transport.connect();
+          } catch (e) {
+            if (e is PlatformException) {
+              exceptionCaught = true;
+              expect(e.code, 'ERROR');
+              expect(e.message, 'Simulated connection failure');
+            } else {
+              rethrow;
+            }
+          }
+        },
+        (error, stack) {
+          if (error is PlatformException) {
+            exceptionCaught = true;
+            expect(error.code, 'ERROR');
+            expect(error.message, 'Simulated connection failure');
+          } else {
+            throw error;
+          }
+        },
+      );
 
       expect(exceptionCaught, isTrue, reason: 'Expected PlatformException to be thrown');
       expect(manageDeviceCalled, isTrue);

@@ -433,6 +433,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                       size: 20,
                     ),
                     onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
+                    tooltip: 'Toggle markers only',
                   ),
                 IconButton(
                   icon: FaIcon(
@@ -449,6 +450,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                           !controller.forceSyncOnCooldown)
                       ? _forceSyncButtonPressed
                       : null,
+                  tooltip: 'Force sync',
                 ),
                 IconButton(
                   icon: FaIcon(
@@ -457,10 +459,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     size: 18,
                   ),
                   onPressed: _showFilterSheet,
+                  tooltip: 'Filter recordings',
                 ),
                 IconButton(
                   icon: const FaIcon(FontAwesomeIcons.gear, color: Colors.white, size: 20),
                   onPressed: () => SettingsDrawer.show(context),
+                  tooltip: 'Settings',
                 ),
               ],
             ),

@@ -98,13 +98,13 @@ void main() {
       expect(wals.length, 2);
 
       // Verify some properties
-      expect(wals[0].id, 'device_1-1');
+      expect(wals[0].id, 'device_1-1234567890');
       expect(wals[0].codec, BleAudioCodec.opus);
       expect(wals[0].walOffset, 100);
       expect(wals[0].storage, WalStorage.sdcard);
       expect(wals[0].status, WalStatus.synced);
 
-      expect(wals[1].id, 'device_2-2');
+      expect(wals[1].id, 'device_2-1234567891');
       expect(wals[1].codec, BleAudioCodec.pcm16);
       expect(wals[1].storage, WalStorage.local);
     });
