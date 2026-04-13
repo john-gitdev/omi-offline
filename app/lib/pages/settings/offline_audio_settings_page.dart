@@ -740,8 +740,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     const SizedBox(width: 16),
                     Expanded(
                       child: Text(
-                        'Audio is processed locally using Silero voice activity detection. Each continuous conversation is saved as its own M4A file. Tap the button on your Omi to tag a moment.',
-                        style: TextStyle(color: Colors.grey.shade300, fontSize: 14),
+                        'Audio is processed locally using Silero voice activity detection. Each continuous conversation is saved as its own audio file. Tap the button on your Omi to tag a moment.',
+                        style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                       ),
                     ),
                   ],
