@@ -13,7 +13,7 @@ import 'errors.dart';
 
 class DeviceConnectionFactory {
   static DeviceConnection? create(BtDevice device) {
-    bool needsBond = device.type == DeviceType.limitless;
+    const bool needsBond = false;
     DeviceTransport transport = NativeBleTransport(device.id, requiresBond: needsBond);
     return OmiDeviceConnection(device, transport);
   }
