@@ -11,6 +11,7 @@ import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/utils/notifications.dart';
+import 'package:omi/utils/audio/foreground.dart';
 import 'package:provider/provider.dart';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:opus_flutter/opus_flutter.dart' as opus_flutter;
@@ -25,6 +26,7 @@ void main() async {
   initOpus(await opus_flutter.load());
   await SharedPreferencesUtil.init();
   await NotificationsService.initialize();
+  await ForegroundUtil.initializeForegroundService();
   await ServiceManager.init();
   await ServiceManager.instance().start();
   await RecordingsManager.cleanUpIncompleteExtraction();

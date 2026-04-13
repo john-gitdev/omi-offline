@@ -439,6 +439,9 @@ class RecordingsManager {
   static bool _isProcessingAny = false;
   static bool get isProcessingAny => _isProcessingAny;
 
+  /// Global progress of the current processing task (0.0 to 1.0).
+  static final ValueNotifier<double> processingProgress = ValueNotifier(0.0);
+
   static bool _cancelRequested = false;
   static SendPort? _activeIsolateControlPort;
 
@@ -880,6 +883,7 @@ class RecordingsManager {
                     (elapsed.inMilliseconds * remainingBytes) ~/ processedBytes;
                 eta = Duration(milliseconds: etaMs);
               }
+              processingProgress.value = progressVal;
               onProgress(progress, eta);
             case 'done':
               isolateDone = true;
@@ -921,6 +925,7 @@ class RecordingsManager {
       onProgress(1.0, Duration.zero);
     } finally {
       _isProcessingAny = false;
+      processingProgress.value = 0.0;
       SharedPreferencesUtil().extractionInProgress = false;
     }
   }
@@ -964,7 +969,7 @@ class RecordingsManager {
         ));
       } catch (_) {}
     }
-    recordings.sort((a, b) => a.startMs.compareTo(b.startMs));
+    recordings.sort((a, b) => r.startMs.compareTo(b.startMs));
 
     for (final markerTime in markerTimestamps) {
       final markerMs = markerTime.millisecondsSinceEpoch;
@@ -1088,7 +1093,7 @@ class RecordingsManager {
         .whereType<MarkerConversation>()
         .toList();
 
-    result.sort((a, b) => b.markerTime.compareTo(a.markerTime));
+    result.sort((a, b) => a.markerTime.compareTo(b.markerTime));
     return result;
   }
 

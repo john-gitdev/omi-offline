@@ -11,6 +11,8 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:omi/utils/audio/foreground.dart';
+import 'package:provider/provider.dart';
 
 class RecordingsController extends ChangeNotifier implements IWalSyncProgressListener {
   final RecordingsManager _manager = RecordingsManager();
@@ -39,6 +41,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   double _processingProgress = 0.0;
   double get processingProgress => _processingProgress;
+
+  double _totalMinutes = 0.0;
+  double get totalMinutes => _totalMinutes;
 
   int _markerCount = 0;
   int get markerCount => _markerCount;
@@ -98,13 +103,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _restoreState();
     _loadBatches();
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(this);
-    RecordingsManager.recordingsChangeNotifier.addListener(
-      _onRecordingsChanged,
-    );
-    _pollTimer = Timer.periodic(
-      const Duration(milliseconds: 500),
-      (_) => _poll(),
-    );
+    RecordingsManager.recordingsChangeNotifier.addListener(_onRecordingsChanged);
+    RecordingsManager.processingProgress.addListener(_onProgressChanged);
+    _pollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _poll());
   }
 
   @override
@@ -113,10 +114,19 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _pollTimer?.cancel();
     _forceSyncCooldownTimer?.cancel();
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(null);
-    RecordingsManager.recordingsChangeNotifier.removeListener(
-      _onRecordingsChanged,
-    );
+    RecordingsManager.recordingsChangeNotifier.removeListener(_onRecordingsChanged);
+    RecordingsManager.processingProgress.removeListener(_onProgressChanged);
     super.dispose();
+  }
+
+  void _onProgressChanged() {
+    if (_isDisposed) return;
+    final progress = RecordingsManager.processingProgress.value;
+    _processingProgress = progress;
+    if (_spState == SyncProcessState.processing && _totalMinutes > 0) {
+      _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
+      notifyListeners();
+    }
   }
 
   void _onRecordingsChanged() {
@@ -196,8 +206,20 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
 
       if (serviceIsProcessing && _spState == SyncProcessState.idle) {
-        _spState = SyncProcessState.processing;
-        notifyListeners();
+        unawaited(
+          reloadBatchesSilently().then((_) async {
+            if (_isDisposed) return;
+            final processable = _batches.expand((b) => b.rawSegments).toList();
+            final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
+            final totalBytes = lengths.fold(0, (s, len) => s + len);
+            if (_isDisposed) return;
+            _spState = SyncProcessState.processing;
+            _totalMinutes = totalBytes / 252000.0;
+            _minutesRemaining = (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
+            _processingProgress = RecordingsManager.processingProgress.value;
+            notifyListeners();
+          }),
+        );
       }
 
       if (!serviceIsSyncing && _spState == SyncProcessState.syncing) {
@@ -206,10 +228,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
             reloadBatchesSilently().then((_) async {
               if (_isDisposed) return;
               final processable = _batches.expand((b) => b.rawSegments).toList();
+              final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
+              final totalBytes = lengths.fold(0, (s, len) => s + len);
               if (_isDisposed) return;
               _spState = SyncProcessState.processing;
-              _minutesRemaining = -1.0;
-              _processingProgress = 0.0;
+              _totalMinutes = totalBytes / 252000.0;
+              _minutesRemaining = (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
+              _processingProgress = RecordingsManager.processingProgress.value;
               _syncedCount = 0;
               _syncSpeed = 0.0;
               notifyListeners();
@@ -229,6 +254,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _spState = SyncProcessState.idle;
         _minutesRemaining = 0;
         _processingProgress = 0.0;
+        _totalMinutes = 0;
         notifyListeners();
         _loadBatches();
       }
@@ -385,6 +411,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
     _persistProgress();
     WakelockPlus.enable();
+    await ForegroundUtil.startForegroundTask();
 
     try {
       await syncs.rotateAndSync(progress: this);
@@ -392,6 +419,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       _isUserTriggered = false;
       _isForcePipeline = false;
       WakelockPlus.disable();
+      await ForegroundUtil.stopForegroundTask();
       if (_spState == SyncProcessState.stopping) {
         _transitionTo(SyncProcessState.idle);
         unawaited(reloadBatchesSilently());
@@ -466,18 +494,21 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
     _persistProgress();
     WakelockPlus.enable();
+    await ForegroundUtil.startForegroundTask();
 
     try {
       final result = await syncs.syncAll(progress: this);
       if (result == null) {
         _isUserTriggered = false;
         WakelockPlus.disable();
+        await ForegroundUtil.stopForegroundTask();
         _transitionTo(SyncProcessState.idle);
         return;
       }
     } catch (e) {
       _isUserTriggered = false;
       WakelockPlus.disable();
+      await ForegroundUtil.stopForegroundTask();
       if (_spState == SyncProcessState.stopping) {
         _transitionTo(SyncProcessState.idle);
         unawaited(reloadBatchesSilently());
@@ -524,22 +555,28 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     final bool backgroundMode = !_isForcePipeline;
 
-    _minutesRemaining = -1.0;
+    final allRaw = activeBatches.expand((b) => b.rawSegments).toList();
+    final totalBytes = allRaw.fold(0, (sum, f) {
+      try {
+        return sum + f.lengthSync();
+      } catch (_) {
+        return sum;
+      }
+    });
+    final totalMin = totalBytes / 252000.0;
+
+    _totalMinutes = totalMin;
+    _minutesRemaining = totalMin;
     _processingProgress = 0.0;
     notifyListeners();
     _persistProgress();
 
     WakelockPlus.enable();
+    await ForegroundUtil.startForegroundTask();
     try {
       await _manager.processAll(
         activeBatches,
-        (progress, eta) {
-          if (!_isDisposed) {
-            _processingProgress = progress;
-            _minutesRemaining = eta != null ? eta.inMinutes.toDouble() : -1.0;
-            notifyListeners();
-          }
-        },
+        (_) {}, // global progress listener handles this
         backgroundMode: backgroundMode,
         onRecordingFinalized: () {
           unawaited(reloadBatchesSilently());
@@ -547,6 +584,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       );
     } catch (e) {
       WakelockPlus.disable();
+      await ForegroundUtil.stopForegroundTask();
       if (_spState == SyncProcessState.stopping) {
         _transitionTo(SyncProcessState.idle);
         unawaited(reloadBatchesSilently());
@@ -556,6 +594,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       return;
     }
     WakelockPlus.disable();
+    await ForegroundUtil.stopForegroundTask();
 
     if (_spState == SyncProcessState.stopping) {
       _transitionTo(SyncProcessState.idle);
@@ -584,6 +623,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _markerCount = 0;
     _minutesRemaining = 0;
     _processingProgress = 0.0;
+    _totalMinutes = 0;
     notifyListeners();
 
     _prefs.saveString(_kSpLastCompleted, 'none');
@@ -674,25 +714,27 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     final unprocessed = daysWithBins.where((b) => b.finalizedRecordings.isEmpty).toList();
     if (unprocessed.isNotEmpty) {
-      _minutesRemaining = -1.0;
+      final totalBytes = unprocessed.expand((b) => b.rawSegments).fold(0, (sum, f) {
+        try { return sum + f.lengthSync(); } catch (_) { return sum; }
+      });
+
+      _totalMinutes = totalBytes / 252000.0;
+      _minutesRemaining = _totalMinutes;
       _processingProgress = 0.0;
       notifyListeners();
 
       WakelockPlus.enable();
+      await ForegroundUtil.startForegroundTask();
       try {
-        await _manager.processAll(unprocessed, (progress, eta) {
-          if (!_isDisposed) {
-            _processingProgress = progress;
-            _minutesRemaining = eta != null ? eta.inMinutes.toDouble() : -1.0;
-            notifyListeners();
-          }
-        }, backgroundMode: false);
+        await _manager.processAll(unprocessed, (_) {}, backgroundMode: false);
       } catch (e) {
         WakelockPlus.disable();
+        await ForegroundUtil.stopForegroundTask();
         _transitionToError('processing', e.toString());
         return;
       }
       WakelockPlus.disable();
+      await ForegroundUtil.stopForegroundTask();
     }
 
     await RecordingsManager.deleteAllRawSegments();
@@ -722,23 +764,23 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         .toList();
     if (freshBatch.isEmpty) return;
 
+    final totalBytes = freshBatch.expand((b) => b.rawSegments).fold(0, (sum, f) {
+      try { return sum + f.lengthSync(); } catch (_) { return sum; }
+    });
+
     _lastActiveStage = 'processing';
-    _minutesRemaining = -1.0;
+    _totalMinutes = totalBytes / 252000.0;
+    _minutesRemaining = _totalMinutes;
     _processingProgress = 0.0;
     _transitionTo(SyncProcessState.processing);
     notifyListeners();
 
     WakelockPlus.enable();
+    await ForegroundUtil.startForegroundTask();
     try {
       await _manager.processAll(
         freshBatch,
-        (progress, eta) {
-          if (!_isDisposed) {
-            _processingProgress = progress;
-            _minutesRemaining = eta != null ? eta.inMinutes.toDouble() : -1.0;
-            notifyListeners();
-          }
-        },
+        (_) {}, // global progress listener handles this
         backgroundMode: false,
         onRecordingFinalized: () {
           unawaited(reloadBatchesSilently());
@@ -746,10 +788,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       );
     } catch (e) {
       WakelockPlus.disable();
+      await ForegroundUtil.stopForegroundTask();
       _transitionToError('processing', e.toString());
       return;
     }
     WakelockPlus.disable();
+    await ForegroundUtil.stopForegroundTask();
     await reloadBatchesSilently();
     await _finishSuccess();
   }

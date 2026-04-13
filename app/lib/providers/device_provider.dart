@@ -8,6 +8,7 @@ import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
+import 'package:omi/utils/audio/foreground.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/debouncer.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
@@ -330,12 +331,15 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     }
     if (RecordingsManager.isProcessingAny) return;
     try {
+      await ForegroundUtil.startForegroundTask();
       await walSync.syncAll();
       await RecordingsManager.processAllCompletedSessions();
     } catch (e) {
       lastSyncError = e.toString();
       lastSyncErrorTime = DateTime.now();
       notifyListeners();
+    } finally {
+      await ForegroundUtil.stopForegroundTask();
     }
   }
 
