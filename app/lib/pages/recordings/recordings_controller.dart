@@ -82,6 +82,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   static const _kSpSyncedCount = 'sp_synced_count';
   static const _kSpTotalCount = 'sp_total_count';
   static const _kSpMinutesRemaining = 'sp_minutes_remaining';
+  static const _kSpProcessingProgress = 'sp_processing_progress';
   static const _kSpMarkerCount = 'sp_marker_count';
   static const _kSpLastCompleted = 'sp_last_completed_stage';
   static const _kSpLastActive = 'sp_last_active_stage';
@@ -142,7 +143,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _syncedCount = _prefs.getInt(_kSpSyncedCount);
     _totalCount = _prefs.getInt(_kSpTotalCount);
     _minutesRemaining = _prefs.getDouble(_kSpMinutesRemaining);
-    _processingProgress = _prefs.getDouble('sp_processing_progress');
+    _processingProgress = _prefs.getDouble(_kSpProcessingProgress);
     _markerCount = _prefs.getInt(_kSpMarkerCount);
     _lastCompletedStage = _prefs.getString(
       _kSpLastCompleted,
@@ -279,7 +280,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _prefs.saveInt(_kSpSyncedCount, _syncedCount);
     _prefs.saveInt(_kSpTotalCount, _totalCount);
     _prefs.saveDouble(_kSpMinutesRemaining, _minutesRemaining);
-    _prefs.saveDouble('sp_processing_progress', _processingProgress);
+    _prefs.saveDouble(_kSpProcessingProgress, _processingProgress);
     _prefs.saveInt(_kSpMarkerCount, _markerCount);
   }
 
