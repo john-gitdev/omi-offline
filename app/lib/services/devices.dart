@@ -254,8 +254,8 @@ class DeviceService implements IDeviceService {
 
       try {
         await _connectToDevice(deviceId);
-      } on DeviceConnectionException catch (e) {
-        Logger.debug(e.cause);
+      } catch (e) {
+        Logger.debug('[DeviceService] Connection failed for $deviceId: $e');
         return null;
       }
 
