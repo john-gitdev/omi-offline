@@ -19,6 +19,9 @@ class SharedPreferencesUtil {
   Future<void>? _heypocketUploadGuard;
   String _heypocketApiKey = '';
 
+  String _omiRefreshToken = '';
+  String _omiFirebaseApiKey = '';
+
   String get deviceIdHash => _preferences?.getString('deviceIdHash') ?? '';
   set deviceIdHash(String value) => _preferences?.setString('deviceIdHash', value);
 
@@ -96,6 +99,33 @@ class SharedPreferencesUtil {
 
   set extractionInProgress(bool value) => saveBool('extractionInProgress', value);
 
+  //--------------------------- Omi Server Sync --------------------------//
+
+  bool get omiSyncEnabled => getBool('omiSyncEnabled', defaultValue: false);
+  set omiSyncEnabled(bool v) => saveBool('omiSyncEnabled', v);
+
+  // Short-lived JWT — refreshed automatically; stored in regular prefs.
+  String get omiIdToken => getString('omiIdToken', defaultValue: '');
+  set omiIdToken(String v) => saveString('omiIdToken', v);
+
+  // Unix ms when the current ID token expires.
+  int get omiTokenExpiry => getInt('omiTokenExpiry', defaultValue: 0);
+  set omiTokenExpiry(int v) => saveInt('omiTokenExpiry', v);
+
+  // Long-lived refresh token — stored in secure storage.
+  String get omiRefreshToken => _omiRefreshToken;
+  Future<void> setOmiRefreshToken(String v) async {
+    _omiRefreshToken = v;
+    await _secureStorage.write(key: 'omiRefreshToken', value: v);
+  }
+
+  // Firebase API key — stored in secure storage.
+  String get omiFirebaseApiKey => _omiFirebaseApiKey;
+  Future<void> setOmiFirebaseApiKey(String v) async {
+    _omiFirebaseApiKey = v;
+    await _secureStorage.write(key: 'omiFirebaseApiKey', value: v);
+  }
+
   //--------------------------- HeyPocket Integration ---------------------//
 
   String get heypocketApiKey => _heypocketApiKey;
@@ -162,6 +192,8 @@ class SharedPreferencesUtil {
 
     // Initialize secure storage and handle migration
     _instance._heypocketApiKey = await _secureStorage.read(key: 'heypocketApiKey') ?? '';
+    _instance._omiRefreshToken = await _secureStorage.read(key: 'omiRefreshToken') ?? '';
+    _instance._omiFirebaseApiKey = await _secureStorage.read(key: 'omiFirebaseApiKey') ?? '';
     if (prefs.containsKey('heypocketApiKey')) {
       final legacyKey = prefs.getString('heypocketApiKey') ?? '';
       if (legacyKey.isNotEmpty && _instance._heypocketApiKey.isEmpty) {
