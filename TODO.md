@@ -1,22 +1,5 @@
 # TODO
 
-## UI/UX
-
-### Unknown Timestamp Handling
-
-Files recorded before the device ever synced time will have no valid UTC
-anchor. Currently the app silently back-fills a derived timestamp (current
-time minus estimated audio duration) rather than surfacing the ambiguity to
-the user.
-
-**Tasks:**
-- [ ] Detect recordings whose timestamp was derived rather than firmware-provided (no reliable UTC anchor) in the WAL/recordings list
-- [ ] Show these in a dedicated "Unknown date" section or with a placeholder label in the daily batch UI
-- [ ] Allow the user to manually set a date/time for an unknown-timestamp recording
-  - Tapping sets `StorageFile.timestamp` (or equivalent metadata) and re-slots the recording into the correct day
-  - Persist the user-set timestamp so it survives app restart
-- [ ] Consider showing a one-time prompt when unknown recordings are detected ("Some recordings have no date — tap to assign")
-
 ## Streaming file list response [UX improvement]
 
 Currently `CMD_LIST_FILES (0x10)` blocks until the firmware completes a full directory walk,
