@@ -1524,7 +1524,7 @@ void sd_worker_thread(void)
                  * lfs_dir_read() — the directory metadata is a CTZ skip-list
                  * and removing an entry mid-iteration causes undefined behavior
                  * (skipped files, double-reads, or corruption). */
-                char del_names[MAX_AUDIO_FILES][MAX_FILENAME_LEN];
+                static char del_names[MAX_AUDIO_FILES][MAX_FILENAME_LEN];
                 int del_count = 0;
 
                 /* Phase 1: collect filenames */
