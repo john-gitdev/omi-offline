@@ -29,6 +29,7 @@ class ProcessingSettings {
   final int maxRollingFrames;
   final String deviceId; // used to generate upload key in .meta sidecar
   final bool convertOpusToM4a;
+  final bool omiSyncEnabled;
 
   const ProcessingSettings({
     required this.speechThreshold,
@@ -42,6 +43,7 @@ class ProcessingSettings {
     required this.maxRollingFrames,
     required this.deviceId,
     required this.convertOpusToM4a,
+    required this.omiSyncEnabled,
   });
 
   factory ProcessingSettings.fromPrefs() {
@@ -59,6 +61,7 @@ class ProcessingSettings {
       maxRollingFrames: p.markerLookbackSeconds * 1000 ~/ frameDurationMs,
       deviceId: p.btDevice.id,
       convertOpusToM4a: p.convertOpusToM4a,
+      omiSyncEnabled: p.omiSyncEnabled,
     );
   }
 }
@@ -111,6 +114,7 @@ class VadAudioProcessor {
   final int _maxChunkMs;
   final String _deviceId;
   final bool _convertOpusToM4a;
+  final bool _omiSyncEnabled;
 
   static const int sampleRate = 16000;
   static const int channels = 1;
@@ -166,7 +170,8 @@ class VadAudioProcessor {
         _markerLookbackMs = settings.markerLookbackMs,
         _maxRollingFrames = settings.maxRollingFrames,
         _deviceId = settings.deviceId,
-        _convertOpusToM4a = settings.convertOpusToM4a;
+        _convertOpusToM4a = settings.convertOpusToM4a,
+        _omiSyncEnabled = settings.omiSyncEnabled;
 
   void destroy() {
     _decoder?.destroy();
@@ -486,6 +491,47 @@ class VadAudioProcessor {
       _saveRecording(refs, startTime, isDerivedTimestamp: isDerivedTimestamp);
 
   Future<String?> _saveRecording(List<FrameRef> refs, DateTime startTime, {bool? isDerivedTimestamp}) async {
+    final result = await _saveRecordingCore(refs, startTime, isDerivedTimestamp: isDerivedTimestamp);
+    if (result != null && _omiSyncEnabled) {
+      try {
+        final dateFolderPath = File(result).parent.path;
+        await _saveBin(refs, dateFolderPath, startTime.millisecondsSinceEpoch);
+      } catch (e) {
+        Logger.error('VadAudioProcessor: _saveBin failed: $e');
+      }
+    }
+    return result;
+  }
+
+  /// Writes a raw Opus .bin file (4-byte LE length prefix + Opus bytes per frame) for upload
+  /// to the Omi backend. Filename includes `_fs320_` so the server uses the correct 320-sample
+  /// frame size (16 kHz × 20 ms) instead of its 160-sample default.
+  Future<void> _saveBin(List<FrameRef> refs, String dateFolderPath, int timestamp) async {
+    final binPath = '$dateFolderPath/recording_fs320_$timestamp.bin';
+    final sink = File(binPath).openWrite();
+    try {
+      String? currentFilePath;
+      Uint8List? currentFileBytes;
+      for (var i = 0; i < refs.length; i++) {
+        if (i % 50 == 0) await Future.delayed(Duration.zero);
+        final ref = refs[i];
+        if (ref.segmentFile.path != currentFilePath) {
+          currentFileBytes = await ref.segmentFile.readAsBytes();
+          currentFilePath = ref.segmentFile.path;
+          await Future.delayed(Duration.zero);
+        }
+        if (currentFileBytes == null) continue;
+        // Write 4-byte length prefix + Opus packet as-is.
+        sink.add(currentFileBytes.sublist(ref.byteOffset, ref.byteOffset + 4 + ref.frameLength));
+      }
+      await sink.flush();
+    } finally {
+      await sink.close();
+    }
+    Logger.debug('VadAudioProcessor: Saved bin for Omi sync — $binPath');
+  }
+
+  Future<String?> _saveRecordingCore(List<FrameRef> refs, DateTime startTime, {bool? isDerivedTimestamp}) async {
     final derived = isDerivedTimestamp ?? _isDerivedTimestamp;
     final prefix = derived ? 'unknown' : 'recording';
     final timestamp = startTime.millisecondsSinceEpoch;
