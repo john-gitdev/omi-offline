@@ -338,7 +338,7 @@ class VadAudioProcessor {
 
       _lastSegmentEndTime = segmentStartTime.add(Duration(milliseconds: totalFrameCount * frameDurationMs));
       Logger.debug('VadAudioProcessor: ${segmentFile.path.split('/').last} — '
-          '$totalFrameCount frames, $segmentSpeechFrames speech, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}');
+          '$totalFrameCount frames, $segmentSpeechFrames speech this seg / $_speechFrameCount total, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}');
     } catch (e) {
       Logger.error('VadAudioProcessor: processSegmentFile error: $e');
     }
