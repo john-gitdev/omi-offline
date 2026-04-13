@@ -188,7 +188,7 @@ class MainActivity : FlutterActivity() {
             // Drain until EOS
             drainOutput(session, drainToEnd = true)
 
-            try { session.codec.stop() } catch (_: Exception) {}
+            session.codec.stop()
             session.codec.release()
 
             if (!session.reachedEos || !session.muxerStarted || session.samplesWritten == 0L) {
