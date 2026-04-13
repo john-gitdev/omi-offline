@@ -47,6 +47,10 @@ class NativeBleTransport extends DeviceTransport {
   @override
   Future<void> connect({bool requiresBond = false}) async {
     if (_state == DeviceTransportState.connected) return;
+    if (_state == DeviceTransportState.connecting && _deviceReadyCompleter != null) {
+      await _deviceReadyCompleter!.future;
+      return;
+    }
 
     _updateState(DeviceTransportState.connecting);
 
@@ -56,7 +60,9 @@ class NativeBleTransport extends DeviceTransport {
       await _hostApi.manageDevice(_peripheralUuid, requiresBond);
     } catch (e) {
       Logger.debug('[NativeBleTransport] manageDevice failed: $e');
+      final completer = _deviceReadyCompleter;
       _deviceReadyCompleter = null;
+      completer?.completeError(e);
       _updateState(DeviceTransportState.disconnected);
       rethrow;
     }
