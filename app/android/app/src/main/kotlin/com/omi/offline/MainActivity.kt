@@ -33,9 +33,6 @@ class MainActivity : FlutterActivity() {
         // Register WiFi Network Plugin
         WifiNetworkPlugin.registerWith(flutterEngine, this)
 
-        // Register Phone Calls Plugin
-        PhoneCallsPlugin.registerWith(flutterEngine, this)
-
         // Register Native BLE Pigeon APIs
         OmiBleManager.initialize(application)
         val flutterApi = BleFlutterApi(flutterEngine.dartExecutor.binaryMessenger)
