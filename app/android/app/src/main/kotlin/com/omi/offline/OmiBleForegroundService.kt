@@ -82,16 +82,31 @@ class OmiBleForegroundService : Service() {
                 putExtra("requires_bond", requiresBond)
                 putExtra("caller", caller)
             }
+            val appCtx = context.applicationContext
             try {
                 ContextCompat.startForegroundService(context, intent)
+
+                // Watchdog: if the main thread is saturated (e.g. by audio processing platform
+                // channel calls), onCreate/onStartCommand cannot run and startForeground() is
+                // never called. Android throws ForegroundServiceDidNotStartInTimeException after
+                // 5s. We cancel the pending service record at 4s from a background thread
+                // (stopService is an IPC to system_server — bypasses the busy main thread),
+                // clearing the ANR timer before it fires. The service restarts on the next
+                // reconnect attempt once the main thread has a free window.
+                Thread {
+                    Thread.sleep(4000)
+                    if (instance == null && !isDestroyingStatic) {
+                        Log.w(TAG, "startService($caller): service did not start within 4s — cancelling to prevent ForegroundServiceDidNotStartInTimeException")
+                        try { appCtx.stopService(Intent(appCtx, OmiBleForegroundService::class.java)) } catch (_: Exception) {}
+                    }
+                }.apply { isDaemon = true; start() }
+
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start foreground service", e)
-                // Workaround for OEM devices (e.g. Moto G Power 2022) where the system
-                // starts the 5-second ANR timer even when ForegroundServiceStartNotAllowedException
-                // is thrown. Calling stopService cancels the pending service record so the
-                // timer is cleared and ForegroundServiceDidNotStartInTimeException is avoided.
+                // Also cancel on immediate failure: some OEM devices start the ANR timer
+                // even when ForegroundServiceStartNotAllowedException is thrown.
                 try {
-                    context.stopService(Intent(context, OmiBleForegroundService::class.java))
+                    appCtx.stopService(Intent(appCtx, OmiBleForegroundService::class.java))
                 } catch (_: Exception) {}
             }
         }
