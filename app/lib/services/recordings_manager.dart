@@ -591,24 +591,15 @@ class RecordingsManager {
         } catch (_) {}
       }
 
-      // 1. Exact containment: marker fired while this recording was active.
-      int matchIdx = recordings.indexWhere((r) => markerMs >= r.startMs && markerMs < r.endMs);
-
-      // 2. Prior conversation: marker fired during silence after this recording ended.
-      if (matchIdx < 0) {
-        for (int i = recordings.length - 1; i >= 0; i--) {
-          if (recordings[i].endMs <= markerMs) {
-            matchIdx = i;
-            break;
-          }
-        }
-      }
+      // Strict containment only: marker must fall within a recording that was actually
+      // produced from the audio around that time. Markers whose audio hasn't been
+      // processed yet stay pending until a future sync+process run covers that range.
+      final matchIdx = recordings.indexWhere((r) => markerMs >= r.startMs && markerMs < r.endMs);
 
       if (matchIdx >= 0) {
         final rec = recordings[matchIdx];
         final segmentFilename = rec.file.path.split('/').last;
-        // If prior match, offset points to the end of the conversation
-        final markerOffsetMs = markerMs < rec.endMs ? markerMs - rec.startMs : rec.durationMs;
+        final markerOffsetMs = markerMs - rec.startMs;
         final edlData = {
           'markerTimestampMs': markerMs,
           'segmentFilename': segmentFilename,
