@@ -972,7 +972,7 @@ class RecordingsManager {
     }
   }
 
-  /// Deletes processed recordings (.m4a/.wav/.meta) for a day.
+  /// Deletes processed recordings (.m4a/.wav/.meta/.bin) for a day.
   /// Raw segments are intentionally preserved.
   /// Safe to call while nothing is playing.
   Future<void> deleteDay(Batch batch) async {
