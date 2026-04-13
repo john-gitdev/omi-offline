@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/heypocket_service.dart';
+import 'package:omi/services/omi_api_client.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
@@ -58,6 +60,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   int _autoUploadActive = 0;
   String _lastHpKey = '';
+
+  final Set<String> _syncingBinFiles = {};
 
   String? _pendingSnackMessage;
   String? consumePendingSnack() {
@@ -588,6 +592,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
         notifyListeners();
         tryAutoUploadNext();
+        tryAutoSyncNext();
       }
     } catch (e) {
       Logger.error('RecordingsController: Failed to load batches: $e');
@@ -754,6 +759,39 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
     }
     if (!_isDisposed) notifyListeners();
+  }
+
+  void tryAutoSyncNext() {
+    if (_prefs.adjustmentMode) return;
+    if (!_prefs.omiSyncEnabled || _prefs.omiRefreshToken.isEmpty) return;
+
+    for (final batch in _batches) {
+      for (final conversation in batch.finalizedRecordings) {
+        final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
+        final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
+        if (_syncingBinFiles.contains(binPath)) continue;
+        final binFile = File(binPath);
+        if (!binFile.existsSync()) continue;
+
+        _syncingBinFiles.add(binPath);
+        unawaited(
+          OmiApiClient.syncLocalFiles([binFile])
+              .then((jobId) => OmiApiClient.pollSyncJob(jobId))
+              .then((_) => binFile.delete())
+              .catchError((e) {
+                Logger.error('Omi sync failed for $binPath: $e');
+                return binFile; // satisfy FileSystemEntity return type
+              })
+              .whenComplete(() {
+                _syncingBinFiles.remove(binPath);
+                if (!_isDisposed) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) => tryAutoSyncNext());
+                }
+              }),
+        );
+        return; // one at a time
+      }
+    }
   }
 
   Future<void> uploadConversation(Conversation conversation) async {
