@@ -1,6 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:onnxruntime/onnxruntime.dart';
+import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/vad_audio_processor.dart';
@@ -223,6 +227,124 @@ class MarkerConversation {
   }
 }
 
+// =============================================================================
+// Background isolate for VAD/audio processing
+// =============================================================================
+
+/// Parameters sent to the background processing isolate. All fields must be
+/// sendable across isolate boundaries (primitives, Uint8List, SendPort, etc.).
+class _IsolateParams {
+  final SendPort sendPort;
+  final RootIsolateToken rootIsolateToken;
+  final Uint8List? modelBytes; // Silero VAD ONNX model, pre-loaded on main isolate
+  final ProcessingSettings settings;
+  final String tempProcessingPath;
+  final List<String> segmentPaths;
+  final List<int> segmentStartTimesMs; // milliseconds since epoch
+  final List<bool> segmentDerivedFlags;
+  final bool backgroundMode;
+
+  const _IsolateParams({
+    required this.sendPort,
+    required this.rootIsolateToken,
+    required this.modelBytes,
+    required this.settings,
+    required this.tempProcessingPath,
+    required this.segmentPaths,
+    required this.segmentStartTimesMs,
+    required this.segmentDerivedFlags,
+    required this.backgroundMode,
+  });
+}
+
+/// Background isolate entry point for VAD + Opus decode + AAC encode.
+/// Runs entirely off the Android main/platform thread, eliminating the
+/// ForegroundServiceDidNotStartInTimeException caused by onnxruntime FFI
+/// blocking the platform thread during inference.
+Future<void> _processingIsolateEntry(_IsolateParams params) async {
+  // Allow platform channel calls (AacEncoder MethodChannel) from this isolate.
+  BackgroundIsolateBinaryMessenger.ensureInitialized(params.rootIsolateToken);
+
+  // Send back a control port so the main isolate can forward cancel requests.
+  final controlPort = ReceivePort();
+  params.sendPort.send({'type': 'control_port', 'port': controlPort.sendPort});
+
+  bool cancelled = false;
+  controlPort.listen((msg) {
+    if (msg == 'cancel') cancelled = true;
+  });
+
+  // Initialise ONNX Runtime (FFI — safe in any isolate).
+  try {
+    OrtEnv.instance.init();
+  } catch (e) {
+    // Non-fatal: amplitude fallback will be used.
+  }
+
+  OrtSession? session;
+  if (params.modelBytes != null) {
+    try {
+      final opts = OrtSessionOptions();
+      session = OrtSession.fromBuffer(params.modelBytes!, opts);
+    } catch (e) {
+      // Amplitude fallback active.
+    }
+  }
+
+  final decoder = (Platform.isIOS || Platform.isAndroid)
+      ? SimpleOpusDecoder(sampleRate: VadAudioProcessor.sampleRate, channels: VadAudioProcessor.channels)
+      : null;
+
+  final processor = VadAudioProcessor.fromSettings(
+    settings: params.settings,
+    outputDir: params.tempProcessingPath,
+    session: session,
+    decoder: decoder,
+  );
+
+  try {
+    int lastSafeToDeleteIndex = -1;
+
+    for (int i = 0; i < params.segmentPaths.length; i++) {
+      if (cancelled) {
+        break;
+      }
+
+      final file = File(params.segmentPaths[i]);
+      final startTime = DateTime.fromMillisecondsSinceEpoch(params.segmentStartTimesMs[i]);
+      final isDerived = params.segmentDerivedFlags[i];
+
+      await processor.processSegmentFile(file, startTime, isDerivedTimestamp: isDerived);
+
+      // Ask the main isolate to move any completed recordings out of temp.
+      params.sendPort.send({'type': 'move'});
+
+      if (params.backgroundMode && !processor.isCapturing) {
+        lastSafeToDeleteIndex = i;
+      }
+
+      params.sendPort.send({'type': 'progress', 'value': ((i + 1) / params.segmentPaths.length) * 0.9});
+    }
+
+    if (params.backgroundMode) {
+      await processor.flushOnlyCompleted();
+    } else {
+      await processor.flushRemaining();
+      if (!cancelled) lastSafeToDeleteIndex = params.segmentPaths.length - 1;
+    }
+
+    params.sendPort.send({'type': 'move'});
+    params.sendPort.send({'type': 'done', 'index': lastSafeToDeleteIndex});
+  } catch (e, st) {
+    params.sendPort.send({'type': 'error', 'message': '$e\n$st'});
+  } finally {
+    processor.destroy();
+    controlPort.close();
+  }
+}
+
+// =============================================================================
+
 class RecordingsManager {
   static final RecordingsManager _instance = RecordingsManager._internal();
   factory RecordingsManager() => _instance;
@@ -232,7 +354,12 @@ class RecordingsManager {
   static bool get isProcessingAny => _isProcessingAny;
 
   static bool _cancelRequested = false;
-  static void cancelProcessing() => _cancelRequested = true;
+  static SendPort? _activeIsolateControlPort;
+
+  static void cancelProcessing() {
+    _cancelRequested = true;
+    _activeIsolateControlPort?.send('cancel');
+  }
 
   /// Global notification system to alert UI pages when the recordings folder
   /// has been modified (deleted, reprocessed, etc.).
@@ -257,7 +384,7 @@ class RecordingsManager {
         // This covers the race where the crash happened between _saveRecording()
         // writing the m4a and moveTempFilesToLive() renaming it.
         // Move .meta sidecars first so they are in place when the audio file lands.
-        final allEntities = await tempDir.list(recursive: true).whereType<File>().toList();
+        final allEntities = await tempDir.list(recursive: true).where((e) => e is File).cast<File>().toList();
         allEntities.sort((a, b) {
           final aIsMeta = a.path.endsWith('.meta') ? 0 : 1;
           final bIsMeta = b.path.endsWith('.meta') ? 0 : 1;
@@ -496,48 +623,84 @@ class RecordingsManager {
             .compareTo(int.tryParse(bp.length > 1 ? bp[1] : '0') ?? 0);
       });
 
+      // Pre-compute segment timestamps on the main isolate (lastModifiedSync is unavailable in a
+      // background isolate without platform channels).
+      const kMinValidEpoch = 946684800;
+      final segmentStartTimesMs = <int>[];
+      final segmentDerivedFlags = <bool>[];
+      for (final file in allSegments) {
+        final stem = file.path.split('/').last.split('.').first;
+        final timerStart = int.tryParse(stem.split('_').first);
+        if (timerStart != null && timerStart > kMinValidEpoch) {
+          segmentStartTimesMs.add(timerStart * 1000);
+          segmentDerivedFlags.add(false);
+        } else {
+          segmentStartTimesMs.add(file.lastModifiedSync().millisecondsSinceEpoch);
+          segmentDerivedFlags.add(true);
+        }
+      }
+
+      // Pre-load the ONNX model on the main isolate (rootBundle requires main isolate).
+      Uint8List? modelBytes;
+      try {
+        final data = await rootBundle.load('assets/models/silero_vad.onnx');
+        modelBytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+      } catch (e) {
+        Logger.error('RecordingsManager: Failed to pre-load VAD model ($e) — amplitude fallback active.');
+      }
+
       int lastSafeToDeleteIndex = -1;
 
       try {
-        final processor = await VadAudioProcessor.create(outputDir: tempProcessingPath);
-        try {
-          for (int i = 0; i < allSegments.length; i++) {
-            final file = allSegments[i];
-            final stem = file.path.split('/').last.split('.').first;
-            final timerStart = int.tryParse(stem.split('_').first);
-            const kMinValidEpoch = 946684800;
-            final segmentStartTime = timerStart != null && timerStart > kMinValidEpoch
-                ? DateTime.fromMillisecondsSinceEpoch(timerStart * 1000)
-                : file.lastModifiedSync();
+        final receivePort = ReceivePort();
+        final exitPort = ReceivePort();
+        bool isolateDone = false;
 
-            if (_cancelRequested) {
-              Logger.debug("RecordingsManager: Processing cancelled at segment $i.");
-              break;
-            }
+        await Isolate.spawn(
+          _processingIsolateEntry,
+          _IsolateParams(
+            sendPort: receivePort.sendPort,
+            rootIsolateToken: RootIsolateToken.instance!,
+            modelBytes: modelBytes,
+            settings: ProcessingSettings.fromPrefs(),
+            tempProcessingPath: tempProcessingPath,
+            segmentPaths: allSegments.map((f) => f.path).toList(),
+            segmentStartTimesMs: segmentStartTimesMs,
+            segmentDerivedFlags: segmentDerivedFlags,
+            backgroundMode: backgroundMode,
+          ),
+          onExit: exitPort.sendPort,
+        );
 
-            final isDerived = timerStart == null || timerStart <= kMinValidEpoch;
-            await processor.processSegmentFile(file, segmentStartTime, isDerivedTimestamp: isDerived);
-            await moveTempFilesToLive();
+        // If the isolate dies without sending 'done'/'error', close receivePort so we don't hang.
+        exitPort.listen((_) {
+          if (!isolateDone) receivePort.close();
+          exitPort.close();
+        });
 
-            if (backgroundMode && !processor.isCapturing) {
-              lastSafeToDeleteIndex = i;
-            }
-
-            onProgress(((i + 1) / allSegments.length) * 0.9);
-            if (!backgroundMode) await Future.delayed(const Duration(milliseconds: 50));
+        await for (final msg in receivePort) {
+          if (msg is! Map) continue;
+          switch (msg['type'] as String) {
+            case 'control_port':
+              _activeIsolateControlPort = msg['port'] as SendPort;
+              // Forward a pending cancel if the user already called cancelProcessing().
+              if (_cancelRequested) _activeIsolateControlPort?.send('cancel');
+            case 'move':
+              await moveTempFilesToLive();
+            case 'progress':
+              onProgress(msg['value'] as double);
+            case 'done':
+              lastSafeToDeleteIndex = msg['index'] as int;
+              isolateDone = true;
+              receivePort.close();
+            case 'error':
+              isolateDone = true;
+              receivePort.close();
+              throw Exception(msg['message']);
           }
-
-          if (backgroundMode) {
-            await processor.flushOnlyCompleted();
-          } else {
-            await processor.flushRemaining();
-            // All intervals are now closed — every segment is safe to delete.
-            lastSafeToDeleteIndex = allSegments.length - 1;
-          }
-          await moveTempFilesToLive();
-        } finally {
-          processor.destroy();
         }
+
+        _activeIsolateControlPort = null;
 
         await Future.delayed(const Duration(milliseconds: 200));
         if (await tempDir.exists()) await tempDir.delete(recursive: true);
@@ -550,6 +713,7 @@ class RecordingsManager {
           await _resolveMarkerConversations(liveDir, batch.markerTimestamps);
         }
       } catch (e) {
+        _activeIsolateControlPort = null;
         Logger.error("RecordingsManager: Combined processing failed: $e");
         rethrow;
       }
