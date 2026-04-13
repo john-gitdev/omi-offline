@@ -1,23 +1,5 @@
 # TODO
 
-## Processing time estimation
-
-Show a meaningful ETA on the processing banner using a bytes-remaining approach (same as download managers). No historical data or persistence needed — self-corrects within the session.
-
-**How it works:**
-- Before spawning the isolate, sum all segment file sizes → `totalBytes` (already computed for the disk-space check, just needs to be kept)
-- After each segment, add its file size to `processedBytes`
-- `eta = elapsed × (totalBytes − processedBytes) / processedBytes`
-- Suppress display until ≥ 5% processed (estimate is noisy before that)
-
-Segment count alone (current `onProgress` value) is a poor proxy — segments vary in size. Byte count is directly proportional to compressed audio duration since Opus is near-CBR.
-
-**Tasks:**
-- [ ] In `processAll`, keep `totalBytes` from the disk-space guard and record `startTime = DateTime.now()` before spawning
-- [ ] Pass `segmentFileSizes` (list of ints, already available via `lengthSync()`) into `_IsolateParams` so the isolate can report bytes-per-segment with each `'progress'` message
-- [ ] On each `'progress'` message in the main isolate, accumulate `processedBytes`, compute ETA if ≥ 5% done, and pass it alongside progress to callers (add `onEtaUpdate(Duration)` callback or extend `onProgress` signature)
-- [ ] Update the processing banner widget to display "~X min remaining" using the ETA
-
 ## UI/UX
 
 ### Unknown Timestamp Handling
@@ -34,29 +16,6 @@ the user.
   - Tapping sets `StorageFile.timestamp` (or equivalent metadata) and re-slots the recording into the correct day
   - Persist the user-set timestamp so it survives app restart
 - [ ] Consider showing a one-time prompt when unknown recordings are detected ("Some recordings have no date — tap to assign")
-
-## StorageStatus — free space & file count from firmware [pending UI decision]
-
-The firmware already returns a 16-byte LE payload via a BLE read characteristic on connect:
-`[total_used_bytes:4][file_count:4][free_bytes:4][status_flags:4]`
-
-`getStorageFileStats()` is already implemented on `OmiDeviceConnection` (`app/lib/services/devices/omi_connection.dart:96`) and reads + parses the first 8 bytes (used bytes + file count). The abstract interface and UI surface are still missing.
-
-**Blocked on:** where to surface this in the UI (e.g. device settings page, sync page, home screen indicator, storage full warning).
-
-**Tasks (once UI location decided):**
-- [ ] Add `getStorageFileStats()` as an abstract method on `DeviceConnection`
-  (`app/lib/services/devices/device_connection.dart`)
-- [ ] Extend `getStorageFileStats()` in `OmiDeviceConnection` to also parse `free_bytes` (bytes 8–11) from the 16-byte payload
-- [ ] Replace the inline storage percentage calculation in `DeviceProvider`
-  (`app/lib/providers/device_provider.dart` ~line 426) with the new method
-- [ ] Expose `freeBytes` and `fileCount` in the UI wherever decided
-
-**Relevant files:**
-- `app/lib/services/devices/device_connection.dart` — add abstract method
-- `app/lib/services/devices/omi_connection.dart:96` — `getStorageFileStats()` already implemented
-- `app/lib/providers/device_provider.dart:426` — inline storage % calculation to replace
-- `omi/firmware/omi/src/lib/core/storage.c:149` — `storage_read_characteristic()` reference
 
 ## Streaming file list response [UX improvement]
 
@@ -100,13 +59,6 @@ so file deletions between "pages" are not possible. No app-side state machine ne
 - `omi/firmware/omi/src/sd_card.c:2336` — `get_audio_file_list_with_sizes()` walk to make streamable
 - `app/lib/services/devices/omi_connection.dart:267` — `performListFiles()` to extend
 - `app/lib/services/wals/sdcard_wal_sync.dart:161` — `_buildWalsFromFiles()` consumer
-
-## User-configurable sync interval [minor]
-
-Currently sync runs on a fixed 30-minute interval (`_backgroundSyncMinutes = 30` in
-`app/lib/providers/device_provider.dart:34`). Let the user choose the interval (e.g. 15 min, 30 min,
-1 hr, manual only) via a settings screen. Shorter intervals reduce data loss window but increase BLE
-radio usage and battery drain on both devices; surface this tradeoff in the UI.
 
 ## Apple Watch Integration [minor]
 
