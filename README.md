@@ -17,11 +17,11 @@ Omi Offline is a personal fork of the Omi project focused entirely on local, pri
 ## ✨ Key Features
 
 - 🔒 **100% Offline by Default:** Zero cloud dependency. No internet connectivity checks, no forced cloud APIs. Your data, your rules.
-- 💾 **Continuous On-Device Recording:** Audio is encoded in Opus (16 kHz mono, 20ms frames) directly on the nRF5340 wearable and saved to an SD card.
+- 💾 **Continuous On-Device Recording:** Audio is encoded in Opus (16 kHz mono, 20ms frames) directly on the nRF5340 wearable and saved to an eMMC card.
 - 🔄 **Resumable BLE Sync (WAL):** Syncs data to your phone in batches over an ACK-gated, Write-Ahead Log (WAL) BLE protocol. Resumes cleanly on disconnects.
 - 🧠 **On-Phone Neural Processing:** Powered by **Silero VAD** (running via ONNX runtime) to segment speech from silence entirely on your mobile device.
 - 🎛 **Iterative Adjustment Mode:** Fine-tune Voice Activity Detection (VAD) parameters without needing to re-sync data from the hardware.
-- 🔌 **HeyPocket Integration:** The *only* optional external integration, allowing you to upload finalized recordings directly to HeyPocket.
+- 🔌 **Integrations:** An optional external integration, allowing you to upload finalized recordings directly to HeyPocket or Omi.
 
 ---
 
@@ -32,7 +32,7 @@ The ecosystem consists of two primary layers:
 ```mermaid
 graph TD
     A[Wearable nRF5340] -->|PDM Microphones| B(Opus Encoder)
-    B -->|Frames| C{SD Card Storage .bin}
+    B -->|Frames| C{eMMC Card Storage .bin}
     C -->|Native BLE GATT via Pigeon| D[Mobile App - Flutter]
     D -->|Stores Raw .bin| E(VadAudioProcessor)
     E -->|Silero ONNX| F[Final Recordings .m4a]
@@ -41,7 +41,7 @@ graph TD
 ### 1. Hardware (Firmware)
 - **Audio Capture:** Uses PDM microphones.
 - **Encoding:** Compresses audio into Opus frames.
-- **Storage:** Writes contiguous `.bin` segments to the SD card.
+- **Storage:** Writes contiguous `.bin` segments to the eMMC card.
 - **Markers:** Inserts a `0xFE` hardware packet into the stream upon button press (double tap) for easy moment tagging.
 
 ### 2. Software (Flutter App)
@@ -112,7 +112,7 @@ omi-offline/
 │   ├── lib/           # Core Dart logic, providers, services
 │   └── test/          # Unit & integration tests
 ├── omi/
-│   └── firmware/      # Zephyr RTOS C code for nRF5340 (Opus encode, SD, BLE)
+│   └── firmware/      # Zephyr RTOS C code for nRF5340 (Opus encode, eMMC, BLE)
 ├── NOMENCLATURE.md    # Definitive project glossary
 └── CLAUDE.md          # Agent configuration & architecture notes
 ```
