@@ -44,6 +44,14 @@ class OmiBleForegroundService : Service() {
         @Volatile
         private var lastCompanionRequestTimestamp: Long = 0
 
+        // Guard against re-entry during onDestroy: if the service fires
+        // onPeripheralDisconnected("service_destroyed") and the Dart layer immediately
+        // calls manageDevice, we must not call startForegroundService() while the
+        // service is still tearing down — the system queues the start but onStartCommand
+        // won't fire in time, causing ForegroundServiceDidNotStartInTimeException.
+        @Volatile
+        private var isDestroyingStatic = false
+
         fun isActive(): Boolean = instance != null
 
         fun startService(context: Context, deviceAddress: String, requiresBond: Boolean = false, caller: String = "unknown") {
@@ -63,6 +71,11 @@ class OmiBleForegroundService : Service() {
                 return
             }
 
+            if (isDestroyingStatic) {
+                Log.w(TAG, "startService($caller): service is still destroying, skipping startForegroundService")
+                return
+            }
+
             Log.d(TAG, "startService($caller): address=$deviceAddress, requiresBond=$requiresBond")
             val intent = Intent(context, OmiBleForegroundService::class.java).apply {
                 putExtra("device_address", deviceAddress)
@@ -73,6 +86,13 @@ class OmiBleForegroundService : Service() {
                 ContextCompat.startForegroundService(context, intent)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start foreground service", e)
+                // Workaround for OEM devices (e.g. Moto G Power 2022) where the system
+                // starts the 5-second ANR timer even when ForegroundServiceStartNotAllowedException
+                // is thrown. Calling stopService cancels the pending service record so the
+                // timer is cleared and ForegroundServiceDidNotStartInTimeException is avoided.
+                try {
+                    context.stopService(Intent(context, OmiBleForegroundService::class.java))
+                } catch (_: Exception) {}
             }
         }
 
@@ -525,6 +545,7 @@ class OmiBleForegroundService : Service() {
     override fun onDestroy() {
         Log.d(TAG, "Service destroying")
         isDestroying = true
+        isDestroyingStatic = true
 
         for ((addr, managed) in managedDevices) {
             managed.pendingReconnect?.let { handler.removeCallbacks(it) }
@@ -542,6 +563,11 @@ class OmiBleForegroundService : Service() {
 
         try { unregisterReceiver(bluetoothReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(bondStateReceiver) } catch (_: Exception) {}
+
+        // Clear the re-entry guard after a short delay so any in-flight Dart callbacks
+        // (e.g. onPeripheralDisconnected → manageDevice) that arrive during teardown
+        // are still blocked, but the service can be restarted once fully torn down.
+        handler.postDelayed({ isDestroyingStatic = false }, 500)
 
         super.onDestroy()
     }
