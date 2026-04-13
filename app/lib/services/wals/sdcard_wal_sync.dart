@@ -478,11 +478,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             eotReceived = true;
             if (!isProcessing) {
               if (chunkQueue.isNotEmpty) {
-                batchBuilder.clear();
                 while (chunkQueue.isNotEmpty) {
                   batchBuilder.add(chunkQueue.removeFirst());
                 }
-                await flushRawBuffer(batchBuilder.toBytes());
+                await flushRawBuffer(batchBuilder.takeBytes());
               }
               _lastSegmentBoundaryOffset = writtenOffset;
               if (!completer.isCompleted) completer.complete();
@@ -509,7 +508,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           const int BATCH_SIZE = 4096;
 
           while (chunkQueue.isNotEmpty) {
-            batchBuilder.clear();
             int batchSize = 0;
 
             // Build batch WITHOUT await
@@ -519,7 +517,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               batchSize += chunk.length;
             }
 
-            final Uint8List batch = batchBuilder.toBytes();
+            final Uint8List batch = batchBuilder.takeBytes();
 
             // 2. Scan for Markers (0xFE) without stripping/modifying any bytes (READ-ONLY)
             // Optimization: Create a single ByteData view for the entire batch to avoid
