@@ -34,11 +34,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   int _totalCount = 0;
   int get totalCount => _totalCount;
 
-  double _minutesRemaining = 0.0;
+  double _minutesRemaining = -1.0;
   double get minutesRemaining => _minutesRemaining;
 
-  double _totalMinutes = 0.0;
-  double get totalMinutes => _totalMinutes;
+  double _processingProgress = 0.0;
+  double get processingProgress => _processingProgress;
 
   int _markerCount = 0;
   int get markerCount => _markerCount;
@@ -86,6 +86,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   static const _kSpSyncedCount = 'sp_synced_count';
   static const _kSpTotalCount = 'sp_total_count';
   static const _kSpMinutesRemaining = 'sp_minutes_remaining';
+  static const _kSpProcessingProgress = 'sp_processing_progress';
   static const _kSpMarkerCount = 'sp_marker_count';
   static const _kSpLastCompleted = 'sp_last_completed_stage';
   static const _kSpLastActive = 'sp_last_active_stage';
@@ -97,8 +98,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _restoreState();
     _loadBatches();
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(this);
-    RecordingsManager.recordingsChangeNotifier.addListener(_onRecordingsChanged);
-    _pollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _poll());
+    RecordingsManager.recordingsChangeNotifier.addListener(
+      _onRecordingsChanged,
+    );
+    _pollTimer = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (_) => _poll(),
+    );
   }
 
   @override
@@ -107,7 +113,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _pollTimer?.cancel();
     _forceSyncCooldownTimer?.cancel();
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(null);
-    RecordingsManager.recordingsChangeNotifier.removeListener(_onRecordingsChanged);
+    RecordingsManager.recordingsChangeNotifier.removeListener(
+      _onRecordingsChanged,
+    );
     super.dispose();
   }
 
@@ -139,9 +147,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _syncedCount = _prefs.getInt(_kSpSyncedCount);
     _totalCount = _prefs.getInt(_kSpTotalCount);
     _minutesRemaining = _prefs.getDouble(_kSpMinutesRemaining);
+    _processingProgress = _prefs.getDouble(_kSpProcessingProgress);
     _markerCount = _prefs.getInt(_kSpMarkerCount);
-    _lastCompletedStage = _prefs.getString(_kSpLastCompleted, defaultValue: 'none');
-    _lastActiveStage = _prefs.getString(_kSpLastActive, defaultValue: 'syncing');
+    _lastCompletedStage = _prefs.getString(
+      _kSpLastCompleted,
+      defaultValue: 'none',
+    );
+    _lastActiveStage = _prefs.getString(
+      _kSpLastActive,
+      defaultValue: 'syncing',
+    );
 
     if (_spState == SyncProcessState.idle) {
       final syncs = ServiceManager.instance().wal.getSyncs();
@@ -191,12 +206,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
             reloadBatchesSilently().then((_) async {
               if (_isDisposed) return;
               final processable = _batches.expand((b) => b.rawSegments).toList();
-              final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
-              final totalBytes = lengths.fold(0, (s, len) => s + len);
               if (_isDisposed) return;
               _spState = SyncProcessState.processing;
-              _totalMinutes = totalBytes / 252000.0;
-              _minutesRemaining = _totalMinutes;
+              _minutesRemaining = -1.0;
+              _processingProgress = 0.0;
               _syncedCount = 0;
               _syncSpeed = 0.0;
               notifyListeners();
@@ -215,7 +228,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (!serviceIsProcessing && _spState == SyncProcessState.processing) {
         _spState = SyncProcessState.idle;
         _minutesRemaining = 0;
-        _totalMinutes = 0;
+        _processingProgress = 0.0;
         notifyListeners();
         _loadBatches();
       }
@@ -256,7 +269,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_isDisposed) return;
     _isForcePipeline = false;
     _lastActiveStage = activeStage;
-    Logger.error('RecordingsController: Pipeline error [$activeStage]: $message');
+    Logger.error(
+      'RecordingsController: Pipeline error [$activeStage]: $message',
+    );
     _spState = SyncProcessState.error;
     notifyListeners();
     _prefs.saveString(_kSpState, 'error');
@@ -269,18 +284,25 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _prefs.saveInt(_kSpSyncedCount, _syncedCount);
     _prefs.saveInt(_kSpTotalCount, _totalCount);
     _prefs.saveDouble(_kSpMinutesRemaining, _minutesRemaining);
+    _prefs.saveDouble(_kSpProcessingProgress, _processingProgress);
     _prefs.saveInt(_kSpMarkerCount, _markerCount);
   }
 
   @override
-  void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
+  void onWalSyncedProgress(
+    double percentage, {
+    double? speedKBps,
+    SyncPhase? phase,
+  }) {
     if (_isDisposed) return;
     _syncSpeed = speedKBps ?? 0.0;
 
     final currentEstimated = ServiceManager.instance().wal.getSyncs().recordingsCount;
     if (_totalCount <= 0 && currentEstimated > 0) {
       _totalCount = currentEstimated;
-      Logger.debug('RecordingsController: Backfilled totalCount from service: $_totalCount');
+      Logger.debug(
+        'RecordingsController: Backfilled totalCount from service: $_totalCount',
+      );
     }
 
     if (_totalCount > 0) {
@@ -321,10 +343,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _pipelineCompleter = Completer<void>();
     _isForcePipeline = true;
     _isUserTriggered = true;
-    unawaited(_runProcessing().whenComplete(() {
-      _isUserTriggered = false;
-      _isForcePipeline = false;
-    }));
+    unawaited(
+      _runProcessing().whenComplete(() {
+        _isUserTriggered = false;
+        _isForcePipeline = false;
+      }),
+    );
     return _pipelineCompleter?.future;
   }
 
@@ -392,7 +416,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _prefs.saveString(_kSpLastCompleted, 'syncing');
     await reloadBatchesSilently();
 
-    _markerCount = _batches.fold(0, (sum, b) => sum + b.markerTimestamps.length);
+    _markerCount = _batches.fold(
+      0,
+      (sum, b) => sum + b.markerTimestamps.length,
+    );
     notifyListeners();
     _persistProgress();
 
@@ -429,7 +456,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     final syncs = ServiceManager.instance().wal.getSyncs();
     final estimatedTotal = syncs.estimatedTotalSegments;
-    Logger.debug('RecordingsController: _runPipeline start — estimatedTotalSegments=$estimatedTotal');
+    Logger.debug(
+      'RecordingsController: _runPipeline start — estimatedTotalSegments=$estimatedTotal',
+    );
 
     _totalCount = estimatedTotal;
     _syncedCount = 0;
@@ -472,7 +501,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _prefs.saveString(_kSpLastCompleted, 'syncing');
     await reloadBatchesSilently();
 
-    _markerCount = _batches.fold(0, (sum, b) => sum + b.markerTimestamps.length);
+    _markerCount = _batches.fold(
+      0,
+      (sum, b) => sum + b.markerTimestamps.length,
+    );
     notifyListeners();
     _persistProgress();
 
@@ -492,18 +524,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     final bool backgroundMode = !_isForcePipeline;
 
-    final allRaw = activeBatches.expand((b) => b.rawSegments).toList();
-    final totalBytes = allRaw.fold(0, (sum, f) {
-      try {
-        return sum + f.lengthSync();
-      } catch (_) {
-        return sum;
-      }
-    });
-    final totalMin = totalBytes / 252000.0;
-
-    _totalMinutes = totalMin;
-    _minutesRemaining = totalMin;
+    _minutesRemaining = -1.0;
+    _processingProgress = 0.0;
     notifyListeners();
     _persistProgress();
 
@@ -511,9 +533,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     try {
       await _manager.processAll(
         activeBatches,
-        (progress) {
+        (progress, eta) {
           if (!_isDisposed) {
-            _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
+            _processingProgress = progress;
+            _minutesRemaining = eta != null ? eta.inMinutes.toDouble() : -1.0;
             notifyListeners();
           }
         },
@@ -560,7 +583,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _totalCount = 0;
     _markerCount = 0;
     _minutesRemaining = 0;
-    _totalMinutes = 0;
+    _processingProgress = 0.0;
     notifyListeners();
 
     _prefs.saveString(_kSpLastCompleted, 'none');
@@ -571,7 +594,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   void cancelPipeline() {
     if (_spState != SyncProcessState.syncing && _spState != SyncProcessState.processing) return;
-    Logger.debug('RecordingsController: Cancel confirmed — cancelling sync + processing.');
+    Logger.debug(
+      'RecordingsController: Cancel confirmed — cancelling sync + processing.',
+    );
     _transitionTo(SyncProcessState.stopping);
     ServiceManager.instance().wal.getSyncs().cancelSync();
     RecordingsManager.cancelProcessing();
@@ -635,19 +660,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     final unprocessed = daysWithBins.where((b) => b.finalizedRecordings.isEmpty).toList();
     if (unprocessed.isNotEmpty) {
-      final totalBytes = unprocessed.expand((b) => b.rawSegments).fold(0, (sum, f) {
-        try { return sum + f.lengthSync(); } catch (_) { return sum; }
-      });
-
-      _totalMinutes = totalBytes / 252000.0;
-      _minutesRemaining = _totalMinutes;
+      _minutesRemaining = -1.0;
+      _processingProgress = 0.0;
       notifyListeners();
 
       WakelockPlus.enable();
       try {
-        await _manager.processAll(unprocessed, (progress) {
+        await _manager.processAll(unprocessed, (progress, eta) {
           if (!_isDisposed) {
-            _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
+            _processingProgress = progress;
+            _minutesRemaining = eta != null ? eta.inMinutes.toDouble() : -1.0;
             notifyListeners();
           }
         }, backgroundMode: false);
@@ -679,16 +701,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await RecordingsManager.reprocessDay(batch);
     await _loadBatches();
 
-    final freshBatch = _batches.where((b) => b.dateString == batch.dateString && b.rawSegments.isNotEmpty).toList();
+    final freshBatch = _batches
+        .where(
+          (b) => b.dateString == batch.dateString && b.rawSegments.isNotEmpty,
+        )
+        .toList();
     if (freshBatch.isEmpty) return;
 
-    final totalBytes = freshBatch.expand((b) => b.rawSegments).fold(0, (sum, f) {
-      try { return sum + f.lengthSync(); } catch (_) { return sum; }
-    });
-
     _lastActiveStage = 'processing';
-    _totalMinutes = totalBytes / 252000.0;
-    _minutesRemaining = _totalMinutes;
+    _minutesRemaining = -1.0;
+    _processingProgress = 0.0;
     _transitionTo(SyncProcessState.processing);
     notifyListeners();
 
@@ -696,14 +718,17 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     try {
       await _manager.processAll(
         freshBatch,
-        (progress) {
+        (progress, eta) {
           if (!_isDisposed) {
-            _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
+            _processingProgress = progress;
+            _minutesRemaining = eta != null ? eta.inMinutes.toDouble() : -1.0;
             notifyListeners();
           }
         },
         backgroundMode: false,
-        onRecordingFinalized: () { unawaited(reloadBatchesSilently()); },
+        onRecordingFinalized: () {
+          unawaited(reloadBatchesSilently());
+        },
       );
     } catch (e) {
       WakelockPlus.disable();
@@ -736,25 +761,24 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _autoUploadActive++;
 
         unawaited(
-          HeyPocketService.uploadRecording(apiKey, conversation)
-              .then((_) async {
-                await _prefs.markUploadedToHeypocket(uploadKey);
-              })
-              .catchError((e) {
-                if (e is HeyPocketException && e.statusCode == 401) {
-                  _prefs.heypocketEnabled = false;
-                  _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
-                }
-                Logger.error('HeyPocket auto-upload failed: $e');
-              })
-              .whenComplete(() {
-                _uploadingFiles.remove(uploadKey);
-                _autoUploadActive--;
-                if (!_isDisposed) {
-                  notifyListeners();
-                  WidgetsBinding.instance.addPostFrameCallback((_) => tryAutoUploadNext());
-                }
-              }),
+          HeyPocketService.uploadRecording(apiKey, conversation).then((_) async {
+            await _prefs.markUploadedToHeypocket(uploadKey);
+          }).catchError((e) {
+            if (e is HeyPocketException && e.statusCode == 401) {
+              _prefs.heypocketEnabled = false;
+              _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
+            }
+            Logger.error('HeyPocket auto-upload failed: $e');
+          }).whenComplete(() {
+            _uploadingFiles.remove(uploadKey);
+            _autoUploadActive--;
+            if (!_isDisposed) {
+              notifyListeners();
+              WidgetsBinding.instance.addPostFrameCallback(
+                (_) => tryAutoUploadNext(),
+              );
+            }
+          }),
         );
       }
     }
@@ -819,7 +843,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   static double _computeAccumulatedMinutes(List<Batch> batches) {
-    final totalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (sum, f) {
+    final totalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (
+      sum,
+      f,
+    ) {
       try {
         return sum + f.lengthSync();
       } catch (_) {
