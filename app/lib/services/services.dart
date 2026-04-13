@@ -1,7 +1,10 @@
 import 'dart:async';
 
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/devices.dart';
+import 'package:omi/services/omi_api_client.dart';
 import 'package:omi/services/wals.dart';
+import 'package:omi/utils/logger.dart';
 
 class ServiceManager {
   late IDeviceService _device;
@@ -39,6 +42,11 @@ class ServiceManager {
   Future<void> start() async {
     _device.start();
     _wal.start();
+    if (SharedPreferencesUtil().omiSyncEnabled) {
+      OmiApiClient.refreshTokenIfNeeded().catchError((e) {
+        Logger.error('ServiceManager: Omi token refresh on startup failed: $e');
+      });
+    }
   }
 
   Future<void> deinit() async {
