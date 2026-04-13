@@ -692,12 +692,6 @@ class RecordingsManager {
     return result;
   }
 
-  static int? _parseRecordingMillis(File file) {
-    final name = file.path.split('/').last;
-    final millisStr = name.contains('_') ? name.split('_').last.split('.').first : null;
-    return millisStr != null ? int.tryParse(millisStr) : null;
-  }
-
   /// Derives the date-folder name (YYYY-MM-DD) from epoch milliseconds.
   ///
   /// **Convention**: all date folders use the *local* timezone so that
