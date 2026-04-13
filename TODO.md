@@ -1,5 +1,23 @@
 # TODO
 
+## Processing time estimation
+
+Show a meaningful ETA on the processing banner using a bytes-remaining approach (same as download managers). No historical data or persistence needed — self-corrects within the session.
+
+**How it works:**
+- Before spawning the isolate, sum all segment file sizes → `totalBytes` (already computed for the disk-space check, just needs to be kept)
+- After each segment, add its file size to `processedBytes`
+- `eta = elapsed × (totalBytes − processedBytes) / processedBytes`
+- Suppress display until ≥ 5% processed (estimate is noisy before that)
+
+Segment count alone (current `onProgress` value) is a poor proxy — segments vary in size. Byte count is directly proportional to compressed audio duration since Opus is near-CBR.
+
+**Tasks:**
+- [ ] In `processAll`, keep `totalBytes` from the disk-space guard and record `startTime = DateTime.now()` before spawning
+- [ ] Pass `segmentFileSizes` (list of ints, already available via `lengthSync()`) into `_IsolateParams` so the isolate can report bytes-per-segment with each `'progress'` message
+- [ ] On each `'progress'` message in the main isolate, accumulate `processedBytes`, compute ETA if ≥ 5% done, and pass it alongside progress to callers (add `onEtaUpdate(Duration)` callback or extend `onProgress` signature)
+- [ ] Update the processing banner widget to display "~X min remaining" using the ETA
+
 ## UI/UX
 
 ### Unknown Timestamp Handling
