@@ -7,13 +7,6 @@ import 'package:omi/utils/logger.dart';
 enum DeviceType {
   omi,
   appleWatch,
-  plaud,
-  bee,
-  fieldy,
-  friendPendant,
-  limitless,
-  frame,
-  openglass,
 }
 
 enum ImageOrientation {

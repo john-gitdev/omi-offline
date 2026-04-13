@@ -56,35 +56,7 @@ class NativeBluetoothDiscoverer extends DeviceDiscoverer {
   }
 
   bool _isSupportedPeripheral(BlePeripheral p) {
-    return _isBee(p) ||
-        _isPlaud(p) ||
-        _isFieldy(p) ||
-        _isFriendPendant(p) ||
-        _isLimitless(p) ||
-        _isOmi(p) ||
-        _isFrame(p);
-  }
-
-  bool _isBee(BlePeripheral p) {
-    return p.name.toLowerCase().contains('bee');
-  }
-
-  bool _isPlaud(BlePeripheral p) {
-    return p.name.toUpperCase().startsWith('PLAUD');
-  }
-
-  bool _isFieldy(BlePeripheral p) {
-    final name = p.name.toLowerCase();
-    return name == 'compass' || name == 'fieldy';
-  }
-
-  bool _isFriendPendant(BlePeripheral p) {
-    return p.name.toLowerCase().startsWith('friend_') || _hasService(p, '19B10000-E8F2-537E-4F6C-D104768A1214');
-  }
-
-  bool _isLimitless(BlePeripheral p) {
-    final name = p.name.toLowerCase();
-    return name.contains('limitless') || name.contains('pendant');
+    return _isOmi(p);
   }
 
   bool _isOmi(BlePeripheral p) {
@@ -94,33 +66,16 @@ class NativeBluetoothDiscoverer extends DeviceDiscoverer {
         _hasService(p, '19B10000-E8F2-537E-4F6C-D104768A1214');
   }
 
-  bool _isFrame(BlePeripheral p) {
-    return _hasService(p, 'FE01');
-  }
-
   bool _hasService(BlePeripheral p, String serviceUuid) {
     final target = serviceUuid.toLowerCase();
     return p.serviceUuids.any((uuid) => uuid.toLowerCase() == target);
   }
 
   static BtDevice _peripheralToDevice(BlePeripheral p) {
-    DeviceType type = DeviceType.omi;
-    if (p.name.toLowerCase().contains('bee')) {
-      type = DeviceType.bee;
-    } else if (p.name.toUpperCase().startsWith('PLAUD')) {
-      type = DeviceType.plaud;
-    } else if (p.name.toLowerCase().contains('fieldy') || p.name.toLowerCase() == 'compass') {
-      type = DeviceType.fieldy;
-    } else if (p.name.toLowerCase().startsWith('friend_')) {
-      type = DeviceType.friendPendant;
-    } else if (p.name.toLowerCase().contains('limitless') || p.name.toLowerCase().contains('pendant')) {
-      type = DeviceType.limitless;
-    }
-
     return BtDevice(
       name: p.name,
       id: p.uuid,
-      type: type,
+      type: DeviceType.omi,
       rssi: p.rssi,
       locator: DeviceLocator.bluetooth(deviceId: p.uuid),
     );
