@@ -48,12 +48,18 @@ class SyncProcessCard extends StatelessWidget {
         mainText = 'Sync and Process Now';
         subText = 'Syncs files from device and prepares conversations';
         iconBg = Colors.deepPurpleAccent;
-        iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
+        iconChild = const FaIcon(
+          FontAwesomeIcons.rotate,
+          color: Colors.white,
+          size: 16,
+        );
         onIconTap = onActionTap;
 
       case SyncProcessState.syncing:
         mainText = data.isForcePipeline ? 'Force Sync...' : 'Syncing segments';
-        final speedStr = data.syncSpeed > 0 ? '  ·  ${data.syncSpeed.toStringAsFixed(1)} KB/s' : '';
+        final speedStr = data.syncSpeed > 0
+            ? '  ·  ${data.syncSpeed.toStringAsFixed(1)} KB/s'
+            : '';
         subText = data.totalCount > 0
             ? '${data.syncedCount} of ${data.totalCount} segments synced$speedStr'
             : (data.isForcePipeline ? 'Rotating segment…' : 'Scanning device…');
@@ -65,13 +71,17 @@ class SyncProcessCard extends StatelessWidget {
         );
         onIconTap = onCancelTap;
         showProgress = true;
-        progressValue = data.totalCount > 0 ? (data.syncedCount / data.totalCount).clamp(0.0, 1.0) : null;
+        progressValue = data.totalCount > 0
+            ? (data.syncedCount / data.totalCount).clamp(0.0, 1.0)
+            : null;
 
       case SyncProcessState.processing:
         mainText = 'Preparing conversations';
         subText = data.minutesRemaining >= 1
-            ? '${data.minutesRemaining.ceil()} min of audio remaining'
-            : '< 1 min of audio remaining';
+            ? '~${data.minutesRemaining.ceil()} min remaining'
+            : (data.minutesRemaining >= 0
+                  ? '< 1 min remaining'
+                  : 'Calculating ETA…');
         iconBg = Colors.deepPurpleAccent;
         iconChild = const SizedBox(
           width: 16,
@@ -80,9 +90,7 @@ class SyncProcessCard extends StatelessWidget {
         );
         onIconTap = onCancelTap;
         showProgress = true;
-        progressValue = data.totalMinutes > 0
-            ? (1.0 - data.minutesRemaining / data.totalMinutes).clamp(0.0, 1.0)
-            : null;
+        progressValue = data.processingProgress;
 
       case SyncProcessState.stopping:
         mainText = 'Stopping…';
@@ -102,21 +110,35 @@ class SyncProcessCard extends StatelessWidget {
         mainText = 'Resume Sync and Processing';
         subText = 'Last run didn\'t finish';
         iconBg = Colors.amber.shade700;
-        iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
+        iconChild = const FaIcon(
+          FontAwesomeIcons.rotate,
+          color: Colors.white,
+          size: 16,
+        );
         onIconTap = onActionTap;
 
       case SyncProcessState.error:
-        mainText = data.lastActiveStage == 'processing' ? 'Processing failed' : 'Sync failed';
+        mainText = data.lastActiveStage == 'processing'
+            ? 'Processing failed'
+            : 'Sync failed';
         subText = 'Tap to retry';
         iconBg = Colors.redAccent;
-        iconChild = const FaIcon(FontAwesomeIcons.circleExclamation, color: Colors.white, size: 16);
+        iconChild = const FaIcon(
+          FontAwesomeIcons.circleExclamation,
+          color: Colors.white,
+          size: 16,
+        );
         onIconTap = onActionTap;
 
       case SyncProcessState.successUi:
         mainText = 'Conversations ready';
         subText = 'Sync and processing complete';
         iconBg = Colors.green.shade600;
-        iconChild = const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.white, size: 16);
+        iconChild = const FaIcon(
+          FontAwesomeIcons.circleCheck,
+          color: Colors.white,
+          size: 16,
+        );
         onIconTap = null;
         showProgress = true;
         progressValue = 1.0;
@@ -132,9 +154,18 @@ class SyncProcessCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(mainText, style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500)),
+                  Text(
+                    mainText,
+                    style: TextStyle(
+                      color: Colors.grey.shade400,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
                   const SizedBox(height: 2),
-                  Text(subText, style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                  Text(
+                    subText,
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
+                  ),
                 ],
               ),
             ),
@@ -144,7 +175,10 @@ class SyncProcessCard extends StatelessWidget {
               child: Container(
                 width: 40,
                 height: 40,
-                decoration: BoxDecoration(color: iconBg, shape: BoxShape.circle),
+                decoration: BoxDecoration(
+                  color: iconBg,
+                  shape: BoxShape.circle,
+                ),
                 child: Center(child: iconChild),
               ),
             ),

@@ -60,7 +60,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, setDialogState) => AlertDialog(
             backgroundColor: const Color(0xFF1C1C1E),
-            title: const Text('Force Sync', style: TextStyle(color: Colors.white)),
+            title: const Text(
+              'Force Sync',
+              style: TextStyle(color: Colors.white),
+            ),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -71,7 +74,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                 ),
                 const SizedBox(height: 16),
                 GestureDetector(
-                  onTap: () => setDialogState(() => doNotShowAgain = !doNotShowAgain),
+                  onTap: () =>
+                      setDialogState(() => doNotShowAgain = !doNotShowAgain),
                   child: Row(
                     children: [
                       SizedBox(
@@ -79,7 +83,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         height: 20,
                         child: Checkbox(
                           value: doNotShowAgain,
-                          onChanged: (v) => setDialogState(() => doNotShowAgain = v ?? false),
+                          onChanged: (v) =>
+                              setDialogState(() => doNotShowAgain = v ?? false),
                           activeColor: Colors.deepPurpleAccent,
                           side: const BorderSide(color: Colors.grey),
                         ),
@@ -97,11 +102,17 @@ class _RecordingsPageState extends State<RecordingsPage> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                child: const Text(
+                  'Cancel',
+                  style: TextStyle(color: Colors.grey),
+                ),
               ),
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(true),
-                child: const Text('Yes', style: TextStyle(color: Colors.deepPurpleAccent)),
+                child: const Text(
+                  'Yes',
+                  style: TextStyle(color: Colors.deepPurpleAccent),
+                ),
               ),
             ],
           ),
@@ -150,13 +161,18 @@ class _RecordingsPageState extends State<RecordingsPage> {
     try {
       await _controller.deleteDay(batch);
     } catch (e) {
-      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Error deleting day: $e')));
+      if (mounted)
+        messenger.showSnackBar(
+          SnackBar(content: Text('Error deleting day: $e')),
+        );
     }
   }
 
   Future<void> _runAdjustmentCleanup() async {
     if (_controller.spState != SyncProcessState.idle) return;
-    final daysWithBins = _controller.batches.where((b) => b.rawSegments.isNotEmpty).toList();
+    final daysWithBins = _controller.batches
+        .where((b) => b.rawSegments.isNotEmpty)
+        .toList();
     if (daysWithBins.isEmpty) return;
 
     final confirm = await showDialog<bool>(
@@ -194,7 +210,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
     try {
       await _controller.reprocessDay(batch);
     } catch (e) {
-      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Error reprocessing day: $e')));
+      if (mounted)
+        messenger.showSnackBar(
+          SnackBar(content: Text('Error reprocessing day: $e')),
+        );
     }
   }
 
@@ -209,21 +228,29 @@ class _RecordingsPageState extends State<RecordingsPage> {
   Future<void> _handleUploadTap(Conversation conversation) async {
     if (_prefs.adjustmentMode) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Uploads paused — turn off Adjustment Mode first')),
+        const SnackBar(
+          content: Text('Uploads paused — turn off Adjustment Mode first'),
+        ),
       );
       return;
     }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Upload key unavailable — please reconnect your device and try again.')),
+        const SnackBar(
+          content: Text(
+            'Upload key unavailable — please reconnect your device and try again.',
+          ),
+        ),
       );
       return;
     }
     if (_controller.uploadingFiles.contains(uploadKey)) return;
 
     final alreadyUploaded = _prefs.isUploadedToHeypocket(uploadKey);
-    final title = alreadyUploaded ? 'Re-upload Conversation' : 'Upload Conversation';
+    final title = alreadyUploaded
+        ? 'Re-upload Conversation'
+        : 'Upload Conversation';
     final content = alreadyUploaded
         ? 'This conversation was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)'
         : 'Upload this conversation to HeyPocket?';
@@ -241,13 +268,15 @@ class _RecordingsPageState extends State<RecordingsPage> {
     );
     if (confirm != true) return;
 
-    unawaited(_controller.uploadConversation(conversation).catchError((e) {
-      if (e is HeyPocketException && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('HeyPocket ${e.statusCode}: ${e.message}')),
-        );
-      }
-    }));
+    unawaited(
+      _controller.uploadConversation(conversation).catchError((e) {
+        if (e is HeyPocketException && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('HeyPocket ${e.statusCode}: ${e.message}')),
+          );
+        }
+      }),
+    );
   }
 
   void _showFilterSheet() {
@@ -256,7 +285,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF1C1C1E),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
       builder: (ctx) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
@@ -266,7 +297,11 @@ class _RecordingsPageState extends State<RecordingsPage> {
             children: [
               const Text(
                 'Hide conversations shorter than',
-                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
               const SizedBox(height: 16),
               Wrap(
@@ -280,16 +315,23 @@ class _RecordingsPageState extends State<RecordingsPage> {
                       Navigator.of(ctx).pop();
                     },
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
                       decoration: BoxDecoration(
-                        color: selected ? Colors.deepPurpleAccent : const Color(0xFF2C2C2E),
+                        color: selected
+                            ? Colors.deepPurpleAccent
+                            : const Color(0xFF2C2C2E),
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text(
                         labels[i],
                         style: TextStyle(
                           color: selected ? Colors.white : Colors.grey.shade300,
-                          fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                          fontWeight: selected
+                              ? FontWeight.w600
+                              : FontWeight.normal,
                         ),
                       ),
                     ),
@@ -317,7 +359,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
     final map = <String, List<MarkerConversation>>{};
     for (final mc in _controller.markerConversations) {
       final dt = mc.markerTime;
-      final dateStr = '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+      final dateStr =
+          '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
       map.putIfAbsent(dateStr, () => []).add(mc);
     }
     return map;
@@ -325,7 +368,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
 
   Future<void> _openMarkerConversation(MarkerConversation mc) async {
     await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => MarkerConversationPlayerPage(markerConversation: mc)),
+      MaterialPageRoute(
+        builder: (_) => MarkerConversationPlayerPage(markerConversation: mc),
+      ),
     );
     await _controller.reloadBatchesSilently();
   }
@@ -339,49 +384,82 @@ class _RecordingsPageState extends State<RecordingsPage> {
           padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
           child: Row(
             children: [
-              const FaIcon(FontAwesomeIcons.circleQuestion, color: Colors.amber, size: 13),
+              const FaIcon(
+                FontAwesomeIcons.circleQuestion,
+                color: Colors.amber,
+                size: 13,
+              ),
               const SizedBox(width: 8),
-              const Text('Unorganized',
-                  style: TextStyle(color: Colors.amber, fontSize: 13, fontWeight: FontWeight.w600)),
+              const Text(
+                'Unorganized',
+                style: TextStyle(
+                  color: Colors.amber,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
               const SizedBox(width: 6),
-              Text('· ${unknown.length} recording${unknown.length == 1 ? '' : 's'} with unknown timestamps',
-                  style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+              Text(
+                '· ${unknown.length} recording${unknown.length == 1 ? '' : 's'} with unknown timestamps',
+                style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+              ),
             ],
           ),
         ),
-        ...unknown.map((conv) => Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Material(
-                color: Colors.grey.shade900,
+        ...unknown.map(
+          (conv) => Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Material(
+              color: Colors.grey.shade900,
+              borderRadius: BorderRadius.circular(8),
+              child: InkWell(
                 borderRadius: BorderRadius.circular(8),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => ConversationPlayerPage(conversation: conv)),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => ConversationPlayerPage(conversation: conv),
                   ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('Unknown date  ·  ${conv.durationLabel}',
-                                  style: const TextStyle(color: Colors.white, fontSize: 14)),
-                              const SizedBox(height: 3),
-                              Text('Estimated: ${conv.startTime.year}-${conv.startTime.month.toString().padLeft(2, '0')}-${conv.startTime.day.toString().padLeft(2, '0')}  ·  ${conv.sizeLabel}',
-                                  style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                            ],
-                          ),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 10,
+                    horizontal: 12,
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Unknown date  ·  ${conv.durationLabel}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              'Estimated: ${conv.startTime.year}-${conv.startTime.month.toString().padLeft(2, '0')}-${conv.startTime.day.toString().padLeft(2, '0')}  ·  ${conv.sizeLabel}',
+                              style: TextStyle(
+                                color: Colors.grey.shade500,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
                         ),
-                        FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
-                      ],
-                    ),
+                      ),
+                      FaIcon(
+                        FontAwesomeIcons.chevronRight,
+                        color: Colors.grey.shade600,
+                        size: 14,
+                      ),
+                    ],
                   ),
                 ),
               ),
-            )),
+            ),
+          ),
+        ),
         const SizedBox(height: 16),
       ],
     );
@@ -396,7 +474,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
           final snack = controller.consumePendingSnack();
           if (snack != null) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(snack)));
+              if (mounted)
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text(snack)));
             });
           }
           return Scaffold(
@@ -411,9 +492,15 @@ class _RecordingsPageState extends State<RecordingsPage> {
                       alignment: Alignment.centerLeft,
                       padding: const EdgeInsets.only(left: 8.0),
                       child: IconButton(
-                        icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Colors.grey, size: 20),
+                        icon: const FaIcon(
+                          FontAwesomeIcons.bluetooth,
+                          color: Colors.grey,
+                          size: 20,
+                        ),
                         onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute(builder: (c) => const FindDevicesPage()),
+                          MaterialPageRoute(
+                            builder: (c) => const FindDevicesPage(),
+                          ),
                         ),
                       ),
                     )
@@ -421,31 +508,38 @@ class _RecordingsPageState extends State<RecordingsPage> {
                       batteryLevel: deviceProvider.batteryLevel,
                       isCharging: deviceProvider.isCharging,
                       onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (c) => const DeviceSettings()),
+                        MaterialPageRoute(
+                          builder: (c) => const DeviceSettings(),
+                        ),
                       ),
                     ),
               actions: [
                 if (controller.markerConversations.isNotEmpty)
                   IconButton(
                     icon: FaIcon(
-                      _showMarkersOnly ? FontAwesomeIcons.solidBookmark : FontAwesomeIcons.bookmark,
+                      _showMarkersOnly
+                          ? FontAwesomeIcons.solidBookmark
+                          : FontAwesomeIcons.bookmark,
                       color: _showMarkersOnly ? Colors.amber : Colors.white,
                       size: 20,
                     ),
-                    onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
+                    onPressed: () =>
+                        setState(() => _showMarkersOnly = !_showMarkersOnly),
                     tooltip: 'Toggle markers only',
                   ),
                 IconButton(
                   icon: FaIcon(
                     FontAwesomeIcons.boltLightning,
-                    color: (deviceProvider.isConnected &&
+                    color:
+                        (deviceProvider.isConnected &&
                             controller.spState == SyncProcessState.idle &&
                             !controller.forceSyncOnCooldown)
                         ? Colors.white
                         : Colors.grey.shade700,
                     size: 20,
                   ),
-                  onPressed: (deviceProvider.isConnected &&
+                  onPressed:
+                      (deviceProvider.isConnected &&
                           controller.spState == SyncProcessState.idle &&
                           !controller.forceSyncOnCooldown)
                       ? _forceSyncButtonPressed
@@ -455,14 +549,20 @@ class _RecordingsPageState extends State<RecordingsPage> {
                 IconButton(
                   icon: FaIcon(
                     FontAwesomeIcons.filter,
-                    color: _minFilterSeconds > 0 ? Colors.deepPurpleAccent : Colors.white,
+                    color: _minFilterSeconds > 0
+                        ? Colors.deepPurpleAccent
+                        : Colors.white,
                     size: 18,
                   ),
                   onPressed: _showFilterSheet,
                   tooltip: 'Filter recordings',
                 ),
                 IconButton(
-                  icon: const FaIcon(FontAwesomeIcons.gear, color: Colors.white, size: 20),
+                  icon: const FaIcon(
+                    FontAwesomeIcons.gear,
+                    color: Colors.white,
+                    size: 20,
+                  ),
                   onPressed: () => SettingsDrawer.show(context),
                   tooltip: 'Settings',
                 ),
@@ -475,10 +575,16 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   padding: EdgeInsets.fromLTRB(24, 8, 24, 16),
                   child: Text(
                     'Conversations',
-                    style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
-                StorageWarningBanner(percentage: deviceProvider.storageFullPercentage),
+                StorageWarningBanner(
+                  percentage: deviceProvider.storageFullPercentage,
+                ),
                 SyncProcessCard(
                   data: SyncCardData(
                     state: controller.spState,
@@ -487,14 +593,17 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     totalCount: controller.totalCount,
                     syncSpeed: controller.syncSpeed,
                     minutesRemaining: controller.minutesRemaining,
-                    totalMinutes: controller.totalMinutes,
+                    processingProgress: controller.processingProgress,
                     lastActiveStage: controller.lastActiveStage,
                   ),
                   onCancelTap: () => unawaited(_showCancelModal()),
                   onActionTap: () {
-                    if (controller.spState == SyncProcessState.idle) controller.startPipeline();
-                    else if (controller.spState == SyncProcessState.resume) controller.resumePipeline();
-                    else if (controller.spState == SyncProcessState.error) controller.retryFromError();
+                    if (controller.spState == SyncProcessState.idle)
+                      controller.startPipeline();
+                    else if (controller.spState == SyncProcessState.resume)
+                      controller.resumePipeline();
+                    else if (controller.spState == SyncProcessState.error)
+                      controller.retryFromError();
                   },
                 ),
                 AccumulatingBanner(
@@ -506,7 +615,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
                       context: context,
                       builder: (ctx) => AlertDialog(
                         backgroundColor: const Color(0xFF1C1C1E),
-                        title: const Text('Process Audio', style: TextStyle(color: Colors.white)),
+                        title: const Text(
+                          'Process Audio',
+                          style: TextStyle(color: Colors.white),
+                        ),
                         content: const Text(
                           'You can process the accumulated audio now. Processing normally will respect the conversation pause limits, while Force Processing will finalize everything immediately.',
                           style: TextStyle(color: Colors.white70, fontSize: 14),
@@ -514,21 +626,30 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         actions: [
                           TextButton(
                             onPressed: () => Navigator.of(ctx).pop(),
-                            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                            child: const Text(
+                              'Cancel',
+                              style: TextStyle(color: Colors.grey),
+                            ),
                           ),
                           TextButton(
                             onPressed: () {
                               Navigator.of(ctx).pop();
                               controller.startProcessingWithoutSync();
                             },
-                            child: const Text('Process Normally', style: TextStyle(color: Colors.deepPurpleAccent)),
+                            child: const Text(
+                              'Process Normally',
+                              style: TextStyle(color: Colors.deepPurpleAccent),
+                            ),
                           ),
                           TextButton(
                             onPressed: () {
                               Navigator.of(ctx).pop();
                               controller.startForceProcessingWithoutSync();
                             },
-                            child: const Text('Force Process', style: TextStyle(color: Colors.deepPurpleAccent)),
+                            child: const Text(
+                              'Force Process',
+                              style: TextStyle(color: Colors.deepPurpleAccent),
+                            ),
                           ),
                         ],
                       ),
@@ -539,49 +660,65 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   adjustmentMode: _prefs.adjustmentMode,
                   adjustmentModeWasEnabled: _prefs.adjustmentModeWasEnabled,
                   spState: controller.spState,
-                  pendingDays: controller.batches.where((b) => b.rawSegments.isNotEmpty).length,
+                  pendingDays: controller.batches
+                      .where((b) => b.rawSegments.isNotEmpty)
+                      .length,
                   onTap: _runAdjustmentCleanup,
                 ),
                 Expanded(
                   child: controller.isLoading
-                      ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
+                      ? const Center(
+                          child: CircularProgressIndicator(
+                            color: Colors.deepPurpleAccent,
+                          ),
+                        )
                       : Builder(
                           builder: (context) {
                             if (_showMarkersOnly) {
                               final byDate = _groupMarkersByDate();
-                              final dates = byDate.keys.toList()..sort((a, b) => b.compareTo(a));
+                              final dates = byDate.keys.toList()
+                                ..sort((a, b) => b.compareTo(a));
                               return RefreshIndicator(
                                 color: Colors.deepPurpleAccent,
                                 onRefresh: () async {},
                                 child: dates.isEmpty
                                     ? ListView(
-                                        physics: const AlwaysScrollableScrollPhysics(),
+                                        physics:
+                                            const AlwaysScrollableScrollPhysics(),
                                         children: [
                                           const SizedBox(height: 100),
                                           Center(
                                             child: const Text(
                                               'No marked recordings yet.\nPress the button on your Omi to tag a moment.',
                                               textAlign: TextAlign.center,
-                                              style: TextStyle(color: Colors.grey, fontSize: 16),
+                                              style: TextStyle(
+                                                color: Colors.grey,
+                                                fontSize: 16,
+                                              ),
                                             ),
                                           ),
                                         ],
                                       )
                                     : ListView.builder(
-                                        physics: const AlwaysScrollableScrollPhysics(),
+                                        physics:
+                                            const AlwaysScrollableScrollPhysics(),
                                         padding: const EdgeInsets.all(16),
                                         itemCount: dates.length,
-                                        itemBuilder: (context, index) => MarkerDayCard(
-                                          dateStr: dates[index],
-                                          markers: byDate[dates[index]]!,
-                                          onMarkerTap: _openMarkerConversation,
-                                        ),
+                                        itemBuilder: (context, index) =>
+                                            MarkerDayCard(
+                                              dateStr: dates[index],
+                                              markers: byDate[dates[index]]!,
+                                              onMarkerTap:
+                                                  _openMarkerConversation,
+                                            ),
                                       ),
                               );
                             }
 
                             final markerMap = _buildMarkerMap();
-                            final visibleBatches = controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
+                            final visibleBatches = controller.batches
+                                .where((b) => b.finalizedRecordings.isNotEmpty)
+                                .toList();
                             final unknownRecordings = visibleBatches
                                 .expand((b) => b.finalizedRecordings)
                                 .where((c) => c.isUnknown)
@@ -589,15 +726,21 @@ class _RecordingsPageState extends State<RecordingsPage> {
                             return RefreshIndicator(
                               color: Colors.deepPurpleAccent,
                               onRefresh: () {
-                                if (controller.spState != SyncProcessState.idle) {
-                                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sync already in progress')));
+                                if (controller.spState !=
+                                    SyncProcessState.idle) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Sync already in progress'),
+                                    ),
+                                  );
                                   return Future.value();
                                 }
                                 return controller.startPipeline();
                               },
                               child: visibleBatches.isEmpty
                                   ? ListView(
-                                      physics: const AlwaysScrollableScrollPhysics(),
+                                      physics:
+                                          const AlwaysScrollableScrollPhysics(),
                                       children: [
                                         const SizedBox(height: 100),
                                         Center(
@@ -606,22 +749,57 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                               const Text(
                                                 'No conversations found.\nSwipe down to sync device.',
                                                 textAlign: TextAlign.center,
-                                                style: TextStyle(color: Colors.grey, fontSize: 16),
+                                                style: TextStyle(
+                                                  color: Colors.grey,
+                                                  fontSize: 16,
+                                                ),
                                               ),
-                                              if (deviceProvider.isConnected) ...[
+                                              if (deviceProvider
+                                                  .isConnected) ...[
                                                 const SizedBox(height: 32),
                                                 ElevatedButton.icon(
-                                                  onPressed: controller.spState == SyncProcessState.idle ? controller.startPipeline : null,
-                                                  icon: const FaIcon(FontAwesomeIcons.rotate, size: 16),
-                                                  label: const Text('Sync and Process'),
-                                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent, foregroundColor: Colors.white),
+                                                  onPressed:
+                                                      controller.spState ==
+                                                          SyncProcessState.idle
+                                                      ? controller.startPipeline
+                                                      : null,
+                                                  icon: const FaIcon(
+                                                    FontAwesomeIcons.rotate,
+                                                    size: 16,
+                                                  ),
+                                                  label: const Text(
+                                                    'Sync and Process',
+                                                  ),
+                                                  style:
+                                                      ElevatedButton.styleFrom(
+                                                        backgroundColor: Colors
+                                                            .deepPurpleAccent,
+                                                        foregroundColor:
+                                                            Colors.white,
+                                                      ),
                                                 ),
                                               ] else ...[
                                                 const SizedBox(height: 32),
                                                 ElevatedButton(
-                                                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (c) => const FindDevicesPage())),
-                                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent, foregroundColor: Colors.white),
-                                                  child: const Text('Connect Omi'),
+                                                  onPressed: () =>
+                                                      Navigator.of(
+                                                        context,
+                                                      ).push(
+                                                        MaterialPageRoute(
+                                                          builder: (c) =>
+                                                              const FindDevicesPage(),
+                                                        ),
+                                                      ),
+                                                  style:
+                                                      ElevatedButton.styleFrom(
+                                                        backgroundColor: Colors
+                                                            .deepPurpleAccent,
+                                                        foregroundColor:
+                                                            Colors.white,
+                                                      ),
+                                                  child: const Text(
+                                                    'Connect Omi',
+                                                  ),
                                                 ),
                                               ],
                                             ],
@@ -630,12 +808,15 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                       ],
                                     )
                                   : ListView.builder(
-                                      physics: const AlwaysScrollableScrollPhysics(),
+                                      physics:
+                                          const AlwaysScrollableScrollPhysics(),
                                       padding: const EdgeInsets.all(16),
                                       itemCount: visibleBatches.length + 1,
                                       itemBuilder: (context, index) {
                                         if (index == 0) {
-                                          return _buildUnorganizedSection(unknownRecordings);
+                                          return _buildUnorganizedSection(
+                                            unknownRecordings,
+                                          );
                                         }
                                         final batchIndex = index - 1;
                                         return BatchCard(
@@ -643,14 +824,26 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           markerMap: markerMap,
                                           minFilterSeconds: _minFilterSeconds,
                                           adjustmentMode: _prefs.adjustmentMode,
-                                          heypocketApiKey: _prefs.heypocketApiKey,
-                                          isUploaded: _prefs.isUploadedToHeypocket,
-                                          isUploading: controller.uploadingFiles.contains,
+                                          heypocketApiKey:
+                                              _prefs.heypocketApiKey,
+                                          isUploaded:
+                                              _prefs.isUploadedToHeypocket,
+                                          isUploading: controller
+                                              .uploadingFiles
+                                              .contains,
                                           onUploadTap: _handleUploadTap,
                                           onMarkerTap: _openMarkerConversation,
-                                          onExportAll: (conversations) => _exportAll(visibleBatches[batchIndex], conversations),
-                                          onDeleteDay: () => _deleteDay(visibleBatches[batchIndex]),
-                                          onReprocessDay: () => _reprocessDay(visibleBatches[batchIndex]),
+                                          onExportAll: (conversations) =>
+                                              _exportAll(
+                                                visibleBatches[batchIndex],
+                                                conversations,
+                                              ),
+                                          onDeleteDay: () => _deleteDay(
+                                            visibleBatches[batchIndex],
+                                          ),
+                                          onReprocessDay: () => _reprocessDay(
+                                            visibleBatches[batchIndex],
+                                          ),
                                         );
                                       },
                                     ),
