@@ -90,6 +90,10 @@ class VadAudioProcessor {
   // never reset by splits. Sized to markerLookbackSeconds.
   final ListQueue<FrameRef> _rbRefs = ListQueue();
   final ListQueue<DateTime> _rbTimes = ListQueue();
+
+  // Tracks segment files that have been fully processed. Used by consumeSafeToDeletePaths()
+  // to determine which files are no longer referenced by any internal buffer.
+  final Set<String> _processedFiles = {};
   final int _maxRollingFrames;
   final int _markerLookbackMs;
 
@@ -403,6 +407,7 @@ class VadAudioProcessor {
       Logger.error('VadAudioProcessor: processSegmentFile error: $e');
     }
 
+    _processedFiles.add(segmentFile.path);
     return savedFiles;
   }
 
@@ -429,6 +434,27 @@ class VadAudioProcessor {
       return null;
     }
     return flushRemaining();
+  }
+
+  /// Returns the set of segment file paths that have been fully processed and are
+  /// no longer referenced by [_currentRefs] or the rolling pre-buffer [_rbRefs].
+  /// Each path is returned at most once. The caller may safely delete these files.
+  ///
+  /// Pass [forceAll] = true after a complete flush (non-background mode) to also
+  /// release files still held in the rolling buffer — safe because no further
+  /// marker lookbacks will occur in that run.
+  Set<String> consumeSafeToDeletePaths({bool forceAll = false}) {
+    if (forceAll) {
+      final safe = Set<String>.from(_processedFiles);
+      _processedFiles.clear();
+      return safe;
+    }
+    final referenced = <String>{};
+    for (final ref in _currentRefs) referenced.add(ref.segmentFile.path);
+    for (final ref in _rbRefs) referenced.add(ref.segmentFile.path);
+    final safe = _processedFiles.difference(referenced);
+    _processedFiles.removeAll(safe);
+    return safe;
   }
 
   void _resetState() {
@@ -520,6 +546,7 @@ class VadAudioProcessor {
           // Segment files are typically small enough (a few MBs) to make this safe and dramatically faster.
           currentFileBytes = await ref.segmentFile.readAsBytes();
           currentFilePath = ref.segmentFile.path;
+          await Future.delayed(Duration.zero);
         }
 
         if (currentFileBytes == null) continue;
@@ -553,10 +580,12 @@ class VadAudioProcessor {
 
         if (batchFrameCount >= batchFrames) {
           await flushBatch();
+          await Future.delayed(Duration.zero);
         }
       }
 
       await flushBatch();
+      await Future.delayed(Duration.zero);
 
       if (currentWindowSamples > 0) {
         dynamicPeaks.add(currentWindowMax);

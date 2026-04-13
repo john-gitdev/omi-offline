@@ -188,13 +188,15 @@ class MainActivity : FlutterActivity() {
             // Drain until EOS
             drainOutput(session, drainToEnd = true)
 
-            session.codec.stop()
+            try { session.codec.stop() } catch (_: Exception) {}
             session.codec.release()
-            if (!session.muxerStarted) {
-                session.muxer.release()
+
+            if (!session.reachedEos || !session.muxerStarted || session.samplesWritten == 0L) {
+                try { session.muxer.release() } catch (_: Exception) {}
                 File(session.tempPath).delete()
-                throw IllegalStateException("AAC encoder produced no output — no audio data was written")
+                throw IllegalStateException("AAC encoder failed to produce a valid stream (reachedEos=${session.reachedEos}, muxerStarted=${session.muxerStarted}, samples=${session.samplesWritten})")
             }
+
             session.muxer.stop()
             session.muxer.release()
 
@@ -206,7 +208,7 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             try { session.codec.stop() } catch (_: Exception) {}
             try { session.codec.release() } catch (_: Exception) {}
-            try { if (session.muxerStarted) session.muxer.stop() } catch (_: Exception) {}
+            try { if (session.muxerStarted && session.samplesWritten > 0) session.muxer.stop() } catch (_: Exception) {}
             try { session.muxer.release() } catch (_: Exception) {}
             try { File(session.tempPath).delete() } catch (_: Exception) {}
             throw e
@@ -239,9 +241,13 @@ class MainActivity : FlutterActivity() {
                     if (!isConfig && session.muxerStarted && bufferInfo.size > 0) {
                         val outputBuffer = session.codec.getOutputBuffer(outputIndex)!!
                         session.muxer.writeSampleData(session.trackIndex, outputBuffer, bufferInfo)
+                        session.samplesWritten++
                     }
                     session.codec.releaseOutputBuffer(outputIndex, false)
-                    if (isEos) break
+                    if (isEos) {
+                        session.reachedEos = true
+                        break
+                    }
                 }
             }
         }
@@ -256,5 +262,7 @@ private data class AacEncoderSession(
     val finalPath: String,
     var trackIndex: Int = -1,
     var muxerStarted: Boolean = false,
+    var reachedEos: Boolean = false,
+    var samplesWritten: Long = 0,
     var totalSamplesQueued: Long = 0L
 )
