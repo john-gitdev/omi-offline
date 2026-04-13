@@ -270,7 +270,14 @@ class OmiBleForegroundService : Service() {
             bleManager.flutterApi?.onPeripheralDisconnected(addr, "unmanaged") {}
         }
 
-        stopSelf()
+        if (managedDevices.isEmpty()) {
+            handler.postDelayed({
+                if (managedDevices.isEmpty()) {
+                    Log.i(TAG, "No more devices managed, stopping service")
+                    stopSelf()
+                }
+            }, 5000)
+        }
     }
 
     // ── Connection ──
@@ -506,8 +513,10 @@ class OmiBleForegroundService : Service() {
         } else {
             // No device specified — Omi streams via WebSocket which needs the app.
             // No point keeping BLE alive without it.
-            Log.i(TAG, "onStartCommand: no device address, stopping")
-            stopSelf()
+            if (managedDevices.isEmpty()) {
+                Log.i(TAG, "onStartCommand: no device address and no managed devices, stopping")
+                stopSelf()
+            }
         }
 
         return START_NOT_STICKY

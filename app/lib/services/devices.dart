@@ -125,15 +125,6 @@ class DeviceService implements IDeviceService {
   }
 
   Future<void> _connectToDevice(String id) async {
-    // Clean up existing connection — disconnect if active, then dispose transport
-    if (_connection != null) {
-      if (_connection!.status == DeviceConnectionState.connected) {
-        await _connection!.disconnect();
-      }
-      await _connection!.transport.dispose();
-    }
-    _connection = null;
-
     var device = _devices.firstWhereOrNull((f) => f.id == id);
     Logger.debug('[DeviceService] device lookup result: ${device?.name ?? "NULL"} (locator: ${device?.locator?.kind})');
 
@@ -153,9 +144,26 @@ class DeviceService implements IDeviceService {
       }
     }
 
-    _connection = DeviceConnectionFactory.create(device);
+    // Clean up existing connection ONLY if it's a different device
+    if (_connection != null && _connection!.device.id != id) {
+      if (_connection!.status == DeviceConnectionState.connected) {
+        await _connection!.disconnect();
+      }
+      await _connection!.transport.dispose();
+      _connection = null;
+    }
+
+    if (_connection == null) {
+      _connection = DeviceConnectionFactory.create(device);
+    }
+
     if (_connection != null) {
-      await _connection!.connect(onConnectionStateChanged: onDeviceConnectionStateChanged);
+      try {
+        await _connection!.connect(onConnectionStateChanged: onDeviceConnectionStateChanged);
+      } catch (e) {
+        Logger.debug('[DeviceService] Connection attempt failed for $id: $e');
+        rethrow;
+      }
     } else {
       Logger.debug('[DeviceService] Failed to create device connection for ${device.id}');
     }
