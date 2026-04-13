@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 import 'package:opus_dart/opus_dart.dart';
+import 'package:opus_flutter/opus_flutter.dart' as opus_flutter;
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/vad_audio_processor.dart';
@@ -262,7 +263,7 @@ class _IsolateParams {
 /// ForegroundServiceDidNotStartInTimeException caused by onnxruntime FFI
 /// blocking the platform thread during inference.
 Future<void> _processingIsolateEntry(_IsolateParams params) async {
-  // Allow platform channel calls (AacEncoder MethodChannel) from this isolate.
+  // Allow platform channel calls (AacEncoder MethodChannel, opus_flutter.load()) from this isolate.
   BackgroundIsolateBinaryMessenger.ensureInitialized(params.rootIsolateToken);
 
   // Send back a control port so the main isolate can forward cancel requests.
@@ -273,6 +274,15 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
   controlPort.listen((msg) {
     if (msg == 'cancel') cancelled = true;
   });
+
+  // Initialise Opus (each isolate has its own FFI state; must call initOpus before any decoder).
+  if (Platform.isIOS || Platform.isAndroid) {
+    try {
+      initOpus(await opus_flutter.load());
+    } catch (e) {
+      // If Opus fails to load, decoder creation below will also fail and we fall back to null.
+    }
+  }
 
   // Initialise ONNX Runtime (FFI — safe in any isolate).
   try {
@@ -291,9 +301,14 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     }
   }
 
-  final decoder = (Platform.isIOS || Platform.isAndroid)
-      ? SimpleOpusDecoder(sampleRate: VadAudioProcessor.sampleRate, channels: VadAudioProcessor.channels)
-      : null;
+  SimpleOpusDecoder? decoder;
+  if (Platform.isIOS || Platform.isAndroid) {
+    try {
+      decoder = SimpleOpusDecoder(sampleRate: VadAudioProcessor.sampleRate, channels: VadAudioProcessor.channels);
+    } catch (e) {
+      // Opus failed to load — decoder stays null, WAV fallback will be used.
+    }
+  }
 
   final processor = VadAudioProcessor.fromSettings(
     settings: params.settings,
