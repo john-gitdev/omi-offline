@@ -62,7 +62,11 @@ class VadAudioProcessor {
   static const int _vadWindowSamples = 512; // Silero VAD input size
 
   static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
-    try { OrtEnv.instance.init(); } catch (e) { Logger.error("VadAudioProcessor: Failed to init OrtEnv: $e"); }
+    try {
+      OrtEnv.instance.init();
+    } catch (e) {
+      Logger.error("VadAudioProcessor: Failed to init OrtEnv: $e");
+    }
     OrtSession? session;
     try {
       final data = await rootBundle.load('assets/models/silero_vad.onnx');
@@ -71,7 +75,8 @@ class VadAudioProcessor {
     } catch (e) {
       Logger.error('VadAudioProcessor: Failed to load Silero VAD model, amplitude fallback active: $e');
     }
-    Logger.debug('VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'amplitude fallback active (threshold=${SharedPreferencesUtil().vadSpeechThreshold})'}');
+    Logger.debug(
+        'VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'amplitude fallback active (threshold=${SharedPreferencesUtil().vadSpeechThreshold})'}');
     return VadAudioProcessor._(outputDir: outputDir, decoder: decoder, session: session);
   }
 
@@ -124,7 +129,8 @@ class VadAudioProcessor {
       _c = _flattenF32(outputs[2]!.value);
       return prob > _speechThreshold;
     } catch (e) {
-      Logger.error('VadAudioProcessor: Silero inference failed ($e) — disabling model, switching to amplitude fallback');
+      Logger.error(
+          'VadAudioProcessor: Silero inference failed ($e) — disabling model, switching to amplitude fallback');
       _session = null;
       return samples512.any((s) => s.abs() > _speechThreshold);
     } finally {
@@ -177,6 +183,7 @@ class VadAudioProcessor {
       int offset = 0;
       int frameIndex = 0;
       int totalFrameCount = 0;
+      int segmentSpeechFrames = 0;
       double segmentMaxAmp = 0.0;
 
       while (offset < fileLength) {
@@ -203,7 +210,8 @@ class VadAudioProcessor {
                 // splitting the recording at the tap point. The recording continues to the next
                 // natural silence threshold.
                 _consecutiveSilenceFrames = 0;
-                Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — in active conversation, silence counter reset.');
+                Logger.debug(
+                    'VadAudioProcessor: Marker at $markerFrameTime — in active conversation, silence counter reset.');
               } else {
                 // Marker fired during silence — force a lookback recording.
                 final msSinceLastSplit = _lastSplitTime != null
@@ -272,6 +280,7 @@ class VadAudioProcessor {
         final frameRef = FrameRef(segmentFile: segmentFile, byteOffset: offset, frameLength: frameLength);
         if (effectiveSpeech) {
           _speechFrameCount++;
+          segmentSpeechFrames++;
           _consecutiveSilenceFrames = 0;
           _currentRefs.add(frameRef);
           _currentChunkDurationMs += frameDurationMs;
@@ -329,7 +338,7 @@ class VadAudioProcessor {
 
       _lastSegmentEndTime = segmentStartTime.add(Duration(milliseconds: totalFrameCount * frameDurationMs));
       Logger.debug('VadAudioProcessor: ${segmentFile.path.split('/').last} — '
-          '$totalFrameCount frames, $_speechFrameCount speech, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}');
+          '$totalFrameCount frames, $segmentSpeechFrames speech, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}');
     } catch (e) {
       Logger.error('VadAudioProcessor: processSegmentFile error: $e');
     }
@@ -355,7 +364,8 @@ class VadAudioProcessor {
 
   Future<String?> flushOnlyCompleted() async {
     if (isCapturing) {
-      Logger.debug('VadAudioProcessor: flushOnlyCompleted — capture in progress, skipping flush to allow continuation.');
+      Logger.debug(
+          'VadAudioProcessor: flushOnlyCompleted — capture in progress, skipping flush to allow continuation.');
       return null;
     }
     return flushRemaining();
