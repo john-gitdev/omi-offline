@@ -240,18 +240,46 @@ class RecordingsManager {
   static void notifyRecordingsChanged() => recordingsChangeNotifier.value++;
 
   /// Call on app startup to clean up incomplete extraction from a previous crash.
-  /// If the persisted extraction-in-progress flag is set, the temp directory is
-  /// removed (its partial output would cause duplicates) and the flag is cleared.
+  /// If the persisted extraction-in-progress flag is set, any fully-written m4a/wav
+  /// files in the temp directory are rescued to their live recordings/<date>/ folders
+  /// first, then the temp directory is removed and the flag is cleared.
   /// Raw segments are intentionally left intact so processing can be retried.
   static Future<void> cleanUpIncompleteExtraction() async {
     final prefs = SharedPreferencesUtil();
     if (!prefs.extractionInProgress) return;
 
-    Logger.debug('RecordingsManager: Detected incomplete extraction from previous run — cleaning up temp dir.');
+    Logger.debug('RecordingsManager: Detected incomplete extraction from previous run — rescuing completed files.');
     try {
       final directory = await getApplicationDocumentsDirectory();
       final tempDir = Directory('${directory.path}/processing_temp');
       if (await tempDir.exists()) {
+        // Rescue any fully-written recordings before deleting the temp dir.
+        // This covers the race where the crash happened between _saveRecording()
+        // writing the m4a and moveTempFilesToLive() renaming it.
+        // Move .meta sidecars first so they are in place when the audio file lands.
+        final allEntities = await tempDir.list(recursive: true).whereType<File>().toList();
+        allEntities.sort((a, b) {
+          final aIsMeta = a.path.endsWith('.meta') ? 0 : 1;
+          final bIsMeta = b.path.endsWith('.meta') ? 0 : 1;
+          return aIsMeta.compareTo(bIsMeta);
+        });
+        for (final file in allEntities) {
+          final fileName = file.path.split('/').last;
+          if (!fileName.endsWith('.m4a') && !fileName.endsWith('.wav') && !fileName.endsWith('.meta')) continue;
+          final parts = fileName.split('_');
+          final millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
+          if (millis == null || millis <= 0) continue;
+          final dateStr = _dateStringFromMillis(millis);
+          final liveDir = Directory('${directory.path}/recordings/$dateStr');
+          await liveDir.create(recursive: true);
+          final dest = '${liveDir.path}/$fileName';
+          try {
+            await file.rename(dest);
+            Logger.debug('RecordingsManager: Rescued $fileName → recordings/$dateStr/');
+          } catch (e) {
+            Logger.error('RecordingsManager: Failed to rescue $fileName: $e');
+          }
+        }
         await tempDir.delete(recursive: true);
         Logger.debug('RecordingsManager: Removed leftover processing_temp directory.');
       }
