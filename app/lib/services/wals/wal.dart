@@ -66,10 +66,12 @@ class Wal {
     this.estimatedSegments = 0,
   });
 
-  // id is stable: storageOffset is always 0 at creation and must not be part of the key
-  // because storageOffset is mutated during sync progress callbacks, which would silently
-  // break deleteWal / removeWhere lookups that rely on id equality.
-  String get id => '$device-$fileNum';
+  // id is stable: keyed on timerStart (the file's Unix timestamp from firmware) so it
+  // survives array-index shifts when earlier files are deleted between reconnects.
+  // fileNum shifts after deletions but timerStart does not — matching on fileNum caused
+  // partial-resume bookmarks to be applied to the wrong file after a disconnect mid-sync.
+  // Falls back to fileNum for the rare case where timerStart is 0 (legacy persisted data).
+  String get id => timerStart > 0 ? '$device-$timerStart' : '$device-$fileNum';
 
   String getSegmentFileNameByTimestamp(int timerStart) {
     return 'segment_$timerStart.bin';

@@ -202,12 +202,21 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         continue;
       }
 
-      final existing = _wals.firstWhereOrNull(
-        (w) =>
-            w.device == deviceId &&
-            w.fileNum == file.index &&
-            w.storage == WalStorage.sdcard,
-      );
+      // Match by timerStart (the file's Unix timestamp) rather than fileNum so that
+      // partial-resume bookmarks survive array-index shifts caused by earlier files
+      // being deleted between a disconnect and the next reconnect.  fileNum is updated
+      // to the current index below when the wal is (re-)created.
+      // Guard: only match on timerStart when it is a valid epoch; synthetic timestamps
+      // (generated when firmware reports timestamp == 0) cannot be matched reliably.
+      const int kMinValidEpochForMatch = 946684800;
+      final existing = (file.timestamp > kMinValidEpochForMatch)
+          ? _wals.firstWhereOrNull(
+              (w) =>
+                  w.device == deviceId &&
+                  w.timerStart == file.timestamp &&
+                  w.storage == WalStorage.sdcard,
+            )
+          : null;
       final walOffset =
           (existing != null &&
               existing.walOffset > 0 &&
