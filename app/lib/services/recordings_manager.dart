@@ -84,9 +84,8 @@ class Conversation {
     }
 
     // Size-based duration estimate — only valid for WAV files.
-    // For M4A/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
+    // For M4A/OGG/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
     final isWav = file.path.endsWith('.wav');
-    final isOgg = file.path.endsWith('.ogg');
     int fileSize = 0;
     try {
       fileSize = file.lengthSync();
@@ -148,9 +147,8 @@ class Conversation {
     }
 
     // Size-based duration estimate — only valid for WAV files.
-    // For M4A/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
+    // For M4A/OGG/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
     final isWav = file.path.endsWith('.wav');
-    final isOgg = file.path.endsWith('.ogg');
     int fileSize = 0;
     try {
       fileSize = await file.length();
