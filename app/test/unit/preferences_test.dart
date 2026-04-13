@@ -148,9 +148,9 @@ void main() {
       prefsUtil.vadMaxConversationMinutes = 90;
       expect(prefsUtil.vadMaxConversationMinutes, 90);
 
-      expect(prefsUtil.autoSyncEnabled, true);
-      prefsUtil.autoSyncEnabled = false;
-      expect(prefsUtil.autoSyncEnabled, false);
+      expect(prefsUtil.backgroundSyncIntervalMinutes, 30);
+      prefsUtil.backgroundSyncIntervalMinutes = 15;
+      expect(prefsUtil.backgroundSyncIntervalMinutes, 15);
 
       expect(prefsUtil.extractionInProgress, false);
       prefsUtil.extractionInProgress = true;
