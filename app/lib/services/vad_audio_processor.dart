@@ -547,8 +547,7 @@ class VadAudioProcessor {
 
     Future<void> flushBatch() async {
       if (batchBuffer.isEmpty) return;
-      final bytes = batchBuffer.toBytes();
-      batchBuffer.clear();
+      final bytes = batchBuffer.takeBytes();
       batchFrameCount = 0;
       hasEncodedAnyFrames = true;
       await AacEncoder.encodeBuffer(sessionId!, bytes);
