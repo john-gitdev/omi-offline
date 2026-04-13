@@ -52,11 +52,6 @@
 
 -keep class com.pravera.flutter_foreground_task.service.** { *; }
 
-# Twilio Voice SDK + bundled WebRTC
--keep class com.twilio.** { *; }
--keep class tvo.webrtc.** { *; }
--dontwarn tvo.webrtc.**
-
 # FFmpeg Kit rules
 -keep class com.arthenica.ffmpegkit.** { *; }
 -keep class com.arthenica.ffmpegkit.FFmpegKitConfig {
