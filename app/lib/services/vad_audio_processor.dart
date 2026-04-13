@@ -27,7 +27,6 @@ class VadAudioProcessor {
   // Per-conversation accumulation — FrameRef disk-pointers only, no Opus in RAM
   List<FrameRef> _currentRefs = [];
   int _speechFrameCount = 0; // speech frames in current conversation
-  int _skippedFramesInRecording = 0; // non-speech frames in current conversation (keeps timestamps correct)
   DateTime? _recordingStartTime;
   DateTime? _lastSegmentEndTime;
   bool _isDerivedTimestamp = false; // true when segment had no valid device RTC timestamp
@@ -220,7 +219,6 @@ class VadAudioProcessor {
                 _currentRefs = rbRefsList.sublist(startIdx);
                 _recordingStartTime = startIdx < rbTimesList.length ? rbTimesList[startIdx] : markerFrameTime;
                 _speechFrameCount = 0;
-                _skippedFramesInRecording = 0;
                 _hangoverFrames = 0;
                 _consecutiveSilenceFrames = 0;
                 _currentChunkDurationMs = _currentRefs.length * frameDurationMs;
@@ -304,7 +302,6 @@ class VadAudioProcessor {
           final bufferToKeep = min(preSpeechFrames, _consecutiveSilenceFrames);
           _currentRefs = _currentRefs.sublist(_currentRefs.length - bufferToKeep);
           _speechFrameCount = 0;
-          _skippedFramesInRecording = 0;
           _hangoverFrames = 0;
           _consecutiveSilenceFrames = 0;
           _currentChunkDurationMs = 0;
@@ -319,7 +316,6 @@ class VadAudioProcessor {
           _forcedByMarker = false;
           _currentRefs = [];
           _speechFrameCount = 0;
-          _skippedFramesInRecording = 0;
           _hangoverFrames = 0;
           _consecutiveSilenceFrames = 0;
           _currentChunkDurationMs = 0;
@@ -368,7 +364,6 @@ class VadAudioProcessor {
   void _resetState() {
     _currentRefs = [];
     _speechFrameCount = 0;
-    _skippedFramesInRecording = 0;
     _hangoverFrames = 0;
     _consecutiveSilenceFrames = 0;
     _currentChunkDurationMs = 0;
