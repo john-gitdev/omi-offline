@@ -84,9 +84,8 @@ class SharedPreferencesUtil {
   int get markerLookbackSeconds => getInt('markerLookbackSeconds', defaultValue: 60).clamp(0, vadSplitSeconds);
   set markerLookbackSeconds(int v) => saveInt('markerLookbackSeconds', v);
 
-  bool get autoSyncEnabled => getBool('autoSyncEnabled', defaultValue: true);
-
-  set autoSyncEnabled(bool value) => saveBool('autoSyncEnabled', value);
+  int get backgroundSyncIntervalMinutes => getInt('backgroundSyncIntervalMinutes', defaultValue: 30);
+  set backgroundSyncIntervalMinutes(int v) => saveInt('backgroundSyncIntervalMinutes', v);
 
   // Whether to display times in 24-hour format (true) or 12-hour AM/PM (false).
   bool get use24HourTime => getBool('use24HourTime', defaultValue: true);
