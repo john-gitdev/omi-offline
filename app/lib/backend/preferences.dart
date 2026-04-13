@@ -71,6 +71,11 @@ class SharedPreferencesUtil {
   int get vadMaxConversationMinutes => getInt('vadMaxConversationMinutes', defaultValue: 60);
   set vadMaxConversationMinutes(int v) => saveInt('vadMaxConversationMinutes', v);
 
+  // How far back (seconds) a forced marker recording reaches before the button tap.
+  // Capped at vadSplitSeconds so the lookback never overlaps with a prior recording.
+  int get markerLookbackSeconds => getInt('markerLookbackSeconds', defaultValue: 60).clamp(0, vadSplitSeconds);
+  set markerLookbackSeconds(int v) => saveInt('markerLookbackSeconds', v);
+
   bool get autoSyncEnabled => getBool('autoSyncEnabled', defaultValue: true);
 
   set autoSyncEnabled(bool value) => saveBool('autoSyncEnabled', value);
