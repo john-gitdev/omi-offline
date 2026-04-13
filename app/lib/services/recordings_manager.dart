@@ -19,7 +19,12 @@ class Conversation {
   final Duration duration;
   final String? uploadKey;
 
-  const Conversation({required this.file, required this.startTime, required this.duration, this.uploadKey});
+  const Conversation({
+    required this.file,
+    required this.startTime,
+    required this.duration,
+    this.uploadKey,
+  });
 
   DateTime get endTime => startTime.add(duration);
 
@@ -39,7 +44,9 @@ class Conversation {
   /// WAV file size calculation.
   static Conversation fromFile(File file) {
     final name = file.path.split('/').last;
-    final millisStr = name.contains('_') ? name.split('_').last.split('.').first : null;
+    final millisStr = name.contains('_')
+        ? name.split('_').last.split('.').first
+        : null;
     final millis = millisStr != null ? int.tryParse(millisStr) : null;
     DateTime startTime;
     if (millis != null && millis > 0) {
@@ -53,7 +60,9 @@ class Conversation {
     }
 
     // Try .meta sidecar for authoritative duration
-    final basePath = file.path.contains('.') ? file.path.substring(0, file.path.lastIndexOf('.')) : file.path;
+    final basePath = file.path.contains('.')
+        ? file.path.substring(0, file.path.lastIndexOf('.'))
+        : file.path;
     final metaFile = File('$basePath.meta');
     if (metaFile.existsSync()) {
       try {
@@ -66,7 +75,9 @@ class Conversation {
             final keyLen = metaBytes[408];
             if (409 + keyLen <= metaBytes.length) {
               try {
-                uploadKey = String.fromCharCodes(metaBytes.sublist(409, 409 + keyLen));
+                uploadKey = String.fromCharCodes(
+                  metaBytes.sublist(409, 409 + keyLen),
+                );
               } catch (_) {
                 uploadKey = null;
               }
@@ -74,9 +85,14 @@ class Conversation {
           }
           // Fall back to filename (without extension) as upload key for recordings
           // processed before the upload key was written to the .meta sidecar.
-          final effectiveKey = uploadKey ?? file.path.split('/').last.split('.').first;
+          final effectiveKey =
+              uploadKey ?? file.path.split('/').last.split('.').first;
           return Conversation(
-              file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: effectiveKey);
+            file: file,
+            startTime: startTime,
+            duration: Duration(milliseconds: durationMs),
+            uploadKey: effectiveKey,
+          );
         }
       } catch (_) {
         // Fall through to size-based estimate
@@ -94,7 +110,11 @@ class Conversation {
     final durationMs = (pcmBytes / 32000.0 * 1000).round();
     final fallbackKey = file.path.split('/').last.split('.').first;
     return Conversation(
-        file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: fallbackKey);
+      file: file,
+      startTime: startTime,
+      duration: Duration(milliseconds: durationMs),
+      uploadKey: fallbackKey,
+    );
   }
 
   /// Parses start time from the filename (`recording_<millis>.m4a` or `.wav`) and
@@ -102,7 +122,9 @@ class Conversation {
   /// WAV file size calculation. Asynchronous version.
   static Future<Conversation> fromFileAsync(File file) async {
     final name = file.path.split('/').last;
-    final millisStr = name.contains('_') ? name.split('_').last.split('.').first : null;
+    final millisStr = name.contains('_')
+        ? name.split('_').last.split('.').first
+        : null;
     final millis = millisStr != null ? int.tryParse(millisStr) : null;
     DateTime startTime;
     if (millis != null && millis > 0) {
@@ -116,7 +138,9 @@ class Conversation {
     }
 
     // Try .meta sidecar for authoritative duration
-    final basePath = file.path.contains('.') ? file.path.substring(0, file.path.lastIndexOf('.')) : file.path;
+    final basePath = file.path.contains('.')
+        ? file.path.substring(0, file.path.lastIndexOf('.'))
+        : file.path;
     final metaFile = File('$basePath.meta');
     if (await metaFile.exists()) {
       try {
@@ -129,7 +153,9 @@ class Conversation {
             final keyLen = metaBytes[408];
             if (409 + keyLen <= metaBytes.length) {
               try {
-                uploadKey = String.fromCharCodes(metaBytes.sublist(409, 409 + keyLen));
+                uploadKey = String.fromCharCodes(
+                  metaBytes.sublist(409, 409 + keyLen),
+                );
               } catch (_) {
                 uploadKey = null;
               }
@@ -137,9 +163,14 @@ class Conversation {
           }
           // Fall back to filename (without extension) as upload key for recordings
           // processed before the upload key was written to the .meta sidecar.
-          final effectiveKey = uploadKey ?? file.path.split('/').last.split('.').first;
+          final effectiveKey =
+              uploadKey ?? file.path.split('/').last.split('.').first;
           return Conversation(
-              file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: effectiveKey);
+            file: file,
+            startTime: startTime,
+            duration: Duration(milliseconds: durationMs),
+            uploadKey: effectiveKey,
+          );
         }
       } catch (_) {
         // Fall through to size-based estimate
@@ -157,14 +188,20 @@ class Conversation {
     final durationMs = (pcmBytes / 32000.0 * 1000).round();
     final fallbackKey = file.path.split('/').last.split('.').first;
     return Conversation(
-        file: file, startTime: startTime, duration: Duration(milliseconds: durationMs), uploadKey: fallbackKey);
+      file: file,
+      startTime: startTime,
+      duration: Duration(milliseconds: durationMs),
+      uploadKey: fallbackKey,
+    );
   }
 
   String get timeRangeLabel {
     // Round start to nearest minute so near-boundary starts (e.g. 11:59:47) display cleanly.
     final rounded = roundToMinute(startTime);
     // Show inclusive end: subtract 1s so a 30-min segment displays as HH:MM–HH:29, not HH:MM–HH:30.
-    final inclusiveEnd = rounded.add(duration).subtract(const Duration(seconds: 1));
+    final inclusiveEnd = rounded
+        .add(duration)
+        .subtract(const Duration(seconds: 1));
     return '${fmtHourMin(rounded)} – ${fmtHourMin(inclusiveEnd)}';
   }
 
@@ -176,7 +213,8 @@ class Conversation {
 
   String get sizeLabel {
     final bytes = fileSizeBytes;
-    if (bytes >= 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    if (bytes >= 1024 * 1024)
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
     return '$bytes B';
   }
@@ -237,10 +275,12 @@ class MarkerConversation {
 class _IsolateParams {
   final SendPort sendPort;
   final RootIsolateToken rootIsolateToken;
-  final Uint8List? modelBytes; // Silero VAD ONNX model, pre-loaded on main isolate
+  final Uint8List?
+  modelBytes; // Silero VAD ONNX model, pre-loaded on main isolate
   final ProcessingSettings settings;
   final String tempProcessingPath;
   final List<String> segmentPaths;
+  final List<int> segmentFileSizes; // used for accurate processing ETA
   final List<int> segmentStartTimesMs; // milliseconds since epoch
   final List<bool> segmentDerivedFlags;
   final bool backgroundMode;
@@ -252,6 +292,7 @@ class _IsolateParams {
     required this.settings,
     required this.tempProcessingPath,
     required this.segmentPaths,
+    required this.segmentFileSizes,
     required this.segmentStartTimesMs,
     required this.segmentDerivedFlags,
     required this.backgroundMode,
@@ -304,7 +345,10 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
   SimpleOpusDecoder? decoder;
   if (Platform.isIOS || Platform.isAndroid) {
     try {
-      decoder = SimpleOpusDecoder(sampleRate: VadAudioProcessor.sampleRate, channels: VadAudioProcessor.channels);
+      decoder = SimpleOpusDecoder(
+        sampleRate: VadAudioProcessor.sampleRate,
+        channels: VadAudioProcessor.channels,
+      );
     } catch (e) {
       // Opus failed to load — decoder stays null, WAV fallback will be used.
     }
@@ -324,10 +368,16 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       }
 
       final file = File(params.segmentPaths[i]);
-      final startTime = DateTime.fromMillisecondsSinceEpoch(params.segmentStartTimesMs[i]);
+      final startTime = DateTime.fromMillisecondsSinceEpoch(
+        params.segmentStartTimesMs[i],
+      );
       final isDerived = params.segmentDerivedFlags[i];
 
-      await processor.processSegmentFile(file, startTime, isDerivedTimestamp: isDerived);
+      await processor.processSegmentFile(
+        file,
+        startTime,
+        isDerivedTimestamp: isDerived,
+      );
 
       // Ask the main isolate to move any completed recordings out of temp.
       params.sendPort.send({'type': 'move'});
@@ -335,10 +385,18 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       // Delete segment files that are fully processed and no longer referenced by any buffer.
       final safeToDelete = processor.consumeSafeToDeletePaths();
       if (safeToDelete.isNotEmpty) {
-        params.sendPort.send({'type': 'delete_segments', 'paths': safeToDelete.toList()});
+        params.sendPort.send({
+          'type': 'delete_segments',
+          'paths': safeToDelete.toList(),
+        });
       }
 
-      params.sendPort.send({'type': 'progress', 'value': ((i + 1) / params.segmentPaths.length) * 0.9});
+      params.sendPort.send({
+        'type': 'progress',
+        'processed_bytes': params.segmentFileSizes[i],
+        'index': i,
+        'total': params.segmentPaths.length,
+      });
     }
 
     if (params.backgroundMode) {
@@ -352,9 +410,14 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     // Final pass: release any files still held only in the rolling pre-buffer.
     // In force mode, no further marker lookbacks will occur so forceAll is safe.
     // In background mode, respect the buffer so the next run can pick up mid-session.
-    final finalSafe = processor.consumeSafeToDeletePaths(forceAll: !params.backgroundMode && !cancelled);
+    final finalSafe = processor.consumeSafeToDeletePaths(
+      forceAll: !params.backgroundMode && !cancelled,
+    );
     if (finalSafe.isNotEmpty) {
-      params.sendPort.send({'type': 'delete_segments', 'paths': finalSafe.toList()});
+      params.sendPort.send({
+        'type': 'delete_segments',
+        'paths': finalSafe.toList(),
+      });
     }
 
     params.sendPort.send({'type': 'done'});
@@ -398,7 +461,9 @@ class RecordingsManager {
     final prefs = SharedPreferencesUtil();
     if (!prefs.extractionInProgress) return;
 
-    Logger.debug('RecordingsManager: Detected incomplete extraction from previous run — rescuing completed files.');
+    Logger.debug(
+      'RecordingsManager: Detected incomplete extraction from previous run — rescuing completed files.',
+    );
     try {
       final directory = await getApplicationDocumentsDirectory();
       final tempDir = Directory('${directory.path}/processing_temp');
@@ -407,7 +472,11 @@ class RecordingsManager {
         // This covers the race where the crash happened between _saveRecording()
         // writing the m4a and moveTempFilesToLive() renaming it.
         // Move .meta sidecars first so they are in place when the audio file lands.
-        final allEntities = await tempDir.list(recursive: true).where((e) => e is File).cast<File>().toList();
+        final allEntities = await tempDir
+            .list(recursive: true)
+            .where((e) => e is File)
+            .cast<File>()
+            .toList();
         allEntities.sort((a, b) {
           final aIsMeta = a.path.endsWith('.meta') ? 0 : 1;
           final bIsMeta = b.path.endsWith('.meta') ? 0 : 1;
@@ -418,9 +487,12 @@ class RecordingsManager {
           if (!fileName.endsWith('.m4a') &&
               !fileName.endsWith('.wav') &&
               !fileName.endsWith('.ogg') &&
-              !fileName.endsWith('.meta')) continue;
+              !fileName.endsWith('.meta'))
+            continue;
           final parts = fileName.split('_');
-          final millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
+          final millis = parts.length >= 2
+              ? int.tryParse(parts.last.split('.').first)
+              : null;
           if (millis == null || millis <= 0) continue;
           final dateStr = _dateStringFromMillis(millis);
           final liveDir = Directory('${directory.path}/recordings/$dateStr');
@@ -428,13 +500,17 @@ class RecordingsManager {
           final dest = '${liveDir.path}/$fileName';
           try {
             await file.rename(dest);
-            Logger.debug('RecordingsManager: Rescued $fileName → recordings/$dateStr/');
+            Logger.debug(
+              'RecordingsManager: Rescued $fileName → recordings/$dateStr/',
+            );
           } catch (e) {
             Logger.error('RecordingsManager: Failed to rescue $fileName: $e');
           }
         }
         await tempDir.delete(recursive: true);
-        Logger.debug('RecordingsManager: Removed leftover processing_temp directory.');
+        Logger.debug(
+          'RecordingsManager: Removed leftover processing_temp directory.',
+        );
       }
     } catch (e) {
       Logger.error('RecordingsManager: Failed to clean up processing_temp: $e');
@@ -455,7 +531,9 @@ class RecordingsManager {
     // Process raw segments (now they are in DeviceSession folders)
     if (await rawSegmentsDir.exists()) {
       final deviceSessionEntities = await rawSegmentsDir.list().toList();
-      final deviceSessionFolders = deviceSessionEntities.whereType<Directory>().toList();
+      final deviceSessionFolders = deviceSessionEntities
+          .whereType<Directory>()
+          .toList();
 
       // Sort DeviceSession folders by ID (e.g. "100", "101")
       deviceSessionFolders.sort((a, b) {
@@ -485,20 +563,27 @@ class RecordingsManager {
               }
             }
           } catch (e) {
-            Logger.error("RecordingsManager: Failed to read markers for DeviceSession $deviceSessionIdStr: $e");
+            Logger.error(
+              "RecordingsManager: Failed to read markers for DeviceSession $deviceSessionIdStr: $e",
+            );
           }
         }
 
         // 2. Process segments
         final folderEntities = await folder.list().toList();
-        final files = folderEntities.whereType<File>().where((f) => f.path.endsWith('.bin')).toList();
+        final files = folderEntities
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.bin'))
+            .toList();
 
-        await Future.wait(files.map((file) async {
-          final date = await file.lastModified();
-          final dateString =
-              '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
-          rawSegmentsByDate.putIfAbsent(dateString, () => []).add(file);
-        }));
+        await Future.wait(
+          files.map((file) async {
+            final date = await file.lastModified();
+            final dateString =
+                '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+            rawSegmentsByDate.putIfAbsent(dateString, () => []).add(file);
+          }),
+        );
       }
     }
 
@@ -511,20 +596,34 @@ class RecordingsManager {
         final folderEntities = await folder.list().toList();
         final files = folderEntities
             .whereType<File>()
-            .where((f) => f.path.endsWith('.m4a') || f.path.endsWith('.wav') || f.path.endsWith('.ogg'))
+            .where(
+              (f) =>
+                  f.path.endsWith('.m4a') ||
+                  f.path.endsWith('.wav') ||
+                  f.path.endsWith('.ogg'),
+            )
             .toList();
-        final conversations = await Future.wait(files.map((f) => Conversation.fromFileAsync(f)));
+        final conversations = await Future.wait(
+          files.map((f) => Conversation.fromFileAsync(f)),
+        );
         processedByDate[dateString] = conversations;
       }
     }
 
     // Merge keys
-    final allDates = {...rawSegmentsByDate.keys, ...processedByDate.keys}.toList();
+    final allDates = {
+      ...rawSegmentsByDate.keys,
+      ...processedByDate.keys,
+    }.toList();
     List<Batch> batches = [];
 
     for (var dateStr in allDates) {
       final parts = dateStr.split('-');
-      final date = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+      final date = DateTime(
+        int.parse(parts[0]),
+        int.parse(parts[1]),
+        int.parse(parts[2]),
+      );
 
       final raw = rawSegmentsByDate[dateStr] ?? [];
       // Sort raw segments numerically by their filename (segmentIndex) to avoid
@@ -534,17 +633,22 @@ class RecordingsManager {
         final nameB = b.path.split('/').last.split('.').first;
         final numA = int.tryParse(nameA.split('_').last) ?? 0;
         final numB = int.tryParse(nameB.split('_').last) ?? 0;
-        final prefixCmp = nameA.split('_').first.compareTo(nameB.split('_').first);
+        final prefixCmp = nameA
+            .split('_')
+            .first
+            .compareTo(nameB.split('_').first);
         return prefixCmp != 0 ? prefixCmp : numA.compareTo(numB);
       });
 
-      batches.add(Batch(
-        dateString: dateStr,
-        date: date,
-        rawSegments: raw,
-        finalizedRecordings: processedByDate[dateStr] ?? <Conversation>[],
-        markerTimestamps: markersByDate[dateStr] ?? [],
-      ));
+      batches.add(
+        Batch(
+          dateString: dateStr,
+          date: date,
+          rawSegments: raw,
+          finalizedRecordings: processedByDate[dateStr] ?? <Conversation>[],
+          markerTimestamps: markersByDate[dateStr] ?? [],
+        ),
+      );
     }
 
     batches.sort((a, b) => b.date.compareTo(a.date));
@@ -557,11 +661,18 @@ class RecordingsManager {
   /// recording that spans midnight is never artificially cut. Output files are
   /// moved into `recordings/<date>/` based on each recording's actual start
   /// timestamp, not the batch date they were grouped under.
-  Future<void> processAll(List<Batch> batches, Function(double progress) onProgress,
-      {bool backgroundMode = false, VoidCallback? onRecordingFinalized}) async {
-    final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
+  Future<void> processAll(
+    List<Batch> batches,
+    Function(double progress, Duration? eta) onProgress, {
+    bool backgroundMode = false,
+    VoidCallback? onRecordingFinalized,
+  }) async {
+    final activeBatches = batches
+        .where((b) => b.rawSegments.isNotEmpty)
+        .toList();
     if (activeBatches.isEmpty) return;
-    if (_isProcessingAny) throw Exception("Another processing task is already in progress.");
+    if (_isProcessingAny)
+      throw Exception("Another processing task is already in progress.");
 
     _isProcessingAny = true;
     _cancelRequested = false;
@@ -588,8 +699,10 @@ class RecordingsManager {
           await sink.close();
           await probe.delete();
         } catch (e) {
-          Logger.error('RecordingsManager: Disk space probe failed ($e). '
-              'Skipping processing to preserve raw segments.');
+          Logger.error(
+            'RecordingsManager: Disk space probe failed ($e). '
+            'Skipping processing to preserve raw segments.',
+          );
           return;
         }
       }
@@ -615,9 +728,12 @@ class RecordingsManager {
         for (final entity in entities) {
           final fileName = entity.path.split('/').last;
           final parts = fileName.split('_');
-          final millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
-          final dateStr =
-              (millis != null && millis > 0) ? _dateStringFromMillis(millis) : activeBatches.last.dateString;
+          final millis = parts.length >= 2
+              ? int.tryParse(parts.last.split('.').first)
+              : null;
+          final dateStr = (millis != null && millis > 0)
+              ? _dateStringFromMillis(millis)
+              : activeBatches.last.dateString;
           final liveDir = Directory('${directory.path}/recordings/$dateStr');
           await liveDir.create(recursive: true);
           final dest = '${liveDir.path}/$fileName';
@@ -626,7 +742,9 @@ class RecordingsManager {
           } on FileSystemException catch (_) {}
           await entity.rename(dest);
           if (fileName.endsWith('.m4a')) {
-            final legacyWav = File('${liveDir.path}/${fileName.replaceAll('.m4a', '')}.wav');
+            final legacyWav = File(
+              '${liveDir.path}/${fileName.replaceAll('.m4a', '')}.wav',
+            );
             try {
               await legacyWav.delete();
             } on FileSystemException catch (_) {}
@@ -647,8 +765,9 @@ class RecordingsManager {
         final as_ = int.tryParse(ap[0]) ?? 0;
         final bs_ = int.tryParse(bp[0]) ?? 0;
         if (as_ != bs_) return as_.compareTo(bs_);
-        return (int.tryParse(ap.length > 1 ? ap[1] : '0') ?? 0)
-            .compareTo(int.tryParse(bp.length > 1 ? bp[1] : '0') ?? 0);
+        return (int.tryParse(ap.length > 1 ? ap[1] : '0') ?? 0).compareTo(
+          int.tryParse(bp.length > 1 ? bp[1] : '0') ?? 0,
+        );
       });
 
       // Pre-compute segment timestamps on the main isolate (lastModifiedSync is unavailable in a
@@ -656,14 +775,18 @@ class RecordingsManager {
       const kMinValidEpoch = 946684800;
       final segmentStartTimesMs = <int>[];
       final segmentDerivedFlags = <bool>[];
+      final segmentFileSizes = <int>[];
       for (final file in allSegments) {
+        segmentFileSizes.add(file.lengthSync());
         final stem = file.path.split('/').last.split('.').first;
         final timerStart = int.tryParse(stem.split('_').first);
         if (timerStart != null && timerStart > kMinValidEpoch) {
           segmentStartTimesMs.add(timerStart * 1000);
           segmentDerivedFlags.add(false);
         } else {
-          segmentStartTimesMs.add(file.lastModifiedSync().millisecondsSinceEpoch);
+          segmentStartTimesMs.add(
+            file.lastModifiedSync().millisecondsSinceEpoch,
+          );
           segmentDerivedFlags.add(true);
         }
       }
@@ -672,9 +795,14 @@ class RecordingsManager {
       Uint8List? modelBytes;
       try {
         final data = await rootBundle.load('assets/models/silero_vad.onnx');
-        modelBytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+        modelBytes = data.buffer.asUint8List(
+          data.offsetInBytes,
+          data.lengthInBytes,
+        );
       } catch (e) {
-        Logger.error('RecordingsManager: Failed to pre-load VAD model ($e) — amplitude fallback active.');
+        Logger.error(
+          'RecordingsManager: Failed to pre-load VAD model ($e) — amplitude fallback active.',
+        );
       }
 
       final Set<String> deletedSegmentFolders = {};
@@ -683,6 +811,9 @@ class RecordingsManager {
         final receivePort = ReceivePort();
         final exitPort = ReceivePort();
         bool isolateDone = false;
+
+        final startTime = DateTime.now();
+        int processedBytes = 0;
 
         await Isolate.spawn(
           _processingIsolateEntry,
@@ -693,6 +824,7 @@ class RecordingsManager {
             settings: ProcessingSettings.fromPrefs(),
             tempProcessingPath: tempProcessingPath,
             segmentPaths: allSegments.map((f) => f.path).toList(),
+            segmentFileSizes: segmentFileSizes,
             segmentStartTimesMs: segmentStartTimesMs,
             segmentDerivedFlags: segmentDerivedFlags,
             backgroundMode: backgroundMode,
@@ -721,14 +853,34 @@ class RecordingsManager {
                 for (final path in paths) {
                   final f = File(path);
                   if (await f.exists()) {
-                    Logger.debug('RecordingsManager: Deleting raw segment: $path');
+                    Logger.debug(
+                      'RecordingsManager: Deleting raw segment: $path',
+                    );
                     await f.delete();
                     deletedSegmentFolders.add(f.parent.path);
                   }
                 }
               }
             case 'progress':
-              onProgress(msg['value'] as double);
+              final segmentBytes = msg['processed_bytes'] as int;
+              processedBytes += segmentBytes;
+              final index = msg['index'] as int;
+              final totalSegments = msg['total'] as int;
+
+              final progressVal = rawTotalBytes > 0
+                  ? processedBytes / rawTotalBytes
+                  : ((index + 1) / totalSegments);
+              final progress = (progressVal * 0.9).clamp(0.0, 0.9);
+
+              Duration? eta;
+              if (progressVal >= 0.05 && processedBytes > 0) {
+                final elapsed = DateTime.now().difference(startTime);
+                final remainingBytes = rawTotalBytes - processedBytes;
+                final etaMs =
+                    (elapsed.inMilliseconds * remainingBytes) ~/ processedBytes;
+                eta = Duration(milliseconds: etaMs);
+              }
+              onProgress(progress, eta);
             case 'done':
               isolateDone = true;
               receivePort.close();
@@ -766,7 +918,7 @@ class RecordingsManager {
           } catch (_) {}
         }
       }
-      onProgress(1.0);
+      onProgress(1.0, Duration.zero);
     } finally {
       _isProcessingAny = false;
       SharedPreferencesUtil().extractionInProgress = false;
@@ -776,25 +928,40 @@ class RecordingsManager {
   /// Writes EDL sidecars for all markers in [markerTimestamps] into [liveRecordingsDirPath].
   /// Idempotent: skips EDLs that already exist with non-empty segments.
   /// Resolves previously-pending EDLs (empty segments) when the backing m4a is now available.
-  static Future<void> _resolveMarkerConversations(String liveRecordingsDirPath, List<DateTime> markerTimestamps) async {
+  static Future<void> _resolveMarkerConversations(
+    String liveRecordingsDirPath,
+    List<DateTime> markerTimestamps,
+  ) async {
     final liveDir = Directory(liveRecordingsDirPath);
     if (!await liveDir.exists() || markerTimestamps.isEmpty) return;
 
     // Build sorted list of (file, startMs, endMs) from m4a/ogg + .meta pairs.
-    final recordings = <({File file, int startMs, int endMs, int durationMs})>[];
+    final recordings =
+        <({File file, int startMs, int endMs, int durationMs})>[];
     for (final entity in await liveDir.list().toList()) {
-      if (entity is! File || (!entity.path.endsWith('.m4a') && !entity.path.endsWith('.ogg'))) continue;
+      if (entity is! File ||
+          (!entity.path.endsWith('.m4a') && !entity.path.endsWith('.ogg')))
+        continue;
       final name = entity.path.split('/').last;
-      final startMs = int.tryParse(name.contains('_') ? name.split('_').last.split('.').first : '');
+      final startMs = int.tryParse(
+        name.contains('_') ? name.split('_').last.split('.').first : '',
+      );
       if (startMs == null || startMs <= 0) continue;
-      final metaFile = File('${entity.path.substring(0, entity.path.lastIndexOf('.'))}.meta');
+      final metaFile = File(
+        '${entity.path.substring(0, entity.path.lastIndexOf('.'))}.meta',
+      );
       if (!await metaFile.exists()) continue;
       try {
         final bd = ByteData.sublistView(await metaFile.readAsBytes());
         if (bd.lengthInBytes < 8) continue;
         final durationMs = bd.getUint32(4, Endian.little);
         if (durationMs <= 0) continue;
-        recordings.add((file: entity, startMs: startMs, endMs: startMs + durationMs, durationMs: durationMs));
+        recordings.add((
+          file: entity,
+          startMs: startMs,
+          endMs: startMs + durationMs,
+          durationMs: durationMs,
+        ));
       } catch (_) {}
     }
     recordings.sort((a, b) => a.startMs.compareTo(b.startMs));
@@ -806,15 +973,19 @@ class RecordingsManager {
       // Skip already-resolved EDLs.
       if (await edlFile.exists()) {
         try {
-          final existing = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
-          if ((existing['segmentFilename'] as String?)?.isNotEmpty == true) continue;
+          final existing =
+              jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+          if ((existing['segmentFilename'] as String?)?.isNotEmpty == true)
+            continue;
         } catch (_) {}
       }
 
       // Strict containment only: marker must fall within a recording that was actually
       // produced from the audio around that time. Markers whose audio hasn't been
       // processed yet stay pending until a future sync+process run covers that range.
-      final matchIdx = recordings.indexWhere((r) => markerMs >= r.startMs && markerMs < r.endMs);
+      final matchIdx = recordings.indexWhere(
+        (r) => markerMs >= r.startMs && markerMs < r.endMs,
+      );
 
       if (matchIdx >= 0) {
         final rec = recordings[matchIdx];
@@ -829,7 +1000,9 @@ class RecordingsManager {
           'userSaved': false,
         };
         await edlFile.writeAsString(jsonEncode(edlData));
-        Logger.debug('RecordingsManager: Wrote EDL for marker at $markerTime → $segmentFilename');
+        Logger.debug(
+          'RecordingsManager: Wrote EDL for marker at $markerTime → $segmentFilename',
+        );
       } else {
         final edlData = {
           'markerTimestampMs': markerMs,
@@ -840,7 +1013,9 @@ class RecordingsManager {
           'userSaved': false,
         };
         await edlFile.writeAsString(jsonEncode(edlData));
-        Logger.debug('RecordingsManager: Wrote PENDING EDL for marker at $markerTime');
+        Logger.debug(
+          'RecordingsManager: Wrote PENDING EDL for marker at $markerTime',
+        );
       }
     }
   }
@@ -856,48 +1031,62 @@ class RecordingsManager {
     final entities = await recordingsDir.list().toList();
     final dateFolders = entities.whereType<Directory>().toList();
 
-    final resultsNested = await Future.wait(dateFolders.map((dateFolder) async {
-      final edlFiles = await dateFolder
-          .list()
-          .where((e) => e is File && e.path.split('/').last.startsWith('marker_') && e.path.endsWith('.edl'))
-          .cast<File>()
-          .toList();
+    final resultsNested = await Future.wait(
+      dateFolders.map((dateFolder) async {
+        final edlFiles = await dateFolder
+            .list()
+            .where(
+              (e) =>
+                  e is File &&
+                  e.path.split('/').last.startsWith('marker_') &&
+                  e.path.endsWith('.edl'),
+            )
+            .cast<File>()
+            .toList();
 
-      final markerFutures = edlFiles.map((edlFile) async {
-        try {
-          final json = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
-          final markerMs = json['markerTimestampMs'] as int;
-          final segmentFilename = json['segmentFilename'] as String?;
-          final markerOffsetMs = json['markerOffsetMs'] as int? ?? 0;
-          final cropStartMs = json['cropStartMs'] as int? ?? 0;
-          final cropEndMs = json['cropEndMs'] as int? ?? 0;
-          final userSaved = json['userSaved'] as bool? ?? false;
+        final markerFutures = edlFiles.map((edlFile) async {
+          try {
+            final json =
+                jsonDecode(await edlFile.readAsString())
+                    as Map<String, dynamic>;
+            final markerMs = json['markerTimestampMs'] as int;
+            final segmentFilename = json['segmentFilename'] as String?;
+            final markerOffsetMs = json['markerOffsetMs'] as int? ?? 0;
+            final cropStartMs = json['cropStartMs'] as int? ?? 0;
+            final cropEndMs = json['cropEndMs'] as int? ?? 0;
+            final userSaved = json['userSaved'] as bool? ?? false;
 
-          File? segmentFile;
-          if (segmentFilename != null && segmentFilename.isNotEmpty) {
-            final f = File('${dateFolder.path}/$segmentFilename');
-            if (await f.exists()) segmentFile = f;
+            File? segmentFile;
+            if (segmentFilename != null && segmentFilename.isNotEmpty) {
+              final f = File('${dateFolder.path}/$segmentFilename');
+              if (await f.exists()) segmentFile = f;
+            }
+
+            return MarkerConversation(
+              markerTime: DateTime.fromMillisecondsSinceEpoch(markerMs),
+              segment: segmentFile,
+              markerOffsetMs: markerOffsetMs,
+              cropStartMs: cropStartMs,
+              cropEndMs: cropEndMs,
+              edlFile: edlFile,
+              userSaved: userSaved,
+            );
+          } catch (e) {
+            Logger.error(
+              'RecordingsManager: Failed to parse EDL ${edlFile.path}: $e',
+            );
+            return null;
           }
+        });
 
-          return MarkerConversation(
-            markerTime: DateTime.fromMillisecondsSinceEpoch(markerMs),
-            segment: segmentFile,
-            markerOffsetMs: markerOffsetMs,
-            cropStartMs: cropStartMs,
-            cropEndMs: cropEndMs,
-            edlFile: edlFile,
-            userSaved: userSaved,
-          );
-        } catch (e) {
-          Logger.error('RecordingsManager: Failed to parse EDL ${edlFile.path}: $e');
-          return null;
-        }
-      });
+        return await Future.wait(markerFutures);
+      }),
+    );
 
-      return await Future.wait(markerFutures);
-    }));
-
-    final result = resultsNested.expand((list) => list).whereType<MarkerConversation>().toList();
+    final result = resultsNested
+        .expand((list) => list)
+        .whereType<MarkerConversation>()
+        .toList();
 
     result.sort((a, b) => b.markerTime.compareTo(a.markerTime));
     return result;
@@ -924,13 +1113,19 @@ class RecordingsManager {
     final batches = await manager.getBatches();
     final activeBatches = batches
         .where((b) => b.rawSegments.isNotEmpty)
-        .where((b) => !SharedPreferencesUtil().adjustmentMode || b.finalizedRecordings.isEmpty)
+        .where(
+          (b) =>
+              !SharedPreferencesUtil().adjustmentMode ||
+              b.finalizedRecordings.isEmpty,
+        )
         .toList();
     if (activeBatches.isEmpty) return;
     try {
-      await manager.processAll(activeBatches, (_) {}, backgroundMode: true);
+      await manager.processAll(activeBatches, (_, __) {}, backgroundMode: true);
     } catch (e) {
-      Logger.error('RecordingsManager: Background processAllCompletedSessions error: $e');
+      Logger.error(
+        'RecordingsManager: Background processAllCompletedSessions error: $e',
+      );
     }
   }
 
@@ -944,11 +1139,19 @@ class RecordingsManager {
     final batches = await manager.getBatches();
     final activeBatches = batches
         .where((b) => b.rawSegments.isNotEmpty)
-        .where((b) => !SharedPreferencesUtil().adjustmentMode || b.finalizedRecordings.isEmpty)
+        .where(
+          (b) =>
+              !SharedPreferencesUtil().adjustmentMode ||
+              b.finalizedRecordings.isEmpty,
+        )
         .toList();
     if (activeBatches.isEmpty) return;
     try {
-      await manager.processAll(activeBatches, (_) {}, backgroundMode: false);
+      await manager.processAll(
+        activeBatches,
+        (_, __) {},
+        backgroundMode: false,
+      );
     } catch (e) {
       Logger.error('RecordingsManager: forceProcessAll error: $e');
     }
@@ -961,12 +1164,18 @@ class RecordingsManager {
     final recordingsDir = Directory('${directory.path}/recordings');
     if (!await recordingsDir.exists()) return;
     await for (final entity in recordingsDir.list(recursive: true)) {
-      if (entity is File && (entity.path.endsWith('.tmp.m4a') || entity.path.endsWith('.tmp.ogg'))) {
+      if (entity is File &&
+          (entity.path.endsWith('.tmp.m4a') ||
+              entity.path.endsWith('.tmp.ogg'))) {
         try {
           await entity.delete();
-          Logger.debug('RecordingsManager: Deleted orphaned temp file ${entity.path}');
+          Logger.debug(
+            'RecordingsManager: Deleted orphaned temp file ${entity.path}',
+          );
         } catch (e) {
-          Logger.error('RecordingsManager: Failed to delete orphaned temp file ${entity.path}: $e');
+          Logger.error(
+            'RecordingsManager: Failed to delete orphaned temp file ${entity.path}: $e',
+          );
         }
       }
     }
@@ -977,10 +1186,14 @@ class RecordingsManager {
   /// Safe to call while nothing is playing.
   Future<void> deleteDay(Batch batch) async {
     final directory = await getApplicationDocumentsDirectory();
-    final recordingsDir = Directory('${directory.path}/recordings/${batch.dateString}');
+    final recordingsDir = Directory(
+      '${directory.path}/recordings/${batch.dateString}',
+    );
     if (await recordingsDir.exists()) {
       await recordingsDir.delete(recursive: true);
-      Logger.debug('RecordingsManager: Deleted processed recordings for ${batch.dateString}');
+      Logger.debug(
+        'RecordingsManager: Deleted processed recordings for ${batch.dateString}',
+      );
     }
   }
 
@@ -1000,7 +1213,9 @@ class RecordingsManager {
     final rawSegmentsDir = Directory('${directory.path}/raw_segments');
     if (await rawSegmentsDir.exists()) {
       await rawSegmentsDir.delete(recursive: true);
-      Logger.debug('RecordingsManager: Deleted all raw segments after adjustment mode exit');
+      Logger.debug(
+        'RecordingsManager: Deleted all raw segments after adjustment mode exit',
+      );
     }
   }
 }
