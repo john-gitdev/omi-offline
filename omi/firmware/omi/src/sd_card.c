@@ -1531,7 +1531,7 @@ void sd_worker_thread(void)
         }
 
         /* 5. Both queues empty — gate SD off between write bursts */
-        if (!sd_write_blocked) {
+        if (!sd_write_blocked && !atomic_get(&ble_connected)) {
             sd_gate_sleep();
             sd_gated = true;
             gate_start_ms = k_uptime_get();
