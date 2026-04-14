@@ -356,31 +356,44 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
       await connection.acquireStorageLock();
       final stream = await connection.getBleStorageBytesStream();
-      final sub = stream.listen((packet) {
-        if (packet.isEmpty || completer.isCompleted) return;
-        Logger.debug('DebugTools: readStatsFile packet[0]=0x${packet[0].toRadixString(16)} len=${packet.length}');
-        switch (packet[0]) {
-          case 0x03:
-            if (packet.length >= 2 && packet[1] == 0x00) {
-              hasAck = true;
-            } else {
-              final code = packet.length >= 2 ? packet[1] : -1;
-              Logger.error('DebugTools: readStatsFile error ACK code=$code');
-              if (!completer.isCompleted) completer.completeError(Exception('Device error ACK: $code'));
-            }
-            break;
-          case 0x01:
-            if (!hasAck || packet.length < 5) return;
-            bytes.addAll(packet.sublist(5));
-            break;
-          case 0x02:
-            Logger.debug('DebugTools: readStatsFile EOT — ${bytes.length} bytes accumulated');
-            completer.complete(List<int>.unmodifiable(bytes));
-            break;
-        }
-      });
+      Logger.debug('DebugTools: readStatsFile subscribed to stream');
+      final sub = stream.listen(
+        (packet) {
+          Logger.debug('DebugTools: readStatsFile RAW packet len=${packet.length}');
+          if (packet.isEmpty || completer.isCompleted) return;
+          Logger.debug('DebugTools: readStatsFile packet[0]=0x${packet[0].toRadixString(16)}');
+          switch (packet[0]) {
+            case 0x03:
+              if (packet.length >= 2 && packet[1] == 0x00) {
+                hasAck = true;
+              } else {
+                final code = packet.length >= 2 ? packet[1] : -1;
+                Logger.error('DebugTools: readStatsFile error ACK code=$code');
+                if (!completer.isCompleted) completer.completeError(Exception('Device error ACK: $code'));
+              }
+              break;
+            case 0x01:
+              if (!hasAck || packet.length < 5) return;
+              bytes.addAll(packet.sublist(5));
+              break;
+            case 0x02:
+              Logger.debug('DebugTools: readStatsFile EOT — ${bytes.length} bytes accumulated');
+              completer.complete(List<int>.unmodifiable(bytes));
+              break;
+          }
+        },
+        onError: (e) {
+          Logger.error('DebugTools: readStatsFile stream error: $e');
+          if (!completer.isCompleted) completer.completeError(e);
+        },
+        onDone: () {
+          Logger.debug('DebugTools: readStatsFile stream CLOSED');
+          if (!completer.isCompleted) completer.completeError(Exception('Stream closed without EOT'));
+        },
+      );
 
-      await connection.performWriteToStorage(statsFile.index, 0x11, 0);
+      final writeOk = await connection.performWriteToStorage(statsFile.index, 0x11, 0);
+      Logger.debug('DebugTools: readStatsFile performWriteToStorage returned $writeOk');
 
       late List<int> content;
       try {
