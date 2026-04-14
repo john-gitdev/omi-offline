@@ -66,6 +66,10 @@ static uint8_t lfs_finfo_buf[8192];
 static struct lfs_file_config lfs_fdata_cfg = {.buffer = lfs_fdata_buf};
 static struct lfs_file_config lfs_finfo_cfg = {.buffer = lfs_finfo_buf};
 
+/* Temporary instrumentation: buffer for stats.txt writes (remove after measurement) */
+static uint8_t lfs_stats_buf[LFS_CACHE_SIZE];
+static struct lfs_file_config lfs_stats_cfg = {.buffer = lfs_stats_buf};
+
 /* LFS I/O buffers — sized to cache_size (8192) for multi-sector I/O */
 static uint8_t lfs_read_buf[8192];
 static uint8_t lfs_prog_buf[8192];
@@ -228,6 +232,12 @@ static atomic_t sd_boot_ready;
 static atomic_t boot_dropped_frames;
 static atomic_t stat_block_attempts;
 static atomic_t stat_dropped_frames;
+
+/* Temporary instrumentation: ingest throughput snapshot (remove after measurement) */
+static atomic_t ingest_snap_pending;
+static atomic_t ingest_snap_bytes;
+static atomic_t ingest_snap_calls;
+static atomic_t ingest_snap_elapsed_ms;
 
 /* Protects current_filename / current_file_path across threads.
  * The SD worker updates these during file creation and TMP→hex rename;
@@ -1385,6 +1395,28 @@ void sd_worker_thread(void)
             goto handle_req;
         }
 
+        /* Temporary instrumentation: write throughput snapshot to audio/stats.txt */
+        if (atomic_cas(&ingest_snap_pending, 1, 0) && is_mounted) {
+            uint32_t b = (uint32_t)atomic_get(&ingest_snap_bytes);
+            uint32_t c = (uint32_t)atomic_get(&ingest_snap_calls);
+            uint32_t e = (uint32_t)atomic_get(&ingest_snap_elapsed_ms);
+            if (e > 0) {
+                char line[128];
+                int n = snprintf(line, sizeof(line),
+                                 "%lld ms: %u calls %u bytes / %u ms = %u B/s %u calls/s\n",
+                                 k_uptime_get(), c, b, e,
+                                 (uint32_t)((uint64_t)b * 1000 / e),
+                                 (uint32_t)((uint64_t)c * 1000 / e));
+                lfs_file_t sf;
+                if (lfs_file_opencfg(&lfs_fs, &sf, "audio/stats.txt",
+                                     LFS_O_WRONLY | LFS_O_CREAT | LFS_O_APPEND,
+                                     &lfs_stats_cfg) == 0) {
+                    lfs_file_write(&lfs_fs, &sf, line, (lfs_size_t)n);
+                    lfs_file_close(&lfs_fs, &sf);
+                }
+            }
+        }
+
         uint32_t write_usage = k_msgq_num_used_get(&sd_msgq);
         uint32_t prio_usage = k_msgq_num_used_get(&sd_prio_msgq);
         
@@ -1952,6 +1984,26 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     if (length > MAX_WRITE_SIZE) {
         LOG_ERR("write_to_file: length %u exceeds MAX_WRITE_SIZE %d", (unsigned)length, MAX_WRITE_SIZE);
         return 0;
+    }
+
+    /* Temporary instrumentation: accumulate bytes/calls over 10 s windows */
+    {
+        static int64_t  ingest_win_ms;
+        static uint32_t ingest_bytes_acc;
+        static uint32_t ingest_calls_acc;
+        int64_t now_i = k_uptime_get();
+        if (ingest_win_ms == 0) ingest_win_ms = now_i;
+        ingest_bytes_acc += length;
+        ingest_calls_acc++;
+        if (now_i - ingest_win_ms >= 10000) {
+            atomic_set(&ingest_snap_bytes,      (atomic_val_t)ingest_bytes_acc);
+            atomic_set(&ingest_snap_calls,      (atomic_val_t)ingest_calls_acc);
+            atomic_set(&ingest_snap_elapsed_ms, (atomic_val_t)(now_i - ingest_win_ms));
+            atomic_set(&ingest_snap_pending, 1);
+            ingest_bytes_acc = 0;
+            ingest_calls_acc = 0;
+            ingest_win_ms = now_i;
+        }
     }
 
     sd_req_t req = {0};
