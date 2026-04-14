@@ -307,31 +307,49 @@ static void parse_filename_to_meta(const char* filename, uint32_t size, AudioFil
 
     if (strncmp(filename, "TMP_", 4) == 0) {
         meta->is_tmp = true;
-        sscanf(filename, "TMP_%x_%x.txt", &meta->val1, &meta->val2);
+        meta->timestamp = (uint32_t)strtoul(filename + 4, NULL, 16);
+        const char *sep = strchr(filename + 4, '_');
+        if (sep) meta->uptime_offset = (uint32_t)strtoul(sep + 1, NULL, 16);
     } else {
         meta->is_tmp = false;
-        sscanf(filename, "%x.txt", &meta->val1);
+        meta->timestamp = (uint32_t)strtoul(filename, NULL, 16);
     }
 }
 
 void build_filename_from_meta(const AudioFileMeta_t* meta, char* out_buffer, size_t max_len)
 {
     if (meta->is_tmp) {
-        snprintf(out_buffer, max_len, "TMP_%08X_%08X.txt", meta->val1, meta->val2);
+        snprintf(out_buffer, max_len, "TMP_%08X_%08X.txt", meta->timestamp, meta->uptime_offset);
     } else {
-        snprintf(out_buffer, max_len, "%08X.txt", meta->val1);
+        snprintf(out_buffer, max_len, "%08X.txt", meta->timestamp);
     }
 }
 
 static int compare_meta(const AudioFileMeta_t* a, const AudioFileMeta_t* b)
 {
-    if (a->val1 != b->val1) {
-        return (a->val1 > b->val1) ? 1 : -1;
+    if (a->timestamp != b->timestamp) {
+        return (a->timestamp > b->timestamp) ? 1 : -1;
     }
-    if (a->val2 != b->val2) {
-        return (a->val2 > b->val2) ? 1 : -1;
+    if (a->uptime_offset != b->uptime_offset) {
+        return (a->uptime_offset > b->uptime_offset) ? 1 : -1;
     }
     return 0;
+}
+
+bool sd_is_current_recording_file_meta(const AudioFileMeta_t *meta)
+{
+    if (!meta) return false;
+    k_mutex_lock(&current_filename_lock, K_FOREVER);
+    if (current_filename[0] == '\0') {
+        k_mutex_unlock(&current_filename_lock);
+        return false;
+    }
+    AudioFileMeta_t current;
+    parse_filename_to_meta(current_filename, 0, &current);
+    k_mutex_unlock(&current_filename_lock);
+    return (current.timestamp == meta->timestamp &&
+            current.uptime_offset == meta->uptime_offset &&
+            current.is_tmp == meta->is_tmp);
 }
 
 // Thread-safe getter for the BLE thread

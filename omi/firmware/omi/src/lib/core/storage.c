@@ -265,7 +265,7 @@ static uint8_t heartbeat_count = 0;
 static int send_file_list_response(struct bt_conn *conn)
 {
     int sync_file_count = sd_get_cached_file_count();
-    if (sd_get_cached_file_count() == 0) {
+    if (sync_file_count == 0) {
         uint8_t zero_resp[5] = {PACKET_DATA, 0, 0, 0, 0};
         storage_notify(conn, zero_resp, 5);
         uint8_t eot = PACKET_EOT;
@@ -291,9 +291,7 @@ static int send_file_list_response(struct bt_conn *conn)
     for (int i = 0; i < sync_file_count; i++) {
         AudioFileMeta_t meta;
         if (sd_get_cached_file_meta(i, &meta) == 0) {
-            char filename[MAX_FILENAME_LEN];
-            build_filename_from_meta(&meta, filename, sizeof(filename));
-            if (!sd_is_current_recording_file(filename)) {
+            if (!sd_is_current_recording_file_meta(&meta)) {
                 total_included++;
             }
         }
@@ -322,14 +320,11 @@ static int send_file_list_response(struct bt_conn *conn)
                 continue;
             }
 
-            char filename[MAX_FILENAME_LEN];
-            build_filename_from_meta(&meta, filename, sizeof(filename));
-            if (sd_is_current_recording_file(filename)) {
+            if (sd_is_current_recording_file_meta(&meta)) {
                 continue;
             }
 
-            // Zero parsing overhead!
-            uint32_t timestamp = meta.val1;
+            uint32_t timestamp = meta.timestamp;
             uint32_t size = meta.file_size;
             uint32_t index = (uint32_t)files_processed;
 
