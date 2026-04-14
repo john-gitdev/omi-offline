@@ -28,6 +28,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   bool isInstalling = false;
   bool isInstalled = false;
   int installProgress = 0;
+  String? installError;
   bool isLegacySecureDFU = true;
   List<String> otaUpdateSteps = [];
   final mcumgr.FirmwareUpdateManagerFactory? managerFactory = mcumgr.FirmwareUpdateManagerFactory();
@@ -78,10 +79,33 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   }
 
   Future<void> startDfu(BtDevice btDevice, {bool fileInAssets = false, String? zipFilePath}) async {
-    if (isLegacySecureDFU) {
-      return startLegacyDfu(btDevice, fileInAssets: fileInAssets, zipFilePath: zipFilePath);
+    setState(() {
+      installError = null;
+    });
+    
+    String? localZipPath;
+    if (zipFilePath != null) {
+      // Copy to internal storage to ensure native DFU libs can access it
+      final dir = await getTemporaryDirectory();
+      final tempFile = File('${dir.path}/temp_firmware_${DateTime.now().millisecondsSinceEpoch}.zip');
+      await File(zipFilePath).copy(tempFile.path);
+      localZipPath = tempFile.path;
     }
-    return startMCUDfu(btDevice, fileInAssets: fileInAssets, zipFilePath: zipFilePath);
+
+    try {
+      if (isLegacySecureDFU) {
+        await startLegacyDfu(btDevice, fileInAssets: fileInAssets, zipFilePath: localZipPath);
+      } else {
+        await startMCUDfu(btDevice, fileInAssets: fileInAssets, zipFilePath: localZipPath);
+      }
+    } finally {
+      // Cleanup local temp file
+      if (localZipPath != null) {
+        try {
+          await File(localZipPath).delete();
+        } catch (_) {}
+      }
+    }
   }
 
   Future<void> killMcuUpdateManager() async {
@@ -98,6 +122,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   Future<void> startMCUDfu(BtDevice btDevice, {bool fileInAssets = false, String? zipFilePath}) async {
     setState(() {
       isInstalling = true;
+      installError = null;
     });
     await Provider.of<DeviceProvider>(context, listen: false).prepareDFU();
     await Future.delayed(const Duration(seconds: 2));
@@ -109,6 +134,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       if (mounted) {
         setState(() {
           isInstalling = false;
+          installError = 'Firmware file not found';
         });
       }
       return;
@@ -136,6 +162,11 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
           isInstalling = false;
           isInstalled = true;
         });
+      } else if (state == mcumgr.FirmwareUpgradeState.error) {
+         setState(() {
+          isInstalling = false;
+          installError = 'MCU DFU Error';
+        });
       } else {
         Logger.debug('update state: $state');
       }
@@ -160,6 +191,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
   Future<void> startLegacyDfu(BtDevice btDevice, {bool fileInAssets = false, String? zipFilePath}) async {
     setState(() {
       isInstalling = true;
+      installError = null;
     });
     await Provider.of<DeviceProvider>(context, listen: false).prepareDFU();
     await Future.delayed(const Duration(seconds: 2));
@@ -187,6 +219,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
         Logger.debug('deviceAddress: $deviceAddress, error: $error, errorType: $errorType, message: $message');
         setState(() {
           isInstalling = false;
+          installError = 'DFU FAILED: $message (Error: $errorType)';
         });
         // Reset firmware update state on error
         final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
