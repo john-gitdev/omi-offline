@@ -69,7 +69,7 @@ typedef struct {
     sd_req_type_t type;
     union {
         struct {
-            uint8_t *buf;
+            uint8_t buf[MAX_WRITE_SIZE];
             size_t len;
             struct read_resp *resp;
         } write;
