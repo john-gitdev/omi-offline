@@ -36,7 +36,6 @@ typedef enum {
     REQ_SAVE_OFFSET,
     REQ_CREATE_NEW_FILE,
     REQ_GET_FILE_STATS,
-    REQ_GET_FILE_LIST,
     REQ_DELETE_FILE,
     REQ_FLUSH_FILE,
     REQ_TIME_SYNCED,
@@ -56,13 +55,6 @@ struct file_stats_resp {
     int res;
     uint32_t file_count;
     uint64_t total_size;
-};
-
-/* File list response */
-struct file_list_resp {
-    struct k_sem sem;
-    int res;
-    int count;
 };
 
 /* Offset info structure stored in info.txt */
@@ -99,12 +91,6 @@ typedef struct {
         struct {
             struct file_stats_resp *resp;
         } file_stats;
-        struct {
-            char (*filenames)[MAX_FILENAME_LEN];
-            uint32_t *sizes;
-            int max_files;
-            struct file_list_resp *resp;
-        } file_list;
         struct {
             char filename[MAX_FILENAME_LEN];
             struct read_resp *resp;
@@ -264,27 +250,6 @@ void sd_notify_ble_state(bool connected);
  * @return 0 on success, negative error code otherwise
  */
 int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size);
-
-/**
- * @brief Get list of audio files sorted by timestamp (oldest first)
- *
- * @param filenames Array of filename buffers
- * @param max_files Maximum number of files to retrieve
- * @param count Pointer to store the actual number of files found
- * @return 0 on success, negative error code otherwise
- */
-int get_audio_file_list(char filenames[][MAX_FILENAME_LEN], int max_files, int *count);
-
-/**
- * @brief Get audio file list with per-file sizes (synchronous)
- *
- * @param filenames Array of filename buffers
- * @param sizes Array to store per-file sizes (may be NULL to skip)
- * @param max_files Maximum number of files to retrieve
- * @param count Pointer to store the actual number of files found
- * @return 0 on success, negative error code otherwise
- */
-int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t *sizes, int max_files, int *count);
 
 /**
  * @brief Delete a specific audio file by name.
