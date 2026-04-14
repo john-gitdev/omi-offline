@@ -321,14 +321,22 @@ static void parse_filename_to_meta(const char* filename, uint32_t size, AudioFil
         const char *sep = strchr(filename + 4, '_');
         if (sep) meta->uptime_offset = (uint32_t)strtoul(sep + 1, NULL, 16);
     } else {
-        meta->is_tmp = false;
-        meta->timestamp = (uint32_t)strtoul(filename, NULL, 16);
+        char *endptr = NULL;
+        uint32_t ts = (uint32_t)strtoul(filename, &endptr, 16);
+        if (endptr == filename) {
+            /* strtoul consumed zero characters — filename is not a hex-named file (e.g. stats.txt) */
+            meta->is_stats = true;
+        } else {
+            meta->timestamp = ts;
+        }
     }
 }
 
 void build_filename_from_meta(const AudioFileMeta_t* meta, char* out_buffer, size_t max_len)
 {
-    if (meta->is_tmp) {
+    if (meta->is_stats) {
+        snprintf(out_buffer, max_len, "stats.txt");
+    } else if (meta->is_tmp) {
         snprintf(out_buffer, max_len, "TMP_%08X_%08X.txt", meta->timestamp, meta->uptime_offset);
     } else {
         snprintf(out_buffer, max_len, "%08X.txt", meta->timestamp);
