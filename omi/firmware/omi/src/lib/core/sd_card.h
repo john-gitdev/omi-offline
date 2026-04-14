@@ -14,15 +14,16 @@
 
 
 typedef struct {
-    uint32_t val1;       // First hex ID (timestamp)
-    uint32_t val2;       // Second hex ID (if TMP)
-    uint32_t file_size;  // Size in bytes
-    bool is_tmp;         // true if it has the TMP_ prefix
+    uint32_t timestamp;      // Primary hex value: UTC epoch for normal files, uptime ticks for TMP
+    uint32_t uptime_offset;  // Secondary hex value: only set for TMP_ files (second component)
+    uint32_t file_size;      // Size in bytes
+    bool is_tmp;             // true if the filename has the TMP_ prefix
 } AudioFileMeta_t;
 
 // Thread-safe accessors
 int sd_get_cached_file_count(void);
 int sd_get_cached_file_meta(int index, AudioFileMeta_t *out_meta);
+bool sd_is_current_recording_file_meta(const AudioFileMeta_t *meta);
 
 // Utility for reconstructing LittleFS/BLE strings
 void build_filename_from_meta(const AudioFileMeta_t* meta, char* out_buffer, size_t max_len);
