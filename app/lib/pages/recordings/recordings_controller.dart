@@ -726,7 +726,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       WakelockPlus.enable();
       await ForegroundUtil.startForegroundTask();
       try {
-        await _manager.processAll(unprocessed, (_) {}, backgroundMode: false);
+        await _manager.processAll(unprocessed, (_, __) {}, backgroundMode: false);
       } catch (e) {
         WakelockPlus.disable();
         await ForegroundUtil.stopForegroundTask();

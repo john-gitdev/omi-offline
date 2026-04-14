@@ -969,7 +969,7 @@ class RecordingsManager {
         ));
       } catch (_) {}
     }
-    recordings.sort((a, b) => r.startMs.compareTo(b.startMs));
+    recordings.sort((a, b) => a.startMs.compareTo(b.startMs));
 
     for (final markerTime in markerTimestamps) {
       final markerMs = markerTime.millisecondsSinceEpoch;
