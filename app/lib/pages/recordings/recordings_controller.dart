@@ -215,7 +215,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
             if (_isDisposed) return;
             _spState = SyncProcessState.processing;
             _totalMinutes = totalBytes / 252000.0;
-            _minutesRemaining = (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
+            _minutesRemaining =
+                (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
             _processingProgress = RecordingsManager.processingProgress.value;
             notifyListeners();
           }),
@@ -233,7 +234,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               if (_isDisposed) return;
               _spState = SyncProcessState.processing;
               _totalMinutes = totalBytes / 252000.0;
-              _minutesRemaining = (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
+              _minutesRemaining =
+                  (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
               _processingProgress = RecordingsManager.processingProgress.value;
               _syncedCount = 0;
               _syncSpeed = 0.0;
@@ -576,7 +578,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     try {
       await _manager.processAll(
         activeBatches,
-        (_) {}, // global progress listener handles this
+        (_, __) {}, // global progress listener handles this
         backgroundMode: backgroundMode,
         onRecordingFinalized: () {
           unawaited(reloadBatchesSilently());
@@ -691,10 +693,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> deleteConversation(Conversation conversation) async {
-    final key = conversation.uploadKey;
-    if (key != null) {
-      await _prefs.removeUploadedFromHeypocket({key});
-    }
     await RecordingsManager.deleteConversation(conversation);
     await _loadBatches();
   }
@@ -715,7 +713,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final unprocessed = daysWithBins.where((b) => b.finalizedRecordings.isEmpty).toList();
     if (unprocessed.isNotEmpty) {
       final totalBytes = unprocessed.expand((b) => b.rawSegments).fold(0, (sum, f) {
-        try { return sum + f.lengthSync(); } catch (_) { return sum; }
+        try {
+          return sum + f.lengthSync();
+        } catch (_) {
+          return sum;
+        }
       });
 
       _totalMinutes = totalBytes / 252000.0;
@@ -765,7 +767,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (freshBatch.isEmpty) return;
 
     final totalBytes = freshBatch.expand((b) => b.rawSegments).fold(0, (sum, f) {
-      try { return sum + f.lengthSync(); } catch (_) { return sum; }
+      try {
+        return sum + f.lengthSync();
+      } catch (_) {
+        return sum;
+      }
     });
 
     _lastActiveStage = 'processing';
@@ -780,7 +786,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     try {
       await _manager.processAll(
         freshBatch,
-        (_) {}, // global progress listener handles this
+        (_, __) {}, // global progress listener handles this
         backgroundMode: false,
         onRecordingFinalized: () {
           unawaited(reloadBatchesSilently());
@@ -861,15 +867,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               .then((jobId) => OmiApiClient.pollSyncJob(jobId))
               .then((_) => binFile.delete())
               .catchError((e) {
-                Logger.error('Omi sync failed for $binPath: $e');
-                return binFile; // satisfy FileSystemEntity return type
-              })
-              .whenComplete(() {
-                _syncingBinFiles.remove(binPath);
-                if (!_isDisposed) {
-                  WidgetsBinding.instance.addPostFrameCallback((_) => tryAutoSyncNext());
-                }
-              }),
+            Logger.error('Omi sync failed for $binPath: $e');
+            return binFile; // satisfy FileSystemEntity return type
+          }).whenComplete(() {
+            _syncingBinFiles.remove(binPath);
+            if (!_isDisposed) {
+              WidgetsBinding.instance.addPostFrameCallback((_) => tryAutoSyncNext());
+            }
+          }),
         );
         return; // one at a time
       }

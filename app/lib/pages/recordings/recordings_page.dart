@@ -74,8 +74,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                 ),
                 const SizedBox(height: 16),
                 GestureDetector(
-                  onTap: () =>
-                      setDialogState(() => doNotShowAgain = !doNotShowAgain),
+                  onTap: () => setDialogState(() => doNotShowAgain = !doNotShowAgain),
                   child: Row(
                     children: [
                       SizedBox(
@@ -83,8 +82,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         height: 20,
                         child: Checkbox(
                           value: doNotShowAgain,
-                          onChanged: (v) =>
-                              setDialogState(() => doNotShowAgain = v ?? false),
+                          onChanged: (v) => setDialogState(() => doNotShowAgain = v ?? false),
                           activeColor: Colors.deepPurpleAccent,
                           side: const BorderSide(color: Colors.grey),
                         ),
@@ -126,9 +124,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _showCancelModal() async {
-    if (_controller.spState != SyncProcessState.syncing &&
-        _controller.spState != SyncProcessState.processing)
-      return;
+    if (_controller.spState != SyncProcessState.syncing && _controller.spState != SyncProcessState.processing) return;
     final confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -184,6 +180,11 @@ class _RecordingsPageState extends State<RecordingsPage> {
     if (confirm != true) return;
     try {
       await _controller.deleteConversation(conversation);
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Deleted conversation from ${conversation.timeRangeLabel}')),
+        );
+      }
     } catch (e) {
       if (mounted)
         messenger.showSnackBar(
@@ -223,9 +224,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
 
   Future<void> _runAdjustmentCleanup() async {
     if (_controller.spState != SyncProcessState.idle) return;
-    final daysWithBins = _controller.batches
-        .where((b) => b.rawSegments.isNotEmpty)
-        .toList();
+    final daysWithBins = _controller.batches.where((b) => b.rawSegments.isNotEmpty).toList();
     if (daysWithBins.isEmpty) return;
 
     final confirm = await showDialog<bool>(
@@ -301,9 +300,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
     if (_controller.uploadingFiles.contains(uploadKey)) return;
 
     final alreadyUploaded = _prefs.isUploadedToHeypocket(uploadKey);
-    final title = alreadyUploaded
-        ? 'Re-upload Conversation'
-        : 'Upload Conversation';
+    final title = alreadyUploaded ? 'Re-upload Conversation' : 'Upload Conversation';
     final content = alreadyUploaded
         ? 'This conversation was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)'
         : 'Upload this conversation to HeyPocket?';
@@ -373,18 +370,14 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         vertical: 8,
                       ),
                       decoration: BoxDecoration(
-                        color: selected
-                            ? Colors.deepPurpleAccent
-                            : const Color(0xFF2C2C2E),
+                        color: selected ? Colors.deepPurpleAccent : const Color(0xFF2C2C2E),
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text(
                         labels[i],
                         style: TextStyle(
                           color: selected ? Colors.white : Colors.grey.shade300,
-                          fontWeight: selected
-                              ? FontWeight.w600
-                              : FontWeight.normal,
+                          fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
                         ),
                       ),
                     ),
@@ -412,8 +405,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
     final map = <String, List<MarkerConversation>>{};
     for (final mc in _controller.markerConversations) {
       final dt = mc.markerTime;
-      final dateStr =
-          '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+      final dateStr = '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
       map.putIfAbsent(dateStr, () => []).add(mc);
     }
     return map;
@@ -576,29 +568,24 @@ class _RecordingsPageState extends State<RecordingsPage> {
                 if (controller.markerConversations.isNotEmpty)
                   IconButton(
                     icon: FaIcon(
-                      _showMarkersOnly
-                          ? FontAwesomeIcons.solidBookmark
-                          : FontAwesomeIcons.bookmark,
+                      _showMarkersOnly ? FontAwesomeIcons.solidBookmark : FontAwesomeIcons.bookmark,
                       color: _showMarkersOnly ? Colors.amber : Colors.white,
                       size: 20,
                     ),
-                    onPressed: () =>
-                        setState(() => _showMarkersOnly = !_showMarkersOnly),
+                    onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
                     tooltip: 'Toggle markers only',
                   ),
                 IconButton(
                   icon: FaIcon(
                     FontAwesomeIcons.boltLightning,
-                    color:
-                        (deviceProvider.isConnected &&
+                    color: (deviceProvider.isConnected &&
                             controller.spState == SyncProcessState.idle &&
                             !controller.forceSyncOnCooldown)
                         ? Colors.white
                         : Colors.grey.shade700,
                     size: 20,
                   ),
-                  onPressed:
-                      (deviceProvider.isConnected &&
+                  onPressed: (deviceProvider.isConnected &&
                           controller.spState == SyncProcessState.idle &&
                           !controller.forceSyncOnCooldown)
                       ? _forceSyncButtonPressed
@@ -608,9 +595,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                 IconButton(
                   icon: FaIcon(
                     FontAwesomeIcons.filter,
-                    color: _minFilterSeconds > 0
-                        ? Colors.deepPurpleAccent
-                        : Colors.white,
+                    color: _minFilterSeconds > 0 ? Colors.deepPurpleAccent : Colors.white,
                     size: 18,
                   ),
                   onPressed: _showFilterSheet,
@@ -661,8 +646,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                       controller.startPipeline();
                     else if (controller.spState == SyncProcessState.resume)
                       controller.resumePipeline();
-                    else if (controller.spState == SyncProcessState.error)
-                      controller.retryFromError();
+                    else if (controller.spState == SyncProcessState.error) controller.retryFromError();
                   },
                 ),
                 AccumulatingBanner(
@@ -719,9 +703,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   adjustmentMode: _prefs.adjustmentMode,
                   adjustmentModeWasEnabled: _prefs.adjustmentModeWasEnabled,
                   spState: controller.spState,
-                  pendingDays: controller.batches
-                      .where((b) => b.rawSegments.isNotEmpty)
-                      .length,
+                  pendingDays: controller.batches.where((b) => b.rawSegments.isNotEmpty).length,
                   onTap: _runAdjustmentCleanup,
                 ),
                 Expanded(
@@ -735,15 +717,13 @@ class _RecordingsPageState extends State<RecordingsPage> {
                           builder: (context) {
                             if (_showMarkersOnly) {
                               final byDate = _groupMarkersByDate();
-                              final dates = byDate.keys.toList()
-                                ..sort((a, b) => b.compareTo(a));
+                              final dates = byDate.keys.toList()..sort((a, b) => b.compareTo(a));
                               return RefreshIndicator(
                                 color: Colors.deepPurpleAccent,
                                 onRefresh: () async {},
                                 child: dates.isEmpty
                                     ? ListView(
-                                        physics:
-                                            const AlwaysScrollableScrollPhysics(),
+                                        physics: const AlwaysScrollableScrollPhysics(),
                                         children: [
                                           const SizedBox(height: 100),
                                           Center(
@@ -759,36 +739,28 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                         ],
                                       )
                                     : ListView.builder(
-                                        physics:
-                                            const AlwaysScrollableScrollPhysics(),
+                                        physics: const AlwaysScrollableScrollPhysics(),
                                         padding: const EdgeInsets.all(16),
                                         itemCount: dates.length,
-                                        itemBuilder: (context, index) =>
-                                            MarkerDayCard(
-                                              dateStr: dates[index],
-                                              markers: byDate[dates[index]]!,
-                                              onMarkerTap:
-                                                  _openMarkerConversation,
-                                              onDeleteMarkerConversation:
-                                                  _deleteMarkerConversation,
-                                            ),
+                                        itemBuilder: (context, index) => MarkerDayCard(
+                                          dateStr: dates[index],
+                                          markers: byDate[dates[index]]!,
+                                          onMarkerTap: _openMarkerConversation,
+                                          onDeleteMarkerConversation: _deleteMarkerConversation,
+                                        ),
                                       ),
                               );
                             }
 
                             final markerMap = _buildMarkerMap();
-                            final visibleBatches = controller.batches
-                                .where((b) => b.finalizedRecordings.isNotEmpty)
-                                .toList();
-                            final unknownRecordings = visibleBatches
-                                .expand((b) => b.finalizedRecordings)
-                                .where((c) => c.isUnknown)
-                                .toList();
+                            final visibleBatches =
+                                controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
+                            final unknownRecordings =
+                                visibleBatches.expand((b) => b.finalizedRecordings).where((c) => c.isUnknown).toList();
                             return RefreshIndicator(
                               color: Colors.deepPurpleAccent,
                               onRefresh: () {
-                                if (controller.spState !=
-                                    SyncProcessState.idle) {
+                                if (controller.spState != SyncProcessState.idle) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
                                       content: Text('Sync already in progress'),
@@ -800,8 +772,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                               },
                               child: visibleBatches.isEmpty
                                   ? ListView(
-                                      physics:
-                                          const AlwaysScrollableScrollPhysics(),
+                                      physics: const AlwaysScrollableScrollPhysics(),
                                       children: [
                                         const SizedBox(height: 100),
                                         Center(
@@ -815,13 +786,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                                   fontSize: 16,
                                                 ),
                                               ),
-                                              if (deviceProvider
-                                                  .isConnected) ...[
+                                              if (deviceProvider.isConnected) ...[
                                                 const SizedBox(height: 32),
                                                 ElevatedButton.icon(
-                                                  onPressed:
-                                                      controller.spState ==
-                                                          SyncProcessState.idle
+                                                  onPressed: controller.spState == SyncProcessState.idle
                                                       ? controller.startPipeline
                                                       : null,
                                                   icon: const FaIcon(
@@ -831,33 +799,25 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                                   label: const Text(
                                                     'Sync and Process',
                                                   ),
-                                                  style:
-                                                      ElevatedButton.styleFrom(
-                                                        backgroundColor: Colors
-                                                            .deepPurpleAccent,
-                                                        foregroundColor:
-                                                            Colors.white,
-                                                      ),
+                                                  style: ElevatedButton.styleFrom(
+                                                    backgroundColor: Colors.deepPurpleAccent,
+                                                    foregroundColor: Colors.white,
+                                                  ),
                                                 ),
                                               ] else ...[
                                                 const SizedBox(height: 32),
                                                 ElevatedButton(
-                                                  onPressed: () =>
-                                                      Navigator.of(
-                                                        context,
-                                                      ).push(
-                                                        MaterialPageRoute(
-                                                          builder: (c) =>
-                                                              const FindDevicesPage(),
-                                                        ),
-                                                      ),
-                                                  style:
-                                                      ElevatedButton.styleFrom(
-                                                        backgroundColor: Colors
-                                                            .deepPurpleAccent,
-                                                        foregroundColor:
-                                                            Colors.white,
-                                                      ),
+                                                  onPressed: () => Navigator.of(
+                                                    context,
+                                                  ).push(
+                                                    MaterialPageRoute(
+                                                      builder: (c) => const FindDevicesPage(),
+                                                    ),
+                                                  ),
+                                                  style: ElevatedButton.styleFrom(
+                                                    backgroundColor: Colors.deepPurpleAccent,
+                                                    foregroundColor: Colors.white,
+                                                  ),
                                                   child: const Text(
                                                     'Connect Omi',
                                                   ),
@@ -869,8 +829,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                       ],
                                     )
                                   : ListView.builder(
-                                      physics:
-                                          const AlwaysScrollableScrollPhysics(),
+                                      physics: const AlwaysScrollableScrollPhysics(),
                                       padding: const EdgeInsets.all(16),
                                       itemCount: visibleBatches.length + 1,
                                       itemBuilder: (context, index) {
@@ -885,21 +844,16 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           markerMap: markerMap,
                                           minFilterSeconds: _minFilterSeconds,
                                           adjustmentMode: _prefs.adjustmentMode,
-                                          heypocketApiKey:
-                                              _prefs.heypocketApiKey,
-                                          isUploaded:
-                                              _prefs.isUploadedToHeypocket,
-                                          isUploading: controller
-                                              .uploadingFiles
-                                              .contains,
+                                          heypocketApiKey: _prefs.heypocketApiKey,
+                                          isUploaded: _prefs.isUploadedToHeypocket,
+                                          isUploading: controller.uploadingFiles.contains,
                                           onUploadTap: _handleUploadTap,
                                           onConversationTap: _openConversation,
                                           onMarkerTap: _openMarkerConversation,
-                                          onExportAll: (conversations) =>
-                                              _exportAll(
-                                                visibleBatches[batchIndex],
-                                                conversations,
-                                              ),
+                                          onExportAll: (conversations) => _exportAll(
+                                            visibleBatches[batchIndex],
+                                            conversations,
+                                          ),
                                           onDeleteDay: () => _deleteDay(
                                             visibleBatches[batchIndex],
                                           ),
@@ -908,18 +862,18 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           ),
                                           onDeleteConversation: _deleteConversation,
                                           onDeleteMarkerConversation: _deleteMarkerConversation,
-                                          );
-                                          },
-                                          ),
-                                          );
-                                          },
-                                          ),
-                                          ),
-                                          ],
-                                          ),
-                                          );
-                                          },
-                                          ),
-                                          );
-                                          }
-                                          }
+                                        );
+                                      },
+                                    ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
