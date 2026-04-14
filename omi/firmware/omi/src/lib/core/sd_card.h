@@ -18,6 +18,7 @@ typedef struct {
     uint32_t uptime_offset;  // Secondary hex value: only set for TMP_ files (second component)
     uint32_t file_size;      // Size in bytes
     bool is_tmp;             // true if the filename has the TMP_ prefix
+    bool is_stats;           // true if the file is stats.txt (non-parseable hex name)
 } AudioFileMeta_t;
 
 // Thread-safe accessors
