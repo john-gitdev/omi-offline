@@ -12,6 +12,22 @@
 #define MAX_AUDIO_FILES 300  /* 24h battery × 12 files/hour (5-min rotation) = 288 max; 300 gives headroom. */
 #define FILE_ROTATION_INTERVAL_MS (5 * 60 * 1000) // 5 minutes in milliseconds
 
+
+typedef struct {
+    uint32_t timestamp;      // Primary hex value: UTC epoch for normal files, uptime ticks for TMP
+    uint32_t uptime_offset;  // Secondary hex value: only set for TMP_ files (second component)
+    uint32_t file_size;      // Size in bytes
+    bool is_tmp;             // true if the filename has the TMP_ prefix
+} AudioFileMeta_t;
+
+// Thread-safe accessors
+int sd_get_cached_file_count(void);
+int sd_get_cached_file_meta(int index, AudioFileMeta_t *out_meta);
+bool sd_is_current_recording_file_meta(const AudioFileMeta_t *meta);
+
+// Utility for reconstructing LittleFS/BLE strings
+void build_filename_from_meta(const AudioFileMeta_t* meta, char* out_buffer, size_t max_len);
+
 /* Request types for the SD worker */
 typedef enum {
     REQ_CLEAR_AUDIO_DIR,

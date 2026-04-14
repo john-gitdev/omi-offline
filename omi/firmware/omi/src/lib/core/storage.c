@@ -52,10 +52,6 @@ static uint32_t current_read_offset = 0;
 #define CMD_ROTATE_FILE     0x13   // Close current recording file and open a new one
 
 /* Multi-file sync state */
-static K_MUTEX_DEFINE(file_list_mutex);
-static char sync_file_list[MAX_AUDIO_FILES][MAX_FILENAME_LEN];
-static uint32_t sync_file_sizes[MAX_AUDIO_FILES];
-static int sync_file_count = 0;
 static int current_sync_file_index = -1;
 static uint8_t list_files_requested = 0;  /* Deferred to storage thread */
 static int16_t delete_file_index = -1;     /* -1 = no delete, >=0 = file index to delete */
@@ -252,33 +248,14 @@ static uint16_t get_ble_chunk_size(struct bt_conn *conn, uint8_t include_timesta
 
 static uint8_t heartbeat_count = 0;
 
-/**
- * @brief Refresh file list cache for multi-file sync
- */
-static int refresh_file_list_cache(void)
-{
-    k_mutex_lock(&file_list_mutex, K_FOREVER);
-    int ret = get_audio_file_list_with_sizes(sync_file_list, sync_file_sizes,
-                                             MAX_AUDIO_FILES, &sync_file_count);
-    if (ret < 0) {
-        LOG_ERR("Failed to get file list: %d", ret);
-        sync_file_count = 0;
-        k_mutex_unlock(&file_list_mutex);
-        return ret;
-    }
 
-    LOG_INF("File list refreshed: %d files", sync_file_count);
-    k_mutex_unlock(&file_list_mutex);
-    return sync_file_count;
-}
 
 /**
  * @brief Send file list response
  * Format: [count:1][ts1:4][sz1:4][ts2:4][sz2:4]...
  *
- * Assumes the file list cache (sync_file_list/sync_file_sizes/sync_file_count)
- * has already been populated by the caller via refresh_file_list_cache().
- * Refreshes only when the cache is empty (sync_file_count == 0).
+
+
  *
  * The currently-recording file is excluded from the response.  Syncing an
  * open write file causes contention on the sd_worker and results in
@@ -287,6 +264,7 @@ static int refresh_file_list_cache(void)
  */
 static int send_file_list_response(struct bt_conn *conn)
 {
+    int sync_file_count = sd_get_cached_file_count();
     if (sync_file_count == 0) {
         uint8_t zero_resp[5] = {PACKET_DATA, 0, 0, 0, 0};
         storage_notify(conn, zero_resp, 5);
@@ -311,8 +289,11 @@ static int send_file_list_response(struct bt_conn *conn)
     uint32_t total_included = 0;
 
     for (int i = 0; i < sync_file_count; i++) {
-        if (!sd_is_current_recording_file(sync_file_list[i])) {
-            total_included++;
+        AudioFileMeta_t meta;
+        if (sd_get_cached_file_meta(i, &meta) == 0) {
+            if (!sd_is_current_recording_file_meta(&meta)) {
+                total_included++;
+            }
         }
     }
 
@@ -334,18 +315,17 @@ static int send_file_list_response(struct bt_conn *conn)
 
         uint8_t chunk_count = 0;
         for (; files_processed < sync_file_count && chunk_count < chunk_limit; files_processed++) {
-            if (sd_is_current_recording_file(sync_file_list[files_processed])) {
+            AudioFileMeta_t meta;
+            if (sd_get_cached_file_meta(files_processed, &meta) < 0) {
                 continue;
             }
 
-            /* Extract timestamp: handle hex UTC or TMP_UPTIME_... formats */
-            uint32_t timestamp = 0;
-            if (strncmp(sync_file_list[files_processed], "TMP_", 4) == 0) {
-                timestamp = (uint32_t)strtoul(sync_file_list[files_processed] + 4, NULL, 16);
-            } else {
-                timestamp = (uint32_t)strtoul(sync_file_list[files_processed], NULL, 16);
+            if (sd_is_current_recording_file_meta(&meta)) {
+                continue;
             }
-            uint32_t size = sync_file_sizes[files_processed];
+
+            uint32_t timestamp = meta.timestamp;
+            uint32_t size = meta.file_size;
             uint32_t index = (uint32_t)files_processed;
 
             /* Little-Endian for App parser - 12 byte entry: [idx:4][ts:4][sz:4] */
@@ -367,7 +347,6 @@ static int send_file_list_response(struct bt_conn *conn)
             chunk_count++;
         }
 
-
         if (chunk_count > 0 || (files_processed == sync_file_count && total_included == 0)) {
             storage_notify(conn, storage_buffer, resp_len);
             k_msleep(15); /* Small gap for BLE stability */
@@ -380,27 +359,27 @@ static int send_file_list_response(struct bt_conn *conn)
     return 0;
 }
 
+
 /**
  * @brief Setup transfer for specific file by index
  */
 static int setup_file_transfer(int file_index, uint32_t start_offset)
 {
-    if (file_index < 0 || file_index >= sync_file_count) {
+    AudioFileMeta_t meta;
+
+    if (sd_get_cached_file_meta(file_index, &meta) < 0) {
         LOG_ERR("File index out of range: %d", file_index);
         return -1;
     }
-
-    if (sync_file_list[file_index][0] == '\0') {
-        LOG_ERR("File at index %d was already deleted", file_index);
-        return -1;
-    }
     
-    strncpy(current_read_filename, sync_file_list[file_index], MAX_FILENAME_LEN - 1);
+    // Reconstruct the %08X string just-in-time for LittleFS to open
+    build_filename_from_meta(&meta, current_read_filename, sizeof(current_read_filename));
+
     current_read_offset = start_offset;
     current_sync_file_index = file_index;
     
-    if (current_read_offset < sync_file_sizes[file_index]) {
-        atomic_set(&remaining_length, sync_file_sizes[file_index] - current_read_offset);
+    if (current_read_offset < meta.file_size) {
+        atomic_set(&remaining_length, meta.file_size - current_read_offset);
     } else {
         atomic_clear(&remaining_length);
     }
@@ -410,17 +389,21 @@ static int setup_file_transfer(int file_index, uint32_t start_offset)
     return 0;
 }
 
+
 /**
  * @brief Delete specific file by index
  */
 static int delete_file_by_index(int file_index)
 {
-    if (file_index < 0 || file_index >= sync_file_count) {
+    AudioFileMeta_t meta;
+
+    if (sd_get_cached_file_meta(file_index, &meta) < 0) {
         return -1;
     }
+
     /* Copy target filename so we are robust to list refreshes */
     char target_name[MAX_FILENAME_LEN] = {0};
-    strncpy(target_name, sync_file_list[file_index], MAX_FILENAME_LEN - 1);
+    build_filename_from_meta(&meta, target_name, sizeof(target_name));
 
     /* Delegate deletion to SD worker so it can safely handle
      * the case where this is the currently-recording file. */
@@ -432,13 +415,11 @@ static int delete_file_by_index(int file_index)
 
     LOG_INF("Deleted file[%d]: %s", file_index, target_name);
     
-    /* Mark as deleted in cache instead of refreshing. This keeps indices 
-     * stable for the rest of the app's sync loop. */
-    sync_file_list[file_index][0] = '\0';
-    sync_file_sizes[file_index] = 0;
+    /* We don't modify the cache here, SD worker handles invalidating the cache. */
     
     return 0;
 }
+
 
 static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *conn)
 {
@@ -469,9 +450,7 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
                            | (uint32_t)((uint8_t *) buf)[5] << 24;
         }
         
-        if (sync_file_count == 0) refresh_file_list_cache();
-        
-        if (file_index >= sync_file_count) {
+        if (file_index >= sd_get_cached_file_count()) {
             return FILE_INDEX_OUT_OF_RANGE;
         }
         
@@ -487,12 +466,12 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
         if (len < 2) return INVALID_COMMAND;
 
         uint8_t file_index = ((uint8_t *) buf)[1];
-        if (sync_file_count == 0) {
+        if (sd_get_cached_file_count() == 0) {
             /* File list not cached, defer refresh + delete to storage thread */
             delete_file_index = file_index;
             return 0xFF;
         }
-        if (file_index >= sync_file_count) {
+        if (file_index >= sd_get_cached_file_count()) {
             return FILE_INDEX_OUT_OF_RANGE;
         }
 
@@ -710,25 +689,16 @@ void storage_write(void)
                 LOG_WRN("CMD_LIST_FILES: SD card still busy after 10s, proceeding anyway");
             }
 
-            /* Always refresh cache so the response is up-to-date. */
-            int refresh_ret = refresh_file_list_cache();
             if (conn) {
-                if (refresh_ret < 0) {
-                    uint8_t error_resp[2] = {PACKET_ACK, (uint8_t)(-refresh_ret)};
-                    storage_notify(conn, error_resp, 2);
-                } else {
-                    send_file_list_response(conn);
-                }
+                send_file_list_response(conn);
             }
         }
         if (delete_file_index >= 0) {
             int16_t idx = delete_file_index;
             delete_file_index = -1;
 
-            if (sync_file_count == 0) refresh_file_list_cache();
-
             uint8_t result = 0;
-            if (idx >= sync_file_count) {
+            if (idx >= sd_get_cached_file_count()) {
                 result = FILE_INDEX_OUT_OF_RANGE;
             } else if (delete_file_by_index(idx) < 0) {
                 result = FILE_NOT_FOUND;
@@ -743,7 +713,6 @@ void storage_write(void)
         if (clear_storage_requested) {
             clear_storage_requested = 0;
             int ret = clear_audio_directory();
-            sync_file_count = 0; // Invalidate cache
             if (conn) {
                 uint8_t result = (ret >= 0) ? 0 : 1;
                 uint8_t ack[2] = {PACKET_ACK, result};
@@ -758,8 +727,6 @@ void storage_write(void)
              * is only sent after the old file is fully sealed and the new one is open.
              * The app can safely call CMD_LIST_FILES immediately after the ACK. */
             int ret = create_new_audio_file();
-            /* Invalidate file list cache — the rotated file now appears in the list. */
-            sync_file_count = 0;
             if (conn) {
                 uint8_t result = (ret >= 0) ? 0 : 1;
                 uint8_t ack[2] = {PACKET_ACK, result};
