@@ -690,6 +690,14 @@ void storage_write(void)
             }
 
             if (conn) {
+                /* Refresh cache before building the response — the cache may be stale
+                 * after a file rotation, time-sync rename, or deletion that called
+                 * invalidate_file_cache() since boot.  get_audio_file_stats() dispatches
+                 * REQ_GET_FILE_STATS to the SD worker which calls ensure_file_cache(),
+                 * so this is safe to call from the storage thread. */
+                uint32_t dummy_count;
+                uint64_t dummy_size;
+                get_audio_file_stats(&dummy_count, &dummy_size);
                 send_file_list_response(conn);
             }
         }
