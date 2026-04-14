@@ -324,6 +324,10 @@ static void parse_filename_to_meta(const char* filename, uint32_t size, AudioFil
             meta->is_stats = true;
         } else {
             meta->timestamp = ts;
+            /* Tokenized format: %08X_%08X.txt — second token is session_id */
+            if (endptr && *endptr == '_') {
+                meta->uptime_offset = (uint32_t)strtoul(endptr + 1, NULL, 16);
+            }
         }
     }
 }
@@ -334,6 +338,8 @@ void build_filename_from_meta(const AudioFileMeta_t* meta, char* out_buffer, siz
         snprintf(out_buffer, max_len, "stats.txt");
     } else if (meta->is_tmp) {
         snprintf(out_buffer, max_len, "TMP_%08X_%08X.txt", meta->timestamp, meta->uptime_offset);
+    } else if (meta->uptime_offset != 0) {
+        snprintf(out_buffer, max_len, "%08X_%08X.txt", meta->timestamp, meta->uptime_offset);
     } else {
         snprintf(out_buffer, max_len, "%08X.txt", meta->timestamp);
     }
