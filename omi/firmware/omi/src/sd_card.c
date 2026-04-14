@@ -67,7 +67,7 @@ static struct lfs_file_config lfs_fdata_cfg = {.buffer = lfs_fdata_buf};
 static struct lfs_file_config lfs_finfo_cfg = {.buffer = lfs_finfo_buf};
 
 /* Temporary instrumentation: buffer for stats.txt writes (remove after measurement) */
-static uint8_t lfs_stats_buf[LFS_CACHE_SIZE];
+static uint8_t lfs_stats_buf[8192];
 static struct lfs_file_config lfs_stats_cfg = {.buffer = lfs_stats_buf};
 
 /* LFS I/O buffers — sized to cache_size (8192) for multi-sector I/O */
