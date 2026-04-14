@@ -9,7 +9,7 @@
 #define MAX_STORAGE_BYTES 0x1E000000 // 480MB
 #define MAX_WRITE_SIZE 440
 #define MAX_FILENAME_LEN 64
-#define MAX_AUDIO_FILES 300  /* 24h battery × 12 files/hour (5-min rotation) = 288 max; 300 gives headroom. */
+#define MAX_AUDIO_FILES 150  /* 12h × 12 files/hour (5-min rotation) = 144 max; 150 gives headroom. */
 #define FILE_ROTATION_INTERVAL_MS (5 * 60 * 1000) // 5 minutes in milliseconds
 
 
