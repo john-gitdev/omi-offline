@@ -487,7 +487,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         child: Padding(
           padding: const EdgeInsets.all(24.0),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisAlignment: MainAxisAlignment.start,
             children: [
               const FaIcon(FontAwesomeIcons.bug, size: 48, color: Colors.amber),
               const SizedBox(height: 16),
