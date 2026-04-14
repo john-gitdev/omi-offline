@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
-import 'package:omi/services/omi_api_client.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
 
@@ -19,13 +18,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late bool _use24HourTime;
   late bool _adjustmentMode;
   late bool _convertOpusToM4a;
-  late bool _omiSyncEnabled;
-  bool _omiTestingConnection = false;
-  bool? _omiTestResult;
-
-  final _omiIdTokenController = TextEditingController();
-  final _omiRefreshTokenController = TextEditingController();
-  final _omiFirebaseApiKeyController = TextEditingController();
 
   late double _vadSpeechThreshold;
   late int _vadSplitSeconds;
@@ -45,10 +37,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
     _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
     _convertOpusToM4a = SharedPreferencesUtil().convertOpusToM4a;
-    _omiSyncEnabled = SharedPreferencesUtil().omiSyncEnabled;
-    _omiIdTokenController.text = SharedPreferencesUtil().omiIdToken;
-    _omiRefreshTokenController.text = SharedPreferencesUtil().omiRefreshToken;
-    _omiFirebaseApiKeyController.text = SharedPreferencesUtil().omiFirebaseApiKey;
 
     _vadSpeechThreshold = SharedPreferencesUtil().vadSpeechThreshold;
     _vadSplitSeconds = SharedPreferencesUtil().vadSplitSeconds;
@@ -62,9 +50,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
   @override
   void dispose() {
-    _omiIdTokenController.dispose();
-    _omiRefreshTokenController.dispose();
-    _omiFirebaseApiKeyController.dispose();
     super.dispose();
   }
 
@@ -91,11 +76,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     prefs.vadGapSeconds = _vadGapSeconds;
     prefs.vadMaxConversationMinutes = _vadMaxConversationMinutes;
     prefs.markerLookbackSeconds = _markerLookbackSeconds;
-
-    prefs.omiSyncEnabled = _omiSyncEnabled;
-    prefs.omiIdToken = _omiIdTokenController.text.trim();
-    await prefs.setOmiRefreshToken(_omiRefreshTokenController.text.trim());
-    await prefs.setOmiFirebaseApiKey(_omiFirebaseApiKeyController.text.trim());
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -602,130 +582,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               ),
               const SizedBox(height: 32),
 
-              // Omi Server Sync
-              const Text(
-                'Omi Server Sync',
-                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Sync to Omi Cloud',
-                          style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
-                        ),
-                        Switch(
-                          value: _omiSyncEnabled,
-                          activeThumbColor: Colors.deepPurpleAccent,
-                          onChanged: (value) {
-                            setState(() => _omiSyncEnabled = value);
-                            _markDirty();
-                          },
-                        ),
-                      ],
-                    ),
-                    Text(
-                      'Upload processed recordings to your official Omi account so they appear in the Omi app.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    ),
-                    const SizedBox(height: 16),
-                    _OmiTokenField(
-                      label: 'ID Token',
-                      hint: 'Firebase ID token (eyJhbG…)',
-                      controller: _omiIdTokenController,
-                      onChanged: (_) => _markDirty(),
-                    ),
-                    const SizedBox(height: 12),
-                    _OmiTokenField(
-                      label: 'Refresh Token',
-                      hint: 'Firebase refresh token',
-                      controller: _omiRefreshTokenController,
-                      onChanged: (_) => _markDirty(),
-                    ),
-                    const SizedBox(height: 12),
-                    _OmiTokenField(
-                      label: 'Firebase API Key',
-                      hint: 'AIzaSy…',
-                      controller: _omiFirebaseApiKeyController,
-                      onChanged: (_) => _markDirty(),
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: _omiTestingConnection
-                                ? null
-                                : () async {
-                                    final refreshToken = _omiRefreshTokenController.text.trim();
-                                    final apiKey = _omiFirebaseApiKeyController.text.trim();
-                                    if (!mounted) return;
-                                    setState(() {
-                                      _omiTestingConnection = true;
-                                      _omiTestResult = null;
-                                    });
-                                    final ok = await OmiApiClient.testConnection(
-                                      refreshToken: refreshToken,
-                                      apiKey: apiKey,
-                                    );
-                                    if (mounted) {
-                                      setState(() {
-                                        _omiTestingConnection = false;
-                                        _omiTestResult = ok;
-                                      });
-                                    }
-                                  },
-                            style: OutlinedButton.styleFrom(
-                              side: const BorderSide(color: Colors.deepPurpleAccent),
-                              foregroundColor: Colors.deepPurpleAccent,
-                            ),
-                            child: _omiTestingConnection
-                                ? const SizedBox(
-                                    height: 16,
-                                    width: 16,
-                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.deepPurpleAccent),
-                                  )
-                                : const Text('Test Connection'),
-                          ),
-                        ),
-                        if (_omiTestResult != null) ...[
-                          const SizedBox(width: 12),
-                          Icon(
-                            _omiTestResult! ? Icons.check_circle : Icons.error,
-                            color: _omiTestResult! ? Colors.green : Colors.redAccent,
-                            size: 22,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            _omiTestResult! ? 'Connected' : 'Failed',
-                            style: TextStyle(
-                              color: _omiTestResult! ? Colors.green : Colors.redAccent,
-                              fontSize: 13,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Extract tokens from app.omi.me developer tools: Application → Local Storage → firebase:authUser.',
-                      style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 32),
-
               // Info box
               Container(
                 padding: const EdgeInsets.all(16),
@@ -751,43 +607,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
           ),
         ),
       ),
-    );
-  }
-}
-
-class _OmiTokenField extends StatelessWidget {
-  final String label;
-  final String hint;
-  final TextEditingController controller;
-  final ValueChanged<String>? onChanged;
-
-  const _OmiTokenField({required this.label, required this.hint, required this.controller, this.onChanged});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
-        const SizedBox(height: 4),
-        TextField(
-          controller: controller,
-          onChanged: onChanged,
-          style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'monospace'),
-          maxLines: 1,
-          decoration: InputDecoration(
-            hintText: hint,
-            hintStyle: TextStyle(color: Colors.grey.shade700, fontSize: 13),
-            filled: true,
-            fillColor: const Color(0xFF2C2C2E),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: BorderSide.none,
-            ),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          ),
-        ),
-      ],
     );
   }
 }
