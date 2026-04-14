@@ -12,7 +12,6 @@ import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:omi/utils/audio/foreground.dart';
-import 'package:provider/provider.dart';
 
 class RecordingsController extends ChangeNotifier implements IWalSyncProgressListener {
   final RecordingsManager _manager = RecordingsManager();
@@ -97,6 +96,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   static const _kSpLastActive = 'sp_last_active_stage';
 
   bool _isDisposed = false;
+  bool _pendingProcessingTransition = false;
 
   void init() {
     _lastHpKey = _prefs.heypocketApiKey;
@@ -123,8 +123,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_isDisposed) return;
     final progress = RecordingsManager.processingProgress.value;
     _processingProgress = progress;
-    if (_spState == SyncProcessState.processing && _totalMinutes > 0) {
-      _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
+    if (_spState == SyncProcessState.processing) {
+      if (_totalMinutes > 0) {
+        _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
+      }
       notifyListeners();
     }
   }
@@ -205,9 +207,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         notifyListeners();
       }
 
-      if (serviceIsProcessing && _spState == SyncProcessState.idle) {
+      if (serviceIsProcessing && _spState == SyncProcessState.idle && !_pendingProcessingTransition) {
+        _pendingProcessingTransition = true;
         unawaited(
           reloadBatchesSilently().then((_) async {
+            _pendingProcessingTransition = false;
             if (_isDisposed) return;
             final processable = _batches.expand((b) => b.rawSegments).toList();
             final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
@@ -224,9 +228,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
 
       if (!serviceIsSyncing && _spState == SyncProcessState.syncing) {
-        if (serviceIsProcessing) {
+        if (serviceIsProcessing && !_pendingProcessingTransition) {
+          _pendingProcessingTransition = true;
           unawaited(
             reloadBatchesSilently().then((_) async {
+              _pendingProcessingTransition = false;
               if (_isDisposed) return;
               final processable = _batches.expand((b) => b.rawSegments).toList();
               final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
@@ -433,6 +439,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     WakelockPlus.disable();
 
     if (_spState == SyncProcessState.stopping) {
+      await ForegroundUtil.stopForegroundTask();
       _isForcePipeline = false;
       _transitionTo(SyncProcessState.idle);
       unawaited(reloadBatchesSilently());
@@ -522,6 +529,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     WakelockPlus.disable();
 
     if (_spState == SyncProcessState.stopping) {
+      await ForegroundUtil.stopForegroundTask();
       _transitionTo(SyncProcessState.idle);
       unawaited(reloadBatchesSilently());
       return;
