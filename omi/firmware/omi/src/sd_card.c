@@ -1439,6 +1439,7 @@ void sd_worker_thread(void)
     }
 
     /* ---- Main loop ---- */
+    int64_t worker_start_time_ms = k_uptime_get();
     int consec_writes = 0;
     bool in_high_watermark = false;
     bool sd_gated = false;
