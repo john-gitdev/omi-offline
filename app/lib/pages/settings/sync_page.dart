@@ -354,18 +354,27 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       final bytes = <int>[];
       bool hasAck = false;
 
+      await connection.acquireStorageLock();
       final stream = await connection.getBleStorageBytesStream();
       final sub = stream.listen((packet) {
         if (packet.isEmpty || completer.isCompleted) return;
+        Logger.debug('DebugTools: readStatsFile packet[0]=0x${packet[0].toRadixString(16)} len=${packet.length}');
         switch (packet[0]) {
           case 0x03:
-            if (packet.length >= 2 && packet[1] == 0x00) hasAck = true;
+            if (packet.length >= 2 && packet[1] == 0x00) {
+              hasAck = true;
+            } else {
+              final code = packet.length >= 2 ? packet[1] : -1;
+              Logger.error('DebugTools: readStatsFile error ACK code=$code');
+              if (!completer.isCompleted) completer.completeError(Exception('Device error ACK: $code'));
+            }
             break;
           case 0x01:
             if (!hasAck || packet.length < 5) return;
             bytes.addAll(packet.sublist(5));
             break;
           case 0x02:
+            Logger.debug('DebugTools: readStatsFile EOT — ${bytes.length} bytes accumulated');
             completer.complete(List<int>.unmodifiable(bytes));
             break;
         }
@@ -373,14 +382,19 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
       await connection.performWriteToStorage(statsFile.index, 0x11, 0);
 
-      final content = await completer.future.timeout(
-        const Duration(seconds: 15),
-        onTimeout: () {
-          if (bytes.isNotEmpty) return List<int>.unmodifiable(bytes);
-          throw TimeoutException('No data received within 15 s');
-        },
-      );
-      await sub.cancel();
+      late List<int> content;
+      try {
+        content = await completer.future.timeout(
+          const Duration(seconds: 15),
+          onTimeout: () {
+            if (bytes.isNotEmpty) return List<int>.unmodifiable(bytes);
+            throw TimeoutException('No data received within 15 s');
+          },
+        );
+      } finally {
+        await sub.cancel();
+        connection.releaseStorageLock();
+      }
 
       final text = String.fromCharCodes(content);
       Logger.debug('DebugTools: readStatsFile — ${content.length} bytes\n$text');
@@ -456,7 +470,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         ),
         centerTitle: true,
       ),
-      body: Center(
+      body: SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(24.0),
           child: Column(
