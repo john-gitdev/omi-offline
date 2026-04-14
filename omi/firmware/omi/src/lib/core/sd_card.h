@@ -15,7 +15,7 @@
 
 typedef struct {
     uint32_t timestamp;      // Primary hex value: UTC epoch for normal files, uptime ticks for TMP
-    uint32_t uptime_offset;  // Secondary hex value: only set for TMP_ files (second component)
+    uint32_t uptime_offset;  // Secondary hex value: session_id token for both TMP_ and tokenized (%08X_%08X) files
     uint32_t file_size;      // Size in bytes
     bool is_tmp;             // true if the filename has the TMP_ prefix
     bool is_stats;           // true if the file is stats.txt (non-parseable hex name)
