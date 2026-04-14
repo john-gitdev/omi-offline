@@ -462,7 +462,7 @@ class OmiDeviceConnection extends DeviceConnection {
       });
       await Future.delayed(_cccdCommandDelay);
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x13]);
-      final res = await completer.future.timeout(const Duration(seconds: 15));
+      final res = await completer.future.timeout(const Duration(seconds: 25));
       await sub.cancel();
       return res;
     } catch (_) {
@@ -482,7 +482,7 @@ class OmiDeviceConnection extends DeviceConnection {
         }
       });
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x14]);
-      final res = await completer.future.timeout(const Duration(seconds: 10));
+      final res = await completer.future.timeout(const Duration(seconds: 65));
       await sub.cancel();
       return res;
     } catch (_) {

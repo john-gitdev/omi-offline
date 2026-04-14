@@ -2127,7 +2127,7 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
         return ret;
     }
 
-    if (k_sem_take(&resp.sem, K_MSEC(15000)) != 0) {
+    if (k_sem_take(&resp.sem, K_MSEC(25000)) != 0) {
         LOG_ERR("Timeout waiting for read");
         /* Worker may still write to static resp later — that's safe.
          * Next call will check if worker caught up via sem. */
@@ -2318,7 +2318,7 @@ int create_new_audio_file(void)
         return -1;
     }
 
-    if (k_sem_take(&resp.sem, K_MSEC(15000)) != 0) {
+    if (k_sem_take(&resp.sem, K_MSEC(25000)) != 0) {
         LOG_ERR("Timeout waiting for create_new_audio_file");
         return -1;
     }
