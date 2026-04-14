@@ -55,7 +55,7 @@ echo -e "${YELLOW}This might take a while the first time.${NC}"
 
 # Run the Docker container with the repository mounted correctly
 # Rely on the environment variables set within the ghcr.io/zephyrproject-rtos/ci image
-docker run --rm -it $PLATFORM_FLAG \
+docker run --rm -i $PLATFORM_FLAG \
     -v "$REPO_ROOT:/omi" \
     -e CMAKE_PREFIX_PATH=/opt/toolchains \
     -e PATH="/root/.local/bin:$PATH" \
