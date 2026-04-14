@@ -69,15 +69,26 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: widget.onTap,
-      child: Container(
-        // Use a container with specific alignment instead of padding to avoid overflow
-        alignment: Alignment.centerLeft,
-        padding: const EdgeInsets.only(left: 16.0),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+    final semanticLabel = widget.batteryLevel >= 0
+        ? 'Battery ${widget.batteryLevel} percent, ${widget.isCharging ? "charging" : "not charging"}'
+        : 'Battery level unknown';
+
+    return Semantics(
+      label: semanticLabel,
+      hint: 'Open device settings',
+      button: true,
+      excludeSemantics: true,
+      child: Tooltip(
+        message: 'Device settings',
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: Container(
+            // Use a container with specific alignment instead of padding to avoid overflow
+            alignment: Alignment.centerLeft,
+            padding: const EdgeInsets.only(left: 16.0),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
             if (widget.isCharging)
               AnimatedBuilder(
                 animation: _blinkController,
@@ -89,17 +100,19 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
               )
             else
               _dot(),
-            const SizedBox(width: 6),
-            Text(
-              widget.batteryLevel >= 0 ? '${widget.batteryLevel}%' : '--',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                height: 1.1, // Tighten line height to prevent vertical overflow
-              ),
+                const SizedBox(width: 6),
+                Text(
+                  widget.batteryLevel >= 0 ? '${widget.batteryLevel}%' : '--',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    height: 1.1, // Tighten line height to prevent vertical overflow
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );

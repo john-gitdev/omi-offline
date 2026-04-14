@@ -559,6 +559,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                 color: Colors.grey,
                                 size: 20,
                               ),
+                              tooltip: 'Find devices',
                               onPressed: () => Navigator.of(context).push(
                                 MaterialPageRoute(
                                   builder: (c) => const FindDevicesPage(),
@@ -664,8 +665,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   spState: controller.spState,
                   accumulatedMinutes: controller.accumulatedMinutes,
                   onTap: () {
-                    if (controller.spState != SyncProcessState.idle &&
-                        controller.spState != SyncProcessState.error) return;
+                    if (controller.spState != SyncProcessState.idle && controller.spState != SyncProcessState.error)
+                      return;
                     showDialog(
                       context: context,
                       builder: (ctx) => AlertDialog(
