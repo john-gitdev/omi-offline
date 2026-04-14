@@ -21,7 +21,6 @@ class ManualFirmwareFlashPage extends StatefulWidget {
 
 class _ManualFirmwareFlashPageState extends State<ManualFirmwareFlashPage> with FirmwareMixin {
   bool _confirmed = false;
-  String? _error;
 
   @override
   void initState() {
@@ -37,13 +36,12 @@ class _ManualFirmwareFlashPageState extends State<ManualFirmwareFlashPage> with 
   Future<void> _startFlash() async {
     setState(() {
       _confirmed = true;
-      _error = null;
     });
     try {
       await startDfu(widget.device, zipFilePath: widget.zipFilePath);
     } catch (e) {
       if (mounted) {
-        setState(() => _error = e.toString());
+        setState(() => installError = e.toString());
       }
     }
   }
@@ -166,7 +164,7 @@ class _ManualFirmwareFlashPageState extends State<ManualFirmwareFlashPage> with 
             ],
 
             // Error
-            if (_error != null) ...[
+            if (installError != null) ...[
               const SizedBox(height: 16),
               Container(
                 padding: const EdgeInsets.all(12),
@@ -174,7 +172,7 @@ class _ManualFirmwareFlashPageState extends State<ManualFirmwareFlashPage> with 
                   color: Colors.red.shade900.withValues(alpha: 0.3),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Text(_error!, style: TextStyle(color: Colors.red.shade300, fontSize: 13)),
+                child: Text(installError!, style: TextStyle(color: Colors.red.shade300, fontSize: 13)),
               ),
             ],
           ],
