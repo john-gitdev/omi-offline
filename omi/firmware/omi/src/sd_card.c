@@ -32,7 +32,7 @@
 LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 
 #define DISK_DRIVE_NAME CONFIG_SDMMC_VOLUME_NAME
-#define SD_REQ_QUEUE_MSGS 200
+#define SD_REQ_QUEUE_MSGS 50
 #define SD_PRIO_QUEUE_MSGS 10
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
 #define WRITE_DRAIN_BURST 16
@@ -290,6 +290,7 @@ static const struct gpio_dt_spec sd_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(sdcard
 
 K_MSGQ_DEFINE(sd_msgq, sizeof(sd_req_t), SD_REQ_QUEUE_MSGS, 4);
 K_MSGQ_DEFINE(sd_prio_msgq, sizeof(sd_req_t), SD_PRIO_QUEUE_MSGS, 4);
+K_MEM_SLAB_DEFINE(write_data_slab, MAX_WRITE_SIZE, 50, 4);
 
 /* Persistent read file handle — kept open between read_audio_data calls
  * so we avoid the expensive LFS open/seek/close on every read.
@@ -454,6 +455,7 @@ static void process_write_data_req(const sd_req_t *req)
             writing_error_counter = 0;
             LOG_INF("[SD_WORK] Attempting recovery from write-blocked state (data)");
         } else {
+            k_mem_slab_free(&write_data_slab, (void *)req->u.write.buf);
             return;
         }
     }
@@ -463,6 +465,7 @@ static void process_write_data_req(const sd_req_t *req)
         if (res < 0) {
             last_write_error_uptime_ms = k_uptime_get();
             sd_write_blocked = true;
+            k_mem_slab_free(&write_data_slab, (void *)req->u.write.buf);
             return;
         }
         atomic_clear(&current_file_deleted);
@@ -474,6 +477,7 @@ static void process_write_data_req(const sd_req_t *req)
         if (res < 0) {
             last_write_error_uptime_ms = k_uptime_get();
             sd_write_blocked = true;
+            k_mem_slab_free(&write_data_slab, (void *)req->u.write.buf);
             return;
         }
     }
@@ -488,6 +492,7 @@ static void process_write_data_req(const sd_req_t *req)
             sd_write_blocked = true;
             LOG_ERR("Too many write errors, blocking write queue");
         }
+        k_mem_slab_free(&write_data_slab, (void *)req->u.write.buf);
         return;
     }
 
@@ -505,12 +510,15 @@ static void process_write_data_req(const sd_req_t *req)
             last_write_error_uptime_ms = k_uptime_get();
             LOG_ERR("sync error err=%d", err);
             sd_write_blocked = true;
+            k_mem_slab_free(&write_data_slab, (void *)req->u.write.buf);
             return;
         }
         data_sync_gen++;
         bytes_since_sync = 0;
         last_file_sync_uptime_ms = k_uptime_get();
     }
+
+    k_mem_slab_free(&write_data_slab, (void *)req->u.write.buf);
 }
 
 static void close_read_handle(void)
@@ -2014,9 +2022,18 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
         }
     }
 
+    uint8_t *slab_buf;
+    if (k_mem_slab_alloc(&write_data_slab, (void **)&slab_buf, K_NO_WAIT) != 0) {
+        atomic_inc(&stat_dropped_frames);
+        write_drop_packets++;
+        write_drop_bytes += length;
+        return 0;
+    }
+    memcpy(slab_buf, data, length);
+
     sd_req_t req = {0};
     req.type = REQ_WRITE_DATA;
-    memcpy(req.u.write.buf, data, length);
+    req.u.write.buf = slab_buf;
     req.u.write.len = length;
 
     /* Try non-blocking put first to check if we need to track a block attempt */
@@ -2029,6 +2046,7 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     }
 
     if (ret != 0) {
+        k_mem_slab_free(&write_data_slab, (void *)slab_buf);
         atomic_inc(&stat_dropped_frames);
         write_drop_packets++;
         write_drop_bytes += length;
