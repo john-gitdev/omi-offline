@@ -333,6 +333,10 @@ static int compare_meta(const AudioFileMeta_t* a, const AudioFileMeta_t* b)
     if (a->uptime_offset != b->uptime_offset) {
         return (a->uptime_offset > b->uptime_offset) ? 1 : -1;
     }
+    /* is_tmp is part of the identity — keep consistent with sd_is_current_recording_file_meta */
+    if (a->is_tmp != b->is_tmp) {
+        return a->is_tmp ? 1 : -1;
+    }
     return 0;
 }
 
