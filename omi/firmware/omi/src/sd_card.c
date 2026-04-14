@@ -32,16 +32,16 @@
 LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 
 #define DISK_DRIVE_NAME CONFIG_SDMMC_VOLUME_NAME
-#define SD_REQ_QUEUE_MSGS 200
+#define SD_REQ_QUEUE_MSGS 250
 #define SD_PRIO_QUEUE_MSGS 10
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
 #define WRITE_DRAIN_BURST 16
 #define ERROR_THRESHOLD 5
 
 /* SD power-gating: sleep SD between write bursts to reduce active duty cycle.
- * GATE_SLEEP_MS: max time SD stays off (queue holds 17.3s at 5100 B/s — 10s is safe).
- * GATE_WAKE_THRESHOLD: queue depth that triggers early wake (70% of 200 = 140 items ≈ 12s). */
-#define GATE_SLEEP_MS       10000
+ * GATE_SLEEP_MS: max time SD stays off (queue holds 21.5s at 5100 B/s — 15s is safe).
+ * GATE_WAKE_THRESHOLD: queue depth that triggers early wake (70% of 250 = 175 items ≈ 15s). */
+#define GATE_SLEEP_MS       15000
 #define GATE_WAKE_THRESHOLD ((SD_REQ_QUEUE_MSGS * 70) / 100)
 #define FILE_CACHE_TTL_MS (30 * 1000)
 
