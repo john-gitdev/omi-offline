@@ -750,8 +750,8 @@ static void sd_gate_sleep(void)
         data_sync_gen++;
         bytes_since_sync = 0;
         last_file_sync_uptime_ms = k_uptime_get();
+        lfs_file_close(&lfs_fs, &lfs_fil_data);
     }
-    lfs_file_close(&lfs_fs, &lfs_fil_data);
     lfs_file_close(&lfs_fs, &lfs_fil_info);
     if (is_mounted) {
         lfs_unmount(&lfs_fs);
@@ -1458,10 +1458,10 @@ void sd_worker_thread(void)
                              atomic_get(&pending_time_synced);
 
             if (pq > 0 || wq >= GATE_WAKE_THRESHOLD || timed_out || deferred) {
-                if (sd_gate_wake() == 0) {
-                    sd_gated = false;
-                }
-                /* If wake failed, stay gated — retry on next 500ms poll */
+                /* Errors set sd_write_blocked; un-gate either way so the
+                 * write_blocked fallback path handles recovery. */
+                sd_gate_wake();
+                sd_gated = false;
             }
             continue;
         }
