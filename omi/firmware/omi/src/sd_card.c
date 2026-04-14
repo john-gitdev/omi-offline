@@ -261,8 +261,8 @@ static bool file_cache_valid = false;
 static int cached_file_list_count = 0;
 static uint32_t cached_total_file_count = 0;
 static uint64_t cached_total_file_size = 0;
-static char cached_file_names[MAX_AUDIO_FILES][MAX_FILENAME_LEN] = {0};
-static uint32_t cached_file_sizes[MAX_AUDIO_FILES] = {0};
+static AudioFileMeta_t cached_file_meta[MAX_AUDIO_FILES];
+static K_MUTEX_DEFINE(file_cache_mutex);
 
 /* BLE connection tracking for file rotation */
 static atomic_t ble_connected;
@@ -298,6 +298,82 @@ static lfs_soff_t read_handle_pos = 0;
  * if it doesn't match, the handle is stale (file grew) and must reopen. */
 static uint32_t data_sync_gen = 0;
 static uint32_t read_handle_gen = 0;
+
+
+static void parse_filename_to_meta(const char* filename, uint32_t size, AudioFileMeta_t* meta)
+{
+    memset(meta, 0, sizeof(AudioFileMeta_t));
+    meta->file_size = size;
+
+    if (strncmp(filename, "TMP_", 4) == 0) {
+        meta->is_tmp = true;
+        meta->timestamp = (uint32_t)strtoul(filename + 4, NULL, 16);
+        const char *sep = strchr(filename + 4, '_');
+        if (sep) meta->uptime_offset = (uint32_t)strtoul(sep + 1, NULL, 16);
+    } else {
+        meta->is_tmp = false;
+        meta->timestamp = (uint32_t)strtoul(filename, NULL, 16);
+    }
+}
+
+void build_filename_from_meta(const AudioFileMeta_t* meta, char* out_buffer, size_t max_len)
+{
+    if (meta->is_tmp) {
+        snprintf(out_buffer, max_len, "TMP_%08X_%08X.txt", meta->timestamp, meta->uptime_offset);
+    } else {
+        snprintf(out_buffer, max_len, "%08X.txt", meta->timestamp);
+    }
+}
+
+static int compare_meta(const AudioFileMeta_t* a, const AudioFileMeta_t* b)
+{
+    if (a->timestamp != b->timestamp) {
+        return (a->timestamp > b->timestamp) ? 1 : -1;
+    }
+    if (a->uptime_offset != b->uptime_offset) {
+        return (a->uptime_offset > b->uptime_offset) ? 1 : -1;
+    }
+    return 0;
+}
+
+bool sd_is_current_recording_file_meta(const AudioFileMeta_t *meta)
+{
+    if (!meta) return false;
+    k_mutex_lock(&current_filename_lock, K_FOREVER);
+    if (current_filename[0] == '\0') {
+        k_mutex_unlock(&current_filename_lock);
+        return false;
+    }
+    AudioFileMeta_t current;
+    parse_filename_to_meta(current_filename, 0, &current);
+    k_mutex_unlock(&current_filename_lock);
+    return (current.timestamp == meta->timestamp &&
+            current.uptime_offset == meta->uptime_offset &&
+            current.is_tmp == meta->is_tmp);
+}
+
+// Thread-safe getter for the BLE thread
+int sd_get_cached_file_count(void)
+{
+    k_mutex_lock(&file_cache_mutex, K_FOREVER);
+    int count = cached_file_list_count;
+    k_mutex_unlock(&file_cache_mutex);
+    return count;
+}
+
+// Thread-safe struct copy
+int sd_get_cached_file_meta(int index, AudioFileMeta_t *out_meta)
+{
+    k_mutex_lock(&file_cache_mutex, K_FOREVER);
+    if (index < 0 || index >= cached_file_list_count || !out_meta) {
+        k_mutex_unlock(&file_cache_mutex);
+        return -1;
+    }
+    // Deep copy the 16-byte struct
+    *out_meta = cached_file_meta[index];
+    k_mutex_unlock(&file_cache_mutex);
+    return 0;
+}
 
 /* Forward declarations */
 void sd_worker_thread(void);
@@ -680,8 +756,7 @@ static void print_audio_files_at_boot(void)
     }
 
     /* Clear file cache arrays before populating */
-    memset(cached_file_names, 0, sizeof(cached_file_names));
-    memset(cached_file_sizes, 0, sizeof(cached_file_sizes));
+    memset(cached_file_meta, 0, sizeof(cached_file_meta));
     int list_count = 0;
 
     LOG_INF("========== AUDIO FILES ON SD CARD ==========");
@@ -696,9 +771,7 @@ static void print_audio_files_at_boot(void)
             /* Also populate the file list cache so that get_file_list
              * can return data immediately during the long gc pre-warm. */
             if (list_count < MAX_AUDIO_FILES) {
-                strncpy(cached_file_names[list_count], info.name, MAX_FILENAME_LEN - 1);
-                cached_file_names[list_count][MAX_FILENAME_LEN - 1] = '\0';
-                cached_file_sizes[list_count] = (uint32_t) info.size;
+                parse_filename_to_meta(info.name, (uint32_t)info.size, &cached_file_meta[list_count]);
                 list_count++;
             }
         }
@@ -939,19 +1012,15 @@ static void sort_cached_file_entries(void)
     }
 
     for (int i = 1; i < cached_file_list_count; i++) {
-        char tmp_name[MAX_FILENAME_LEN] = {0};
-        uint32_t tmp_size = cached_file_sizes[i];
-        strncpy(tmp_name, cached_file_names[i], MAX_FILENAME_LEN - 1);
+        AudioFileMeta_t tmp_meta = cached_file_meta[i];
 
         int j = i - 1;
-        while (j >= 0 && compare_filenames(cached_file_names[j], tmp_name) > 0) {
-            strncpy(cached_file_names[j + 1], cached_file_names[j], MAX_FILENAME_LEN);
-            cached_file_sizes[j + 1] = cached_file_sizes[j];
+        while (j >= 0 && compare_meta(&cached_file_meta[j], &tmp_meta) > 0) {
+            cached_file_meta[j + 1] = cached_file_meta[j];
             j--;
         }
 
-        strncpy(cached_file_names[j + 1], tmp_name, MAX_FILENAME_LEN);
-        cached_file_sizes[j + 1] = tmp_size;
+        cached_file_meta[j + 1] = tmp_meta;
     }
 }
 
@@ -967,15 +1036,21 @@ static void update_current_file_cache_size(uint32_t delta)
     update_cached_free_bytes();
     cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
 
+    k_mutex_lock(&file_cache_mutex, K_FOREVER);
+    AudioFileMeta_t current_meta;
+    parse_filename_to_meta(current_filename, current_file_size, &current_meta);
+
     for (int i = 0; i < cached_file_list_count; i++) {
-        if (strcmp(cached_file_names[i], current_filename) == 0) {
-            cached_file_sizes[i] += delta;
+        if (compare_meta(&cached_file_meta[i], &current_meta) == 0) {
+            cached_file_meta[i].file_size += delta;
+            k_mutex_unlock(&file_cache_mutex);
             return;
         }
     }
 
     /* Cache became stale (e.g. filename not indexed due truncation). */
     invalidate_file_cache();
+    k_mutex_unlock(&file_cache_mutex);
 }
 
 static int refresh_file_cache(void)
@@ -990,8 +1065,8 @@ static int refresh_file_cache(void)
     uint32_t total_count = 0;
     uint64_t total_size = 0;
 
-    memset(cached_file_names, 0, sizeof(cached_file_names));
-    memset(cached_file_sizes, 0, sizeof(cached_file_sizes));
+    k_mutex_lock(&file_cache_mutex, K_FOREVER);
+    memset(cached_file_meta, 0, sizeof(cached_file_meta));
 
     int dres = lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR);
     if (dres < 0) {
@@ -1004,8 +1079,10 @@ static int refresh_file_cache(void)
             update_cached_free_bytes();
             cached_stats_valid_until_ms = k_uptime_get() + FILE_CACHE_TTL_MS;
             file_cache_valid = true;
+            k_mutex_unlock(&file_cache_mutex);
             return 0;
         }
+        k_mutex_unlock(&file_cache_mutex);
         return dres;
     }
 
@@ -1023,9 +1100,7 @@ static int refresh_file_cache(void)
         total_size += info.size;
 
         if (list_count < MAX_AUDIO_FILES) {
-            strncpy(cached_file_names[list_count], info.name, MAX_FILENAME_LEN - 1);
-            cached_file_names[list_count][MAX_FILENAME_LEN - 1] = '\0';
-            cached_file_sizes[list_count] = (uint32_t) info.size;
+            parse_filename_to_meta(info.name, (uint32_t)info.size, &cached_file_meta[list_count]);
             list_count++;
         }
     }
@@ -1035,10 +1110,12 @@ static int refresh_file_cache(void)
     sort_cached_file_entries();
 
     if (current_filename[0] != '\0') {
+        AudioFileMeta_t current_meta;
+        parse_filename_to_meta(current_filename, current_file_size, &current_meta);
         for (int i = 0; i < cached_file_list_count; i++) {
-            if (strcmp(cached_file_names[i], current_filename) == 0) {
-                total_size = total_size - cached_file_sizes[i] + current_file_size;
-                cached_file_sizes[i] = current_file_size;
+            if (compare_meta(&cached_file_meta[i], &current_meta) == 0) {
+                total_size = total_size - cached_file_meta[i].file_size + current_file_size;
+                cached_file_meta[i].file_size = current_file_size;
                 break;
             }
         }
@@ -1064,6 +1141,7 @@ static int refresh_file_cache(void)
     sd_write_blocked = false;
     writing_error_counter = 0;
 
+    k_mutex_unlock(&file_cache_mutex);
     return 0;
 }
 
@@ -1132,34 +1210,7 @@ static k_tid_t sd_worker_tid = NULL;
 /* Internal helpers: file list, file stats                            */
 /* ------------------------------------------------------------------ */
 
-static int get_audio_file_list_internal(char filenames[][MAX_FILENAME_LEN], uint32_t *sizes, int max_files, int *count)
-{
-    if (!filenames || !count || max_files <= 0)
-        return -EINVAL;
-    if (!is_mounted)
-        return -ENODEV;
 
-    int cache_res = ensure_file_cache();
-    if (cache_res < 0) {
-        return cache_res;
-    }
-
-    int file_count = cached_file_list_count;
-    if (file_count > max_files) {
-        file_count = max_files;
-    }
-
-    for (int i = 0; i < file_count; i++) {
-        strncpy(filenames[i], cached_file_names[i], MAX_FILENAME_LEN - 1);
-        filenames[i][MAX_FILENAME_LEN - 1] = '\0';
-        if (sizes) {
-            sizes[i] = cached_file_sizes[i];
-        }
-    }
-
-    *count = file_count;
-    return 0;
-}
 
 /* ------------------------------------------------------------------ */
 /* SD worker thread                                                    */
@@ -1589,18 +1640,7 @@ void sd_worker_thread(void)
             break;
         }
 
-        /* ---- Get file list ---- */
-        case REQ_GET_FILE_LIST: {
-            int list_count = 0;
-            res = get_audio_file_list_internal(
-                req.u.file_list.filenames, req.u.file_list.sizes, req.u.file_list.max_files, &list_count);
-            if (req.u.file_list.resp) {
-                req.u.file_list.resp->res = res;
-                req.u.file_list.resp->count = (res == 0) ? list_count : 0;
-                k_sem_give(&req.u.file_list.resp->sem);
-            }
-            break;
-        }
+
 
         /* ---- Flush current file ---- */
         case REQ_FLUSH_FILE: {
@@ -2266,141 +2306,6 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
     return 0;
 }
 
-int get_audio_file_list(char filenames[][MAX_FILENAME_LEN], int max_files, int *count)
-{
-    if (!filenames || !count || max_files <= 0)
-        return -EINVAL;
 
-    if (sd_shutdown_in_progress) {
-        return -ECANCELED;
-    }
 
-    /* Fast path: during boot the worker is blocked in lfs_fs_gc().
-     * Return the file list cached during print_audio_files_at_boot() instead. */
-    if (!atomic_get(&sd_boot_ready) && file_cache_valid) {
-        int n = cached_file_list_count < max_files ? cached_file_list_count : max_files;
-        for (int i = 0; i < n; i++) {
-            strncpy(filenames[i], cached_file_names[i], MAX_FILENAME_LEN - 1);
-            filenames[i][MAX_FILENAME_LEN - 1] = '\0';
-        }
-        *count = n;
-        return 0;
-    }
 
-    static struct file_list_resp resp;
-    static atomic_t list_in_flight;
-
-    if (!atomic_cas(&list_in_flight, 0, 1)) {
-        if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            atomic_set(&list_in_flight, 0);
-        } else {
-            LOG_WRN("get_audio_file_list: previous request still in-flight");
-            return -EBUSY;
-        }
-        if (!atomic_cas(&list_in_flight, 0, 1)) {
-            return -EBUSY;
-        }
-    }
-    k_sem_init(&resp.sem, 0, 1);
-    resp.count = 0;
-
-    sd_req_t req = {0};
-    req.type = REQ_GET_FILE_LIST;
-    req.u.file_list.filenames = filenames;
-    req.u.file_list.sizes = NULL; /* no sizes requested */
-    req.u.file_list.max_files = max_files;
-    req.u.file_list.resp = &resp;
-
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(2000));
-    if (ret) {
-        LOG_ERR("Failed to queue get_file_list: %d", ret);
-        atomic_set(&list_in_flight, 0);
-        return ret;
-    }
-
-    if (k_sem_take(&resp.sem, K_MSEC(5000)) != 0) {
-        LOG_ERR("Timeout waiting for get_file_list");
-        atomic_set(&list_in_flight, 0);
-        return -ETIMEDOUT;
-    }
-    atomic_set(&list_in_flight, 0);
-    if (resp.res) {
-        LOG_ERR("get_audio_file_list failed: %d", resp.res);
-        return resp.res;
-    }
-
-    *count = resp.count;
-    return 0;
-}
-
-int get_audio_file_list_with_sizes(char filenames[][MAX_FILENAME_LEN], uint32_t *sizes, int max_files, int *count)
-{
-    if (!filenames || !count || max_files <= 0)
-        return -EINVAL;
-
-    if (sd_shutdown_in_progress) {
-        return -ECANCELED;
-    }
-
-    /* Fast path: If the RAM cache is valid, return it immediately.
-     * This prevents the app from timing out if the SD worker is busy
-     * with a long GC scan or mass-rename. */
-    if (file_cache_valid) {
-        int n = cached_file_list_count < max_files ? cached_file_list_count : max_files;
-        for (int i = 0; i < n; i++) {
-            strncpy(filenames[i], cached_file_names[i], MAX_FILENAME_LEN - 1);
-            filenames[i][MAX_FILENAME_LEN - 1] = '\0';
-            if (sizes) {
-                sizes[i] = cached_file_sizes[i];
-            }
-        }
-        *count = n;
-        LOG_INF("File list returned from RAM cache (%d files)", n);
-        return 0;
-    }
-
-    static struct file_list_resp resp;
-    static atomic_t list_sizes_in_flight;
-
-    if (!atomic_cas(&list_sizes_in_flight, 0, 1)) {
-        if (k_sem_take(&resp.sem, K_NO_WAIT) == 0) {
-            atomic_set(&list_sizes_in_flight, 0);
-        } else {
-            LOG_WRN("get_audio_file_list_with_sizes: previous request still in-flight");
-            return -EBUSY;
-        }
-        if (!atomic_cas(&list_sizes_in_flight, 0, 1)) {
-            return -EBUSY;
-        }
-    }
-    k_sem_init(&resp.sem, 0, 1);
-    resp.count = 0;
-
-    sd_req_t req = {0};
-    req.type = REQ_GET_FILE_LIST;
-    req.u.file_list.filenames = filenames;
-    req.u.file_list.sizes = sizes;
-    req.u.file_list.max_files = max_files;
-    req.u.file_list.resp = &resp;
-
-    int ret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
-    if (ret) {
-        LOG_ERR("Failed to queue get_file_list: %d", ret);
-        atomic_set(&list_sizes_in_flight, 0);
-        return ret;
-    }
-
-    if (k_sem_take(&resp.sem, K_MSEC(5000)) != 0) {
-        LOG_ERR("Timeout waiting for get_file_list");
-        atomic_set(&list_sizes_in_flight, 0);
-        return -ETIMEDOUT;
-    }
-    atomic_set(&list_sizes_in_flight, 0);
-    if (resp.res) {
-        LOG_ERR("get_audio_file_list_with_sizes failed: %d", resp.res);
-        return resp.res;
-    }
-
-    *count = resp.count;
-    return 0;
-}
