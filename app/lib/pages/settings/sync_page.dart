@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:provider/provider.dart';
+import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
@@ -320,6 +322,97 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
+  /// Reads audio/stats.txt from the device over BLE and shows its contents.
+  /// stats.txt is written by the temporary ingest-throughput instrumentation in
+  /// sd_card.c — it has timestamp=0 so it sorts to position 0 in the file list.
+  Future<void> _readStatsFile() async {
+    setState(() => _statusMessage = 'Fetching file list from device...');
+    try {
+      final pairedDevice = context.read<DeviceProvider>().pairedDevice;
+      if (pairedDevice == null) {
+        setState(() => _statusMessage = 'No paired device found.');
+        return;
+      }
+
+      final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+      if (connection == null) {
+        setState(() => _statusMessage = 'Could not connect to device.');
+        return;
+      }
+
+      final files = await connection.listFiles();
+      // stats.txt parses to timestamp=0 (strtoul("stats", null, 16) == 0)
+      final statsFile = files.where((f) => f.timestamp == 0).firstOrNull;
+      if (statsFile == null) {
+        setState(() => _statusMessage = 'stats.txt not found — record for at least 10 s first.');
+        return;
+      }
+
+      setState(() => _statusMessage = 'Reading stats.txt (${statsFile.size} bytes)...');
+
+      final completer = Completer<List<int>>();
+      final bytes = <int>[];
+      bool hasAck = false;
+
+      final stream = await connection.getBleStorageBytesStream();
+      final sub = stream.listen((packet) {
+        if (packet.isEmpty || completer.isCompleted) return;
+        switch (packet[0]) {
+          case 0x03:
+            if (packet.length >= 2 && packet[1] == 0x00) hasAck = true;
+            break;
+          case 0x01:
+            if (!hasAck || packet.length < 5) return;
+            bytes.addAll(packet.sublist(5));
+            break;
+          case 0x02:
+            completer.complete(List<int>.unmodifiable(bytes));
+            break;
+        }
+      });
+
+      await connection.performWriteToStorage(statsFile.index, 0x11, 0);
+
+      final content = await completer.future.timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          if (bytes.isNotEmpty) return List<int>.unmodifiable(bytes);
+          throw TimeoutException('No data received within 15 s');
+        },
+      );
+      await sub.cancel();
+
+      final text = String.fromCharCodes(content);
+      Logger.debug('DebugTools: readStatsFile — ${content.length} bytes\n$text');
+      setState(() => _statusMessage = 'Read ${content.length} bytes from stats.txt.');
+
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (c) => AlertDialog(
+            backgroundColor: const Color(0xFF1C1C1E),
+            title: const Text('SD Ingest Stats', style: TextStyle(color: Colors.white)),
+            content: SingleChildScrollView(
+              child: SelectableText(
+                text.isEmpty ? '(file is empty — wait 10 s and try again)' : text,
+                style: const TextStyle(color: Colors.white70, fontSize: 12, fontFamily: 'monospace'),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(c),
+                child: const Text('Close', style: TextStyle(color: Colors.deepPurpleAccent)),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      Logger.error('DebugTools: readStatsFile error — $e');
+      setState(() => _statusMessage = 'Stats read error: $e');
+    }
+  }
+
   Future<void> _cancelSync() async {
     Logger.debug('DebugTools: Cancel Download tapped');
     ServiceManager.instance().wal.getSyncs().cancelSync();
@@ -476,6 +569,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllConversations,
+                ),
+                const SizedBox(height: 12),
+                _DebugButton(
+                  label: 'Read SD Ingest Stats',
+                  description: 'Reads audio/stats.txt from the device — shows bytes/s written to SD.',
+                  icon: FontAwesomeIcons.chartBar,
+                  color: Colors.tealAccent,
+                  onTap: _readStatsFile,
                 ),
               ],
             ],
