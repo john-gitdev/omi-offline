@@ -37,6 +37,12 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
 #define WRITE_DRAIN_BURST 16
 #define ERROR_THRESHOLD 5
+
+/* SD power-gating: sleep SD between write bursts to reduce active duty cycle.
+ * GATE_SLEEP_MS: max time SD stays off (queue holds 17.3s at 5100 B/s — 10s is safe).
+ * GATE_WAKE_THRESHOLD: queue depth that triggers early wake (70% of 200 = 140 items ≈ 12s). */
+#define GATE_SLEEP_MS       10000
+#define GATE_WAKE_THRESHOLD ((SD_REQ_QUEUE_MSGS * 70) / 100)
 #define FILE_CACHE_TTL_MS (30 * 1000)
 
 /* LittleFS paths are relative to FS root (no mount-point prefix) */
@@ -730,6 +736,68 @@ static int sd_unmount(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* SD power-gating (sleep/wake between write bursts)                  */
+/* ------------------------------------------------------------------ */
+
+/* Sync and close open file handles, unmount, power off the SD.
+ * Deliberately does NOT clear current_filename/current_file_path so
+ * sd_gate_wake() can reopen the same file and continue appending. */
+static void sd_gate_sleep(void)
+{
+    close_read_handle();
+    if (current_filename[0] != '\0') {
+        lfs_file_sync(&lfs_fs, &lfs_fil_data);
+        data_sync_gen++;
+        bytes_since_sync = 0;
+        last_file_sync_uptime_ms = k_uptime_get();
+    }
+    lfs_file_close(&lfs_fs, &lfs_fil_data);
+    lfs_file_close(&lfs_fs, &lfs_fil_info);
+    if (is_mounted) {
+        lfs_unmount(&lfs_fs);
+        is_mounted = false;
+    }
+    sd_enable_power(false);
+    LOG_INF("[SD_GATE] Powered off");
+}
+
+/* Power on SD, remount LFS, reopen the info file and the current
+ * audio file in append mode.  No lfs_fs_gc — GC is boot-only. */
+static int sd_gate_wake(void)
+{
+    int ret = sd_mount();
+    if (ret != 0) {
+        LOG_ERR("[SD_GATE] Remount failed: %d", ret);
+        return ret;
+    }
+
+    ret = lfs_file_opencfg(&lfs_fs, &lfs_fil_info, FILE_INFO_PATH,
+                           LFS_O_CREAT | LFS_O_RDWR, &lfs_finfo_cfg);
+    if (ret < 0) {
+        LOG_ERR("[SD_GATE] Reopen info failed: %d", ret);
+        sd_write_blocked = true;
+        return ret;
+    }
+
+    if (current_filename[0] != '\0') {
+        ret = lfs_file_opencfg(&lfs_fs, &lfs_fil_data, current_file_path,
+                               LFS_O_WRONLY | LFS_O_CREAT | LFS_O_APPEND, &lfs_fdata_cfg);
+        if (ret < 0) {
+            /* File missing or corrupt — process_write_data_req will create a new one */
+            LOG_WRN("[SD_GATE] Reopen '%s' failed (%d) — new file on next write",
+                    current_file_path, ret);
+            k_mutex_lock(&current_filename_lock, K_FOREVER);
+            current_filename[0] = '\0';
+            current_file_path[0] = '\0';
+            k_mutex_unlock(&current_filename_lock);
+        }
+    }
+
+    LOG_INF("[SD_GATE] Powered on, remounted");
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Path helpers                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -1366,8 +1434,39 @@ void sd_worker_thread(void)
     /* ---- Main loop ---- */
     int consec_writes = 0;
     bool in_high_watermark = false;
+    bool sd_gated = false;
+    int64_t gate_start_ms = 0;
+
+    struct k_poll_event gate_events[2] = {
+        K_POLL_EVENT_INITIALIZER(K_POLL_TYPE_MSGQ_DATA_AVAILABLE,
+                                 K_POLL_MODE_NOTIFY_ONLY, &sd_prio_msgq),
+        K_POLL_EVENT_INITIALIZER(K_POLL_TYPE_MSGQ_DATA_AVAILABLE,
+                                 K_POLL_MODE_NOTIFY_ONLY, &sd_msgq),
+    };
 
     while (1) {
+        /* ---- Gate sleep loop: SD is powered off ---- */
+        if (sd_gated) {
+            gate_events[0].state = K_POLL_STATE_NOT_READY;
+            gate_events[1].state = K_POLL_STATE_NOT_READY;
+            k_poll(gate_events, 2, K_MSEC(500));
+
+            uint32_t wq = k_msgq_num_used_get(&sd_msgq);
+            uint32_t pq = k_msgq_num_used_get(&sd_prio_msgq);
+            bool timed_out = (k_uptime_get() - gate_start_ms) >= GATE_SLEEP_MS;
+            bool deferred  = atomic_get(&pending_flush_on_ble_connect) ||
+                             atomic_get(&pending_time_synced);
+
+            if (pq > 0 || wq >= GATE_WAKE_THRESHOLD || timed_out || deferred) {
+                if (sd_gate_wake() == 0) {
+                    sd_gated = false;
+                }
+                /* If wake failed, stay gated — retry on next 500ms poll */
+            }
+            continue;
+        }
+
+
         /* Handle deferred control requests first (when queue was saturated). */
         if (atomic_cas(&pending_flush_on_ble_connect, 1, 0)) {
             /* Attempt flush inline; if it fails, re-set the flag so the
@@ -1425,8 +1524,16 @@ void sd_worker_thread(void)
             }
         }
 
-        /* 5. Both queues empty: block on write_queue to avoid busy loop.
-         *    Use a shorter timeout when BLE is connected to remain responsive. */
+        /* 5. Both queues empty — gate SD off between write bursts */
+        if (!sd_write_blocked) {
+            sd_gate_sleep();
+            sd_gated = true;
+            gate_start_ms = k_uptime_get();
+            continue;
+        }
+
+        /* Write-blocked fallback: keep polling so recovery check in
+         * process_write_data_req can fire once the 2s backoff expires. */
         k_timeout_t idle_wait = atomic_get(&ble_connected) ? K_MSEC(10) : K_MSEC(2000);
         if (k_msgq_get(&sd_msgq, &req, idle_wait) == 0) {
             consec_writes++;
