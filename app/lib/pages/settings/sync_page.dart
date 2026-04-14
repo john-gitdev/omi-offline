@@ -353,15 +353,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       final completer = Completer<List<int>>();
       final bytes = <int>[];
       bool hasAck = false;
+      bool commandSent = false;
 
       await connection.acquireStorageLock();
       final stream = await connection.getBleStorageBytesStream();
-      Logger.debug('DebugTools: readStatsFile subscribed to stream');
       final sub = stream.listen(
         (packet) {
-          Logger.debug('DebugTools: readStatsFile RAW packet len=${packet.length}');
-          if (packet.isEmpty || completer.isCompleted) return;
-          Logger.debug('DebugTools: readStatsFile packet[0]=0x${packet[0].toRadixString(16)}');
+          // Ignore stale packets from the preceding LIST_FILES response.
+          if (!commandSent || packet.isEmpty || completer.isCompleted) return;
           switch (packet[0]) {
             case 0x03:
               if (packet.length >= 2 && packet[1] == 0x00) {
@@ -377,23 +376,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               bytes.addAll(packet.sublist(5));
               break;
             case 0x02:
-              Logger.debug('DebugTools: readStatsFile EOT — ${bytes.length} bytes accumulated');
               completer.complete(List<int>.unmodifiable(bytes));
               break;
           }
         },
         onError: (e) {
-          Logger.error('DebugTools: readStatsFile stream error: $e');
           if (!completer.isCompleted) completer.completeError(e);
         },
         onDone: () {
-          Logger.debug('DebugTools: readStatsFile stream CLOSED');
           if (!completer.isCompleted) completer.completeError(Exception('Stream closed without EOT'));
         },
       );
 
-      final writeOk = await connection.performWriteToStorage(statsFile.index, 0x11, 0);
-      Logger.debug('DebugTools: readStatsFile performWriteToStorage returned $writeOk');
+      await connection.performWriteToStorage(statsFile.index, 0x11, 0);
+      commandSent = true;
 
       late List<int> content;
       try {
