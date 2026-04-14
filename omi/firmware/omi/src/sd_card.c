@@ -43,6 +43,7 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
  * GATE_WAKE_THRESHOLD: queue depth that triggers early wake (70% of 250 = 175 items ≈ 15s). */
 #define GATE_SLEEP_MS       15000
 #define GATE_WAKE_THRESHOLD ((SD_REQ_QUEUE_MSGS * 70) / 100)
+#define BOOT_GATE_DELAY_MS  60000
 #define FILE_CACHE_TTL_MS (30 * 1000)
 
 /* LittleFS paths are relative to FS root (no mount-point prefix) */
@@ -1531,7 +1532,8 @@ void sd_worker_thread(void)
         }
 
         /* 5. Both queues empty — gate SD off between write bursts */
-        if (!sd_write_blocked && !atomic_get(&ble_connected)) {
+        bool boot_delay_active = (k_uptime_get() - worker_start_time_ms) < BOOT_GATE_DELAY_MS;
+        if (!sd_write_blocked && !atomic_get(&ble_connected) && !boot_delay_active) {
             sd_gate_sleep();
             sd_gated = true;
             gate_start_ms = k_uptime_get();
@@ -2422,7 +2424,3 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
     *total_size = resp.total_size;
     return 0;
 }
-
-
-
-
