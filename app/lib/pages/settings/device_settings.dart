@@ -1,20 +1,20 @@
-import 'package:omi/gen/pigeon_communicator.g.dart';
-import "package:omi/widgets/dialog.dart";
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
 
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/pages/settings/firmware/firmware_update.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/utils/device.dart';
 import 'sync_page.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
-import 'package:omi/utils/other/temp.dart';
+import 'package:omi/gen/pigeon_communicator.g.dart';
+import 'package:file_picker/file_picker.dart';
 
 class DeviceSettings extends StatefulWidget {
   const DeviceSettings({super.key});
@@ -24,134 +24,123 @@ class DeviceSettings extends StatefulWidget {
 }
 
 class _DeviceSettingsState extends State<DeviceSettings> {
-  double _dimRatio = 100.0;
+  bool _hasDimmingFeature = false;
   bool _isDimRatioLoaded = false;
-  bool? _hasDimmingFeature;
+  double _dimRatio = 50.0; // Default fallback
 
-  double _micGain = 5.0;
+  bool _hasMicGainFeature = false;
   bool _isMicGainLoaded = false;
-  bool? _hasMicGainFeature;
+  double _micGain = 0.0; // Default 0dB
 
-  Timer? _debounce;
   Timer? _micGainDebounce;
 
   @override
   void initState() {
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final provider = context.read<DeviceProvider>();
-      await provider.getDeviceInfo();
-      // Battery level comes from the BLE notification listener set up on connect.
-      // Calling updateBatteryLevel() would try to READ the detail characteristic,
-      // which is notify-only (GATT_READ_NOT_PERMITTED). Skip it here.
-      _loadInitialDimRatio();
-    });
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkFeaturesAndLoadSettings();
+    });
   }
 
   @override
   void dispose() {
-    _debounce?.cancel();
     _micGainDebounce?.cancel();
     super.dispose();
   }
 
-  void _loadInitialDimRatio() async {
-    if (!mounted) return;
-    final deviceProvider = context.read<DeviceProvider>();
-    final pairedDevice = deviceProvider.pairedDevice;
-    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
-      var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
-      if (connection != null) {
-        var features = await connection.getFeatures();
-        // Retry up to 2 more times if the first read fails (transient GATT error
-        // on a degraded but still-connected link returns 0 instead of the real flags).
-        for (int i = 0; i < 2 && features == 0 && mounted; i++) {
-          await Future.delayed(const Duration(milliseconds: 600));
-          features = await connection.getFeatures();
-        }
-        final hasDimming = OmiFeatures.hasFeature(features, OmiFeatures.ledDimming);
-        final hasMicGain = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
+  Future<void> _checkFeaturesAndLoadSettings() async {
+    final provider = context.read<DeviceProvider>();
+    final connectedDevice = provider.connectedDevice;
+    if (connectedDevice == null) return;
 
-        if (!mounted) return;
-        setState(() {
-          _hasDimmingFeature = hasDimming;
-          _hasMicGainFeature = hasMicGain;
-        });
+    final connection = await ServiceManager.instance().device.ensureConnection(connectedDevice.id);
+    if (connection == null) return;
 
-        if (!hasDimming) {
-          setState(() {
-            _isDimRatioLoaded = true;
-          });
-        } else {
-          var ratio = await connection.getLedDimRatio();
-          if (ratio != null && mounted) {
-            setState(() {
-              _dimRatio = ratio.toDouble();
-              _isDimRatioLoaded = true;
-            });
-          } else if (mounted) {
-            setState(() {
-              _isDimRatioLoaded = true; // Loaded, but no value, use default
-            });
-          }
-        }
+    final deviceInfo = await connection.performGetDeviceInfo(connection);
 
-        if (!hasMicGain) {
-          setState(() {
-            _isMicGainLoaded = true;
-          });
-        } else {
-          var gain = await connection.getMicGain();
-          if (gain != null && mounted) {
-            setState(() {
-              _micGain = gain.toDouble();
-              _isMicGainLoaded = true;
-            });
-          } else if (mounted) {
-            setState(() {
-              _isMicGainLoaded = true; // Loaded, but no value, use default
-            });
-          }
-        }
+    if (mounted) {
+      setState(() {
+        _hasDimmingFeature = OmiFeatures.hasFeature(deviceInfo.features, OmiFeatures.ledDimming);
+        _hasMicGainFeature = OmiFeatures.hasFeature(deviceInfo.features, OmiFeatures.micGain);
+      });
+
+      if (_hasDimmingFeature) {
+        _loadDimRatio();
+      }
+      if (_hasMicGainFeature) {
+        _loadMicGain();
       }
     }
   }
 
-  void _updateDimRatio(double value) async {
-    final deviceProvider = context.read<DeviceProvider>();
-    final pairedDevice = deviceProvider.pairedDevice;
-    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
-      var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
-      await connection?.setLedDimRatio(value.toInt());
+  Future<void> _loadDimRatio() async {
+    final provider = context.read<DeviceProvider>();
+    final connectedDevice = provider.connectedDevice;
+    if (connectedDevice == null) return;
+
+    final connection = await ServiceManager.instance().device.ensureConnection(connectedDevice.id);
+    if (connection == null) return;
+
+    final ratio = await connection.getDimRatio();
+    if (ratio != null && mounted) {
+      setState(() {
+        _dimRatio = ratio.toDouble();
+        _isDimRatioLoaded = true;
+      });
+    } else {
+      if (mounted) setState(() => _isDimRatioLoaded = true);
     }
   }
 
-  void _updateMicGain(double value) async {
-    final deviceProvider = context.read<DeviceProvider>();
-    final pairedDevice = deviceProvider.pairedDevice;
-    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
-      var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
-      await connection?.setMicGain(value.toInt());
+  Future<void> _updateDimRatio(double ratio) async {
+    final provider = context.read<DeviceProvider>();
+    final connectedDevice = provider.connectedDevice;
+    if (connectedDevice == null) return;
+
+    final connection = await ServiceManager.instance().device.ensureConnection(connectedDevice.id);
+    if (connection == null) return;
+
+    await connection.setDimRatio(ratio.toInt());
+    if (mounted) {
+      setState(() {
+        _dimRatio = ratio;
+      });
     }
   }
 
-  Widget _buildSectionHeader(String title, {String? subtitle}) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 4, right: 4, bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w600),
-          ),
-          if (subtitle != null) ...[
-            const SizedBox(height: 6),
-            Text(subtitle, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
-          ],
-        ],
-      ),
-    );
+  Future<void> _loadMicGain() async {
+    final provider = context.read<DeviceProvider>();
+    final connectedDevice = provider.connectedDevice;
+    if (connectedDevice == null) return;
+
+    final connection = await ServiceManager.instance().device.ensureConnection(connectedDevice.id);
+    if (connection == null) return;
+
+    final gainLevel = await connection.getMicGain();
+    if (gainLevel != null && mounted) {
+      setState(() {
+        _micGain = gainLevel.toDouble();
+        _isMicGainLoaded = true;
+      });
+    } else {
+      if (mounted) setState(() => _isMicGainLoaded = true);
+    }
+  }
+
+  Future<void> _updateMicGain(double gainLevel) async {
+    final provider = context.read<DeviceProvider>();
+    final connectedDevice = provider.connectedDevice;
+    if (connectedDevice == null) return;
+
+    final connection = await ServiceManager.instance().device.ensureConnection(connectedDevice.id);
+    if (connection == null) return;
+
+    await connection.setMicGain(gainLevel.toInt());
+    if (mounted) {
+      setState(() {
+        _micGain = gainLevel;
+      });
+    }
   }
 
   Widget _buildProfileStyleItem({
@@ -161,62 +150,74 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     String? copyValue,
     VoidCallback? onTap,
     bool showChevron = true,
+    Color? iconColor,
+    Color? titleColor,
+    Color? chipColor,
+    Color? chipTextColor,
   }) {
-    final content = Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-      child: Row(
-        children: [
-          SizedBox(width: 24, height: 24, child: FaIcon(icon, color: const Color(0xFF8E8E93), size: 20)),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Text(
-              title,
-              style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
-            ),
-          ),
-          if (chipValue != null) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(color: const Color(0xFF2A2A2E), borderRadius: BorderRadius.circular(100)),
-              child: Text(
-                chipValue,
-                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+    return GestureDetector(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 24,
+              height: 24,
+              child: Padding(
+                padding: const EdgeInsets.only(left: 2, top: 1),
+                child: FaIcon(icon, color: iconColor ?? const Color(0xFF8E8E93), size: 20),
               ),
             ),
-            if (showChevron) const SizedBox(width: 8),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(color: titleColor ?? Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
+              ),
+            ),
+            if (chipValue != null) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: chipColor ?? const Color(0xFF2A2A2E),
+                  borderRadius: BorderRadius.circular(100),
+                ),
+                child: Text(
+                  chipValue,
+                  style: TextStyle(
+                    color: chipTextColor ?? Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              if (showChevron) const SizedBox(width: 8),
+            ],
+            if (showChevron) const Icon(Icons.chevron_right, color: Color(0xFF3C3C43), size: 20),
           ],
-          if (showChevron) const Icon(Icons.chevron_right, color: Color(0xFF3C3C43), size: 20),
-        ],
+        ),
       ),
     );
+  }
 
-    if (copyValue != null) {
-      return GestureDetector(
-        onTap: () {
-          Clipboard.setData(ClipboardData(text: copyValue));
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('$title copied to clipboard')));
-        },
-        child: content,
-      );
-    }
-
-    if (onTap != null) {
-      return GestureDetector(onTap: onTap, child: content);
-    }
-    return content;
+  Widget _buildSectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, bottom: 8),
+      child: Text(
+        title.toUpperCase(),
+        style: const TextStyle(color: Color(0xFF8E8E93), fontSize: 13, fontWeight: FontWeight.w600, letterSpacing: 0.5),
+      ),
+    );
   }
 
   Widget _buildDeviceInfoSection(BtDevice? device, DeviceProvider provider) {
-    final deviceName = device?.name ?? 'Omi';
-    final deviceId = device?.id ?? 'Unknown';
-
-    String truncateId(String id) {
-      if (id.length > 10) {
-        return '${id.substring(0, 4)}•••${id.substring(id.length - 4)}';
+    String truncateValue(String? value) {
+      if (value == null) return 'Unknown';
+      if (value.length > 12) {
+        return '${value.substring(0, 5)}•••${value.substring(value.length - 4)}';
       }
-      return id;
+      return value;
     }
 
     return Container(
@@ -224,25 +225,95 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       child: Column(
         children: [
           _buildProfileStyleItem(
-            icon: FontAwesomeIcons.batteryFull,
-            title: 'Battery Level',
-            chipValue: provider.batteryLevel >= 0 ? '${provider.batteryLevel}%' : '...',
+            icon: FontAwesomeIcons.microchip,
+            title: 'Product Name',
+            chipValue: device?.name ?? 'Omi CV1',
+            copyValue: device?.name ?? 'Omi CV1',
+            showChevron: false,
+          ),
+          const Divider(height: 1, color: Color(0xFF3C3C43)),
+          _buildProfileStyleItem(
+            icon: FontAwesomeIcons.hashtag,
+            title: 'Model Number',
+            chipValue: device?.modelNumber ?? 'Unknown',
+            copyValue: device?.modelNumber ?? 'Unknown',
             showChevron: false,
           ),
           const Divider(height: 1, color: Color(0xFF3C3C43)),
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.fingerprint,
             title: 'Device ID',
-            chipValue: truncateId(deviceId),
-            copyValue: deviceId,
+            chipValue: truncateValue(device?.id),
+            copyValue: device?.id,
+            showChevron: false,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHardwareInfoSection(BtDevice? device) {
+    final provider = context.read<DeviceProvider>();
+    return Container(
+      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+      child: Column(
+        children: [
+          _buildProfileStyleItem(
+            icon: FontAwesomeIcons.batteryHalf,
+            title: 'Battery',
+            chipValue: provider.batteryLevel > 0 ? '${provider.batteryLevel}%' : 'Unknown',
+            showChevron: false,
+            chipColor: provider.batteryLevel > 20 ? const Color(0xFF1A3D2E) : const Color(0xFF3D2A2A),
+            chipTextColor: provider.batteryLevel > 20 ? const Color(0xFF4ADE80) : const Color(0xFFF87171),
+          ),
+          const Divider(height: 1, color: Color(0xFF3C3C43)),
+          _buildProfileStyleItem(
+            icon: FontAwesomeIcons.industry,
+            title: 'Manufacturer',
+            chipValue: device?.manufacturerName ?? 'Unknown',
+            copyValue: device?.manufacturerName ?? 'Unknown',
             showChevron: false,
           ),
           const Divider(height: 1, color: Color(0xFF3C3C43)),
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.download,
-            title: 'Firmware',
+            title: 'Firmware Update',
             chipValue: device?.firmwareRevision ?? 'oo-1.0.9',
-            showChevron: false,
+            copyValue: device?.firmwareRevision ?? 'oo-1.0.9',
+            showChevron: true,
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => FirmwareUpdate(
+                    device: provider.pairedDevice,
+                  ),
+                ),
+              );
+            },
+          ),
+          const Divider(height: 1, color: Color(0xFF3C3C43)),
+          _buildProfileStyleItem(
+            icon: FontAwesomeIcons.microchip,
+            title: 'Flash Custom Firmware',
+            showChevron: true,
+            onTap: () async {
+              FilePickerResult? result = await FilePicker.platform.pickFiles(
+                type: FileType.custom,
+                allowedExtensions: ['zip'],
+              );
+
+              if (result != null && result.files.single.path != null) {
+                String? selectedFilePath = result.files.single.path;
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => FirmwareUpdate(
+                      device: provider.pairedDevice,
+                      zipFilePath: selectedFilePath,
+                    ),
+                  ),
+                );
+              }
+            },
           ),
           if (provider.storageStats != null && provider.storageStats!.freeBytes > 0) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
@@ -265,49 +336,12 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     );
   }
 
-  Widget _buildHardwareInfoSection(BtDevice? device) {
-    final hardwareRevision = device?.hardwareRevision ?? 'XIAO';
-    final modelNumber = device?.modelNumber ?? 'Omi CV1';
-    final manufacturer = device?.manufacturerName ?? 'Based Hardware';
-
-    return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
-      child: Column(
-        children: [
-          _buildProfileStyleItem(
-            icon: FontAwesomeIcons.gears,
-            title: 'Hardware Revision',
-            chipValue: hardwareRevision,
-            copyValue: hardwareRevision,
-            showChevron: false,
-          ),
-          const Divider(height: 1, color: Color(0xFF3C3C43)),
-          _buildProfileStyleItem(
-            icon: FontAwesomeIcons.hashtag,
-            title: 'Model Number',
-            chipValue: modelNumber,
-            copyValue: modelNumber,
-            showChevron: false,
-          ),
-          const Divider(height: 1, color: Color(0xFF3C3C43)),
-          _buildProfileStyleItem(
-            icon: FontAwesomeIcons.industry,
-            title: 'Manufacturer',
-            chipValue: manufacturer,
-            copyValue: manufacturer,
-            showChevron: false,
-          ),
-        ],
-      ),
-    );
-  }
-
   void _showBrightnessSheet() {
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1C1C1E),
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-      builder: (sheetContext) {
+      builder: (context) {
         return StatefulBuilder(
           builder: (context, setSheetState) {
             return SafeArea(
@@ -322,18 +356,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                       height: 4,
                       decoration: BoxDecoration(color: const Color(0xFF3C3C43), borderRadius: BorderRadius.circular(2)),
                     ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'LED Brightness',
-                          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
-                        ),
-                        Text(
-                          '${_dimRatio.round()}%',
-                          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
-                        ),
-                      ],
+                    const Text(
+                      'LED Brightness',
+                      style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(height: 24),
                     SliderTheme(
@@ -351,31 +376,22 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         min: 0,
                         max: 100,
                         divisions: 100,
-                        onChanged: (double value) {
-                          setSheetState(() {});
-                          setState(() {
-                            _dimRatio = value;
-                          });
-                          _debounce?.cancel();
-                          _debounce = Timer(const Duration(milliseconds: 300), () {
-                            _updateDimRatio(value);
-                          });
+                        label: '${_dimRatio.round()}%',
+                        onChanged: (value) {
+                          setSheetState(() => _dimRatio = value);
+                          setState(() => _dimRatio = value);
                         },
-                        onChangeEnd: (double value) {
-                          _debounce?.cancel();
-                          _updateDimRatio(value);
-                        },
+                        onChangeEnd: _updateDimRatio,
                       ),
                     ),
                     const SizedBox(height: 8),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Off', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                        Text('Max', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                        Text('Dim', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                        Text('Bright', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
                       ],
                     ),
-                    const SizedBox(height: 16),
                   ],
                 ),
               ),
@@ -503,7 +519,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: _buildPresetButton('High', 6, currentLevel, () {
+                          child: _buildPresetButton('Loud', 6, currentLevel, () {
                             setSheetState(() {});
                             setState(() => _micGain = 6.0);
                             _updateMicGain(6.0);
@@ -568,7 +584,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           ],
           // Mic Gain
           if (_isMicGainLoaded && _hasMicGainFeature == true) ...[
-            const Divider(height: 1, color: Color(0xFF3C3C43)),
+            if (_isDimRatioLoaded && _hasDimmingFeature == true) const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.microphone,
               title: 'Mic Gain',
@@ -748,9 +764,12 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                   const SizedBox(height: 32),
                 ],
                 if (provider.isConnected) ...[
-                  const SizedBox(height: 16),
-                  _buildSectionHeader('Customization'),
-                  _buildCustomizationSection(),
+                  if (_isDimRatioLoaded && _hasDimmingFeature == true ||
+                      _isMicGainLoaded && _hasMicGainFeature == true) ...[
+                    const SizedBox(height: 16),
+                    _buildSectionHeader('Customization'),
+                    _buildCustomizationSection(),
+                  ],
                   const SizedBox(height: 32),
                   _buildSectionHeader('Device Info'),
                   _buildDeviceInfoSection(provider.pairedDevice, provider),
