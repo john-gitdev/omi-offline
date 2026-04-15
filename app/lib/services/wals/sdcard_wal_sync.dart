@@ -152,11 +152,22 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }) async {
     _device = device;
     if (_device != null) {
-      _wals = await _buildWalsFromFiles(
-        _device!.id,
-        ignoreThreshold: true,
-        prefetchedFiles: prefetchedFiles,
-      );
+      final connection = _connectionProvider != null
+          ? await _connectionProvider!(_device!.id)
+          : await ServiceManager.instance().device.ensureConnection(_device!.id);
+      if (connection != null) {
+        await connection.acquireStorageLock('setDevice');
+        try {
+          _wals = await _buildWalsFromFilesLocked(
+            connection,
+            _device!.id,
+            ignoreThreshold: true,
+            prefetchedFiles: prefetchedFiles,
+          );
+        } finally {
+          connection.releaseStorageLock();
+        }
+      }
       listener.onWalUpdated();
     }
   }
@@ -165,8 +176,22 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<List<Wal>> getMissingWals() async {
     final dev = _device;
     if (dev == null) return [];
-    // ignoreThreshold: true to ensure all files (even short tests) show up
-    final wals = await _buildWalsFromFiles(dev.id, ignoreThreshold: true);
+
+    final connection = _connectionProvider != null
+        ? await _connectionProvider!(dev.id)
+        : await ServiceManager.instance().device.ensureConnection(dev.id);
+    if (connection == null) return [];
+
+    await connection.acquireStorageLock('getMissingWals');
+    try {
+      return await _getMissingWalsLocked(connection, dev.id);
+    } finally {
+      connection.releaseStorageLock();
+    }
+  }
+
+  Future<List<Wal>> _getMissingWalsLocked(DeviceConnection connection, String deviceId) async {
+    final wals = await _buildWalsFromFilesLocked(connection, deviceId, ignoreThreshold: true);
     Logger.debug('SDCardWalSync: getMissingWals returned ${wals.length} WALs');
     return wals;
   }
@@ -175,19 +200,31 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<bool> hasFilesToSync() async {
     if (_device == null) return false;
     if (_wals.isNotEmpty) return true;
-    final files = await _listFiles(_device!.id);
-    return files.isNotEmpty;
+    
+    final connection = _connectionProvider != null
+        ? await _connectionProvider!(_device!.id)
+        : await ServiceManager.instance().device.ensureConnection(_device!.id);
+    if (connection == null) return false;
+
+    await connection.acquireStorageLock('hasFilesToSync');
+    try {
+      final files = await connection.listFiles();
+      return files.isNotEmpty;
+    } finally {
+      connection.releaseStorageLock();
+    }
   }
 
-  Future<List<Wal>> _buildWalsFromFiles(
+  Future<List<Wal>> _buildWalsFromFilesLocked(
+    DeviceConnection connection,
     String deviceId, {
     required bool ignoreThreshold,
     List<StorageFile>? prefetchedFiles,
   }) async {
-    final files = prefetchedFiles ?? await _listFiles(deviceId);
+    final files = prefetchedFiles ?? await connection.listFiles();
     if (files.isEmpty) return [];
 
-    final codec = await _getAudioCodec(deviceId);
+    final codec = await connection.getAudioCodec() ?? BleAudioCodec.pcm8;
     final threshold = codec.getStorageBytesPerMinute();
     final wals = <Wal>[];
 
@@ -261,35 +298,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     return wals;
   }
 
-  Future<BleAudioCodec> _getAudioCodec(String deviceId) async {
-    var connection = _connectionProvider != null
-        ? await _connectionProvider!(deviceId)
-        : await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null) return BleAudioCodec.pcm8;
-    return await connection.getAudioCodec() ?? BleAudioCodec.pcm8;
-  }
-
-  Future<List<StorageFile>> _listFiles(String deviceId) async {
-    var connection = _connectionProvider != null
-        ? await _connectionProvider!(deviceId)
-        : await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null) return [];
-    return await connection.listFiles();
-  }
-
-  Future<bool> _writeToStorage(
-    String deviceId,
-    int numFile,
-    int command,
-    int offset,
-  ) async {
-    var connection = _connectionProvider != null
-        ? await _connectionProvider!(deviceId)
-        : await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null) return false;
-    return await connection.writeToStorage(numFile, command, offset);
-  }
-
   @override
   Future deleteWal(Wal wal) async {
     final dev = _device;
@@ -297,11 +305,20 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final connection = _connectionProvider != null
         ? await _connectionProvider!(dev.id)
         : await ServiceManager.instance().device.ensureConnection(dev.id);
-    if (connection != null) {
-      await connection.deleteFile(
-        StorageFile(index: wal.fileNum, timestamp: 0, size: 0),
-      );
+    if (connection == null) return;
+
+    await connection.acquireStorageLock('deleteWal');
+    try {
+      await _deleteWalLocked(connection, wal);
+    } finally {
+      connection.releaseStorageLock();
     }
+  }
+
+  Future _deleteWalLocked(DeviceConnection connection, Wal wal) async {
+    await connection.deleteFile(
+      StorageFile(index: wal.fileNum, timestamp: 0, size: 0),
+    );
     _wals.removeWhere((w) => w.id == wal.id);
     listener.onWalUpdated();
   }
@@ -347,21 +364,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     } catch (_) {}
   }
 
-  Future _readStorageBytesToFile(
+  Future _readStorageBytesToFileLocked(
+    DeviceConnection connection,
     Wal wal,
     Function(File f, int offset, int timerStart, {String? subFolder})
     callback, {
     Function(int offset)? onProgress,
   }) async {
-    var deviceId = wal.device;
     int fileNum = wal.fileNum;
     int offset = wal.walOffset;
     int timerStart = wal.timerStart;
-
-    var connection = _connectionProvider != null
-        ? await _connectionProvider!(deviceId)
-        : await ServiceManager.instance().device.ensureConnection(deviceId);
-    if (connection == null) throw Exception('Device connection lost');
 
     if (_isCancelled) throw Exception("Cancelled");
 
@@ -580,8 +592,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     );
 
     try {
-      final readStarted = await _writeToStorage(
-        deviceId,
+      final readStarted = await connection.writeToStorage(
         fileNum,
         0x11,
         offset,
@@ -644,202 +655,69 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }) async {
     if (_isSyncing || _device == null) return null;
 
+    final dev = _device!;
+    final connection = _connectionProvider != null
+        ? await _connectionProvider!(dev.id)
+        : await ServiceManager.instance().device.ensureConnection(dev.id);
+    if (connection == null) throw Exception('No connection');
+
+    if (connection.isStorageBusy) {
+      Logger.debug('Storage busy, skipping: syncAll');
+      return null;
+    }
+
     _resetSyncState();
     _isSyncing = true;
 
+    await connection.acquireStorageLock('syncAll');
     try {
-      // Refresh and update atomically before UI sees anything
-      final refreshed = await getMissingWals();
-      _wals = refreshed;
-      listener.onWalUpdated();
-
-      if (_isCancelled) return null;
-
-      final wals = _wals
-          .where(
-            (w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard,
-          )
-          .toList();
-      if (wals.isEmpty) {
-        return null;
-      }
-      final dev = _device!;
-      final connection = _connectionProvider != null
-          ? await _connectionProvider!(dev.id)
-          : await ServiceManager.instance().device.ensureConnection(dev.id);
-      if (connection == null) throw Exception('No connection');
-
-      bool anyPartial = false;
-      _downloadStartTime = DateTime.now();
-      await connection.acquireStorageLock();
-      try {
-        for (int i = 0; i < wals.length; i++) {
-          final wal = wals[i];
-          if (_isCancelled) break;
-          wal.isSyncing = true;
-          wal.syncStartedAt = DateTime.now();
-          listener.onWalUpdated();
-
-          final initialOffset = wal.walOffset;
-          int lastOffset = initialOffset;
-          await _checkDiskSpaceBeforeSync(wal.storageTotalBytes - initialOffset);
-
-          // Single try-catch covers both transfer (with gap retries) and delete.
-          // This ensures wal.isSyncing is always cleared and anyPartial is set
-          // whether the failure is a gap retry limit, a transfer error, or a
-          // delete error.
-          try {
-            const int maxGapRetries = 3;
-            int gapRetries = 0;
-            bool transferred = false;
-            while (!transferred) {
-              if (_isCancelled) throw Exception("Cancelled");
-              try {
-                Logger.debug(
-                  'SDCardWalSync: Starting transfer for file[${wal.fileNum}] (attempt ${gapRetries + 1})',
-                );
-                await _readStorageBytesToFile(
-                  wal,
-                  (
-                    File file,
-                    int offset,
-                    int timerStart, {
-                    String? subFolder,
-                  }) async {
-                    if (_isCancelled) throw Exception("Cancelled");
-                    _updateSpeed(offset - lastOffset);
-                    lastOffset = offset;
-                    listener.onWalUpdated();
-                  },
-                  onProgress: (offset) {
-                    wal.walOffset = offset;
-                    final double withinWal =
-                        (wal.storageTotalBytes > initialOffset)
-                        ? (offset - initialOffset) /
-                              (wal.storageTotalBytes - initialOffset)
-                        : 1.0;
-                    final double clamped =
-                        ((i + (withinWal.clamp(0.0, 1.0) * 0.9)) / wals.length)
-                            .clamp(0.0, 1.0);
-                    progress?.onWalSyncedProgress(
-                      clamped,
-                      speedKBps: _currentSpeedKBps,
-                    );
-                    _globalProgressListener?.onWalSyncedProgress(
-                      clamped,
-                      speedKBps: _currentSpeedKBps,
-                    );
-                  },
-                );
-                transferred = true;
-              } on _ProtocolGapException catch (e) {
-                gapRetries++;
-                if (gapRetries > maxGapRetries) {
-                  Logger.error(
-                    'SDCardWalSync: Gap retry limit exceeded for file[${wal.fileNum}]: $e',
-                  );
-                  rethrow; // caught by outer catch below — sets anyPartial
-                }
-                Logger.debug(
-                  'SDCardWalSync: Gap detected (retry $gapRetries/$maxGapRetries) — rewinding to ${e.incoming}',
-                );
-                wal.walOffset = e.incoming;
-                lastOffset = e.incoming;
-                _lastSegmentBoundaryOffset = e.incoming;
-                final conn = dev != null
-                    ? (_connectionProvider != null
-                          ? await _connectionProvider!(dev.id)
-                          : await ServiceManager.instance().device
-                                .ensureConnection(dev.id))
-                    : (_connectionProvider != null
-                          ? await _connectionProvider!('test')
-                          : null);
-                await conn?.stopStorageSync();
-                await Future.delayed(const Duration(milliseconds: 200));
-              }
-            }
-
-            if (_isCancelled) throw Exception("Cancelled");
-
-            Logger.debug(
-              'SDCardWalSync: Transfer complete for file[${wal.fileNum}], deleting...',
-            );
-            await Future.delayed(const Duration(milliseconds: 500));
-            await deleteWal(wal);
-            wal.status = WalStatus.synced;
-            final double fileDone = ((i + 1.0) / wals.length).clamp(0.0, 1.0);
-            progress?.onWalSyncedProgress(fileDone, speedKBps: _currentSpeedKBps);
-            _globalProgressListener?.onWalSyncedProgress(
-              fileDone,
-              speedKBps: _currentSpeedKBps,
-            );
-            Logger.debug(
-              'SDCardWalSync: Successfully synced and deleted file[${wal.fileNum}]',
-            );
-            listener.onWalUpdated();
-          } catch (e) {
-            Logger.error(
-              'SDCardWalSync: Failed to sync file[${wal.fileNum}]: $e',
-            );
-            wal.walOffset = _lastSegmentBoundaryOffset;
-            wal.isSyncing = false;
-            listener.onWalUpdated();
-            anyPartial = true;
-            if (_isCancelled) break; // cancellation aborts remaining files gracefully
-          }
-        }
-      } finally {
-        connection.releaseStorageLock();
-      }
-
-      return SyncLocalFilesResponse(
-        newConversationIds: [],
-        updatedConversationIds: [],
-        isPartial: anyPartial,
-      );
+      return await _syncAllLocked(connection, dev.id, progress: progress);
     } finally {
       _isSyncing = false;
       _completeCancelIfPending();
+      connection.releaseStorageLock();
     }
   }
 
-  @override
-  Future<SyncLocalFilesResponse?> syncWal({
-    required Wal wal,
+  Future<SyncLocalFilesResponse?> _syncAllLocked(
+    DeviceConnection connection,
+    String deviceId, {
     IWalSyncProgressListener? progress,
   }) async {
-    if (_isSyncing) return null;
-    _resetSyncState();
-    _isSyncing = true;
+    final refreshed = await _getMissingWalsLocked(connection, deviceId);
+    _wals = refreshed;
+    listener.onWalUpdated();
 
-    try {
+    if (_isCancelled) return null;
+
+    final wals = _wals
+        .where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard)
+        .toList();
+    if (wals.isEmpty) return null;
+
+    bool anyPartial = false;
+    _downloadStartTime = DateTime.now();
+
+    for (int i = 0; i < wals.length; i++) {
+      final wal = wals[i];
+      if (_isCancelled) break;
       wal.isSyncing = true;
       wal.syncStartedAt = DateTime.now();
       listener.onWalUpdated();
 
-      final dev = _device;
-      final connection = dev != null
-          ? (_connectionProvider != null
-                ? await _connectionProvider!(dev.id)
-                : await ServiceManager.instance().device.ensureConnection(dev.id))
-          : (_connectionProvider != null
-                ? await _connectionProvider!('test')
-                : null);
-      if (connection == null) throw Exception('No connection');
-
       final initialOffset = wal.walOffset;
       int lastOffset = initialOffset;
       await _checkDiskSpaceBeforeSync(wal.storageTotalBytes - initialOffset);
-      _downloadStartTime = DateTime.now();
 
-      await connection.acquireStorageLock();
       try {
         const int maxGapRetries = 3;
         int gapRetries = 0;
         bool transferred = false;
         while (!transferred) {
+          if (_isCancelled) throw Exception("Cancelled");
           try {
-            await _readStorageBytesToFile(
+            await _readStorageBytesToFileLocked(
+              connection,
               wal,
               (File file, int offset, int timerStart, {String? subFolder}) async {
                 if (_isCancelled) throw Exception("Cancelled");
@@ -849,12 +727,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               },
               onProgress: (offset) {
                 wal.walOffset = offset;
-                final double progressPercent =
+                final double withinWal =
                     (wal.storageTotalBytes > initialOffset)
                     ? (offset - initialOffset) /
                           (wal.storageTotalBytes - initialOffset)
                     : 1.0;
-                final double clamped = progressPercent.clamp(0.0, 1.0);
+                final double clamped =
+                    ((i + (withinWal.clamp(0.0, 1.0) * 0.9)) / wals.length)
+                        .clamp(0.0, 1.0);
                 progress?.onWalSyncedProgress(
                   clamped,
                   speedKBps: _currentSpeedKBps,
@@ -869,52 +749,156 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           } on _ProtocolGapException catch (e) {
             gapRetries++;
             if (gapRetries > maxGapRetries) {
-              Logger.error(
-                'SDCardWalSync: Gap retry limit exceeded for file[${wal.fileNum}]: $e',
-              );
               rethrow;
             }
-            Logger.debug(
-              'SDCardWalSync: Gap detected (retry $gapRetries/$maxGapRetries) — rewinding to ${e.incoming}',
-            );
             wal.walOffset = e.incoming;
             lastOffset = e.incoming;
             _lastSegmentBoundaryOffset = e.incoming;
-            final conn = dev != null
-                ? (_connectionProvider != null
-                      ? await _connectionProvider!(dev.id)
-                      : await ServiceManager.instance().device.ensureConnection(
-                          dev.id,
-                        ))
-                : (_connectionProvider != null
-                      ? await _connectionProvider!('test')
-                      : null);
-            await conn?.stopStorageSync();
+            await connection.stopStorageSync();
             await Future.delayed(const Duration(milliseconds: 200));
           }
         }
 
+        if (_isCancelled) throw Exception("Cancelled");
+
         await Future.delayed(const Duration(milliseconds: 500));
-        if (wal.walOffset >= wal.storageTotalBytes) {
-          await deleteWal(wal);
-        } else {
-          wal.walOffset = _lastSegmentBoundaryOffset;
-        }
+        await _deleteWalLocked(connection, wal);
         wal.status = WalStatus.synced;
-        _wals.removeWhere((w) => w.id == wal.id);
+        final double fileDone = ((i + 1.0) / wals.length).clamp(0.0, 1.0);
+        progress?.onWalSyncedProgress(fileDone, speedKBps: _currentSpeedKBps);
+        _globalProgressListener?.onWalSyncedProgress(
+          fileDone,
+          speedKBps: _currentSpeedKBps,
+        );
         listener.onWalUpdated();
       } catch (e) {
         wal.walOffset = _lastSegmentBoundaryOffset;
+        wal.status = WalStatus.miss;
         wal.isSyncing = false;
         listener.onWalUpdated();
-        rethrow;
-      } finally {
-        connection.releaseStorageLock();
+        anyPartial = true;
+        if (_isCancelled) break;
       }
+    }
+
+    return SyncLocalFilesResponse(
+      newConversationIds: [],
+      updatedConversationIds: [],
+      isPartial: anyPartial,
+    );
+  }
+
+  @override
+  Future<SyncLocalFilesResponse?> syncWal({
+    required Wal wal,
+    IWalSyncProgressListener? progress,
+  }) async {
+    if (_isSyncing) return null;
+
+    final connection = _device != null
+        ? (_connectionProvider != null
+              ? await _connectionProvider!(_device!.id)
+              : await ServiceManager.instance().device.ensureConnection(_device!.id))
+        : null;
+    if (connection == null) throw Exception('No connection');
+
+    if (connection.isStorageBusy) {
+      Logger.debug('Storage busy, skipping: syncWal');
+      return null;
+    }
+
+    _resetSyncState();
+    _isSyncing = true;
+
+    await connection.acquireStorageLock('syncWal');
+    try {
+      return await _syncWalLocked(connection, wal, progress: progress);
     } finally {
       _isSyncing = false;
       _completeCancelIfPending();
+      connection.releaseStorageLock();
     }
+  }
+
+  Future<SyncLocalFilesResponse?> _syncWalLocked(
+    DeviceConnection connection,
+    Wal wal, {
+    IWalSyncProgressListener? progress,
+  }) async {
+    wal.isSyncing = true;
+    wal.syncStartedAt = DateTime.now();
+    listener.onWalUpdated();
+
+    final initialOffset = wal.walOffset;
+    int lastOffset = initialOffset;
+    await _checkDiskSpaceBeforeSync(wal.storageTotalBytes - initialOffset);
+    _downloadStartTime = DateTime.now();
+
+    try {
+      const int maxGapRetries = 3;
+      int gapRetries = 0;
+      bool transferred = false;
+      while (!transferred) {
+        if (_isCancelled) throw Exception("Cancelled");
+        try {
+          await _readStorageBytesToFileLocked(
+            connection,
+            wal,
+            (File file, int offset, int timerStart, {String? subFolder}) async {
+              if (_isCancelled) throw Exception("Cancelled");
+              _updateSpeed(offset - lastOffset);
+              lastOffset = offset;
+              listener.onWalUpdated();
+            },
+            onProgress: (offset) {
+              wal.walOffset = offset;
+              final double progressPercent =
+                  (wal.storageTotalBytes > initialOffset)
+                  ? (offset - initialOffset) /
+                        (wal.storageTotalBytes - initialOffset)
+                  : 1.0;
+              final double clamped = progressPercent.clamp(0.0, 1.0);
+              progress?.onWalSyncedProgress(
+                clamped,
+                speedKBps: _currentSpeedKBps,
+              );
+              _globalProgressListener?.onWalSyncedProgress(
+                clamped,
+                speedKBps: _currentSpeedKBps,
+              );
+            },
+          );
+          transferred = true;
+        } on _ProtocolGapException catch (e) {
+          gapRetries++;
+          if (gapRetries > maxGapRetries) rethrow;
+          
+          wal.walOffset = e.incoming;
+          lastOffset = e.incoming;
+          _lastSegmentBoundaryOffset = e.incoming;
+          await connection.stopStorageSync();
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
+      }
+
+      if (_isCancelled) throw Exception("Cancelled");
+
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (wal.walOffset >= wal.storageTotalBytes) {
+        await _deleteWalLocked(connection, wal);
+      } else {
+        wal.walOffset = _lastSegmentBoundaryOffset;
+      }
+      wal.status = WalStatus.synced;
+      listener.onWalUpdated();
+    } catch (e) {
+      wal.walOffset = _lastSegmentBoundaryOffset;
+      wal.isSyncing = false;
+      wal.status = WalStatus.miss;
+      listener.onWalUpdated();
+      rethrow;
+    }
+
     return SyncLocalFilesResponse(
       newConversationIds: [],
       updatedConversationIds: [],
@@ -926,37 +910,34 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     IWalSyncProgressListener? progress,
   }) async {
     if (_isSyncing || _device == null) return null;
+    
+    final dev = _device!;
+    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+    if (connection == null) throw Exception('No connection');
+
+    if (connection.isStorageBusy) {
+      Logger.debug('Storage busy, skipping: rotateAndSync');
+      return null;
+    }
+
     _resetSyncState();
     _isSyncing = true;
 
+    await connection.acquireStorageLock('rotateAndSync');
     try {
-      final dev = _device!;
-      final connection = await ServiceManager.instance().device.ensureConnection(
-        dev.id,
-      );
-      if (connection == null) throw Exception('No connection');
-
       if (_isCancelled) return null;
 
       final rotated = await connection.rotateFile();
       if (!rotated) throw Exception('Rotation failed');
-      _wals = await _buildWalsFromFiles(dev.id, ignoreThreshold: true);
+      _wals = await _buildWalsFromFilesLocked(connection, dev.id, ignoreThreshold: true);
 
       if (_isCancelled) return null;
 
-      // syncAll will manage its own _isSyncing internally if called directly,
-      // but here we already have it set. syncAll checks _isSyncing and returns
-      // null if it's already true, so we MUST reset it or use a version that
-      // doesn't check.
-      // Actually, let's just reset it here so syncAll can take over.
-      _isSyncing = false;
-      return await syncAll(progress: progress);
+      return await _syncAllLocked(connection, dev.id, progress: progress);
     } finally {
-      // If we are still true (e.g. exception before calling syncAll), reset.
-      if (_isSyncing) {
-        _isSyncing = false;
-        _completeCancelIfPending();
-      }
+      _isSyncing = false;
+      _completeCancelIfPending();
+      connection.releaseStorageLock();
     }
   }
 
@@ -968,25 +949,33 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     );
     if (connection == null) return;
 
-    Logger.debug(
-      'SDCardWalSync: deleteAllPendingWals — Sending CMD_CLEAR_STORAGE (0x14)',
-    );
-    final success = await connection.performClearStorage();
-    if (success) {
-      _wals = [];
-      listener.onWalUpdated();
-    } else {
-      Logger.error(
-        'SDCardWalSync: CMD_CLEAR_STORAGE failed, falling back to per-file deletion',
-      );
-      final files = await _listFiles(_device!.id);
-      for (final file in files) {
-        await connection.deleteFile(file);
-        _wals.removeWhere(
-          (w) => w.fileNum == file.index && w.storage == WalStorage.sdcard,
-        );
+    if (connection.isStorageBusy) {
+      Logger.debug('Storage busy, skipping: deleteAllPendingWals');
+      return;
+    }
+
+    await connection.acquireStorageLock('deleteAllPendingWals');
+    try {
+      Logger.debug('SDCardWalSync: deleteAllPendingWals — Sending CMD_CLEAR_STORAGE (0x14)');
+      final success = await connection.performClearStorage();
+      if (success) {
+        _wals = [];
+        listener.onWalUpdated();
+      } else {
+        Logger.error('SDCardWalSync: CMD_CLEAR_STORAGE failed, falling back to per-file deletion');
+        final files = await connection.listFiles();
+        for (final file in files) {
+          if (_isCancelled) break;
+          await Future.delayed(const Duration(milliseconds: 5)); // Prevent UI starvation
+          await connection.deleteFile(file);
+          _wals.removeWhere(
+            (w) => w.fileNum == file.index && w.storage == WalStorage.sdcard,
+          );
+        }
+        listener.onWalUpdated();
       }
-      listener.onWalUpdated();
+    } finally {
+      connection.releaseStorageLock();
     }
   }
 }
