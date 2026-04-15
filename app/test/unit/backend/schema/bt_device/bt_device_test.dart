@@ -59,7 +59,10 @@ class MockDeviceConnection extends DeviceConnection {
   MockDeviceConnection(BtDevice device, {this.onPerformGetDeviceInfo}) : super(device, MockDeviceTransport());
 
   @override
-  Future<void> acquireStorageLock() async {}
+  bool get isStorageBusy => false;
+
+  @override
+  Future<void> acquireStorageLock([String owner = 'unknown']) async {}
 
   @override
   Future<Stream<List<int>>> getBleStorageBytesStream() async {

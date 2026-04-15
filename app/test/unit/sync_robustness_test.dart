@@ -62,10 +62,13 @@ class MockDeviceConnection extends Fake implements DeviceConnection {
   Future<void> close() => _controller.close();
 
   @override
-  Future<bool> acquireStorageLock() async => true;
+  bool get isStorageBusy => false;
 
   @override
-  Future<bool> releaseStorageLock() async => true;
+  Future<void> acquireStorageLock([String owner = 'unknown']) async {}
+
+  @override
+  void releaseStorageLock() {}
 
   int currentFileNum = 0;
   int writeCount = 0;

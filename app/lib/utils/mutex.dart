@@ -3,6 +3,8 @@ import 'dart:async';
 class Mutex {
   Completer<void>? _completer;
 
+  bool get isLocked => _completer != null;
+
   Future<void> acquire() async {
     while (_completer != null) {
       await _completer!.future;
