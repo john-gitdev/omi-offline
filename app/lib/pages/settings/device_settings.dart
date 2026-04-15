@@ -1,5 +1,3 @@
-import 'package:file_picker/file_picker.dart';
-import 'package:omi/pages/settings/firmware/manual_firmware_flash_page.dart';
 import 'package:omi/gen/pigeon_communicator.g.dart';
 import "package:omi/widgets/dialog.dart";
 import 'dart:async';
@@ -759,41 +757,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                   const SizedBox(height: 32),
                   _buildSectionHeader('Hardware'),
                   _buildHardwareInfoSection(provider.pairedDevice),
-                  const SizedBox(height: 32),
-                  _buildSectionHeader('Firmware Update'),
-                  Container(
-                    decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
-                    child: Column(
-                      children: [
-                        _buildProfileStyleItem(
-                          icon: FontAwesomeIcons.microchip,
-                          title: 'Flash Custom Firmware',
-                          onTap: () async {
-                            if (provider.pairedDevice == null) return;
-                            final result = await FilePicker.platform.pickFiles(
-                              type: FileType.custom,
-                              allowedExtensions: ['zip'],
-                              dialogTitle: 'Select firmware ZIP file',
-                            );
-                            if (result == null || result.files.isEmpty) return;
-                            final file = result.files.first;
-                            if (file.path == null) return;
-
-                            if (!context.mounted) return;
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (context) => ManualFirmwareFlashPage(
-                                  zipFilePath: file.path!,
-                                  fileName: file.name,
-                                  device: provider.pairedDevice!,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
                   const SizedBox(height: 32),
                 ],
                 _buildActionsSection(provider),
