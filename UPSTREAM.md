@@ -82,7 +82,7 @@ Tracks features, fixes, and commits reviewed from `BasedHardware/omi` and ported
 - **`isInitialized` companion property (`OmiBleManager.kt`):** `val isInitialized: Boolean get() = _instance != null` to support the guard without catching exceptions.
 - **Reconnect guard in `connectPeripheral` (`OmiBleManager.kt`):** Skips if `pendingReconnectRunnable != null`, preventing Dart from fighting the OS-managed `autoConnect=true` reconnect in progress.
 - **`ensureConnection` refactor (`devices.dart`):** Returns `null` without disposing the transport if a `_connection` already exists for the same device ID (even if disconnected), preventing `force=true` calls from killing a native reconnect.
-- **`_bleDisconnectDevice` simplification (`device_provider.dart`):** Calls `DeviceService.disconnectDevice()` directly instead of routing through `ensureConnection()`, which would leave `_connection` pointing to a stale object after DFU.
+- **`_bleDisconnectDevice` simplification (`device_provider.dart`):** Calls `DeviceService.disconnectDevice()` directly instead of routing through `ensureConnection()`.
 - **Characteristic existence guards (`native_ble_transport.dart`):** `_hasCharacteristic()` helper checks discovered `_services`; subscribe silently skips, read returns `[]`, write throws immediately with a clear message for absent optional characteristics.
 
 **Excluded:** None.
@@ -117,7 +117,6 @@ Smaller fixes integrated independently; superseded by the PR #6200 full-file rep
 |--------|------|-------------|--------|
 | [`bae9dbea3`](https://github.com/BasedHardware/omi/commit/bae9dbea3) | `OmiBleManager.kt` | BLE API compat for Android < 13: `SDK_INT >= 33` branches with deprecated `setValue` fallbacks for `writeCharacteristic` / `writeDescriptor` | Already present |
 | [`b0560a0ec`](https://github.com/BasedHardware/omi/commit/b0560a0ec) | `OmiBleForegroundService.kt` | Guard `OmiBleManager` init in `onCreate`: `if (!OmiBleManager.isInitialized) initialize(application)` prevents `IllegalStateException` on re-delivered pending intents after process death | Integrated |
-| [`20f323a36`](https://github.com/BasedHardware/omi/commit/20f323a36) | `OmiBleForegroundService.kt` | Remove DFU service MTU skip in `requestMtuThenNotifyReady`: removed `hasDfuService` guard and unused `DFU_SERVICE_UUID` constant so MTU negotiation proceeds unconditionally | Integrated |
 | [`a43cd2be0`](https://github.com/BasedHardware/omi/commit/a43cd2be0) | `OmiBleManager.kt` | Log `writeCharacteristic` errors on API 33+ path; extract `writeDescriptorCompat()` helper that calls `completeCommand()` on failure, preventing permanent BLE queue stalls | Integrated |
 | [`f8a9ac42a`](https://github.com/BasedHardware/omi/commit/f8a9ac42a) | `OmiBleManager.kt` | Increase RSSI keep-alive interval from 500ms to 3s on Android to reduce BLE radio overhead and battery consumption | Integrated |
 | [`d16ba4481`](https://github.com/BasedHardware/omi/commit/d16ba4481) | `OmiBleForegroundService.kt` | Catch `SecurityException` on `connectGatt` when `BLUETOOTH_CONNECT` permission is denied instead of crashing | Integrated |
