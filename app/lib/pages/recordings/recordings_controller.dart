@@ -508,11 +508,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     try {
       final result = await syncs.syncAll(progress: this);
       if (result == null) {
-        _isUserTriggered = false;
-        WakelockPlus.disable();
-        await ForegroundUtil.stopForegroundTask();
-        _transitionTo(SyncProcessState.idle);
-        return;
+        Logger.debug('RecordingsController: syncAll returned null (no new segments)');
       }
     } catch (e) {
       _isUserTriggered = false;
