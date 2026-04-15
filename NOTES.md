@@ -162,3 +162,34 @@ This section reviews the functionality of the Debug Tools present in `app/lib/pa
 - Clears the HeyPocket upload history to allow re-upload if files are re-processed.
 **Conclusion:** Matches description. `recordings` stores the `.m4a` files and EDL data, while `processing_temp` holds files currently being worked on.
 
+---
+
+## SD Card Power-Gating and Locking Architecture
+
+### App-Side (Client Locking & Triggers)
+The Flutter app manages a `_storageMutex` to ensure that no two multi-step storage operations (e.g., `syncAll`, `deleteWal`, `rotateAndSync`) overlap. This prevents deadlocks and ensures the SD card stays awake for the full duration of a task.
+
+1. **`app/lib/services/devices/omi_connection.dart`**:
+   - Owns the `_storageMutex`.
+   - `acquireStorageLock()`: Includes an active wake probe via `_waitForStorageReady()`, which calls `performGetStorageFileStats()` to wake the SD card if asleep.
+   - `releaseStorageLock()`: Implements an idle release. It does not force an explicit BLE sleep command, allowing the firmware's idle timeout to safely handle powering down after operations conclude.
+
+2. **`app/lib/services/wals/sdcard_wal_sync.dart`**:
+   - Enforces the `_Locked` pattern.
+   - Public methods (e.g., `syncAll`, `getMissingWals`) acquire the mutex and pass the locked connection to their private `_Locked` equivalents.
+   - Prevents nested locks and re-entrant calls, ensuring atomic and uninterrupted workflows.
+
+### Firmware-Side (Device Power Management)
+The firmware leverages priority queues to intelligently gate SD card power without needing explicit wake/sleep commands from the app.
+
+1. **`omi/firmware/omi/src/sd_card.c`**:
+   - Runs the main SD worker thread.
+   - **Auto-Sleep (`sd_gate_sleep`)**: Triggers an automatic power down (`GATE_SLEEP_MS` = 15 seconds) when there are no pending read/write operations. This ensures buffers are fully flushed before sleeping.
+   - **Auto-Wake (`sd_gate_wake`)**: Triggers when a priority request arrives (such as the `REQ_GET_FILE_STATS` sent by the app's wake probe) or when the write queue exceeds `GATE_WAKE_THRESHOLD`. It remounts LittleFS and executes the command.
+
+2. **`omi/firmware/omi/src/lib/core/storage.c`**:
+   - Acts as the BLE GATT translation layer.
+   - When the app reads the `0x30295782...` characteristic (via `performGetStorageFileStats()`), it calls `get_audio_file_stats()`. This posts a `REQ_GET_FILE_STATS` to the `sd_prio_msgq`, signaling `sd_card.c` to wake up.
+
+3. **`omi/firmware/omi/src/lib/core/sd_card.h`**:
+   - Defines the API for interacting with the SD worker, including the `sd_req_type_t` enumeration (e.g., `REQ_GET_FILE_STATS`).
