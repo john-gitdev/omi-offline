@@ -189,7 +189,8 @@ abstract class DeviceConnection {
 
   // ── Abstract Implementation Hooks ──
 
-  Future<void> acquireStorageLock();
+  bool get isStorageBusy;
+  Future<void> acquireStorageLock([String owner = 'unknown']);
   void releaseStorageLock();
   Future<Stream<List<int>>> getBleStorageBytesStream();
   Future<StorageFileStats?> performGetStorageFileStats();

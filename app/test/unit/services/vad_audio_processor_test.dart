@@ -53,7 +53,7 @@ void main() {
       },
     );
 
-    SharedPreferences.setMockInitialValues({});
+    SharedPreferences.setMockInitialValues({'convertOpusToM4a': true});
     await SharedPreferencesUtil.init();
   });
 
