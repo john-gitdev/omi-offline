@@ -414,13 +414,28 @@ class OmiDeviceConnection extends DeviceConnection {
       _listFilesSub = stream.listen((blePacket) {
         if (isStale() || blePacket.isEmpty) return;
 
-        // PACKET_ACK (0x03) with result 0 means success but potentially empty data
+        // PACKET_ACK (0x03) is just an acknowledgement that the command was received.
+        // The actual data follows in PACKET_DATA (0x01) packets.
         if (blePacket[0] == 0x03) {
-          if (buffer.isEmpty) success([]); // ACK received before any data = empty list
+          Logger.debug('OmiDeviceConnection: CMD_LIST_FILES ACK received');
           return;
         }
 
-        if (blePacket[0] == 0x02) return; // Ignore EOT for list files (usually not sent)
+        // PACKET_EOT (0x02) marks the end of the file list transfer.
+        if (blePacket[0] == 0x02) {
+          Logger.debug('OmiDeviceConnection: CMD_LIST_FILES EOT received');
+          if (expectedTotalBytes == null || buffer.length < expectedTotalBytes!) {
+            // If we got EOT but haven't received all expected bytes (or any bytes), 
+            // complete with what we have if it's a valid list.
+            if (buffer.length >= 4) {
+               // We have at least the count, so we can try parsing.
+               _parseAndSuccess(buffer, success);
+            } else {
+               success([]); // Empty list or malformed
+            }
+          }
+          return;
+        }
 
         // For every packet, we expect the PACKET_DATA (0x01) header
         if (blePacket[0] != 0x01) {
@@ -435,36 +450,21 @@ class OmiDeviceConnection extends DeviceConnection {
         if (expectedTotalBytes == null && buffer.length >= 4) {
           final count = ByteData.sublistView(Uint8List.fromList(buffer)).getUint32(0, Endian.little);
           if (count == 0) {
-            success([]);
-            return;
-          }
-          if (count > 2000) {
+            // Firmware sends [0x01][0,0,0,0] followed by [0x02] for empty list.
+            expectedTotalBytes = 4;
+          } else if (count > 2000) {
             fail("Invalid file count: $count");
             return;
+          } else {
+            // Entry format: [index:4][timestamp:4][size:4] = 12 bytes
+            expectedTotalBytes = 4 + (count * 12);
+            Logger.debug('OmiDeviceConnection: Expecting $count files ($expectedTotalBytes bytes total)');
           }
-          // Entry format: [index:4][timestamp:4][size:4] = 12 bytes
-          expectedTotalBytes = 4 + (count * 12);
-          Logger.debug('OmiDeviceConnection: Expecting $count files ($expectedTotalBytes bytes total)');
         }
 
         // Keep accumulating until we reach the expected size
         if (expectedTotalBytes != null && buffer.length >= expectedTotalBytes!) {
-          final count = ByteData.sublistView(Uint8List.fromList(buffer)).getUint32(0, Endian.little);
-          final files = <StorageFile>[];
-          final bd = ByteData.sublistView(Uint8List.fromList(buffer.sublist(0, expectedTotalBytes!)));
-          for (int i = 0; i < count; i++) {
-            files.add(StorageFile(
-              index: bd.getUint32(4 + i * 12, Endian.little),
-              timestamp: bd.getUint32(8 + i * 12, Endian.little),
-              size: bd.getUint32(12 + i * 12, Endian.little),
-            ));
-          }
-          for (int i = 0; i < files.length; i++) {
-            Logger.debug(
-                'OmiDeviceConnection: file[$i] index=${files[i].index} ts=${files[i].timestamp} size=${files[i].size}');
-          }
-          Logger.debug('OmiDeviceConnection: Successfully parsed all $count files');
-          success(files);
+          _parseAndSuccess(buffer, success);
         }
       });
 
@@ -574,5 +574,29 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<Stream<List<int>>> performReadFile(StorageFile file, {int offset = 0}) async {
     // This is handled by the WAL sync logic which sets up its own listener.
     return const Stream.empty();
+  }
+
+  void _parseAndSuccess(List<int> buffer, void Function(List<StorageFile>) success) {
+    final count = ByteData.sublistView(Uint8List.fromList(buffer)).getUint32(0, Endian.little);
+    final files = <StorageFile>[];
+    final totalExpected = 4 + (count * 12);
+
+    // Guard against partial data if called from EOT branch
+    final actualBuffer = buffer.length > totalExpected ? buffer.sublist(0, totalExpected) : buffer;
+
+    final bd = ByteData.sublistView(Uint8List.fromList(actualBuffer));
+    for (int i = 0; i < count && (4 + (i + 1) * 12) <= actualBuffer.length; i++) {
+      files.add(StorageFile(
+        index: bd.getUint32(4 + i * 12, Endian.little),
+        timestamp: bd.getUint32(8 + i * 12, Endian.little),
+        size: bd.getUint32(12 + i * 12, Endian.little),
+      ));
+    }
+
+    for (int i = 0; i < files.length; i++) {
+      Logger.debug('OmiDeviceConnection: file[$i] index=${files[i].index} ts=${files[i].timestamp} size=${files[i].size}');
+    }
+    Logger.debug('OmiDeviceConnection: Successfully parsed ${files.length} files (count field said $count)');
+    success(files);
   }
 }
