@@ -57,6 +57,10 @@ class OmiDeviceConnection extends DeviceConnection {
   BleAudioCodec? _cachedAudioCodec;
 
   final Mutex _storageMutex = Mutex();
+  String? _lockOwner;
+
+  @override
+  bool get isStorageBusy => _storageMutex.isLocked;
 
   // 2s for the initial listFiles subscription (CCCD descriptor write is slow on first subscribe).
   static const _cccdSettleDelay = Duration(milliseconds: 2000);
@@ -67,10 +71,67 @@ class OmiDeviceConnection extends DeviceConnection {
   OmiDeviceConnection(super.device, super.transport);
 
   @override
-  Future<void> acquireStorageLock() => _storageMutex.acquire();
+  Future<void> acquireStorageLock([String owner = 'unknown']) async {
+    try {
+      await _storageMutex.acquire().timeout(const Duration(seconds: 10));
+      _lockOwner = owner;
+
+      try {
+        // TODO: Implement actual BLE wake command
+        // await writeToConfig(...);
+
+        await _waitForStorageReady();
+      } catch (e) {
+        _lockOwner = null;
+        _storageMutex.release(); // CRITICAL: prevent deadlock
+        rethrow;
+      }
+    } catch (e) {
+      Logger.error(
+        'Failed to acquire SD lock for [$owner]. Current owner: $_lockOwner. Error: $e'
+      );
+      rethrow;
+    }
+  }
+
+  Future<void> _waitForStorageReady() async {
+    const maxAttempts = 3;
+
+    for (int i = 0; i < maxAttempts; i++) {
+      try {
+        // Primary probe
+        await performGetStorageFileStats();
+        return;
+      } catch (_) {
+        try {
+          // Fallback probe (must remain lightweight)
+          await performListFiles();
+          return;
+        } catch (_) {
+          await Future.delayed(Duration(milliseconds: 100 * (i + 1)));
+        }
+      }
+    }
+
+    throw Exception('SD card not ready after wake');
+  }
+
+  Future<void> _sleepStorage() async {
+    try {
+      // TODO: Replace with actual BLE sleep command
+      // await writeToConfig(...).timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // Ignore failures
+    }
+  }
 
   @override
-  void releaseStorageLock() => _storageMutex.release();
+  void releaseStorageLock() {
+    unawaited(_sleepStorage());
+
+    _lockOwner = null;
+    _storageMutex.release();
+  }
 
   @override
   Future<void> connect({
