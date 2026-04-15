@@ -101,11 +101,14 @@ class OmiDeviceConnection extends DeviceConnection {
       try {
         // Primary probe
         await performGetStorageFileStats();
+        // Cache audio codec while awake
+        await performGetAudioCodec();
         return;
       } catch (_) {
         try {
           // Fallback probe (must remain lightweight)
           await performListFiles();
+          await performGetAudioCodec();
           return;
         } catch (_) {
           await Future.delayed(Duration(milliseconds: 100 * (i + 1)));

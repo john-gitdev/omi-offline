@@ -328,6 +328,20 @@ void main() {
       await expectLater(syncFuture, throwsA(isA<Exception>()));
     });
 
+    test('small files (< 500ms) are skipped in _buildWalsFromFilesLocked', () async {
+      // Opus storage bytes per minute is 243,000. 1 second is 4050 bytes.
+      // 500ms is 2025 bytes.
+      // 200ms is 810 bytes.
+      mockConn.files = [
+        StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 800), // < 500ms
+        StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 2500), // > 500ms
+      ];
+
+      final wals = await sync.getMissingWals();
+      expect(wals.length, equals(1));
+      expect(wals[0].fileNum, equals(2));
+    });
+
     test('syncAll continues next file and returns partial on gap exception limit', () async {
       // 1. We mock listFiles but SDCardWalSync needs some fields setup to pass _buildWalsFromFiles logic.
       // Let's use `StorageFile` with adequate sizes.
