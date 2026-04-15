@@ -687,7 +687,18 @@ class RecordingsManager {
         // Move .meta sidecars before .m4a/.wav so the sidecar is always present
         // by the time onRecordingFinalized fires and the scan reads the file.
         final folderEntities = await tempDir.list().toList();
-        final entities = folderEntities.whereType<File>().toList()
+        final entities = folderEntities.whereType<File>().where((f) {
+          final name = f.path.split('/').last;
+          // Ignore temp files used during encoding to avoid race conditions
+          // where the main isolate moves a file while the background isolate is still writing it.
+          if (name.contains('.tmp')) return false;
+          // Only move known finalized file types
+          return name.endsWith('.m4a') ||
+              name.endsWith('.wav') ||
+              name.endsWith('.ogg') ||
+              name.endsWith('.meta') ||
+              name.endsWith('.bin');
+        }).toList()
           ..sort((a, b) {
             final aIsMeta = a.path.endsWith('.meta') ? 0 : 1;
             final bIsMeta = b.path.endsWith('.meta') ? 0 : 1;
@@ -1111,7 +1122,7 @@ class RecordingsManager {
     final recordingsDir = Directory('${directory.path}/recordings');
     if (!await recordingsDir.exists()) return;
     await for (final entity in recordingsDir.list(recursive: true)) {
-      if (entity is File && (entity.path.endsWith('.tmp.m4a') || entity.path.endsWith('.tmp.ogg'))) {
+      if (entity is File && (entity.path.endsWith('.tmp.m4a') || entity.path.endsWith('.ogg.tmp'))) {
         try {
           await entity.delete();
           Logger.debug(
