@@ -68,9 +68,6 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
   Future getDeviceInfo() async {
     if (connectedDevice != null) {
-      if (pairedDevice?.firmwareRevision != null && pairedDevice?.firmwareRevision != 'Unknown') {
-        return;
-      }
       final currentConnectedDevice = connectedDevice;
       if (currentConnectedDevice != null) {
         var connection = await ServiceManager.instance().device.ensureConnection(currentConnectedDevice.id);
@@ -435,8 +432,12 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     isDeviceStorageSupport = files.isNotEmpty;
 
     final stats = await connection.getStorageFileStats();
-    storageStats = stats;
     if (stats != null) {
+      storageStats = StorageFileStats(
+        totalUsedBytes: stats.totalUsedBytes,
+        fileCount: files.where((f) => f.size > 0).length,
+        freeBytes: stats.freeBytes,
+      );
       final usedBytes = stats.totalUsedBytes;
       final totalBytes = usedBytes + stats.freeBytes;
       if (totalBytes > 0) {
@@ -445,6 +446,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
         storageFullPercentage = 0;
       }
     } else {
+      storageStats = null;
       if (files.isNotEmpty) {
         final usedBytes = files.fold(0, (sum, f) => sum + f.size);
         const totalBytes = 480 * 1024 * 1024;
