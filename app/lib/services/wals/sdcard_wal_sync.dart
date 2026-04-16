@@ -462,23 +462,26 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           unawaited(_saveMarker(lastDeviceSessionId ?? 0, msg.payload as int));
           break;
         case 'done':
-          isCompleted = true;
           final finalOffset = msg.payload as int;
           if (onProgress != null) onProgress(finalOffset);
 
-          if (deleteAfter) {
+          if (deleteAfter && !_isCancelled && !isShuttingDown) {
             try {
-              Logger.debug('SDCardWalSync: deleting synced WAL from SD card: fileNum=$fileNum');
+              Logger.debug('SDCardWalSync: [DONE] triggering deletion for fileNum=$fileNum');
               await connection.deleteFile(
                 StorageFile(index: fileNum, timestamp: 0, size: 0),
               );
+              Logger.debug('SDCardWalSync: [DONE] deletion success for fileNum=$fileNum');
               _wals.removeWhere((w) => w.fileNum == fileNum);
               listener.onWalUpdated();
             } catch (e) {
-              Logger.error('SDCardWalSync: Deletion failed for fileNum=$fileNum: $e');
+              Logger.error('SDCardWalSync: [DONE] deletion failed for fileNum=$fileNum: $e');
             }
+          } else {
+            Logger.debug('SDCardWalSync: [DONE] skipping deletion: deleteAfter=$deleteAfter cancelled=$_isCancelled shutdown=$isShuttingDown');
           }
 
+          isCompleted = true;
           if (!completer.isCompleted) completer.complete();
           break;
         case 'error':
