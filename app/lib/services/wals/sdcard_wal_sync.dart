@@ -346,6 +346,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   Future _deleteWalLocked(DeviceConnection connection, Wal wal) async {
+    Logger.debug('SDCardWalSync: deleting synced WAL from SD card: fileNum=\${wal.fileNum}');
     await connection.deleteFile(
       StorageFile(index: wal.fileNum, timestamp: 0, size: 0),
     );
@@ -461,6 +462,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           break;
         case 'done':
           isCompleted = true;
+          final finalOffset = msg.payload as int;
+          if (onProgress != null) onProgress(finalOffset);
           if (!completer.isCompleted) completer.complete();
           break;
         case 'error':
@@ -1053,7 +1056,7 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
                   params.replyPort.send(_SyncMessage('error',
                       'Final file size mismatch: expected=\$expectedOffset actual=\${outputFile.lengthSync()}'));
                 } else {
-                  params.replyPort.send(_SyncMessage('done'));
+                  params.replyPort.send(_SyncMessage('done', expectedOffset));
                 }
               } catch (e) {
                 params.replyPort.send(_SyncMessage('error', 'Final validation failed: \$e'));
