@@ -621,6 +621,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return await _syncAllLocked(connection, dev.id, progress: progress);
     } finally {
       _isSyncing = false;
+      listener.onSyncFinished();
       _completeCancelIfPending();
       connection.releaseStorageLock();
     }
@@ -762,6 +763,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       return await _syncWalLocked(connection, wal, progress: progress);
     } finally {
       _isSyncing = false;
+      listener.onSyncFinished();
       _completeCancelIfPending();
       connection.releaseStorageLock();
     }

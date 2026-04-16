@@ -24,12 +24,13 @@ abstract class IWalSyncProgressListener {
 }
 
 abstract class IWalServiceListener extends IWalSyncListener {
-  void onStatusChanged(WalServiceStatus status);
+  void onWalServiceStatusChanged(WalServiceStatus status);
 }
 
 abstract class IWalSyncListener {
   void onWalUpdated();
   void onWalSynced(Wal wal);
+  void onSyncFinished() {}
   void onDeviceRecordingFailed() {}
 }
 

@@ -20,7 +20,7 @@ class WalService implements IWalService, IWalSyncListener {
     _subscriptions.remove(key);
     _subscriptions.putIfAbsent(key, () => subscription);
 
-    subscription.onStatusChanged(_status);
+    subscription.onWalServiceStatusChanged(_status);
   }
 
   @override
@@ -39,13 +39,13 @@ class WalService implements IWalService, IWalSyncListener {
     await _sdSync.stop();
 
     _status = WalServiceStatus.stop;
-    _onStatusChanged(_status);
+    _onWalServiceStatusChanged(_status);
     _subscriptions.clear();
   }
 
-  void _onStatusChanged(WalServiceStatus status) {
+  void _onWalServiceStatusChanged(WalServiceStatus status) {
     for (var s in List.from(_subscriptions.values)) {
-      s.onStatusChanged(status);
+      s.onWalServiceStatusChanged(status);
     }
   }
 
@@ -65,6 +65,13 @@ class WalService implements IWalService, IWalSyncListener {
   void onWalSynced(Wal wal) {
     for (var s in List.from(_subscriptions.values)) {
       s.onWalSynced(wal);
+    }
+  }
+
+  @override
+  void onSyncFinished() {
+    for (var s in List.from(_subscriptions.values)) {
+      s.onSyncFinished();
     }
   }
 

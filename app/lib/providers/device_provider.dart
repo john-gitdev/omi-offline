@@ -9,12 +9,13 @@ import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
+import 'package:omi/services/wals.dart';
 import 'package:omi/utils/audio/foreground.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/debouncer.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
 
-class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption {
+class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption, IWalServiceListener {
   bool _disposed = false;
   bool isConnecting = false;
   bool isConnected = false;
@@ -54,6 +55,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     final saved = SharedPreferencesUtil().lastBatteryLevel;
     if (saved >= 0) batteryLevel = saved;
     ServiceManager.instance().device.subscribe(this, this);
+    ServiceManager.instance().wal.subscribe(this, this);
     BleBridge.instance.bluetoothStateChangedCallback = (state) {
       Logger.debug('Bluetooth state changed: $state');
       if (state == 'on') {
@@ -394,6 +396,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _disconnectDebouncer.cancel();
     _connectDebouncer.cancel();
     ServiceManager.instance().device.unsubscribe(this);
+    ServiceManager.instance().wal.unsubscribe(this);
     super.dispose();
   }
 
@@ -426,6 +429,26 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       if (!_disposed) periodicConnect('coming from onDisconnect');
     });
   }
+
+  @override
+  void onWalServiceStatusChanged(WalServiceStatus status) {}
+
+  @override
+  void onWalUpdated() {}
+
+  @override
+  void onWalSynced(Wal wal) {}
+
+  @override
+  void onSyncFinished() {
+    if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground) {
+      Logger.debug('Maximizing battery: disconnecting device after sync completion because app is in background.');
+      ServiceManager.instance().device.disconnectDevice();
+    }
+  }
+
+  @override
+  void onDeviceRecordingFailed() {}
 
   String? _currentlySettingUpId;
 
