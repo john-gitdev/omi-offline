@@ -101,6 +101,12 @@ class NativeBleTransport extends DeviceTransport {
     _closeAllStreams();
     _services = [];
 
+    // Fail any pending connect completer
+    if (_deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted) {
+      _deviceReadyCompleter!.completeError(Exception('Disconnected'));
+      _deviceReadyCompleter = null;
+    }
+
     try {
       await _hostApi.unmanageDevice(_peripheralUuid);
     } catch (e) {

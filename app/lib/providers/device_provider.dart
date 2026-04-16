@@ -53,6 +53,18 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     final saved = SharedPreferencesUtil().lastBatteryLevel;
     if (saved >= 0) batteryLevel = saved;
     ServiceManager.instance().device.subscribe(this, this);
+    BleBridge.instance.bluetoothStateChangedCallback = (state) {
+      Logger.debug('Bluetooth state changed: $state');
+      if (state == 'on') {
+        if (!isConnected && SharedPreferencesUtil().btDevice.id.isNotEmpty && !isConnecting) {
+          scanAndConnectToDevice();
+        }
+      } else if (state == 'off') {
+        if (isConnected || isConnecting) {
+          onDeviceDisconnected();
+        }
+      }
+    };
     if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
       Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true));
     }
@@ -358,7 +370,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _isAppInForeground = true;
     if (isConnected) {
       _startBackgroundSyncTimer();
-    } else if (SharedPreferencesUtil().maximizeBattery) {
+    } else {
       if (!isConnecting && SharedPreferencesUtil().btDevice.id.isNotEmpty) {
         scanAndConnectToDevice();
       }
