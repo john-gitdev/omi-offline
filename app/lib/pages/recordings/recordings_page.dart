@@ -879,8 +879,3 @@ class _RecordingsPageState extends State<RecordingsPage> {
     );
   }
 }
-,
-      ),
-    );
-  }
-}

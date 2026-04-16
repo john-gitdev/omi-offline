@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
+import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/recordings_manager.dart';

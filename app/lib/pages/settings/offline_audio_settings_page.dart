@@ -15,6 +15,7 @@ class OfflineAudioSettingsPage extends StatefulWidget {
 
 class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late int _backgroundSyncIntervalMinutes;
+  late bool _maximizeBattery;
   late bool _use24HourTime;
   late bool _adjustmentMode;
   late bool _convertOpusToM4a;
