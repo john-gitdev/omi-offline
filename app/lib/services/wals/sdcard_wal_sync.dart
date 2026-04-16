@@ -391,6 +391,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     List<Uint8List> batchBuffer = [];
     DateTime lastFlush = DateTime.now();
     int inFlightBatches = 0;
+    int totalPackets = 0;
 
     Timer? inactivityTimer;
     void resetInactivityTimer() {
@@ -442,6 +443,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           writtenOffset = bytesWritten;
           _lastSegmentBoundaryOffset = bytesWritten;
 
+          Logger.debug(
+            'SDCardWalSync: [PROGRESS] received $totalPackets packets, offset=$bytesWritten bytes',
+          );
+
           if (onProgress != null) onProgress(bytesWritten);
           _updateSpeed(delta);
           listener.onWalUpdated();
@@ -481,6 +486,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         resetInactivityTimer();
         if (value.isEmpty) return;
 
+        totalPackets++;
         batchBuffer.add(Uint8List.fromList(value));
 
         final now = DateTime.now();
@@ -1032,8 +1038,15 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
               return;
 
             case 0x03:
-              if (value.length >= 2 && value[1] == 0x00) {
-                hasReceivedStartAck = true;
+              if (value.length >= 2) {
+                if (value[1] == 0x00) {
+                  hasReceivedStartAck = true;
+                } else {
+                  params.replyPort.send(_SyncMessage('error', 'Error ACK: \${value[1]}'));
+                  isCompleted = true;
+                  isolateReceivePort.close();
+                  return;
+                }
               }
               break;
           }
