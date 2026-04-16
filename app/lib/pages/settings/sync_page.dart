@@ -61,6 +61,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
 
     try {
+      final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
+      if (!deviceProvider.isConnected) {
+        setState(() => _statusMessage = 'Connecting to device...');
+        await deviceProvider.scanAndConnectToDevice();
+        setState(() => _statusMessage = 'Syncing segments...');
+      }
+
       Logger.debug('DebugTools: Calling syncAll()');
       final result = await ServiceManager.instance().wal.getSyncs().syncAll(progress: this);
       Logger.debug(
@@ -112,6 +119,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
 
     try {
+      final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
+      if (!deviceProvider.isConnected) {
+        setState(() => _statusMessage = 'Connecting to device...');
+        await deviceProvider.scanAndConnectToDevice();
+        setState(() => _statusMessage = 'Rotating segment and syncing...');
+      }
+
       Logger.debug('DebugTools: Calling rotateAndSync()');
       await ServiceManager.instance().wal.getSyncs().rotateAndSync(progress: this);
       Logger.debug('DebugTools: Force sync complete');
