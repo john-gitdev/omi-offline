@@ -246,7 +246,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
 
   Future<void> _reprocessDay(Batch batch) async {
     final messenger = ScaffoldMessenger.of(context);
-    if (_controller.spState != SyncProcessState.idle) return;
+    if (_controller.spState != SyncProcessState.idle && _controller.spState != SyncProcessState.error) return;
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -653,7 +653,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   spState: controller.spState,
                   accumulatedMinutes: controller.accumulatedMinutes,
                   onTap: () {
-                    if (controller.spState != SyncProcessState.idle) return;
+                    if (controller.spState != SyncProcessState.idle &&
+                        controller.spState != SyncProcessState.error) return;
                     showDialog(
                       context: context,
                       builder: (ctx) => AlertDialog(
@@ -760,7 +761,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                             return RefreshIndicator(
                               color: Colors.deepPurpleAccent,
                               onRefresh: () {
-                                if (controller.spState != SyncProcessState.idle) {
+                                if (controller.spState != SyncProcessState.idle &&
+                                    controller.spState != SyncProcessState.error) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
                                       content: Text('Sync already in progress'),
@@ -873,6 +875,11 @@ class _RecordingsPageState extends State<RecordingsPage> {
             ),
           );
         },
+      ),
+    );
+  }
+}
+,
       ),
     );
   }
