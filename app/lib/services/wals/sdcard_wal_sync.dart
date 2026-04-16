@@ -461,7 +461,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           break;
         case 'error':
           isCompleted = true;
-          if (!completer.isCompleted) completer.completeError(Exception(msg.payload.toString()));
+          final errorStr = msg.payload.toString();
+          if (errorStr.contains('Protocol gap:')) {
+            try {
+              final parts = errorStr.split(': ')[1].split(' ');
+              final incoming = int.parse(parts[0].split('=')[1]);
+              final expected = int.parse(parts[1].split('=')[1]);
+              if (!completer.isCompleted) completer.completeError(_ProtocolGapException(incoming, expected));
+            } catch (_) {
+              if (!completer.isCompleted) completer.completeError(Exception(errorStr));
+            }
+          } else {
+            if (!completer.isCompleted) completer.completeError(Exception(errorStr));
+          }
           break;
       }
     });
@@ -497,8 +509,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
           if (isolateSendPort == null) {
             pendingBatches.add(toSend);
-            if (pendingBatches.length > 200) {
-              await Future.delayed(const Duration(milliseconds: 2));
+            if (pendingBatches.length > 100) {
+              await Future.delayed(const Duration(milliseconds: 10));
             }
           } else {
             while (inFlightBatches > 10 && !isCompleted && !isShuttingDown) {
@@ -1015,8 +1027,8 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
                   scanOff += (4 + padded);
                 }
               }
-              if (combined.length >= 3) {
-                tailBuffer = combined.sublist(combined.length - 3);
+              if (combined.length >= 24) {
+                tailBuffer = combined.sublist(combined.length - 24);
               } else {
                 tailBuffer = combined;
               }
