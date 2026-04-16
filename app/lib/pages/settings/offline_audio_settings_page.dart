@@ -405,6 +405,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                         child: _WindowOption(
                           label: sec < 60 ? '${sec}s' : '${sec ~/ 60} min',
                           selected: _vadSplitSeconds == sec,
+                          expand: false,
                           onTap: () {
                             setState(() {
                               _vadSplitSeconds = sec;
@@ -441,6 +442,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                         child: _WindowOption(
                           label: sec < 60 ? '${sec}s' : '${sec ~/ 60} min',
                           selected: _markerLookbackSeconds == sec,
+                          expand: false,
                           onTap: () {
                             setState(() => _markerLookbackSeconds = sec);
                             _markDirty();
@@ -615,34 +617,34 @@ class _WindowOption extends StatelessWidget {
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final bool expand;
 
-  const _WindowOption({required this.label, required this.selected, required this.onTap});
+  const _WindowOption({required this.label, required this.selected, required this.onTap, this.expand = true});
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          margin: const EdgeInsets.only(right: 8),
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1C1C1E),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: selected ? Colors.deepPurpleAccent : Colors.transparent, width: 1.5),
-          ),
-          child: Center(
-            child: Text(
-              label,
-              style: TextStyle(
-                color: selected ? Colors.deepPurpleAccent : Colors.grey.shade400,
-                fontSize: 14,
-                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-              ),
+    Widget content = GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1C1C1E),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: selected ? Colors.deepPurpleAccent : Colors.transparent, width: 1.5),
+        ),
+        child: Center(
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.deepPurpleAccent : Colors.grey.shade400,
+              fontSize: 14,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
             ),
           ),
         ),
       ),
     );
+    return expand ? Expanded(child: content) : content;
   }
 }
