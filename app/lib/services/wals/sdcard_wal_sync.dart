@@ -436,8 +436,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (msg is! _SyncMessage) return;
 
       switch (msg.type) {
-        case 'progress':
+        case 'batchAck':
           inFlightBatches = (inFlightBatches - 1).clamp(0, 9999);
+          break;
+        case 'progress':
           final bytesWritten = msg.payload as int;
           final delta = bytesWritten - writtenOffset;
           writtenOffset = bytesWritten;
@@ -513,7 +515,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               await Future.delayed(const Duration(milliseconds: 10));
             }
           } else {
-            while (inFlightBatches > 10 && !isCompleted && !isShuttingDown) {
+            while (inFlightBatches > 50 && !isCompleted && !isShuttingDown) {
               await Future.delayed(const Duration(milliseconds: 10));
             }
             if (!isCompleted && !isShuttingDown) {
@@ -1076,6 +1078,7 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
           lastProgressSentAt = now;
         }
 
+        params.replyPort.send(_SyncMessage('batchAck'));
         await Future(() {}); // Yield
       } catch (e) {
         flush();
