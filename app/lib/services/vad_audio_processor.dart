@@ -264,7 +264,6 @@ class VadAudioProcessor {
       int totalFrameCount = 0;
       int segmentSpeechFrames = 0;
       double segmentMaxAmp = 0.0;
-      int lastSpeechCountBeforeReset = 0;
 
       while (offset < fileLength) {
         if (offset + 4 > fileLength) break;
@@ -382,10 +381,12 @@ class VadAudioProcessor {
 
         final silenceMs = _consecutiveSilenceFrames * frameDurationMs;
         if (silenceMs >= _silenceDurationToSplitMs) {
-          lastSpeechCountBeforeReset = _speechFrameCount;
           if (_speechFrameCount * frameDurationMs >= _minSpeechMs || _forcedByMarker) {
             final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
             if (filePath != null) savedFiles.add(filePath);
+          } else if (_currentRefs.isNotEmpty) {
+            Logger.debug('VadAudioProcessor: Discarding short recording '
+                '(${_speechFrameCount * frameDurationMs}ms speech < ${_minSpeechMs}ms minimum)');
           }
           _lastSplitTime = segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
           _forcedByMarker = false;
@@ -401,7 +402,6 @@ class VadAudioProcessor {
               .subtract(Duration(milliseconds: bufferToKeep * frameDurationMs));
         } else if (_currentChunkDurationMs >= _maxChunkMs) {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
-          lastSpeechCountBeforeReset = _speechFrameCount;
           final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
           if (filePath != null) savedFiles.add(filePath);
           _lastSplitTime = segmentStartTime.add(Duration(milliseconds: (frameIndex + 1) * frameDurationMs));
@@ -420,9 +420,8 @@ class VadAudioProcessor {
       }
 
       _lastSegmentEndTime = segmentStartTime.add(Duration(milliseconds: totalFrameCount * frameDurationMs));
-      final displayTotal = _speechFrameCount > 0 ? _speechFrameCount : lastSpeechCountBeforeReset;
       Logger.debug('VadAudioProcessor: ${segmentFile.path.split('/').last} — '
-          '$totalFrameCount frames, $segmentSpeechFrames speech this seg / $displayTotal total, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}');
+          '$totalFrameCount frames, $segmentSpeechFrames speech frames, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}');
     } catch (e) {
       Logger.error('VadAudioProcessor: processSegmentFile error: $e');
     }
