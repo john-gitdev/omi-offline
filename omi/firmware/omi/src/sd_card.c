@@ -250,7 +250,10 @@ static atomic_t proactive_wipe_requested;
 
 static bool is_mounted = false;
 static bool sd_enabled = false;
+static bool sd_ready = false;
+static bool sd_gated = false;
 static bool sd_shutdown_in_progress = false;
+static int64_t last_storage_activity_ms = 0;
 static uint32_t current_file_size = 0;
 static size_t bytes_since_sync = 0;
 static int64_t last_file_sync_uptime_ms = 0;
@@ -427,6 +430,7 @@ static void process_save_offset_req(const sd_req_t *req)
     if (bw == (lfs_ssize_t) sizeof(sd_offset_info_t)) {
         lfs_file_sync(&lfs_fs, &lfs_fil_info);
         memcpy(&current_offset_info, &req->u.info.offset_info, sizeof(sd_offset_info_t));
+        last_storage_activity_ms = k_uptime_get();
     } else {
         last_write_error_uptime_ms = k_uptime_get();
         LOG_ERR("[SD_WORK] save offset write err %d", (int) bw);
@@ -497,6 +501,7 @@ static void process_write_data_req(const sd_req_t *req)
     writing_error_counter = 0;
     current_file_size += (uint32_t)bw;
     bytes_since_sync += (size_t)bw;
+    last_storage_activity_ms = k_uptime_get();
     update_current_file_cache_size((uint32_t)bw);
 
     bool sync_due_to_interval =
@@ -721,6 +726,7 @@ static int sd_mount(void)
     }
 
     is_mounted = true;
+    sd_ready = true;
     LOG_INF("LittleFS mounted OK (block_size=%u, block_count=%u, lookahead=%u bytes = %u blocks window)",
             (unsigned) lfs_cfg.block_size,
             (unsigned) lfs_cfg.block_count,
@@ -731,6 +737,7 @@ static int sd_mount(void)
 
 static int sd_unmount(void)
 {
+    sd_ready = false;
     close_read_handle();
     lfs_close_files();
     if (is_mounted) {
@@ -751,6 +758,8 @@ static int sd_unmount(void)
  * sd_gate_wake() can reopen the same file and continue appending. */
 static void sd_gate_sleep(void)
 {
+    LOG_DBG("SD entering sleep (idle)");
+    sd_ready = false;
     close_read_handle();
     if (current_filename[0] != '\0') {
         lfs_file_sync(&lfs_fs, &lfs_fil_data);
@@ -765,16 +774,28 @@ static void sd_gate_sleep(void)
         is_mounted = false;
     }
     sd_enable_power(false);
+    sd_gated = true;
     LOG_INF("[SD_GATE] Powered off");
 }
 
 /* Power on SD, remount LFS, reopen the info file and the current
  * audio file in append mode.  No lfs_fs_gc — GC is boot-only. */
-static int sd_gate_wake(void)
+int sd_gate_wake(void)
 {
+    last_storage_activity_ms = k_uptime_get();
+    static K_MUTEX_DEFINE(wake_lock);
+    k_mutex_lock(&wake_lock, K_FOREVER);
+
+    if (sd_ready && !sd_gated) {
+        k_mutex_unlock(&wake_lock);
+        return 0;
+    }
+
+    LOG_DBG("SD wake triggered by storage request");
     int ret = sd_mount();
     if (ret != 0) {
         LOG_ERR("[SD_GATE] Remount failed: %d", ret);
+        k_mutex_unlock(&wake_lock);
         return ret;
     }
 
@@ -783,6 +804,7 @@ static int sd_gate_wake(void)
     if (ret < 0) {
         LOG_ERR("[SD_GATE] Reopen info failed: %d", ret);
         sd_write_blocked = true;
+        k_mutex_unlock(&wake_lock);
         return ret;
     }
 
@@ -800,7 +822,15 @@ static int sd_gate_wake(void)
         }
     }
 
+    sd_gated = false;
     LOG_INF("[SD_GATE] Powered on, remounted");
+
+    // wait until mount complete / ready flag
+    while (!sd_ready) {
+        k_sleep(K_MSEC(10));
+    }
+
+    k_mutex_unlock(&wake_lock);
     return 0;
 }
 
@@ -908,6 +938,7 @@ static int _open_file_for_continuation(const char *filename, bool needs_rename)
 
 static int try_continue_latest_file(void)
 {
+    sd_gate_wake();
     lfs_dir_t dir;
     struct lfs_info info;
 
@@ -955,6 +986,7 @@ static int try_continue_latest_file(void)
 
 static int create_audio_file_with_timestamp(void)
 {
+    sd_gate_wake();
     bool rtc_valid = rtc_is_valid();
     uint32_t timestamp = 0;
 
@@ -1142,6 +1174,7 @@ static void update_current_file_cache_size(uint32_t delta)
 
 static int refresh_file_cache(void)
 {
+    sd_gate_wake();
     if (!is_mounted) {
         return -ENODEV;
     }
@@ -1246,6 +1279,7 @@ static int ensure_file_cache(void)
 
 void sd_update_filename_after_timesync(uint32_t synced_utc_time)
 {
+    sd_gate_wake();
     if (!is_mounted)
         return;
 
@@ -1442,7 +1476,6 @@ void sd_worker_thread(void)
     int64_t worker_start_time_ms = k_uptime_get();
     int consec_writes = 0;
     bool in_high_watermark = false;
-    bool sd_gated = false;
     int64_t gate_start_ms = 0;
 
     struct k_poll_event gate_events[2] = {
@@ -1469,7 +1502,6 @@ void sd_worker_thread(void)
                 /* Errors set sd_write_blocked; un-gate either way so the
                  * write_blocked fallback path handles recovery. */
                 sd_gate_wake();
-                sd_gated = false;
             }
             continue;
         }
@@ -1533,17 +1565,31 @@ void sd_worker_thread(void)
         }
 
         /* 5. Both queues empty — gate SD off between write bursts */
-        bool boot_delay_active = (k_uptime_get() - worker_start_time_ms) < BOOT_GATE_DELAY_MS;
-        if (!sd_write_blocked && !atomic_get(&ble_connected) && !boot_delay_active) {
+        int64_t now = k_uptime_get();
+
+        bool has_pending_work =
+            k_msgq_num_used_get(&sd_prio_msgq) > 0 ||
+            k_msgq_num_used_get(&sd_msgq) > 0;
+
+        bool recently_active =
+            (now - last_storage_activity_ms) < 4000;  // 4s grace window
+
+        bool boot_delay_active =
+            (now - worker_start_time_ms) < BOOT_GATE_DELAY_MS;
+
+        if (!sd_write_blocked &&
+            !has_pending_work &&
+            !recently_active &&
+            !boot_delay_active) {
+
             sd_gate_sleep();
-            sd_gated = true;
-            gate_start_ms = k_uptime_get();
+            gate_start_ms = now;
             continue;
         }
 
         /* Write-blocked fallback: keep polling so recovery check in
          * process_write_data_req can fire once the 2s backoff expires. */
-        k_timeout_t idle_wait = atomic_get(&ble_connected) ? K_MSEC(10) : K_MSEC(2000);
+        k_timeout_t idle_wait = K_MSEC(10);
         if (k_msgq_get(&sd_msgq, &req, idle_wait) == 0) {
             consec_writes++;
             goto handle_req;
@@ -1552,6 +1598,8 @@ void sd_worker_thread(void)
         continue;
 
     handle_req:
+        last_storage_activity_ms = k_uptime_get();
+        sd_gate_wake();
         switch (req.type) {
 
         /* ---- Write data ---- */
@@ -1664,6 +1712,7 @@ void sd_worker_thread(void)
 
             if (br > 0) {
                 read_handle_pos += br;
+                last_storage_activity_ms = k_uptime_get();
             }
 
             if (req.u.read.resp) {
@@ -1731,6 +1780,9 @@ void sd_worker_thread(void)
             invalidate_file_cache();
 
             res = create_audio_file_with_timestamp();
+            if (res >= 0) {
+                last_storage_activity_ms = k_uptime_get();
+            }
 
             if (req.u.clear_dir.resp) {
                 req.u.clear_dir.resp->res = res;
@@ -1742,6 +1794,9 @@ void sd_worker_thread(void)
         /* ---- Create new file ---- */
         case REQ_CREATE_NEW_FILE:
             res = create_audio_file_with_timestamp();
+            if (res >= 0) {
+                last_storage_activity_ms = k_uptime_get();
+            }
             if (req.u.create_file.resp) {
                 req.u.create_file.resp->res = res;
                 k_sem_give(&req.u.create_file.resp->sem);
@@ -1751,6 +1806,9 @@ void sd_worker_thread(void)
         /* ---- Get file stats ---- */
         case REQ_GET_FILE_STATS: {
             res = ensure_file_cache();
+            if (res >= 0) {
+                last_storage_activity_ms = k_uptime_get();
+            }
 
             if (req.u.file_stats.resp) {
                 req.u.file_stats.resp->res = res;
@@ -1775,6 +1833,7 @@ void sd_worker_thread(void)
                     data_sync_gen++;
                     bytes_since_sync = 0;
                     last_file_sync_uptime_ms = k_uptime_get();
+                    last_storage_activity_ms = k_uptime_get();
                     LOG_INF("[SD_WORK] Flushed %s (%u bytes)", current_filename, current_file_size);
                 }
             }
@@ -1827,6 +1886,7 @@ void sd_worker_thread(void)
                 LOG_ERR("[SD_WORK] remove %s failed: %d", del_path, rm);
             } else {
                 invalidate_file_cache();
+                last_storage_activity_ms = k_uptime_get();
             }
             if (req.u.delete_file.resp) {
                 req.u.delete_file.resp->res = rm;
@@ -1844,10 +1904,14 @@ void sd_worker_thread(void)
                  * and caused TMP files to be invisible to the app's sync. */
                 sd_update_filename_after_timesync(req.u.time_synced.utc_time);
                 invalidate_file_cache();
+                last_storage_activity_ms = k_uptime_get();
             } else if (current_filename[0] == '\0') {
                 res = create_audio_file_with_timestamp();
-                if (res < 0)
+                if (res >= 0) {
+                    last_storage_activity_ms = k_uptime_get();
+                } else {
                     LOG_ERR("[SD_WORK] create after time sync failed: %d", res);
+                }
             }
             break;
 
@@ -2103,6 +2167,7 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
 
 int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
 {
+    sd_gate_wake();
     /* Static resp so worker never writes to freed stack memory on timeout */
     static struct read_resp resp;
     static atomic_t read_in_flight;
@@ -2189,6 +2254,7 @@ int sd_flush_current_file(void)
 
 int delete_audio_file(const char *filename)
 {
+    sd_gate_wake();
     if (!filename)
         return -EINVAL;
 
@@ -2234,6 +2300,7 @@ int delete_audio_file(const char *filename)
 
 int clear_audio_directory(void)
 {
+    sd_gate_wake();
     static struct read_resp resp;
     static atomic_t clear_in_flight;
 
@@ -2275,6 +2342,7 @@ int clear_audio_directory(void)
 
 int save_offset(const char *filename, uint32_t offset)
 {
+    sd_gate_wake();
     sd_req_t req = {0};
     req.type = REQ_SAVE_OFFSET;
     strncpy(req.u.info.offset_info.oldest_filename, filename, MAX_FILENAME_LEN - 1);
@@ -2300,6 +2368,7 @@ int get_offset(char *filename, uint32_t *offset)
 
 int create_new_audio_file(void)
 {
+    sd_gate_wake();
     static struct read_resp resp;
     static atomic_t create_in_flight;
 
@@ -2344,6 +2413,7 @@ int create_new_audio_file(void)
 
 int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
 {
+    sd_gate_wake();
     if (!file_count || !total_size)
         return -EINVAL;
 

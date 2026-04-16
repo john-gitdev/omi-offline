@@ -664,6 +664,7 @@ void storage_write(void)
         struct bt_conn *conn = get_current_connection();
 
         if (transport_started) {
+            sd_gate_wake();
             LOG_INF("transport started in side : %d", transport_started);
             sync_speed_mode = SYNC_SPEED_MODE_NONE;
             sync_speed_window_bytes = 0;
@@ -676,6 +677,7 @@ void storage_write(void)
         }
         if (list_files_requested) {
             list_files_requested = 0;
+            sd_gate_wake();
 
             /* Handshake: Wait for SD card boot init to finish (mount + pre-warm).
              * This ensures the app always gets a definitive list and prevents ACK 7. */
@@ -702,6 +704,7 @@ void storage_write(void)
             }
         }
         if (delete_file_index >= 0) {
+            sd_gate_wake();
             int16_t idx = delete_file_index;
             delete_file_index = -1;
 
@@ -719,6 +722,7 @@ void storage_write(void)
             LOG_INF("Delete file[%d] result: %d", idx, result);
         }
         if (clear_storage_requested) {
+            sd_gate_wake();
             clear_storage_requested = 0;
             int ret = clear_audio_directory();
             if (conn) {
@@ -729,6 +733,7 @@ void storage_write(void)
             LOG_INF("CMD_CLEAR_STORAGE: SD card wiped, ret=%d", ret);
         }
         if (rotate_file_requested) {
+            sd_gate_wake();
             rotate_file_requested = 0;
             /* create_new_audio_file() closes the current file and opens a new one.
              * It blocks until the SD worker has completed the rotation, so the ACK

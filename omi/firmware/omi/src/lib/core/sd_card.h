@@ -103,6 +103,11 @@ typedef struct {
 } sd_req_t;
 
 /**
+ * @brief Wake SD card from power gating. Blocks until ready.
+ */
+int sd_gate_wake(void);
+
+/**
  * @brief Initialize the SD card module interface.
  *
  * @return 0 on success, negative error code otherwise.
@@ -295,16 +300,6 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time);
  * @param utc_time The UTC timestamp that was just synced
  */
 void sd_notify_time_synced(uint32_t utc_time);
-
-/**
- * @brief Turn on SD card power
- */
-void sd_on(void);
-
-/**
- * @brief Turn off SD card power
- */
-void sd_off(void);
 
 /**
  * @brief Check if SD card is powered on
