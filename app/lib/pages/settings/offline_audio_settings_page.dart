@@ -34,6 +34,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   void initState() {
     super.initState();
     _backgroundSyncIntervalMinutes = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
+    _maximizeBattery = SharedPreferencesUtil().maximizeBattery;
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
     _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
     _convertOpusToM4a = SharedPreferencesUtil().convertOpusToM4a;
@@ -199,6 +200,27 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white.withOpacity(0.05)),
+                ),
+                child: SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Maximize Battery', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  subtitle: Text('Disconnects Bluetooth after a sync completes to maximize battery life.', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+                  value: _maximizeBattery,
+                  onChanged: (value) {
+                    setState(() => _maximizeBattery = value);
+                    _markDirty();
+                  },
+                  activeColor: Colors.deepPurpleAccent,
                 ),
               ),
               const SizedBox(height: 16),

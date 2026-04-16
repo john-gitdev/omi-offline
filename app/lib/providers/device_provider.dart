@@ -17,6 +17,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   bool _disposed = false;
   bool isConnecting = false;
   bool isConnected = false;
+  bool _isAppInForeground = true;
   bool isDeviceStorageSupport = false;
   BtDevice? connectedDevice;
   BtDevice? pairedDevice;
@@ -334,15 +335,34 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       notifyListeners();
     } finally {
       await ForegroundUtil.stopForegroundTask();
+      if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground) {
+        Logger.debug('Maximizing battery: disconnecting device after background sync because app is in background.');
+        await ServiceManager.instance().device.disconnectDevice();
+      }
     }
   }
 
   void onAppPaused() {
+    _isAppInForeground = false;
     _backgroundSyncTimer?.cancel();
+    if (SharedPreferencesUtil().maximizeBattery) {
+      final walSync = ServiceManager.instance().wal.getSyncs();
+      if (!walSync.isSyncing) {
+        Logger.debug('Maximizing battery: disconnecting device because app is paused.');
+        ServiceManager.instance().device.disconnectDevice();
+      }
+    }
   }
 
   void onAppResumed() {
-    if (isConnected) _startBackgroundSyncTimer();
+    _isAppInForeground = true;
+    if (isConnected) {
+      _startBackgroundSyncTimer();
+    } else if (SharedPreferencesUtil().maximizeBattery) {
+      if (!isConnecting && SharedPreferencesUtil().btDevice.id.isNotEmpty) {
+        scanAndConnectToDevice();
+      }
+    }
   }
 
   @override
