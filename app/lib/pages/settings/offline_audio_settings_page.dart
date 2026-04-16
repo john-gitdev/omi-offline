@@ -62,6 +62,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   Future<void> _saveSettings() async {
     final prefs = SharedPreferencesUtil();
     prefs.backgroundSyncIntervalMinutes = _backgroundSyncIntervalMinutes;
+    prefs.maximizeBattery = _maximizeBattery;
     if (context.mounted) {
       Provider.of<DeviceProvider>(context, listen: false).restartBackgroundSyncTimer();
     }
