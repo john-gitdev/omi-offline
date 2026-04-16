@@ -387,7 +387,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> startForcePipeline() async {
-    if (_spState != SyncProcessState.idle) return;
+    if (_spState != SyncProcessState.idle && _spState != SyncProcessState.error) return;
     if (_forceSyncOnCooldown) return;
 
     _forceSyncOnCooldown = true;
@@ -921,5 +921,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
     });
     return totalBytes / 252000.0;
+  }
+}
+  return totalBytes / 252000.0;
   }
 }
