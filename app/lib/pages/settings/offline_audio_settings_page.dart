@@ -136,6 +136,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
           leading: IconButton(
             icon: const FaIcon(FontAwesomeIcons.chevronLeft, size: 18),
             onPressed: _handleBack,
+            tooltip: 'Back',
           ),
           title: const Text(
             'Recording Settings',
