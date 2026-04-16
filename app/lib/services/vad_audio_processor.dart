@@ -80,6 +80,7 @@ class VadAudioProcessor {
   // Per-conversation accumulation — FrameRef disk-pointers only, no Opus in RAM
   List<FrameRef> _currentRefs = [];
   int _speechFrameCount = 0; // speech frames in current conversation
+  int _lastSpeechCountBeforeReset = 0;
   DateTime? _recordingStartTime;
   DateTime? _lastSegmentEndTime;
   bool _isDerivedTimestamp = false; // true when segment had no valid device RTC timestamp
@@ -303,7 +304,7 @@ class VadAudioProcessor {
                 final rbTimesList = _rbTimes.toList();
                 final startIdx = (rbRefsList.length - actualLookbackFrames).clamp(0, rbRefsList.length);
 
-                lastSpeechCountBeforeReset = _speechFrameCount;
+                _lastSpeechCountBeforeReset = _speechFrameCount;
                 _currentRefs = rbRefsList.sublist(startIdx);
                 _recordingStartTime = startIdx < rbTimesList.length ? rbTimesList[startIdx] : markerFrameTime;
                 _speechFrameCount = 0;
