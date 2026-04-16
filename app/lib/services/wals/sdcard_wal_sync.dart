@@ -32,6 +32,7 @@ class _SyncIsolateParams {
   final int initialOffset;
   final int? lastDeviceSessionId;
   final int timerStart;
+  final int expectedTotalBytes;
 
   _SyncIsolateParams({
     required this.replyPort,
@@ -40,6 +41,7 @@ class _SyncIsolateParams {
     required this.initialOffset,
     this.lastDeviceSessionId,
     required this.timerStart,
+    required this.expectedTotalBytes,
   });
 }
 
@@ -489,6 +491,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         initialOffset: offset,
         lastDeviceSessionId: lastDeviceSessionId,
         timerStart: timerStart,
+        expectedTotalBytes: wal.storageTotalBytes,
       ),
     );
 
@@ -981,7 +984,7 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
           int packetType = value[0];
           switch (packetType) {
             case 0x01:
-              if (!hasReceivedStartAck || value.length < 5) continue;
+              if (value.length < 5) continue;
               int incomingOffset =
                   value[1] |
                   (value[2] << 8) |
@@ -1014,8 +1017,10 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
                 int packageSize = bd.getUint32(scanOff, Endian.little);
                 if (packageSize == 0xFFFFFFFE) {
                   if (scanOff + 20 <= combined.length) {
-                    final markerTs = bd.getUint32(scanOff + 4, Endian.little);
-                    params.replyPort.send(_SyncMessage('marker', markerTs));
+                    if (scanOff + 20 > tailBuffer.length) {
+                      final markerTs = bd.getUint32(scanOff + 4, Endian.little);
+                      params.replyPort.send(_SyncMessage('marker', markerTs));
+                    }
                     scanOff += 20;
                     continue;
                   } else {
@@ -1041,29 +1046,24 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
             case 0x02:
               flush();
               try {
-                if (outputFile.lengthSync() != expectedOffset) {
-                  params.replyPort.send(_SyncMessage('error', 'Final file size mismatch: expected=$expectedOffset actual=${outputFile.lengthSync()}'));
+                if (expectedOffset < params.expectedTotalBytes) {
+                  params.replyPort.send(_SyncMessage('error',
+                      'Premature EOT: expected=\${params.expectedTotalBytes} actual=\$expectedOffset'));
+                } else if (outputFile.lengthSync() != expectedOffset) {
+                  params.replyPort.send(_SyncMessage('error',
+                      'Final file size mismatch: expected=\$expectedOffset actual=\${outputFile.lengthSync()}'));
                 } else {
                   params.replyPort.send(_SyncMessage('done'));
                 }
               } catch (e) {
-                params.replyPort.send(_SyncMessage('error', 'Final validation failed: $e'));
+                params.replyPort.send(_SyncMessage('error', 'Final validation failed: \$e'));
               }
               isCompleted = true;
               isolateReceivePort.close();
               return;
 
             case 0x03:
-              if (value.length >= 2) {
-                if (value[1] == 0x00) {
-                  hasReceivedStartAck = true;
-                } else {
-                  params.replyPort.send(_SyncMessage('error', 'Error ACK: \${value[1]}'));
-                  isCompleted = true;
-                  isolateReceivePort.close();
-                  return;
-                }
-              }
+              // Start ACK received, but we rely on data offsets for truth.
               break;
           }
         }
