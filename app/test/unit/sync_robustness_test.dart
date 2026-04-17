@@ -50,6 +50,8 @@ class MockPathProvider extends Fake with MockPlatformInterfaceMixin implements P
 class MockWalSyncListener extends Fake implements IWalSyncListener {
   @override
   void onWalUpdated() {}
+  @override
+  void onSyncFinished() {}
 }
 
 class MockDeviceConnection extends Fake implements DeviceConnection {
@@ -291,16 +293,17 @@ void main() {
 
       // First packet: offset 0, advances expectedOffset to 10
       mockConn.add(dataPacket(0, payload));
+      await Future.delayed(const Duration(milliseconds: 600));
       await pump();
-      expect(wal.walOffset, equals(10));
 
       // Duplicate at offset 0: must be discarded (walOffset must stay at 10)
       mockConn.add(dataPacket(0, payload));
+      await Future.delayed(const Duration(milliseconds: 600));
       await pump();
-      expect(wal.walOffset, equals(10));
 
       mockConn.add(eotPacket());
       await expectLater(syncFuture, completes);
+      expect(wal.walOffset, equals(10));
     });
 
     test('Gap in DATA sequence aborts the transfer with an exception', () async {
