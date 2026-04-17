@@ -12,7 +12,7 @@ class OmiDeviceConnection extends DeviceConnection {
   static const String batteryServiceUuid = '0000180f-0000-1000-8000-00805f9b34fb';
   static const String batteryLevelCharacteristicUuid = '00002a19-0000-1000-8000-00805f9b34fb';
 
-  // 4-byte battery detail: [mv_lo, mv_hi, pct, charging]
+  // 1-byte battery detail: [charging:1]
   static const String batteryDetailServiceUuid = '19b10050-e8f2-537e-4f6c-d104768a1214';
   static const String batteryDetailCharacteristicUuid = '19b10051-e8f2-537e-4f6c-d104768a1214';
 
@@ -195,8 +195,7 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<bool> performRetrieveChargingState() async {
     try {
       final data = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
-      if (data.length >= 4) return data[3] == 1;
-      if (data.isNotEmpty) return data[0] == 1; // legacy 1-byte firmware fallback
+      if (data.isNotEmpty) return data[0] == 1;
     } catch (_) {}
     return false;
   }
@@ -217,24 +216,16 @@ class OmiDeviceConnection extends DeviceConnection {
       Logger.debug('OmiDeviceConnection: Error subscribing to battery level: $e');
     }
 
-    // Battery detail stream: 4 bytes [mv_lo, mv_hi, pct, charging]
+    // Charging stream from custom service
     try {
       final chargingStream =
           await transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
       await _chargingSubscription?.cancel();
       _chargingSubscription = chargingStream.listen((v) {
-        if (v.length >= 4) {
-          final mv = v[0] | (v[1] << 8);
-          Logger.debug('OmiDeviceConnection: battery detail ${mv}mV ${v[2]}% charging=${v[3]}');
-          if (onBatteryLevelChange != null) onBatteryLevelChange(v[2]);
-          if (onChargingStateChange != null) onChargingStateChange(v[3] == 1);
-        } else if (v.isNotEmpty) {
-          // legacy 1-byte firmware fallback
-          if (onChargingStateChange != null) onChargingStateChange(v[0] == 1);
-        }
+        if (v.isNotEmpty && onChargingStateChange != null) onChargingStateChange(v[0] == 1);
       });
     } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error subscribing to battery detail: $e');
+      Logger.debug('OmiDeviceConnection: Error subscribing to charging state: $e');
     }
 
     return levelSub;
