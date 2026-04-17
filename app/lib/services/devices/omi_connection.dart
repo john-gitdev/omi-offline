@@ -495,8 +495,20 @@ class OmiDeviceConnection extends DeviceConnection {
         if (data.isNotEmpty && data[0] == 0x03) completer.complete(data.length < 2 || data[1] == 0);
       });
       await Future.delayed(_cccdCommandDelay);
+      // Extended CMD_DELETE_FILE: [0x12][index][timestamp:4LE]
+      // Firmware uses the timestamp to verify the index still points to the
+      // intended file after a cache refresh, and falls back to a timestamp scan
+      // if the index shifted due to a rotation or earlier deletion.
+      final ts = file.timestamp;
       await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x12, file.index & 0xFF]);
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [
+        0x12,
+        file.index & 0xFF,
+        ts & 0xFF,
+        (ts >> 8) & 0xFF,
+        (ts >> 16) & 0xFF,
+        (ts >> 24) & 0xFF,
+      ]);
       final res = await completer.future.timeout(const Duration(seconds: 35));
       await sub.cancel();
       return res;

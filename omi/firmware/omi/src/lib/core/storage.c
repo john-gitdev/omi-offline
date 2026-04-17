@@ -55,6 +55,8 @@ static uint32_t current_read_offset = 0;
 static int current_sync_file_index = -1;
 static uint8_t list_files_requested = 0;  /* Deferred to storage thread */
 static int16_t delete_file_index = -1;     /* -1 = no delete, >=0 = file index to delete */
+static bool    delete_file_has_ts = false; /* true when app supplied a timestamp to verify */
+static uint32_t delete_file_expected_ts = 0; /* timestamp the app believes is at delete_file_index */
 static uint8_t rotate_file_requested = 0; /* Deferred to storage thread */
 static uint8_t clear_storage_requested = 0; /* Deferred to storage thread */
 
@@ -466,13 +468,17 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
         if (len < 2) return INVALID_COMMAND;
 
         uint8_t file_index = ((uint8_t *) buf)[1];
-        if (sd_get_cached_file_count() == 0) {
-            /* File list not cached, defer refresh + delete to storage thread */
-            delete_file_index = file_index;
-            return 0xFF;
-        }
-        if (file_index >= sd_get_cached_file_count()) {
-            return FILE_INDEX_OUT_OF_RANGE;
+
+        /* Extended form: [0x12][index][ts:4LE] — app supplies the timestamp it
+         * received in CMD_LIST_FILES so the storage thread can verify the index
+         * still points to the same file after a cache refresh. */
+        delete_file_has_ts = (len >= 6);
+        if (delete_file_has_ts) {
+            const uint8_t *b = (const uint8_t *) buf;
+            delete_file_expected_ts = (uint32_t)b[2]
+                                    | (uint32_t)b[3] << 8
+                                    | (uint32_t)b[4] << 16
+                                    | (uint32_t)b[5] << 24;
         }
 
         delete_file_index = file_index;  /* Defer to storage thread */
@@ -706,12 +712,51 @@ void storage_write(void)
         if (delete_file_index >= 0) {
             sd_gate_wake();
             int16_t idx = delete_file_index;
+            bool has_ts = delete_file_has_ts;
+            uint32_t expected_ts = delete_file_expected_ts;
             delete_file_index = -1;
+            delete_file_has_ts = false;
+
+            /* Refresh the file cache before checking bounds or resolving the filename.
+             * A rotation or time-sync rename between CMD_LIST_FILES and CMD_DELETE_FILE
+             * can call invalidate_file_cache(), leaving the cache stale. */
+            uint32_t dummy_count;
+            uint64_t dummy_size;
+            get_audio_file_stats(&dummy_count, &dummy_size);
+
+            /* Resolve the target index using the timestamp supplied by the app.
+             * If the app sent a timestamp and the cached entry at idx no longer
+             * matches, scan the full cache for the right file — the index may have
+             * shifted due to a rotation or earlier deletion. */
+            int delete_idx = idx;
+            if (has_ts) {
+                AudioFileMeta_t meta;
+                if (sd_get_cached_file_meta(idx, &meta) == 0 &&
+                    meta.timestamp == expected_ts) {
+                    /* Fast path: index still valid. */
+                    delete_idx = idx;
+                } else {
+                    /* Index shifted — scan for matching timestamp. */
+                    delete_idx = -1;
+                    int count = sd_get_cached_file_count();
+                    for (int i = 0; i < count; i++) {
+                        if (sd_get_cached_file_meta(i, &meta) == 0 &&
+                            meta.timestamp == expected_ts) {
+                            delete_idx = i;
+                            LOG_WRN("Delete: index shifted %d -> %d (ts=%u)", idx, i, expected_ts);
+                            break;
+                        }
+                    }
+                }
+            }
 
             uint8_t result = 0;
-            if (idx >= sd_get_cached_file_count()) {
+            if (delete_idx < 0) {
+                LOG_ERR("Delete: file with ts=%u not found in cache", expected_ts);
+                result = FILE_NOT_FOUND;
+            } else if (delete_idx >= sd_get_cached_file_count()) {
                 result = FILE_INDEX_OUT_OF_RANGE;
-            } else if (delete_file_by_index(idx) < 0) {
+            } else if (delete_file_by_index(delete_idx) < 0) {
                 result = FILE_NOT_FOUND;
             }
 
@@ -719,7 +764,7 @@ void storage_write(void)
                 uint8_t ack[2] = {PACKET_ACK, result};
                 storage_notify(conn, ack, sizeof(ack));
             }
-            LOG_INF("Delete file[%d] result: %d", idx, result);
+            LOG_INF("Delete file[%d] (ts=%u) result: %d", idx, expected_ts, result);
         }
         if (clear_storage_requested) {
             sd_gate_wake();

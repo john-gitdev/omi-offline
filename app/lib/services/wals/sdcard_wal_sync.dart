@@ -346,10 +346,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   Future _deleteWalLocked(DeviceConnection connection, Wal wal) async {
-    Logger.debug('SDCardWalSync: deleting synced WAL from SD card: fileNum=${wal.fileNum}');
-    await connection.deleteFile(
-      StorageFile(index: wal.fileNum, timestamp: 0, size: 0),
+    Logger.debug('SDCardWalSync: deleting synced WAL from SD card: fileNum=${wal.fileNum} ts=${wal.timerStart}');
+    final success = await connection.deleteFile(
+      StorageFile(index: wal.fileNum, timestamp: wal.timerStart, size: 0),
     );
+    if (!success) throw Exception('Firmware rejected deletion of fileNum=${wal.fileNum} ts=${wal.timerStart}');
     _wals.removeWhere((w) => w.id == wal.id);
     listener.onWalUpdated();
   }
@@ -371,7 +372,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     Function(File f, int offset, int timerStart, {String? subFolder})
     callback, {
     Function(int offset)? onProgress,
-    bool deleteAfter = false,
   }) async {
     int fileNum = wal.fileNum;
     int offset = wal.walOffset;
@@ -464,23 +464,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         case 'done':
           final finalOffset = msg.payload as int;
           if (onProgress != null) onProgress(finalOffset);
-
-          if (deleteAfter && !_isCancelled && !isShuttingDown) {
-            try {
-              Logger.debug('SDCardWalSync: [DONE] triggering deletion for fileNum=$fileNum');
-              await connection.deleteFile(
-                StorageFile(index: fileNum, timestamp: 0, size: 0),
-              );
-              Logger.debug('SDCardWalSync: [DONE] deletion success for fileNum=$fileNum');
-              _wals.removeWhere((w) => w.fileNum == fileNum);
-              listener.onWalUpdated();
-            } catch (e) {
-              Logger.error('SDCardWalSync: [DONE] deletion failed for fileNum=$fileNum: $e');
-            }
-          } else {
-            Logger.debug('SDCardWalSync: [DONE] skipping deletion: deleteAfter=$deleteAfter cancelled=$_isCancelled shutdown=$isShuttingDown');
-          }
-
           isCompleted = true;
           if (!completer.isCompleted) completer.complete();
           break;
@@ -675,6 +658,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       final initialOffset = wal.walOffset;
       int lastOffset = initialOffset;
+      _lastSegmentBoundaryOffset = initialOffset; // reset per-file so a failure on file[i] can't inherit file[i-1]'s offset
       await _checkDiskSpaceBeforeSync(wal.storageTotalBytes - initialOffset);
 
       try {
@@ -712,7 +696,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                   speedKBps: _currentSpeedKBps,
                 );
               },
-              deleteAfter: true,
             );
             transferred = true;
           } on _ProtocolGapException catch (e) {
@@ -730,14 +713,25 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         if (_isCancelled) throw Exception("Cancelled");
 
-        wal.status = WalStatus.synced;
+        // Transfer complete — delete the SD file while still holding the storage lock.
+        // Deletion is done here rather than inside the isolate 'done' handler so that
+        // the BLE stream is fully torn down (cleanup()) before the delete command is sent,
+        // eliminating the race where a stray post-EOT packet could fire completeError()
+        // mid-deletion and leave the file stranded on the SD card.
+        try {
+          await _deleteWalLocked(connection, wal);
+        } catch (e) {
+          Logger.error('SDCardWalSync: deletion failed for fileNum=${wal.fileNum} after transfer: $e');
+          wal.isSyncing = false;
+          listener.onWalUpdated();
+          anyPartial = true;
+        }
         final double fileDone = ((i + 1.0) / wals.length).clamp(0.0, 1.0);
         progress?.onWalSyncedProgress(fileDone, speedKBps: _currentSpeedKBps);
         _globalProgressListener?.onWalSyncedProgress(
           fileDone,
           speedKBps: _currentSpeedKBps,
         );
-        listener.onWalUpdated();
       } catch (e) {
         wal.walOffset = _lastSegmentBoundaryOffset;
         wal.status = WalStatus.miss;
@@ -799,6 +793,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     final initialOffset = wal.walOffset;
     int lastOffset = initialOffset;
+    _lastSegmentBoundaryOffset = initialOffset;
     await _checkDiskSpaceBeforeSync(wal.storageTotalBytes - initialOffset);
     _downloadStartTime = DateTime.now();
 
@@ -834,13 +829,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 clamped,
                 speedKBps: _currentSpeedKBps,
               );
-              },
-              deleteAfter: true,
-              );
-              transferred = true;        } on _ProtocolGapException catch (e) {
+            },
+          );
+          transferred = true;
+        } on _ProtocolGapException catch (e) {
           gapRetries++;
           if (gapRetries > maxGapRetries) rethrow;
-          
           wal.walOffset = e.incoming;
           lastOffset = e.incoming;
           _lastSegmentBoundaryOffset = e.incoming;
@@ -851,8 +845,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       if (_isCancelled) throw Exception("Cancelled");
 
-      wal.status = WalStatus.synced;
-      listener.onWalUpdated();
+      await _deleteWalLocked(connection, wal);
     } catch (e) {
       wal.walOffset = _lastSegmentBoundaryOffset;
       wal.isSyncing = false;
