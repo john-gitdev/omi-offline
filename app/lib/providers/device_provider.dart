@@ -425,6 +425,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _isHandlingDisconnect = false;
 
     _reconnectDelayTimer?.cancel();
+    // Skip reconnect when maximize-battery intentionally disconnected while in background.
+    if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground) return;
     _reconnectDelayTimer = Timer(const Duration(seconds: 1), () {
       if (!_disposed) periodicConnect('coming from onDisconnect');
     });
