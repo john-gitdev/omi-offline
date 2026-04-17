@@ -121,7 +121,7 @@ class OmiCompanionManager(
 
     fun startObserving() {
         if (Build.VERSION.SDK_INT < 33) {
-            Log.d(TAG, "startObserving: skipped (API \${Build.VERSION.SDK_INT} < 33)")
+            Log.d(TAG, "startObserving: skipped (API ${Build.VERSION.SDK_INT} < 33)")
             return
         }
         val associations = companionDeviceManager.myAssociations
@@ -135,18 +135,18 @@ class OmiCompanionManager(
                     .setAssociationId(association.id)
                     .build()
                 companionDeviceManager.startObservingDevicePresence(request)
-                Log.d(TAG, "Observing device presence (API 36+) for association \${association.id}")
+                Log.d(TAG, "Observing device presence (API 36+) for association ${association.id}")
             } catch (e: Exception) {
-                Log.w(TAG, "startObserving (API 36+) failed: \${e.message}")
+                Log.w(TAG, "startObserving (API 36+) failed: ${e.message}")
             }
         } else {
             val mac = association.deviceMacAddress
             if (mac != null) {
                 try {
                     companionDeviceManager.startObservingDevicePresence(mac.toString())
-                    Log.d(TAG, "Observing device presence for \$mac")
+                    Log.d(TAG, "Observing device presence for $mac")
                 } catch (e: Exception) {
-                    Log.w(TAG, "startObserving failed: \${e.message}")
+                    Log.w(TAG, "startObserving failed: ${e.message}")
                 }
             }
         }
@@ -168,7 +168,7 @@ class OmiCompanionManager(
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "stopObserving failed: \${e.message}")
+                Log.w(TAG, "stopObserving failed: ${e.message}")
             }
         }
     }
