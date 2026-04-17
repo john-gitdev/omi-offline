@@ -346,7 +346,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   Future _deleteWalLocked(DeviceConnection connection, Wal wal) async {
-    Logger.debug('SDCardWalSync: deleting synced WAL from SD card: fileNum=\${wal.fileNum}');
+    Logger.debug('SDCardWalSync: deleting synced WAL from SD card: fileNum=${wal.fileNum}');
     await connection.deleteFile(
       StorageFile(index: wal.fileNum, timestamp: 0, size: 0),
     );
@@ -484,21 +484,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           isCompleted = true;
           if (!completer.isCompleted) completer.complete();
           break;
+        case 'protocolGap':
+          isCompleted = true;
+          final payload = msg.payload as Map<String, dynamic>;
+          if (!completer.isCompleted) completer.completeError(_ProtocolGapException(payload['incoming'] as int, payload['expected'] as int));
+          break;
         case 'error':
           isCompleted = true;
           final errorStr = msg.payload.toString();
-          if (errorStr.contains('Protocol gap:')) {
-            try {
-              final parts = errorStr.split(': ')[1].split(' ');
-              final incoming = int.parse(parts[0].split('=')[1]);
-              final expected = int.parse(parts[1].split('=')[1]);
-              if (!completer.isCompleted) completer.completeError(_ProtocolGapException(incoming, expected));
-            } catch (_) {
-              if (!completer.isCompleted) completer.completeError(Exception(errorStr));
-            }
-          } else {
-            if (!completer.isCompleted) completer.completeError(Exception(errorStr));
-          }
+          if (!completer.isCompleted) completer.completeError(Exception(errorStr));
           break;
       }
     });
@@ -978,7 +972,7 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
     }
   }
 
-  isolateReceivePort.listen((message) async {
+  isolateReceivePort.listen((message) {
     if (isCompleted || message is! _SyncMessage) return;
 
     if (message.type == 'shutdown') {
@@ -1010,8 +1004,10 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
                 if (packetEnd <= expectedOffset) continue;
                 payload = payload.sublist(expectedOffset - incomingOffset);
               } else if (incomingOffset > expectedOffset) {
-                params.replyPort.send(_SyncMessage('error',
-                    'Protocol gap: incoming=$incomingOffset expected=$expectedOffset'));
+                params.replyPort.send(_SyncMessage('protocolGap', {
+                  'incoming': incomingOffset,
+                  'expected': expectedOffset,
+                }));
                 isCompleted = true;
                 isolateReceivePort.close();
                 return;
@@ -1061,15 +1057,15 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
               try {
                 if (expectedOffset < params.expectedTotalBytes) {
                   params.replyPort.send(_SyncMessage('error',
-                      'Premature EOT: expected=\${params.expectedTotalBytes} actual=\$expectedOffset'));
+                      'Premature EOT: expected=${params.expectedTotalBytes} actual=$expectedOffset'));
                 } else if (outputFile.lengthSync() != expectedOffset) {
                   params.replyPort.send(_SyncMessage('error',
-                      'Final file size mismatch: expected=\$expectedOffset actual=\${outputFile.lengthSync()}'));
+                      'Final file size mismatch: expected=$expectedOffset actual=${outputFile.lengthSync()}'));
                 } else {
                   params.replyPort.send(_SyncMessage('done', expectedOffset));
                 }
               } catch (e) {
-                params.replyPort.send(_SyncMessage('error', 'Final validation failed: \$e'));
+                params.replyPort.send(_SyncMessage('error', 'Final validation failed: $e'));
               }
               isCompleted = true;
               isolateReceivePort.close();
@@ -1081,7 +1077,7 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
           }
         }
 
-        if (writeBuffer.length >= 32768 || writeBuffer.length > 524288) {
+        if (writeBuffer.length >= 32768) {
           flush();
         }
 
@@ -1092,7 +1088,6 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
         }
 
         params.replyPort.send(_SyncMessage('batchAck'));
-        await Future(() {}); // Yield
       } catch (e) {
         flush();
         params.replyPort.send(_SyncMessage('error', e.toString()));
