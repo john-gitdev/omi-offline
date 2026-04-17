@@ -51,6 +51,10 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   void Function(BtDevice device)? onDeviceConnected;
 
   DeviceProvider() {
+    // Correctly initialize foreground state for cases where app starts in background.
+    final state = WidgetsBinding.instance.lifecycleState;
+    _isAppInForeground = state == null || state == AppLifecycleState.resumed;
+
     // Seed from last known value so battery indicator isn't grey on launch.
     final saved = SharedPreferencesUtil().lastBatteryLevel;
     if (saved >= 0) batteryLevel = saved;
@@ -360,6 +364,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   void onAppPaused() {
     _isAppInForeground = false;
     _backgroundSyncTimer?.cancel();
+    _reconnectionTimer?.cancel();
     if (SharedPreferencesUtil().maximizeBattery) {
       final walSync = ServiceManager.instance().wal.getSyncs();
       if (!walSync.isSyncing) {
@@ -374,8 +379,8 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     if (isConnected) {
       _startBackgroundSyncTimer();
     } else {
-      if (!isConnecting && SharedPreferencesUtil().btDevice.id.isNotEmpty) {
-        scanAndConnectToDevice();
+      if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
+        periodicConnect('app resumed', boundDeviceOnly: true);
       }
     }
   }

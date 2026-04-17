@@ -495,41 +495,61 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     resetInactivityTimer();
 
-    _storageStream = (await connection.getBleStorageBytesStream()).listen(
-      (List<int> value) async {
-        if (isCompleted || isShuttingDown) return;
-        resetInactivityTimer();
-        if (value.isEmpty) return;
+    final List<List<int>> packetQueue = [];
+    bool isProcessingQueue = false;
 
-        totalPackets++;
-        batchBuffer.add(Uint8List.fromList(value));
+    Future<void> processQueue() async {
+      if (isProcessingQueue) return;
+      isProcessingQueue = true;
+      try {
+        while (packetQueue.isNotEmpty && !isCompleted && !isShuttingDown) {
+          final value = packetQueue.removeAt(0);
+          if (value.isEmpty) continue;
 
-        final now = DateTime.now();
-        if (batchBuffer.length >= 20 || now.difference(lastFlush) >= const Duration(milliseconds: 20)) {
-          final toSend = List<Uint8List>.from(batchBuffer);
-          batchBuffer.clear();
-          lastFlush = now;
+          totalPackets++;
+          batchBuffer.add(Uint8List.fromList(value));
 
-          if (isolateSendPort == null) {
-            pendingBatches.add(toSend);
-            if (pendingBatches.length > 100) {
-              await Future.delayed(const Duration(milliseconds: 10));
-            }
-          } else {
-            while (inFlightBatches > 50 && !isCompleted && !isShuttingDown) {
-              await Future.delayed(const Duration(milliseconds: 10));
-            }
-            if (!isCompleted && !isShuttingDown) {
-              try {
-                isolateSendPort!.send(_SyncMessage('dataBatch', toSend));
-                inFlightBatches++;
-              } catch (e) {
-                isCompleted = true;
-                if (!completer.isCompleted) completer.completeError(Exception("Isolate send failed: $e"));
+          final now = DateTime.now();
+          bool hasControlPacket = value[0] == 0x00 || value[0] == 0x02;
+          if (hasControlPacket ||
+              batchBuffer.length >= 20 ||
+              now.difference(lastFlush) >= const Duration(milliseconds: 20)) {
+            final toSend = List<Uint8List>.from(batchBuffer);
+            batchBuffer.clear();
+            lastFlush = now;
+
+            if (isolateSendPort == null) {
+              pendingBatches.add(toSend);
+              if (pendingBatches.length > 100) {
+                await Future.delayed(const Duration(milliseconds: 10));
+              }
+            } else {
+              while (inFlightBatches > 50 && !isCompleted && !isShuttingDown) {
+                await Future.delayed(const Duration(milliseconds: 10));
+              }
+              if (!isCompleted && !isShuttingDown) {
+                try {
+                  isolateSendPort!.send(_SyncMessage('dataBatch', toSend));
+                  inFlightBatches++;
+                } catch (e) {
+                  isCompleted = true;
+                  if (!completer.isCompleted) completer.completeError(Exception("Isolate send failed: $e"));
+                }
               }
             }
           }
         }
+      } finally {
+        isProcessingQueue = false;
+      }
+    }
+
+    _storageStream = (await connection.getBleStorageBytesStream()).listen(
+      (List<int> value) {
+        if (isCompleted || isShuttingDown) return;
+        resetInactivityTimer();
+        packetQueue.add(value);
+        processQueue();
       },
       onError: (e) {
         if (!isCompleted) {
@@ -635,22 +655,31 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     String deviceId, {
     IWalSyncProgressListener? progress,
   }) async {
-    final refreshed = await _getMissingWalsLocked(connection, deviceId);
-    _wals = refreshed;
-    listener.onWalUpdated();
+    // Note: _wals was already populated/refreshed by setDevice() or preceding logic.
+    // Index 0 with a very low timestamp is the active recording file on a device
+    // that hasn't synced time yet (firmware uses boot uptime as TS).
+    // The firmware will reject deletion of the active file, so we skip it.
+    final wals = _wals.where((w) {
+      if (w.status != WalStatus.miss || w.storage != WalStorage.sdcard) return false;
+      if (w.fileNum == 0 && w.timerStart < 1000000) {
+        Logger.debug('SDCardWalSync: skipping index 0 (looks like active recording without NTP sync)');
+        return false;
+      }
+      return true;
+    }).toList();
 
-    if (_isCancelled) return null;
-
-    final wals = _wals
-        .where((w) => w.status == WalStatus.miss && w.storage == WalStorage.sdcard)
-        .toList();
     if (wals.isEmpty) return null;
+
+    // Sort by index descending to ensure that when we delete a file,
+    // the indices of the remaining files on the device DO NOT SHIFT.
+    wals.sort((a, b) => b.fileNum.compareTo(a.fileNum));
 
     bool anyPartial = false;
     _downloadStartTime = DateTime.now();
 
     for (int i = 0; i < wals.length; i++) {
       final wal = wals[i];
+      _totalBytesDownloaded = 0;
       if (_isCancelled) break;
       wal.isSyncing = true;
       wal.syncStartedAt = DateTime.now();
@@ -679,14 +708,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               },
               onProgress: (offset) {
                 wal.walOffset = offset;
-                final double withinWal =
-                    (wal.storageTotalBytes > initialOffset)
-                    ? (offset - initialOffset) /
-                          (wal.storageTotalBytes - initialOffset)
+                final double withinWal = (wal.storageTotalBytes > initialOffset)
+                    ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
                     : 1.0;
-                final double clamped =
-                    ((i + (withinWal.clamp(0.0, 1.0) * 0.9)) / wals.length)
-                        .clamp(0.0, 1.0);
+                final double clamped = ((i + (withinWal.clamp(0.0, 1.0) * 0.9)) / wals.length).clamp(0.0, 1.0);
                 progress?.onWalSyncedProgress(
                   clamped,
                   speedKBps: _currentSpeedKBps,
@@ -713,17 +738,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         if (_isCancelled) throw Exception("Cancelled");
 
-        // Transfer complete — delete the SD file while still holding the storage lock.
-        // Deletion is done here rather than inside the isolate 'done' handler so that
-        // the BLE stream is fully torn down (cleanup()) before the delete command is sent,
-        // eliminating the race where a stray post-EOT packet could fire completeError()
-        // mid-deletion and leave the file stranded on the SD card.
+        // Transfer complete — mark as synced locally.
+        // Important: Use a copy of the list for iteration so this modification doesn't skip items.
+        wal.status = WalStatus.synced;
+        wal.isSyncing = false;
+        listener.onWalUpdated();
+
+        // Delete the SD file while still holding the storage lock.
         try {
           await _deleteWalLocked(connection, wal);
         } catch (e) {
           Logger.error('SDCardWalSync: deletion failed for fileNum=${wal.fileNum} after transfer: $e');
-          wal.isSyncing = false;
-          listener.onWalUpdated();
           anyPartial = true;
         }
         final double fileDone = ((i + 1.0) / wals.length).clamp(0.0, 1.0);
@@ -733,6 +758,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           speedKBps: _currentSpeedKBps,
         );
       } catch (e) {
+        Logger.error('SDCardWalSync: transfer failed for fileNum=${wal.fileNum} ts=${wal.timerStart}: $e');
         wal.walOffset = _lastSegmentBoundaryOffset;
         wal.status = WalStatus.miss;
         wal.isSyncing = false;
@@ -983,6 +1009,14 @@ void _syncIsolateEntry(_SyncIsolateParams params) {
 
           int packetType = value[0];
           switch (packetType) {
+            case 0x00:
+              if (value.length >= 2 && value[1] != 0) {
+                params.replyPort.send(_SyncMessage('error', 'Device returned error ACK: ${value[1]}'));
+                isCompleted = true;
+                isolateReceivePort.close();
+                return;
+              }
+              break;
             case 0x01:
               if (value.length < 5) continue;
               int incomingOffset =

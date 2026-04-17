@@ -62,7 +62,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         context,
         listen: false,
       );
-      if (state == AppLifecycleState.paused) {
+      if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
         deviceProvider.onAppPaused();
       } else if (state == AppLifecycleState.resumed) {
         deviceProvider.onAppResumed();
