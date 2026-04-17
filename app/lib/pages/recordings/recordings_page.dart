@@ -548,6 +548,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                           color: Colors.grey,
                           size: 20,
                         ),
+                        tooltip: 'Find devices',
                         onPressed: () => Navigator.of(context).push(
                           MaterialPageRoute(
                             builder: (c) => const FindDevicesPage(),

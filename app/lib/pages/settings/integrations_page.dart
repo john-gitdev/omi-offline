@@ -189,6 +189,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
         elevation: 0,
         leading: IconButton(
           icon: const FaIcon(FontAwesomeIcons.chevronLeft, size: 18),
+          tooltip: 'Back',
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: const Text(
@@ -327,6 +328,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             size: 14,
             color: Colors.grey,
           ),
+          tooltip: obscured ? 'Show key' : 'Hide key',
           onPressed: onToggleObscure,
         ),
       ),

@@ -38,6 +38,7 @@ class UploadIconButton extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 6),
         constraints: const BoxConstraints(),
         icon: Icon(Icons.cloud_off, color: Colors.grey.shade600, size: 18),
+        tooltip: 'Upload not available',
         onPressed: onTap,
       );
     }
@@ -50,6 +51,7 @@ class UploadIconButton extends StatelessWidget {
           height: 18,
           child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
         ),
+        tooltip: 'Uploading',
         onPressed: null,
       );
     }
@@ -58,6 +60,7 @@ class UploadIconButton extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 6),
         constraints: const BoxConstraints(),
         icon: const Icon(Icons.cloud_done, color: Colors.green, size: 18),
+        tooltip: 'Uploaded',
         onPressed: onTap,
       );
     }
@@ -65,6 +68,7 @@ class UploadIconButton extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 6),
       constraints: const BoxConstraints(),
       icon: const Icon(Icons.cloud_upload, color: Colors.redAccent, size: 18),
+      tooltip: 'Upload',
       onPressed: onTap,
     );
   }

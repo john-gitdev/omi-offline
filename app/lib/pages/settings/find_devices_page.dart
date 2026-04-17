@@ -142,6 +142,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
           else
             IconButton(
               icon: const Icon(Icons.refresh, color: Colors.white),
+              tooltip: 'Refresh scan',
               onPressed: _startScan,
             ),
         ],
