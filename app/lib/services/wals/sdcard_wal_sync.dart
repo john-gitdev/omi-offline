@@ -805,6 +805,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         // Delete immediately so a disconnect won't re-sync this file next session.
         try {
           await _deleteWalLocked(connection, wal);
+          // Refresh stats after deletion so the File Count and Free Space update in real-time
+          await _updateStorageStatsLocked(connection);
         } catch (e) {
           Logger.error('SDCardWalSync: deletion failed for fileNum=${wal.fileNum} after transfer: $e');
           anyPartial = true;
