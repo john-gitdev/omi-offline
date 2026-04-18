@@ -1,6 +1,7 @@
 import 'package:omi/services/wals/wal.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/services/wals/sdcard_wal_sync.dart';
+import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/utils/notifications.dart';
 
 class WalService implements IWalService, IWalSyncListener {
@@ -65,6 +66,13 @@ class WalService implements IWalService, IWalSyncListener {
   void onWalSynced(Wal wal) {
     for (var s in List.from(_subscriptions.values)) {
       s.onWalSynced(wal);
+    }
+  }
+
+  @override
+  void onStorageStatsUpdated(StorageFileStats stats) {
+    for (var s in List.from(_subscriptions.values)) {
+      s.onStorageStatsUpdated(stats);
     }
   }
 
