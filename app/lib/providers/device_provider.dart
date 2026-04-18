@@ -361,15 +361,25 @@ class DeviceProvider extends ChangeNotifier
       lastSyncErrorTime = DateTime.now();
       notifyListeners();
     } finally {
-      await ForegroundUtil.stopForegroundTask();
+      // Only release the foreground service (and wake lock) when the app is
+      // visible. In background we keep it alive so the next timer tick fires.
+      if (_isAppInForeground) {
+        await ForegroundUtil.stopForegroundTask();
+      }
     }
   }
 
   void onAppPaused() {
     if (!_isAppInForeground) return;
     _isAppInForeground = false;
-    _backgroundSyncTimer?.cancel();
     _reconnectionTimer?.cancel();
+    // Keep _backgroundSyncTimer running so periodic sync fires overnight.
+    // Start the foreground service so Android keeps the process alive with a
+    // wake lock — without this the CPU sleeps and the Dart timer never fires.
+    final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
+    if (interval > 0 && SharedPreferencesUtil().btDevice.id.isNotEmpty) {
+      ForegroundUtil.startForegroundTask();
+    }
     if (SharedPreferencesUtil().maximizeBattery) {
       final walSync = ServiceManager.instance().wal.getSyncs();
       if (!walSync.isSyncing) {
@@ -381,6 +391,11 @@ class DeviceProvider extends ChangeNotifier
 
   void onAppResumed() {
     _isAppInForeground = true;
+    // Release the overnight wake lock now that the user has the app open.
+    final walSync = ServiceManager.instance().wal.getSyncs();
+    if (!walSync.isSyncing) {
+      ForegroundUtil.stopForegroundTask();
+    }
     if (isConnected) {
       _startBackgroundSyncTimer();
     } else {
