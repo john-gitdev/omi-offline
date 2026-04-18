@@ -193,15 +193,21 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final wals = await _buildWalsFromFilesLocked(connection, deviceId, ignoreThreshold: true);
     Logger.debug('SDCardWalSync: getMissingWals returned ${wals.length} WALs');
 
-    // Optimization: While we have the storage lock and the SD card is awake,
-    // fetch the latest storage stats and push them to the listener (DeviceProvider)
-    // so the Settings UI stays accurate without redundant BLE calls.
-    final stats = await connection.getStorageFileStats();
-    if (stats != null) {
-      listener.onStorageStatsUpdated(stats);
-    }
+    // Update stats at the beginning of the sync
+    await _updateStorageStatsLocked(connection);
 
     return wals;
+  }
+
+  Future<void> _updateStorageStatsLocked(DeviceConnection connection) async {
+    try {
+      final stats = await connection.getStorageFileStats();
+      if (stats != null) {
+        listener.onStorageStatsUpdated(stats);
+      }
+    } catch (e) {
+      Logger.debug('SDCardWalSync: Failed to update storage stats: $e');
+    }
   }
 
   @override
@@ -809,6 +815,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         if (_isCancelled) break;
       }
     }
+
+    // Update stats at the end of the sync
+    await _updateStorageStatsLocked(connection);
 
     return SyncLocalFilesResponse(
       newConversationIds: [],
