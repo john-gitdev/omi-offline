@@ -83,8 +83,8 @@ class ForegroundUtil {
         ),
         foregroundTaskOptions: ForegroundTaskOptions(
           eventAction: ForegroundTaskEventAction.repeat(60 * 1000 * 5),
-          autoRunOnBoot: false,
-          allowWakeLock: false,
+          autoRunOnBoot: true,
+          allowWakeLock: true,
           allowWifiLock: false,
         ),
       );
