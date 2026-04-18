@@ -275,6 +275,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           _buildUploadAction(),
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.trashCan, color: Colors.redAccent, size: 20),
+            tooltip: 'Delete conversation',
             onPressed: () async {
               bool? confirm = await showDialog<bool>(
                 context: context,

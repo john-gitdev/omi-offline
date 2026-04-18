@@ -288,6 +288,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
               ),
             IconButton(
               icon: const FaIcon(FontAwesomeIcons.trashCan, color: Colors.redAccent, size: 20),
+              tooltip: 'Delete marker',
               onPressed: () async {
               bool? confirm = await showDialog<bool>(
                 context: context,
