@@ -1154,9 +1154,15 @@ static int refresh_file_cache(void)
         }
     }
 
-    cached_total_file_count = total_count;
+    /* Exclude the currently-open recording from the reported count — it is not
+     * yet available for sync (send_file_list_response skips it too). */
+    uint32_t reportable_count = total_count;
+    if (current_filename[0] != '\0' && reportable_count > 0) {
+        reportable_count--;
+    }
+    cached_total_file_count = reportable_count;
     cached_total_file_size = total_size;
-    cached_stats_file_count = total_count;
+    cached_stats_file_count = reportable_count;
     cached_stats_total_size = total_size;
     update_cached_free_bytes();
 
