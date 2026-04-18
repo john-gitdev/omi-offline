@@ -243,9 +243,6 @@ class AudioPlayerUtils extends ChangeNotifier {
     List<Uint8List> opusFrames = [];
     int offset = 0;
 
-    // ⚡ Bolt Performance Optimization:
-    // Hoist ByteData view creation outside the loop to prevent allocating a new
-    // Uint8List and ByteData object for every frame during decoding.
     final opusBd = ByteData.sublistView(opusData);
 
     while (offset < opusData.length - 4) {
@@ -299,9 +296,6 @@ class AudioPlayerUtils extends ChangeNotifier {
     List<Uint8List> pcmFrames = [];
     int offset = 0;
 
-    // ⚡ Bolt Performance Optimization:
-    // Hoist ByteData view creation outside the loop to prevent allocating a new
-    // Uint8List and ByteData object for every frame during decoding.
     final pcmBd = ByteData.sublistView(pcmFileData);
 
     while (offset < pcmFileData.length - 4) {

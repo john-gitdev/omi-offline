@@ -1,3 +1,0 @@
-## 2024-05-18 - [Avoid excessive ByteData/Uint8List allocations in loops]
-**Learning:** `ByteData.sublistView(Uint8List.fromList(data.sublist(...)))` creates a new `Uint8List` and a new `ByteData` view. Doing this in a tight loop parsing small chunks (e.g. 4 bytes) from a large file buffer results in an ~8x performance degradation compared to hoisting `ByteData.sublistView` outside the loop and using offset-based reading (`bd.getUint32(offset)`).
-**Action:** Replace `ByteData.sublistView(Uint8List.fromList(data.sublist(offset, offset + 4))).getUint32(0)` inside loops with a single `ByteData.sublistView(data)` before the loop and `bd.getUint32(offset)` inside the loop, especially for parsing audio files and BLE buffers.
