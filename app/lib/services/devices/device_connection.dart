@@ -130,8 +130,8 @@ abstract class DeviceConnection {
     return false;
   }
 
-  Future<bool> writeToStorage(int fileNum, int command, int offset) async {
-    if (await isConnected()) return performWriteToStorage(fileNum, command, offset);
+  Future<bool> writeToStorage(int fileNum, int command, int offset, {int? timestamp}) async {
+    if (await isConnected()) return performWriteToStorage(fileNum, command, offset, timestamp: timestamp);
     return false;
   }
 
@@ -207,7 +207,7 @@ abstract class DeviceConnection {
   Future<StreamSubscription<List<int>>?> performGetBleButtonListener(
       {required void Function(List<int>) onButtonReceived});
   Future<List<int>> performGetStorageList();
-  Future<bool> performWriteToStorage(int numFile, int command, int offset);
+  Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp});
   Future<int> performGetFeatures();
   Future<void> performSetLedDimRatio(int ratio);
   Future<int?> performGetLedDimRatio();

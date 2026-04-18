@@ -365,21 +365,41 @@ static int send_file_list_response(struct bt_conn *conn)
 /**
  * @brief Setup transfer for specific file by index
  */
-static int setup_file_transfer(int file_index, uint32_t start_offset)
+static int setup_file_transfer(int file_index, uint32_t start_offset, bool has_ts, uint32_t expected_ts)
 {
     AudioFileMeta_t meta;
+    int actual_idx = file_index;
 
-    if (sd_get_cached_file_meta(file_index, &meta) < 0) {
-        LOG_ERR("File index out of range: %d", file_index);
+    if (has_ts) {
+        if (sd_get_cached_file_meta(file_index, &meta) == 0 &&
+            meta.timestamp == expected_ts) {
+            /* Index still valid */
+            actual_idx = file_index;
+        } else {
+            /* Index shifted - scan for timestamp */
+            actual_idx = -1;
+            int count = sd_get_cached_file_count();
+            for (int i = 0; i < count; i++) {
+                if (sd_get_cached_file_meta(i, &meta) == 0 &&
+                    meta.timestamp == expected_ts) {
+                    actual_idx = i;
+                    LOG_WRN("Read: index shifted %d -> %d (ts=%u)", file_index, i, expected_ts);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (actual_idx < 0 || sd_get_cached_file_meta(actual_idx, &meta) < 0) {
+        LOG_ERR("File not found for transfer (idx=%d, ts=%u)", file_index, expected_ts);
         return -1;
     }
-    
+
     // Reconstruct the %08X string just-in-time for LittleFS to open
     build_filename_from_meta(&meta, current_read_filename, sizeof(current_read_filename));
 
     current_read_offset = start_offset;
-    current_sync_file_index = file_index;
-    
+    current_sync_file_index = actual_idx;    
     if (current_read_offset < meta.file_size) {
         atomic_set(&remaining_length, meta.file_size - current_read_offset);
     } else {
@@ -441,9 +461,12 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
     
     if (command == CMD_READ_FILE) {
         if (len < 2) return INVALID_COMMAND;
-        
+
         uint8_t file_index = ((uint8_t *) buf)[1];
         uint32_t request_offset = 0;
+        uint32_t expected_ts = 0;
+        bool has_ts = (len >= 10);
+
         if (len >= 6) {
             /* Little-endian offset to match the rest of the BLE protocol */
             request_offset = ((uint8_t *) buf)[2]
@@ -451,19 +474,21 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
                            | ((uint8_t *) buf)[4] << 16
                            | (uint32_t)((uint8_t *) buf)[5] << 24;
         }
-        
-        if (file_index >= sd_get_cached_file_count()) {
-            return FILE_INDEX_OUT_OF_RANGE;
+
+        if (has_ts) {
+            expected_ts = ((uint8_t *) buf)[6]
+                        | ((uint8_t *) buf)[7] << 8
+                        | ((uint8_t *) buf)[8] << 16
+                        | (uint32_t)((uint8_t *) buf)[9] << 24;
         }
-        
-        if (setup_file_transfer(file_index, request_offset) < 0) {
+
+        if (setup_file_transfer(file_index, request_offset, has_ts, expected_ts) < 0) {
             return FILE_NOT_FOUND;
         }
-        
+
         transport_started = 1;
         return 0;
-    }
-    
+    }    
     if (command == CMD_DELETE_FILE) {
         if (len < 2) return INVALID_COMMAND;
 

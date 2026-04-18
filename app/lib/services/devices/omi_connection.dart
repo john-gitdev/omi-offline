@@ -289,14 +289,27 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<bool> performWriteToStorage(int numFile, int command, int offset) async {
+  Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp}) async {
     try {
-      final data = ByteData(6)
-        ..setUint8(0, command & 0xFF)
-        ..setUint8(1, numFile & 0xFF)
-        ..setUint32(2, offset, Endian.little);
+      final List<int> cmd = [
+        command,
+        numFile & 0xFF,
+        offset & 0xFF,
+        (offset >> 8) & 0xFF,
+        (offset >> 16) & 0xFF,
+        (offset >> 24) & 0xFF,
+      ];
+      if (command == 0x11 && timestamp != null) {
+        // Extended CMD_READ_FILE: [0x11][index][offset:4LE][timestamp:4LE]
+        cmd.addAll([
+          timestamp & 0xFF,
+          (timestamp >> 8) & 0xFF,
+          (timestamp >> 16) & 0xFF,
+          (timestamp >> 24) & 0xFF,
+        ]);
+      }
       await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, data.buffer.asUint8List());
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, cmd);
       return true;
     } catch (_) {
       return false;
