@@ -725,16 +725,16 @@ class RecordingsManager {
             try {
               await legacyWav.delete();
             } on FileSystemException catch (_) {}
-            if (millis != null && millis > 0) {
-              await _deleteOverlappingRecordings(liveDir, fileName, millis);
-            }
-            onRecordingFinalized?.call();
+            final kept = (millis != null && millis > 0)
+                ? await _deleteOverlappingRecordings(liveDir, fileName, millis)
+                : true;
+            if (kept) onRecordingFinalized?.call();
             notifyRecordingsChanged();
           } else if (fileName.endsWith('.wav') || fileName.endsWith('.ogg')) {
-            if (millis != null && millis > 0) {
-              await _deleteOverlappingRecordings(liveDir, fileName, millis);
-            }
-            onRecordingFinalized?.call();
+            final kept = (millis != null && millis > 0)
+                ? await _deleteOverlappingRecordings(liveDir, fileName, millis)
+                : true;
+            if (kept) onRecordingFinalized?.call();
             notifyRecordingsChanged();
           }
         }
@@ -1061,25 +1061,35 @@ class RecordingsManager {
     return result;
   }
 
-  /// Removes recordings in [liveDir] that overlap in time with the newly placed
-  /// [newFileName] (which starts at [newStartMs]). Reads duration from the
-  /// `.meta` sidecar, which must already be in [liveDir] before this is called.
-  /// Overlapping old recordings are deleted (audio + meta + bin sidecar).
-  static Future<void> _deleteOverlappingRecordings(Directory liveDir, String newFileName, int newStartMs) async {
-    final baseName = newFileName.contains('.') ? newFileName.substring(0, newFileName.lastIndexOf('.')) : newFileName;
-    final newMetaFile = File('${liveDir.path}/$baseName.meta');
-    if (!await newMetaFile.exists()) return;
+  /// Resolves time-range conflicts between [newFileName] (just moved into [liveDir],
+  /// starting at [newStartMs]) and any existing recordings that overlap it.
+  ///
+  /// Strategy: keep the *longest* recording among all overlapping candidates —
+  /// it was produced from the most audio data. Ties go to the new file (current
+  /// VAD settings). All shorter overlapping recordings are deleted (audio + meta
+  /// + bin sidecar).
+  ///
+  /// Returns `true` if [newFileName] was kept, `false` if it was the shorter one
+  /// and was deleted (caller should skip `onRecordingFinalized`).
+  static Future<bool> _deleteOverlappingRecordings(Directory liveDir, String newFileName, int newStartMs) async {
+    final newBase = newFileName.contains('.') ? newFileName.substring(0, newFileName.lastIndexOf('.')) : newFileName;
+    final newMetaFile = File('${liveDir.path}/$newBase.meta');
+    if (!await newMetaFile.exists()) return true;
 
     int newDurationMs;
     try {
       final bd = ByteData.sublistView(await newMetaFile.readAsBytes());
-      if (bd.lengthInBytes < 8) return;
+      if (bd.lengthInBytes < 8) return true;
       newDurationMs = bd.getUint32(4, Endian.little);
     } catch (_) {
-      return;
+      return true;
     }
-    if (newDurationMs <= 0) return;
+    if (newDurationMs <= 0) return true;
     final newEndMs = newStartMs + newDurationMs;
+
+    // Collect all existing recordings that overlap with the new one.
+    // Each entry: [audioFile, metaFile, baseName, durationMs].
+    final overlapping = <(File, File, String, int)>[];
 
     final entities = await liveDir.list().toList();
     for (final entity in entities) {
@@ -1107,25 +1117,64 @@ class RecordingsManager {
       if (existDurationMs <= 0) continue;
       final existEndMs = existStartMs + existDurationMs;
 
-      final overlaps = existStartMs < newEndMs && existEndMs > newStartMs;
-      if (!overlaps) continue;
+      if (existStartMs < newEndMs && existEndMs > newStartMs) {
+        overlapping.add((entity, existMetaFile, existBase, existDurationMs));
+      }
+    }
 
+    if (overlapping.isEmpty) return true;
+
+    // Find the longest duration among new + all overlapping existing recordings.
+    // Tuple layout: ($1=audioFile, $2=metaFile, $3=baseName, $4=durationMs)
+    int maxDuration = newDurationMs;
+    for (final o in overlapping) {
+      if (o.$4 > maxDuration) maxDuration = o.$4;
+    }
+
+    // Delete every loser. Ties go to the new file (keep it), so existing files
+    // are only kept if they are strictly longer.
+    bool newFileKept = newDurationMs >= maxDuration;
+
+    if (!newFileKept) {
+      // New file loses — delete it.
       Logger.debug(
-        'RecordingsManager: Removing overlapping recording $name '
-        '(${existStartMs}–${existEndMs}) conflicts with new $newFileName (${newStartMs}–${newEndMs})',
+        'RecordingsManager: Discarding new shorter recording $newFileName (${newDurationMs}ms) '
+        'in favour of existing longer recording (${maxDuration}ms)',
       );
       try {
-        await entity.delete();
+        await File('${liveDir.path}/$newFileName').delete();
       } catch (_) {}
       try {
-        await existMetaFile.delete();
+        await newMetaFile.delete();
       } catch (_) {}
       try {
-        final ts = existBase.split('_').last;
+        final ts = newBase.split('_').last;
         final binFile = File('${liveDir.path}/recording_fs320_$ts.bin');
         if (await binFile.exists()) await binFile.delete();
       } catch (_) {}
     }
+
+    // Delete any existing recordings that lost.
+    for (final o in overlapping) {
+      if (o.$4 >= maxDuration && !newFileKept) continue; // this is the winner we kept
+      Logger.debug(
+        'RecordingsManager: Removing overlapping recording ${o.$1.path.split('/').last} '
+        '(${o.$4}ms) — ${newFileKept ? 'new file is longer' : 'another existing file is longer'}',
+      );
+      try {
+        await o.$1.delete();
+      } catch (_) {}
+      try {
+        await o.$2.delete();
+      } catch (_) {}
+      try {
+        final ts = o.$3.split('_').last;
+        final binFile = File('${liveDir.path}/recording_fs320_$ts.bin');
+        if (await binFile.exists()) await binFile.delete();
+      } catch (_) {}
+    }
+
+    return newFileKept;
   }
 
   /// Derives the date-folder name (YYYY-MM-DD) from epoch milliseconds.
