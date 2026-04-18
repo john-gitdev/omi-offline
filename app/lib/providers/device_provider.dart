@@ -15,7 +15,9 @@ import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/debouncer.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
 
-class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption, IWalServiceListener {
+class DeviceProvider extends ChangeNotifier
+    with WidgetsBindingObserver
+    implements IDeviceServiceSubsciption, IWalServiceListener {
   bool _disposed = false;
   bool isConnecting = false;
   bool isConnected = false;
@@ -51,6 +53,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   void Function(BtDevice device)? onDeviceConnected;
 
   DeviceProvider() {
+    WidgetsBinding.instance.addObserver(this);
     // Correctly initialize foreground state for cases where app starts in background.
     final state = WidgetsBinding.instance.lifecycleState;
     _isAppInForeground = state == null || state == AppLifecycleState.resumed;
@@ -78,6 +81,15 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     _startBackgroundSyncTimer();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden || state == AppLifecycleState.detached) {
+      onAppPaused();
+    } else if (state == AppLifecycleState.resumed) {
+      onAppResumed();
+    }
+  }
+
   Future<void> setConnectedDevice(BtDevice? device) async {
     connectedDevice = device;
     pairedDevice = device;
@@ -103,10 +115,6 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       }
     }
     notifyListeners();
-  }
-
-  Future _bleDisconnectDevice(BtDevice btDevice) async {
-    await ServiceManager.instance().device.disconnectDevice();
   }
 
   Future<int> _retrieveBatteryLevel(String deviceId) async {
@@ -354,10 +362,6 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
       notifyListeners();
     } finally {
       await ForegroundUtil.stopForegroundTask();
-      if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground) {
-        Logger.debug('Maximizing battery: disconnecting device after background sync because app is in background.');
-        await ServiceManager.instance().device.disconnectDevice();
-      }
     }
   }
 
@@ -394,6 +398,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   @override
   void dispose() {
     _disposed = true;
+    WidgetsBinding.instance.removeObserver(this);
     _bleBatteryLevelListener?.cancel();
     _bleButtonListener?.cancel();
     _reconnectionTimer?.cancel();

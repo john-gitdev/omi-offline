@@ -55,23 +55,6 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    try {
-      final deviceProvider = Provider.of<DeviceProvider>(
-        context,
-        listen: false,
-      );
-      if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
-        deviceProvider.onAppPaused();
-      } else if (state == AppLifecycleState.resumed) {
-        deviceProvider.onAppResumed();
-      }
-    } catch (_) {
-      // Provider not yet available during early lifecycle
-    }
-  }
-
   void _checkHeyPocketKey() {
     final apiKey = SharedPreferencesUtil().heypocketApiKey;
     if (apiKey.isEmpty) return;
