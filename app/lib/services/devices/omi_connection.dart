@@ -41,9 +41,6 @@ class OmiDeviceConnection extends DeviceConnection {
   static const String settingsDimRatioCharacteristicUuid = '19b10011-e8f2-537e-4f6c-d104768a1214';
   static const String settingsMicGainCharacteristicUuid = '19b10012-e8f2-537e-4f6c-d104768a1214';
 
-  // Deduplicates concurrent listFiles calls
-  Completer<List<StorageFile>>? _listFilesCompleter;
-
   // Protects against stale packets from previous calls
   int _listFilesGeneration = 0;
   StreamSubscription? _listFilesSub;
@@ -500,24 +497,15 @@ class OmiDeviceConnection extends DeviceConnection {
       // intended file after a cache refresh, and falls back to a timestamp scan
       // if the index shifted due to a rotation or earlier deletion.
       final ts = file.timestamp;
-      final List<int> cmd;
-      if (ts > 1000000) {
-        cmd = [
-          0x12,
-          file.index & 0xFF,
-          ts & 0xFF,
-          (ts >> 8) & 0xFF,
-          (ts >> 16) & 0xFF,
-          (ts >> 24) & 0xFF,
-        ];
-      } else {
-        cmd = [0x12, file.index & 0xFF];
-      }
       await transport.writeCharacteristic(
-        storageDataStreamServiceUuid,
-        storageDataStreamCharacteristicUuid,
-        cmd,
-      );
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [
+        0x12,
+        file.index & 0xFF,
+        ts & 0xFF,
+        (ts >> 8) & 0xFF,
+        (ts >> 16) & 0xFF,
+        (ts >> 24) & 0xFF,
+      ]);
       final res = await completer.future.timeout(const Duration(seconds: 35));
       await sub.cancel();
       return res;
@@ -529,8 +517,19 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<bool> performStopStorageSync() async {
     try {
+      final completer = Completer<bool>();
+      final stream =
+          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final sub = stream.listen((data) {
+        if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
+          completer.complete(data.length < 2 || data[1] == 0);
+        }
+      });
+
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x03]);
-      return true;
+      final res = await completer.future.timeout(const Duration(seconds: 5));
+      await sub.cancel();
+      return res;
     } catch (_) {
       return false;
     }
