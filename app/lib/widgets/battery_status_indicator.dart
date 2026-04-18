@@ -89,17 +89,17 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-            if (widget.isCharging)
-              AnimatedBuilder(
-                animation: _blinkController,
-                builder: (context, child) => Opacity(
-                  opacity: _blinkController.value < 0.5 ? 1.0 : 0.0,
-                  child: child,
-                ),
-                child: _dot(),
-              )
-            else
-              _dot(),
+                if (widget.isCharging)
+                  AnimatedBuilder(
+                    animation: _blinkController,
+                    builder: (context, child) => Opacity(
+                      opacity: _blinkController.value < 0.5 ? 1.0 : 0.0,
+                      child: child,
+                    ),
+                    child: _dot(),
+                  )
+                else
+                  _dot(),
                 const SizedBox(width: 6),
                 Text(
                   widget.batteryLevel >= 0 ? '${widget.batteryLevel}%' : '--',
