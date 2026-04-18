@@ -192,6 +192,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<List<Wal>> _getMissingWalsLocked(DeviceConnection connection, String deviceId) async {
     final wals = await _buildWalsFromFilesLocked(connection, deviceId, ignoreThreshold: true);
     Logger.debug('SDCardWalSync: getMissingWals returned ${wals.length} WALs');
+
+    // Optimization: While we have the storage lock and the SD card is awake,
+    // fetch the latest storage stats and push them to the listener (DeviceProvider)
+    // so the Settings UI stays accurate without redundant BLE calls.
+    final stats = await connection.getStorageFileStats();
+    if (stats != null) {
+      listener.onStorageStatsUpdated(stats);
+    }
+
     return wals;
   }
 

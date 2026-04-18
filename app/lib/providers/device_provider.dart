@@ -418,7 +418,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     isCharging = false;
     notifyListeners();
     await setConnectedDevice(null);
-    await setisDeviceStorageSupport();
+    await refreshStorageStats();
     setIsConnected(false);
     updateConnectingStatus(false);
 
@@ -446,6 +446,20 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
   @override
   void onWalSynced(Wal wal) {}
+
+  @override
+  void onStorageStatsUpdated(StorageFileStats stats) {
+    storageStats = stats;
+    final usedBytes = stats.totalUsedBytes;
+    final totalBytes = usedBytes + stats.freeBytes;
+    if (totalBytes > 0) {
+      storageFullPercentage = ((usedBytes / totalBytes) * 100).round().clamp(0, 100);
+    } else {
+      storageFullPercentage = 0;
+    }
+    isDeviceStorageSupport = stats.fileCount > 0 || stats.totalUsedBytes > 0;
+    notifyListeners();
+  }
 
   @override
   void onSyncFinished() {
@@ -487,42 +501,6 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
 
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
 
-    if (_disposed || connectedDevice?.id != device.id) return;
-    var connection = await ServiceManager.instance().device.ensureConnection(device.id);
-    if (connection == null || _disposed || connectedDevice?.id != device.id) return;
-
-    final files = await connection.listFiles();
-    if (_disposed || connectedDevice?.id != device.id) return;
-    isDeviceStorageSupport = files.isNotEmpty;
-
-    final stats = await connection.getStorageFileStats();
-    if (stats != null) {
-      storageStats = StorageFileStats(
-        totalUsedBytes: stats.totalUsedBytes,
-        fileCount: files.where((f) => f.size > 0).length,
-        freeBytes: stats.freeBytes,
-      );
-      final usedBytes = stats.totalUsedBytes;
-      final totalBytes = usedBytes + stats.freeBytes;
-      if (totalBytes > 0) {
-        storageFullPercentage = ((usedBytes / totalBytes) * 100).round().clamp(0, 100);
-      } else {
-        storageFullPercentage = 0;
-      }
-    } else {
-      storageStats = null;
-      if (files.isNotEmpty) {
-        final usedBytes = files.fold(0, (sum, f) => sum + f.size);
-        const totalBytes = 480 * 1024 * 1024;
-        storageFullPercentage = ((usedBytes / totalBytes) * 100).round().clamp(0, 100);
-      } else {
-        storageFullPercentage = 0;
-      }
-    }
-    notifyListeners();
-
-    await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: files);
-
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
 
@@ -541,20 +519,41 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
     }
   }
 
-  Future setisDeviceStorageSupport() async {
+  Future<void> refreshStorageStats() async {
     final dev = connectedDevice;
-    if (dev == null) {
-      isDeviceStorageSupport = false;
-    } else {
-      var connection = await ServiceManager.instance().device.ensureConnection(dev.id);
-      if (connection == null) {
-        isDeviceStorageSupport = false;
-      } else {
-        var files = await connection.listFiles();
-        isDeviceStorageSupport = files.isNotEmpty;
-      }
+    if (dev == null) return;
+
+    final walSync = ServiceManager.instance().wal.getSyncs();
+    if (walSync.isSyncing) {
+      Logger.debug('DeviceProvider: Sync already in progress, skipping manual storage refresh.');
+      return;
     }
-    notifyListeners();
+
+    var connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+    if (connection == null) return;
+
+    await connection.acquireStorageLock('refreshStorageStats');
+    try {
+      final files = await connection.listFiles();
+      final stats = await connection.getStorageFileStats();
+      if (stats != null) {
+        onStorageStatsUpdated(stats);
+      } else {
+        isDeviceStorageSupport = files.isNotEmpty;
+        if (files.isNotEmpty) {
+          final usedBytes = files.fold(0, (sum, f) => sum + f.size);
+          const totalBytes = 480 * 1024 * 1024;
+          storageFullPercentage = ((usedBytes / totalBytes) * 100).round().clamp(0, 100);
+        } else {
+          storageFullPercentage = 0;
+        }
+      }
+      // Also update the WAL sync's view of the world
+      await walSync.setDevice(dev, prefetchedFiles: files);
+    } finally {
+      connection.releaseStorageLock();
+      notifyListeners();
+    }
   }
 
   @override
