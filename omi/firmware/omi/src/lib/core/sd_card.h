@@ -103,11 +103,6 @@ typedef struct {
 } sd_req_t;
 
 /**
- * @brief Wake SD card from power gating. Blocks until ready.
- */
-int sd_gate_wake(void);
-
-/**
  * @brief Initialize the SD card module interface.
  *
  * @return 0 on success, negative error code otherwise.
