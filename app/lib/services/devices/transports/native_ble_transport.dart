@@ -250,6 +250,11 @@ class NativeBleTransport extends DeviceTransport {
   final Set<String> _activeSubscriptionKeys = {};
 
   void _handleConnectionState(bool connected, String? error) {
+    if (connected) {
+      _updateState(DeviceTransportState.connected);
+      return;
+    }
+
     if (!connected) {
       if (_state == DeviceTransportState.connecting && error != null) {
         if (error == 'unmanaged' || error == 'gatt_status_133') {

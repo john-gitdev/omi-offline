@@ -542,18 +542,29 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   ? Container(
                       alignment: Alignment.centerLeft,
                       padding: const EdgeInsets.only(left: 8.0),
-                      child: IconButton(
-                        icon: const FaIcon(
-                          FontAwesomeIcons.bluetooth,
-                          color: Colors.grey,
-                          size: 20,
-                        ),
-                        onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (c) => const FindDevicesPage(),
-                          ),
-                        ),
-                      ),
+                      child: deviceProvider.isConnecting
+                          ? const Center(
+                              child: SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            )
+                          : IconButton(
+                              icon: const FaIcon(
+                                FontAwesomeIcons.bluetooth,
+                                color: Colors.grey,
+                                size: 20,
+                              ),
+                              onPressed: () => Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (c) => const FindDevicesPage(),
+                                ),
+                              ),
+                            ),
                     )
                   : BatteryStatusIndicator(
                       batteryLevel: deviceProvider.batteryLevel,
