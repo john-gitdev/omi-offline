@@ -47,6 +47,9 @@ dependencies:
     git:
       url: https://github.com/mdmohsin7/frame-sdk-flutter.git
       ref: master
+  mcumgr_flutter: ^0.4.2
+  nordic_dfu: ^6.1.4+hotfix
+  flutter_archive: ^6.0.3
 
   # Utils
   pool: ^1.5.1

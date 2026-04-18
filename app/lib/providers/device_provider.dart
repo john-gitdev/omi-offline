@@ -405,6 +405,34 @@ class DeviceProvider extends ChangeNotifier
     }
   }
 
+  bool isFirmwareUpdateInProgress = false;
+  bool _isOnFirmwareUpdatePage = false;
+
+  void setOnFirmwareUpdatePage(bool value) {
+    _isOnFirmwareUpdatePage = value;
+    notifyListeners();
+  }
+
+  void setFirmwareUpdateInProgress(bool value) {
+    isFirmwareUpdateInProgress = value;
+    notifyListeners();
+  }
+
+  void resetFirmwareUpdateState() {
+    isFirmwareUpdateInProgress = false;
+    notifyListeners();
+  }
+
+  Future<void> prepareDFU() async {
+    // Stub for now. Usually involves stopping syncs and disconnecting to trigger DFU mode.
+    Logger.debug('Preparing DFU...');
+    final walSync = ServiceManager.instance().wal.getSyncs();
+    if (walSync.isSyncing) {
+      walSync.cancelSync();
+    }
+    notifyListeners();
+  }
+
   @override
   void notifyListeners() {
     if (!_disposed) super.notifyListeners();
