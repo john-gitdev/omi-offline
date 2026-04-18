@@ -564,6 +564,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                   builder: (c) => const FindDevicesPage(),
                                 ),
                               ),
+                              tooltip: 'Connect device',
                             ),
                     )
                   : BatteryStatusIndicator(

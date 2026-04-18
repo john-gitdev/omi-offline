@@ -39,6 +39,7 @@ class UploadIconButton extends StatelessWidget {
         constraints: const BoxConstraints(),
         icon: Icon(Icons.cloud_off, color: Colors.grey.shade600, size: 18),
         onPressed: onTap,
+        tooltip: 'Upload unavailable',
       );
     }
     if (isUploading) {
@@ -51,6 +52,7 @@ class UploadIconButton extends StatelessWidget {
           child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
         ),
         onPressed: null,
+        tooltip: 'Uploading...',
       );
     }
     if (isUploaded) {
@@ -59,6 +61,7 @@ class UploadIconButton extends StatelessWidget {
         constraints: const BoxConstraints(),
         icon: const Icon(Icons.cloud_done, color: Colors.green, size: 18),
         onPressed: onTap,
+        tooltip: 'Uploaded',
       );
     }
     return IconButton(
@@ -66,6 +69,7 @@ class UploadIconButton extends StatelessWidget {
       constraints: const BoxConstraints(),
       icon: const Icon(Icons.cloud_upload, color: Colors.redAccent, size: 18),
       onPressed: onTap,
+      tooltip: 'Upload to HeyPocket',
     );
   }
 }
