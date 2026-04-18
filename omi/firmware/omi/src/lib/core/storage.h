@@ -16,10 +16,25 @@ int storage_init();
 
 /**
  * @brief Stops the current storage transfer
- *
- * Stops the current storage transfer
- */
-void storage_stop_transfer();
+ /**
+  * @brief Stops the current storage transfer
+  */
+ void storage_stop_transfer();
+
+ /**
+  * @brief Starts a new storage sync session. Freezes the current file list indices.
+  */
+ void storage_start_sync_session(void);
+
+ /**
+  * @brief Ends the current storage sync session. Allows file list to be refreshed.
+  */
+ void storage_stop_sync_session(void);
+
+ /**
+  * @brief Returns true if a storage sync session is currently active.
+  */
+ bool is_storage_sync_active(void);
 
 /**
  * @brief Returns true while a file sync transfer is in progress.

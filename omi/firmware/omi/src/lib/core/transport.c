@@ -613,6 +613,7 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
     is_connected = false;
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     storage_is_on = false;
+    storage_stop_sync_session();
     sd_notify_ble_state(false);
 #endif
 

@@ -443,29 +443,50 @@ static int delete_file_by_index(int file_index)
 }
 
 
+static bool storage_sync_session_active = false;
+
+void storage_start_sync_session(void) {
+    storage_sync_session_active = true;
+    LOG_INF("Storage Sync Session: STARTED (indices frozen)");
+}
+
+void storage_stop_sync_session(void) {
+    storage_sync_session_active = false;
+    LOG_INF("Storage Sync Session: ENDED (indices unfrozen)");
+}
+
+bool is_storage_sync_active(void) {
+    return storage_sync_session_active;
+}
+
 static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *conn)
 {
     if (len < 1) {
         return INVALID_COMMAND;
     }
-    
+
     const uint8_t command = ((uint8_t *) buf)[0];
     LOG_INF("Storage command: 0x%02X, len=%d", command, len);
-    
+
     /* ===== NEW MULTI-FILE COMMANDS ===== */
-    
+
     if (command == CMD_LIST_FILES) {
+        storage_start_sync_session();
         list_files_requested = 1;  /* Defer to storage thread */
         return 0xFF;  /* Storage thread will send its own response */
     }
-    
+
+    if (command == CMD_STOP_SYNC) {
+        storage_stop_sync_session();
+        storage_stop_transfer();
+        return 0;
+    }
+
     if (command == CMD_READ_FILE) {
         if (len < 2) return INVALID_COMMAND;
 
         uint8_t file_index = ((uint8_t *) buf)[1];
         uint32_t request_offset = 0;
-        uint32_t expected_ts = 0;
-        bool has_ts = (len >= 10);
 
         if (len >= 6) {
             /* Little-endian offset to match the rest of the BLE protocol */
@@ -475,37 +496,19 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
                            | (uint32_t)((uint8_t *) buf)[5] << 24;
         }
 
-        if (has_ts) {
-            expected_ts = ((uint8_t *) buf)[6]
-                        | ((uint8_t *) buf)[7] << 8
-                        | ((uint8_t *) buf)[8] << 16
-                        | (uint32_t)((uint8_t *) buf)[9] << 24;
-        }
-
-        if (setup_file_transfer(file_index, request_offset, has_ts, expected_ts) < 0) {
+        if (setup_file_transfer(file_index, request_offset, false, 0) < 0) {
             return FILE_NOT_FOUND;
         }
 
         transport_started = 1;
         return 0;
-    }    
+    }
+
     if (command == CMD_DELETE_FILE) {
         if (len < 2) return INVALID_COMMAND;
 
         uint8_t file_index = ((uint8_t *) buf)[1];
-
-        /* Extended form: [0x12][index][ts:4LE] — app supplies the timestamp it
-         * received in CMD_LIST_FILES so the storage thread can verify the index
-         * still points to the same file after a cache refresh. */
-        delete_file_has_ts = (len >= 6);
-        if (delete_file_has_ts) {
-            const uint8_t *b = (const uint8_t *) buf;
-            delete_file_expected_ts = (uint32_t)b[2]
-                                    | (uint32_t)b[3] << 8
-                                    | (uint32_t)b[4] << 16
-                                    | (uint32_t)b[5] << 24;
-        }
-
+        delete_file_has_ts = false;
         delete_file_index = file_index;  /* Defer to storage thread */
         return 0xFF;
     }
