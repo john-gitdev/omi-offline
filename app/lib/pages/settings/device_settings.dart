@@ -1,5 +1,4 @@
 import 'package:omi/gen/pigeon_communicator.g.dart';
-import "package:omi/widgets/dialog.dart";
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -11,10 +10,8 @@ import 'package:provider/provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/utils/device.dart';
-import 'sync_page.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
-import 'package:omi/utils/other/temp.dart';
 
 class DeviceSettings extends StatefulWidget {
   const DeviceSettings({super.key});
@@ -44,6 +41,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       // Calling updateBatteryLevel() would try to READ the detail characteristic,
       // which is notify-only (GATT_READ_NOT_PERMITTED). Skip it here.
       _loadInitialDimRatio();
+      provider.refreshStorageStats();
     });
     super.initState();
   }

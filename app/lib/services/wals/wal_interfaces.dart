@@ -30,6 +30,7 @@ abstract class IWalServiceListener extends IWalSyncListener {
 abstract class IWalSyncListener {
   void onWalUpdated();
   void onWalSynced(Wal wal);
+  void onStorageStatsUpdated(StorageFileStats stats) {}
   void onSyncFinished() {}
   void onDeviceRecordingFailed() {}
 }
