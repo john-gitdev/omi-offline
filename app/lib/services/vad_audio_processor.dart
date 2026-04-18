@@ -248,11 +248,21 @@ class VadAudioProcessor {
       if (_currentRefs.isNotEmpty && _lastSegmentEndTime != null) {
         final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds;
         if (gapMs > _gapThresholdMs) {
+          Logger.debug(
+            'VadAudioProcessor: Gap detected before ${segmentFile.path.split('/').last} — '
+            'gapMs=$gapMs (threshold=${_gapThresholdMs}ms), '
+            'lastEnd=$_lastSegmentEndTime segmentStart=$segmentStartTime — flushing.',
+          );
           _h = Float32List(2 * 1 * 64);
           _c = Float32List(2 * 1 * 64);
           _pcmWindow.clear();
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
+        } else if (gapMs > 0) {
+          Logger.debug(
+            'VadAudioProcessor: Small gap before ${segmentFile.path.split('/').last} — '
+            'gapMs=$gapMs (within threshold, continuing stream).',
+          );
         }
       }
 
