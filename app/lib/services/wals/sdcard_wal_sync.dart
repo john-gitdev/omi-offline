@@ -155,7 +155,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           ? await _connectionProvider!(_device!.id)
           : await ServiceManager.instance().device.ensureConnection(_device!.id);
       if (connection != null) {
-        await connection.acquireStorageLock('setDevice');
+        // Skip lock when files are prefetched — _buildWalsFromFilesLocked only
+        // needs BLE I/O (listFiles) when prefetchedFiles is null. With files
+        // already in hand the only remaining call is getAudioCodec(), which is
+        // cached, so acquiring the lock here would deadlock any caller that
+        // already holds it (e.g. refreshStorageStats).
+        if (prefetchedFiles == null) {
+          await connection.acquireStorageLock('setDevice');
+        }
         try {
           _wals = await _buildWalsFromFilesLocked(
             connection,
@@ -164,7 +171,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             prefetchedFiles: prefetchedFiles,
           );
         } finally {
-          connection.releaseStorageLock();
+          if (prefetchedFiles == null) {
+            connection.releaseStorageLock();
+          }
         }
       }
       listener.onWalUpdated();
