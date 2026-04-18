@@ -1,0 +1,3 @@
+## 2024-05-19 - Memory Allocations in ByteData Parsing Loops
+**Learning:** In Dart, calling `ByteData.sublistView(Uint8List.fromList(data.sublist(...)))` inside a tight loop causes significant performance degradation because it creates a new `Uint8List` and a new `ByteData` view per iteration. When parsing data frames (like audio chunks or BLE payloads), this nested allocation and copy pattern is a common anti-pattern.
+**Action:** Always hoist a single `ByteData.sublistView(data)` view creation outside the loop. Use offset-based methods (e.g., `bd.getUint32(offset, Endian.little)`) directly on the single view within the loop to avoid continuous short-lived memory allocations.

@@ -279,8 +279,10 @@ class OmiDeviceConnection extends DeviceConnection {
       final data =
           await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
       List<int> result = [];
+      // Performance optimization: Hoist ByteData view creation outside the loop
+      final bd = ByteData.sublistView(Uint8List.fromList(data));
       for (int i = 0; i < (data.length ~/ 4); i++) {
-        result.add(ByteData.sublistView(Uint8List.fromList(data)).getUint32(i * 4, Endian.little));
+        result.add(bd.getUint32(i * 4, Endian.little));
       }
       return result;
     } catch (_) {
