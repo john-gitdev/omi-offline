@@ -38,7 +38,7 @@ class UploadIconButton extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 6),
         constraints: const BoxConstraints(),
         icon: Icon(Icons.cloud_off, color: Colors.grey.shade600, size: 18),
-        tooltip: 'Uploads unavailable',
+        tooltip: 'Upload key unavailable',
         onPressed: onTap,
       );
     }
@@ -51,7 +51,7 @@ class UploadIconButton extends StatelessWidget {
           height: 18,
           child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
         ),
-        tooltip: 'Uploading...',
+        tooltip: 'Uploading to HeyPocket',
         onPressed: null,
       );
     }
@@ -60,7 +60,7 @@ class UploadIconButton extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 6),
         constraints: const BoxConstraints(),
         icon: const Icon(Icons.cloud_done, color: Colors.green, size: 18),
-        tooltip: 'Uploaded',
+        tooltip: 'Re-upload to HeyPocket',
         onPressed: onTap,
       );
     }
@@ -188,7 +188,8 @@ class ConversationTile extends StatelessWidget {
             ),
           ),
         ),
-        ...sortedMarkers.map((mc) => MarkerSubEntry(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
+        ...sortedMarkers.map((mc) =>
+            MarkerSubEntry(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
       ],
     );
   }
@@ -290,8 +291,7 @@ class BatchCard extends StatelessWidget {
                     key: Key('reprocess_day_${batch.dateString}'),
                     onPressed: onReprocessDay,
                     icon: const FaIcon(FontAwesomeIcons.rotateRight, size: 13, color: Colors.deepPurpleAccent),
-                    label: const Text('Reprocess Day',
-                        style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13)),
+                    label: const Text('Reprocess Day', style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13)),
                   )
                 else
                   TextButton.icon(

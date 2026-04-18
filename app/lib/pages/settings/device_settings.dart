@@ -728,6 +728,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             leading: IconButton(
               icon: const FaIcon(FontAwesomeIcons.chevronLeft, size: 18),
               onPressed: () => Navigator.of(context).pop(),
+              tooltip: 'Back',
             ),
             title: Text(
               'Device Settings',
