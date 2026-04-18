@@ -13,6 +13,7 @@
  */
 #include "lib/core/sd_card.h"
 #include "lib/core/transport.h"
+#include "lib/core/storage.h"
 
 #include <ctype.h>
 #include <lfs.h>
@@ -1177,6 +1178,11 @@ static int refresh_file_cache(void)
     sd_gate_wake();
     if (!is_mounted) {
         return -ENODEV;
+    }
+
+    if (is_storage_sync_active() && file_cache_valid) {
+        LOG_DBG("refresh_file_cache: session active, skipping refresh to maintain stable indices");
+        return 0;
     }
 
     lfs_dir_t dir;
