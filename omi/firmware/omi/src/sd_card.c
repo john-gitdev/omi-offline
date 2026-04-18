@@ -1579,11 +1579,15 @@ void sd_worker_thread(void)
             k_msgq_num_used_get(&sd_prio_msgq) > 0 ||
             k_msgq_num_used_get(&sd_msgq) > 0;
 
+        bool recently_active =
+            (now - last_storage_activity_ms) < 4000;
+
         bool boot_delay_active =
             (now - worker_start_time_ms) < BOOT_GATE_DELAY_MS;
 
         if (!sd_write_blocked &&
             !has_pending_work &&
+            !recently_active &&
             !boot_delay_active) {
 
             sd_gate_sleep();
