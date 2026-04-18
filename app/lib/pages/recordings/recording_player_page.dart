@@ -306,7 +306,6 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
                 }
               }
             },
-            tooltip: 'Delete',
           ),
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.shareFromSquare, color: Colors.white, size: 20),

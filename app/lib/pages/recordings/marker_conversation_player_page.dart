@@ -319,7 +319,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                 }
               }
               },
-              tooltip: 'Delete',
               ),
               IconButton(
                 icon: const FaIcon(FontAwesomeIcons.shareFromSquare, size: 20, color: Colors.white),
