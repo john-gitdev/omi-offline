@@ -362,6 +362,7 @@ class DeviceProvider extends ChangeNotifier implements IDeviceServiceSubsciption
   }
 
   void onAppPaused() {
+    if (!_isAppInForeground) return;
     _isAppInForeground = false;
     _backgroundSyncTimer?.cancel();
     _reconnectionTimer?.cancel();

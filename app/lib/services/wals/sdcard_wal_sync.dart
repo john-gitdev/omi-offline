@@ -1,6 +1,6 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
-import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:collection/collection.dart';
@@ -25,33 +25,6 @@ class _ProtocolGapException implements Exception {
   String toString() => 'Protocol gap: incoming=$incoming expected=$expected';
 }
 
-class _SyncIsolateParams {
-  final SendPort replyPort;
-  final String documentsPath;
-  final int fileNum;
-  final int initialOffset;
-  final int? lastDeviceSessionId;
-  final int timerStart;
-  final int expectedTotalBytes;
-
-  _SyncIsolateParams({
-    required this.replyPort,
-    required this.documentsPath,
-    required this.fileNum,
-    required this.initialOffset,
-    this.lastDeviceSessionId,
-    required this.timerStart,
-    required this.expectedTotalBytes,
-  });
-}
-
-class _SyncMessage {
-  final String type;
-  final dynamic payload;
-
-  _SyncMessage(this.type, [this.payload]);
-}
-
 class SDCardWalSyncImpl implements SDCardWalSync {
   List<Wal> _wals = <Wal>[];
   BtDevice? _device;
@@ -65,7 +38,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   bool _isCancelled = false;
   bool _isSyncing = false;
-  int _cancelGeneration = 0;
   int _lastSegmentBoundaryOffset = 0;
   Completer<void>? _activeTransferCompleter;
   Completer<void>? _cancelCompleter;
@@ -129,7 +101,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             ? _connectionProvider!(dev.id)
             : ServiceManager.instance().device.ensureConnection(dev.id);
         connFuture
-            .then((conn) => conn?.stopStorageSync() ?? Future.value(false))
+            .then((conn) async => await conn?.stopStorageSync() ?? Future.value(false))
             .catchError((_) => false);
       }
 
@@ -164,7 +136,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           ? _connectionProvider!(dev.id)
           : ServiceManager.instance().device.ensureConnection(dev.id);
       connFuture
-          .then((conn) => conn?.stopStorageSync() ?? Future.value(false))
+          .then((conn) async => await conn?.stopStorageSync() ?? Future.value(false))
           .catchError((_) => false);
     }
     await _storageStream?.cancel();
@@ -366,6 +338,36 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     } catch (_) {}
   }
 
+  Future<(File, int)> _flushToDisk(
+    Wal wal,
+    List<int> rawData,
+    int timerStart, {
+    String? subFolder,
+    int? deviceSessionId,
+    int? segmentIndex,
+    bool append = false,
+  }) async {
+    final directory = await getApplicationDocumentsDirectory();
+    final folderPath = deviceSessionId != null
+        ? '${directory.path}/raw_segments/$deviceSessionId'
+        : '${directory.path}/raw_segments/$subFolder';
+
+    final folder = Directory(folderPath);
+    if (!await folder.exists()) await folder.create(recursive: true);
+
+    String fileName = (deviceSessionId != null && segmentIndex != null)
+        ? '${deviceSessionId}_$segmentIndex.bin'
+        : wal.getSegmentFileNameByTimestamp(timerStart);
+
+    String filePath = '${folder.path}/$fileName';
+    final file = File(filePath);
+    await file.writeAsBytes(
+      rawData,
+      mode: append ? FileMode.append : FileMode.write,
+    );
+    return (file, rawData.length);
+  }
+
   Future _readStorageBytesToFileLocked(
     DeviceConnection connection,
     Wal wal,
@@ -376,205 +378,244 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     int fileNum = wal.fileNum;
     int offset = wal.walOffset;
     int timerStart = wal.timerStart;
-    int? lastDeviceSessionId = wal.timerStart > 0 ? wal.timerStart : null;
 
     if (_isCancelled) throw Exception("Cancelled");
 
     final completer = Completer<void>();
     _activeTransferCompleter = completer;
-    bool isCompleted = false;
-    bool isShuttingDown = false;
+    bool hasError = false;
+    bool isProcessing = false;
+    bool eotReceived = false;
+
+    int? lastDeviceSessionId = wal.timerStart > 0 ? wal.timerStart : null;
+    int? lastSegmentIndex = 0;
+    final Queue<Uint8List> chunkQueue = Queue<Uint8List>();
+    final BytesBuilder batchBuilder = BytesBuilder(copy: false);
+    final Set<String> flushedSegmentsThisTransfer = {};
     int writtenOffset = offset;
 
-    final dir = await getApplicationDocumentsDirectory();
-    final mainReceivePort = ReceivePort();
-    SendPort? isolateSendPort;
-    Isolate? isolate;
+    if (offset > 0 && lastDeviceSessionId != null) {
+      final directory = await getApplicationDocumentsDirectory();
+      final existingFile = File(
+        '${directory.path}/raw_segments/$lastDeviceSessionId/${lastDeviceSessionId}_0.bin',
+      );
+      if (await existingFile.exists()) {
+        flushedSegmentsThisTransfer.add('${lastDeviceSessionId}_0');
+      }
+    }
 
-    List<List<Uint8List>> pendingBatches = [];
-    List<Uint8List> batchBuffer = [];
-    DateTime lastFlush = DateTime.now();
-    int inFlightBatches = 0;
-    int totalPackets = 0;
+    Future<void> flushRawBuffer(List<int> rawData) async {
+      if (rawData.isEmpty) return;
+      String subFolder = lastDeviceSessionId?.toString() ?? 'unsynced';
+      final segmentKey = '${lastDeviceSessionId}_$lastSegmentIndex';
+      final appendMode = flushedSegmentsThisTransfer.contains(segmentKey);
+      if (!appendMode) flushedSegmentsThisTransfer.add(segmentKey);
 
+      var (file, bytesWritten) = await _flushToDisk(
+        wal,
+        rawData,
+        timerStart,
+        subFolder: subFolder,
+        deviceSessionId: lastDeviceSessionId,
+        segmentIndex: lastSegmentIndex,
+        append: appendMode,
+      );
+      writtenOffset += bytesWritten;
+      _lastSegmentBoundaryOffset = writtenOffset;
+      try {
+        await callback(file, writtenOffset, timerStart, subFolder: subFolder);
+      } catch (_) {}
+    }
+
+    _storageStream?.cancel();
+    int expectedOffset = offset;
+    _lastSegmentBoundaryOffset = offset;
+    bool hasReceivedStartAck = false;
+    bool isStreamLocked = false;
+    int packetsReceived = 0;
     Timer? inactivityTimer;
+
     void resetInactivityTimer() {
       inactivityTimer?.cancel();
       inactivityTimer = Timer(const Duration(seconds: 15), () {
-        if (!isCompleted) {
-          isCompleted = true;
-          if (!completer.isCompleted) {
-            completer.completeError(Exception("Transfer stalled: 15s inactivity timeout"));
-          }
+        if (!completer.isCompleted) {
+          isStreamLocked = true;
+          hasError = true;
+          completer.completeError(
+            Exception("Transfer stalled: 15s inactivity timeout"),
+          );
         }
       });
     }
 
-    Future<void> cleanup() async {
-      if (isShuttingDown) return;
-      isShuttingDown = true;
-      inactivityTimer?.cancel();
-      if (isolateSendPort != null) {
-        try {
-          isolateSendPort!.send(_SyncMessage('shutdown'));
-        } catch (_) {}
-      }
-      await Future.delayed(const Duration(milliseconds: 20));
-      isolate?.kill(priority: Isolate.immediate);
-      mainReceivePort.close();
-      await _storageStream?.cancel();
-      _storageStream = null;
-    }
-
-    mainReceivePort.listen((msg) async {
-      if (isCompleted || isShuttingDown) return;
-      if (msg is SendPort) {
-        isolateSendPort = msg;
-        for (final b in pendingBatches) {
-          isolateSendPort!.send(_SyncMessage('dataBatch', b));
-          inFlightBatches++;
-        }
-        pendingBatches.clear();
-        return;
-      }
-      if (msg is! _SyncMessage) return;
-
-      switch (msg.type) {
-        case 'batchAck':
-          inFlightBatches = (inFlightBatches - 1).clamp(0, 9999);
-          break;
-        case 'progress':
-          final bytesWritten = msg.payload as int;
-          final delta = bytesWritten - writtenOffset;
-          writtenOffset = bytesWritten;
-          _lastSegmentBoundaryOffset = bytesWritten;
-
-          Logger.debug(
-            'SDCardWalSync: [PROGRESS] received $totalPackets packets, offset=$bytesWritten bytes',
-          );
-
-          if (onProgress != null) onProgress(bytesWritten);
-          _updateSpeed(delta);
-          listener.onWalUpdated();
-          resetInactivityTimer();
-          break;
-        case 'marker':
-          unawaited(_saveMarker(lastDeviceSessionId ?? 0, msg.payload as int));
-          break;
-        case 'done':
-          final finalOffset = msg.payload as int;
-          if (onProgress != null) onProgress(finalOffset);
-          isCompleted = true;
-          if (!completer.isCompleted) completer.complete();
-          break;
-        case 'protocolGap':
-          isCompleted = true;
-          final payload = msg.payload as Map<String, dynamic>;
-          if (!completer.isCompleted) completer.completeError(_ProtocolGapException(payload['incoming'] as int, payload['expected'] as int));
-          break;
-        case 'error':
-          isCompleted = true;
-          final errorStr = msg.payload.toString();
-          if (!completer.isCompleted) completer.completeError(Exception(errorStr));
-          break;
-      }
-    });
-
-    isolate = await Isolate.spawn(
-      _syncIsolateEntry,
-      _SyncIsolateParams(
-        replyPort: mainReceivePort.sendPort,
-        documentsPath: dir.path,
-        fileNum: fileNum,
-        initialOffset: offset,
-        lastDeviceSessionId: lastDeviceSessionId,
-        timerStart: timerStart,
-        expectedTotalBytes: wal.storageTotalBytes,
-      ),
-    );
-
     resetInactivityTimer();
 
-    final List<List<int>> packetQueue = [];
-    bool isProcessingQueue = false;
+    _storageStream = (await connection.getBleStorageBytesStream()).listen(
+      (List<int> value) async {
+        resetInactivityTimer();
+        if (_isCancelled || hasError || isStreamLocked) return;
+        packetsReceived++;
+        if (packetsReceived % 500 == 0) {
+          Logger.debug(
+            'SDCardWalSync: [PROGRESS] received $packetsReceived packets, offset=$expectedOffset bytes',
+          );
+        }
+        if (value.isEmpty) return;
 
-    Future<void> processQueue() async {
-      if (isProcessingQueue) return;
-      isProcessingQueue = true;
-      try {
-        while (packetQueue.isNotEmpty && !isCompleted && !isShuttingDown) {
-          final value = packetQueue.removeAt(0);
-          if (value.isEmpty) continue;
+        int packetType = value[0];
+        switch (packetType) {
+          case 0x01:
+            if (!hasReceivedStartAck || value.length < 5) return;
+            int incomingOffset =
+                value[1] |
+                (value[2] << 8) |
+                (value[3] << 16) |
+                (value[4] << 24);
+            List<int> payload = value.sublist(5);
 
-          totalPackets++;
-          batchBuffer.add(Uint8List.fromList(value));
-
-          final now = DateTime.now();
-          bool hasControlPacket = value[0] == 0x00 || value[0] == 0x02;
-          if (hasControlPacket ||
-              batchBuffer.length >= 20 ||
-              now.difference(lastFlush) >= const Duration(milliseconds: 20)) {
-            final toSend = List<Uint8List>.from(batchBuffer);
-            batchBuffer.clear();
-            lastFlush = now;
-
-            if (isolateSendPort == null) {
-              pendingBatches.add(toSend);
-              if (pendingBatches.length > 100) {
-                await Future.delayed(const Duration(milliseconds: 10));
+            if (incomingOffset < expectedOffset) {
+              final packetEnd = incomingOffset + payload.length;
+              if (packetEnd <= expectedOffset) return;
+              payload = payload.sublist(expectedOffset - incomingOffset);
+            } else if (incomingOffset > expectedOffset) {
+              isStreamLocked = true;
+              hasError = true;
+              if (!completer.isCompleted) {
+                completer.completeError(
+                  _ProtocolGapException(incomingOffset, expectedOffset),
+                );
               }
+              return;
+            }
+
+            chunkQueue.add(Uint8List.fromList(payload));
+            expectedOffset += payload.length;
+            if (onProgress != null) onProgress(expectedOffset);
+            break;
+
+          case 0x02:
+            isStreamLocked = true;
+            eotReceived = true;
+            if (!isProcessing) {
+              if (chunkQueue.isNotEmpty) {
+                while (chunkQueue.isNotEmpty) {
+                  batchBuilder.add(chunkQueue.removeFirst());
+                }
+                await flushRawBuffer(batchBuilder.takeBytes());
+              }
+              _lastSegmentBoundaryOffset = writtenOffset;
+              if (!completer.isCompleted) completer.complete();
+            }
+            return;
+
+          case 0x03:
+            if (value.length < 2) return;
+            if (value[1] == 0x00) {
+              hasReceivedStartAck = true;
             } else {
-              while (inFlightBatches > 50 && !isCompleted && !isShuttingDown) {
-                await Future.delayed(const Duration(milliseconds: 10));
+              isStreamLocked = true;
+              hasError = true;
+              if (!completer.isCompleted) {
+                completer.completeError(Exception("Error ACK: ${value[1]}"));
               }
-              if (!isCompleted && !isShuttingDown) {
-                try {
-                  isolateSendPort!.send(_SyncMessage('dataBatch', toSend));
-                  inFlightBatches++;
-                } catch (e) {
-                  isCompleted = true;
-                  if (!completer.isCompleted) completer.completeError(Exception("Isolate send failed: $e"));
+              return;
+            }
+            break;
+        }
+
+        if (isProcessing) return;
+        isProcessing = true;
+        try {
+          const int batchSizeLimit = 4096;
+
+          while (chunkQueue.isNotEmpty) {
+            int batchSize = 0;
+
+            // Build batch WITHOUT await
+            while (chunkQueue.isNotEmpty && batchSize < batchSizeLimit) {
+              final chunk = chunkQueue.removeFirst();
+              batchBuilder.add(chunk);
+              batchSize += chunk.length;
+            }
+
+            final Uint8List batch = batchBuilder.takeBytes();
+
+            // 2. Scan for Markers (0xFE) without stripping/modifying any bytes (READ-ONLY)
+            // Optimization: Create a single ByteData view for the entire batch to avoid
+            // allocating thousands of short-lived ByteData objects during the linear scan.
+            final batchBd = ByteData.sublistView(batch);
+            int scanOff = 0;
+            while (scanOff + 4 <= batch.length) {
+              int packageSize = batchBd.getUint32(scanOff, Endian.little);
+
+              if (packageSize == 0xFFFFFFFE) {
+                if (scanOff + 20 <= batch.length) {
+                  if (lastDeviceSessionId != null) {
+                    await _saveMarker(
+                      lastDeviceSessionId,
+                      batchBd.getUint32(scanOff + 4, Endian.little),
+                    );
+                  }
+                  scanOff += 20;
+                  continue;
+                } else {
+                  break;
                 }
               }
+
+              if (packageSize == 0 || packageSize == 0xFFFFFFFF) {
+                scanOff += 4;
+              } else if (packageSize > 400) {
+                scanOff += 1;
+              } else {
+                int padded = (packageSize + 3) & ~3;
+                scanOff += (4 + padded);
+              }
             }
+
+            // ---- SAFE FLUSH ----
+            await flushRawBuffer(batch);
+          }
+        } finally {
+          isProcessing = false;
+          if (eotReceived && !completer.isCompleted) {
+            completer.complete();
           }
         }
-      } finally {
-        isProcessingQueue = false;
-      }
-    }
-
-    _storageStream = (await connection.getBleStorageBytesStream()).listen(
-      (List<int> value) {
-        if (isCompleted || isShuttingDown) return;
-        resetInactivityTimer();
-        packetQueue.add(value);
-        processQueue();
       },
       onError: (e) {
-        if (!isCompleted) {
-          isCompleted = true;
-          if (!completer.isCompleted) completer.completeError(e);
-        }
+        hasError = true;
+        if (!completer.isCompleted) completer.completeError(e);
       },
       onDone: () {
-        if (isCompleted || isShuttingDown) return;
-        if (batchBuffer.isNotEmpty && isolateSendPort != null) {
-          try {
-            isolateSendPort!.send(_SyncMessage('dataBatch', List<Uint8List>.from(batchBuffer)));
-            inFlightBatches++;
-          } catch (_) {}
-          batchBuffer.clear();
+        if (!completer.isCompleted) {
+          if (eotReceived) {
+            completer.complete();
+          } else {
+            completer.completeError(Exception('Stream closed without EOT'));
+          }
         }
       },
     );
 
     try {
-      final readStarted = await connection.writeToStorage(fileNum, 0x11, offset);
+      final readStarted = await connection.writeToStorage(
+        fileNum,
+        0x11,
+        offset,
+      );
       if (!readStarted) throw Exception('Could not start SD card read');
       await completer.future;
     } finally {
-      await cleanup();
+      inactivityTimer?.cancel();
+      // Ensure the firmware closes its read handle before we return (and potentially 
+      // try to delete the file). CMD_STOP_SYNC (0x03) forces this on the firmware.
+      await connection.stopStorageSync();
+      
+      // Cancel the stream subscription so it doesn't receive the next operation's
+      // ACK packets (e.g. DELETE ACK) and misinterpret them as a new read start-ACK.
+      await _storageStream?.cancel();
+      _storageStream = null;
     }
   }
 
@@ -586,7 +627,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
   void _resetSyncState() {
     _isCancelled = false;
-    _cancelGeneration++;
     _isSyncing = false;
     _totalBytesDownloaded = 0;
     _downloadStartTime = null;
@@ -655,24 +695,27 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     String deviceId, {
     IWalSyncProgressListener? progress,
   }) async {
-    // Note: _wals was already populated/refreshed by setDevice() or preceding logic.
-    // Index 0 with a very low timestamp is the active recording file on a device
-    // that hasn't synced time yet (firmware uses boot uptime as TS).
-    // The firmware will reject deletion of the active file, so we skip it.
+    // Refresh the file list from the device so files completed since setDevice()
+    // are included. Files with walOffset == storageTotalBytes (previous transfer
+    // succeeded but deletion failed) appear as miss and pass straight through to
+    // Phase 2 deletion without any re-download.
+    _wals = await _getMissingWalsLocked(connection, deviceId);
+    listener.onWalUpdated();
+
+    if (_isCancelled) return null;
+
+    // The firmware sorts files ascending by timestamp: index 0 = oldest completed
+    // recording, highest index = newest. The active TMP_ file is excluded from the
+    // list entirely by the firmware, so no active-file filtering is needed here.
     final wals = _wals.where((w) {
-      if (w.status != WalStatus.miss || w.storage != WalStorage.sdcard) return false;
-      if (w.fileNum == 0 && w.timerStart < 1000000) {
-        Logger.debug('SDCardWalSync: skipping index 0 (looks like active recording without NTP sync)');
-        return false;
-      }
-      return true;
+      return w.status == WalStatus.miss && w.storage == WalStorage.sdcard;
     }).toList();
 
     if (wals.isEmpty) return null;
 
-    // Sort by index descending to ensure that when we delete a file,
-    // the indices of the remaining files on the device DO NOT SHIFT.
-    wals.sort((a, b) => b.fileNum.compareTo(a.fileNum));
+    // Ascending = oldest first. Device indices are stable — deleting a file does
+    // not renumber the remaining ones, so original fileNums are always correct.
+    wals.sort((a, b) => a.fileNum.compareTo(b.fileNum));
 
     bool anyPartial = false;
     _downloadStartTime = DateTime.now();
@@ -681,6 +724,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       final wal = wals[i];
       _totalBytesDownloaded = 0;
       if (_isCancelled) break;
+
       wal.isSyncing = true;
       wal.syncStartedAt = DateTime.now();
       listener.onWalUpdated();
@@ -712,22 +756,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                     ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
                     : 1.0;
                 final double clamped = ((i + (withinWal.clamp(0.0, 1.0) * 0.9)) / wals.length).clamp(0.0, 1.0);
-                progress?.onWalSyncedProgress(
-                  clamped,
-                  speedKBps: _currentSpeedKBps,
-                );
-                _globalProgressListener?.onWalSyncedProgress(
-                  clamped,
-                  speedKBps: _currentSpeedKBps,
-                );
+                progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
+                _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
               },
             );
             transferred = true;
           } on _ProtocolGapException catch (e) {
             gapRetries++;
-            if (gapRetries > maxGapRetries) {
-              rethrow;
-            }
+            if (gapRetries > maxGapRetries) rethrow;
             wal.walOffset = e.incoming;
             lastOffset = e.incoming;
             _lastSegmentBoundaryOffset = e.incoming;
@@ -738,25 +774,21 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         if (_isCancelled) throw Exception("Cancelled");
 
-        // Transfer complete — mark as synced locally.
-        // Important: Use a copy of the list for iteration so this modification doesn't skip items.
         wal.status = WalStatus.synced;
         wal.isSyncing = false;
         listener.onWalUpdated();
 
-        // Delete the SD file while still holding the storage lock.
+        // Delete immediately so a disconnect won't re-sync this file next session.
         try {
           await _deleteWalLocked(connection, wal);
         } catch (e) {
           Logger.error('SDCardWalSync: deletion failed for fileNum=${wal.fileNum} after transfer: $e');
           anyPartial = true;
         }
+
         final double fileDone = ((i + 1.0) / wals.length).clamp(0.0, 1.0);
         progress?.onWalSyncedProgress(fileDone, speedKBps: _currentSpeedKBps);
-        _globalProgressListener?.onWalSyncedProgress(
-          fileDone,
-          speedKBps: _currentSpeedKBps,
-        );
+        _globalProgressListener?.onWalSyncedProgress(fileDone, speedKBps: _currentSpeedKBps);
       } catch (e) {
         Logger.error('SDCardWalSync: transfer failed for fileNum=${wal.fileNum} ts=${wal.timerStart}: $e');
         wal.walOffset = _lastSegmentBoundaryOffset;
@@ -959,168 +991,4 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       connection.releaseStorageLock();
     }
   }
-}
-void _syncIsolateEntry(_SyncIsolateParams params) {
-  final isolateReceivePort = ReceivePort();
-  params.replyPort.send(isolateReceivePort.sendPort);
-
-  int expectedOffset = params.initialOffset;
-  final writeBuffer = BytesBuilder(copy: false);
-  Uint8List tailBuffer = Uint8List(0);
-
-  final subFolder = params.lastDeviceSessionId?.toString() ?? 'unsynced';
-  final folderPath = '${params.documentsPath}/raw_segments/$subFolder';
-  final folder = Directory(folderPath);
-  if (!folder.existsSync()) folder.createSync(recursive: true);
-
-  String fileName = (params.lastDeviceSessionId != null)
-      ? '${params.lastDeviceSessionId}_0.bin'
-      : 'recording_${params.timerStart}.bin';
-
-  final outputFile = File('${folder.path}/$fileName');
-
-  DateTime lastProgressSentAt = DateTime.now();
-  bool isCompleted = false;
-
-  void flush() {
-    if (writeBuffer.isEmpty) return;
-    try {
-      outputFile.writeAsBytesSync(writeBuffer.takeBytes(), mode: FileMode.append);
-    } catch (e) {
-      params.replyPort.send(_SyncMessage('error', 'Write failed: $e'));
-    }
-  }
-
-  isolateReceivePort.listen((message) {
-    if (isCompleted || message is! _SyncMessage) return;
-
-    if (message.type == 'shutdown') {
-      flush();
-      isCompleted = true;
-      isolateReceivePort.close();
-      return;
-    }
-
-    if (message.type == 'dataBatch') {
-      try {
-        final List<Uint8List> batch = message.payload;
-        for (final value in batch) {
-          if (value.isEmpty) continue;
-
-          int packetType = value[0];
-          switch (packetType) {
-            case 0x00:
-              if (value.length >= 2 && value[1] != 0) {
-                params.replyPort.send(_SyncMessage('error', 'Device returned error ACK: ${value[1]}'));
-                isCompleted = true;
-                isolateReceivePort.close();
-                return;
-              }
-              break;
-            case 0x01:
-              if (value.length < 5) continue;
-              int incomingOffset =
-                  value[1] |
-                  (value[2] << 8) |
-                  (value[3] << 16) |
-                  (value[4] << 24);
-              Uint8List payload = value.sublist(5);
-
-              if (incomingOffset < expectedOffset) {
-                final packetEnd = incomingOffset + payload.length;
-                if (packetEnd <= expectedOffset) continue;
-                payload = payload.sublist(expectedOffset - incomingOffset);
-              } else if (incomingOffset > expectedOffset) {
-                params.replyPort.send(_SyncMessage('protocolGap', {
-                  'incoming': incomingOffset,
-                  'expected': expectedOffset,
-                }));
-                isCompleted = true;
-                isolateReceivePort.close();
-                return;
-              }
-
-              writeBuffer.add(payload);
-              expectedOffset += payload.length;
-
-              final combined = Uint8List(tailBuffer.length + payload.length);
-              combined.setAll(0, tailBuffer);
-              combined.setAll(tailBuffer.length, payload);
-
-              final bd = ByteData.sublistView(combined);
-              int scanOff = 0;
-              while (scanOff + 4 <= combined.length) {
-                int packageSize = bd.getUint32(scanOff, Endian.little);
-                if (packageSize == 0xFFFFFFFE) {
-                  if (scanOff + 20 <= combined.length) {
-                    if (scanOff + 20 > tailBuffer.length) {
-                      final markerTs = bd.getUint32(scanOff + 4, Endian.little);
-                      params.replyPort.send(_SyncMessage('marker', markerTs));
-                    }
-                    scanOff += 20;
-                    continue;
-                  } else {
-                    break;
-                  }
-                }
-                if (packageSize == 0 || packageSize == 0xFFFFFFFF) {
-                  scanOff += 4;
-                } else if (packageSize > 400) {
-                  scanOff += 1;
-                } else {
-                  int padded = (packageSize + 3) & ~3;
-                  scanOff += (4 + padded);
-                }
-              }
-              if (combined.length >= 24) {
-                tailBuffer = combined.sublist(combined.length - 24);
-              } else {
-                tailBuffer = combined;
-              }
-              break;
-
-            case 0x02:
-              flush();
-              try {
-                if (expectedOffset < params.expectedTotalBytes) {
-                  params.replyPort.send(_SyncMessage('error',
-                      'Premature EOT: expected=${params.expectedTotalBytes} actual=$expectedOffset'));
-                } else if (outputFile.lengthSync() != expectedOffset) {
-                  params.replyPort.send(_SyncMessage('error',
-                      'Final file size mismatch: expected=$expectedOffset actual=${outputFile.lengthSync()}'));
-                } else {
-                  params.replyPort.send(_SyncMessage('done', expectedOffset));
-                }
-              } catch (e) {
-                params.replyPort.send(_SyncMessage('error', 'Final validation failed: $e'));
-              }
-              isCompleted = true;
-              isolateReceivePort.close();
-              return;
-
-            case 0x03:
-              // Start ACK received, but we rely on data offsets for truth.
-              break;
-          }
-        }
-
-        if (writeBuffer.length >= 32768) {
-          flush();
-        }
-
-        final now = DateTime.now();
-        if (now.difference(lastProgressSentAt) >= const Duration(milliseconds: 500)) {
-          params.replyPort.send(_SyncMessage('progress', expectedOffset));
-          lastProgressSentAt = now;
-        }
-
-        params.replyPort.send(_SyncMessage('batchAck'));
-      } catch (e) {
-        flush();
-        params.replyPort.send(_SyncMessage('error', e.toString()));
-        isCompleted = true;
-        isolateReceivePort.close();
-      }
-    }
-  });
 }
