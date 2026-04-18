@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:collection/collection.dart';
 import 'package:omi/utils/logger.dart';
+import 'package:omi/utils/wal_file_manager.dart';
 
 import 'package:path_provider/path_provider.dart';
 
@@ -151,6 +152,18 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }) async {
     _device = device;
     if (_device != null) {
+      // Restore persisted WAL offsets so partial downloads resume correctly after
+      // an app restart, and so fully-downloaded-but-not-yet-deleted files are not
+      // re-downloaded from offset 0 (which would create duplicate recordings).
+      if (_wals.isEmpty) {
+        try {
+          _wals = await WalFileManager.loadWals();
+          Logger.debug('SDCardWalSync: Loaded ${_wals.length} persisted WALs from disk');
+        } catch (e) {
+          Logger.debug('SDCardWalSync: Failed to load persisted WALs: $e');
+        }
+      }
+
       final connection = _connectionProvider != null
           ? await _connectionProvider!(_device!.id)
           : await ServiceManager.instance().device.ensureConnection(_device!.id);
@@ -349,6 +362,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     if (!success) throw Exception('Firmware rejected deletion of fileNum=${wal.fileNum} ts=${wal.timerStart}');
     _wals.removeWhere((w) => w.id == wal.id);
     listener.onWalUpdated();
+    // Persist after deletion so the WAL is gone from disk even if the app restarts before
+    // the next natural save point. This prevents re-downloading a deleted file.
+    WalFileManager.saveWals(_wals).catchError((_) {});
   }
 
   Future<void> _saveMarker(int deviceSessionId, int utcTime) async {
@@ -776,6 +792,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               },
               onProgress: (offset) {
                 wal.walOffset = offset;
+                // Persist offset every ~1 MB so a crash or disconnect preserves
+                // progress and the next session resumes rather than re-downloading.
+                if ((offset - initialOffset) % (1024 * 1024) < 512) {
+                  WalFileManager.saveWals(_wals).catchError((_) {});
+                }
                 final double withinWal = (wal.storageTotalBytes > initialOffset)
                     ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
                     : 1.0;
@@ -821,6 +842,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal.status = WalStatus.miss;
         wal.isSyncing = false;
         listener.onWalUpdated();
+        // Persist the partial offset so the next session resumes from where we stopped.
+        WalFileManager.saveWals(_wals).catchError((_) {});
         anyPartial = true;
         if (_isCancelled) break;
       }
