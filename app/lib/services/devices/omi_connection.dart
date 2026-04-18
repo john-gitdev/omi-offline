@@ -43,6 +43,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
   // Protects against stale packets from previous calls
   int _listFilesGeneration = 0;
+
   StreamSubscription? _listFilesSub;
   Timer? _timeoutTimer;
   // Retries CMD_LIST_FILES until the firmware responds
@@ -384,7 +385,6 @@ class OmiDeviceConnection extends DeviceConnection {
     _listFilesSub = null;
     final int gen = ++_listFilesGeneration;
     final currentCompleter = Completer<List<StorageFile>>();
-    _listFilesCompleter = currentCompleter;
     final buffer = <int>[];
     bool isStale() => gen != _listFilesGeneration;
 
