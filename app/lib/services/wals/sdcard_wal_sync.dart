@@ -618,7 +618,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         fileNum,
         0x11,
         offset,
-        timestamp: timerStart,
       );
       if (!readStarted) throw Exception('Could not start SD card read');
       await completer.future;

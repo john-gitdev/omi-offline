@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
@@ -7,7 +6,6 @@ import 'package:omi/services/devices/omi_connection.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:omi/services/devices/transports/native_ble_transport.dart';
-import 'package:omi/utils/logger.dart';
 
 import 'errors.dart';
 
@@ -130,8 +128,8 @@ abstract class DeviceConnection {
     return false;
   }
 
-  Future<bool> writeToStorage(int fileNum, int command, int offset, {int? timestamp}) async {
-    if (await isConnected()) return performWriteToStorage(fileNum, command, offset, timestamp: timestamp);
+  Future<bool> writeToStorage(int fileNum, int command, int offset) async {
+    if (await isConnected()) return performWriteToStorage(fileNum, command, offset);
     return false;
   }
 
@@ -207,7 +205,7 @@ abstract class DeviceConnection {
   Future<StreamSubscription<List<int>>?> performGetBleButtonListener(
       {required void Function(List<int>) onButtonReceived});
   Future<List<int>> performGetStorageList();
-  Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp});
+  Future<bool> performWriteToStorage(int numFile, int command, int offset);
   Future<int> performGetFeatures();
   Future<void> performSetLedDimRatio(int ratio);
   Future<int?> performGetLedDimRatio();
