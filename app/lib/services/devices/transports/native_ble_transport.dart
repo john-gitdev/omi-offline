@@ -255,30 +255,28 @@ class NativeBleTransport extends DeviceTransport {
       return;
     }
 
-    if (!connected) {
-      if (_state == DeviceTransportState.connecting && error != null) {
-        if (error == 'unmanaged' || error == 'gatt_status_133') {
-          // 'unmanaged': belt-and-suspenders for the await race fix in dispose/disconnect.
-          // 'gatt_status_133': Android GATT_ERROR — transient, native layer retries automatically.
-          // Other gatt_status codes (8=auth, 19=remote termination, 22=not supported, …) are
-          // real failures and must propagate so the connection attempt is properly aborted.
-          Logger.debug('[NativeBleTransport] Ignoring transient error during connect: $error');
-          return;
-        }
+    if (_state == DeviceTransportState.connecting && error != null) {
+      if (error == 'unmanaged' || error == 'gatt_status_133') {
+        // 'unmanaged': belt-and-suspenders for the await race fix in dispose/disconnect.
+        // 'gatt_status_133': Android GATT_ERROR — transient, native layer retries automatically.
+        // Other gatt_status codes (8=auth, 19=remote termination, 22=not supported, …) are
+        // real failures and must propagate so the connection attempt is properly aborted.
+        Logger.debug('[NativeBleTransport] Ignoring transient error during connect: $error');
+        return;
       }
+    }
 
-      // Remember active subscriptions before closing streams
-      _activeSubscriptionKeys.clear();
-      _activeSubscriptionKeys.addAll(_streamControllers.keys);
+    // Remember active subscriptions before closing streams
+    _activeSubscriptionKeys.clear();
+    _activeSubscriptionKeys.addAll(_streamControllers.keys);
 
-      _closeAllStreams();
-      _services = [];
-      _updateState(DeviceTransportState.disconnected);
+    _closeAllStreams();
+    _services = [];
+    _updateState(DeviceTransportState.disconnected);
 
-      // Fail pending completer
-      if (_deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted) {
-        _deviceReadyCompleter!.completeError(error ?? 'Disconnected before ready');
-      }
+    // Fail pending completer
+    if (_deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted) {
+      _deviceReadyCompleter!.completeError(error ?? 'Disconnected before ready');
     }
   }
 
