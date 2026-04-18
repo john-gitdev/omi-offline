@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:onnxruntime/onnxruntime.dart';
@@ -724,9 +725,15 @@ class RecordingsManager {
             try {
               await legacyWav.delete();
             } on FileSystemException catch (_) {}
+            if (millis != null && millis > 0) {
+              await _deleteOverlappingRecordings(liveDir, fileName, millis);
+            }
             onRecordingFinalized?.call();
             notifyRecordingsChanged();
           } else if (fileName.endsWith('.wav') || fileName.endsWith('.ogg')) {
+            if (millis != null && millis > 0) {
+              await _deleteOverlappingRecordings(liveDir, fileName, millis);
+            }
             onRecordingFinalized?.call();
             notifyRecordingsChanged();
           }
@@ -1052,6 +1059,73 @@ class RecordingsManager {
 
     result.sort((a, b) => b.markerTime.compareTo(a.markerTime));
     return result;
+  }
+
+  /// Removes recordings in [liveDir] that overlap in time with the newly placed
+  /// [newFileName] (which starts at [newStartMs]). Reads duration from the
+  /// `.meta` sidecar, which must already be in [liveDir] before this is called.
+  /// Overlapping old recordings are deleted (audio + meta + bin sidecar).
+  static Future<void> _deleteOverlappingRecordings(Directory liveDir, String newFileName, int newStartMs) async {
+    final baseName = newFileName.contains('.') ? newFileName.substring(0, newFileName.lastIndexOf('.')) : newFileName;
+    final newMetaFile = File('${liveDir.path}/$baseName.meta');
+    if (!await newMetaFile.exists()) return;
+
+    int newDurationMs;
+    try {
+      final bd = ByteData.sublistView(await newMetaFile.readAsBytes());
+      if (bd.lengthInBytes < 8) return;
+      newDurationMs = bd.getUint32(4, Endian.little);
+    } catch (_) {
+      return;
+    }
+    if (newDurationMs <= 0) return;
+    final newEndMs = newStartMs + newDurationMs;
+
+    final entities = await liveDir.list().toList();
+    for (final entity in entities) {
+      if (entity is! File) continue;
+      final name = entity.path.split('/').last;
+      if (name == newFileName) continue;
+      if (!name.endsWith('.m4a') && !name.endsWith('.wav') && !name.endsWith('.ogg')) continue;
+
+      final parts = name.split('_');
+      final existStartMs = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
+      if (existStartMs == null || existStartMs <= 0) continue;
+
+      final existBase = name.contains('.') ? name.substring(0, name.lastIndexOf('.')) : name;
+      final existMetaFile = File('${liveDir.path}/$existBase.meta');
+      if (!await existMetaFile.exists()) continue;
+
+      int existDurationMs;
+      try {
+        final bd = ByteData.sublistView(await existMetaFile.readAsBytes());
+        if (bd.lengthInBytes < 8) continue;
+        existDurationMs = bd.getUint32(4, Endian.little);
+      } catch (_) {
+        continue;
+      }
+      if (existDurationMs <= 0) continue;
+      final existEndMs = existStartMs + existDurationMs;
+
+      final overlaps = existStartMs < newEndMs && existEndMs > newStartMs;
+      if (!overlaps) continue;
+
+      Logger.debug(
+        'RecordingsManager: Removing overlapping recording $name '
+        '(${existStartMs}–${existEndMs}) conflicts with new $newFileName (${newStartMs}–${newEndMs})',
+      );
+      try {
+        await entity.delete();
+      } catch (_) {}
+      try {
+        await existMetaFile.delete();
+      } catch (_) {}
+      try {
+        final ts = existBase.split('_').last;
+        final binFile = File('${liveDir.path}/recording_fs320_$ts.bin');
+        if (await binFile.exists()) await binFile.delete();
+      } catch (_) {}
+    }
   }
 
   /// Derives the date-folder name (YYYY-MM-DD) from epoch milliseconds.
