@@ -254,7 +254,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.fileAudio,
               title: 'File Count',
-              chipValue: '${provider.storageStats!.fileCount}',
+              chipValue: '${(provider.storageStats!.fileCount - 1).clamp(0, 999)}',
               showChevron: false,
             ),
           ],
