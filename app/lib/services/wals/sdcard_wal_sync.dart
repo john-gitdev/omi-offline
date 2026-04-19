@@ -157,7 +157,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       // re-downloaded from offset 0 (which would create duplicate recordings).
       if (_wals.isEmpty) {
         try {
-          _wals = await WalFileManager.loadWals();
+          final persisted = await WalFileManager.loadWals();
+          _wals = persisted.where((w) => w.device == _device!.id).toList();
           Logger.debug('SDCardWalSync: Loaded ${_wals.length} persisted WALs from disk');
         } catch (e) {
           Logger.debug('SDCardWalSync: Failed to load persisted WALs: $e');
