@@ -63,7 +63,9 @@ class WalFileManager {
         final existing = await loadWals();
         final others = existing.where((w) => w.device != deviceId).toList();
         if (others.isNotEmpty) allWals = [...others, ...wals];
-      } catch (_) {}
+      } catch (e) {
+        Logger.debug('WalFileManager: Failed to merge existing WALs, saving current device only: $e');
+      }
     }
 
     await _createBackup();
