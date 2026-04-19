@@ -54,11 +54,9 @@ typedef enum {
 static button_fsm_state_t fsm_state = STATE_IDLE;
 static uint32_t state_timer = 0;
 
-#define MUTE_HOLD_TIME 1000      // 1s hold for mute
-#define DOUBLE_TAP_WINDOW 600    // 600ms window for second tap
-#define TRIPLE_TAP_WINDOW 600    // 600ms window for third tap
-#define TRIPLE_HOLD_TIME 1000    // 1s hold on third press = triple-tap-hold
-#define POWER_OFF_HOLD_TIME 3000 // 3s hold for power off (on second tap)
+#define HOLD_TIME 1000        // 1s hold threshold (single/double/triple)
+#define DOUBLE_TAP_WINDOW 600 // 600ms window for second tap
+#define TRIPLE_TAP_WINDOW 600 // 600ms window for third tap
 
 
 void check_button_level(struct k_work *work_item)
@@ -76,26 +74,13 @@ void check_button_level(struct k_work *work_item)
 
     case STATE_FIRST_PRESS:
         if (!pressed) {
-            // Released before MUTE_HOLD_TIME.
-            // Short press. Wait for second tap window.
+            // Short press — wait for second tap window.
             fsm_state = STATE_FIRST_RELEASE;
             state_timer = 0;
         } else {
-            // Still pressed. Check duration.
+            // Still pressed. Absorb the hold with no action.
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms >= MUTE_HOLD_TIME) {
-                // Long press 1s -> Mute toggle
-                is_muted = !is_muted;
-                LOG_INF("Mute toggled: %s", is_muted ? "ON" : "OFF");
-                if (is_muted) {
-                    mic_pause();
-                } else {
-                    mic_resume();
-                }
-                play_haptic_milli(500);
-                
-                // Note: LED colors are now handled in set_led_state() in main.c
-                
+            if (duration_ms >= HOLD_TIME) {
                 fsm_state = STATE_WAIT_FOR_RELEASE;
             }
         }
@@ -108,9 +93,8 @@ void check_button_level(struct k_work *work_item)
         } else {
             uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
             if (idle_duration_ms > DOUBLE_TAP_WINDOW) {
-                // Timeout. It was a single tap!
-                is_led_enabled = !is_led_enabled;
-                LOG_INF("Single tap: LED toggled %s", is_led_enabled ? "ON" : "OFF");
+                // Single tap — no action.
+                LOG_INF("Single tap");
                 fsm_state = STATE_IDLE;
             }
         }
@@ -118,19 +102,23 @@ void check_button_level(struct k_work *work_item)
 
     case STATE_SECOND_PRESS:
         if (!pressed) {
-            // Released before POWER_OFF_HOLD_TIME — could still be double or triple tap.
-            // Wait in STATE_SECOND_RELEASE to see if a third press arrives.
+            // Released — wait to see if a third press arrives.
             fsm_state = STATE_SECOND_RELEASE;
             state_timer = 0;
         } else {
-            // Still pressed. Check if we hit 3s.
+            // Still pressed. Check if held long enough for mute toggle.
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms >= POWER_OFF_HOLD_TIME) {
-                // Double tap + Long hold 3s -> Power Off
-                LOG_INF("Power off triggered via Double-Tap-Hold");
-                play_haptic_milli(1000);
-                turnoff_all(); // This shuts down the device.
-                fsm_state = STATE_IDLE;
+            if (duration_ms >= HOLD_TIME) {
+                // Double tap + hold -> mute toggle
+                is_muted = !is_muted;
+                LOG_INF("Mute toggled: %s", is_muted ? "ON" : "OFF");
+                if (is_muted) {
+                    mic_pause();
+                } else {
+                    mic_resume();
+                }
+                play_haptic_milli(500);
+                fsm_state = STATE_WAIT_FOR_RELEASE;
             }
         }
         break;
@@ -161,17 +149,19 @@ void check_button_level(struct k_work *work_item)
 
     case STATE_THIRD_PRESS:
         if (!pressed) {
-            // Released — triple tap.
-            LOG_INF("Triple tap detected");
+            // Released — triple tap -> toggle LED.
+            is_led_enabled = !is_led_enabled;
+            LOG_INF("Triple tap: LED toggled %s", is_led_enabled ? "ON" : "OFF");
             play_haptic_milli(150);
             fsm_state = STATE_IDLE;
         } else {
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms >= TRIPLE_HOLD_TIME) {
-                // Held for 1s — triple-tap-hold.
-                LOG_INF("Triple tap and hold detected");
-                play_haptic_milli(750);
-                fsm_state = STATE_WAIT_FOR_RELEASE;
+            if (duration_ms >= HOLD_TIME) {
+                // Triple tap + hold -> power off.
+                LOG_INF("Power off triggered via triple-tap-hold");
+                play_haptic_milli(1000);
+                turnoff_all();
+                fsm_state = STATE_IDLE;
             }
         }
         break;
