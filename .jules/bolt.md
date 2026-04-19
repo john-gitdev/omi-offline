@@ -1,3 +1,0 @@
-## 2024-04-19 - Zero-copy Audio Frame Processing
-**Learning:** In Dart, calling `Uint8List.fromList(data.sublist(start, end))` creates an entirely new list and copies the data multiple times, which is highly inefficient in tight loops like audio frame decoding. A direct zero-copy view can be constructed using `Uint8List.sublistView(data, start, end)`, which prevents the need to allocate thousands of small arrays during decoding operations.
-**Action:** When extracting chunks or frames from a larger byte array during high-frequency parsing tasks, always use `sublistView` instead of `.sublist().fromList()` to preserve memory bandwidth and CPU cycles.
