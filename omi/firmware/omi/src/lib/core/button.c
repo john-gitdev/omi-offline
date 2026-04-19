@@ -60,12 +60,6 @@ static uint32_t state_timer = 0;
 #define TRIPLE_HOLD_TIME 1000    // 1s hold on third press = triple-tap-hold
 #define POWER_OFF_HOLD_TIME 3000 // 3s hold for power off (on second tap)
 
-// BLE event values sent via transport_notify_button_state
-#define BUTTON_EVENT_SINGLE_TAP  1
-#define BUTTON_EVENT_DOUBLE_TAP  2
-#define BUTTON_EVENT_LONG_PRESS  3
-#define BUTTON_EVENT_TRIPLE_TAP  6
-#define BUTTON_EVENT_TRIPLE_HOLD 7
 
 void check_button_level(struct k_work *work_item)
 {
@@ -160,7 +154,6 @@ void check_button_level(struct k_work *work_item)
                 } else {
                     LOG_INF("Double tap ignored (muted)");
                 }
-                transport_notify_button_state(BUTTON_EVENT_DOUBLE_TAP);
                 fsm_state = STATE_IDLE;
             }
         }
@@ -171,7 +164,6 @@ void check_button_level(struct k_work *work_item)
             // Released — triple tap.
             LOG_INF("Triple tap detected");
             play_haptic_milli(150);
-            transport_notify_button_state(BUTTON_EVENT_TRIPLE_TAP);
             fsm_state = STATE_IDLE;
         } else {
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
@@ -179,7 +171,6 @@ void check_button_level(struct k_work *work_item)
                 // Held for 1s — triple-tap-hold.
                 LOG_INF("Triple tap and hold detected");
                 play_haptic_milli(750);
-                transport_notify_button_state(BUTTON_EVENT_TRIPLE_HOLD);
                 fsm_state = STATE_WAIT_FOR_RELEASE;
             }
         }
@@ -206,7 +197,6 @@ static struct gpio_callback button_cb_data;
 static void button_gpio_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
     was_pressed = (gpio_pin_get_dt(&usr_btn) == 1);
-    transport_notify_button_state(was_pressed ? 1 : 0);
 
     // Start the state machine work item on the first press from idle.
     // The work item reschedules itself while active and stops when it returns
