@@ -1,6 +1,7 @@
 # Tooling / IDE
 .codesight/
 .cursorrules
+.Jules/
 AGENTS.md
 codex.md
 
