@@ -50,6 +50,13 @@ Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures a
 - `OfflineAudioProcessor` decodes Opus → 16 kHz mono 16-bit PCM, adaptive noise floor tracking (initial -40 dBFS, SNR margin configurable), splits into `recordings/<YYYY-MM-DD>/recording_<millis>.m4a`
 - `RecordingsManager` / `Conversation` model parses finalized recordings from the `recordings/` directory for UI binding
 
+**VAD processing design invariants** (`services/vad_audio_processor.dart`, `services/recordings_manager.dart`):
+- The firmware writes ~5-minute sequential bin files. Each file's `segmentStartTime` (the WAL `timerStart`) picks up exactly where the previous file ended — no overlaps, no gaps larger than clock drift.
+- The processor treats all bin files as one continuous audio stream. A recording starts when speech is detected and ends only on: (a) `vadSplitSeconds` of continuous silence (default 2 min), or (b) `vadMaxConversationMinutes` cap (default 60 min). Nothing else creates a boundary.
+- The `vadGapSeconds` threshold (default 30 s) handles clock drift between consecutive files: positive gaps within the threshold are stitched; gaps above the threshold flush the current recording and start fresh.
+- **Background mode never flushes at end-of-run.** Recordings in progress are left open — their bin files are retained on disk and re-processed in the next sync+process cycle together with any newly downloaded files. This is how recordings accumulate across multiple syncs. `flushRemaining` is only called in explicit force-process (user action).
+- The `VadAudioProcessor` is stateless across runs (recreated in a fresh isolate each time). Persistence is implicit: uncut bin files stay on disk and are re-processed. Do not add an end-of-run flush to background mode — it would prematurely save partial recordings and delete the bin files, causing the next run to start cold and produce recordings anchored to the wrong (too-early) timestamp.
+
 **Sync** (`services/wals/`):
 - `WalService` creates `Wal` entries per file (tracks codec, device, storage location, sync status: miss → syncing → synced)
 - `SDCardWalSyncImpl` reads files over BLE — allows resume on reconnect without re-downloading

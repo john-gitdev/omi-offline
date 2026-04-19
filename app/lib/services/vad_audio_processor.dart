@@ -245,9 +245,9 @@ class VadAudioProcessor {
       if (fileLength == 0) return [];
       final byteData = ByteData.sublistView(bytes);
 
-      if (_currentRefs.isNotEmpty && _lastSegmentEndTime != null) {
+      if (_lastSegmentEndTime != null) {
         final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds;
-        if (gapMs > _gapThresholdMs) {
+        if (_currentRefs.isNotEmpty && gapMs > _gapThresholdMs) {
           Logger.debug(
             'VadAudioProcessor: Gap detected before ${segmentFile.path.split('/').last} — '
             'gapMs=$gapMs (threshold=${_gapThresholdMs}ms), '
@@ -258,16 +258,23 @@ class VadAudioProcessor {
           _pcmWindow.clear();
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
-        } else if (gapMs > 0) {
+        } else if (gapMs > 0 && gapMs <= _gapThresholdMs) {
           Logger.debug(
             'VadAudioProcessor: Small gap before ${segmentFile.path.split('/').last} — '
             'gapMs=$gapMs (within threshold, continuing stream).',
           );
         }
+        // gapMs <= 0: sequential firmware files with no real gap — stitch seamlessly.
       }
 
       if (_currentRefs.isEmpty) {
-        _recordingStartTime = segmentStartTime;
+        // Only anchor the recording start to this file's timestamp when it is genuinely
+        // a fresh start. If _lastSegmentEndTime is set and this file starts at or before
+        // that point (e.g. right after a cap flush), the start time was already set
+        // correctly during that flush and must not be overwritten.
+        if (_lastSegmentEndTime == null || !segmentStartTime.isBefore(_lastSegmentEndTime!)) {
+          _recordingStartTime = segmentStartTime;
+        }
       }
 
       int offset = 0;
