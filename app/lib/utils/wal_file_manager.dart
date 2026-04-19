@@ -45,7 +45,7 @@ class WalFileManager {
     return Wal.fromJsonList(walsList);
   }
 
-  static Future<bool> saveWals(List<Wal> wals) async {
+  static Future<bool> saveWals(List<Wal> wals, {String? deviceId}) async {
     if (_walFile == null) {
       await init();
     }
@@ -55,12 +55,23 @@ class WalFileManager {
       return false;
     }
 
+    // Merge: keep WALs for other devices so switching devices doesn't erase
+    // their resume offsets.
+    List<Wal> allWals = wals;
+    if (deviceId != null) {
+      try {
+        final existing = await loadWals();
+        final others = existing.where((w) => w.device != deviceId).toList();
+        if (others.isNotEmpty) allWals = [...others, ...wals];
+      } catch (_) {}
+    }
+
     await _createBackup();
 
     final jsonData = {
       'version': 1,
       'timestamp': DateTime.now().millisecondsSinceEpoch,
-      'wals': wals.map((wal) => wal.toJson()).toList(),
+      'wals': allWals.map((wal) => wal.toJson()).toList(),
     };
 
     final jsonString = jsonEncode(jsonData);
