@@ -46,6 +46,8 @@ typedef enum {
     STATE_FIRST_PRESS,
     STATE_FIRST_RELEASE,
     STATE_SECOND_PRESS,
+    STATE_SECOND_RELEASE,  // waiting to see if a third tap follows
+    STATE_THIRD_PRESS,     // third tap in progress
     STATE_WAIT_FOR_RELEASE
 } button_fsm_state_t;
 
@@ -54,7 +56,16 @@ static uint32_t state_timer = 0;
 
 #define MUTE_HOLD_TIME 1000      // 1s hold for mute
 #define DOUBLE_TAP_WINDOW 600    // 600ms window for second tap
+#define TRIPLE_TAP_WINDOW 600    // 600ms window for third tap
+#define TRIPLE_HOLD_TIME 1000    // 1s hold on third press = triple-tap-hold
 #define POWER_OFF_HOLD_TIME 3000 // 3s hold for power off (on second tap)
+
+// BLE event values sent via transport_notify_button_state
+#define BUTTON_EVENT_SINGLE_TAP  1
+#define BUTTON_EVENT_DOUBLE_TAP  2
+#define BUTTON_EVENT_LONG_PRESS  3
+#define BUTTON_EVENT_TRIPLE_TAP  6
+#define BUTTON_EVENT_TRIPLE_HOLD 7
 
 void check_button_level(struct k_work *work_item)
 {
@@ -113,23 +124,10 @@ void check_button_level(struct k_work *work_item)
 
     case STATE_SECOND_PRESS:
         if (!pressed) {
-            // Released.
-            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms < POWER_OFF_HOLD_TIME) {
-                // Double tap (release happened before 3s) -> Marker
-                if (!is_muted) {
-                    LOG_INF("Double tap (Marker) detected");
-                    play_haptic_milli(300);
-                    marker_flash_count = 2; // Trigger 1s white flash (2 cycles of 500ms)
-                    
-                    #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-                    write_marker_to_storage();
-                    #endif
-                } else {
-                    LOG_INF("Double tap ignored (muted)");
-                }
-            }
-            fsm_state = STATE_IDLE;
+            // Released before POWER_OFF_HOLD_TIME — could still be double or triple tap.
+            // Wait in STATE_SECOND_RELEASE to see if a third press arrives.
+            fsm_state = STATE_SECOND_RELEASE;
+            state_timer = 0;
         } else {
             // Still pressed. Check if we hit 3s.
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
@@ -139,6 +137,50 @@ void check_button_level(struct k_work *work_item)
                 play_haptic_milli(1000);
                 turnoff_all(); // This shuts down the device.
                 fsm_state = STATE_IDLE;
+            }
+        }
+        break;
+
+    case STATE_SECOND_RELEASE:
+        if (pressed) {
+            // Third tap started — could be triple-tap or triple-tap-hold.
+            fsm_state = STATE_THIRD_PRESS;
+            state_timer = 0;
+        } else {
+            uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            if (idle_duration_ms > TRIPLE_TAP_WINDOW) {
+                // Timeout — it was a double tap.
+                if (!is_muted) {
+                    LOG_INF("Double tap (Marker) detected");
+                    play_haptic_milli(300);
+                    marker_flash_count = 2; // Trigger 1s white flash (2 cycles of 500ms)
+                    #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+                    write_marker_to_storage();
+                    #endif
+                } else {
+                    LOG_INF("Double tap ignored (muted)");
+                }
+                transport_notify_button_state(BUTTON_EVENT_DOUBLE_TAP);
+                fsm_state = STATE_IDLE;
+            }
+        }
+        break;
+
+    case STATE_THIRD_PRESS:
+        if (!pressed) {
+            // Released — triple tap.
+            LOG_INF("Triple tap detected");
+            play_haptic_milli(150);
+            transport_notify_button_state(BUTTON_EVENT_TRIPLE_TAP);
+            fsm_state = STATE_IDLE;
+        } else {
+            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            if (duration_ms >= TRIPLE_HOLD_TIME) {
+                // Held for 1s — triple-tap-hold.
+                LOG_INF("Triple tap and hold detected");
+                play_haptic_milli(750);
+                transport_notify_button_state(BUTTON_EVENT_TRIPLE_HOLD);
+                fsm_state = STATE_WAIT_FOR_RELEASE;
             }
         }
         break;
