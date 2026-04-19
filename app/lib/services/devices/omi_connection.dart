@@ -290,14 +290,27 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<bool> performWriteToStorage(int numFile, int command, int offset) async {
+  Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp}) async {
     try {
-      final data = ByteData(6)
-        ..setUint8(0, command & 0xFF)
-        ..setUint8(1, numFile & 0xFF)
-        ..setUint32(2, offset, Endian.little);
+      final List<int> cmd = [
+        command & 0xFF,
+        numFile & 0xFF,
+        offset & 0xFF,
+        (offset >> 8) & 0xFF,
+        (offset >> 16) & 0xFF,
+        (offset >> 24) & 0xFF,
+      ];
+      if (command == 0x11 && timestamp != null) {
+        // Extended CMD_READ_FILE: [0x11][index][offset:4LE][timestamp:4LE]
+        cmd.addAll([
+          timestamp & 0xFF,
+          (timestamp >> 8) & 0xFF,
+          (timestamp >> 16) & 0xFF,
+          (timestamp >> 24) & 0xFF,
+        ]);
+      }
       await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, data.buffer.asUint8List());
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, Uint8List.fromList(cmd));
       return true;
     } catch (_) {
       return false;
@@ -483,7 +496,7 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<bool> performDeleteFile(StorageFile file) async {
+  Future<bool> performDeleteFile(StorageFile file, {int? timestamp}) async {
     try {
       final completer = Completer<bool>();
       final stream =
@@ -493,8 +506,19 @@ class OmiDeviceConnection extends DeviceConnection {
         if (data.isNotEmpty && data[0] == 0x03) completer.complete(data.length < 2 || data[1] == 0);
       });
       await Future.delayed(_cccdCommandDelay);
+
+      final List<int> cmd = [0x12, file.index & 0xFF];
+      if (timestamp != null) {
+        cmd.addAll([
+          timestamp & 0xFF,
+          (timestamp >> 8) & 0xFF,
+          (timestamp >> 16) & 0xFF,
+          (timestamp >> 24) & 0xFF,
+        ]);
+      }
+
       await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x12, file.index & 0xFF]);
+          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, Uint8List.fromList(cmd));
       final res = await completer.future.timeout(const Duration(seconds: 35));
       await sub.cancel();
       return res;

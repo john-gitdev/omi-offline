@@ -87,7 +87,7 @@ abstract class DeviceConnection {
   }
 
   Future<bool> deleteFile(StorageFile file) async {
-    if (await isConnected()) return performDeleteFile(file);
+    if (await isConnected()) return performDeleteFile(file, timestamp: file.timestamp);
     return false;
   }
 
@@ -128,8 +128,8 @@ abstract class DeviceConnection {
     return false;
   }
 
-  Future<bool> writeToStorage(int fileNum, int command, int offset) async {
-    if (await isConnected()) return performWriteToStorage(fileNum, command, offset);
+  Future<bool> writeToStorage(int fileNum, int command, int offset, {int? timestamp}) async {
+    if (await isConnected()) return performWriteToStorage(fileNum, command, offset, timestamp: timestamp);
     return false;
   }
 
@@ -205,7 +205,7 @@ abstract class DeviceConnection {
   Future<StreamSubscription<List<int>>?> performGetBleButtonListener(
       {required void Function(List<int>) onButtonReceived});
   Future<List<int>> performGetStorageList();
-  Future<bool> performWriteToStorage(int numFile, int command, int offset);
+  Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp});
   Future<int> performGetFeatures();
   Future<void> performSetLedDimRatio(int ratio);
   Future<int?> performGetLedDimRatio();
@@ -217,5 +217,5 @@ abstract class DeviceConnection {
   Future<bool> performClearStorage();
   Future<List<StorageFile>> performListFiles();
   Future<Stream<List<int>>> performReadFile(StorageFile file, {int offset = 0});
-  Future<bool> performDeleteFile(StorageFile file);
+  Future<bool> performDeleteFile(StorageFile file, {int? timestamp});
 }
