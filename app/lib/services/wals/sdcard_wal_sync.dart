@@ -290,12 +290,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       }
 
       final ms = (newBytes / (codec.getStorageBytesPerMinute() / 60000.0)).truncate();
-      // Skip files with less than 500ms of audio that haven't been started —
-      // these are post-rotation stub files the firmware just opened on BLE connect.
-      if (ms < 500 && walOffset == 0) {
-        Logger.debug('SDCardWalSync: Skipping file[${file.index}] — less than 500ms of audio ($ms ms)');
-        continue;
-      }
       final seconds = (ms / 1000).truncate();
       const kMinValidEpoch = 946684800;
       final timerStart = (existing != null)
@@ -341,12 +335,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
   }
 
-  Future _deleteWalLocked(DeviceConnection connection, Wal wal) async {
-    Logger.debug('SDCardWalSync: deleting synced WAL from SD card: fileNum=${wal.fileNum} ts=${wal.timerStart}');
+  Future _deleteWalLocked(DeviceConnection connection, Wal wal, {int? overrideFileNum}) async {
+    final targetIdx = overrideFileNum ?? wal.fileNum;
+    Logger.debug('SDCardWalSync: deleting synced WAL from SD card: index=$targetIdx ts=${wal.timerStart}');
     final success = await connection.deleteFile(
-      StorageFile(index: wal.fileNum, timestamp: wal.timerStart, size: 0),
+      StorageFile(index: targetIdx, timestamp: wal.timerStart, size: 0),
     );
-    if (!success) throw Exception('Firmware rejected deletion of fileNum=${wal.fileNum} ts=${wal.timerStart}');
+    if (!success) throw Exception('Firmware rejected deletion of index=$targetIdx ts=${wal.timerStart}');
     _wals.removeWhere((w) => w.id == wal.id);
     listener.onWalUpdated();
   }
@@ -398,8 +393,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     Function(File f, int offset, int timerStart, {String? subFolder})
     callback, {
     Function(int offset)? onProgress,
+    int? overrideFileNum,
   }) async {
-    int fileNum = wal.fileNum;
+    int fileNum = overrideFileNum ?? wal.fileNum;
     int offset = wal.walOffset;
     int timerStart = wal.timerStart;
 
@@ -627,6 +623,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         fileNum,
         0x11,
         offset,
+        timestamp: timerStart > 946684800 ? timerStart : null,
       );
       if (!readStarted) throw Exception('Could not start SD card read');
       await completer.future;
@@ -783,6 +780,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 progress?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
                 _globalProgressListener?.onWalSyncedProgress(clamped, speedKBps: _currentSpeedKBps);
               },
+              overrideFileNum: 0, // Always target oldest file for fast-path
             );
             transferred = true;
           } on _ProtocolGapException catch (e) {
@@ -804,11 +802,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         // Delete immediately so a disconnect won't re-sync this file next session.
         try {
-          await _deleteWalLocked(connection, wal);
+          await _deleteWalLocked(connection, wal, overrideFileNum: 0);
           // Refresh stats after deletion so the File Count and Free Space update in real-time
           await _updateStorageStatsLocked(connection);
         } catch (e) {
-          Logger.error('SDCardWalSync: deletion failed for fileNum=${wal.fileNum} after transfer: $e');
+          Logger.error('SDCardWalSync: deletion failed for index=0 after transfer: $e');
           anyPartial = true;
         }
 
