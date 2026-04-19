@@ -243,9 +243,9 @@ class OpusFramesToWavTranscoder implements IAudioTranscoder {
 
     int offset = 0;
     while (offset + frameSizeBytes <= opusFramesData.length) {
-      final frame = opusFramesData.sublist(offset, offset + frameSizeBytes);
+      final frame = Uint8List.sublistView(opusFramesData, offset, offset + frameSizeBytes);
       try {
-        final pcmSamples = _decoder.decode(input: Uint8List.fromList(frame));
+        final pcmSamples = _decoder.decode(input: frame);
         allPcmSamples.addAll(pcmSamples);
       } catch (e) {
         Logger.debug('[OpusFramesToWav] Failed to decode frame at offset $offset: $e');
@@ -254,9 +254,9 @@ class OpusFramesToWavTranscoder implements IAudioTranscoder {
     }
 
     if (offset < opusFramesData.length) {
-      final remainingFrame = opusFramesData.sublist(offset);
+      final remainingFrame = Uint8List.sublistView(opusFramesData, offset);
       try {
-        final pcmSamples = _decoder.decode(input: Uint8List.fromList(remainingFrame));
+        final pcmSamples = _decoder.decode(input: remainingFrame);
         allPcmSamples.addAll(pcmSamples);
       } catch (e) {
         Logger.debug('[OpusFramesToWav] Failed to decode remaining frame: $e');
