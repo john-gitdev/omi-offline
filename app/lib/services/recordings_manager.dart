@@ -385,11 +385,12 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       });
     }
 
-    if (params.backgroundMode) {
-      await processor.flushOnlyCompleted();
-    } else {
+    if (!params.backgroundMode) {
       await processor.flushRemaining();
     }
+    // Background mode: no end-of-run flush. Recordings are saved mid-run when
+    // silence or cap fires. Uncut bin files stay on disk so the next sync+process
+    // run can continue accumulating without losing in-progress state.
 
     params.sendPort.send({'type': 'move'});
 
