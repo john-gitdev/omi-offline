@@ -243,8 +243,6 @@ class OpusFramesToWavTranscoder implements IAudioTranscoder {
 
     int offset = 0;
     while (offset + frameSizeBytes <= opusFramesData.length) {
-      // ⚡ Bolt Optimization: Use sublistView instead of .sublist().fromList()
-      // Impact: Avoids allocating a new Uint8List and deep copying bytes for every single audio frame.
       final frame = Uint8List.sublistView(opusFramesData, offset, offset + frameSizeBytes);
       try {
         final pcmSamples = _decoder.decode(input: frame);
@@ -256,7 +254,6 @@ class OpusFramesToWavTranscoder implements IAudioTranscoder {
     }
 
     if (offset < opusFramesData.length) {
-      // ⚡ Bolt Optimization: Use sublistView instead of .sublist().fromList()
       final remainingFrame = Uint8List.sublistView(opusFramesData, offset);
       try {
         final pcmSamples = _decoder.decode(input: remainingFrame);
