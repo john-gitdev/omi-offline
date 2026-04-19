@@ -251,8 +251,8 @@ class AudioPlayerUtils extends ChangeNotifier {
 
       if (offset + length > opusData.length) break;
 
-      final frameData = opusData.sublist(offset, offset + length.toInt());
-      opusFrames.add(Uint8List.fromList(frameData));
+      final frameData = Uint8List.sublistView(opusData, offset, offset + length.toInt());
+      opusFrames.add(frameData);
       offset += length.toInt();
     }
 
