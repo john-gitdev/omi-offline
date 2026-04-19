@@ -476,6 +476,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
               : IconButton(
                   icon: const FaIcon(FontAwesomeIcons.chevronLeft, size: 18),
                   onPressed: () => Navigator.of(context).pop(),
+                  tooltip: 'Back',
                 ),
           title: Text(
             widget.isRollback ? 'Stable Firmware' : 'Firmware Update',
