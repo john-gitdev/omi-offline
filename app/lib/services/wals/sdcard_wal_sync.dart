@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:collection/collection.dart';
 import 'package:omi/utils/logger.dart';
+import 'package:omi/utils/wal_file_manager.dart';
 
 import 'package:path_provider/path_provider.dart';
 
@@ -151,6 +152,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }) async {
     _device = device;
     if (_device != null) {
+      // Restore persisted WAL offsets so partial downloads resume correctly after
+      // an app restart, and so fully-downloaded-but-not-yet-deleted files are not
+      // re-downloaded from offset 0 (which would create duplicate recordings).
+      if (_wals.isEmpty) {
+        try {
+          final persisted = await WalFileManager.loadWals();
+          _wals = persisted.where((w) => w.device == _device!.id).toList();
+          Logger.debug('SDCardWalSync: Loaded ${_wals.length} persisted WALs from disk');
+        } catch (e) {
+          Logger.debug('SDCardWalSync: Failed to load persisted WALs: $e');
+        }
+      }
+
       final connection = _connectionProvider != null
           ? await _connectionProvider!(_device!.id)
           : await ServiceManager.instance().device.ensureConnection(_device!.id);
@@ -164,12 +178,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           await connection.acquireStorageLock('setDevice');
         }
         try {
-          _wals = await _buildWalsFromFilesLocked(
-            connection,
-            _device!.id,
-            ignoreThreshold: true,
-            prefetchedFiles: prefetchedFiles,
-          );
+          // Skip rebuild when prefetchedFiles is an empty list — caller wants to
+          // register the device without BLE I/O. An empty file list would make
+          // _buildWalsFromFilesLocked return [] and erase the persisted WALs we
+          // just loaded. The real rebuild happens when refreshStorageStats() calls
+          // setDevice() again with the actual file listing.
+          if (prefetchedFiles == null || prefetchedFiles.isNotEmpty) {
+            _wals = await _buildWalsFromFilesLocked(
+              connection,
+              _device!.id,
+              ignoreThreshold: true,
+              prefetchedFiles: prefetchedFiles,
+            );
+          }
         } finally {
           if (prefetchedFiles == null) {
             connection.releaseStorageLock();
@@ -344,6 +365,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     if (!success) throw Exception('Firmware rejected deletion of index=$targetIdx ts=${wal.timerStart}');
     _wals.removeWhere((w) => w.id == wal.id);
     listener.onWalUpdated();
+    // Persist after deletion so the WAL is gone from disk even if the app restarts before
+    // the next natural save point. This prevents re-downloading a deleted file.
+    WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) {});
   }
 
   Future<void> _saveMarker(int deviceSessionId, int utcTime) async {
@@ -773,6 +797,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               },
               onProgress: (offset) {
                 wal.walOffset = offset;
+                // Persist offset every ~1 MB so a crash or disconnect preserves
+                // progress and the next session resumes rather than re-downloading.
+                if ((offset - initialOffset) % (1024 * 1024) < 512) {
+                  WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) {});
+                }
                 final double withinWal = (wal.storageTotalBytes > initialOffset)
                     ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
                     : 1.0;
@@ -819,6 +848,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal.status = WalStatus.miss;
         wal.isSyncing = false;
         listener.onWalUpdated();
+        // Persist the partial offset so the next session resumes from where we stopped.
+        WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) {});
         anyPartial = true;
         if (_isCancelled) break;
       }
