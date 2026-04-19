@@ -251,8 +251,10 @@ class AudioPlayerUtils extends ChangeNotifier {
 
       if (offset + length > opusData.length) break;
 
-      final frameData = opusData.sublist(offset, offset + length.toInt());
-      opusFrames.add(Uint8List.fromList(frameData));
+      // ⚡ Bolt Optimization: Use sublistView instead of .sublist().fromList()
+      // Impact: Avoids allocating a new Uint8List and deep copying bytes for every single audio frame.
+      final frameData = Uint8List.sublistView(opusData, offset, offset + length.toInt());
+      opusFrames.add(frameData);
       offset += length.toInt();
     }
 
