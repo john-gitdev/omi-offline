@@ -54,9 +54,10 @@ typedef enum {
 static button_fsm_state_t fsm_state = STATE_IDLE;
 static uint32_t state_timer = 0;
 
-#define HOLD_TIME 1000        // 1s hold threshold (single/double/triple)
-#define DOUBLE_TAP_WINDOW 600 // 600ms window for second tap
-#define TRIPLE_TAP_WINDOW 600 // 600ms window for third tap
+#define HOLD_TIME 1000             // 1s hold threshold (single/double tap)
+#define TRIPLE_HOLD_TIME 3000      // 3s hold for triple-tap power off
+#define DOUBLE_TAP_WINDOW 600      // 600ms window for second tap
+#define TRIPLE_TAP_WINDOW 600      // 600ms window for third tap
 
 
 void check_button_level(struct k_work *work_item)
@@ -156,7 +157,7 @@ void check_button_level(struct k_work *work_item)
             fsm_state = STATE_IDLE;
         } else {
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms >= HOLD_TIME) {
+            if (duration_ms >= TRIPLE_HOLD_TIME) {
                 // Triple tap + hold -> power off.
                 LOG_INF("Power off triggered via triple-tap-hold");
                 play_haptic_milli(1000);
