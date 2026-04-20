@@ -66,4 +66,7 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
 
 void transport_notify_button_state(uint8_t state);
 
+int transport_set_adv_slow(void);
+int transport_set_adv_fast(void);
+
 #endif // TRANSPORT_H

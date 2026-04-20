@@ -17,11 +17,17 @@
 #include "lib/core/sd_card.h"
 #include "lib/core/storage.h"
 #include "lib/core/settings.h"
+#include "lib/core/codec.h"
+#include "lib/core/config.h"
 #include "rtc.h"
 #include "imu.h"
 
 #include "spi_flash.h"
 #include "wdog_facade.h"
+
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+#include "aad.h"
+#endif
 
 LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -35,6 +41,20 @@ bool is_charging = false;
 bool is_off = false;
 
 static bool blink_toggle = false;
+
+static void mic_handler(int16_t *buffer)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    if (!aad_process_audio(buffer, MIC_BUFFER_SAMPLES)) {
+        return;
+    }
+#endif
+
+    int err = codec_receive_pcm(buffer, MIC_BUFFER_SAMPLES);
+    if (err) {
+        LOG_ERR("Failed to process PCM data: %d", err);
+    }
+}
 
 static void boot_led_sequence(void)
 {
@@ -81,6 +101,13 @@ void set_led_state()
         led_off();
         return;
     }
+
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    if (aad_is_sleeping()) {
+        led_off();
+        return;
+    }
+#endif
 
     // Force LEDs ON if charging starts
     if (is_charging && !is_led_enabled) {
@@ -214,11 +241,19 @@ int main(void)
 
     boot_warming_sequence();
 
+    set_mic_callback(mic_handler);
     ret = mic_start();
     if (ret) {
         LOG_ERR("Mic failed %d", ret);
         return ret;
     }
+
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    ret = aad_start();
+    if (ret) {
+        LOG_ERR("AAD start failed (%d)", ret);
+    }
+#endif
 
     led_stop_breathing();
 

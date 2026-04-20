@@ -1055,6 +1055,53 @@ int transport_off()
     return 0;
 }
 
+/* Slow advertising parameters for low-power mode (~1 s interval).
+ * BT_LE_ADV_CONN uses 100-150ms by default; 1000-1200ms saves ~300-500 µA.
+ * Advertising interval unit = 0.625 ms → 1000 ms = 1600, 1200 ms = 1920. */
+static const struct bt_le_adv_param adv_param_slow = BT_LE_ADV_PARAM_INIT(
+    BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_ONE_TIME,
+    1600,
+    1920,
+    NULL);
+
+int transport_set_adv_slow(void)
+{
+    if (is_connected) {
+        return 0;
+    }
+    int err = bt_le_adv_stop();
+    if (err && err != -EALREADY) {
+        LOG_ERR("adv_slow: stop failed (%d)", err);
+        return err;
+    }
+    err = bt_le_adv_start(&adv_param_slow, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+    if (err) {
+        LOG_ERR("adv_slow: start failed (%d)", err);
+    } else {
+        LOG_INF("BLE advertising switched to slow interval");
+    }
+    return err;
+}
+
+int transport_set_adv_fast(void)
+{
+    if (is_connected) {
+        return 0;
+    }
+    int err = bt_le_adv_stop();
+    if (err && err != -EALREADY) {
+        LOG_ERR("adv_fast: stop failed (%d)", err);
+        return err;
+    }
+    err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
+    if (err) {
+        LOG_ERR("adv_fast: start failed (%d)", err);
+    } else {
+        LOG_INF("BLE advertising switched to fast interval");
+    }
+    return err;
+}
+
 // periodic advertising
 int transport_start()
 {
