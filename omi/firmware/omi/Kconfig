@@ -63,5 +63,42 @@ config OMI_ENABLE_MONITOR
          Disable in production to save power, RAM, and flash space."
     default n
 
+config OMI_WATCHDOG_TIMEOUT_MS
+    int "Watchdog timeout (ms)"
+    range 5000 300000
+    default 30000
+    help
+        "Watchdog reset timeout in milliseconds."
+
+config OMI_ENABLE_VAD_GATE
+    bool "Enable VAD Gate"
+    help
+        "Enable the VAD gate support."
+    default n
+
+config OMI_VAD_ABS_THRESHOLD
+    int "VAD Absolute Threshold"
+    help
+        "Absolute amplitude threshold for voice detection."
+    default 600
+
+config OMI_VAD_DEBOUNCE_FRAMES
+    int "VAD Debounce Frames"
+    help
+        "Number of consecutive frames with voice before recording starts."
+    default 3
+
+config OMI_VAD_HOLD_MS
+    int "VAD Hold Time (ms)"
+    help
+        "Time to keep recording after voice stops."
+    default 3000
+
+config OMI_ENABLE_T5838_AAD
+    bool "T5838 Hardware AAD"
+    depends on OMI_ENABLE_VAD_GATE
+    help
+        "Enable T5838 hardware acoustic activity detection support."
+    default n
 
 endmenu

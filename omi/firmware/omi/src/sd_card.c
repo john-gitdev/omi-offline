@@ -33,10 +33,11 @@
 LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 
 #define DISK_DRIVE_NAME CONFIG_SDMMC_VOLUME_NAME
-#define SD_REQ_QUEUE_MSGS 250
+#define SD_REQ_QUEUE_MSGS 100
 #define SD_PRIO_QUEUE_MSGS 10
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
 #define WRITE_DRAIN_BURST 16
+#define WRITE_BATCH_COUNT 100
 #define ERROR_THRESHOLD 5
 
 #define FILE_CACHE_TTL_MS (30 * 1000)
@@ -51,6 +52,17 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define LFS_MAGIC_VALUE 0x4C465356u /* 'L','F','S','V' */
 
 /* ------------------------------------------------------------------ */
+/* Disk sector size (always 512 for SD) */
+#define DISK_SECTOR_SIZE 512
+/* LFS block size: groups 8 sectors into one LFS block.
+ * With 512-byte blocks, a 512 MB SD has 1M blocks and LFS metadata overhead
+ * is enormous (CTZ skip-lists, lookahead scans).  4096-byte blocks reduce
+ * the block count to ~128K and cut metadata overhead by ~8x. */
+#define LFS_BLOCK_SIZE 4096
+#define LFS_CACHE_SIZE LFS_BLOCK_SIZE                         /* cache = 1 full block for multi-sector I/O */
+#define SECTORS_PER_BLOCK (LFS_BLOCK_SIZE / DISK_SECTOR_SIZE) /* 8 */
+
+/* ------------------------------------------------------------------ */
 /* LittleFS state                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -62,16 +74,16 @@ static lfs_file_t lfs_fil_data;
 static lfs_file_t lfs_fil_info;
 
 /* Static buffers for lfs_file_opencfg (avoids heap allocation)
- * Size must match cache_size (LFS_CACHE_SIZE = 8192). */
-static uint8_t lfs_fdata_buf[8192];
-static uint8_t lfs_finfo_buf[8192];
+ * Size must match cache_size (LFS_CACHE_SIZE = 4096). */
+static uint8_t lfs_fdata_buf[LFS_CACHE_SIZE];
+static uint8_t lfs_finfo_buf[LFS_CACHE_SIZE];
 static struct lfs_file_config lfs_fdata_cfg = {.buffer = lfs_fdata_buf};
 static struct lfs_file_config lfs_finfo_cfg = {.buffer = lfs_finfo_buf};
 
 
-/* LFS I/O buffers — sized to cache_size (8192) for multi-sector I/O */
-static uint8_t lfs_read_buf[8192];
-static uint8_t lfs_prog_buf[8192];
+/* LFS I/O buffers — sized to cache_size (4096) for multi-sector I/O */
+static uint8_t lfs_read_buf[LFS_CACHE_SIZE];
+static uint8_t lfs_prog_buf[LFS_CACHE_SIZE];
 /* Lookahead buffer sizing:
  * 128 bytes = 1024 blocks = 4 MB window → too small for 512 MB SD (128K blocks).
  * Every time the window is exhausted, LFS triggers a FULL filesystem traversal
@@ -87,16 +99,6 @@ static uint8_t lfs_lookahead_buf[LFS_LOOKAHEAD_SIZE];
 /* Shared temp sector buffer â€” only used from worker thread, safe as static */
 static uint8_t _lfs_io_tmp[512];
 
-/* ------------------------------------------------------------------ */
-/* Disk sector size (always 512 for SD) */
-#define DISK_SECTOR_SIZE 512
-/* LFS block size: groups 8 sectors into one LFS block.
- * With 512-byte blocks, a 512 MB SD has 1M blocks and LFS metadata overhead
- * is enormous (CTZ skip-lists, lookahead scans).  4096-byte blocks reduce
- * the block count to ~128K and cut metadata overhead by ~8x. */
-#define LFS_BLOCK_SIZE 8192
-#define LFS_CACHE_SIZE LFS_BLOCK_SIZE                         /* cache = 1 full block for multi-sector I/O */
-#define SECTORS_PER_BLOCK (LFS_BLOCK_SIZE / DISK_SECTOR_SIZE) /* 16 */
 /* LittleFS disk_access callbacks                                      */
 /* ------------------------------------------------------------------ */
 
@@ -216,6 +218,9 @@ static struct lfs_config lfs_cfg = {
 
 static uint8_t writing_error_counter = 0;
 static bool sd_write_blocked = false;
+static uint8_t write_batch_buffer[WRITE_BATCH_COUNT * MAX_WRITE_SIZE];
+static size_t write_batch_offset = 0;
+static int write_batch_counter = 0;
 static int64_t last_write_blocked_log_ms = 0;
 static int64_t last_write_error_uptime_ms = 0;
 static uint32_t write_drop_packets = 0;
@@ -245,6 +250,9 @@ static atomic_t proactive_wipe_requested;
 
 static bool is_mounted = false;
 static bool sd_enabled = false;
+static atomic_t sd_write_paused = ATOMIC_INIT(0);
+static atomic_t sd_io_low_power = ATOMIC_INIT(0);
+static atomic_t sd_dev_pm_supported = ATOMIC_INIT(1);
 static bool sd_ready = false;
 static bool sd_shutdown_in_progress = false;
 static uint32_t current_file_size = 0;
@@ -290,7 +298,7 @@ K_MSGQ_DEFINE(sd_prio_msgq, sizeof(sd_req_t), SD_PRIO_QUEUE_MSGS, 4);
  * block reads (≈50 SPI transactions), making each read 100–300 ms.
  * Keeping the handle open reduces this to a simple sequential read (~5 ms). */
 static lfs_file_t lfs_read_handle;
-static uint8_t lfs_read_handle_buf[8192];
+static uint8_t lfs_read_handle_buf[LFS_CACHE_SIZE];
 static struct lfs_file_config lfs_read_handle_cfg = {.buffer = lfs_read_handle_buf};
 static char read_handle_filename[MAX_FILENAME_LEN] = {0};
 static bool read_handle_open = false;
@@ -399,12 +407,14 @@ int sd_get_cached_file_meta(int index, AudioFileMeta_t *out_meta)
 /* Forward declarations */
 void sd_worker_thread(void);
 static void process_write_data_req(const sd_req_t *req);
+static int flush_batch_buffer(void);
 static int create_audio_file_with_timestamp(void);
 static bool should_rotate_file(void);
 static void build_file_path(const char *filename, char *path, size_t path_size);
 static void invalidate_file_cache(void);
 static void update_current_file_cache_size(uint32_t delta);
 static void sort_cached_file_entries(void);
+static void sd_set_io_low_power(bool enable);
 
 static void process_save_offset_req(const sd_req_t *req)
 {
@@ -418,6 +428,7 @@ static void process_save_offset_req(const sd_req_t *req)
         }
     }
 
+    sd_set_io_low_power(false);
     lfs_file_seek(&lfs_fs, &lfs_fil_info, 0, LFS_SEEK_SET);
     lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_info, &req->u.info.offset_info, sizeof(sd_offset_info_t));
     if (bw == (lfs_ssize_t) sizeof(sd_offset_info_t)) {
@@ -427,6 +438,7 @@ static void process_save_offset_req(const sd_req_t *req)
         last_write_error_uptime_ms = k_uptime_get();
         LOG_ERR("[SD_WORK] save offset write err %d", (int) bw);
     }
+    sd_set_io_low_power(true);
 }
 
 static void drain_pending_write_queue_for_shutdown(void)
@@ -445,6 +457,47 @@ static void drain_pending_write_queue_for_shutdown(void)
     }
 }
 
+static int flush_batch_buffer(void)
+{
+    if (write_batch_offset == 0)
+        return 0;
+
+    if (sd_write_blocked) {
+        write_batch_offset = 0;
+        write_batch_counter = 0;
+        return -EIO;
+    }
+
+    int64_t t0 = k_uptime_get();
+    lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_data, write_batch_buffer, write_batch_offset);
+    int64_t cost = k_uptime_get() - t0;
+    if (cost > 2000)
+        LOG_WRN("[SD_PERF] flush_batch_buffer took %lld ms (%u bytes, %d frames)", cost, (unsigned) write_batch_offset,
+                write_batch_counter);
+
+    if (bw < 0 || (size_t) bw != write_batch_offset) {
+        writing_error_counter++;
+        last_write_error_uptime_ms = k_uptime_get();
+        LOG_ERR("batch write error bw=%d wanted=%u", (int) bw, (unsigned) write_batch_offset);
+        if (writing_error_counter > ERROR_THRESHOLD) {
+            sd_write_blocked = true;
+            LOG_ERR("Too many write errors, blocking write queue");
+        }
+        write_batch_offset = 0;
+        write_batch_counter = 0;
+        return -EIO;
+    }
+
+    current_file_size += (uint32_t) bw;
+    bytes_since_sync += (size_t) bw;
+    update_current_file_cache_size((uint32_t) bw);
+    writing_error_counter = 0;
+    write_batch_offset = 0;
+    write_batch_counter = 0;
+    LOG_DBG("[SD] batch wrote %u bytes -> %s", (unsigned) bw, current_filename);
+    return 0;
+}
+
 static void process_write_data_req(const sd_req_t *req)
 {
     if (sd_write_blocked) {
@@ -455,6 +508,10 @@ static void process_write_data_req(const sd_req_t *req)
         } else {
             return;
         }
+    }
+
+    if (atomic_get(&sd_write_paused)) {
+        return;
     }
 
     if (current_filename[0] == '\0') {
@@ -469,6 +526,7 @@ static void process_write_data_req(const sd_req_t *req)
 
     if (should_rotate_file()) {
         LOG_INF("[SD_WORK] Rotating file after %d min", (int)(FILE_ROTATION_INTERVAL_MS / 60000));
+        flush_batch_buffer();
         int res = create_audio_file_with_timestamp();
         if (res < 0) {
             last_write_error_uptime_ms = k_uptime_get();
@@ -477,28 +535,26 @@ static void process_write_data_req(const sd_req_t *req)
         }
     }
 
-    lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_data, req->u.write.buf, req->u.write.len);
-    if (bw < 0 || (size_t)bw != req->u.write.len) {
-        last_write_error_uptime_ms = k_uptime_get();
-        writing_error_counter++;
-        LOG_ERR("write error bw=%d wanted=%u", (int)bw, (unsigned)req->u.write.len);
-
-        if (writing_error_counter > ERROR_THRESHOLD) {
-            sd_write_blocked = true;
-            LOG_ERR("Too many write errors, blocking write queue");
+    /* Overflow guard — flush first if this frame won't fit */
+    if (write_batch_offset + req->u.write.len > sizeof(write_batch_buffer)) {
+        flush_batch_buffer();
+        if (write_batch_offset + req->u.write.len > sizeof(write_batch_buffer)) {
+            LOG_ERR("[SD_WORK] batch buffer overflow guard len=%u", (unsigned) req->u.write.len);
+            return;
         }
-        return;
     }
 
-    writing_error_counter = 0;
-    current_file_size += (uint32_t)bw;
-    bytes_since_sync += (size_t)bw;
-    update_current_file_cache_size((uint32_t)bw);
+    memcpy(write_batch_buffer + write_batch_offset, req->u.write.buf, req->u.write.len);
+    write_batch_offset += req->u.write.len;
+    write_batch_counter++;
 
-    bool sync_due_to_interval =
-        (bytes_since_sync > 0) && ((k_uptime_get() - last_file_sync_uptime_ms) >= SD_FSYNC_INTERVAL_MS);
+    bool queue_pressure_high = k_msgq_num_used_get(&sd_msgq) >= (SD_REQ_QUEUE_MSGS / 3);
+    if (write_batch_counter >= WRITE_BATCH_COUNT || queue_pressure_high)
+        flush_batch_buffer();
 
-    if (sync_due_to_interval) {
+    /* fsync on interval — only after a flush has committed data */
+    bool sync_due = (bytes_since_sync > 0) && ((k_uptime_get() - last_file_sync_uptime_ms) >= SD_FSYNC_INTERVAL_MS);
+    if (sync_due) {
         int err = lfs_file_sync(&lfs_fs, &lfs_fil_data);
         if (err < 0) {
             last_write_error_uptime_ms = k_uptime_get();
@@ -552,12 +608,89 @@ static int sd_enable_power(bool enable)
     return ret;
 }
 
+static void sd_set_io_low_power(bool enable)
+{
+    const struct device *spi_dev = DEVICE_DT_GET(DT_NODELABEL(spi3));
+
+    if (!sd_enabled || !device_is_ready(spi_dev))
+        return;
+
+    if (enable) {
+        if (!atomic_cas(&sd_io_low_power, 0, 1))
+            return;
+
+        int ret_sd = 0;
+        if (atomic_get(&sd_dev_pm_supported)) {
+            ret_sd = pm_device_action_run(sd_dev, PM_DEVICE_ACTION_SUSPEND);
+            if (pm_action_is_unsupported(ret_sd)) {
+                atomic_set(&sd_dev_pm_supported, 0);
+                LOG_INF("SD device PM suspend unsupported, SPI-only power management");
+            }
+        }
+        int ret_spi = pm_device_action_run(spi_dev, PM_DEVICE_ACTION_SUSPEND);
+        if (!pm_action_is_ok(ret_sd) || !pm_action_is_ok(ret_spi))
+            LOG_WRN("SD low-power suspend failed (sd=%d spi=%d)", ret_sd, ret_spi);
+    } else {
+        if (!atomic_cas(&sd_io_low_power, 1, 0))
+            return;
+
+        int ret_spi = pm_device_action_run(spi_dev, PM_DEVICE_ACTION_RESUME);
+        int ret_sd = 0;
+        if (atomic_get(&sd_dev_pm_supported)) {
+            ret_sd = pm_device_action_run(sd_dev, PM_DEVICE_ACTION_RESUME);
+            if (pm_action_is_unsupported(ret_sd)) {
+                atomic_set(&sd_dev_pm_supported, 0);
+                LOG_INF("SD device PM resume unsupported, SPI-only power management");
+            }
+        }
+        if (!pm_action_is_ok(ret_sd) || !pm_action_is_ok(ret_spi))
+            LOG_WRN("SD low-power resume failed (sd=%d spi=%d)", ret_sd, ret_spi);
+    }
+    /* spi3 is safe to suspend — BLE connect always resumes it before OTA can start */
+}
+
+void sd_write_pause(bool pause)
+{
+    if (pause) {
+        atomic_set(&sd_write_paused, 1);
+
+        if (is_mounted && sd_worker_tid) {
+            struct read_resp resp;
+            k_sem_init(&resp.sem, 0, 1);
+            resp.res = 0;
+            sd_req_t req = {0};
+            req.type = REQ_FLUSH_FILE;
+            req.u.create_file.resp = &resp;
+            int qret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
+            if (qret == 0) {
+                if (k_sem_take(&resp.sem, K_MSEC(10000)) != 0)
+                    LOG_WRN("[AAD] SD pause flush timeout");
+            } else {
+                LOG_WRN("[AAD] SD pause flush enqueue failed: %d", qret);
+            }
+        }
+
+        /* Suspend SD device only — do NOT suspend spi3, it is shared with spi_flash */
+        if (sd_enabled) {
+            pm_device_action_run(sd_dev, PM_DEVICE_ACTION_SUSPEND);
+        }
+        LOG_INF("[AAD] SD writes paused");
+    } else {
+        if (sd_enabled) {
+            pm_device_action_run(sd_dev, PM_DEVICE_ACTION_RESUME);
+        }
+        atomic_set(&sd_write_paused, 0);
+        LOG_INF("[AAD] SD writes resumed");
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* LittleFS mount / unmount                                            */
 /* ------------------------------------------------------------------ */
 
 static void lfs_close_files(void)
 {
+    flush_batch_buffer();
     lfs_file_close(&lfs_fs, &lfs_fil_data);
     lfs_file_close(&lfs_fs, &lfs_fil_info);
     k_mutex_lock(&current_filename_lock, K_FOREVER);
@@ -837,6 +970,8 @@ static int _open_file_for_continuation(const char *filename, bool needs_rename)
 
     current_file_size = (uint32_t) lfs_file_size(&lfs_fs, &lfs_fil_data);
     bytes_since_sync = 0;
+    write_batch_offset = 0;
+    write_batch_counter = 0;
 
     last_file_sync_uptime_ms = k_uptime_get();
     current_file_created_uptime_ms = k_uptime_get();
@@ -906,6 +1041,7 @@ static int create_audio_file_with_timestamp(void)
 
     /* Close current file if open */
     if (current_filename[0] != '\0') {
+        flush_batch_buffer();
         lfs_file_close(&lfs_fs, &lfs_fil_data);
         k_mutex_lock(&current_filename_lock, K_FOREVER);
         current_filename[0] = '\0';
@@ -951,6 +1087,8 @@ static int create_audio_file_with_timestamp(void)
 
     current_file_size = 0;
     bytes_since_sync = 0;
+    write_batch_offset = 0;
+    write_batch_counter = 0;
 
     writing_error_counter = 0;
     sd_write_blocked = false;
@@ -1223,6 +1361,7 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
                 build_file_path(info.name, old_path, 128);
                 build_file_path(new_fn, new_path, 128);
                 
+                flush_batch_buffer();
                 if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
                     LOG_INF("Retroactive rename: %s -> %s", info.name, new_fn);
                 }
@@ -1466,11 +1605,27 @@ void sd_worker_thread(void)
         continue;
 
     handle_req:
+        if (req.type != REQ_WRITE_DATA)
+            sd_set_io_low_power(false);
+
         switch (req.type) {
 
         /* ---- Write data ---- */
         case REQ_WRITE_DATA:
             process_write_data_req(&req);
+            for (int i = 0; i < WRITE_DRAIN_BURST; i++) {
+                if (k_msgq_num_used_get(&sd_prio_msgq) > 0)
+                    break;
+                sd_req_t drain_req;
+                if (k_msgq_get(&sd_msgq, &drain_req, K_NO_WAIT) != 0)
+                    break;
+                if (drain_req.type != REQ_WRITE_DATA) {
+                    /* put non-write back on prio queue and stop draining */
+                    k_msgq_put(&sd_prio_msgq, &drain_req, K_NO_WAIT);
+                    break;
+                }
+                process_write_data_req(&drain_req);
+            }
             break;
 
         /* ---- Read audio data (uses persistent file handle) ---- */
@@ -1521,7 +1676,9 @@ void sd_worker_thread(void)
              * This avoids the expensive lfs_file_sync on EVERY read
              * (was ~50-100 ms each) — we only pay the cost when we
              * actually hit the stale-EOF boundary. */
-            if (br == 0 && is_active_file && (bytes_since_sync > 0)) {
+            if (br == 0 && is_active_file && (write_batch_offset > 0 || bytes_since_sync > 0)) {
+                if (write_batch_offset > 0)
+                    flush_batch_buffer();
                 if (bytes_since_sync > 0) {
                     lfs_file_sync(&lfs_fs, &lfs_fil_data);
                     data_sync_gen++;
@@ -1595,6 +1752,7 @@ void sd_worker_thread(void)
 
         /* ---- Clear audio directory ---- */
         case REQ_CLEAR_AUDIO_DIR: {
+            flush_batch_buffer();
             close_read_handle();
             lfs_file_close(&lfs_fs, &lfs_fil_data);
             k_mutex_lock(&current_filename_lock, K_FOREVER);
@@ -1643,6 +1801,9 @@ void sd_worker_thread(void)
             lfs_file_write(&lfs_fs, &lfs_fil_info, &current_offset_info, sizeof(current_offset_info));
             lfs_file_sync(&lfs_fs, &lfs_fil_info);
             invalidate_file_cache();
+            bytes_since_sync = 0;
+            write_batch_offset = 0;
+            write_batch_counter = 0;
 
             res = create_audio_file_with_timestamp();
             if (res >= 0) {
@@ -1657,6 +1818,7 @@ void sd_worker_thread(void)
 
         /* ---- Create new file ---- */
         case REQ_CREATE_NEW_FILE:
+            flush_batch_buffer();
             res = create_audio_file_with_timestamp();
             if (res >= 0) {
                     }
@@ -1687,15 +1849,20 @@ void sd_worker_thread(void)
         case REQ_FLUSH_FILE: {
             int flush_res = 0;
             if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
-                int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
-                if (sr < 0) {
-                    LOG_ERR("[SD_WORK] lfs_file_sync failed: %d", sr);
-                    flush_res = sr;
-                } else {
-                    data_sync_gen++;
-                    bytes_since_sync = 0;
-                    last_file_sync_uptime_ms = k_uptime_get();
-                                LOG_INF("[SD_WORK] Flushed %s (%u bytes)", current_filename, current_file_size);
+                flush_res = flush_batch_buffer();
+                if (flush_res == 0) {
+                    int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
+                    if (sr < 0) {
+                        LOG_ERR("[SD_WORK] lfs_file_sync failed: %d", sr);
+                        flush_res = sr;
+                    } else {
+                        data_sync_gen++;
+                        bytes_since_sync = 0;
+                        write_batch_offset = 0;
+                        write_batch_counter = 0;
+                        last_file_sync_uptime_ms = k_uptime_get();
+                        LOG_INF("[SD_WORK] Flushed %s (%u bytes)", current_filename, current_file_size);
+                    }
                 }
             }
             if (req.u.create_file.resp) {
@@ -1731,6 +1898,7 @@ void sd_worker_thread(void)
             if (current_filename[0] != '\0' &&
                 filename_equals_ignore_case(current_filename, req.u.delete_file.filename)) {
                 LOG_INF("[SD_WORK] Deleting active recording file");
+                flush_batch_buffer();
                 lfs_file_close(&lfs_fs, &lfs_fil_data);
                 k_mutex_lock(&current_filename_lock, K_FOREVER);
                 current_filename[0] = '\0';
@@ -1738,6 +1906,8 @@ void sd_worker_thread(void)
                 k_mutex_unlock(&current_filename_lock);
                 current_file_size = 0;
                 bytes_since_sync = 0;
+                write_batch_offset = 0;
+                write_batch_counter = 0;
                 last_file_sync_uptime_ms = 0;
                 atomic_set(&current_file_deleted, 1);
             }
@@ -1762,6 +1932,7 @@ void sd_worker_thread(void)
                  * lfs_fil_data, so close+rename+reopen is safe regardless of
                  * BLE connection state. The old deferral was overly cautious
                  * and caused TMP files to be invisible to the app's sync. */
+                flush_batch_buffer();
                 sd_update_filename_after_timesync(req.u.time_synced.utc_time);
                 invalidate_file_cache();
                     } else if (current_filename[0] == '\0') {
@@ -1776,6 +1947,9 @@ void sd_worker_thread(void)
         default:
             LOG_ERR("[SD_WORK] unknown request type %d", req.type);
         }
+
+        if (req.type != REQ_WRITE_DATA)
+            sd_set_io_low_power(true);
     }
 }
 

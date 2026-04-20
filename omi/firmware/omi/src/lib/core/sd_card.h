@@ -10,7 +10,7 @@
 #define MAX_WRITE_SIZE 440
 #define MAX_FILENAME_LEN 64
 #define MAX_AUDIO_FILES 150  /* 12h × 12 files/hour (5-min rotation) = 144 max; 150 gives headroom. */
-#define FILE_ROTATION_INTERVAL_MS (5 * 60 * 1000) // 5 minutes in milliseconds
+#define FILE_ROTATION_INTERVAL_MS (10 * 60 * 1000) // 10 minutes in milliseconds
 
 
 typedef struct {
@@ -302,6 +302,13 @@ void sd_notify_time_synced(uint32_t utc_time);
  * @return true if SD card is on, false otherwise
  */
 bool is_sd_on(void);
+
+/**
+ * @brief Pause or resume SD card writes (for AAD power saving).
+ *
+ * @param pause true to pause writes and suspend SD, false to resume.
+ */
+void sd_write_pause(bool pause);
 
 #endif // CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 
