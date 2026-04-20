@@ -109,6 +109,28 @@ Tracks features, fixes, and commits reviewed from `BasedHardware/omi` and ported
 
 ---
 
+### 8. BLE Supervision Timeout 4s → 6s
+**Source:** [Commit `18754d1`](https://github.com/BasedHardware/omi/commit/18754d1965df4b58ec497f13f77f3141f4fd016a) (PR #6824)
+
+**Integrated:**
+- `CONFIG_BT_PERIPHERAL_PREF_TIMEOUT` increased from 400 → 600 (4s → 6s) in both `omi.conf` and `sysbuild/ipc_radio.conf`. More tolerant of transient RF drops, reduces unexpected disconnects.
+
+**Excluded:** None.
+
+---
+
+### 9. BLE Bonding Persistence
+**Source:** [Commit `853053c`](https://github.com/BasedHardware/omi/commit/853053c2708d6cf54e6d8d5b929c67abbcb6e9fb) (PR #6822)
+
+**Integrated:**
+- `CONFIG_BT_SETTINGS=y` and `CONFIG_BT_KEYS_OVERWRITE_OLDEST=y` added to `omi.conf` so bond keys survive reboot.
+- `transport.c`: loads `"bt"` settings subtree after `bt_enable()`; requests `BT_SECURITY_L2` on connect to trigger bonding.
+- `settings.c`: changed from `settings_load()` to `settings_load_subtree("omi")` so app settings and BT settings load at the correct times independently.
+
+**Excluded:** None.
+
+---
+
 ### Minor Individual Commits
 
 Smaller fixes integrated independently; superseded by the PR #6200 full-file replacement.
