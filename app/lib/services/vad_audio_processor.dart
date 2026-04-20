@@ -268,11 +268,14 @@ class VadAudioProcessor {
       }
 
       if (_currentRefs.isEmpty) {
-        // Only anchor the recording start to this file's timestamp when it is genuinely
-        // a fresh start. If _lastSegmentEndTime is set and this file starts at or before
-        // that point (e.g. right after a cap flush), the start time was already set
-        // correctly during that flush and must not be overwritten.
-        if (_lastSegmentEndTime == null || !segmentStartTime.isBefore(_lastSegmentEndTime!)) {
+        // Set the recording start to this bin's timestamp only on a genuine fresh start.
+        // Preserve _recordingStartTime when it is already set to a time AT OR AFTER
+        // _lastSegmentEndTime — that means a cap cut just fired and set it to cutTime,
+        // which must not be overwritten with an earlier bin timestamp.
+        final capJustFired = _recordingStartTime != null &&
+            _lastSegmentEndTime != null &&
+            !_recordingStartTime!.isBefore(_lastSegmentEndTime!);
+        if (!capJustFired) {
           _recordingStartTime = segmentStartTime;
         }
       }
@@ -422,14 +425,20 @@ class VadAudioProcessor {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
           final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
           if (filePath != null) savedFiles.add(filePath);
-          _lastSplitTime = segmentStartTime.add(Duration(milliseconds: (frameIndex + 1) * frameDurationMs));
+          // Anchor the next recording to exactly where this one ends on the audio
+          // clock (start + accumulated frames), not to the current bin's firmware
+          // timestamp. Bin timestamps drift from the audio clock over many files,
+          // so using segmentStartTime + frameOffset would push the new start time
+          // backwards, creating an overlap with the recording we just saved.
+          final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
+          _lastSplitTime = cutTime;
           _forcedByMarker = false;
           _currentRefs = [];
           _speechFrameCount = 0;
           _hangoverFrames = 0;
           _consecutiveSilenceFrames = 0;
           _currentChunkDurationMs = 0;
-          _recordingStartTime = segmentStartTime.add(Duration(milliseconds: (frameIndex + 1) * frameDurationMs));
+          _recordingStartTime = cutTime;
         }
 
         offset += 4 + ((frameLength + 3) & ~3); // advance past 4-byte-aligned frame (matches SD card wire format)
