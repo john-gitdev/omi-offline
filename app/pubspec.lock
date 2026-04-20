@@ -510,6 +510,14 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  flutter_archive:
+    dependency: "direct main"
+    description:
+      name: flutter_archive
+      sha256: e433389fde0bdfc20af40784fdb6d91753794b40cf708a43f95244fcd5d6c298
+      url: "https://pub.dev"
+    source: hosted
+    version: "6.0.4"
   flutter_background_service:
     dependency: "direct main"
     description:
@@ -1256,6 +1264,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.13.0"
+  mcumgr_flutter:
+    dependency: "direct main"
+    description:
+      name: mcumgr_flutter
+      sha256: e19a5c420bdc20c831ffc4673a01b8fb1825fb3f42524cfc454a9862b20453f2
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.4.2"
   meta:
     dependency: transitive
     description:
@@ -1296,6 +1312,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.0"
+  nordic_dfu:
+    dependency: "direct main"
+    description:
+      name: nordic_dfu
+      sha256: "498c18e7587f8aabb478fccfb93c2687ee2338595e3f81c26f82c8c8782c49ca"
+      url: "https://pub.dev"
+    source: hosted
+    version: "6.2.0"
   octo_image:
     dependency: transitive
     description:
@@ -1619,6 +1643,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.1.0"
+  protobuf:
+    dependency: transitive
+    description:
+      name: protobuf
+      sha256: "68645b24e0716782e58948f8467fd42a880f255096a821f9e7d0ec625b00c84d"
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.1.0"
   provider:
     dependency: "direct main"
     description:
