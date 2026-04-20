@@ -431,7 +431,10 @@ class VadAudioProcessor {
           // so using segmentStartTime + frameOffset would push the new start time
           // backwards, creating an overlap with the recording we just saved.
           final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
-          _lastSplitTime = cutTime;
+          // _lastSplitTime stays on the firmware clock so marker lookback arithmetic
+          // (markerFrameTime - _lastSplitTime) remains consistent. Only _recordingStartTime
+          // uses the audio clock to prevent label overlap.
+          _lastSplitTime = segmentStartTime.add(Duration(milliseconds: (frameIndex + 1) * frameDurationMs));
           _forcedByMarker = false;
           _currentRefs = [];
           _speechFrameCount = 0;
