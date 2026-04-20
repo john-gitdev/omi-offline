@@ -46,15 +46,19 @@ typedef enum {
     STATE_FIRST_PRESS,
     STATE_FIRST_RELEASE,
     STATE_SECOND_PRESS,
+    STATE_SECOND_RELEASE,  // waiting to see if a third tap follows
+    STATE_THIRD_PRESS,     // third tap in progress
     STATE_WAIT_FOR_RELEASE
 } button_fsm_state_t;
 
 static button_fsm_state_t fsm_state = STATE_IDLE;
 static uint32_t state_timer = 0;
 
-#define MUTE_HOLD_TIME 1000      // 1s hold for mute
-#define DOUBLE_TAP_WINDOW 600    // 600ms window for second tap
-#define POWER_OFF_HOLD_TIME 3000 // 3s hold for power off (on second tap)
+#define HOLD_TIME 1000             // 1s hold threshold (single/double tap)
+#define TRIPLE_HOLD_TIME 3000      // 3s hold for triple-tap power off
+#define DOUBLE_TAP_WINDOW 600      // 600ms window for second tap
+#define TRIPLE_TAP_WINDOW 600      // 600ms window for third tap
+
 
 void check_button_level(struct k_work *work_item)
 {
@@ -71,26 +75,13 @@ void check_button_level(struct k_work *work_item)
 
     case STATE_FIRST_PRESS:
         if (!pressed) {
-            // Released before MUTE_HOLD_TIME.
-            // Short press. Wait for second tap window.
+            // Short press — wait for second tap window.
             fsm_state = STATE_FIRST_RELEASE;
             state_timer = 0;
         } else {
-            // Still pressed. Check duration.
+            // Still pressed. Absorb the hold with no action.
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms >= MUTE_HOLD_TIME) {
-                // Long press 1s -> Mute toggle
-                is_muted = !is_muted;
-                LOG_INF("Mute toggled: %s", is_muted ? "ON" : "OFF");
-                if (is_muted) {
-                    mic_pause();
-                } else {
-                    mic_resume();
-                }
-                play_haptic_milli(500);
-                
-                // Note: LED colors are now handled in set_led_state() in main.c
-                
+            if (duration_ms >= HOLD_TIME) {
                 fsm_state = STATE_WAIT_FOR_RELEASE;
             }
         }
@@ -103,9 +94,8 @@ void check_button_level(struct k_work *work_item)
         } else {
             uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
             if (idle_duration_ms > DOUBLE_TAP_WINDOW) {
-                // Timeout. It was a single tap!
-                is_led_enabled = !is_led_enabled;
-                LOG_INF("Single tap: LED toggled %s", is_led_enabled ? "ON" : "OFF");
+                // Single tap — no action.
+                LOG_INF("Single tap");
                 fsm_state = STATE_IDLE;
             }
         }
@@ -113,31 +103,65 @@ void check_button_level(struct k_work *work_item)
 
     case STATE_SECOND_PRESS:
         if (!pressed) {
-            // Released.
+            // Released — wait to see if a third press arrives.
+            fsm_state = STATE_SECOND_RELEASE;
+            state_timer = 0;
+        } else {
+            // Still pressed. Check if held long enough for mute toggle.
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms < POWER_OFF_HOLD_TIME) {
-                // Double tap (release happened before 3s) -> Marker
+            if (duration_ms >= HOLD_TIME) {
+                // Double tap + hold -> mute toggle
+                is_muted = !is_muted;
+                LOG_INF("Mute toggled: %s", is_muted ? "ON" : "OFF");
+                if (is_muted) {
+                    mic_pause();
+                } else {
+                    mic_resume();
+                }
+                play_haptic_milli(500);
+                fsm_state = STATE_WAIT_FOR_RELEASE;
+            }
+        }
+        break;
+
+    case STATE_SECOND_RELEASE:
+        if (pressed) {
+            // Third tap started — could be triple-tap or triple-tap-hold.
+            fsm_state = STATE_THIRD_PRESS;
+            state_timer = 0;
+        } else {
+            uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            if (idle_duration_ms > TRIPLE_TAP_WINDOW) {
+                // Timeout — it was a double tap.
                 if (!is_muted) {
                     LOG_INF("Double tap (Marker) detected");
                     play_haptic_milli(300);
                     marker_flash_count = 2; // Trigger 1s white flash (2 cycles of 500ms)
-                    
                     #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
                     write_marker_to_storage();
                     #endif
                 } else {
                     LOG_INF("Double tap ignored (muted)");
                 }
+                fsm_state = STATE_IDLE;
             }
+        }
+        break;
+
+    case STATE_THIRD_PRESS:
+        if (!pressed) {
+            // Released — triple tap -> toggle LED.
+            is_led_enabled = !is_led_enabled;
+            LOG_INF("Triple tap: LED toggled %s", is_led_enabled ? "ON" : "OFF");
+            play_haptic_milli(150);
             fsm_state = STATE_IDLE;
         } else {
-            // Still pressed. Check if we hit 3s.
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms >= POWER_OFF_HOLD_TIME) {
-                // Double tap + Long hold 3s -> Power Off
-                LOG_INF("Power off triggered via Double-Tap-Hold");
+            if (duration_ms >= TRIPLE_HOLD_TIME) {
+                // Triple tap + hold -> power off.
+                LOG_INF("Power off triggered via triple-tap-hold");
                 play_haptic_milli(1000);
-                turnoff_all(); // This shuts down the device.
+                turnoff_all();
                 fsm_state = STATE_IDLE;
             }
         }
@@ -164,7 +188,6 @@ static struct gpio_callback button_cb_data;
 static void button_gpio_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
     was_pressed = (gpio_pin_get_dt(&usr_btn) == 1);
-    transport_notify_button_state(was_pressed ? 1 : 0);
 
     // Start the state machine work item on the first press from idle.
     // The work item reschedules itself while active and stops when it returns
