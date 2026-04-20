@@ -818,7 +818,7 @@ static void print_audio_files_at_boot(void)
 /* File creation / continuation at boot                               */
 /* ------------------------------------------------------------------ */
 
-#define FILE_CONTINUE_THRESHOLD_SEC (2 * 60)
+#define FILE_CONTINUE_THRESHOLD_SEC (60)
 
 /* Helper: open a file and set the common state variables for continuation. */
 static int _open_file_for_continuation(const char *filename, bool needs_rename)
