@@ -18,6 +18,9 @@
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 #include "sd_card.h"
 #endif
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+#include "aad.h"
+#endif
 
 LOG_MODULE_REGISTER(button, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -139,6 +142,9 @@ void check_button_level(struct k_work *work_item)
                     marker_flash_count = 2; // Trigger 1s white flash (2 cycles of 500ms)
                     #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
                     write_marker_to_storage();
+                    #endif
+                    #ifdef CONFIG_OMI_ENABLE_T5838_AAD
+                    aad_force_wake();
                     #endif
                 } else {
                     LOG_INF("Double tap ignored (muted)");
