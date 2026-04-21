@@ -65,11 +65,6 @@ class SharedPreferencesUtil {
   double get vadPreSpeechSeconds => getDouble('vadPreSpeechSeconds', defaultValue: 1.0);
   set vadPreSpeechSeconds(double v) => saveDouble('vadPreSpeechSeconds', v);
 
-  // Gap between consecutive segment files (seconds) that forces a conversation
-  // cut, regardless of VAD state.
-  int get vadGapSeconds => getInt('vadGapSeconds', defaultValue: 30);
-  set vadGapSeconds(int v) => saveInt('vadGapSeconds', v);
-
   // Maximum continuous conversation length (minutes) before forcing a cut.
   int get vadMaxConversationMinutes => getInt('vadMaxConversationMinutes', defaultValue: 60);
   set vadMaxConversationMinutes(int v) => saveInt('vadMaxConversationMinutes', v);

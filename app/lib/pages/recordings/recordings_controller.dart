@@ -910,16 +910,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   static double _computeAccumulatedMinutes(List<Batch> batches) {
-    final totalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (
-      sum,
-      f,
-    ) {
+    final rawTotalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (sum, f) {
       try {
         return sum + f.lengthSync();
       } catch (_) {
         return sum;
       }
     });
-    return totalBytes / 252000.0;
+    final draftDurationMs =
+        batches.expand((b) => b.draftRecordings).fold<int>(0, (sum, c) => sum + c.duration.inMilliseconds);
+
+    return (rawTotalBytes / 252000.0) + (draftDurationMs / 60000.0);
   }
 }
