@@ -25,6 +25,7 @@
 #include "lib/core/config.h"
 #include "lib/core/sd_card.h"
 #include "lib/core/transport.h"
+#include "rtc.h"
 
 LOG_MODULE_REGISTER(aad, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -49,6 +50,10 @@ static atomic_t sd_pause_pending = ATOMIC_INIT(0); /* 1=pause, 2=resume */
 static atomic_t adv_slow_req = ATOMIC_INIT(0);
 static atomic_t adv_fast_req = ATOMIC_INIT(0);
 
+
+/* ---- Force-wake (button press) ---- */
+#define FORCE_WAKE_HOLD_MS 50000
+static int64_t force_wake_until_ms = 0;
 
 /* ---- VAD state (mic callback context only) ---- */
 static bool vad_is_recording = false;
@@ -244,7 +249,8 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
 
     uint32_t avg = avg_abs_amplitude(buffer, sample_count);
     int64_t now = k_uptime_get();
-    bool has_voice = avg >= CONFIG_OMI_VAD_ABS_THRESHOLD;
+    bool has_voice = avg >= CONFIG_OMI_VAD_ABS_THRESHOLD
+                  || k_uptime_get() < force_wake_until_ms;
 
     if (has_voice) {
         vad_last_voice_ms = now;
@@ -254,10 +260,20 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
                 preroll_queue_flush();
                 vad_is_recording = true;
                 vad_sleeping = false;
+
+                /* Write VAD-resume timestamp into the audio stream so the app
+                 * can recalibrate frame times after a silence gap. */
+                uint8_t vad_ts_buf[16] = {0};
+                uint32_t utc = get_utc_time();
+                uint64_t up = (uint64_t)k_uptime_get();
+                memcpy(vad_ts_buf, &utc, 4);
+                memcpy(vad_ts_buf + 4, &up, 4);
+                write_custom_packet_to_storage(0xFFFFFFFD, vad_ts_buf, 16);
+
                 atomic_set(&sd_pause_pending, 2);
                 atomic_set(&adv_fast_req, 1);
                 k_sem_give(&aad_sem);
-                LOG_INF("VAD: RECORDING (avg=%u)", avg);
+                LOG_INF("VAD: RECORDING (avg=%u, utc=%u)", avg, utc);
             }
         }
     } else {
@@ -317,6 +333,14 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
     }
 
     return true;
+}
+
+void aad_force_wake(void)
+{
+    force_wake_until_ms = k_uptime_get() + FORCE_WAKE_HOLD_MS;
+    atomic_set(&wake_pending, 1);
+    k_sem_give(&aad_sem);
+    LOG_INF("AAD: force wake (hold %d ms)", FORCE_WAKE_HOLD_MS);
 }
 
 int aad_start(void)

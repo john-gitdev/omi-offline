@@ -238,6 +238,14 @@ class VadAudioProcessor {
     final savedFiles = <String>[];
     _isDerivedTimestamp = isDerivedTimestamp;
 
+    // VAD-resume anchor: set when a 0xFFFFFFFD packet is encountered.
+    // Recalibrates frame timestamps after a firmware-side silence gap.
+    DateTime? vadResumeTime;
+    int? vadResumeFrameIndex;
+
+    // Wall-clock time of the last processed audio frame (updated each frame).
+    DateTime lastFrameWallTime = segmentStartTime;
+
     try {
       if (!await segmentFile.exists()) return [];
       final bytes = await segmentFile.readAsBytes();
@@ -304,37 +312,63 @@ class VadAudioProcessor {
             final markerUtcSeconds = byteData.getUint32(offset + 4, Endian.little);
             const kMinValidMarkerEpoch = 946684800;
             if (markerUtcSeconds > kMinValidMarkerEpoch) {
-              final markerFrameTime = segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
+              final markerFrameTime = lastFrameWallTime;
               if (isCapturing) {
-                // Marker fired inside an active conversation — prevent the trailing silence from
-                // splitting the recording at the tap point. The recording continues to the next
-                // natural silence threshold.
-                _consecutiveSilenceFrames = 0;
-                Logger.debug(
-                    'VadAudioProcessor: Marker at $markerFrameTime — in active conversation, silence counter reset.');
+                // Marker during active recording — continue, don't split.
+                Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — continuing active recording.');
               } else {
-                // Marker fired during silence — force a lookback recording.
-                final msSinceLastSplit = _lastSplitTime != null
-                    ? markerFrameTime.difference(_lastSplitTime!).inMilliseconds
-                    : _markerLookbackMs;
-                final actualLookbackMs = min(msSinceLastSplit, _markerLookbackMs);
-                final actualLookbackFrames = actualLookbackMs ~/ frameDurationMs;
-
-                final rbRefsList = _rbRefs.toList();
-                final rbTimesList = _rbTimes.toList();
-                final startIdx = (rbRefsList.length - actualLookbackFrames).clamp(0, rbRefsList.length);
-
-                _lastSpeechCountBeforeReset = _speechFrameCount;
-                _currentRefs = rbRefsList.sublist(startIdx);
-                _recordingStartTime = startIdx < rbTimesList.length ? rbTimesList[startIdx] : markerFrameTime;
+                // Marker while not recording — start immediately at this point.
+                // No lookback: firmware VAD means no silence frames exist to look back through.
+                _recordingStartTime = markerFrameTime;
                 _speechFrameCount = 0;
                 _hangoverFrames = 0;
                 _consecutiveSilenceFrames = 0;
-                _currentChunkDurationMs = _currentRefs.length * frameDurationMs;
+                _currentChunkDurationMs = 0;
+                _currentRefs = [];
                 _forcedByMarker = true;
-                Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — forced lookback recording '
-                    '(${actualLookbackMs}ms, ${_currentRefs.length} frames).');
+                Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — starting recording immediately.');
               }
+            }
+          }
+          offset += 20;
+          continue;
+        }
+
+        // VAD-resume timestamp packet (0xFFFFFFFD): firmware writes this when AAD wakes
+        // from silence. Used to decide stitch vs split and recalibrate frame timestamps.
+        // Payload: [0..3] UTC epoch seconds (u32 LE), [4..7] uptime ms (u32 LE), [8..15] padding.
+        if (frameLength == 0xFFFFFFFD) {
+          if (offset + 8 <= fileLength) {
+            final vadUtcSeconds = byteData.getUint32(offset + 4, Endian.little);
+            const kMinValidEpoch = 946684800;
+            if (vadUtcSeconds > kMinValidEpoch) {
+              final newResumeTime = DateTime.fromMillisecondsSinceEpoch(vadUtcSeconds * 1000, isUtc: true);
+              final gapMs = newResumeTime.difference(lastFrameWallTime).inMilliseconds;
+
+              if (gapMs >= _silenceDurationToSplitMs) {
+                // Gap exceeds threshold — flush current recording, start new conversation.
+                if (_currentRefs.isNotEmpty &&
+                    (_speechFrameCount * frameDurationMs >= _minSpeechMs || _forcedByMarker)) {
+                  final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
+                  if (filePath != null) savedFiles.add(filePath);
+                }
+                _currentRefs = [];
+                _speechFrameCount = 0;
+                _hangoverFrames = 0;
+                _consecutiveSilenceFrames = 0;
+                _currentChunkDurationMs = 0;
+                _forcedByMarker = false;
+                _lastSplitTime = newResumeTime;
+                _recordingStartTime = newResumeTime;
+                Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
+              } else {
+                // Gap within threshold — stitch (continue current recording).
+                Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms < threshold, stitching.');
+              }
+
+              // Update anchor for subsequent frame timestamp calculations.
+              vadResumeTime = newResumeTime;
+              vadResumeFrameIndex = frameIndex;
             }
           }
           offset += 20;
@@ -383,16 +417,23 @@ class VadAudioProcessor {
           _speechFrameCount++;
           segmentSpeechFrames++;
           _consecutiveSilenceFrames = 0;
-          _currentRefs.add(frameRef);
-          _currentChunkDurationMs += frameDurationMs;
         } else {
           _consecutiveSilenceFrames++;
-          _currentRefs.add(frameRef);
-          _currentChunkDurationMs += frameDurationMs;
+        }
+        _currentRefs.add(frameRef);
+        _currentChunkDurationMs += frameDurationMs;
+
+        if (_recordingStartTime == null) {
+          _recordingStartTime = (vadResumeTime != null && vadResumeFrameIndex != null)
+              ? vadResumeTime!
+              : segmentStartTime;
         }
 
-        // Rolling pre-buffer — every audio frame, independent of VAD state and splits.
-        final frameTime = segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
+        // Compute accurate wall-clock time for this frame using VAD-resume anchor if available.
+        final frameTime = (vadResumeTime != null && vadResumeFrameIndex != null)
+            ? vadResumeTime!.add(Duration(milliseconds: (frameIndex - vadResumeFrameIndex!) * frameDurationMs))
+            : segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
+        lastFrameWallTime = frameTime;
         _rbRefs.addLast(frameRef);
         _rbTimes.addLast(frameTime);
         if (_rbRefs.length > _maxRollingFrames) {
@@ -400,41 +441,14 @@ class VadAudioProcessor {
           _rbTimes.removeFirst();
         }
 
-        final silenceMs = _consecutiveSilenceFrames * frameDurationMs;
-        if (silenceMs >= _silenceDurationToSplitMs) {
-          if (_speechFrameCount * frameDurationMs >= _minSpeechMs || _forcedByMarker) {
-            final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
-            if (filePath != null) savedFiles.add(filePath);
-          } else if (_currentRefs.isNotEmpty) {
-            Logger.debug('VadAudioProcessor: Discarding short recording '
-                '(${_speechFrameCount * frameDurationMs}ms speech < ${_minSpeechMs}ms minimum)');
-          }
-          _lastSplitTime = segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
-          _forcedByMarker = false;
-          final preSpeechFrames = _preSpeechBufferMs ~/ frameDurationMs;
-          final bufferToKeep = min(preSpeechFrames, _consecutiveSilenceFrames);
-          _currentRefs = _currentRefs.sublist(_currentRefs.length - bufferToKeep);
-          _speechFrameCount = 0;
-          _hangoverFrames = 0;
-          _consecutiveSilenceFrames = 0;
-          _currentChunkDurationMs = 0;
-          _recordingStartTime = segmentStartTime
-              .add(Duration(milliseconds: frameIndex * frameDurationMs))
-              .subtract(Duration(milliseconds: bufferToKeep * frameDurationMs));
-        } else if (_currentChunkDurationMs >= _maxChunkMs) {
+        // Silence-based splits are handled by 0xFFFFFFFD timestamp packets.
+        // Only enforce the max conversation duration cap here.
+        if (_currentChunkDurationMs >= _maxChunkMs) {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
           final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
           if (filePath != null) savedFiles.add(filePath);
-          // Anchor the next recording to exactly where this one ends on the audio
-          // clock (start + accumulated frames), not to the current bin's firmware
-          // timestamp. Bin timestamps drift from the audio clock over many files,
-          // so using segmentStartTime + frameOffset would push the new start time
-          // backwards, creating an overlap with the recording we just saved.
           final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
-          // _lastSplitTime stays on the firmware clock so marker lookback arithmetic
-          // (markerFrameTime - _lastSplitTime) remains consistent. Only _recordingStartTime
-          // uses the audio clock to prevent label overlap.
-          _lastSplitTime = segmentStartTime.add(Duration(milliseconds: (frameIndex + 1) * frameDurationMs));
+          _lastSplitTime = frameTime;
           _forcedByMarker = false;
           _currentRefs = [];
           _speechFrameCount = 0;
@@ -449,7 +463,7 @@ class VadAudioProcessor {
         totalFrameCount++;
       }
 
-      _lastSegmentEndTime = segmentStartTime.add(Duration(milliseconds: totalFrameCount * frameDurationMs));
+      _lastSegmentEndTime = lastFrameWallTime.add(const Duration(milliseconds: frameDurationMs));
       Logger.debug('VadAudioProcessor: ${segmentFile.path.split('/').last} — '
           '$totalFrameCount frames, $segmentSpeechFrames speech frames, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}');
     } catch (e) {

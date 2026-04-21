@@ -42,4 +42,12 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count);
  */
 bool aad_is_sleeping(void);
 
+/**
+ * @brief Force VAD out of sleep immediately (e.g. button press).
+ *
+ * Bypasses acoustic threshold for FORCE_WAKE_HOLD_MS (50s), then resumes
+ * normal VAD. Guarantees at least 60s of recording after a button tap.
+ */
+void aad_force_wake(void);
+
 #endif /* AAD_H */
