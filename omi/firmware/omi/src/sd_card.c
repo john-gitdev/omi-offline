@@ -32,6 +32,17 @@
 
 LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 
+/* ------------------------------------------------------------------ */
+/* Power Management Helpers                                           */
+/* ------------------------------------------------------------------ */
+#ifndef pm_action_is_unsupported
+#define pm_action_is_unsupported(ret) ((ret) == -ENOTSUP)
+#endif
+
+#ifndef pm_action_is_ok
+#define pm_action_is_ok(ret) ((ret) == 0 || (ret) == -EALREADY || (ret) == -ENOTSUP)
+#endif
+
 #define DISK_DRIVE_NAME CONFIG_SDMMC_VOLUME_NAME
 #define SD_REQ_QUEUE_MSGS 100
 #define SD_PRIO_QUEUE_MSGS 10
@@ -253,6 +264,14 @@ static bool sd_enabled = false;
 static atomic_t sd_write_paused = ATOMIC_INIT(0);
 static atomic_t sd_io_low_power = ATOMIC_INIT(0);
 static atomic_t sd_dev_pm_supported = ATOMIC_INIT(1);
+
+/* Worker thread & task definitions */
+#define SD_WORKER_STACK_SIZE 16384
+#define SD_WORKER_PRIORITY 7
+K_THREAD_STACK_DEFINE(sd_worker_stack, SD_WORKER_STACK_SIZE);
+static struct k_thread sd_worker_thread_data;
+static k_tid_t sd_worker_tid = NULL;
+
 static bool sd_ready = false;
 static bool sd_shutdown_in_progress = false;
 static uint32_t current_file_size = 0;
@@ -1374,16 +1393,6 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
     }
     invalidate_file_cache();
 }
-
-/* ------------------------------------------------------------------ */
-/* Worker thread & task definitions                                    */
-/* ------------------------------------------------------------------ */
-
-#define SD_WORKER_STACK_SIZE 16384
-#define SD_WORKER_PRIORITY 7
-K_THREAD_STACK_DEFINE(sd_worker_stack, SD_WORKER_STACK_SIZE);
-static struct k_thread sd_worker_thread_data;
-static k_tid_t sd_worker_tid = NULL;
 
 /* ------------------------------------------------------------------ */
 /* Internal helpers: file list, file stats                            */
@@ -2527,3 +2536,4 @@ int get_audio_file_stats(uint32_t *file_count, uint64_t *total_size)
     *total_size = resp.total_size;
     return 0;
 }
+
