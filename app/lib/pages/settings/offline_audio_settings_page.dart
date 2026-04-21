@@ -557,30 +557,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               ),
               const SizedBox(height: 24),
 
-              // Segment Gap Threshold
-              const Text(
-                'Segment Gap Threshold',
-                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Max allowed time gap between audio segments before forcing a split. Bridges brief gaps caused by the device being turned off or restarting.',
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  for (final sec in [10, 30, 60, 120])
-                    _WindowOption(
-                      label: '${sec}s',
-                      selected: _vadGapSeconds == sec,
-                      onTap: () {
-                        setState(() => _vadGapSeconds = sec);
-                        _markDirty();
-                      },
-                    ),
-                ],
-              ),
               const SizedBox(height: 32),
 
               // Maximum Conversation Length
@@ -671,5 +647,37 @@ class _WindowOption extends StatelessWidget {
       ),
     );
     return expand ? Expanded(child: content) : content;
+  }
+}
+ _WindowOption({required this.label, required this.selected, required this.onTap, this.expand = true});
+
+  @override
+  Widget build(BuildContext context) {
+    Widget content = GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1C1C1E),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: selected ? Colors.deepPurpleAccent : Colors.transparent, width: 1.5),
+        ),
+        child: Center(
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.deepPurpleAccent : Colors.grey.shade400,
+              fontSize: 14,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+            ),
+          ),
+        ),
+      ),
+    );
+    return expand ? Expanded(child: content) : content;
+  }
+}
+content;
   }
 }

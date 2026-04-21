@@ -23,7 +23,6 @@ class ProcessingSettings {
   final int silenceDurationToSplitMs;
   final int minSpeechMs;
   final int preSpeechBufferMs;
-  final int gapThresholdMs;
   final int maxChunkMs;
   final int markerLookbackMs;
   final int maxRollingFrames;
@@ -37,7 +36,6 @@ class ProcessingSettings {
     required this.silenceDurationToSplitMs,
     required this.minSpeechMs,
     required this.preSpeechBufferMs,
-    required this.gapThresholdMs,
     required this.maxChunkMs,
     required this.markerLookbackMs,
     required this.maxRollingFrames,
@@ -55,7 +53,6 @@ class ProcessingSettings {
       silenceDurationToSplitMs: p.vadSplitSeconds * 1000,
       minSpeechMs: p.vadMinSpeechSeconds * 1000,
       preSpeechBufferMs: (p.vadPreSpeechSeconds * 1000).round(),
-      gapThresholdMs: p.vadGapSeconds * 1000,
       maxChunkMs: p.vadMaxConversationMinutes * 60 * 1000,
       markerLookbackMs: p.markerLookbackSeconds * 1000,
       maxRollingFrames: p.markerLookbackSeconds * 1000 ~/ frameDurationMs,
@@ -77,41 +74,37 @@ class VadAudioProcessor {
   final SimpleOpusDecoder? _decoder;
   final String? _outputDir;
 
-  // Per-conversation accumulation — FrameRef disk-pointers only, no Opus in RAM
-  List<FrameRef> _currentRefs = [];
+  // Per-conversation accumulation — FrameRef disk-pointers only, no Opus in RAM.
+  // Can also contain Duration objects representing silence gaps to be padded.
+  List<Object> _currentRefs = [];
   int _speechFrameCount = 0; // speech frames in current conversation
-  int _lastSpeechCountBeforeReset = 0;
   DateTime? _recordingStartTime;
   DateTime? _lastSegmentEndTime;
   bool _isDerivedTimestamp = false; // true when segment had no valid device RTC timestamp
 
   // VAD state counters
-  int _consecutiveSilenceFrames = 0;
   int _hangoverFrames = 0; // frames remaining in hangover
   int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
 
   // Marker-forced recording state
   bool _forcedByMarker = false;
-  DateTime? _lastSplitTime; // wall time of the most recent silence split
 
   // Rolling pre-buffer for marker lookback — receives every audio frame regardless of VAD state,
   // never reset by splits. Sized to markerLookbackSeconds.
-  final ListQueue<FrameRef> _rbRefs = ListQueue();
+  // Can contain Duration objects for bridged gaps.
+  final ListQueue<Object> _rbRefs = ListQueue();
   final ListQueue<DateTime> _rbTimes = ListQueue();
 
   // Tracks segment files that have been fully processed. Used by consumeSafeToDeletePaths()
   // to determine which files are no longer referenced by any internal buffer.
   final Set<String> _processedFiles = {};
   final int _maxRollingFrames;
-  final int _markerLookbackMs;
 
   // Settings — cached at construction time for the lifetime of one processAll pass
   final double _speechThreshold;
   final int _hangoverFrameCount;
   final int _silenceDurationToSplitMs;
   final int _minSpeechMs;
-  final int _preSpeechBufferMs;
-  final int _gapThresholdMs;
   final int _maxChunkMs;
   final String _deviceId;
   final bool _convertOpusToM4a;
@@ -165,10 +158,7 @@ class VadAudioProcessor {
         _hangoverFrameCount = settings.hangoverFrameCount,
         _silenceDurationToSplitMs = settings.silenceDurationToSplitMs,
         _minSpeechMs = settings.minSpeechMs,
-        _preSpeechBufferMs = settings.preSpeechBufferMs,
-        _gapThresholdMs = settings.gapThresholdMs,
         _maxChunkMs = settings.maxChunkMs,
-        _markerLookbackMs = settings.markerLookbackMs,
         _maxRollingFrames = settings.maxRollingFrames,
         _deviceId = settings.deviceId,
         _convertOpusToM4a = settings.convertOpusToM4a,
@@ -255,10 +245,10 @@ class VadAudioProcessor {
 
       if (_lastSegmentEndTime != null) {
         final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds;
-        if (_currentRefs.isNotEmpty && gapMs > _gapThresholdMs) {
+        if (_currentRefs.isNotEmpty && gapMs > _silenceDurationToSplitMs) {
           Logger.debug(
             'VadAudioProcessor: Gap detected before ${segmentFile.path.split('/').last} — '
-            'gapMs=$gapMs (threshold=${_gapThresholdMs}ms), '
+            'gapMs=$gapMs (threshold=${_silenceDurationToSplitMs}ms), '
             'lastEnd=$_lastSegmentEndTime segmentStart=$segmentStartTime — flushing.',
           );
           _h = Float32List(2 * 1 * 64);
@@ -266,7 +256,7 @@ class VadAudioProcessor {
           _pcmWindow.clear();
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
-        } else if (gapMs > 0 && gapMs <= _gapThresholdMs) {
+        } else if (gapMs > 0 && gapMs <= _silenceDurationToSplitMs) {
           Logger.debug(
             'VadAudioProcessor: Small gap before ${segmentFile.path.split('/').last} — '
             'gapMs=$gapMs (within threshold, continuing stream).',
@@ -322,7 +312,6 @@ class VadAudioProcessor {
                 _recordingStartTime = markerFrameTime;
                 _speechFrameCount = 0;
                 _hangoverFrames = 0;
-                _consecutiveSilenceFrames = 0;
                 _currentChunkDurationMs = 0;
                 _currentRefs = [];
                 _forcedByMarker = true;
@@ -355,10 +344,8 @@ class VadAudioProcessor {
                 _currentRefs = [];
                 _speechFrameCount = 0;
                 _hangoverFrames = 0;
-                _consecutiveSilenceFrames = 0;
                 _currentChunkDurationMs = 0;
                 _forcedByMarker = false;
-                _lastSplitTime = newResumeTime;
                 _recordingStartTime = newResumeTime;
                 Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
               } else {
@@ -416,9 +403,6 @@ class VadAudioProcessor {
         if (effectiveSpeech) {
           _speechFrameCount++;
           segmentSpeechFrames++;
-          _consecutiveSilenceFrames = 0;
-        } else {
-          _consecutiveSilenceFrames++;
         }
         _currentRefs.add(frameRef);
         _currentChunkDurationMs += frameDurationMs;
@@ -448,12 +432,10 @@ class VadAudioProcessor {
           final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
           if (filePath != null) savedFiles.add(filePath);
           final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
-          _lastSplitTime = frameTime;
           _forcedByMarker = false;
           _currentRefs = [];
           _speechFrameCount = 0;
           _hangoverFrames = 0;
-          _consecutiveSilenceFrames = 0;
           _currentChunkDurationMs = 0;
           _recordingStartTime = cutTime;
         }
@@ -474,7 +456,7 @@ class VadAudioProcessor {
     return savedFiles;
   }
 
-  Future<String?> flushRemaining() async {
+  Future<String?> flushRemaining({bool isDraft = false}) async {
     if (_currentRefs.isEmpty || (_speechFrameCount * frameDurationMs < _minSpeechMs && !_forcedByMarker)) {
       if (_currentRefs.isNotEmpty) {
         Logger.debug(
@@ -485,7 +467,7 @@ class VadAudioProcessor {
       _resetState();
       return null;
     }
-    final path = await _saveRecording(_currentRefs, _recordingStartTime!);
+    final path = await _saveRecording(_currentRefs, _recordingStartTime!, isDraft: isDraft);
     _resetState();
     return path;
   }
@@ -513,11 +495,11 @@ class VadAudioProcessor {
       return safe;
     }
     final referenced = <String>{};
-    for (final ref in _currentRefs) {
-      referenced.add(ref.segmentFile.path);
+    for (final item in _currentRefs) {
+      if (item is FrameRef) referenced.add(item.segmentFile.path);
     }
-    for (final ref in _rbRefs) {
-      referenced.add(ref.segmentFile.path);
+    for (final item in _rbRefs) {
+      if (item is FrameRef) referenced.add(item.segmentFile.path);
     }
     final safe = _processedFiles.difference(referenced);
     _processedFiles.removeAll(safe);
@@ -528,18 +510,18 @@ class VadAudioProcessor {
     _currentRefs = [];
     _speechFrameCount = 0;
     _hangoverFrames = 0;
-    _consecutiveSilenceFrames = 0;
     _currentChunkDurationMs = 0;
     _recordingStartTime = null;
     _forcedByMarker = false;
   }
 
   @visibleForTesting
-  Future<String?> saveRecordingTest(List<FrameRef> refs, DateTime startTime, {bool isDerivedTimestamp = false}) =>
+  Future<String?> saveRecordingTest(List<Object> refs, DateTime startTime, {bool isDerivedTimestamp = false}) =>
       _saveRecording(refs, startTime, isDerivedTimestamp: isDerivedTimestamp);
 
-  Future<String?> _saveRecording(List<FrameRef> refs, DateTime startTime, {bool? isDerivedTimestamp}) async {
-    final result = await _saveRecordingCore(refs, startTime, isDerivedTimestamp: isDerivedTimestamp);
+  Future<String?> _saveRecording(List<Object> refs, DateTime startTime,
+      {bool? isDerivedTimestamp, bool isDraft = false}) async {
+    final result = await _saveRecordingCore(refs, startTime, isDerivedTimestamp: isDerivedTimestamp, isDraft: isDraft);
     if (result != null && _omiSyncEnabled) {
       try {
         final dateFolderPath = File(result).parent.path;
@@ -554,23 +536,25 @@ class VadAudioProcessor {
   /// Writes a raw Opus .bin file (4-byte LE length prefix + Opus bytes per frame) for upload
   /// to the Omi backend. Filename includes `_fs320_` so the server uses the correct 320-sample
   /// frame size (16 kHz × 20 ms) instead of its 160-sample default.
-  Future<void> _saveBin(List<FrameRef> refs, String dateFolderPath, int timestamp) async {
+  Future<void> _saveBin(List<Object> refs, String dateFolderPath, int timestamp) async {
     final binPath = '$dateFolderPath/recording_fs320_$timestamp.bin';
     final sink = File(binPath).openWrite();
     try {
       String? currentFilePath;
       Uint8List? currentFileBytes;
       for (var i = 0; i < refs.length; i++) {
+        final item = refs[i];
+        if (item is! FrameRef) continue;
+
         if (i % 50 == 0) await Future.delayed(Duration.zero);
-        final ref = refs[i];
-        if (ref.segmentFile.path != currentFilePath) {
-          currentFileBytes = await ref.segmentFile.readAsBytes();
-          currentFilePath = ref.segmentFile.path;
+        if (item.segmentFile.path != currentFilePath) {
+          currentFileBytes = await item.segmentFile.readAsBytes();
+          currentFilePath = item.segmentFile.path;
           await Future.delayed(Duration.zero);
         }
         if (currentFileBytes == null) continue;
         // Write 4-byte length prefix + Opus packet as-is.
-        sink.add(currentFileBytes.sublist(ref.byteOffset, ref.byteOffset + 4 + ref.frameLength));
+        sink.add(currentFileBytes.sublist(item.byteOffset, item.byteOffset + 4 + item.frameLength));
       }
       await sink.flush();
     } finally {
@@ -579,10 +563,13 @@ class VadAudioProcessor {
     Logger.debug('VadAudioProcessor: Saved bin for Omi sync — $binPath');
   }
 
-  Future<String?> _saveRecordingCore(List<FrameRef> refs, DateTime startTime, {bool? isDerivedTimestamp}) async {
+  Future<String?> _saveRecordingCore(List<Object> refs, DateTime startTime,
+      {bool? isDerivedTimestamp, bool isDraft = false}) async {
     final derived = isDerivedTimestamp ?? _isDerivedTimestamp;
     final prefix = derived ? 'unknown' : 'recording';
     final timestamp = startTime.millisecondsSinceEpoch;
+    // Append _draft if requested, but only for files with valid timestamps (not 'unknown_').
+    final suffix = (isDraft && !derived) ? '_draft' : '';
 
     String dateFolderPath;
     if (_outputDir != null) {
@@ -600,18 +587,18 @@ class VadAudioProcessor {
     }
 
     if (refs.length < 5) {
-      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix);
+      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
     }
 
     if (!_convertOpusToM4a) {
       if (Platform.isIOS) {
-        return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix);
+        return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
       } else {
-        return await _saveOgg(refs, dateFolderPath, timestamp, prefix: prefix);
+        return await _saveOgg(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
       }
     }
 
-    final m4aPath = '${dateFolder.path}/${prefix}_$timestamp.m4a';
+    final m4aPath = '${dateFolder.path}/${prefix}_$timestamp$suffix.m4a';
 
     const waveformBuckets = 200;
     const windowSize = 800;
@@ -652,9 +639,30 @@ class VadAudioProcessor {
 
     try {
       for (var i = 0; i < refs.length; i++) {
-        if (i % 50 == 0) await Future.delayed(Duration.zero);
+        final item = refs[i];
 
-        final ref = refs[i];
+        if (item is Duration) {
+          final pcmSamples = (item.inMilliseconds * sampleRate) ~/ 1000;
+          final silenceBytes = Uint8List(pcmSamples * channels * 2);
+          batchBuffer.add(silenceBytes);
+          totalSamples += pcmSamples;
+
+          for (int s = 0; s < pcmSamples; s++) {
+            currentWindowSamples++;
+            if (currentWindowSamples >= windowSize) {
+              dynamicPeaks.add(0.0);
+              currentWindowSamples = 0;
+            }
+          }
+
+          if (batchBuffer.length > 32000) {
+            await flushBatch();
+          }
+          continue;
+        }
+
+        final ref = item as FrameRef;
+        if (i % 50 == 0) await Future.delayed(Duration.zero);
 
         if (ref.segmentFile.path != currentFilePath) {
           // Note: reading the entire file into memory is a tradeoff (avoids thousands of native file seek/read calls).
@@ -716,15 +724,15 @@ class VadAudioProcessor {
       await AacEncoder.finishEncoder(sessionId!);
     } on Exception catch (e) {
       Logger.error('VadAudioProcessor: AAC encoding failed, falling back to WAV: $e');
-      final corruptFile = File('${dateFolder.path}/${prefix}_$timestamp.m4a');
+      final corruptFile = File('${dateFolder.path}/${prefix}_$timestamp$suffix.m4a');
       try {
         if (await corruptFile.exists()) await corruptFile.delete();
       } catch (_) {}
-      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix);
+      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
     }
 
     await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-        prefix: prefix, extension: 'm4a');
+        prefix: prefix, extension: 'm4a', suffix: suffix);
 
     Logger.debug(
         'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
@@ -732,9 +740,9 @@ class VadAudioProcessor {
     return m4aPath;
   }
 
-  Future<void> _saveMetadata(List<FrameRef> refs, String dateFolderPath, int timestamp, int totalSamples,
+  Future<void> _saveMetadata(List<Object> refs, String dateFolderPath, int timestamp, int totalSamples,
       List<double> dynamicPeaks, int waveformBuckets,
-      {required String prefix, required String extension}) async {
+      {required String prefix, required String extension, String suffix = ''}) async {
     final finalAmplitudes = List<double>.filled(waveformBuckets, 0.0);
     if (dynamicPeaks.isNotEmpty) {
       final double ratio = dynamicPeaks.length / waveformBuckets;
@@ -757,14 +765,14 @@ class VadAudioProcessor {
       final peak16 = (finalAmplitudes[i] * 65535.0).round().clamp(0, 65535);
       metaBytes.setUint16(8 + i * 2, peak16, Endian.little);
     }
-    final metaPath = '$dateFolderPath/${prefix}_$timestamp.meta';
+    final metaPath = '$dateFolderPath/${prefix}_$timestamp$suffix.meta';
     final List<int> metaOut = [...metaBytes.buffer.asUint8List()];
     final rawId = _deviceId;
     if (rawId.isNotEmpty) {
       final deviceId = rawId.replaceAll(':', '').toUpperCase();
       if (deviceId.length >= 6) {
         final mac6 = deviceId.substring(0, 6);
-        final uploadKey = '${mac6}_recording_$timestamp.$extension';
+        final uploadKey = '${mac6}_recording_$timestamp$suffix.$extension';
         final keyBytes = uploadKey.codeUnits;
         final truncatedKey = keyBytes.length > 255 ? keyBytes.sublist(0, 255) : keyBytes;
         metaOut.add(truncatedKey.length);
@@ -774,19 +782,16 @@ class VadAudioProcessor {
     await File(metaPath).writeAsBytes(metaOut);
   }
 
-  Future<String?> _saveOgg(List<FrameRef> refs, String dateFolderPath, int timestamp,
-      {String prefix = 'recording'}) async {
-    final oggPath = '$dateFolderPath/${prefix}_$timestamp.ogg';
+  Future<String?> _saveOgg(List<Object> refs, String dateFolderPath, int timestamp,
+      {String prefix = 'recording', String suffix = ''}) async {
+    final oggPath = '$dateFolderPath/${prefix}_$timestamp$suffix.ogg';
     final tmpPath = '$oggPath.tmp';
     final oggFile = File(tmpPath);
     final IOSink sink = oggFile.openWrite();
 
     const waveformBuckets = 200;
     const windowSize = 800;
-    // Fixed samples per 20ms Opus frame at 16kHz — used for granule advancement when
-    // the decoder is unavailable (desktop builds) so granule positions are always correct.
     const samplesPerFrame = frameDurationMs * sampleRate ~/ 1000;
-    // Batch this many frames into one OGG page (~400ms) to avoid 27-byte-per-frame overhead.
     const framesPerPage = 20;
 
     final dynamicPeaks = <double>[];
@@ -794,16 +799,13 @@ class VadAudioProcessor {
     int currentWindowSamples = 0;
     int totalSamples = 0;
 
+    final opusSilenceFrame = Uint8List.fromList([0xF8, 0xFF, 0xFE]);
+
     bool renamed = false;
     try {
       final serial = Random().nextInt(0x7FFFFFFF);
-      // 1. Ogg ID Header
-      final idHeader = _createOggOpusIdHeader();
-      sink.add(_createOggPage(0, 0, serial, [idHeader], isFirstPage: true));
-
-      // 2. Ogg Comment Header
-      final commentHeader = _createOggOpusCommentHeader();
-      sink.add(_createOggPage(0, 1, serial, [commentHeader]));
+      sink.add(_createOggPage(0, 0, serial, [_createOggOpusIdHeader()], isFirstPage: true));
+      sink.add(_createOggPage(0, 1, serial, [_createOggOpusCommentHeader()]));
 
       int granulePos = 0;
       int pageSeqNum = 2;
@@ -812,8 +814,33 @@ class VadAudioProcessor {
       final pagePackets = <Uint8List>[];
 
       for (var i = 0; i < refs.length; i++) {
+        final item = refs[i];
+
+        if (item is Duration) {
+          final ms = item.inMilliseconds;
+          final silenceFrames = (ms / frameDurationMs).round();
+          for (int f = 0; f < silenceFrames; f++) {
+            granulePos += samplesPerFrame;
+            pagePackets.add(opusSilenceFrame);
+            for (int s = 0; s < samplesPerFrame; s++) {
+              currentWindowSamples++;
+              if (currentWindowSamples >= windowSize) {
+                dynamicPeaks.add(0.0);
+                currentWindowSamples = 0;
+              }
+            }
+            totalSamples += samplesPerFrame;
+
+            if (pagePackets.length >= framesPerPage) {
+              sink.add(_createOggPage(granulePos * 3, pageSeqNum++, serial, pagePackets.toList()));
+              pagePackets.clear();
+            }
+          }
+          continue;
+        }
+
+        final ref = item as FrameRef;
         if (i % 50 == 0) await Future.delayed(Duration.zero);
-        final ref = refs[i];
 
         if (ref.segmentFile.path != currentFilePath) {
           currentFileBytes = await ref.segmentFile.readAsBytes();
@@ -826,7 +853,6 @@ class VadAudioProcessor {
         final frameDataOffset = ref.byteOffset + 4;
         final opusBytes = currentFileBytes.sublist(frameDataOffset, frameDataOffset + ref.frameLength);
 
-        // Decode for waveform peaks. A decode exception means a corrupt frame — skip it entirely.
         Int16List? pcmData;
         try {
           pcmData = _decoder?.decode(input: opusBytes);
@@ -847,9 +873,6 @@ class VadAudioProcessor {
           totalSamples += pcmData.length;
         }
 
-        // Always advance granule by the fixed frame duration so positions are correct even
-        // when the decoder is unavailable (pcmData == null on desktop builds).
-        // Ogg Opus granule position is in the 48kHz timescale — multiply 16kHz samples by 3.
         granulePos += samplesPerFrame;
         pagePackets.add(opusBytes);
 
@@ -868,25 +891,23 @@ class VadAudioProcessor {
         dynamicPeaks.add(currentWindowMax);
       }
 
-      // When the decoder is unavailable, derive duration from frame count instead of decoded samples.
       final metaSamples = totalSamples > 0 ? totalSamples : granulePos;
       await _saveMetadata(refs, dateFolderPath, timestamp, metaSamples, dynamicPeaks, waveformBuckets,
-          prefix: prefix, extension: 'ogg');
+          prefix: prefix, extension: 'ogg', suffix: suffix);
 
-      Logger.debug('VadAudioProcessor: Saved OGG recording (${refs.length} frames) starting at $timestamp to $oggPath');
+      Logger.debug('VadAudioProcessor: Saved OGG recording (${refs.length} items) starting at $timestamp$suffix to $oggPath');
       return oggPath;
     } catch (e) {
       Logger.error('VadAudioProcessor: OGG encoding failed, falling back to WAV: $e');
       try {
         await sink.close();
       } catch (_) {}
-      // Clean up whichever partial file exists: tmpPath before rename, oggPath after.
       final pathToClean = renamed ? oggPath : tmpPath;
       try {
         final f = File(pathToClean);
         if (await f.exists()) await f.delete();
       } catch (_) {}
-      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix);
+      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
     }
   }
 
@@ -1240,9 +1261,9 @@ class VadAudioProcessor {
     return crc;
   }
 
-  Future<String> _saveWav(List<FrameRef> refs, String dateFolderPath, int timestamp,
-      {String prefix = 'recording'}) async {
-    final wavPath = '$dateFolderPath/${prefix}_$timestamp.wav';
+  Future<String> _saveWav(List<Object> refs, String dateFolderPath, int timestamp,
+      {String prefix = 'recording', String suffix = ''}) async {
+    final wavPath = '$dateFolderPath/${prefix}_$timestamp$suffix.wav';
     final wavFile = File(wavPath);
     final IOSink sink = wavFile.openWrite();
 
@@ -1255,9 +1276,17 @@ class VadAudioProcessor {
     if (wavDecoder != null) {
       try {
         for (var i = 0; i < refs.length; i++) {
-          if (i % 50 == 0) await Future.delayed(Duration.zero);
+          final item = refs[i];
 
-          final ref = refs[i];
+          if (item is Duration) {
+            final pcmSamples = (item.inMilliseconds * sampleRate) ~/ 1000;
+            final silenceBytes = Uint8List(pcmSamples * channels * 2); // 16-bit PCM
+            decodedSegments.add(silenceBytes);
+            continue;
+          }
+
+          final ref = item as FrameRef;
+          if (i % 50 == 0) await Future.delayed(Duration.zero);
 
           if (ref.segmentFile.path != currentFilePath) {
             currentFileBytes = await ref.segmentFile.readAsBytes();
@@ -1342,9 +1371,9 @@ class VadAudioProcessor {
     if (currentWindowSamples > 0) dynamicPeaks.add(currentWindowMax);
 
     await _saveMetadata(refs, dateFolderPath, timestamp, totalPcmBytes ~/ (channels * 2), dynamicPeaks, waveformBuckets,
-        prefix: prefix, extension: 'wav');
+        prefix: prefix, extension: 'wav', suffix: suffix);
 
-    Logger.debug('VadAudioProcessor: Saved WAV fallback to $wavPath');
+    Logger.debug('VadAudioProcessor: Saved WAV recording to $wavPath');
     return wavPath;
   }
 }
