@@ -170,16 +170,24 @@ class SyncProcessCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 12),
-            GestureDetector(
-              onTap: onIconTap,
-              child: Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
+            Tooltip(
+              message: mainText,
+              child: Semantics(
+                button: true,
+                label: mainText,
+                child: Material(
                   color: iconBg,
-                  shape: BoxShape.circle,
+                  shape: const CircleBorder(),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    onTap: onIconTap,
+                    child: SizedBox(
+                      width: 40,
+                      height: 40,
+                      child: Center(child: iconChild),
+                    ),
+                  ),
                 ),
-                child: Center(child: iconChild),
               ),
             ),
           ],
