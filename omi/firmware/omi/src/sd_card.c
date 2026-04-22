@@ -36,11 +36,11 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 /* Power Management Helpers                                           */
 /* ------------------------------------------------------------------ */
 #ifndef pm_action_is_unsupported
-#define pm_action_is_unsupported(ret) ((ret) == -ENOTSUP)
+#define pm_action_is_unsupported(ret) ((ret) == -ENOTSUP || (ret) == -ENOSYS)
 #endif
 
 #ifndef pm_action_is_ok
-#define pm_action_is_ok(ret) ((ret) == 0 || (ret) == -EALREADY || (ret) == -ENOTSUP)
+#define pm_action_is_ok(ret) ((ret) == 0 || (ret) == -EALREADY || (ret) == -ENOTSUP || (ret) == -ENOSYS)
 #endif
 
 #define DISK_DRIVE_NAME CONFIG_SDMMC_VOLUME_NAME
@@ -56,7 +56,7 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 
 #define FILE_CACHE_TTL_MS (30 * 1000)
 #define FILE_CONTINUE_THRESHOLD_SEC 60
-#define BOOT_MIN_AUDIO_FILE_SIZE 1024
+#define BOOT_MIN_AUDIO_FILE_SIZE 10000
 
 /* LittleFS paths are relative to FS root (no mount-point prefix) */
 #define FILE_DATA_DIR  "audio"
@@ -202,7 +202,7 @@ static int lfs_disk_sync_cb(const struct lfs_config *c)
 {
     (void) c;
     int ret = disk_access_ioctl(DISK_DRIVE_NAME, DISK_IOCTL_CTRL_SYNC, NULL);
-    if (ret != 0) {
+    if (ret != 0 && ret != -ENOTSUP && ret != -ENOSYS) {
         LOG_WRN("[SD] CTRL_SYNC failed: %d (data may not be durable)", ret);
         return LFS_ERR_IO;
     }
@@ -272,6 +272,8 @@ static atomic_t pending_flush_on_ble_connect;
 static atomic_t pending_rotate_on_ble_connect;
 static atomic_t pending_time_synced;
 static uint32_t pending_timesync_utc; /* Written only from sd_notify_time_synced (single writer), read only on worker thread — no atomic needed. */
+static atomic_t deferred_timesync_rename_pending;
+static uint32_t deferred_timesync_utc;
 static atomic_t proactive_wipe_requested;
 
 static bool is_mounted = false;
@@ -2057,6 +2059,14 @@ void sd_worker_thread(void)
 
         /* ---- Time synced ---- */
         case REQ_TIME_SYNCED:
+            if (atomic_get(&ble_connected)) {
+                /* Defer rename until BLE disconnect to avoid corrupting active downloads */
+                atomic_set(&deferred_timesync_rename_pending, 1);
+                deferred_timesync_utc = req.u.time_synced.utc_time;
+                LOG_INF("[SD_WORK] Time sync received; deferring rename until BLE disconnect");
+                break;
+            }
+
             if (current_filename[0] != '\0' && current_file_needs_rename) {
                 /* 
                  * Time sync received while recording to a temporary file.
@@ -2238,6 +2248,16 @@ void sd_notify_ble_state(bool connected)
         }
     } else if (!connected && atomic_get(&ble_connected)) {
         LOG_INF("BLE disconnected");
+        atomic_set(&pending_rotate_on_ble_connect, 0);
+
+        if (atomic_cas(&deferred_timesync_rename_pending, 1, 0)) {
+            LOG_INF("[SD] Executing deferred time-sync rename after BLE disconnect");
+            sd_req_t req = {0};
+            req.type = REQ_TIME_SYNCED;
+            req.u.time_synced.utc_time = deferred_timesync_utc;
+            k_msgq_put(&sd_prio_msgq, &req, K_NO_WAIT);
+        }
+
         if (atomic_get(&current_file_deleted)) {
             int cr = create_new_audio_file();
             if (cr < 0)
@@ -2301,9 +2321,11 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     /* Try non-blocking put first to check if we need to track a block attempt */
     int ret = k_msgq_put(&sd_msgq, &req, K_NO_WAIT);
     if (ret != 0) {
-        /* Bounded blocking: wait up to 500ms for space in the ordered queue.
-         * SD cards frequently stall for 100-400ms during internal maintenance. */
-        ret = k_msgq_put(&sd_msgq, &req, K_MSEC(500));
+        /* Bounded blocking: use a very short adaptive timeout.
+         * SD cards frequently stall for 100-400ms during internal maintenance.
+         * We drop quickly rather than stalling the mic thread. */
+        k_timeout_t retry_to = atomic_get(&ble_connected) ? K_MSEC(1) : K_MSEC(5);
+        ret = k_msgq_put(&sd_msgq, &req, retry_to);
     }
 
     if (ret != 0) {
@@ -2359,7 +2381,7 @@ int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
         return ret;
     }
 
-    if (k_sem_take(&resp.sem, K_MSEC(25000)) != 0) {
+    if (k_sem_take(&resp.sem, K_MSEC(15000)) != 0) {
         LOG_ERR("Timeout waiting for read");
         /* Worker may still write to static resp later — that's safe.
          * Next call will check if worker caught up via sem. */
