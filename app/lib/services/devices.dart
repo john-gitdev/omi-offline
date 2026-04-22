@@ -17,7 +17,7 @@ abstract class IDeviceService {
   void stop();
   Future<List<BtDevice>> discover({String? desirableDeviceId, int timeout = 5});
 
-  Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false});
+  Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false, bool requiresBond = true});
 
   void subscribe(IDeviceServiceSubsciption subscription, Object context);
   void unsubscribe(Object context);
@@ -124,7 +124,7 @@ class DeviceService implements IDeviceService {
     }
   }
 
-  Future<void> _connectToDevice(String id) async {
+  Future<void> _connectToDevice(String id, {bool requiresBond = true}) async {
     var device = _devices.firstWhereOrNull((f) => f.id == id);
     Logger.debug('[DeviceService] device lookup result: ${device?.name ?? "NULL"} (locator: ${device?.locator?.kind})');
 
@@ -154,12 +154,12 @@ class DeviceService implements IDeviceService {
     }
 
     if (_connection == null) {
-      _connection = DeviceConnectionFactory.create(device);
+      _connection = DeviceConnectionFactory.create(device, requiresBond: requiresBond);
     }
 
     if (_connection != null) {
       try {
-        await _connection!.connect(onConnectionStateChanged: onDeviceConnectionStateChanged);
+        await _connection!.connect(onConnectionStateChanged: onDeviceConnectionStateChanged, requiresBond: requiresBond);
       } catch (e) {
         Logger.debug('[DeviceService] Connection attempt failed for $id: $e');
         rethrow;
@@ -232,7 +232,7 @@ class DeviceService implements IDeviceService {
 
   final Mutex _mutex = Mutex();
   @override
-  Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false}) async {
+  Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false, bool requiresBond = true}) async {
     await _mutex.acquire();
     try {
       Logger.debug("ensureConnection ${_connection?.device.id} ${_connection?.status} $force");
@@ -253,7 +253,7 @@ class DeviceService implements IDeviceService {
       if (!force) return null;
 
       try {
-        await _connectToDevice(deviceId);
+        await _connectToDevice(deviceId, requiresBond: requiresBond);
       } catch (e) {
         Logger.debug('[DeviceService] Connection failed for $deviceId: $e');
         return null;

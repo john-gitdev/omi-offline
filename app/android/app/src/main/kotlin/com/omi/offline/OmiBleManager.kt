@@ -173,6 +173,14 @@ class OmiBleManager private constructor(private val application: Application) {
         } else {
             adapter.getRemoteDevice(addr)
         }
+        
+        // If we have an existing GATT for this address, close it first to ensure a fresh start
+        connectedGatts[addr]?.let {
+            Log.i(TAG, "Closing existing GATT for $addr before reconnecting")
+            it.close()
+            connectedGatts.remove(addr)
+        }
+
         val gatt = device.connectGatt(application, autoConnect, createGattCallback(), BluetoothDevice.TRANSPORT_LE)
         if (gatt != null) connectedGatts[addr] = gatt
         return gatt

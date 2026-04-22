@@ -410,7 +410,10 @@ class OmiBleForegroundService : Service() {
         val addr = address.uppercase()
 
         val error = when {
-            status == 22 -> "paired_to_another_phone"
+            status == 22 -> {
+                Log.w(TAG, "Disconnection status 22 (LOCAL_HOST_TERM) for $addr - often a bonding/pairing mismatch.")
+                "bonding_issue_or_terminated"
+            }
             status != 0 -> "gatt_status_$status"
             else -> null
         }

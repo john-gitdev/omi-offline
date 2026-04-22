@@ -10,9 +10,8 @@ import 'package:omi/services/devices/transports/native_ble_transport.dart';
 import 'errors.dart';
 
 class DeviceConnectionFactory {
-  static DeviceConnection? create(BtDevice device) {
-    const bool needsBond = false;
-    DeviceTransport transport = NativeBleTransport(device.id, requiresBond: needsBond);
+  static DeviceConnection? create(BtDevice device, {bool requiresBond = true}) {
+    DeviceTransport transport = NativeBleTransport(device.id, requiresBond: requiresBond);
     return OmiDeviceConnection(device, transport);
   }
 }
