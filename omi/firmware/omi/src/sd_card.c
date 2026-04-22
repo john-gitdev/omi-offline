@@ -202,6 +202,7 @@ static int lfs_disk_sync_cb(const struct lfs_config *c)
     int ret = disk_access_ioctl(DISK_DRIVE_NAME, DISK_IOCTL_CTRL_SYNC, NULL);
     if (ret != 0) {
         LOG_WRN("[SD] CTRL_SYNC failed: %d (data may not be durable)", ret);
+        return LFS_ERR_IO;
     }
     return LFS_ERR_OK;
 }
@@ -268,7 +269,7 @@ static K_MUTEX_DEFINE(current_filename_lock);
 static atomic_t pending_flush_on_ble_connect;
 static atomic_t pending_rotate_on_ble_connect;
 static atomic_t pending_time_synced;
-static atomic_t pending_time_synced_utc;
+static uint32_t pending_timesync_utc; /* Written only from sd_notify_time_synced (single writer), read only on worker thread — no atomic needed. */
 static atomic_t proactive_wipe_requested;
 
 static bool is_mounted = false;
@@ -1663,7 +1664,7 @@ void sd_worker_thread(void)
         }
         if (atomic_cas(&pending_time_synced, 1, 0)) {
             req.type = REQ_TIME_SYNCED;
-            req.u.time_synced.utc_time = (uint32_t)atomic_get(&pending_time_synced_utc);
+            req.u.time_synced.utc_time = pending_timesync_utc;
             goto handle_req;
         }
 
@@ -1772,57 +1773,62 @@ void sd_worker_thread(void)
                 if (write_batch_offset > 0)
                     flush_batch_buffer_chunked();
                 if (bytes_since_sync > 0) {
-                    lfs_file_sync(&lfs_fs, &lfs_fil_data);
-                    data_sync_gen++;
-                    bytes_since_sync = 0;
-                    last_file_sync_uptime_ms = k_uptime_get();
-                }
-                /* Reopen read handle to pick up new file size.
-                 * Re-verify the file is still active after the close-reopen
-                 * window to guard against concurrent file rotation. */
-                close_read_handle();
-                k_mutex_lock(&current_filename_lock, K_FOREVER);
-                bool still_active = (current_filename[0] != '\0' &&
-                                     strcmp(req.u.read.filename, current_filename) == 0);
-                k_mutex_unlock(&current_filename_lock);
-                if (!still_active) {
-                    /* File rotated under us — signal completion. */
-                    is_active_file = false;
-                }
-                res = lfs_file_opencfg(&lfs_fs, &lfs_read_handle, read_path, LFS_O_RDONLY, &lfs_read_handle_cfg);
-                if (res < 0) {
-                    if (req.u.read.resp) {
-                        req.u.read.resp->res = res;
-                        req.u.read.resp->read_bytes = 0;
-                        k_sem_give(&req.u.read.resp->sem);
+                    int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
+                    if (sr == 0) {
+                        data_sync_gen++;
+                        bytes_since_sync = 0;
+                        last_file_sync_uptime_ms = k_uptime_get();
+
+                        /* Reopen read handle to pick up new file size.
+                         * Re-verify the file is still active after the close-reopen
+                         * window to guard against concurrent file rotation. */
+                        close_read_handle();
+                        k_mutex_lock(&current_filename_lock, K_FOREVER);
+                        bool still_active = (current_filename[0] != '\0' &&
+                                             strcmp(req.u.read.filename, current_filename) == 0);
+                        k_mutex_unlock(&current_filename_lock);
+                        if (!still_active) {
+                            /* File rotated under us — signal completion. */
+                            is_active_file = false;
+                        }
+                        res = lfs_file_opencfg(&lfs_fs, &lfs_read_handle, read_path, LFS_O_RDONLY, &lfs_read_handle_cfg);
+                        if (res < 0) {
+                            if (req.u.read.resp) {
+                                req.u.read.resp->res = res;
+                                req.u.read.resp->read_bytes = 0;
+                                k_sem_give(&req.u.read.resp->sem);
+                            }
+                            break;
+                        }
+                        strncpy(read_handle_filename, req.u.read.filename, MAX_FILENAME_LEN - 1);
+                        read_handle_open = true;
+                        read_handle_pos = 0;
+                        read_handle_gen = data_sync_gen;
+
+                        /* Re-check if the file is still the active file after reopen.
+                         * A file rotation could have changed current_filename between
+                         * the sync and reopen, making our read_path stale. */
+                        k_mutex_lock(&current_filename_lock, K_FOREVER);
+                        still_active = (current_filename[0] != '\0' &&
+                                        strcmp(req.u.read.filename, current_filename) == 0);
+                        k_mutex_unlock(&current_filename_lock);
+                        if (!still_active) {
+                            if (req.u.read.resp) {
+                                req.u.read.resp->res = 0;
+                                req.u.read.resp->read_bytes = 0;
+                                k_sem_give(&req.u.read.resp->sem);
+                            }
+                            break;
+                        }
+
+                        lfs_file_seek(&lfs_fs, &lfs_read_handle, (lfs_soff_t) req.u.read.offset, LFS_SEEK_SET);
+                        read_handle_pos = (lfs_soff_t) req.u.read.offset;
+
+                        br = lfs_file_read(&lfs_fs, &lfs_read_handle, req.u.read.out_buf, req.u.read.length);
+                    } else {
+                        LOG_ERR("[SD_WORK] lazy sync failed: %d", sr);
                     }
-                    break;
                 }
-                strncpy(read_handle_filename, req.u.read.filename, MAX_FILENAME_LEN - 1);
-                read_handle_open = true;
-                read_handle_pos = 0;
-                read_handle_gen = data_sync_gen;
-
-                /* Re-check if the file is still the active file after reopen.
-                 * A file rotation could have changed current_filename between
-                 * the sync and reopen, making our read_path stale. */
-                k_mutex_lock(&current_filename_lock, K_FOREVER);
-                still_active = (current_filename[0] != '\0' &&
-                                strcmp(req.u.read.filename, current_filename) == 0);
-                k_mutex_unlock(&current_filename_lock);
-                if (!still_active) {
-                    if (req.u.read.resp) {
-                        req.u.read.resp->res = 0;
-                        req.u.read.resp->read_bytes = 0;
-                        k_sem_give(&req.u.read.resp->sem);
-                    }
-                    break;
-                }
-
-                lfs_file_seek(&lfs_fs, &lfs_read_handle, (lfs_soff_t) req.u.read.offset, LFS_SEEK_SET);
-                read_handle_pos = (lfs_soff_t) req.u.read.offset;
-
-                br = lfs_file_read(&lfs_fs, &lfs_read_handle, req.u.read.out_buf, req.u.read.length);
             }
 
             if (br > 0) {
@@ -1849,9 +1855,11 @@ void sd_worker_thread(void)
             lfs_file_close(&lfs_fs, &lfs_fil_data);
             k_mutex_lock(&current_filename_lock, K_FOREVER);
             current_filename[0] = '\0';
+            current_file_path[0] = '\0';
             k_mutex_unlock(&current_filename_lock);
 
             char fpath[64];
+            bool clear_ok = true;
 
             /* RAM-efficient search-and-delete loop (avoids 9.6KB static buffer).
              * We find one file, close dir, delete it, and repeat until empty. 
@@ -1879,22 +1887,27 @@ void sd_worker_thread(void)
                 int rm = lfs_remove(&lfs_fs, fpath);
                 if (rm < 0) {
                     LOG_ERR("[SD_WORK] rm %s: %d", fpath, rm);
+                    clear_ok = false;
                     break; /* Stop on error to avoid infinite loops */
                 }
                 k_yield();
             }
 
-            /* Reset offset info */
-            memset(&current_offset_info, 0, sizeof(current_offset_info));
-            lfs_file_seek(&lfs_fs, &lfs_fil_info, 0, LFS_SEEK_SET);
-            lfs_file_write(&lfs_fs, &lfs_fil_info, &current_offset_info, sizeof(current_offset_info));
-            lfs_file_sync(&lfs_fs, &lfs_fil_info);
-            invalidate_file_cache();
-            bytes_since_sync = 0;
-            write_batch_offset = 0;
-            write_batch_counter = 0;
+            if (clear_ok) {
+                /* Reset offset info */
+                memset(&current_offset_info, 0, sizeof(current_offset_info));
+                lfs_file_seek(&lfs_fs, &lfs_fil_info, 0, LFS_SEEK_SET);
+                lfs_file_write(&lfs_fs, &lfs_fil_info, &current_offset_info, sizeof(current_offset_info));
+                lfs_file_sync(&lfs_fs, &lfs_fil_info);
+                invalidate_file_cache();
+                bytes_since_sync = 0;
+                write_batch_offset = 0;
+                write_batch_counter = 0;
 
-            res = create_audio_file_with_timestamp();
+                res = create_audio_file_with_timestamp();
+            } else {
+                res = -EIO;
+            }
 
             if (req.u.clear_dir.resp) {
                 req.u.clear_dir.resp->res = res;
@@ -2030,7 +2043,11 @@ void sd_worker_thread(void)
                  * 1. Rotate to a new file (which will now use the correct UTC timestamp).
                  * 2. Retroactively rename all previously closed TMP_ segments.
                  */
-                create_audio_file_with_timestamp();
+                int res = create_audio_file_with_timestamp();
+                if (res < 0) {
+                    LOG_ERR("[SD_WORK] Time sync rotation failed: %d", res);
+                    break;
+                }
                 sd_update_filename_after_timesync(req.u.time_synced.utc_time);
             } else if (current_filename[0] == '\0') {
                 /* No file open yet, start a fresh one with UTC name. */
@@ -2165,7 +2182,7 @@ uint32_t sd_get_cached_free_bytes(void)
 void sd_notify_time_synced(uint32_t utc_time)
 {
     /* Store value before flag — atomic_set provides ordering. */
-    atomic_set(&pending_time_synced_utc, (atomic_val_t)utc_time);
+    pending_timesync_utc = utc_time;
     atomic_set(&pending_time_synced, 1);
 
     sd_req_t req = {0};
@@ -2243,18 +2260,13 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     }
 
     if (sd_write_blocked) {
+        /* Recovery is handled strictly on the sd_worker thread to avoid data races. */
         int64_t now = k_uptime_get();
-        if ((now - last_write_error_uptime_ms) > 2000) {
-            sd_write_blocked = false;
-            writing_error_counter = 0;
-            LOG_INF("Attempting recovery from write-blocked state");
-        } else {
-            if (now - last_write_blocked_log_ms > 1000) {
-                LOG_ERR("write_to_file blocked (permanent SD failure?)");
-                last_write_blocked_log_ms = now;
-            }
-            return 0;
+        if (now - last_write_blocked_log_ms > 1000) {
+            LOG_ERR("write_to_file blocked (permanent SD failure?)");
+            last_write_blocked_log_ms = now;
         }
+        return 0;
     }
     if (length > MAX_WRITE_SIZE) {
         LOG_ERR("write_to_file: length %u exceeds MAX_WRITE_SIZE %d", (unsigned)length, MAX_WRITE_SIZE);
