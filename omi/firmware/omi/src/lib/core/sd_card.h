@@ -42,6 +42,7 @@ typedef enum {
     REQ_FLUSH_FILE,
     REQ_TIME_SYNCED,
     REQ_UNMOUNT,
+    REQ_PAUSE_IO,
 } sd_req_type_t;
 
 /* Read request response object */

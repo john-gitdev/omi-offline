@@ -704,39 +704,27 @@ void sd_write_pause(bool pause)
 {
     if (pause) {
         atomic_set(&sd_write_paused, 1);
-        bool flush_ok = true;
 
-        if (is_mounted && sd_worker_tid) {
-            struct read_resp resp;
-            k_sem_init(&resp.sem, 0, 1);
-            resp.res = 0;
-            sd_req_t req = {0};
-            req.type = REQ_FLUSH_FILE;
-            req.u.create_file.resp = &resp;
-            int qret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
-            if (qret != 0) {
-                LOG_WRN("[AAD] SD pause flush enqueue failed: %d", qret);
-                flush_ok = false;
-            } else if (k_sem_take(&resp.sem, K_MSEC(10000)) != 0) {
-                LOG_WRN("[AAD] SD pause flush timeout; keep active");
-                flush_ok = false;
-            } else if (resp.res < 0) {
-                LOG_WRN("[AAD] SD pause flush failed: %d", resp.res);
-                flush_ok = false;
+        if (k_current_get() != sd_worker_tid) {
+            if (is_mounted && sd_worker_tid) {
+                struct read_resp resp;
+                k_sem_init(&resp.sem, 0, 1);
+                resp.res = 0;
+                sd_req_t req = {0};
+                req.type = REQ_PAUSE_IO;
+                req.u.create_file.resp = &resp;
+                int qret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
+                if (qret == 0) {
+                    k_sem_take(&resp.sem, K_MSEC(10000));
+                }
             }
+            return;
         }
 
-        /* Max power savings: Suspend the entire SPI3 bus if flush succeeded 
-         * AND no OTA is in progress. The mcumgr callback will wake it if DFU starts. */
-        if (flush_ok) {
-            sd_set_io_low_power(true);
-            LOG_INF("[AAD] SD writes paused (SPI3 suspended)");
-        } else {
-            LOG_INF("[AAD] SD writes paused (active mode maintained)");
-        }
+        /* If we are here, we ARE the worker thread. Caller (handler) already flushed. */
+        sd_set_io_low_power(true);
+        LOG_INF("[AAD] SD writes paused (SPI3 suspended)");
     } else {
-        /* Lazy resume: clear flag only. The write path will resume the device
-         * only when a batch flush actually needs SPI I/O. */
         atomic_set(&sd_write_paused, 0);
         LOG_INF("[AAD] SD writes resumed (lazy)");
     }
@@ -1600,11 +1588,6 @@ void sd_worker_thread(void)
     }
 
     /* ---- Main loop ---- */
-    int consec_writes = 0;
-    bool in_high_watermark = false;
-    int64_t last_activity_uptime_ms = 0;
-    const int64_t idle_sleep_delay_ms = 10000; // Match CONFIG_OMI_VAD_HOLD_MS (10s)
-
     while (1) {
 
 
@@ -1630,79 +1613,26 @@ void sd_worker_thread(void)
             goto handle_req;
         }
 
-        uint32_t write_usage = k_msgq_num_used_get(&sd_msgq);
-        uint32_t prio_usage = k_msgq_num_used_get(&sd_prio_msgq);
-        
-        /* Hysteresis: Enter panic mode at 70%, Exit at 50% */
-        if (!in_high_watermark && write_usage >= (SD_REQ_QUEUE_MSGS * 70) / 100) {
-            in_high_watermark = true;
-            LOG_INF("[SD_WORK] High watermark reached (%u/%d), entering priority drain",
-                    write_usage, SD_REQ_QUEUE_MSGS);
-        } else if (in_high_watermark && write_usage <= (SD_REQ_QUEUE_MSGS * 50) / 100) {
-            in_high_watermark = false;
-            LOG_INF("[SD_WORK] Queue depth safe (%u/%d), resuming normal schedule", 
-                    write_usage, SD_REQ_QUEUE_MSGS);
-        }
-
-        /* 
-         * Scheduling Policy:
-         * 1. If in high watermark, aggressively drain writes.
-         * 2. If we have pending writes and haven't exceeded our burst limit (16), process writes.
-         * 3. If there are no priority requests, keep processing writes.
-         */
-        if (write_usage > 0 && (in_high_watermark || consec_writes < 16 || prio_usage == 0)) {
-            if (k_msgq_get(&sd_msgq, &req, K_NO_WAIT) == 0) {
-                consec_writes++;
-                goto handle_req;
-            }
-        }
-
-        /* 4. Process priority queue (BLE reads/control) if we yielded from writes or writes are empty */
-        if (prio_usage > 0) {
-            if (k_msgq_get(&sd_prio_msgq, &req, K_NO_WAIT) == 0) {
-                consec_writes = 0; /* Reset counter to allow next write burst */
-                goto handle_req;
-            }
-        }
-
-        /* 5. Both queues empty — poll with short timeout so write-blocked
-         * recovery check in process_write_data_req can fire. */
-        k_timeout_t idle_wait = K_MSEC(100);
-        if (k_msgq_get(&sd_msgq, &req, idle_wait) == 0) {
-            consec_writes++;
+        /* Priority check first */
+        if (k_msgq_get(&sd_prio_msgq, &req, K_NO_WAIT) == 0) {
             goto handle_req;
         }
 
-        /* Check for idle sleep only when truly idle (queues empty) */
-        if ((k_uptime_get() - last_activity_uptime_ms) >= idle_sleep_delay_ms) {
-            sd_set_io_low_power(true);
-        }
+        /* Block forever for data */
+        k_msgq_get(&sd_msgq, &req, K_FOREVER);
+        goto handle_req;
 
         continue;
 
     handle_req:
-        /* Activity detected — immediately wake SPI3 bus and reset the idle timer */
+        /* Activity detected — immediately wake SPI3 bus */
         sd_set_io_low_power(false);
-        last_activity_uptime_ms = k_uptime_get();
 
         switch (req.type) {
 
         /* ---- Write data ---- */
         case REQ_WRITE_DATA:
             process_write_data_req(&req);
-            for (int i = 0; i < WRITE_DRAIN_BURST; i++) {
-                if (k_msgq_num_used_get(&sd_prio_msgq) > 0)
-                    break;
-                sd_req_t drain_req;
-                if (k_msgq_get(&sd_msgq, &drain_req, K_NO_WAIT) != 0)
-                    break;
-                if (drain_req.type != REQ_WRITE_DATA) {
-                    /* put non-write back on prio queue and stop draining */
-                    k_msgq_put(&sd_prio_msgq, &drain_req, K_NO_WAIT);
-                    break;
-                }
-                process_write_data_req(&drain_req);
-            }
             break;
 
         /* ---- Read audio data (uses persistent file handle) ---- */
@@ -1995,6 +1925,20 @@ void sd_worker_thread(void)
             if (req.u.delete_file.resp) {
                 req.u.delete_file.resp->res = rm;
                 k_sem_give(&req.u.delete_file.resp->sem);
+            }
+            break;
+        }
+
+        /* ---- Pause IO ---- */
+        case REQ_PAUSE_IO: {
+            flush_batch_buffer();
+            if (current_filename[0] != '\0') {
+                lfs_file_sync(&lfs_fs, &lfs_fil_data);
+            }
+            sd_write_pause(true);
+            if (req.u.create_file.resp) {
+                req.u.create_file.resp->res = 0;
+                k_sem_give(&req.u.create_file.resp->sem);
             }
             break;
         }
