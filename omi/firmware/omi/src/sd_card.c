@@ -55,6 +55,8 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define SD_SPI_MOSI_HOLD_PIN 11
 
 #define FILE_CACHE_TTL_MS (30 * 1000)
+#define FILE_CONTINUE_THRESHOLD_SEC 60
+#define BOOT_MIN_AUDIO_FILE_SIZE 1024
 
 /* LittleFS paths are relative to FS root (no mount-point prefix) */
 #define FILE_DATA_DIR  "audio"
@@ -1024,8 +1026,6 @@ static void print_audio_files_at_boot(void)
 /* File creation / continuation at boot                               */
 /* ------------------------------------------------------------------ */
 
-#define FILE_CONTINUE_THRESHOLD_SEC (60)
-
 /* Helper: open a file and set the common state variables for continuation. */
 static int _open_file_for_continuation(const char *filename, bool needs_rename)
 {
@@ -1054,50 +1054,70 @@ static int _open_file_for_continuation(const char *filename, bool needs_rename)
 
 static int try_continue_latest_file(void)
 {
-
     lfs_dir_t dir;
     struct lfs_info info;
 
     uint32_t current_time = get_utc_time();
     bool rtc_valid = (current_time != 0 && current_time >= 1700000000U);
 
-    if (!rtc_valid) {
-        return -1;
-    }
-
-    /* RTC valid: find the most recent timestamped file within the continuation window. */
     if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) < 0) {
         return -1;
     }
 
-    char latest_filename[MAX_FILENAME_LEN] = {0};
-    uint32_t latest_timestamp = 0;
+    char latest_utc_fn[MAX_FILENAME_LEN] = {0};
+    uint32_t latest_utc_ts = 0;
+    lfs_size_t latest_utc_sz = 0;
+
+    char latest_tmp_fn[MAX_FILENAME_LEN] = {0};
+    uint32_t latest_tmp_uptime = 0;
+    lfs_size_t latest_tmp_sz = 0;
 
     while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
         if (info.type != LFS_TYPE_REG)
             continue;
-        char *dot = strrchr(info.name, '.');
-        if (dot && strcasecmp(dot, ".txt") == 0) {
-            uint32_t ts = (uint32_t) strtoul(info.name, NULL, 16);
-            if (ts > latest_timestamp) {
-                latest_timestamp = ts;
-                strncpy(latest_filename, info.name, sizeof(latest_filename) - 1);
+
+        if (info.size < BOOT_MIN_AUDIO_FILE_SIZE)
+            continue;
+
+        if (strncmp(info.name, "TMP_", 4) == 0) {
+            uint32_t uptime = (uint32_t)strtoul(info.name + 4, NULL, 16);
+            if (uptime > latest_tmp_uptime) {
+                latest_tmp_uptime = uptime;
+                latest_tmp_sz = info.size;
+                strncpy(latest_tmp_fn, info.name, sizeof(latest_tmp_fn) - 1);
+            }
+        } else {
+            char *dot = strrchr(info.name, '.');
+            if (dot && strcasecmp(dot, ".txt") == 0) {
+                uint32_t ts = (uint32_t)strtoul(info.name, NULL, 16);
+                if (ts > latest_utc_ts) {
+                    latest_utc_ts = ts;
+                    latest_utc_sz = info.size;
+                    strncpy(latest_utc_fn, info.name, sizeof(latest_utc_fn) - 1);
+                }
             }
         }
     }
     lfs_dir_close(&lfs_fs, &dir);
 
-    if (latest_filename[0] == '\0')
-        return -1;
+    /* 1. Prefer UTC file if valid and within window */
+    if (rtc_valid && latest_utc_ts > 0) {
+        int32_t diff = (int32_t)(current_time - latest_utc_ts);
+        if (diff >= 0 && diff <= FILE_CONTINUE_THRESHOLD_SEC) {
+            LOG_INF("[SD_BOOT] Continuing UTC file: %s (diff=%d s, sz=%u)",
+                    latest_utc_fn, diff, (unsigned)latest_utc_sz);
+            return _open_file_for_continuation(latest_utc_fn, /*needs_rename=*/false);
+        }
+    }
 
-    int32_t diff = (int32_t) (current_time - latest_timestamp);
-    LOG_INF("[SD_BOOT] Latest file: %s diff=%d s", latest_filename, diff);
+    /* 2. Fall back to TMP file (always needs rename) */
+    if (latest_tmp_uptime > 0) {
+        LOG_INF("[SD_BOOT] Continuing TMP file: %s (sz=%u)",
+                latest_tmp_fn, (unsigned)latest_tmp_sz);
+        return _open_file_for_continuation(latest_tmp_fn, /*needs_rename=*/true);
+    }
 
-    if (diff < 0 || diff > FILE_CONTINUE_THRESHOLD_SEC)
-        return -1;
-
-    LOG_INF("[SD_BOOT] Continuing file: %s", latest_filename);
-    return _open_file_for_continuation(latest_filename, /*needs_rename=*/false);
+    return -1;
 }
 
 static int create_audio_file_with_timestamp(void)
