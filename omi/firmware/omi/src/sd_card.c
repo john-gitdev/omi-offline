@@ -47,9 +47,12 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define SD_REQ_QUEUE_MSGS 100
 #define SD_PRIO_QUEUE_MSGS 10
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
-#define WRITE_DRAIN_BURST 16
 #define WRITE_BATCH_COUNT 100
 #define ERROR_THRESHOLD 5
+
+/* SPI3 MOSI hold-low pin — disconnected on SD power-off to prevent back-feed.
+   gpio1 pin 11 = P1.11 on the nRF52840 board schematic. */
+#define SD_SPI_MOSI_HOLD_PIN 11
 
 #define FILE_CACHE_TTL_MS (30 * 1000)
 
@@ -196,7 +199,10 @@ static int lfs_disk_erase_cb(const struct lfs_config *c, lfs_block_t block)
 static int lfs_disk_sync_cb(const struct lfs_config *c)
 {
     (void) c;
-    (void) disk_access_ioctl(DISK_DRIVE_NAME, DISK_IOCTL_CTRL_SYNC, NULL);
+    int ret = disk_access_ioctl(DISK_DRIVE_NAME, DISK_IOCTL_CTRL_SYNC, NULL);
+    if (ret != 0) {
+        LOG_WRN("[SD] CTRL_SYNC failed: %d (data may not be durable)", ret);
+    }
     return LFS_ERR_OK;
 }
 
@@ -510,7 +516,12 @@ static int flush_batch_buffer_chunked(void)
     while (to_write > 0) {
         size_t chunk = (to_write > FLUSH_CHUNK_SIZE) ? FLUSH_CHUNK_SIZE : to_write;
         lfs_ssize_t bw = lfs_file_write(&lfs_fs, &lfs_fil_data, ptr, chunk);
-        
+
+        if (bw < 0 || (size_t)bw != chunk) {
+            k_msleep(50);
+            bw = lfs_file_write(&lfs_fs, &lfs_fil_data, ptr, chunk);
+        }
+
         if (bw < 0 || (size_t)bw != chunk) {
             writing_error_counter++;
             last_write_error_uptime_ms = k_uptime_get();
@@ -519,7 +530,6 @@ static int flush_batch_buffer_chunked(void)
             write_batch_counter = 0;
             return -EIO;
         }
-
         ptr += bw;
         to_write -= bw;
         total_written += bw;
@@ -551,6 +561,16 @@ static void process_write_data_req(const sd_req_t *req)
             writing_error_counter = 0;
             LOG_INF("[SD_WORK] Attempting recovery from write-blocked state (data)");
         } else {
+            /* Still blocked: buffer the frame to preserve audio if space allows */
+            if (write_batch_offset + req->u.write.len <= sizeof(write_batch_buffer)) {
+                memcpy(write_batch_buffer + write_batch_offset,
+                       req->u.write.buf, req->u.write.len);
+                write_batch_offset += req->u.write.len;
+                write_batch_counter++;
+            } else {
+                /* Batch buffer full — frame is truly unrecoverable */
+                atomic_inc(&stat_dropped_frames);
+            }
             return;
         }
     }
@@ -571,7 +591,13 @@ static void process_write_data_req(const sd_req_t *req)
 
     if (should_rotate_file()) {
         LOG_INF("[SD_WORK] Rotating file after %d min", (int)(FILE_ROTATION_INTERVAL_MS / 60000));
-        flush_batch_buffer_chunked();
+        int flush_res = flush_batch_buffer_chunked();
+        if (flush_res < 0) {
+            LOG_ERR("[SD_WORK] flush failed before rotation: %d", flush_res);
+            last_write_error_uptime_ms = k_uptime_get();
+            sd_write_blocked = true;
+            return;
+        }
         int res = create_audio_file_with_timestamp();
         if (res < 0) {
             last_write_error_uptime_ms = k_uptime_get();
@@ -627,7 +653,8 @@ static int sd_enable_power(bool enable)
              * bus and must remain accessible during OTA. The SD chip itself is
              * powered off via sd_en, so it draws no current regardless. */
         }
-        gpio_pin_configure(DEVICE_DT_GET(DT_NODELABEL(gpio1)), 11, GPIO_DISCONNECTED);
+        gpio_pin_configure(DEVICE_DT_GET(DT_NODELABEL(gpio1)),
+                           SD_SPI_MOSI_HOLD_PIN, GPIO_DISCONNECTED);
         ret = gpio_pin_set_dt(&sd_en, 0);
         sd_enabled = false;
     }
@@ -735,6 +762,11 @@ static void lfs_close_files(void)
     current_filename[0] = '\0';
     current_file_path[0] = '\0';
     k_mutex_unlock(&current_filename_lock);
+    /* Reset batch and sync counters so a post-recovery remount starts clean */
+    write_batch_offset  = 0;
+    write_batch_counter = 0;
+    bytes_since_sync    = 0;
+    current_file_size   = 0;
 }
 
 /*
@@ -929,8 +961,10 @@ static bool filename_equals_ignore_case(const char *a, const char *b)
     for (size_t i = 0; i < MAX_FILENAME_LEN; i++) {
         if (tolower((unsigned char) a[i]) != tolower((unsigned char) b[i]))
             return false;
+        if (a[i] == '\0' && b[i] == '\0')
+            return true;
         if (a[i] == '\0' || b[i] == '\0')
-            break;
+            return false;
     }
     return true;
 }
@@ -1195,11 +1229,17 @@ static int compare_filenames(const void *a, const void *b)
 
 static void update_cached_free_bytes(void)
 {
-    if (lfs_cfg.block_count > 0) {
-        uint64_t total_cap = (uint64_t)lfs_cfg.block_count * lfs_cfg.block_size;
-        cached_free_bytes = (cached_total_file_size < total_cap)
-                            ? (uint32_t)(total_cap - cached_total_file_size) : 0;
-    }
+    if (lfs_cfg.block_count == 0) return;
+    uint64_t total_cap = (uint64_t)lfs_cfg.block_count * lfs_cfg.block_size;
+    /* Reserve ~2% for LFS metadata (CTZ skip-lists, dir entries, superblock).
+       Minimum reservation: 512 KB to avoid false "disk full" near capacity. */
+    uint64_t metadata_reserve = total_cap / 50;  /* 2% */
+    if (metadata_reserve < (512 * 1024)) metadata_reserve = 512 * 1024;
+    uint64_t usable = (total_cap > metadata_reserve)
+                      ? (total_cap - metadata_reserve) : 0;
+    cached_free_bytes = (cached_total_file_size < usable)
+                        ? (uint32_t)(usable - cached_total_file_size)
+                        : 0;
 }
 
 static void invalidate_file_cache(void)
@@ -1233,6 +1273,18 @@ static void update_current_file_cache_size(uint32_t delta)
         return;
     }
 
+    /* Snapshot filename under lock so a concurrent BLE rename cannot
+       change it between our cache lookup and the size update. */
+    char fname_snap[MAX_FILENAME_LEN];
+    k_mutex_lock(&current_filename_lock, K_FOREVER);
+    if (current_filename[0] == '\0') {
+        k_mutex_unlock(&current_filename_lock);
+        return;
+    }
+    strncpy(fname_snap, current_filename, sizeof(fname_snap) - 1);
+    fname_snap[sizeof(fname_snap) - 1] = '\0';
+    k_mutex_unlock(&current_filename_lock);
+
     cached_total_file_size += delta;
     cached_stats_total_size = cached_total_file_size;
     cached_stats_file_count = cached_total_file_count;
@@ -1241,7 +1293,7 @@ static void update_current_file_cache_size(uint32_t delta)
 
     k_mutex_lock(&file_cache_mutex, K_FOREVER);
     AudioFileMeta_t current_meta;
-    parse_filename_to_meta(current_filename, current_file_size, &current_meta);
+    parse_filename_to_meta(fname_snap, current_file_size, &current_meta);
 
     for (int i = 0; i < cached_file_list_count; i++) {
         if (compare_meta(&cached_file_meta[i], &current_meta) == 0) {
@@ -1391,7 +1443,7 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
         struct lfs_info info;
         char old_fn[MAX_FILENAME_LEN] = {0};
         char new_fn[MAX_FILENAME_LEN] = {0};
-        char old_path[128], new_path[128];
+        char old_path[64], new_path[64];
 
         if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) < 0) {
             break;
@@ -1416,8 +1468,8 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
         uint32_t correct_ts = (original_uptime_ms / 1000U) + rtc_offset;
         
         snprintf(new_fn, MAX_FILENAME_LEN, "%08X.txt", correct_ts);
-        build_file_path(old_fn, old_path, 128);
-        build_file_path(new_fn, new_path, 128);
+        build_file_path(old_fn, old_path, sizeof(old_path));
+        build_file_path(new_fn, new_path, sizeof(new_path));
         
         if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
             LOG_INF("Retroactive rename: %s -> %s", old_fn, new_fn);
@@ -1461,8 +1513,18 @@ void sd_worker_thread(void)
     if (atomic_cas(&proactive_wipe_requested, 1, 0)) {
         LOG_INF("[SD_WORK] Executing early reformat requested by main...");
         lfs_unmount(&lfs_fs);
-        lfs_format(&lfs_fs, &lfs_cfg);
-        lfs_mount(&lfs_fs, &lfs_cfg);
+        int fmt_ret = lfs_format(&lfs_fs, &lfs_cfg);
+        if (fmt_ret != LFS_ERR_OK) {
+            LOG_ERR("[SD_WORK] Proactive reformat failed: %d", fmt_ret);
+            sd_write_blocked = true;
+            return;
+        }
+        int mnt_ret = lfs_mount(&lfs_fs, &lfs_cfg);
+        if (mnt_ret != LFS_ERR_OK) {
+            LOG_ERR("[SD_WORK] Proactive remount failed: %d", mnt_ret);
+            sd_write_blocked = true;
+            return;
+        }
         check_or_write_magic();
         LOG_INF("[SD_WORK] Early reformat complete.");
     }
@@ -1833,8 +1895,6 @@ void sd_worker_thread(void)
             write_batch_counter = 0;
 
             res = create_audio_file_with_timestamp();
-            if (res >= 0) {
-                    }
 
             if (req.u.clear_dir.resp) {
                 req.u.clear_dir.resp->res = res;
@@ -1847,8 +1907,6 @@ void sd_worker_thread(void)
         case REQ_CREATE_NEW_FILE:
             flush_batch_buffer_chunked();
             res = create_audio_file_with_timestamp();
-            if (res >= 0) {
-                    }
             if (req.u.create_file.resp) {
                 req.u.create_file.resp->res = res;
                 k_sem_give(&req.u.create_file.resp->sem);
@@ -1858,8 +1916,6 @@ void sd_worker_thread(void)
         /* ---- Get file stats ---- */
         case REQ_GET_FILE_STATS: {
             res = ensure_file_cache();
-            if (res >= 0) {
-                    }
 
             if (req.u.file_stats.resp) {
                 req.u.file_stats.resp->res = res;
