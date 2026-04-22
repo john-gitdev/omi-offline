@@ -122,13 +122,6 @@ void set_led_state()
         return;
     }
 
-#ifdef CONFIG_OMI_ENABLE_T5838_AAD
-    if (aad_is_sleeping()) {
-        led_off();
-        return;
-    }
-#endif
-
     // Force LEDs ON if charging starts
     if (is_charging && !is_led_enabled) {
         is_led_enabled = true;
