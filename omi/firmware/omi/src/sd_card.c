@@ -268,6 +268,7 @@ static atomic_t proactive_wipe_requested;
 static bool is_mounted = false;
 static bool sd_enabled = false;
 static atomic_t sd_write_paused = ATOMIC_INIT(0);
+static atomic_t ota_active = ATOMIC_INIT(0);
 static atomic_t sd_io_low_power = ATOMIC_INIT(0);
 static atomic_t sd_dev_pm_supported = ATOMIC_INIT(1);
 
@@ -649,6 +650,10 @@ static void sd_set_io_low_power(bool enable)
         return;
 
     if (enable) {
+        /* Do NOT sleep the bus if an OTA is in progress or about to start */
+        if (atomic_get(&ota_active))
+            return;
+
         if (!atomic_cas(&sd_io_low_power, 0, 1))
             return;
 
@@ -682,10 +687,24 @@ static void sd_set_io_low_power(bool enable)
     /* spi3 is safe to suspend — BLE connect always resumes it before OTA can start */
 }
 
+void sd_set_ota_active(bool active)
+{
+    if (active) {
+        atomic_set(&ota_active, 1);
+        /* Force SPI3 bus to wake up immediately */
+        sd_set_io_low_power(false);
+        LOG_INF("OTA mode active: SPI3 bus resumed");
+    } else {
+        atomic_set(&ota_active, 0);
+        LOG_INF("OTA mode inactive");
+    }
+}
+
 void sd_write_pause(bool pause)
 {
     if (pause) {
         atomic_set(&sd_write_paused, 1);
+        bool flush_ok = true;
 
         if (is_mounted && sd_worker_tid) {
             struct read_resp resp;
@@ -695,25 +714,31 @@ void sd_write_pause(bool pause)
             req.type = REQ_FLUSH_FILE;
             req.u.create_file.resp = &resp;
             int qret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
-            if (qret == 0) {
-                if (k_sem_take(&resp.sem, K_MSEC(10000)) != 0)
-                    LOG_WRN("[AAD] SD pause flush timeout");
-            } else {
+            if (qret != 0) {
                 LOG_WRN("[AAD] SD pause flush enqueue failed: %d", qret);
+                flush_ok = false;
+            } else if (k_sem_take(&resp.sem, K_MSEC(10000)) != 0) {
+                LOG_WRN("[AAD] SD pause flush timeout; keep active");
+                flush_ok = false;
+            } else if (resp.res < 0) {
+                LOG_WRN("[AAD] SD pause flush failed: %d", resp.res);
+                flush_ok = false;
             }
         }
 
-        /* Suspend SD device only — do NOT suspend spi3, it is shared with spi_flash */
-        if (sd_enabled) {
-            pm_device_action_run(sd_dev, PM_DEVICE_ACTION_SUSPEND);
+        /* Max power savings: Suspend the entire SPI3 bus if flush succeeded 
+         * AND no OTA is in progress. The mcumgr callback will wake it if DFU starts. */
+        if (flush_ok) {
+            sd_set_io_low_power(true);
+            LOG_INF("[AAD] SD writes paused (SPI3 suspended)");
+        } else {
+            LOG_INF("[AAD] SD writes paused (active mode maintained)");
         }
-        LOG_INF("[AAD] SD writes paused");
     } else {
-        if (sd_enabled) {
-            pm_device_action_run(sd_dev, PM_DEVICE_ACTION_RESUME);
-        }
+        /* Lazy resume: clear flag only. The write path will resume the device
+         * only when a batch flush actually needs SPI I/O. */
         atomic_set(&sd_write_paused, 0);
-        LOG_INF("[AAD] SD writes resumed");
+        LOG_INF("[AAD] SD writes resumed (lazy)");
     }
 }
 
