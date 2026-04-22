@@ -33,11 +33,12 @@ class OmiBleForegroundService : Service() {
         private const val MTU_SIZE = 512
         private const val STABILITY_TIMER_MS = 60_000L
         private const val RECONNECT_DELAY_MS = 3_000L
+        private const val CONNECTION_TIMEOUT_MS = 30_000L
         private const val COMPANION_RATE_LIMIT_MS = 15_000L
         private const val PREFS_NAME = "ble_config"
         private const val PREFS_KEY = "managed_device"
         private const val PREFS_USER_DISCONNECTED = "user_disconnected"
-@Volatile
+        @Volatile
         var instance: OmiBleForegroundService? = null
             private set
 
@@ -130,7 +131,8 @@ class OmiBleForegroundService : Service() {
         var currentGattHash: Int? = null,
         var hasEverConnected: Boolean = false,
         var pendingReconnect: Runnable? = null,
-        var stabilityTimerRunnable: Runnable? = null
+        var stabilityTimerRunnable: Runnable? = null,
+        var connectionTimeoutRunnable: Runnable? = null
     )
 
     private val managedDevices = ConcurrentHashMap<String, ManagedDevice>()
@@ -153,6 +155,8 @@ class OmiBleForegroundService : Service() {
             managed.hasEverConnected = true
             managed.pendingReconnect?.let { handler.removeCallbacks(it) }
             managed.pendingReconnect = null
+            managed.connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
+            managed.connectionTimeoutRunnable = null
             managed.connectionStartTime = System.currentTimeMillis()
             managed.currentGattHash = gatt.hashCode()
 
@@ -166,6 +170,7 @@ class OmiBleForegroundService : Service() {
             Log.i(TAG, "onGattDisconnected: $addr (status=$status)")
             handleDisconnection(addr, gattHash, status)
         }
+
 
         override fun onGattServicesDiscovered(address: String, services: List<BleService>) {
             val addr = address.uppercase()
@@ -346,6 +351,16 @@ class OmiBleForegroundService : Service() {
 
             managed.currentGattHash = gatt.hashCode()
             managed.connectionStartTime = System.currentTimeMillis()
+
+            managed.connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
+            val timeoutRunnable = Runnable {
+                Log.w(TAG, "Connection timeout for $addr after ${CONNECTION_TIMEOUT_MS}ms")
+                managed.connectionTimeoutRunnable = null
+                handleDisconnection(addr, managed.currentGattHash ?: 0, -1)
+            }
+            managed.connectionTimeoutRunnable = timeoutRunnable
+            handler.postDelayed(timeoutRunnable, CONNECTION_TIMEOUT_MS)
+
             updateNotification("Connecting to Omi...")
         }
     }
@@ -356,6 +371,8 @@ class OmiBleForegroundService : Service() {
 
         managed.pendingReconnect?.let { handler.removeCallbacks(it) }
         managed.pendingReconnect = null
+        managed.connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        managed.connectionTimeoutRunnable = null
         managed.retryCount = 0
         connectToDevice(addr, source)
     }
@@ -375,6 +392,8 @@ class OmiBleForegroundService : Service() {
 
             managed.pendingReconnect?.let { handler.removeCallbacks(it) }
             managed.pendingReconnect = null
+            managed.connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
+            managed.connectionTimeoutRunnable = null
             managed.stabilityTimerRunnable?.let { handler.removeCallbacks(it) }
             managed.stabilityTimerRunnable = null
 
