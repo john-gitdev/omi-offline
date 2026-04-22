@@ -24,6 +24,7 @@ class OmiBleManager private constructor(private val application: Application) {
     companion object {
         private const val TAG = "OmiBle"
         private const val BOND_TIMEOUT_MS = 15000L
+        private const val DISCOVERY_TIMEOUT_MS = 15000L
 
         @Volatile
         private var _instance: OmiBleManager? = null
@@ -69,6 +70,7 @@ class OmiBleManager private constructor(private val application: Application) {
     val mainHandler = Handler(Looper.getMainLooper())
 
     val connectedGatts = ConcurrentHashMap<String, BluetoothGatt>()
+    private val discoveryTimeouts = ConcurrentHashMap<String, Runnable>()
     private val readCompletions = ConcurrentHashMap<String, (Result<ByteArray>) -> Unit>()
     private val writeCompletions = ConcurrentHashMap<String, (Result<Unit>) -> Unit>()
 
@@ -351,6 +353,7 @@ class OmiBleManager private constructor(private val application: Application) {
     fun cleanupPeripheral(address: String) {
         val addr = address.uppercase()
         servicesDiscoveredFor.remove(addr)
+        discoveryTimeouts.remove(addr)?.let { mainHandler.removeCallbacks(it) }
         stopRssiKeepAlive()
         val prefix = addr.lowercase()
         readCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { readCompletions.remove(it)?.invoke(Result.failure(Exception("Disconnected"))) }
@@ -363,7 +366,27 @@ class OmiBleManager private constructor(private val application: Application) {
             val address = gatt.device.address.uppercase()
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 connectedGatts[address] = gatt
-                enqueueCommand { if (!gatt.discoverServices()) completeCommand() }
+
+                // Add timeout for discovery
+                val discoveryTimeout = Runnable {
+                    if (!servicesDiscoveredFor.contains(address)) {
+                        Log.e(TAG, "Service discovery timeout for $address")
+                        cleanupPeripheral(address)
+                        connectionListener?.onGattDisconnected(address, gatt.hashCode(), -1)
+                        gatt.disconnect()
+                        gatt.close()
+                    }
+                }
+                discoveryTimeouts[address] = discoveryTimeout
+                mainHandler.postDelayed(discoveryTimeout, DISCOVERY_TIMEOUT_MS)
+
+                enqueueCommand {
+                    if (!gatt.discoverServices()) {
+                        mainHandler.removeCallbacks(discoveryTimeout)
+                        discoveryTimeouts.remove(address)
+                        completeCommand()
+                    }
+                }
                 connectionListener?.onGattConnected(address, gatt)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 cleanupPeripheral(address)
@@ -376,6 +399,9 @@ class OmiBleManager private constructor(private val application: Application) {
         }
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             val address = gatt.device.address.uppercase()
+
+            discoveryTimeouts.remove(address)?.let { mainHandler.removeCallbacks(it) }
+
             if (servicesDiscoveredFor.contains(address) || status != BluetoothGatt.GATT_SUCCESS) { completeCommand(); return }
             val bleServices = gatt.services.map { svc ->
                 BleService(svc.uuid.toString().lowercase(), svc.characteristics?.map { it.uuid.toString().lowercase() } ?: emptyList())
