@@ -94,10 +94,10 @@ void main() {
     });
 
     test('Specific configuration wrappers read and write correctly', () async {
-      // Test use24HourTime (default true)
-      expect(prefsUtil.use24HourTime, true);
-      prefsUtil.use24HourTime = false;
+      // Test use24HourTime (default false)
       expect(prefsUtil.use24HourTime, false);
+      prefsUtil.use24HourTime = true;
+      expect(prefsUtil.use24HourTime, true);
 
       // Test deviceIdHash
       expect(prefsUtil.deviceIdHash, '');
@@ -139,10 +139,6 @@ void main() {
       expect(prefsUtil.vadPreSpeechSeconds, 1.0);
       prefsUtil.vadPreSpeechSeconds = 2.0;
       expect(prefsUtil.vadPreSpeechSeconds, 2.0);
-
-      expect(prefsUtil.vadGapSeconds, 30);
-      prefsUtil.vadGapSeconds = 45;
-      expect(prefsUtil.vadGapSeconds, 45);
 
       expect(prefsUtil.vadMaxConversationMinutes, 60);
       prefsUtil.vadMaxConversationMinutes = 90;

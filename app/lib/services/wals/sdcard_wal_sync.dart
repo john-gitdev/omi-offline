@@ -367,7 +367,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     listener.onWalUpdated();
     // Persist after deletion so the WAL is gone from disk even if the app restarts before
     // the next natural save point. This prevents re-downloading a deleted file.
-    WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) {});
+    WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => false);
   }
 
   Future<void> _saveMarker(int deviceSessionId, int utcTime) async {

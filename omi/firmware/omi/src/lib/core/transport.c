@@ -989,7 +989,7 @@ void pusher(void)
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
         // Always write to storage for offline-only recording
-        if (!is_muted && get_file_size() < MAX_STORAGE_BYTES && is_sd_on()) {
+        if (!is_muted && sd_get_cached_total_size() < MAX_STORAGE_BYTES && is_sd_on()) {
             storage_full_warned = false;
             
             write_to_storage();

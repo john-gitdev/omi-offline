@@ -25,7 +25,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late int _vadMinSpeechSeconds;
   late double _vadHangoverSeconds;
   late double _vadPreSpeechSeconds;
-  late int _vadGapSeconds;
   late int _vadMaxConversationMinutes;
   late int _markerLookbackSeconds;
 
@@ -45,7 +44,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _vadMinSpeechSeconds = SharedPreferencesUtil().vadMinSpeechSeconds;
     _vadHangoverSeconds = SharedPreferencesUtil().vadHangoverSeconds;
     _vadPreSpeechSeconds = SharedPreferencesUtil().vadPreSpeechSeconds;
-    _vadGapSeconds = SharedPreferencesUtil().vadGapSeconds;
     _vadMaxConversationMinutes = SharedPreferencesUtil().vadMaxConversationMinutes;
     _markerLookbackSeconds = SharedPreferencesUtil().markerLookbackSeconds;
   }
@@ -76,7 +74,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     prefs.vadMinSpeechSeconds = _vadMinSpeechSeconds;
     prefs.vadHangoverSeconds = _vadHangoverSeconds;
     prefs.vadPreSpeechSeconds = _vadPreSpeechSeconds;
-    prefs.vadGapSeconds = _vadGapSeconds;
     prefs.vadMaxConversationMinutes = _vadMaxConversationMinutes;
     prefs.markerLookbackSeconds = _markerLookbackSeconds;
 
@@ -647,37 +644,5 @@ class _WindowOption extends StatelessWidget {
       ),
     );
     return expand ? Expanded(child: content) : content;
-  }
-}
- _WindowOption({required this.label, required this.selected, required this.onTap, this.expand = true});
-
-  @override
-  Widget build(BuildContext context) {
-    Widget content = GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.only(right: 8),
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1C1C1E),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: selected ? Colors.deepPurpleAccent : Colors.transparent, width: 1.5),
-        ),
-        child: Center(
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? Colors.deepPurpleAccent : Colors.grey.shade400,
-              fontSize: 14,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-            ),
-          ),
-        ),
-      ),
-    );
-    return expand ? Expanded(child: content) : content;
-  }
-}
-content;
   }
 }

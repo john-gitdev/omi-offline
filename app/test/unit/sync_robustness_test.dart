@@ -76,14 +76,14 @@ class MockDeviceConnection extends Fake implements DeviceConnection {
   int writeCount = 0;
 
   @override
-  Future<bool> writeToStorage(int numFile, int command, int offset) async {
+  Future<bool> writeToStorage(int numFile, int command, int offset, {int? timestamp}) async {
     currentFileNum = numFile;
     writeCount++;
     return true;
   }
 
   @override
-  Future<bool> deleteFile(StorageFile file) async => true;
+  Future<bool> deleteFile(StorageFile file, {int? timestamp}) async => true;
 
   List<StorageFile> files = [];
 
@@ -113,13 +113,81 @@ class MockDeviceConnection extends Fake implements DeviceConnection {
   Future<bool> isConnected() async => true;
 
   @override
-  Future<bool> performWriteToStorage(int fileNum, int type, int offset) async => true;
+  Future<bool> performWriteToStorage(int fileNum, int type, int offset, {int? timestamp}) async => true;
+
+  @override
+  Future<bool> performSyncDeviceTime() async => true;
 
   @override
   Future<List<int>> performGetStorageList() async => [0, 0];
 
   @override
   Future<BleAudioCodec?> getAudioCodec() async => BleAudioCodec.opus;
+
+  @override
+  Future<StorageFileStats?> performGetStorageFileStats() async => StorageFileStats(
+        totalUsedBytes: 0,
+        fileCount: files.length,
+        freeBytes: 1000000,
+      );
+
+  @override
+  Future<BtDevice> performGetDeviceInfo(DeviceConnection? connection) async => MockBtDevice();
+
+  @override
+  Future<int> performRetrieveBatteryLevel() async => 100;
+
+  @override
+  Future<bool> performRetrieveChargingState() async => false;
+
+  @override
+  Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({
+    void Function(int)? onBatteryLevelChange,
+    void Function(bool)? onChargingStateChange,
+  }) async => null;
+
+  @override
+  Future<List<int>> performGetButtonState() async => [];
+
+  @override
+  Future<BleAudioCodec> performGetAudioCodec() async => BleAudioCodec.opus;
+
+  @override
+  Future<StreamSubscription<List<int>>?> performGetBleButtonListener(
+      {required void Function(List<int>) onButtonReceived}) async => null;
+
+  @override
+  Future<int> performGetFeatures() async => 0;
+
+  @override
+  Future<void> performSetLedDimRatio(int ratio) async {}
+
+  @override
+  Future<int?> performGetLedDimRatio() async => null;
+
+  @override
+  Future<void> performSetMicGain(int gain) async {}
+
+  @override
+  Future<int?> performGetMicGain() async => null;
+
+  @override
+  Future<bool> performStopStorageSync() async => true;
+
+  @override
+  Future<bool> performRotateFile() async => true;
+
+  @override
+  Future<bool> performClearStorage() async => true;
+
+  @override
+  Future<List<StorageFile>> performListFiles() async => files;
+
+  @override
+  Future<Stream<List<int>>> performReadFile(StorageFile file, {int offset = 0}) async => const Stream.empty();
+
+  @override
+  Future<bool> performDeleteFile(StorageFile file, {int? timestamp}) async => true;
 }
 
 class MockBtDevice extends Fake implements BtDevice {
@@ -341,8 +409,9 @@ void main() {
       ];
 
       final wals = await sync.getMissingWals();
-      expect(wals.length, equals(1));
-      expect(wals[0].fileNum, equals(2));
+      expect(wals.length, equals(2));
+      expect(wals[0].fileNum, equals(1));
+      expect(wals[1].fileNum, equals(2));
     });
 
     test('syncAll continues next file and returns partial on gap exception limit', () async {

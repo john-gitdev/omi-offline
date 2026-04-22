@@ -111,9 +111,6 @@ struct bt_gatt_service storage_service = BT_GATT_SERVICE(storage_service_attr);
 #define STORAGE_WRITE_NOTIFY_ATTR_IDX 2
 
 bool storage_is_on = false;
-static uint32_t cached_file_count = 0;
-static uint64_t cached_total_size = 0;
-static int64_t storage_stats_next_refresh_ms = 0;
 
 static bool storage_notify_ready(struct bt_conn *conn)
 {
@@ -150,19 +147,6 @@ static ssize_t storage_read_characteristic(struct bt_conn *conn,
                                            uint16_t len,
                                            uint16_t offset)
 {
-    int64_t now = k_uptime_get();
-    if (now >= storage_stats_next_refresh_ms) {
-        uint32_t file_count = 0;
-        uint64_t total_size = 0;
-        if (get_audio_file_stats(&file_count, &total_size) == 0) {
-            cached_file_count = file_count;
-            cached_total_size = total_size;
-            storage_stats_next_refresh_ms = now + 2000;
-        } else {
-            storage_stats_next_refresh_ms = now + 500;
-        }
-    }
-    
     /* Phone app expects (little-endian):
      *   [0..3]  total_used_bytes  (uint32)
      *   [4..7]  file_count        (uint32)
@@ -170,12 +154,12 @@ static ssize_t storage_read_characteristic(struct bt_conn *conn,
      *   [12..15] status_flags     (uint32)  — optional, newer firmware
      */
     uint32_t payload[4] = {0};
-    payload[0] = (uint32_t)cached_total_size;   /* total used bytes */
-    payload[1] = cached_file_count;             /* number of audio files */
-    payload[2] = sd_get_cached_free_bytes();   /* free bytes remaining on SD */
-    payload[3] = 0;                      /* status_flags: bit0=charging, bit1=warning, bit2=error */
+    payload[0] = (uint32_t)sd_get_cached_total_size(); /* total used bytes */
+    payload[1] = sd_get_cached_file_count();           /* number of audio files */
+    payload[2] = sd_get_cached_free_bytes();           /* free bytes remaining on SD */
+    payload[3] = 0;                                    /* status_flags */
     
-    LOG_INF("Storage read: used=%u bytes, files=%u", payload[0], payload[1]);
+    LOG_INF("Storage read: used=%u bytes, files=%u, free=%u", payload[0], payload[1], payload[2]);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
 
