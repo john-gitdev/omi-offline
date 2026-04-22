@@ -67,6 +67,10 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define LFS_MAGIC_PATH  ".lfs_magic"
 #define LFS_MAGIC_VALUE 0x4C465356u /* 'L','F','S','V' */
 
+/* Sentinel file created to request a full SD wipe on next boot.
+ * Provides persistence across unexpected resets/watchdog triggers. */
+#define WIPE_SENTINEL_PATH ".wipe_pending"
+
 /* ------------------------------------------------------------------ */
 /* Disk sector size (always 512 for SD) */
 #define DISK_SECTOR_SIZE 512
@@ -1533,8 +1537,11 @@ void sd_worker_thread(void)
     }
 
     /* ---- Handle proactive wipe request (e.g. firmware update) ---- */
-    if (atomic_cas(&proactive_wipe_requested, 1, 0)) {
-        LOG_INF("[SD_WORK] Executing early reformat requested by main...");
+    struct lfs_info sinfo;
+    bool sentinel_found = (lfs_stat(&lfs_fs, WIPE_SENTINEL_PATH, &sinfo) == 0);
+
+    if (sentinel_found || atomic_cas(&proactive_wipe_requested, 1, 0)) {
+        LOG_INF("[SD_WORK] Executing early reformat (sentinel=%d)...", sentinel_found);
         lfs_unmount(&lfs_fs);
         int fmt_ret = lfs_format(&lfs_fs, &lfs_cfg);
         if (fmt_ret != LFS_ERR_OK) {
@@ -2111,6 +2118,17 @@ uint32_t sd_get_boot_dropped_frames(void)
 void sd_request_wipe(void)
 {
     atomic_set(&proactive_wipe_requested, 1);
+
+    /* If already mounted, try to write the sentinel file for hardware persistence.
+     * The worker thread check at boot handles the case where we reset before this. */
+    if (is_mounted) {
+        lfs_file_t f;
+        if (lfs_file_open(&lfs_fs, &f, WIPE_SENTINEL_PATH, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC) >= 0) {
+            lfs_file_close(&lfs_fs, &f);
+            LOG_INF("[SD] Wipe sentinel created on SD card");
+        }
+    }
+
     LOG_INF("[SD] Proactive wipe flag set for next boot");
 }
 
