@@ -511,7 +511,11 @@ class DeviceProvider extends ChangeNotifier
 
   @override
   void onSyncFinished() {
-    if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground) {
+    // Double check that we are actually in the background before disconnecting.
+    final state = WidgetsBinding.instance.lifecycleState;
+    final isTrulyBackground = (state != null && state != AppLifecycleState.resumed);
+
+    if (SharedPreferencesUtil().maximizeBattery && (isTrulyBackground || !_isAppInForeground)) {
       Logger.debug('Maximizing battery: disconnecting device after sync completion because app is in background.');
       ServiceManager.instance().device.disconnectDevice();
     }

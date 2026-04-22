@@ -1602,6 +1602,8 @@ void sd_worker_thread(void)
     /* ---- Main loop ---- */
     int consec_writes = 0;
     bool in_high_watermark = false;
+    int64_t last_activity_uptime_ms = 0;
+    const int64_t idle_sleep_delay_ms = 10000; // Match CONFIG_OMI_VAD_HOLD_MS (10s)
 
     while (1) {
 
@@ -1665,17 +1667,23 @@ void sd_worker_thread(void)
 
         /* 5. Both queues empty — poll with short timeout so write-blocked
          * recovery check in process_write_data_req can fire. */
-        k_timeout_t idle_wait = K_MSEC(10);
+        k_timeout_t idle_wait = K_MSEC(100);
         if (k_msgq_get(&sd_msgq, &req, idle_wait) == 0) {
             consec_writes++;
             goto handle_req;
         }
 
+        /* Check for idle sleep only when truly idle (queues empty) */
+        if ((k_uptime_get() - last_activity_uptime_ms) >= idle_sleep_delay_ms) {
+            sd_set_io_low_power(true);
+        }
+
         continue;
 
     handle_req:
-        if (req.type != REQ_WRITE_DATA)
-            sd_set_io_low_power(false);
+        /* Activity detected — immediately wake SPI3 bus and reset the idle timer */
+        sd_set_io_low_power(false);
+        last_activity_uptime_ms = k_uptime_get();
 
         switch (req.type) {
 
@@ -2013,9 +2021,6 @@ void sd_worker_thread(void)
         default:
             LOG_ERR("[SD_WORK] unknown request type %d", req.type);
         }
-
-        if (req.type != REQ_WRITE_DATA)
-            sd_set_io_low_power(true);
     }
 }
 
