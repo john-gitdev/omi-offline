@@ -115,6 +115,12 @@ static uint8_t _lfs_io_tmp[512];
 
 /*
  * Map LFS (block, offset) to disk sector.
+ *
+ * NOTE: LittleFS is NOT thread-safe by default. In this architecture, all
+ * lfs_* functions and these callbacks are strictly serialized on the single
+ * sd_worker thread. If LFS is ever called from another thread, it will 
+ * cause immediate filesystem corruption.
+ *
  *   LFS block N at byte offset K  →  disk sector  N * SECTORS_PER_BLOCK + K/512
  * With cache_size == 4096 (== block_size), LFS typically calls us with
  * size == 4096 and off == 0.  The fast path handles any aligned multi-sector
@@ -421,6 +427,14 @@ int sd_get_cached_file_meta(int index, AudioFileMeta_t *out_meta)
     *out_meta = cached_file_meta[index];
     k_mutex_unlock(&file_cache_mutex);
     return 0;
+}
+
+uint64_t sd_get_cached_total_size(void)
+{
+    k_mutex_lock(&file_cache_mutex, K_FOREVER);
+    uint64_t size = cached_total_file_size;
+    k_mutex_unlock(&file_cache_mutex);
+    return size;
 }
 
 /* Forward declarations */
@@ -1355,7 +1369,6 @@ static int ensure_file_cache(void)
 
 void sd_update_filename_after_timesync(uint32_t synced_utc_time)
 {
-
     if (!is_mounted)
         return;
 
@@ -1363,34 +1376,56 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
     uint32_t rtc_offset = synced_utc_time - (uint32_t)(k_uptime_get() / 1000U);
     LOG_INF("Time sync received: offset is %u s", rtc_offset);
 
-    /* Retroactively rename all CLOSED temporary files */
-    lfs_dir_t dir;
-    struct lfs_info info;
-    if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) == 0) {
-        char old_path[128], new_path[128], new_fn[MAX_FILENAME_LEN];
+    /* 
+     * Retroactively rename all CLOSED temporary files.
+     * Use a search-and-repeat loop to avoid renaming while iterating the directory
+     * (safe for LittleFS) and to save RAM (no large buffer of filenames).
+     */
+    while (1) {
+        lfs_dir_t dir;
+        struct lfs_info info;
+        char old_fn[MAX_FILENAME_LEN] = {0};
+        char new_fn[MAX_FILENAME_LEN] = {0};
+        char old_path[128], new_path[128];
+
+        if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) < 0) {
+            break;
+        }
+
         while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
-            /* Only rename finished TMP_ segments (don't touch the active one) */
+            /* Only rename finished TMP_ segments. The active one was already
+             * rotated out by the worker before calling this function. */
             if (info.type == LFS_TYPE_REG && strncmp(info.name, "TMP_", 4) == 0 &&
                 strcmp(info.name, current_filename) != 0) {
-                
-                uint32_t original_uptime_ms = (uint32_t)strtoul(info.name + 4, NULL, 16);
-                uint32_t correct_ts = (original_uptime_ms / 1000U) + rtc_offset;
-                
-                snprintf(new_fn, MAX_FILENAME_LEN, "%08X.txt", correct_ts);
-                build_file_path(info.name, old_path, 128);
-                build_file_path(new_fn, new_path, 128);
-                
-                flush_batch_buffer();
-                if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
-                    LOG_INF("Retroactive rename: %s -> %s", info.name, new_fn);
-                }
-                /* Yield to allow other prio-msgq requests (like get list) to be processed
-                 * between renames if the loop is long. */
-                k_yield();
+                strncpy(old_fn, info.name, MAX_FILENAME_LEN - 1);
+                break;
             }
         }
         lfs_dir_close(&lfs_fs, &dir);
+
+        if (old_fn[0] == '\0') {
+            break; /* No more TMP files found */
+        }
+
+        uint32_t original_uptime_ms = (uint32_t)strtoul(old_fn + 4, NULL, 16);
+        uint32_t correct_ts = (original_uptime_ms / 1000U) + rtc_offset;
+        
+        snprintf(new_fn, MAX_FILENAME_LEN, "%08X.txt", correct_ts);
+        build_file_path(old_fn, old_path, 128);
+        build_file_path(new_fn, new_path, 128);
+        
+        if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
+            LOG_INF("Retroactive rename: %s -> %s", old_fn, new_fn);
+        } else {
+            LOG_ERR("Failed to rename %s", old_fn);
+            break; /* Stop on error to avoid infinite loops */
+        }
+        
+        /* Yield to allow other prio-msgq requests (like get list) to be processed
+         * between renames if there are many files. */
+        k_yield();
     }
+    
     invalidate_file_cache();
 }
 
@@ -1768,40 +1803,37 @@ void sd_worker_thread(void)
             current_filename[0] = '\0';
             k_mutex_unlock(&current_filename_lock);
 
-            lfs_dir_t dir;
-            struct lfs_info info;
             char fpath[64];
 
-            {
-                /* Two-phase delete: LittleFS forbids lfs_remove() during
-                 * lfs_dir_read() — the directory metadata is a CTZ skip-list
-                 * and removing an entry mid-iteration causes undefined behavior
-                 * (skipped files, double-reads, or corruption). */
-                static char del_names[MAX_AUDIO_FILES][MAX_FILENAME_LEN];
-                int del_count = 0;
+            /* RAM-efficient search-and-delete loop (avoids 9.6KB static buffer).
+             * We find one file, close dir, delete it, and repeat until empty. 
+             * This $O(N^2)$ approach is safe and saves significant RAM. */
+            while (1) {
+                lfs_dir_t dir;
+                struct lfs_info info;
+                char to_delete[MAX_FILENAME_LEN] = {0};
 
-                /* Phase 1: collect filenames */
                 if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) == 0) {
                     while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
-                        if (info.type != LFS_TYPE_REG)
-                            continue;
-                        if (del_count < MAX_AUDIO_FILES) {
-                            strncpy(del_names[del_count], info.name,
-                                    MAX_FILENAME_LEN - 1);
-                            del_names[del_count][MAX_FILENAME_LEN - 1] = '\0';
-                            del_count++;
+                        if (info.type == LFS_TYPE_REG) {
+                            strncpy(to_delete, info.name, MAX_FILENAME_LEN - 1);
+                            break;
                         }
                     }
                     lfs_dir_close(&lfs_fs, &dir);
                 }
 
-                /* Phase 2: delete after directory handle is closed */
-                for (int i = 0; i < del_count; i++) {
-                    build_file_path(del_names[i], fpath, sizeof(fpath));
-                    int rm = lfs_remove(&lfs_fs, fpath);
-                    if (rm < 0)
-                        LOG_ERR("[SD_WORK] rm %s: %d", fpath, rm);
+                if (to_delete[0] == '\0') {
+                    break; /* Directory is empty */
                 }
+
+                build_file_path(to_delete, fpath, sizeof(fpath));
+                int rm = lfs_remove(&lfs_fs, fpath);
+                if (rm < 0) {
+                    LOG_ERR("[SD_WORK] rm %s: %d", fpath, rm);
+                    break; /* Stop on error to avoid infinite loops */
+                }
+                k_yield();
             }
 
             /* Reset offset info */
@@ -1936,20 +1968,20 @@ void sd_worker_thread(void)
 
         /* ---- Time synced ---- */
         case REQ_TIME_SYNCED:
-            if (current_file_needs_rename && current_filename[0] != '\0') {
-                /* Rename immediately — the worker thread is the only writer to
-                 * lfs_fil_data, so close+rename+reopen is safe regardless of
-                 * BLE connection state. The old deferral was overly cautious
-                 * and caused TMP files to be invisible to the app's sync. */
-                flush_batch_buffer();
+            if (current_filename[0] != '\0' && current_file_needs_rename) {
+                /* 
+                 * Time sync received while recording to a temporary file.
+                 * 1. Rotate to a new file (which will now use the correct UTC timestamp).
+                 * 2. Retroactively rename all previously closed TMP_ segments.
+                 */
+                create_audio_file_with_timestamp();
                 sd_update_filename_after_timesync(req.u.time_synced.utc_time);
-                invalidate_file_cache();
-                    } else if (current_filename[0] == '\0') {
-                res = create_audio_file_with_timestamp();
-                if (res >= 0) {
-                            } else {
-                    LOG_ERR("[SD_WORK] create after time sync failed: %d", res);
-                }
+            } else if (current_filename[0] == '\0') {
+                /* No file open yet, start a fresh one with UTC name. */
+                create_audio_file_with_timestamp();
+            } else {
+                /* Already recording with UTC name; just catch up any old TMP segments. */
+                sd_update_filename_after_timesync(req.u.time_synced.utc_time);
             }
             break;
 
@@ -2394,16 +2426,6 @@ int save_offset(const char *filename, uint32_t offset)
         LOG_ERR("Failed to queue save_offset: %d", ret);
         return -1;
     }
-    return 0;
-}
-
-int get_offset(char *filename, uint32_t *offset)
-{
-    if (!filename || !offset)
-        return -EINVAL;
-    strncpy(filename, current_offset_info.oldest_filename, MAX_FILENAME_LEN - 1);
-    filename[MAX_FILENAME_LEN - 1] = '\0';
-    *offset = current_offset_info.offset_in_file;
     return 0;
 }
 

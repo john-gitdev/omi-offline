@@ -25,6 +25,7 @@ typedef struct {
 int sd_get_cached_file_count(void);
 int sd_get_cached_file_meta(int index, AudioFileMeta_t *out_meta);
 bool sd_is_current_recording_file_meta(const AudioFileMeta_t *meta);
+uint64_t sd_get_cached_total_size(void);
 
 // Utility for reconstructing LittleFS/BLE strings
 void build_filename_from_meta(const AudioFileMeta_t* meta, char* out_buffer, size_t max_len);
@@ -216,15 +217,6 @@ int clear_audio_directory(void);
  * @return 0 if successful, negative errno code if error
  */
 int save_offset(const char *filename, uint32_t offset);
-
-/**
- * @brief Get the saved offset info from the info file
- *
- * @param filename Buffer to store the oldest filename (must be at least MAX_FILENAME_LEN)
- * @param offset Pointer to store the offset value
- * @return 0 on success, negative errno code if error
- */
-int get_offset(char *filename, uint32_t *offset);
 
 /**
  * @brief Create a new audio file with current timestamp
