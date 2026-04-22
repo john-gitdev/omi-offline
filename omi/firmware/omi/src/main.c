@@ -25,6 +25,8 @@
 #include "spi_flash.h"
 #include "wdog_facade.h"
 
+#include <zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt.h>
+
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
 #include "aad.h"
 #endif
@@ -35,6 +37,24 @@ LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
 #define BATTERY_FULL_THRESHOLD_PERCENT 98 // 98%
 extern uint8_t battery_percentage;
 #endif
+
+static mgmt_evt_cb_return_t ota_mgmt_callback(uint32_t event, uint32_t status,
+                                             const struct mgmt_evt_op_cmd_arg *arg, void *user_data)
+{
+    if (event == IMG_MGMT_EV_UPLOAD_START) {
+        LOG_INF("OTA Upload Started — Waking SPI3 bus");
+        sd_set_ota_active(true);
+    } else if (event == IMG_MGMT_EV_UPLOAD_STP) {
+        LOG_INF("OTA Upload Stopped/Finished — Releasing SPI3 bus");
+        sd_set_ota_active(false);
+    }
+    return MGMT_EVT_ITER_CONTINUE;
+}
+
+static struct mgmt_callback ota_mgmt_cb = {
+    .callback = ota_mgmt_callback,
+    .event_id = (IMG_MGMT_EV_UPLOAD_START | IMG_MGMT_EV_UPLOAD_STP),
+};
 
 bool is_connected = false;
 bool is_charging = false;
@@ -238,6 +258,8 @@ int main(void)
 
     ret = transport_start();
     if (ret) LOG_ERR("BLE failed %d", ret);
+
+    img_mgmt_register_callbacks(&ota_mgmt_cb);
 
     boot_warming_sequence();
 

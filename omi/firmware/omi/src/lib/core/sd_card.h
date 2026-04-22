@@ -296,6 +296,13 @@ void sd_notify_time_synced(uint32_t utc_time);
 bool is_sd_on(void);
 
 /**
+ * @brief Mark OTA as active or inactive. 
+ * 
+ * When OTA is active, SPI3 is resumed and kept active.
+ */
+void sd_set_ota_active(bool active);
+
+/**
  * @brief Pause or resume SD card writes (for AAD power saving).
  *
  * @param pause true to pause writes and suspend SD, false to resume.
