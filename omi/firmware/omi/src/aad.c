@@ -54,6 +54,9 @@ static atomic_t adv_fast_req = ATOMIC_INIT(0);
 /* ---- Force-wake (button press) ---- */
 #define FORCE_WAKE_HOLD_MS 50000
 static int64_t force_wake_until_ms = 0;
+static int64_t last_hw_wake_ms = -100000; // Initialize to long ago
+
+extern volatile bool is_muted;
 
 /* ---- VAD state (mic callback context only) ---- */
 static bool vad_is_recording = false;
@@ -217,6 +220,7 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
         /* WAKE event from ISR */
         if (atomic_cas(&wake_pending, 1, 0)) {
             atomic_set(&wake_consumed, 1);
+            last_hw_wake_ms = k_uptime_get();
             LOG_INF("AAD: WAKE detected");
         }
 
@@ -393,5 +397,10 @@ int aad_start(void)
 
 bool aad_is_sleeping(void)
 {
+    if (is_muted) {
+        /* While muted, software VAD is disabled. We consider the device "awake"
+         * (for LED status) if hardware acoustic activity was detected recently. */
+        return (k_uptime_get() - last_hw_wake_ms) > CONFIG_OMI_VAD_HOLD_MS;
+    }
     return vad_sleeping;
 }
