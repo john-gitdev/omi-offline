@@ -2050,14 +2050,6 @@ void sd_worker_thread(void)
 
         /* ---- Time synced ---- */
         case REQ_TIME_SYNCED:
-            if (atomic_get(&ble_connected)) {
-                /* Defer rename until BLE disconnect to avoid corrupting active downloads */
-                atomic_set(&deferred_timesync_rename_pending, 1);
-                deferred_timesync_utc = req.u.time_synced.utc_time;
-                LOG_INF("[SD_WORK] Time sync received; deferring rename until BLE disconnect");
-                break;
-            }
-
             if (current_filename[0] != '\0' && current_file_needs_rename) {
                 /* 
                  * Time sync received while recording to a temporary file.
