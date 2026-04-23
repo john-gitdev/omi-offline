@@ -422,9 +422,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final folder = Directory(folderPath);
     if (!await folder.exists()) await folder.create(recursive: true);
 
-    String fileName = (deviceSessionId != null && segmentIndex != null)
-        ? '${deviceSessionId}_$segmentIndex.bin'
-        : wal.getSegmentFileNameByTimestamp(timerStart);
+    final fileName = '${timerStart}_${segmentIndex ?? 0}.bin';
 
     String filePath = '${folder.path}/$fileName';
     final file = File(filePath);
