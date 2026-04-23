@@ -256,9 +256,10 @@ class NativeBleTransport extends DeviceTransport {
     }
 
     if (_state == DeviceTransportState.connecting && error != null) {
-      if (error == 'unmanaged' || error == 'gatt_status_133') {
+      if (error == 'unmanaged' || error == 'gatt_status_133' || error == 'gatt_status_-1') {
         // 'unmanaged': belt-and-suspenders for the await race fix in dispose/disconnect.
         // 'gatt_status_133': Android GATT_ERROR — transient, native layer retries automatically.
+        // 'gatt_status_-1': Internal timeout — transient, native layer retries automatically.
         // Other gatt_status codes (8=auth, 19=remote termination, 22=not supported, …) are
         // real failures and must propagate so the connection attempt is properly aborted.
         Logger.debug('[NativeBleTransport] Ignoring transient error during connect: $error');

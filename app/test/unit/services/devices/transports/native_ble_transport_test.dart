@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:omi/services/devices/transports/native_ble_transport.dart';
+import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/gen/pigeon_communicator.g.dart';
 
 void main() {
@@ -87,6 +88,40 @@ void main() {
       expect(states, [DeviceTransportState.connecting, DeviceTransportState.disconnected]);
 
       await subscription.cancel();
+    });
+
+    test('ignores transient GATT errors during connect', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockDecodedMessageHandler<Object?>(
+        BasicMessageChannel<Object?>(
+          'dev.flutter.pigeon.omi_pigeon.BleHostApi.manageDevice',
+          BleHostApi.pigeonChannelCodec,
+        ),
+        (message) async {
+          return <Object?>[null];
+        },
+      );
+
+      final connectFuture = transport.connect();
+
+      // Simulate status 133
+      BleBridge.instance.onPeripheralDisconnected('test-uuid', 'gatt_status_133');
+      await Future.delayed(Duration.zero);
+
+      // Simulate status -1 (timeout)
+      BleBridge.instance.onPeripheralDisconnected('test-uuid', 'gatt_status_-1');
+      await Future.delayed(Duration.zero);
+
+      bool completed = false;
+      connectFuture.then((_) => completed = true);
+
+      await Future.delayed(const Duration(milliseconds: 100));
+      expect(completed, isFalse, reason: 'Connect future should still be pending after transient errors');
+
+      // Now simulate success
+      BleBridge.instance.onDeviceReady('test-uuid', []);
+      await connectFuture;
+      expect(completed, isTrue);
     });
   });
 }

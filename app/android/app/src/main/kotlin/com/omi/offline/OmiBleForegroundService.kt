@@ -332,7 +332,7 @@ class OmiBleForegroundService : Service() {
 
             // autoConnect=false for initial connection (device nearby, fast).
             // autoConnect=true for retries/reconnection (passive scan, survives BT toggle).
-            val autoConnect = source != "manageDevice"
+            val autoConnect = source.startsWith("retry_")
 
             Log.i(TAG, "connectToDevice($source): $addr (autoConnect=$autoConnect)")
             val gatt = try {
@@ -435,7 +435,7 @@ class OmiBleForegroundService : Service() {
         val addr = address.uppercase()
         val managed = managedDevices[addr] ?: return
 
-        if (isDestroying || status == -1 || !isBluetoothEnabled) return
+        if (isDestroying || !isBluetoothEnabled) return
 
         managed.retryCount++
         Log.i(TAG, "Retry #${managed.retryCount} for $addr in ${RECONNECT_DELAY_MS}ms (status=$status)")

@@ -517,7 +517,6 @@ static int flush_batch_buffer_chunked(void)
         return -EIO;
     }
 
-    int64_t t0 = k_uptime_get();
     size_t to_write = write_batch_offset;
     uint8_t *ptr = write_batch_buffer;
     size_t total_written = 0;
@@ -1239,21 +1238,6 @@ static bool should_rotate_file(void)
  * incorrectly sort them as "oldest". Return UINT32_MAX so they sort last,
  * after all real timestamped files. TMP files are the currently-recording
  * file (pre-time-sync) and should never be synced before being renamed. */
-static uint32_t filename_sort_ts(const char *name)
-{
-    if (strncmp(name, "TMP_", 4) == 0) {
-        return UINT32_MAX;
-    }
-    return (uint32_t) strtoul(name, NULL, 16);
-}
-
-static int compare_filenames(const void *a, const void *b)
-{
-    uint32_t ta = filename_sort_ts((const char *) a);
-    uint32_t tb = filename_sort_ts((const char *) b);
-    return (ta < tb) ? -1 : (ta > tb) ? 1 : 0;
-}
-
 static void update_cached_free_bytes(void)
 {
     if (lfs_cfg.block_count == 0) return;
