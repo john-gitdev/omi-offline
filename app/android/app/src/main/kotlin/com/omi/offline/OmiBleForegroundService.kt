@@ -330,9 +330,9 @@ class OmiBleForegroundService : Service() {
 
             if (bleManager.connectedGatts.containsKey(addr)) bleManager.closeGatt(addr)
 
-            // autoConnect=false for initial connection (device nearby, fast).
-            // autoConnect=true for retries/reconnection (passive scan, survives BT toggle).
-            val autoConnect = source.startsWith("retry_")
+            // autoConnect=false for initial manual connection (fast).
+            // autoConnect=true for background/retries (passive scan, more robust).
+            val autoConnect = source != "manageDevice"
 
             Log.i(TAG, "connectToDevice($source): $addr (autoConnect=$autoConnect)")
             val gatt = try {
