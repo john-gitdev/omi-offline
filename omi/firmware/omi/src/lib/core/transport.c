@@ -551,6 +551,34 @@ void transport_notify_battery_soon(void)
 static uint8_t mtu_recheck_attempts = 0;
 static void mtu_recheck_work_handler(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(mtu_recheck_work, mtu_recheck_work_handler);
+
+static void post_connect_work_handler(struct k_work *work)
+{
+    if (!is_connected || !current_connection) {
+        return;
+    }
+
+#if defined(CONFIG_BT_SMP)
+    /* Request bonding so link keys are persisted by BT settings backend. */
+    int sec_err = bt_conn_set_security(current_connection, BT_SECURITY_L2);
+    if (sec_err && sec_err != -EALREADY) {
+        LOG_WRN("bt_conn_set_security failed (err %d)", sec_err);
+    }
+#endif
+
+    // Wait 1500ms for the pairing exchange
+    k_sleep(K_MSEC(1500));
+
+    // Initiate PHY, Data Length, and MTU updates
+    update_phy(current_connection);
+    update_data_length(current_connection);
+    update_mtu(current_connection);
+
+    mtu_recheck_attempts = 0;
+    k_work_schedule(&mtu_recheck_work, K_MSEC(MTU_RECHECK_DELAY_MS));
+}
+K_WORK_DELAYABLE_DEFINE(post_connect_work, post_connect_work_handler);
+
 static void update_conn_params(struct bt_conn *conn);
 
 static void _transport_connected(struct bt_conn *conn, uint8_t err)
@@ -588,27 +616,7 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     // Request aggressive connection params for higher BLE sync throughput.
     update_conn_params(current_connection);
 
-    // Delay a bit before PHY request to avoid early HCI race on some phones.
-    k_sleep(K_MSEC(300));
-
-    // Initiate PHY, Data Length, and MTU updates
-    update_phy(current_connection);
-
-    // Add a delay before data length and MTU updates as per Nordic example
-    k_sleep(K_MSEC(1000));
-    update_data_length(current_connection);
-    update_mtu(current_connection);
-
-    mtu_recheck_attempts = 0;
-    k_work_schedule(&mtu_recheck_work, K_MSEC(MTU_RECHECK_DELAY_MS));
-
-#if defined(CONFIG_BT_SMP)
-    /* Request bonding so link keys are persisted by BT settings backend. */
-    int sec_err = bt_conn_set_security(conn, BT_SECURITY_L2);
-    if (sec_err && sec_err != -EALREADY) {
-        LOG_WRN("bt_conn_set_security failed (err %d)", sec_err);
-    }
-#endif
+    k_work_schedule(&post_connect_work, K_MSEC(500));
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     sd_notify_ble_state(true);

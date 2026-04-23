@@ -495,7 +495,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       writtenOffset += bytesWritten;
       _lastSegmentBoundaryOffset = writtenOffset;
       try {
-        await callback(file, writtenOffset, timerStart, subFolder: subFolder);
+        await callback(file, writtenOffset, timerStart, subFolder: subFolderPrefix);
       } catch (_) {}
     }
 

@@ -64,6 +64,7 @@ class NativeBleTransport extends DeviceTransport {
       _deviceReadyCompleter = null;
       completer?.completeError(e);
       _updateState(DeviceTransportState.disconnected);
+      await Future.delayed(const Duration(seconds: 2));
       rethrow;
     }
 
@@ -78,6 +79,7 @@ class NativeBleTransport extends DeviceTransport {
       Logger.debug('[NativeBleTransport] connect failed: $e');
       _deviceReadyCompleter = null;
       _updateState(DeviceTransportState.disconnected);
+      await Future.delayed(const Duration(seconds: 2));
       rethrow;
     }
   }
