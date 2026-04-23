@@ -26,6 +26,14 @@ class _ProtocolGapException implements Exception {
   String toString() => 'Protocol gap: incoming=$incoming expected=$expected';
 }
 
+/// Thrown when the firmware returns a non-zero ACK (error) for a command.
+class _AckException implements Exception {
+  final int code;
+  const _AckException(this.code);
+  @override
+  String toString() => 'Error ACK: $code';
+}
+
 class SDCardWalSyncImpl implements SDCardWalSync {
   List<Wal> _wals = <Wal>[];
   BtDevice? _device;
@@ -107,7 +115,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             : ServiceManager.instance().device.ensureConnection(dev.id);
         connFuture
             .then((conn) async => await conn?.stopStorageSync() ?? Future.value(false))
-            .catchError((_) => false);
+            .catchError((_) => Future.value(false));
       }
 
       // Cancel the BLE stream so the app doesn't hang waiting for an EOT that won't come
@@ -142,7 +150,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           : ServiceManager.instance().device.ensureConnection(dev.id);
       connFuture
           .then((conn) async => await conn?.stopStorageSync() ?? Future.value(false))
-          .catchError((_) => false);
+          .catchError((_) => Future.value(false));
     }
     await _storageStream?.cancel();
     _storageStream = null;
@@ -371,7 +379,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     listener.onWalUpdated();
     // Persist after deletion so the WAL is gone from disk even if the app restarts before
     // the next natural save point. This prevents re-downloading a deleted file.
-    WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => false);
+    WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => Future.value(false));
   }
 
   Future<void> _saveMarker(int deviceSessionId, int utcTime) async {
@@ -564,7 +572,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               isStreamLocked = true;
               hasError = true;
               if (!completer.isCompleted) {
-                completer.completeError(Exception("Error ACK: ${value[1]}"));
+                completer.completeError(_AckException(value[1]));
               }
               return;
             }
@@ -791,7 +799,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       try {
         const int maxGapRetries = 3;
+        const int maxAckRetries = 3;
         int gapRetries = 0;
+        int ackRetries = 0;
         bool transferred = false;
         while (!transferred) {
           if (_isCancelled) throw Exception("Cancelled");
@@ -810,7 +820,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 // Persist offset every ~1 MB so a crash or disconnect preserves
                 // progress and the next session resumes rather than re-downloading.
                 if ((offset - initialOffset) % (1024 * 1024) < 512) {
-                  WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => false);
+                  WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
                 }
                 final double withinWal = (wal.storageTotalBytes > initialOffset)
                     ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
@@ -830,6 +840,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             _lastSegmentBoundaryOffset = e.incoming;
             await connection.stopStorageSync();
             await Future.delayed(const Duration(milliseconds: 200));
+          } on _AckException catch (e) {
+            // ACK 7 = FILE_NOT_FOUND, often due to SD contention.
+            if (e.code == 7 && ackRetries < maxAckRetries) {
+              ackRetries++;
+              Logger.debug('SDCardWalSync: Error ACK 7 for fileNum=${wal.fileNum}, retrying ($ackRetries/$maxAckRetries) after 500ms');
+              await connection.stopStorageSync();
+              await Future.delayed(const Duration(milliseconds: 500));
+              continue;
+            }
+            rethrow;
           }
         }
 
@@ -844,6 +864,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           await _deleteWalLocked(connection, wal, overrideFileNum: 0);
           // Refresh stats after deletion so the File Count and Free Space update in real-time
           await _updateStorageStatsLocked(connection);
+          // Settle delay: give the SD worker time to finish metadata updates before requesting next file
+          await Future.delayed(const Duration(milliseconds: 500));
         } catch (e) {
           Logger.error('SDCardWalSync: deletion failed for index=0 after transfer: $e');
           anyPartial = true;
@@ -859,7 +881,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal.isSyncing = false;
         listener.onWalUpdated();
         // Persist the partial offset so the next session resumes from where we stopped.
-        WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => false);
+        WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
         anyPartial = true;
         
         if (_isCancelled) break;

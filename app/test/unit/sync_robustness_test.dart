@@ -336,7 +336,7 @@ void main() {
 
       final response = await syncAllFuture;
       expect(response!.isPartial, isTrue);
-    });
+    }, timeout: const Timeout(Duration(seconds: 60)));
 
     test('syncAll aborts batch on stall (timeout)', () async {
       globalCurrentFileNum = -1;

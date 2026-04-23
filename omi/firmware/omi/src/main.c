@@ -26,6 +26,8 @@
 #include "wdog_facade.h"
 
 #include <zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt.h>
+#include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
+#include <zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt_callbacks.h>
 
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
 #include "aad.h"
@@ -38,22 +40,23 @@ LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
 extern uint8_t battery_percentage;
 #endif
 
-static mgmt_evt_cb_return_t ota_mgmt_callback(uint32_t event, uint32_t status,
-                                             const struct mgmt_evt_op_cmd_arg *arg, void *user_data)
+static enum mgmt_cb_return ota_mgmt_callback(uint32_t event, enum mgmt_cb_return prev_status,
+                                             int32_t *rc, uint16_t *group, bool *abort_more,
+                                             void *data, size_t data_size)
 {
-    if (event == IMG_MGMT_EV_UPLOAD_START) {
+    if (event == MGMT_EVT_OP_IMG_MGMT_DFU_STARTED) {
         LOG_INF("OTA Upload Started — Waking SPI3 bus");
         sd_set_ota_active(true);
-    } else if (event == IMG_MGMT_EV_UPLOAD_STP) {
+    } else if (event == MGMT_EVT_OP_IMG_MGMT_DFU_STOPPED) {
         LOG_INF("OTA Upload Stopped/Finished — Releasing SPI3 bus");
         sd_set_ota_active(false);
     }
-    return MGMT_EVT_ITER_CONTINUE;
+    return MGMT_CB_OK;
 }
 
 static struct mgmt_callback ota_mgmt_cb = {
     .callback = ota_mgmt_callback,
-    .event_id = (IMG_MGMT_EV_UPLOAD_START | IMG_MGMT_EV_UPLOAD_STP),
+    .event_id = (MGMT_EVT_OP_IMG_MGMT_DFU_STARTED | MGMT_EVT_OP_IMG_MGMT_DFU_STOPPED),
 };
 
 bool is_connected = false;
@@ -252,7 +255,7 @@ int main(void)
     ret = transport_start();
     if (ret) LOG_ERR("BLE failed %d", ret);
 
-    img_mgmt_register_callbacks(&ota_mgmt_cb);
+    mgmt_callback_register(&ota_mgmt_cb);
 
     boot_warming_sequence();
 
