@@ -455,17 +455,22 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     bool isProcessing = false;
     bool eotReceived = false;
 
-    int? lastDeviceSessionId = wal.timerStart > 0 ? wal.timerStart : null;
+    int? lastDeviceSessionId = wal.timerStart;
     int? lastSegmentIndex = 0;
     final Queue<Uint8List> chunkQueue = Queue<Uint8List>();
     final BytesBuilder batchBuilder = BytesBuilder(copy: false);
     final Set<String> flushedSegmentsThisTransfer = {};
     int writtenOffset = offset;
 
+    // Use 'unknown_' prefix for pre-sync timestamps so they land in the 'Unorganized' UI section
+    String subFolderPrefix = (lastDeviceSessionId != null && lastDeviceSessionId < 946684800) 
+        ? 'unknown_$lastDeviceSessionId' 
+        : lastDeviceSessionId?.toString() ?? 'unsynced';
+
     if (offset > 0 && lastDeviceSessionId != null) {
       final directory = await getApplicationDocumentsDirectory();
       final existingFile = File(
-        '${directory.path}/raw_segments/$lastDeviceSessionId/${lastDeviceSessionId}_0.bin',
+        '${directory.path}/raw_segments/$subFolderPrefix/${lastDeviceSessionId}_0.bin',
       );
       if (await existingFile.exists()) {
         flushedSegmentsThisTransfer.add('${lastDeviceSessionId}_0');
@@ -474,7 +479,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     Future<void> flushRawBuffer(List<int> rawData) async {
       if (rawData.isEmpty) return;
-      String subFolder = lastDeviceSessionId?.toString() ?? 'unsynced';
       final segmentKey = '${lastDeviceSessionId}_$lastSegmentIndex';
       final appendMode = flushedSegmentsThisTransfer.contains(segmentKey);
       if (!appendMode) flushedSegmentsThisTransfer.add(segmentKey);
@@ -483,8 +487,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal,
         rawData,
         timerStart,
-        subFolder: subFolder,
-        deviceSessionId: lastDeviceSessionId,
+        subFolder: subFolderPrefix,
+        deviceSessionId: null, // Force use of subFolderPrefix which includes 'unknown_'
         segmentIndex: lastSegmentIndex,
         append: appendMode,
       );
