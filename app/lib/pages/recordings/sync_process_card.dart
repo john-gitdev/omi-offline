@@ -39,6 +39,7 @@ class SyncProcessCard extends StatelessWidget {
     final Color iconBg;
     final Widget iconChild;
     VoidCallback? onIconTap;
+    String tooltipText = '';
     bool showProgress = false;
     double? progressValue;
     Color progressColor = Colors.deepPurpleAccent;
@@ -54,6 +55,7 @@ class SyncProcessCard extends StatelessWidget {
           size: 16,
         );
         onIconTap = onActionTap;
+        tooltipText = 'Start sync';
 
       case SyncProcessState.syncing:
         mainText = data.isForcePipeline ? 'Force Sync...' : 'Syncing segments';
@@ -70,6 +72,7 @@ class SyncProcessCard extends StatelessWidget {
           child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
         );
         onIconTap = onCancelTap;
+        tooltipText = 'Cancel sync';
         showProgress = true;
         progressValue = data.totalCount > 0
             ? (data.syncedCount / data.totalCount).clamp(0.0, 1.0)
@@ -89,6 +92,7 @@ class SyncProcessCard extends StatelessWidget {
           child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
         );
         onIconTap = onCancelTap;
+        tooltipText = 'Cancel processing';
         showProgress = true;
         progressValue = data.processingProgress;
 
@@ -102,6 +106,7 @@ class SyncProcessCard extends StatelessWidget {
           child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
         );
         onIconTap = null;
+        tooltipText = 'Stopping';
         showProgress = true;
         progressValue = null;
         progressColor = Colors.grey.shade600;
@@ -116,6 +121,7 @@ class SyncProcessCard extends StatelessWidget {
           size: 16,
         );
         onIconTap = onActionTap;
+        tooltipText = 'Resume';
 
       case SyncProcessState.error:
         mainText = data.lastActiveStage == 'processing'
@@ -129,6 +135,7 @@ class SyncProcessCard extends StatelessWidget {
           size: 16,
         );
         onIconTap = onActionTap;
+        tooltipText = 'Retry';
 
       case SyncProcessState.successUi:
         mainText = 'Conversations ready';
@@ -140,6 +147,7 @@ class SyncProcessCard extends StatelessWidget {
           size: 16,
         );
         onIconTap = null;
+        tooltipText = 'Success';
         showProgress = true;
         progressValue = 1.0;
         progressColor = Colors.green;
@@ -171,10 +179,10 @@ class SyncProcessCard extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             Tooltip(
-              message: mainText,
+              message: tooltipText,
               child: Semantics(
                 button: true,
-                label: mainText,
+                label: tooltipText,
                 child: Material(
                   color: iconBg,
                   shape: const CircleBorder(),
