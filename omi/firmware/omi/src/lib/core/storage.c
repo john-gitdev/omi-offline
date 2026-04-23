@@ -471,6 +471,8 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
 
         uint8_t file_index = ((uint8_t *) buf)[1];
         uint32_t request_offset = 0;
+        uint32_t expected_ts = 0;
+        bool has_ts = (len >= 10);
 
         if (len >= 6) {
             /* Little-endian offset to match the rest of the BLE protocol */
@@ -480,7 +482,14 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
                            | (uint32_t)((uint8_t *) buf)[5] << 24;
         }
 
-        if (setup_file_transfer(file_index, request_offset, false, 0) < 0) {
+        if (has_ts) {
+            expected_ts = ((uint8_t *) buf)[6]
+                        | ((uint8_t *) buf)[7] << 8
+                        | ((uint8_t *) buf)[8] << 16
+                        | (uint32_t)((uint8_t *) buf)[9] << 24;
+        }
+
+        if (setup_file_transfer(file_index, request_offset, has_ts, expected_ts) < 0) {
             return FILE_NOT_FOUND;
         }
 
@@ -492,7 +501,19 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
         if (len < 2) return INVALID_COMMAND;
 
         uint8_t file_index = ((uint8_t *) buf)[1];
-        delete_file_has_ts = false;
+
+        /* Extended form: [0x12][index][ts:4LE] — app supplies the timestamp it
+         * received in CMD_LIST_FILES so the storage thread can verify the index
+         * still points to the same file after a cache refresh. */
+        delete_file_has_ts = (len >= 6);
+        if (delete_file_has_ts) {
+            const uint8_t *b = (const uint8_t *) buf;
+            delete_file_expected_ts = (uint32_t)b[2]
+                                    | (uint32_t)b[3] << 8
+                                    | (uint32_t)b[4] << 16
+                                    | (uint32_t)b[5] << 24;
+        }
+
         delete_file_index = file_index;  /* Defer to storage thread */
         return 0xFF;
     }

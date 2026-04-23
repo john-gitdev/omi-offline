@@ -33,6 +33,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   final Future<DeviceConnection?> Function(String deviceId)?
   _connectionProvider;
 
+  final Duration _inactivityTimeout;
+
   StreamSubscription? _storageStream;
 
   IWalSyncListener listener;
@@ -86,7 +88,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   SDCardWalSyncImpl(
     this.listener, {
     Future<DeviceConnection?> Function(String deviceId)? connectionProvider,
-  }) : _connectionProvider = connectionProvider;
+    Duration inactivityTimeout = const Duration(seconds: 15),
+  })  : _connectionProvider = connectionProvider,
+        _inactivityTimeout = inactivityTimeout;
 
   @override
   void cancelSync() {
@@ -481,12 +485,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     void resetInactivityTimer() {
       inactivityTimer?.cancel();
-      inactivityTimer = Timer(const Duration(seconds: 15), () {
+      inactivityTimer = Timer(_inactivityTimeout, () {
         if (!completer.isCompleted) {
           isStreamLocked = true;
           hasError = true;
           completer.completeError(
-            Exception("Transfer stalled: 15s inactivity timeout"),
+            Exception("Transfer stalled: ${_inactivityTimeout.inSeconds}s inactivity timeout"),
           );
         }
       });
@@ -770,6 +774,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       _totalBytesDownloaded = 0;
       if (_isCancelled) break;
 
+      // Abort if device disconnected between files
+      if (!await connection.isConnected()) {
+        Logger.debug('SDCardWalSync: Connection lost during syncAll, aborting loop');
+        break;
+      }
+
       wal.isSyncing = true;
       wal.syncStartedAt = DateTime.now();
       listener.onWalUpdated();
@@ -800,7 +810,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 // Persist offset every ~1 MB so a crash or disconnect preserves
                 // progress and the next session resumes rather than re-downloading.
                 if ((offset - initialOffset) % (1024 * 1024) < 512) {
-                  WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) {});
+                  WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => false);
                 }
                 final double withinWal = (wal.storageTotalBytes > initialOffset)
                     ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
@@ -849,9 +859,25 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         wal.isSyncing = false;
         listener.onWalUpdated();
         // Persist the partial offset so the next session resumes from where we stopped.
-        WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) {});
+        WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => false);
         anyPartial = true;
+        
         if (_isCancelled) break;
+
+        // Give a small window for connection state to update in the provider/service
+        await Future.delayed(const Duration(milliseconds: 100));
+        if (!await connection.isConnected()) {
+          Logger.debug('SDCardWalSync: Connection lost after failure, aborting syncAll');
+          break;
+        }
+
+        // If the error was a fatal "Error ACK: 7" (File Not Found) stop the batch 
+        // sync as session state is likely desynchronized. For other errors (like 
+        // timeouts or stream gaps), we continue to the next file to remain robust.
+        if (e.toString().contains('Error ACK: 7')) {
+          Logger.debug('SDCardWalSync: Fatal index shift (ACK 7), stopping batch sync');
+          break;
+        }
       }
     }
 

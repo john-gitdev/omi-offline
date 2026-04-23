@@ -287,6 +287,7 @@ void main() {
       sync = SDCardWalSyncImpl(
         MockWalSyncListener(),
         connectionProvider: (_) async => mockConn,
+        inactivityTimeout: const Duration(seconds: 1),
       );
       sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
     });
