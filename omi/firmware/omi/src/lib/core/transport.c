@@ -783,9 +783,9 @@ static void update_conn_params(struct bt_conn *conn)
 {
     struct bt_le_conn_param params = {
         .interval_min = 6,
-        .interval_max = 12,
+        .interval_max = 18,
         .latency      = 0,
-        .timeout      = 400,
+        .timeout      = 600,
     };
     for (int i = 0; i < CONN_PARAM_UPDATE_RETRIES; i++) {
         int err = bt_conn_le_param_update(conn, &params);
