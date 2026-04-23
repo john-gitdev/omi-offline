@@ -871,11 +871,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           break;
         }
 
-        // If the error was a fatal "Error ACK: 7" (File Not Found) stop the batch 
-        // sync as session state is likely desynchronized. For other errors (like 
-        // timeouts or stream gaps), we continue to the next file to remain robust.
-        if (e.toString().contains('Error ACK: 7')) {
-          Logger.debug('SDCardWalSync: Fatal index shift (ACK 7), stopping batch sync');
+        // Fatal errors (ACK 7), timeouts (stalls), or command failures should stop the batch.
+        // Continuing after these is unlikely to succeed and creates a bad user experience.
+        final errStr = e.toString();
+        if (errStr.contains('Error ACK: 7') ||
+            errStr.contains('Transfer stalled') ||
+            errStr.contains('Could not start SD card read')) {
+          Logger.debug('SDCardWalSync: Fatal or stalled transfer, stopping batch sync');
           break;
         }
       }
