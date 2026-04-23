@@ -793,6 +793,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     bool anyPartial = false;
     _downloadStartTime = DateTime.now();
 
+    // Protocol settle delay: give firmware storage thread a moment to finish its
+    // CMD_LIST_FILES cleanup (folder closing, EOT notify) before starting first read.
+    await Future.delayed(const Duration(milliseconds: 200));
+
     for (int i = 0; i < wals.length; i++) {
       final wal = wals[i];
       _totalBytesDownloaded = 0;

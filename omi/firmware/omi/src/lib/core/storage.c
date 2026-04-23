@@ -354,6 +354,10 @@ static int setup_file_transfer(int file_index, uint32_t start_offset, bool has_t
     AudioFileMeta_t meta;
     int actual_idx = file_index;
 
+    /* Clean state for new transfer */
+    atomic_clear(&remaining_length);
+    atomic_clear(&stop_started);
+
     if (has_ts) {
         if (sd_get_cached_file_meta(file_index, &meta) == 0 &&
             meta.timestamp == expected_ts) {
