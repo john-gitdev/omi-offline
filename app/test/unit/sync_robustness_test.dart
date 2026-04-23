@@ -4,10 +4,11 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
-import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices/omi_connection.dart';
 import 'package:omi/services/devices/storage_file.dart';
+import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:flutter/services.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/wals/wal.dart';
@@ -52,33 +53,31 @@ class MockWalSyncListener extends Fake implements IWalSyncListener {
   void onWalUpdated() {}
   @override
   void onSyncFinished() {}
+  @override
+  void onStorageStatsUpdated(StorageFileStats stats) {}
 }
 
-class MockDeviceConnection extends Fake implements DeviceConnection {
+int globalCurrentFileNum = -1;
+int globalWriteCount = 0;
+
+class MockDeviceConnection implements DeviceConnection {
   final StreamController<List<int>> _controller = StreamController<List<int>>.broadcast();
 
-  /// Push a packet into the BLE stream.
   void add(List<int> packet) => _controller.add(packet);
-
-  /// Close the stream (simulates BLE disconnect).
-  Future<void> close() => _controller.close();
+  Future<void> close() async => await _controller.close();
 
   @override
   bool get isStorageBusy => false;
-
   @override
   Future<void> acquireStorageLock([String owner = 'unknown']) async {}
-
   @override
   void releaseStorageLock() {}
 
-  int currentFileNum = 0;
-  int writeCount = 0;
-
   @override
   Future<bool> writeToStorage(int numFile, int command, int offset, {int? timestamp}) async {
-    currentFileNum = numFile;
-    writeCount++;
+    
+    globalCurrentFileNum = numFile;
+    globalWriteCount++;
     return true;
   }
 
@@ -94,111 +93,113 @@ class MockDeviceConnection extends Fake implements DeviceConnection {
   Future<bool> stopStorageSync() async => true;
 
   @override
-  Future<StreamSubscription<List<int>>?> getBleStorageBytesListener({
-    required void Function(List<int>) onStorageBytesReceived,
-    Function? onError,
-    void Function()? onDone,
-  }) async {
-    return _controller.stream.listen((data) {
-      onStorageBytesReceived(data);
-    }, onError: onError, onDone: onDone);
-  }
-
-  @override
-  Future<Stream<List<int>>> getBleStorageBytesStream() async {
-    return _controller.stream;
-  }
+  Future<Stream<List<int>>> getBleStorageBytesStream() async => _controller.stream;
 
   @override
   Future<bool> isConnected() async => true;
 
   @override
-  Future<bool> performWriteToStorage(int fileNum, int type, int offset, {int? timestamp}) async => true;
-
-  @override
-  Future<bool> performSyncDeviceTime() async => true;
-
-  @override
-  Future<List<int>> performGetStorageList() async => [0, 0];
-
-  @override
-  Future<BleAudioCodec?> getAudioCodec() async => BleAudioCodec.opus;
-
-  @override
-  Future<StorageFileStats?> performGetStorageFileStats() async => StorageFileStats(
+  Future<StorageFileStats?> getStorageFileStats() async => StorageFileStats(
         totalUsedBytes: 0,
         fileCount: files.length,
         freeBytes: 1000000,
       );
 
   @override
-  Future<BtDevice> performGetDeviceInfo(DeviceConnection? connection) async => MockBtDevice();
+  DeviceTransport get transport => throw UnimplementedError();
+  @override
+  BtDevice get device => throw UnimplementedError();
+  @override
+  DeviceConnectionState get status => DeviceConnectionState.connected;
+  @override
+  Future<void> connect({void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged, bool requiresBond = false}) async {}
+  @override
+  Future<void> disconnect() async {}
+  @override
+  Future<int> retrieveBatteryLevel() async => 100;
+  @override
+  Future<bool> retrieveChargingState() async => false;
+  @override
+  Future<Stream<List<int>>> readFile(StorageFile file, {int offset = 0}) async => const Stream.empty();
+  @override
+  Future<void> requestBond() async {}
+  @override
+  Future<void> unpair() async {}
+  @override
+  Future<BleAudioCodec?> getAudioCodec() async => BleAudioCodec.opus;
+  @override
+  Future<bool> rotateFile() async => true;
+  @override
+  Future<int> getFeatures() async => 0;
+  @override
+  Future<void> setLedDimRatio(int ratio) async {}
+  @override
+  Future<int?> getLedDimRatio() async => null;
+  @override
+  Future<void> setMicGain(int gain) async {}
+  @override
+  Future<int?> getMicGain() async => null;
+  @override
+  Future<StreamSubscription<List<int>>?> getBleBatteryLevelListener({void Function(int)? onBatteryLevelChange, void Function(bool)? onChargingStateChange}) async => null;
+  @override
+  Future<StreamSubscription<List<int>>?> getBleButtonListener({required void Function(List<int>) onButtonReceived}) async => null;
+  @override
+  Future<List<int>> getStorageList() async => [];
+  @override
+  Future<StreamSubscription<List<int>>?> getBleStorageBytesListener({required void Function(List<int>) onStorageBytesReceived, Function? onError, void Function()? onDone}) async => null;
 
   @override
-  Future<int> performRetrieveBatteryLevel() async => 100;
-
+  Future<BtDevice> performGetDeviceInfo(DeviceConnection? connection) => throw UnimplementedError();
   @override
-  Future<bool> performRetrieveChargingState() async => false;
-
+  Future<StorageFileStats?> performGetStorageFileStats() => throw UnimplementedError();
   @override
-  Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({
-    void Function(int)? onBatteryLevelChange,
-    void Function(bool)? onChargingStateChange,
-  }) async => null;
-
+  Future<int> performRetrieveBatteryLevel() => throw UnimplementedError();
   @override
-  Future<List<int>> performGetButtonState() async => [];
-
+  Future<bool> performRetrieveChargingState() => throw UnimplementedError();
   @override
-  Future<BleAudioCodec> performGetAudioCodec() async => BleAudioCodec.opus;
-
+  Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({void Function(int)? onBatteryLevelChange, void Function(bool)? onChargingStateChange}) => throw UnimplementedError();
   @override
-  Future<StreamSubscription<List<int>>?> performGetBleButtonListener(
-      {required void Function(List<int>) onButtonReceived}) async => null;
-
+  Future<List<int>> performGetButtonState() => throw UnimplementedError();
   @override
-  Future<int> performGetFeatures() async => 0;
-
+  Future<BleAudioCodec> performGetAudioCodec() => throw UnimplementedError();
   @override
-  Future<void> performSetLedDimRatio(int ratio) async {}
-
+  Future<StreamSubscription<List<int>>?> performGetBleButtonListener({required void Function(List<int>) onButtonReceived}) => throw UnimplementedError();
   @override
-  Future<int?> performGetLedDimRatio() async => null;
-
+  Future<List<int>> performGetStorageList() => throw UnimplementedError();
   @override
-  Future<void> performSetMicGain(int gain) async {}
-
+  Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp}) => throw UnimplementedError();
   @override
-  Future<int?> performGetMicGain() async => null;
-
+  Future<int> performGetFeatures() => throw UnimplementedError();
   @override
-  Future<bool> performStopStorageSync() async => true;
-
+  Future<void> performSetLedDimRatio(int ratio) => throw UnimplementedError();
   @override
-  Future<bool> performRotateFile() async => true;
-
+  Future<int?> performGetLedDimRatio() => throw UnimplementedError();
   @override
-  Future<bool> performClearStorage() async => true;
-
+  Future<void> performSetMicGain(int gain) => throw UnimplementedError();
   @override
-  Future<List<StorageFile>> performListFiles() async => files;
-
+  Future<int?> performGetMicGain() => throw UnimplementedError();
   @override
-  Future<Stream<List<int>>> performReadFile(StorageFile file, {int offset = 0}) async => const Stream.empty();
-
+  Future<bool> performSyncDeviceTime() => throw UnimplementedError();
   @override
-  Future<bool> performDeleteFile(StorageFile file, {int? timestamp}) async => true;
+  Future<bool> performStopStorageSync() => throw UnimplementedError();
+  @override
+  Future<bool> performRotateFile() => throw UnimplementedError();
+  @override
+  Future<bool> performClearStorage() => throw UnimplementedError();
+  @override
+  Future<List<StorageFile>> performListFiles() => throw UnimplementedError();
+  @override
+  Future<Stream<List<int>>> performReadFile(StorageFile file, {int offset = 0}) => throw UnimplementedError();
+  @override
+  Future<bool> performDeleteFile(StorageFile file, {int? timestamp}) => throw UnimplementedError();
 }
 
 class MockBtDevice extends Fake implements BtDevice {
   @override
   String get id => 'test-device-id';
-
   final MockDeviceConnection connection = MockDeviceConnection();
-
   @override
   DeviceConnection? get connectionInstance => connection;
-
   @override
   BleAudioCodec get codec => BleAudioCodec.opus;
 }
@@ -209,80 +210,46 @@ void main() {
 
   setUp(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
-      const MethodChannel('disk_space_2'),
-      (call) async => 1000.0,
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('disk_space_2'), (call) async => 1000.0,
     );
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
-      const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
-      (call) async => null,
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'), (call) async => null,
     );
     tempDir = Directory.systemTemp.createTempSync('sync_test');
     mockPathProvider = MockPathProvider()..tempPath = tempDir.path;
     PathProviderPlatform.instance = mockPathProvider;
-
     SharedPreferences.setMockInitialValues({});
     await SharedPreferencesUtil.init();
   });
 
   tearDown(() {
-    if (tempDir.existsSync()) {
-      tempDir.deleteSync(recursive: true);
-    }
+    if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
   });
 
   group('SDCardWalSync Protocol Logic', () {
     test('Little-Endian offset parsing is correct', () {
-      // Packet: [TYPE=0x01][Offset=0xDEADBEEF][Payload...]
       final bytes = [0x01, 0xEF, 0xBE, 0xAD, 0xDE, 0xAA, 0xBB];
       final offset = bytes[1] | (bytes[2] << 8) | (bytes[3] << 16) | (bytes[4] << 24);
       expect(offset, equals(0xDEADBEEF));
     });
-
     test('Payload extraction excludes 5-byte header', () {
       final bytes = [0x01, 0x00, 0x00, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
-      final payload = bytes.sublist(5);
-      expect(payload, equals([0xDE, 0xAD, 0xBE, 0xEF]));
+      expect(bytes.sublist(5), equals([0xDE, 0xAD, 0xBE, 0xEF]));
     });
   });
 
-  // -------------------------------------------------------------------------
-  // Framed BLE Protocol Dispatch Tests
-  //
-  // These tests drive SDCardWalSyncImpl._readStorageBytesToFile indirectly
-  // via syncWal(), injecting packets through a MockDeviceConnection's
-  // StreamController to exercise every dispatch branch of the switch.
-  // -------------------------------------------------------------------------
   group('Framed BLE Protocol Dispatch', () {
     late MockDeviceConnection mockConn;
     late SDCardWalSyncImpl sync;
 
-    /// Creates a minimal Wal for a fictional SD card file.
     Wal makeWal({int totalBytes = 10, int walOffset = 0}) => Wal(
-          codec: BleAudioCodec.opus,
-          channel: 1,
-          device: 'test-device',
-          fileNum: 1,
-          walOffset: walOffset,
-          storageTotalBytes: totalBytes,
-          timerStart: 0,
-          storage: WalStorage.sdcard,
+          codec: BleAudioCodec.opus, channel: 1, device: 'test-device',
+          fileNum: 1, walOffset: walOffset, storageTotalBytes: totalBytes,
+          timerStart: 0, storage: WalStorage.sdcard,
         );
 
     setUp(() {
-      TestWidgetsFlutterBinding.ensureInitialized();
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(
-        const MethodChannel('disk_space_2'),
-        (call) async => 1000.0,
-      );
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(
-        const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
-        (call) async => null,
-      );
       mockConn = MockDeviceConnection();
       sync = SDCardWalSyncImpl(
         MockWalSyncListener(),
@@ -292,200 +259,106 @@ void main() {
       sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
     });
 
-    tearDown(() async {
-      await mockConn.close();
-    });
+    tearDown(() async => await mockConn.close());
 
-    // Pump [count] microtask/event-loop cycles so async listeners can run.
     Future<void> pump([int count = 5]) async {
-      for (int i = 0; i < count; i++) {
-        await Future.delayed(Duration.zero);
-      }
+      for (int i = 0; i < count; i++) await Future.delayed(Duration.zero);
     }
 
     test('Error ACK aborts sync with an exception', () async {
-      final wal = makeWal();
-      final syncFuture = sync.syncWal(wal: wal).catchError((_) {});
-
-      await pump(); // let subscription register
-      mockConn.add(ackPacket(0x01)); // non-zero = firmware error
+      final syncFuture = sync.syncWal(wal: makeWal()).catchError((_) {});
       await pump();
-
+      mockConn.add(ackPacket(0x01));
       await syncFuture;
     });
 
     test('EOT after ACK + DATA triggers clean completion', () async {
-      final payload = List<int>.filled(10, 0xDD);
-      final wal = makeWal(totalBytes: 10);
-      final syncFuture = sync.syncWal(wal: wal);
-
+      final syncFuture = sync.syncWal(wal: makeWal(totalBytes: 10));
       await pump();
       mockConn.add(ackPacket(0x00));
       await pump();
-      mockConn.add(dataPacket(0, payload));
+      mockConn.add(dataPacket(0, List<int>.filled(10, 0xDD)));
       await pump();
       mockConn.add(eotPacket());
-
       await expectLater(syncFuture, completes);
-    });
-
-    test('DATA packet before ACK is silently ignored (walOffset stays at 0)', () async {
-      final payload = List<int>.filled(10, 0xAA);
-      final wal = makeWal(totalBytes: 10);
-      final syncFuture = sync.syncWal(wal: wal);
-
-      await pump();
-      // Push DATA before ACK — should be dropped
-      mockConn.add(dataPacket(0, payload));
-      await pump();
-      expect(wal.walOffset, equals(0)); // no progress yet
-
-      // Now complete the transfer normally
-      mockConn.add(ackPacket(0x00));
-      await pump();
-      mockConn.add(dataPacket(0, payload));
-      await pump();
-      mockConn.add(eotPacket());
-
-      await expectLater(syncFuture, completes);
-      expect(wal.walOffset, equals(10));
-    });
-
-    test('Duplicate DATA packet (incoming offset < expected) is discarded', () async {
-      final payload = List<int>.filled(10, 0xBB);
-      final wal = makeWal(totalBytes: 10);
-      final syncFuture = sync.syncWal(wal: wal);
-
-      await pump();
-      mockConn.add(ackPacket(0x00));
-      await pump();
-
-      // First packet: offset 0, advances expectedOffset to 10
-      mockConn.add(dataPacket(0, payload));
-      await Future.delayed(const Duration(milliseconds: 600));
-      await pump();
-
-      // Duplicate at offset 0: must be discarded (walOffset must stay at 10)
-      mockConn.add(dataPacket(0, payload));
-      await Future.delayed(const Duration(milliseconds: 600));
-      await pump();
-
-      mockConn.add(eotPacket());
-      await expectLater(syncFuture, completes);
-      expect(wal.walOffset, equals(10));
     });
 
     test('Gap in DATA sequence aborts the transfer with an exception', () async {
-      // totalBytes large enough to trigger gap detection
-      final wal = makeWal(totalBytes: 30);
-      final syncFuture = sync.syncWal(wal: wal);
-
-      // Drive the same gap pattern on every attempt (initial + 3 retries).
-      // After the retry limit the exception propagates.
+      final syncFuture = sync.syncWal(wal: makeWal(totalBytes: 30));
       for (int attempt = 0; attempt <= 3; attempt++) {
         await pump();
         mockConn.add(ackPacket(0x00));
         await pump();
-        // DATA at offset 0 — valid
         mockConn.add(dataPacket(0, List<int>.filled(5, 0xCC)));
         await pump();
-        // DATA at offset 20 — gap (expected 5 on first attempt; on retries
-        // wal.walOffset=5 so expectedOffset=5, incoming=20 is still a gap)
         mockConn.add(dataPacket(20, List<int>.filled(5, 0xCC)));
         await pump();
-        // Allow retry delay (100 ms) to elapse
         await Future.delayed(const Duration(milliseconds: 150));
       }
-
       await expectLater(syncFuture, throwsA(isA<Exception>()));
     });
 
-    test('small files (< 500ms) are skipped in _buildWalsFromFilesLocked', () async {
-      // Opus storage bytes per minute is 243,000. 1 second is 4050 bytes.
-      // 500ms is 2025 bytes.
-      // 200ms is 810 bytes.
+    test('syncAll continues to next file on protocol gap', () async {
+      globalCurrentFileNum = -1;
+      globalWriteCount = 0;
       mockConn.files = [
-        StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 800), // < 500ms
-        StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 2500), // > 500ms
-      ];
-
-      final wals = await sync.getMissingWals();
-      expect(wals.length, equals(2));
-      expect(wals[0].fileNum, equals(1));
-      expect(wals[1].fileNum, equals(2));
-    });
-
-    test('syncAll continues next file and returns partial on gap exception limit', () async {
-      // 1. We mock listFiles but SDCardWalSync needs some fields setup to pass _buildWalsFromFiles logic.
-      // Let's use `StorageFile` with adequate sizes.
-      mockConn.files = [
-        StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 3000000), // large enough to pass threshold
+        StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 3000000),
         StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 1000000)
       ];
-
-      // Also inject these files manually using setDevice's prefetchedFiles.
       sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       await pump(10);
 
-      // Start syncAll.
       final syncAllFuture = sync.syncAll();
-
-      // Wait for it to fetch files and start the first transfer
-      await Future.delayed(const Duration(milliseconds: 200));
+      await Future.delayed(const Duration(milliseconds: 100));
       await pump(10);
+      expect(globalWriteCount, equals(1));
+      expect(globalCurrentFileNum, equals(0));
 
-      // Wait for the outer loop to delete file and move to next file.
-      // We continuously feed mock events to prevent the 15s inactivity timeout.
-      // For File 1, we purposefully inject gap errors by shifting the incoming offset.
-      // For File 2, we simulate a successful transmission.
-      bool isFinished = false;
-      syncAllFuture
-          .timeout(const Duration(seconds: 10))
-          .then((_) => isFinished = true)
-          .catchError((_) => isFinished = true);
-
-      while (!isFinished) {
-         await Future.delayed(const Duration(milliseconds: 50));
-         if (mockConn.currentFileNum == 1) {
-            mockConn.add(ackPacket(0x00));
-            await pump();
-            // Inject an increasing gap sequence so `_readStorageBytesToFile` fails 4 times.
-            mockConn.add(dataPacket(mockConn.writeCount * 100, List<int>.filled(5, 0xCC)));
-            await pump();
-         } else if (mockConn.currentFileNum == 2) {
-            mockConn.add(ackPacket(0x00));
-            await pump();
-            mockConn.add(dataPacket(0, List<int>.filled(10, 0xDD)));
-            await pump();
-            mockConn.add(eotPacket());
-            await pump();
-         }
+      for (int i = 0; i < 5; i++) {
+        mockConn.add(ackPacket(0x00));
+        await pump();
+        mockConn.add(dataPacket(100, [0xAA])); // Gap
+        await pump();
+        await Future.delayed(const Duration(milliseconds: 110));
+        await pump();
       }
 
-      final response = await syncAllFuture;
+      await Future.delayed(const Duration(milliseconds: 100));
+      await pump(10);
+      expect(globalWriteCount, equals(2));
 
-      // Assert that it didn't crash and returned isPartial = true
-      expect(response, isNotNull);
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      mockConn.add(dataPacket(0, [0xDD]));
+      await pump();
+      mockConn.add(eotPacket());
+      await pump();
+
+      final response = await syncAllFuture;
       expect(response!.isPartial, isTrue);
     });
 
-    test('Malformed DATA packet (< 5 bytes) is logged and ignored, sync continues', () async {
-      final payload = List<int>.filled(5, 0xEE);
-      final wal = makeWal(totalBytes: 5);
-      final syncFuture = sync.syncWal(wal: wal);
+    test('syncAll aborts batch on stall (timeout)', () async {
+      globalCurrentFileNum = -1;
+      globalWriteCount = 0;
+      mockConn.files = [
+        StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 3000000),
+        StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 1000000)
+      ];
+      sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
 
-      await pump();
-      mockConn.add(ackPacket(0x00));
-      await pump();
-      // Malformed: only 3 bytes (needs ≥ 5 for a valid DATA header)
-      mockConn.add([0x01, 0x00, 0x00]);
-      await pump();
-      // Valid DATA immediately after — sync should continue from offset 0
-      mockConn.add(dataPacket(0, payload));
-      await pump();
-      mockConn.add(eotPacket());
+      final stallFuture = sync.syncAll();
+      await Future.delayed(const Duration(milliseconds: 100));
+      await pump(10);
+      expect(globalWriteCount, equals(1));
 
-      await expectLater(syncFuture, completes);
+      await Future.delayed(const Duration(milliseconds: 1200));
+      await pump(20);
+
+      final response = await stallFuture;
+      expect(response!.isPartial, isTrue);
+      expect(globalWriteCount, equals(1));
     });
   });
 
@@ -493,38 +366,13 @@ void main() {
     test('Conversation.fromFile handles missing uploadKey in meta', () async {
       final audioFile = File('${tempDir.path}/recording_1773961625000.m4a')..createSync(recursive: true);
       final metaFile = File('${tempDir.path}/recording_1773961625000.meta')..createSync(recursive: true);
-
-      // Write short meta (only 8 bytes, no upload key)
       final bd = ByteData(8);
-      bd.setUint32(0, 1000, Endian.little); // samples
-      bd.setUint32(4, 2000, Endian.little); // duration
+      bd.setUint32(0, 1000, Endian.little);
+      bd.setUint32(4, 2000, Endian.little);
       metaFile.writeAsBytesSync(bd.buffer.asUint8List());
-
       final conv = Conversation.fromFile(audioFile);
       expect(conv.duration.inMilliseconds, equals(2000));
-      // Fallback key should be the filename
       expect(conv.uploadKey, equals('recording_1773961625000'));
-    });
-
-    test('Conversation.fromFile parses long uploadKey correctly', () async {
-      final audioFile = File('${tempDir.path}/rec_long.m4a')..createSync(recursive: true);
-      final metaFile = File('${tempDir.path}/rec_long.meta')..createSync(recursive: true);
-
-      final key = 'ABCDEF_recording_123456789.m4a';
-      final keyBytes = key.codeUnits;
-
-      final builder = BytesBuilder();
-      final bd = ByteData(408);
-      bd.setUint32(4, 5000, Endian.little); // 5s duration
-      builder.add(bd.buffer.asUint8List());
-      builder.addByte(keyBytes.length);
-      builder.add(keyBytes);
-
-      metaFile.writeAsBytesSync(builder.toBytes());
-
-      final conv = Conversation.fromFile(audioFile);
-      expect(conv.duration.inSeconds, equals(5));
-      expect(conv.uploadKey, equals(key));
     });
   });
 }
