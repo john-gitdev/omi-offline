@@ -968,7 +968,7 @@ class VadAudioProcessor {
       page.add(p);
     }
 
-    final pageBytes = page.toBytes();
+    final pageBytes = page.takeBytes();
     final crc = _computeOggCrc(pageBytes);
     ByteData.view(pageBytes.buffer).setUint32(22, crc, Endian.little);
     return pageBytes;
