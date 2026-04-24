@@ -1563,7 +1563,7 @@ class RecordingsManager {
     final List<Conversation> sessionConversations = [];
     final recordingsDir = Directory('${directory.path}/recordings');
     if (await recordingsDir.exists()) {
-      final dateFolders = await recordingsDir.list().whereType<Directory>().toList();
+      final dateFolders = (await recordingsDir.list().toList()).whereType<Directory>().toList();
       for (final folder in dateFolders) {
         final audioFiles = await folder
             .list()
