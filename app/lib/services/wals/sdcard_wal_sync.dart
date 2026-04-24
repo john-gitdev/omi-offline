@@ -394,10 +394,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => Future.value(false));
   }
 
-  Future<void> _saveMarker(int deviceSessionId, int utcTime) async {
+  Future<void> _saveMarker(int sessionTimestamp, int utcTime) async {
     try {
       final directory = await getApplicationDocumentsDirectory();
-      final folderPath = '${directory.path}/raw_segments/$deviceSessionId';
+      final folderPath = '${directory.path}/raw_segments/$sessionTimestamp';
       final folder = Directory(folderPath);
       if (!await folder.exists()) await folder.create(recursive: true);
       final markerFile = File('${folder.path}/markers.txt');
@@ -453,31 +453,29 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     bool isProcessing = false;
     bool eotReceived = false;
 
-    int? lastDeviceSessionId = wal.timerStart;
-    int? lastSegmentIndex = 0;
     final Queue<Uint8List> chunkQueue = Queue<Uint8List>();
     final BytesBuilder batchBuilder = BytesBuilder(copy: false);
     final Set<String> flushedSegmentsThisTransfer = {};
     int writtenOffset = offset;
 
     // Use 'unknown_' prefix for pre-sync timestamps so they land in the 'Unorganized' UI section
-    String subFolderPrefix = (lastDeviceSessionId != null && lastDeviceSessionId < 946684800) 
-        ? 'unknown_$lastDeviceSessionId' 
-        : lastDeviceSessionId?.toString() ?? 'unsynced';
+    String subFolderPrefix = (timerStart < 946684800) 
+        ? 'unknown_$timerStart' 
+        : timerStart.toString();
 
-    if (offset > 0 && lastDeviceSessionId != null) {
+    if (offset > 0) {
       final directory = await getApplicationDocumentsDirectory();
       final existingFile = File(
-        '${directory.path}/raw_segments/$subFolderPrefix/${lastDeviceSessionId}_0.bin',
+        '${directory.path}/raw_segments/$subFolderPrefix/${timerStart}_0.bin',
       );
       if (await existingFile.exists()) {
-        flushedSegmentsThisTransfer.add('${lastDeviceSessionId}_0');
+        flushedSegmentsThisTransfer.add('${timerStart}_0');
       }
     }
 
     Future<void> flushRawBuffer(List<int> rawData) async {
       if (rawData.isEmpty) return;
-      final segmentKey = '${lastDeviceSessionId}_$lastSegmentIndex';
+      final segmentKey = '${timerStart}_0';
       final appendMode = flushedSegmentsThisTransfer.contains(segmentKey);
       if (!appendMode) flushedSegmentsThisTransfer.add(segmentKey);
 
@@ -487,7 +485,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         timerStart,
         subFolder: subFolderPrefix,
         deviceSessionId: null, // Force use of subFolderPrefix which includes 'unknown_'
-        segmentIndex: lastSegmentIndex,
+        segmentIndex: 0,
         append: appendMode,
       );
       writtenOffset += bytesWritten;
