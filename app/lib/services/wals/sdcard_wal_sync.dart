@@ -619,7 +619,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                   await _saveMarker(
                     timerStart,
                     batchBd.getUint32(scanOff + 4, Endian.little),
-                    sessionId: batchBd.getUint32(scanOff + 12, Endian.little),
+                    batchBd.getUint32(scanOff + 8, Endian.little),
+                    batchBd.getUint32(scanOff + 12, Endian.little),
                   );
                   scanOff += 20;
                   continue;

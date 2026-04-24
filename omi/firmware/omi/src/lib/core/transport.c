@@ -552,6 +552,22 @@ static uint8_t mtu_recheck_attempts = 0;
 static void mtu_recheck_work_handler(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(mtu_recheck_work, mtu_recheck_work_handler);
 
+static void post_pairing_work_handler(struct k_work *work)
+{
+    if (!is_connected || !current_connection) {
+        return;
+    }
+
+    // After the pairing delay, initiate PHY, Data Length, and MTU updates
+    update_phy(current_connection);
+    update_data_length(current_connection);
+    update_mtu(current_connection);
+
+    mtu_recheck_attempts = 0;
+    k_work_schedule(&mtu_recheck_work, K_MSEC(MTU_RECHECK_DELAY_MS));
+}
+K_WORK_DELAYABLE_DEFINE(post_pairing_work, post_pairing_work_handler);
+
 static void post_connect_work_handler(struct k_work *work)
 {
     if (!is_connected || !current_connection) {
@@ -566,16 +582,9 @@ static void post_connect_work_handler(struct k_work *work)
     }
 #endif
 
-    // Wait 1500ms for the pairing exchange
-    k_sleep(K_MSEC(1500));
-
-    // Initiate PHY, Data Length, and MTU updates
-    update_phy(current_connection);
-    update_data_length(current_connection);
-    update_mtu(current_connection);
-
-    mtu_recheck_attempts = 0;
-    k_work_schedule(&mtu_recheck_work, K_MSEC(MTU_RECHECK_DELAY_MS));
+    // Schedule the rest of the updates after 1500ms to allow pairing to settle
+    // WITHOUT blocking the system work queue thread.
+    k_work_schedule(&post_pairing_work, K_MSEC(1500));
 }
 K_WORK_DELAYABLE_DEFINE(post_connect_work, post_connect_work_handler);
 
