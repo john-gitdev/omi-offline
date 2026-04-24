@@ -266,10 +266,10 @@ static int send_file_list_response(struct bt_conn *conn)
     uint16_t mtu = bt_gatt_get_mtu(conn);
     uint16_t max_payload = (mtu > 3) ? (mtu - 3) : 20;
     
-    /* First packet overhead: 1 (type) + 4 (count) = 5 bytes. Entry: [idx:4][ts:4][sz:4] = 12 bytes */
-    int first_packet_max = (max_payload - 5) / 12;
+    /* First packet overhead: 1 (type) + 4 (count) = 5 bytes. Entry: [idx:4][ts:4][sz:4][sid:4] = 16 bytes */
+    int first_packet_max = (max_payload - 5) / 16;
     /* Subsequent packets overhead: 1 (type) = 1 byte */
-    int later_packet_max = (max_payload - 1) / 12;
+    int later_packet_max = (max_payload - 1) / 16;
 
     int files_processed = 0;
     uint32_t total_included = 0;
@@ -313,8 +313,9 @@ static int send_file_list_response(struct bt_conn *conn)
             uint32_t timestamp = meta.timestamp;
             uint32_t size = meta.file_size;
             uint32_t index = (uint32_t)files_processed;
+            uint32_t session_id = meta.uptime_offset;
 
-            /* Little-Endian for App parser - 12 byte entry: [idx:4][ts:4][sz:4] */
+            /* Little-Endian for App parser - 16 byte entry: [idx:4][ts:4][sz:4][sid:4] */
             storage_buffer[resp_len++] = index & 0xFF;
             storage_buffer[resp_len++] = (index >> 8) & 0xFF;
             storage_buffer[resp_len++] = (index >> 16) & 0xFF;
@@ -329,6 +330,11 @@ static int send_file_list_response(struct bt_conn *conn)
             storage_buffer[resp_len++] = (size >> 8) & 0xFF;
             storage_buffer[resp_len++] = (size >> 16) & 0xFF;
             storage_buffer[resp_len++] = (size >> 24) & 0xFF;
+
+            storage_buffer[resp_len++] = session_id & 0xFF;
+            storage_buffer[resp_len++] = (session_id >> 8) & 0xFF;
+            storage_buffer[resp_len++] = (session_id >> 16) & 0xFF;
+            storage_buffer[resp_len++] = (session_id >> 24) & 0xFF;
 
             chunk_count++;
         }

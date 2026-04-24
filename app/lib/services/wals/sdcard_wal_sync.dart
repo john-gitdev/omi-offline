@@ -301,60 +301,60 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       final bool hasValidTimestamp = file.timestamp > kMinValidEpochForMatch;
 
       final existing = hasValidTimestamp
-          ? _wals.firstWhereOrNull(
-              (w) =>
-                  w.device == deviceId &&
-                  w.timerStart == file.timestamp &&
-                  w.storage == WalStorage.sdcard,
-            )
-          : _wals.firstWhereOrNull(
-              (w) =>
-                  w.device == deviceId &&
-                  w.fileNum == file.index &&
-                  w.timerStart < kMinValidEpochForMatch &&
-                  w.storage == WalStorage.sdcard,
-            );
+        ? _wals.firstWhereOrNull(
+            (w) =>
+                w.device == deviceId &&
+                w.timerStart == file.timestamp &&
+                w.storage == WalStorage.sdcard,
+          )
+        : _wals.firstWhereOrNull(
+            (w) =>
+                w.device == deviceId &&
+                w.sessionId == file.sessionId &&
+                w.timerStart < kMinValidEpochForMatch &&
+                w.storage == WalStorage.sdcard,
+          );
 
       // Verify that if we found a match, the identity is actually the same.
       // If the file on disk has a different timestamp than our saved bookmark,
       // we must discard the bookmark because the SD card has been reset or rearranged.
       bool isMatchValid = existing != null;
       if (existing != null && hasValidTimestamp && existing.timerStart != file.timestamp) {
-        Logger.debug('SDCardWalSync: Discarding invalid bookmark for index ${file.index} (TS mismatch: ${existing.timerStart} vs ${file.timestamp})');
-        isMatchValid = false;
+      Logger.debug('SDCardWalSync: Discarding invalid bookmark for index ${file.index} (TS mismatch: ${existing.timerStart} vs ${file.timestamp})');
+      isMatchValid = false;
       }
 
       final walOffset =
-          (isMatchValid &&
-              existing!.walOffset > 0 &&
-              existing.walOffset <= file.size)
-          ? existing.walOffset
-          : 0;
+        (isMatchValid &&
+            existing!.walOffset > 0 &&
+            existing.walOffset <= file.size)
+        ? existing.walOffset
+        : 0;
 
       final newBytes = file.size - walOffset;
       if (!ignoreThreshold && walOffset == 0 && newBytes < threshold) {
-        continue;
+      continue;
       }
 
       final ms = (newBytes / (codec.getStorageBytesPerMinute() / 60000.0)).truncate();
       final seconds = (ms / 1000).truncate();
-      
+
       // Trust the raw firmware timestamp. Never "invent" a UTC time here;
       // pre-sync files stay low (e.g. 1010) so the protocol remains honest.
       final timerStart = file.timestamp;
 
       final wal = Wal(
-        codec: codec,
-        channel: 1,
-        device: deviceId,
-        fileNum: file.index,
-        walOffset: walOffset,
-        storageTotalBytes: file.size,
-        timerStart: timerStart,
-        storage: WalStorage.sdcard,
-        estimatedSegments: (seconds / 60).ceil().clamp(1, 999),
-      );
-      if (isMatchValid && existing!.isSyncing) {
+      codec: codec,
+      channel: 1,
+      device: deviceId,
+      fileNum: file.index,
+      walOffset: walOffset,
+      storageTotalBytes: file.size,
+      timerStart: timerStart,
+      sessionId: file.sessionId,
+      storage: WalStorage.sdcard,
+      estimatedSegments: (seconds / 60).ceil().clamp(1, 999),
+      );      if (isMatchValid && existing!.isSyncing) {
         wal.isSyncing = true;
         wal.syncStartedAt = existing.syncStartedAt;
       }
@@ -394,14 +394,18 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => Future.value(false));
   }
 
-  Future<void> _saveMarker(int sessionTimestamp, int utcTime) async {
+  Future<void> _saveMarker(int sessionTimestamp, int utcTime, int uptime, int sessionId) async {
     try {
       final directory = await getApplicationDocumentsDirectory();
-      final folderPath = '${directory.path}/raw_segments/$sessionTimestamp';
+      String subFolder = (sessionTimestamp < 946684800)
+          ? 'session_$sessionId'
+          : sessionTimestamp.toString();
+      final folderPath = '${directory.path}/raw_segments/$subFolder';
       final folder = Directory(folderPath);
       if (!await folder.exists()) await folder.create(recursive: true);
       final markerFile = File('${folder.path}/markers.txt');
-      await markerFile.writeAsString('$utcTime\n', mode: FileMode.append);
+      // Save CSV: UTC, Uptime, SessionID
+      await markerFile.writeAsString('$utcTime,$uptime,$sessionId\n', mode: FileMode.append);
     } catch (_) {}
   }
 
@@ -418,7 +422,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final folder = Directory(folderPath);
     if (!await folder.exists()) await folder.create(recursive: true);
 
-    final fileName = '${timerStart}_0.bin';
+    final fileName = '${timerStart}_${wal.sessionId ?? 0}.bin';
 
     String filePath = '${folder.path}/$fileName';
     final file = File(filePath);
@@ -454,24 +458,24 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final Set<String> flushedSegmentsThisTransfer = {};
     int writtenOffset = offset;
 
-    // Use 'unknown_' prefix for pre-sync timestamps so they land in the 'Unorganized' UI section
+    // Use 'session_$sessionId' prefix for pre-sync timestamps so they land in the 'Unorganized' UI section
     String subFolderPrefix = (timerStart < 946684800) 
-        ? 'unknown_$timerStart' 
+        ? 'session_${wal.sessionId}' 
         : timerStart.toString();
 
     if (offset > 0) {
       final directory = await getApplicationDocumentsDirectory();
       final existingFile = File(
-        '${directory.path}/raw_segments/$subFolderPrefix/${timerStart}_0.bin',
+        '${directory.path}/raw_segments/$subFolderPrefix/${timerStart}_${wal.sessionId ?? 0}.bin',
       );
       if (await existingFile.exists()) {
-        flushedSegmentsThisTransfer.add('${timerStart}_0');
+        flushedSegmentsThisTransfer.add('${timerStart}_${wal.sessionId ?? 0}');
       }
     }
 
     Future<void> flushRawBuffer(List<int> rawData) async {
       if (rawData.isEmpty) return;
-      final segmentKey = '${timerStart}_0';
+      final segmentKey = '${timerStart}_${wal.sessionId ?? 0}';
       final appendMode = flushedSegmentsThisTransfer.contains(segmentKey);
       if (!appendMode) flushedSegmentsThisTransfer.add(segmentKey);
 
@@ -615,6 +619,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                   await _saveMarker(
                     timerStart,
                     batchBd.getUint32(scanOff + 4, Endian.little),
+                    sessionId: batchBd.getUint32(scanOff + 12, Endian.little),
                   );
                   scanOff += 20;
                   continue;

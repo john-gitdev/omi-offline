@@ -29,6 +29,7 @@ class Wal {
   int walOffset;
   final int storageTotalBytes;
   final int timerStart;
+  final int? sessionId;
   WalStorage storage;
 
   WalStatus status;
@@ -55,6 +56,7 @@ class Wal {
     required this.storageTotalBytes,
     required this.timerStart,
     required this.storage,
+    this.sessionId,
     this.status = WalStatus.miss,
     this.isSyncing = false,
     this.syncMethod = SyncMethod.ble,
@@ -73,12 +75,15 @@ class Wal {
   // Falls back to fileNum for the rare case where timerStart is 0 (legacy persisted data).
   String get id => timerStart > 0 ? '$device-$timerStart' : '$device-$fileNum';
 
-  String getSegmentFileNameByTimestamp(int timerStart) {
-    return 'segment_$timerStart.bin';
+  String getSegmentFileNameByTimestamp(int timerStart, {int? sessionId}) {
+    if (sessionId != null) {
+      return '${timerStart}_$sessionId.bin';
+    }
+    return '${timerStart}_0.bin';
   }
 
   String getFileName() {
-    return getSegmentFileNameByTimestamp(timerStart);
+    return getSegmentFileNameByTimestamp(timerStart, sessionId: sessionId);
   }
 
   String? getFilePath() {
@@ -117,6 +122,7 @@ class Wal {
       'storageOffset': walOffset,
       'storageTotalBytes': storageTotalBytes,
       'timerStart': timerStart,
+      'sessionId': sessionId,
       'storage': storage.name,
       'status': status.name,
       'filePath': filePath,
@@ -140,6 +146,7 @@ class Wal {
       walOffset: json['storageOffset'] ?? 0,
       storageTotalBytes: json['storageTotalBytes'] ?? 0,
       timerStart: json['timerStart'] ?? 0,
+      sessionId: json['sessionId'],
       storage: WalStorage.values.firstWhere((e) => e.name == json['storage'], orElse: () => WalStorage.local),
       status: WalStatus.values.firstWhere((e) => e.name == json['status'], orElse: () => WalStatus.miss),
       filePath: json['filePath'],
@@ -158,6 +165,7 @@ class Wal {
     int? walOffset,
     int? storageTotalBytes,
     int? timerStart,
+    int? sessionId,
     WalStorage? storage,
     WalStatus? status,
     bool? isSyncing,
@@ -177,6 +185,7 @@ class Wal {
       walOffset: walOffset ?? this.walOffset,
       storageTotalBytes: storageTotalBytes ?? this.storageTotalBytes,
       timerStart: timerStart ?? this.timerStart,
+      sessionId: sessionId ?? this.sessionId,
       storage: storage ?? this.storage,
       status: status ?? this.status,
       isSyncing: isSyncing ?? this.isSyncing,

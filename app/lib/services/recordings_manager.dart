@@ -21,18 +21,25 @@ class Conversation {
   final DateTime startTime;
   final Duration duration;
   final String? uploadKey;
+  final int? sessionId;
+  final int? startUptime;
 
   const Conversation({
     required this.file,
     required this.startTime,
     required this.duration,
     this.uploadKey,
+    this.sessionId,
+    this.startUptime,
   });
 
   DateTime get endTime => startTime.add(duration);
 
   /// True when this recording was saved with an unknown timestamp (device had no RTC sync).
-  bool get isUnknown => file.path.split('/').last.startsWith('unknown_');
+  bool get isUnknown {
+    final name = file.path.split('/').last;
+    return name.startsWith('unknown_') || name.startsWith('session_');
+  }
 
   int get fileSizeBytes {
     try {
@@ -69,13 +76,21 @@ class Conversation {
         if (metaBytes.length >= 8) {
           final bd = ByteData.sublistView(metaBytes);
           final durationMs = bd.getUint32(4, Endian.little);
+          
+          int? sessionId;
+          int? startUptime;
+          if (metaBytes.length >= 416) {
+            sessionId = bd.getUint32(408, Endian.little);
+            startUptime = bd.getUint32(412, Endian.little);
+          }
+
           String? uploadKey;
-          if (metaBytes.length >= 409) {
-            final keyLen = metaBytes[408];
-            if (409 + keyLen <= metaBytes.length) {
+          if (metaBytes.length >= 417) {
+            final keyLen = metaBytes[416];
+            if (417 + keyLen <= metaBytes.length) {
               try {
                 uploadKey = String.fromCharCodes(
-                  metaBytes.sublist(409, 409 + keyLen),
+                  metaBytes.sublist(417, 417 + keyLen),
                 );
               } catch (_) {
                 uploadKey = null;
@@ -90,6 +105,8 @@ class Conversation {
             startTime: startTime,
             duration: Duration(milliseconds: durationMs),
             uploadKey: effectiveKey,
+            sessionId: sessionId,
+            startUptime: startUptime,
           );
         }
       } catch (_) {
@@ -142,13 +159,21 @@ class Conversation {
         if (metaBytes.length >= 8) {
           final bd = ByteData.sublistView(metaBytes);
           final durationMs = bd.getUint32(4, Endian.little);
+          
+          int? sessionId;
+          int? startUptime;
+          if (metaBytes.length >= 416) {
+            sessionId = bd.getUint32(408, Endian.little);
+            startUptime = bd.getUint32(412, Endian.little);
+          }
+
           String? uploadKey;
-          if (metaBytes.length >= 409) {
-            final keyLen = metaBytes[408];
-            if (409 + keyLen <= metaBytes.length) {
+          if (metaBytes.length >= 417) {
+            final keyLen = metaBytes[416];
+            if (417 + keyLen <= metaBytes.length) {
               try {
                 uploadKey = String.fromCharCodes(
-                  metaBytes.sublist(409, 409 + keyLen),
+                  metaBytes.sublist(417, 417 + keyLen),
                 );
               } catch (_) {
                 uploadKey = null;
@@ -163,6 +188,8 @@ class Conversation {
             startTime: startTime,
             duration: Duration(milliseconds: durationMs),
             uploadKey: effectiveKey,
+            sessionId: sessionId,
+            startUptime: startUptime,
           );
         }
       } catch (_) {
@@ -273,6 +300,7 @@ class _IsolateParams {
   final List<String> segmentPaths;
   final List<int> segmentFileSizes; // used for accurate processing ETA
   final List<int> segmentStartTimesMs; // milliseconds since epoch
+  final List<int?> segmentSessionIds;
   final List<bool> segmentDerivedFlags;
   final bool backgroundMode;
 
@@ -285,6 +313,7 @@ class _IsolateParams {
     required this.segmentPaths,
     required this.segmentFileSizes,
     required this.segmentStartTimesMs,
+    required this.segmentSessionIds,
     required this.segmentDerivedFlags,
     required this.backgroundMode,
   });
@@ -363,11 +392,13 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
         params.segmentStartTimesMs[i],
       );
       final isDerived = params.segmentDerivedFlags[i];
+      final sessionId = params.segmentSessionIds[i];
 
       await processor.processSegmentFile(
         file,
         startTime,
         isDerivedTimestamp: isDerived,
+        sessionId: sessionId,
       );
 
       // Ask the main isolate to move any completed recordings out of temp.
@@ -518,13 +549,17 @@ class RecordingsManager {
       final deviceSessionEntities = await rawSegmentsDir.list().toList();
       final deviceSessionFolders = deviceSessionEntities.whereType<Directory>().toList();
 
-      // Sort session folders by timestamp ID (e.g. "1713892490", "unknown_101")
+      // Sort session folders by timestamp ID (e.g. "1713892490", "unknown_101", "session_AABBCCDD")
       deviceSessionFolders.sort((a, b) {
-        final aIdStr = a.path.split('/').last.replaceFirst('unknown_', '');
-        final bIdStr = b.path.split('/').last.replaceFirst('unknown_', '');
-        final aId = int.tryParse(aIdStr) ?? 0;
-        final bId = int.tryParse(bIdStr) ?? 0;
-        return aId.compareTo(bId);
+        final aName = a.path.split('/').last;
+        final bName = b.path.split('/').last;
+        final aIdStr = aName.replaceFirst('unknown_', '').replaceFirst('session_', '');
+        final bIdStr = bName.replaceFirst('unknown_', '').replaceFirst('session_', '');
+        
+        final aId = aName.startsWith('session_') ? int.tryParse(aIdStr, radix: 16) : int.tryParse(aIdStr);
+        final bId = bName.startsWith('session_') ? int.tryParse(bIdStr, radix: 16) : int.tryParse(bIdStr);
+        
+        return (aId ?? 0).compareTo(bId ?? 0);
       });
 
       for (var folder in deviceSessionFolders) {
@@ -758,16 +793,21 @@ class RecordingsManager {
         );
       });
 
-      // Pre-compute segment timestamps on the main isolate (lastModifiedSync is unavailable in a
-      // background isolate without platform channels).
+      // Pre-compute segment timestamps and session IDs on the main isolate.
       const kMinValidEpoch = 946684800;
       final segmentStartTimesMs = <int>[];
+      final segmentSessionIds = <int?>[];
       final segmentDerivedFlags = <bool>[];
       final segmentFileSizes = <int>[];
       for (final file in allSegments) {
         segmentFileSizes.add(file.lengthSync());
         final stem = file.path.split('/').last.split('.').first;
-        final timerStart = int.tryParse(stem.split('_').first);
+        final parts = stem.split('_');
+        final timerStart = int.tryParse(parts[0]);
+        final sessionId = parts.length > 1 ? int.tryParse(parts[1]) : null;
+        
+        segmentSessionIds.add(sessionId);
+
         if (timerStart != null && timerStart > kMinValidEpoch) {
           segmentStartTimesMs.add(timerStart * 1000);
           segmentDerivedFlags.add(false);
@@ -814,6 +854,7 @@ class RecordingsManager {
             segmentPaths: allSegments.map((f) => f.path).toList(),
             segmentFileSizes: segmentFileSizes,
             segmentStartTimesMs: segmentStartTimesMs,
+            segmentSessionIds: segmentSessionIds,
             segmentDerivedFlags: segmentDerivedFlags,
             backgroundMode: backgroundMode,
           ),
@@ -1206,32 +1247,30 @@ class RecordingsManager {
     if (!await liveDir.exists() || markerTimestamps.isEmpty) return;
 
     // Build sorted list of (file, startMs, endMs) from m4a/ogg + .meta pairs.
-    final recordings = <({File file, int startMs, int endMs, int durationMs})>[];
+    final recordings = <({File file, int startMs, int endMs, int durationMs, int? sessionId, int? startUptime})>[];
     for (final entity in await liveDir.list().toList()) {
       if (entity is! File || (!entity.path.endsWith('.m4a') && !entity.path.endsWith('.ogg'))) continue;
-      final name = entity.path.split('/').last;
-      final startMs = int.tryParse(
-        name.contains('_') ? name.split('_').last.split('.').first : '',
-      );
-      if (startMs == null || startMs <= 0) continue;
-      final metaFile = File(
-        '${entity.path.substring(0, entity.path.lastIndexOf('.'))}.meta',
-      );
-      if (!await metaFile.exists()) continue;
-      try {
-        final bd = ByteData.sublistView(await metaFile.readAsBytes());
-        if (bd.lengthInBytes < 8) continue;
-        final durationMs = bd.getUint32(4, Endian.little);
-        if (durationMs <= 0) continue;
-        recordings.add((
-          file: entity,
-          startMs: startMs,
-          endMs: startMs + durationMs,
-          durationMs: durationMs,
-        ));
-      } catch (_) {}
+      
+      final conv = Conversation.fromFile(entity);
+      if (conv.duration.inMilliseconds <= 0) continue;
+
+      recordings.add((
+        file: entity,
+        startMs: conv.startTime.millisecondsSinceEpoch,
+        endMs: conv.endTime.millisecondsSinceEpoch,
+        durationMs: conv.duration.inMilliseconds,
+        sessionId: conv.sessionId,
+        startUptime: conv.startUptime,
+      ));
     }
     recordings.sort((a, b) => a.startMs.compareTo(b.startMs));
+
+    // Also read markers.txt if it exists to get the uptime/sessionId for each marker.
+    // If the file is just timestamps (legacy), we'll have only markerTimestamps.
+    final markerFile = File('$liveRecordingsDirPath/../markers.txt'); // Look in raw_segments session folder?
+    // Wait, liveDir is recordings/date/. raw_segments is in a different sibling tree.
+    // markers.txt is passed in markerTimestamps.
+    // For now we rely on the markerMs (timestamp).
 
     for (final markerTime in markerTimestamps) {
       final markerMs = markerTime.millisecondsSinceEpoch;
@@ -1246,16 +1285,28 @@ class RecordingsManager {
       }
 
       // Strict containment only: marker must fall within a recording that was actually
-      // produced from the audio around that time. Markers whose audio hasn't been
-      // processed yet stay pending until a future sync+process run covers that range.
-      final matchIdx = recordings.indexWhere(
+      // produced from the audio around that time.
+      int matchIdx = recordings.indexWhere(
         (r) => markerMs >= r.startMs && markerMs < r.endMs,
       );
+
+      // If no time match, and this is an "unknown" recording (Dec 1969/Jan 1970), 
+      // we could try matching by sessionId, but we'd need the SID from the marker.
+      // Since markerTimestamps only contains DateTime, we'll implement that in a future
+      // update when we pass MarkerInfo objects.
+      // For now, relative positioning logic below handles the "unknown" case if a time match occurred.
 
       if (matchIdx >= 0) {
         final rec = recordings[matchIdx];
         final segmentFilename = rec.file.path.split('/').last;
-        final markerOffsetMs = markerMs - rec.startMs;
+        
+        int markerOffsetMs = markerMs - rec.startMs;
+
+        // Relative positioning for unknown sessions (markerMs is uptime, startUptime is uptime)
+        if (rec.startUptime != null && rec.startUptime! > 0 && markerMs < 946684800000) {
+          markerOffsetMs = markerMs - (rec.startUptime! * 1000);
+        }
+
         final edlData = {
           'markerTimestampMs': markerMs,
           'segmentFilename': segmentFilename,
@@ -1269,6 +1320,7 @@ class RecordingsManager {
           'RecordingsManager: Wrote EDL for marker at $markerTime → $segmentFilename',
         );
       } else {
+        // ... (Pending EDL logic)
         final edlData = {
           'markerTimestampMs': markerMs,
           'segmentFilename': null,
