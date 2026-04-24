@@ -518,10 +518,12 @@ class RecordingsManager {
       final deviceSessionEntities = await rawSegmentsDir.list().toList();
       final deviceSessionFolders = deviceSessionEntities.whereType<Directory>().toList();
 
-      // Sort DeviceSession folders by ID (e.g. "100", "101")
+      // Sort session folders by timestamp ID (e.g. "1713892490", "unknown_101")
       deviceSessionFolders.sort((a, b) {
-        final aId = int.tryParse(a.path.split('/').last) ?? 0;
-        final bId = int.tryParse(b.path.split('/').last) ?? 0;
+        final aIdStr = a.path.split('/').last.replaceFirst('unknown_', '');
+        final bIdStr = b.path.split('/').last.replaceFirst('unknown_', '');
+        final aId = int.tryParse(aIdStr) ?? 0;
+        final bId = int.tryParse(bIdStr) ?? 0;
         return aId.compareTo(bId);
       });
 
@@ -547,7 +549,7 @@ class RecordingsManager {
             }
           } catch (e) {
             Logger.error(
-              "RecordingsManager: Failed to read markers for DeviceSession $deviceSessionIdStr: $e",
+              "RecordingsManager: Failed to read markers for session $deviceSessionIdStr: $e",
             );
           }
         }
