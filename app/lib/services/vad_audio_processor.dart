@@ -81,6 +81,8 @@ class VadAudioProcessor {
   DateTime? _recordingStartTime;
   DateTime? _lastSegmentEndTime;
   bool _isDerivedTimestamp = false; // true when segment had no valid device RTC timestamp
+  int? _currentSessionId;
+  int? _currentStartUptime;
 
   // VAD state counters
   int _hangoverFrames = 0; // frames remaining in hangover
@@ -224,7 +226,7 @@ class VadAudioProcessor {
   }
 
   Future<List<String>> processSegmentFile(File segmentFile, DateTime segmentStartTime,
-      {bool isDerivedTimestamp = false}) async {
+      {bool isDerivedTimestamp = false, int? sessionId}) async {
     final savedFiles = <String>[];
     _isDerivedTimestamp = isDerivedTimestamp;
 
@@ -275,6 +277,8 @@ class VadAudioProcessor {
             !_recordingStartTime!.isBefore(_lastSegmentEndTime!);
         if (!capJustFired) {
           _recordingStartTime = segmentStartTime;
+          _currentSessionId = sessionId;
+          _currentStartUptime = isDerivedTimestamp ? segmentStartTime.millisecondsSinceEpoch ~/ 1000 : 0;
         }
       }
 
@@ -758,13 +762,17 @@ class VadAudioProcessor {
     }
 
     final durationMs = (totalSamples * 1000) ~/ sampleRate;
-    final metaBytes = ByteData(408);
+    final metaBytes = ByteData(416); // Increased from 408 to 416
     metaBytes.setUint32(0, totalSamples, Endian.little);
     metaBytes.setUint32(4, durationMs, Endian.little);
     for (int i = 0; i < waveformBuckets; i++) {
       final peak16 = (finalAmplitudes[i] * 65535.0).round().clamp(0, 65535);
       metaBytes.setUint16(8 + i * 2, peak16, Endian.little);
     }
+    // Add Session ID and Start Uptime at the end of the fixed header
+    metaBytes.setUint32(408, _currentSessionId ?? 0, Endian.little);
+    metaBytes.setUint32(412, _currentStartUptime ?? 0, Endian.little);
+
     final metaPath = '$dateFolderPath/${prefix}_$timestamp$suffix.meta';
     final List<int> metaOut = [...metaBytes.buffer.asUint8List()];
     final rawId = _deviceId;

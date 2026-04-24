@@ -1158,7 +1158,7 @@ static int create_audio_file_with_timestamp(void)
 
     k_mutex_lock(&current_filename_lock, K_FOREVER);
     if (rtc_valid) {
-        snprintf(current_filename, sizeof(current_filename), "%08X.txt", timestamp);
+        snprintf(current_filename, sizeof(current_filename), "%08X_%08X.txt", timestamp, device_session_id);
         current_file_needs_rename = false;
     } else {
         uint32_t boot_uptime = (uint32_t) k_uptime_get_32();
@@ -1476,9 +1476,14 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
         }
 
         uint32_t original_uptime_ms = (uint32_t)strtoul(old_fn + 4, NULL, 16);
+        uint32_t session_id = 0;
+        const char *sep = strchr(old_fn + 4, '_');
+        if (sep) {
+            session_id = (uint32_t)strtoul(sep + 1, NULL, 16);
+        }
         uint32_t correct_ts = (original_uptime_ms / 1000U) + rtc_offset;
         
-        snprintf(new_fn, MAX_FILENAME_LEN, "%08X.txt", correct_ts);
+        snprintf(new_fn, MAX_FILENAME_LEN, "%08X_%08X.txt", correct_ts, session_id);
         build_file_path(old_fn, old_path, sizeof(old_path));
         build_file_path(new_fn, new_path, sizeof(new_path));
         

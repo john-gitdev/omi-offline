@@ -467,8 +467,8 @@ class OmiDeviceConnection extends DeviceConnection {
             fail("Invalid file count: $count");
             return;
           } else {
-            // Entry format: [index:4][timestamp:4][size:4] = 12 bytes
-            expectedTotalBytes = 4 + (count * 12);
+            // Entry format: [index:4][timestamp:4][size:4][sessionId:4] = 16 bytes
+            expectedTotalBytes = 4 + (count * 16);
             Logger.debug('OmiDeviceConnection: Expecting $count files ($expectedTotalBytes bytes total)');
           }
         }
@@ -612,22 +612,23 @@ class OmiDeviceConnection extends DeviceConnection {
   void _parseAndSuccess(List<int> buffer, void Function(List<StorageFile>) success) {
     final count = ByteData.sublistView(Uint8List.fromList(buffer)).getUint32(0, Endian.little);
     final files = <StorageFile>[];
-    final totalExpected = 4 + (count * 12);
+    final totalExpected = 4 + (count * 16);
 
     // Guard against partial data if called from EOT branch
     final actualBuffer = buffer.length > totalExpected ? buffer.sublist(0, totalExpected) : buffer;
 
     final bd = ByteData.sublistView(Uint8List.fromList(actualBuffer));
-    for (int i = 0; i < count && (4 + (i + 1) * 12) <= actualBuffer.length; i++) {
+    for (int i = 0; i < count && (4 + (i + 1) * 16) <= actualBuffer.length; i++) {
       files.add(StorageFile(
-        index: bd.getUint32(4 + i * 12, Endian.little),
-        timestamp: bd.getUint32(8 + i * 12, Endian.little),
-        size: bd.getUint32(12 + i * 12, Endian.little),
+        index: bd.getUint32(4 + i * 16, Endian.little),
+        timestamp: bd.getUint32(8 + i * 16, Endian.little),
+        size: bd.getUint32(12 + i * 16, Endian.little),
+        sessionId: bd.getUint32(16 + i * 16, Endian.little),
       ));
     }
 
     for (int i = 0; i < files.length; i++) {
-      Logger.debug('OmiDeviceConnection: file[$i] index=${files[i].index} ts=${files[i].timestamp} size=${files[i].size}');
+      Logger.debug('OmiDeviceConnection: file[$i] index=${files[i].index} ts=${files[i].timestamp} size=${files[i].size} sid=${files[i].sessionId}');
     }
     Logger.debug('OmiDeviceConnection: Successfully parsed ${files.length} files (count field said $count)');
     success(files);

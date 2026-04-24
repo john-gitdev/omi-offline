@@ -2,16 +2,18 @@ class StorageFile {
   final int index;
   final int timestamp;
   final int size;
+  final int? sessionId;
 
   StorageFile({
     required this.index,
     required this.timestamp,
     required this.size,
+    this.sessionId,
   });
 
   @override
   String toString() {
-    return 'StorageFile(index: $index, timestamp: $timestamp, size: $size)';
+    return 'StorageFile(index: $index, timestamp: $timestamp, size: $size, sessionId: $sessionId)';
   }
 }
 
