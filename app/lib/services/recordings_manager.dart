@@ -1543,6 +1543,176 @@ class RecordingsManager {
     notifyRecordingsChanged();
   }
 
+  /// Batch-updates the starting timestamp for an entire hardware session.
+  ///
+  /// This renames and moves all processed recordings, .meta sidecars, .bin raw syncs,
+  /// and .edl markers belonging to the same sessionId.
+  static Future<void> promoteSessionToDate(Conversation base, DateTime newStartTime) async {
+    final sessionId = base.sessionId;
+    final startUptime = base.startUptime;
+    if (startUptime == null || startUptime == 0) {
+      throw Exception('Cannot promote session: startUptime is missing or zero.');
+    }
+
+    final rtcOffsetMs = newStartTime.millisecondsSinceEpoch - (startUptime * 1000);
+    final directory = await getApplicationDocumentsDirectory();
+
+    // 1. Identify all affected finalized recordings across all date folders.
+    final List<Conversation> sessionConversations = [];
+    final recordingsDir = Directory('${directory.path}/recordings');
+    if (await recordingsDir.exists()) {
+      final dateFolders = await recordingsDir.list().whereType<Directory>().toList();
+      for (final folder in dateFolders) {
+        final audioFiles = await folder
+            .list()
+            .where((e) => e is File && (e.path.endsWith('.m4a') || e.path.endsWith('.wav') || e.path.endsWith('.ogg')))
+            .cast<File>()
+            .toList();
+
+        for (final file in audioFiles) {
+          final conv = Conversation.fromFile(file);
+          if (conv.sessionId == sessionId && sessionId != null && sessionId != 0) {
+            sessionConversations.add(conv);
+          } else if (file.path == base.file.path) {
+            // Fallback for single-file promotion if sessionId is missing
+            sessionConversations.add(conv);
+          }
+        }
+      }
+    }
+
+    // 2. Perform renames and moves for processed recordings
+    for (final conv in sessionConversations) {
+      final convUptime = conv.startUptime ?? (conv.startTime.millisecondsSinceEpoch ~/ 1000);
+      final newConvStartMs = (convUptime * 1000) + rtcOffsetMs;
+      final newDateStr = _dateStringFromMillis(newConvStartMs);
+      final targetDir = Directory('${directory.path}/recordings/$newDateStr');
+      if (!await targetDir.exists()) await targetDir.create(recursive: true);
+
+      final extension = conv.file.path.split('.').last;
+      final newAudioPath = '${targetDir.path}/recording_$newConvStartMs.$extension';
+      final newMetaPath = '${targetDir.path}/recording_$newConvStartMs.meta';
+
+      final basePath = conv.file.path.substring(0, conv.file.path.lastIndexOf('.'));
+      final metaFile = File('$basePath.meta');
+
+      // Update .meta content with new UTC time if we were to be super thorough,
+      // but fromFile relies on filename timestamp, so renaming the file is enough.
+
+      if (await metaFile.exists()) await metaFile.rename(newMetaPath);
+      await conv.file.rename(newAudioPath);
+
+      // Handle legacy .bin sidecar if present
+      final oldBinPath = '$basePath.bin';
+      if (await File(oldBinPath).exists()) {
+        final newBinPath = '${targetDir.path}/recording_$newConvStartMs.bin';
+        await File(oldBinPath).rename(newBinPath);
+      }
+
+      // 3. Move and update .edl markers in the same date folder
+      final parentDir = conv.file.parent;
+      final markerFiles = await parentDir
+          .list()
+          .where((e) => e is File && e.path.split('/').last.startsWith('marker_') && e.path.endsWith('.edl'))
+          .cast<File>()
+          .toList();
+
+      for (final edlFile in markerFiles) {
+        try {
+          final content = await edlFile.readAsString();
+          final json = jsonDecode(content) as Map<String, dynamic>;
+          final segmentFilename = json['segmentFilename'] as String?;
+          if (segmentFilename == conv.file.path.split('/').last) {
+            final oldMarkerMs = json['markerTimestampMs'] as int;
+            // Marker uptime = oldMarkerMs (since it was Dec 1969/Jan 1970)
+            final newMarkerMs = oldMarkerMs + rtcOffsetMs;
+            
+            final updatedJson = Map<String, dynamic>.from(json);
+            updatedJson['markerTimestampMs'] = newMarkerMs;
+            updatedJson['segmentFilename'] = newAudioPath.split('/').last;
+
+            await edlFile.delete(); // Delete old EDL
+            final newEdlFile = File('${targetDir.path}/marker_$newMarkerMs.edl');
+            await newEdlFile.writeAsString(jsonEncode(updatedJson));
+          }
+        } catch (e) {
+          Logger.error('RecordingsManager: Failed to migrate EDL ${edlFile.path}: $e');
+        }
+      }
+    }
+
+    // 4. Handle raw_segments folder migration
+    final rawSegmentsDir = Directory('${directory.path}/raw_segments');
+    if (await rawSegmentsDir.exists()) {
+      final sessionFolderName = sessionId != null && sessionId != 0 ? 'session_$sessionId' : null;
+      final baseUptime = base.startUptime ?? 0;
+      final oldUnknownFolderName = 'unknown_$baseUptime';
+
+      Directory? sourceFolder;
+      if (sessionFolderName != null) {
+        final dir = Directory('${rawSegmentsDir.path}/$sessionFolderName');
+        if (await dir.exists()) sourceFolder = dir;
+      }
+      if (sourceFolder == null) {
+        final dir = Directory('${rawSegmentsDir.path}/$oldUnknownFolderName');
+        if (await dir.exists()) sourceFolder = dir;
+      }
+
+      if (sourceFolder != null) {
+        final newBaseStartMs = (baseUptime * 1000) + rtcOffsetMs;
+        final newBaseStartSecs = newBaseStartMs ~/ 1000;
+        final targetFolder = Directory('${rawSegmentsDir.path}/$newBaseStartSecs');
+        
+        if (await targetFolder.exists()) {
+          // Merge contents if target already exists (unlikely but safe)
+          await for (final entity in sourceFolder.list()) {
+            if (entity is File) {
+              await entity.rename('${targetFolder.path}/${entity.path.split('/').last}');
+            }
+          }
+          await sourceFolder.delete(recursive: true);
+        } else {
+          await sourceFolder.rename(targetFolder.path);
+        }
+
+        // 5. Update markers.txt inside the promoted raw folder
+        final markerFile = File('${targetFolder.path}/markers.txt');
+        if (await markerFile.exists()) {
+          final lines = await markerFile.readAsLines();
+          final List<String> newLines = [];
+          for (final line in lines) {
+            final parts = line.split(',');
+            if (parts.isNotEmpty) {
+              final oldUtc = int.tryParse(parts[0]) ?? 0;
+              final newUtc = oldUtc + (rtcOffsetMs ~/ 1000);
+              parts[0] = newUtc.toString();
+              newLines.add(parts.join(','));
+            }
+          }
+          await markerFile.writeAsString(newLines.map((l) => '$l\n').join(''));
+        }
+
+        // 6. Update .bin filenames in the promoted raw folder to match new UTC base
+        // Format: {uptime}_{sessionId}.bin -> {newUtc}_{sessionId}.bin
+        await for (final entity in targetFolder.list()) {
+          if (entity is File && entity.path.endsWith('.bin')) {
+            final name = entity.path.split('/').last;
+            final parts = name.split('_');
+            final uptime = int.tryParse(parts[0]) ?? 0;
+            if (uptime < 946684800) {
+              final newUtc = uptime + (rtcOffsetMs ~/ 1000);
+              final sid = parts.length > 1 ? parts[1] : '0.bin';
+              final newName = '${newUtc}_$sid';
+              await entity.rename('${targetFolder.path}/$newName');
+            }
+          }
+        }
+      }
+    }
+
+    notifyRecordingsChanged();
+  }
+
   /// Deletes all raw .bin segment files and their parent device-session folders.
   /// Called after adjustment mode is turned off and any pending processing is done.
   static Future<void> deleteAllRawSegments() async {
