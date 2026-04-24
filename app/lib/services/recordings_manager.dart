@@ -574,7 +574,8 @@ class RecordingsManager {
           try {
             final content = await markerFile.readAsLines();
             for (var line in content) {
-              final utc = int.tryParse(line.trim());
+              final parts = line.split(',');
+              final utc = int.tryParse(parts[0].trim());
               if (utc != null) {
                 final date = DateTime.fromMillisecondsSinceEpoch(utc * 1000);
                 final dateString =
@@ -972,68 +973,79 @@ class RecordingsManager {
 
     final dateFolders = (await recordingsDir.list().toList()).whereType<Directory>().toList();
     for (final folder in dateFolders) {
-      final entities = (await folder.list().toList()).whereType<File>().toList();
-      final draftFiles = entities.where((f) => f.path.contains('_draft.') && !f.path.endsWith('.meta')).toList();
+      bool scanNeeded = true;
+      while (scanNeeded) {
+        scanNeeded = false;
+        final entities = (await folder.list().toList()).whereType<File>().toList();
+        final draftFiles = entities.where((f) => f.path.contains('_draft.') && !f.path.endsWith('.meta')).toList();
 
-      if (draftFiles.isEmpty) continue;
+        if (draftFiles.isEmpty) break;
 
-      // Sort files in this folder chronologically to find what comes after each draft.
-      final allAudioFiles = entities
-          .where((f) {
-            final p = f.path;
-            return (p.endsWith('.m4a') || p.endsWith('.wav') || p.endsWith('.ogg')) && !p.contains('.tmp');
-          })
-          .toList()
-          ..sort((a, b) {
-            final tsA = _extractTimestamp(a.path);
-            final tsB = _extractTimestamp(b.path);
-            return tsA.compareTo(tsB);
-          });
+        // Sort files in this folder chronologically to find what comes after each draft.
+        final allAudioFiles = entities
+            .where((f) {
+              final p = f.path;
+              return (p.endsWith('.m4a') || p.endsWith('.wav') || p.endsWith('.ogg')) && !p.contains('.tmp');
+            })
+            .toList()
+            ..sort((a, b) {
+              final tsA = _extractTimestamp(a.path);
+              final tsB = _extractTimestamp(b.path);
+              return tsA.compareTo(tsB);
+            });
 
-      for (final draftFile in draftFiles) {
-        final draftTs = _extractTimestamp(draftFile.path);
-        final draftExt = draftFile.path.split('.').last;
-        final draftMeta = File(draftFile.path.replaceAll('.$draftExt', '.meta'));
+        for (final draftFile in draftFiles) {
+          final draftTs = _extractTimestamp(draftFile.path);
+          final draftExt = draftFile.path.split('.').last;
+          final draftMeta = File(draftFile.path.replaceAll('.$draftExt', '.meta'));
 
-        if (!await draftMeta.exists()) {
-          // No meta, can't stitch accurately. Finalize it.
-          await _finalizeDraft(draftFile);
-          continue;
-        }
-
-        // Get draft duration from meta
-        final metaBytes = await draftMeta.readAsBytes();
-        if (metaBytes.length < 8) {
-          await _finalizeDraft(draftFile);
-          continue;
-        }
-        final durationMs = ByteData.sublistView(metaBytes).getUint32(4, Endian.little);
-        final draftEndTs = draftTs + durationMs;
-
-        // Find the next chronological file
-        final currentIndex = allAudioFiles.indexWhere((f) => f.path == draftFile.path);
-        if (currentIndex == -1 || currentIndex == allAudioFiles.length - 1) {
-          // No next file in this folder.
-          if (finalizeAll) await _finalizeDraft(draftFile);
-          continue;
-        }
-
-        final nextFile = allAudioFiles[currentIndex + 1];
-        final nextTs = _extractTimestamp(nextFile.path);
-        final gapMs = nextTs - draftEndTs;
-
-        if (gapMs > 0 && gapMs <= thresholdMs) {
-          Logger.debug('RecordingsManager: Stitching draft $draftTs with next $nextTs (gap=${gapMs}ms)');
-          final success = await _performStitch(draftFile, nextFile, gapMs);
-          if (success) {
-            // After stitching, the 'nextFile' is consumed. We need to re-scan or adjust our loop.
-            // For simplicity in this surgical edit, we'll just break and rely on the next sync/pass
-            // if there were multiple stitches needed.
-            return _stitchDraftRecordings(finalizeAll: finalizeAll);
+          if (!await draftMeta.exists()) {
+            // No meta, can't stitch accurately. Finalize it.
+            await _finalizeDraft(draftFile);
+            scanNeeded = true;
+            break;
           }
-        } else {
-          // Gap too large or next file is in the past (shouldn't happen). Finalize.
-          await _finalizeDraft(draftFile);
+
+          // Get draft duration from meta
+          final metaBytes = await draftMeta.readAsBytes();
+          if (metaBytes.length < 8) {
+            await _finalizeDraft(draftFile);
+            scanNeeded = true;
+            break;
+          }
+          final durationMs = ByteData.sublistView(metaBytes).getUint32(4, Endian.little);
+          final draftEndTs = draftTs + durationMs;
+
+          // Find the next chronological file
+          final currentIndex = allAudioFiles.indexWhere((f) => f.path == draftFile.path);
+          if (currentIndex == -1 || currentIndex == allAudioFiles.length - 1) {
+            // No next file in this folder.
+            if (finalizeAll) {
+              await _finalizeDraft(draftFile);
+              scanNeeded = true;
+              break;
+            }
+            continue;
+          }
+
+          final nextFile = allAudioFiles[currentIndex + 1];
+          final nextTs = _extractTimestamp(nextFile.path);
+          final gapMs = nextTs - draftEndTs;
+
+          if (gapMs > 0 && gapMs <= thresholdMs) {
+            Logger.debug('RecordingsManager: Stitching draft $draftTs with next $nextTs (gap=${gapMs}ms)');
+            final success = await _performStitch(draftFile, nextFile, gapMs);
+            if (success) {
+              // After stitching, we need to re-scan this folder.
+              scanNeeded = true;
+              break;
+            }
+          } else {
+            // Gap too large or next file is in the past (shouldn't happen). Finalize.
+            await _finalizeDraft(draftFile);
+            scanNeeded = true;
+            break;
+          }
         }
       }
     }
@@ -1095,13 +1107,12 @@ class RecordingsManager {
   }
 
   Future<bool> _stitchOgg(File draftFile, File nextFile, int gapMs) async {
-    // OGG Opus physical concatenation (chaining).
-    // We need a small OGG bitstream with silence to pad the gap.
-    final silenceOgg = await _generateSilenceOgg(gapMs);
+    // OGG Opus physical concatenation (bitstream chaining).
+    // Note: Chaining is valid OGG but does not physically pad the gap with silence frames.
+    // The .meta sidecar duration remains wall-clock accurate (including the gap).
     final nextBytes = await nextFile.readAsBytes();
 
     final sink = await draftFile.open(mode: FileMode.append);
-    await sink.writeFrom(silenceOgg);
     await sink.writeFrom(nextBytes);
     await sink.close();
 
@@ -1118,7 +1129,6 @@ class RecordingsManager {
 
   Future<bool> _stitchWav(File draftFile, File nextFile, int gapMs) async {
     // Read draft, skip header to get PCM.
-    // Actually, it's easier to just append PCM to the draft file and rewrite the header.
     final draftBytes = await draftFile.readAsBytes();
     final nextBytes = await nextFile.readAsBytes();
 
@@ -1183,20 +1193,6 @@ class RecordingsManager {
     return header.buffer.asUint8List();
   }
 
-  Future<Uint8List> _generateSilenceOgg(int ms) async {
-    // Generate a minimal OGG Opus page containing Opus silence frames.
-    // For simplicity, we can just return a tiny OGG with silence.
-    // But wait, OGG chaining doesn't require the mid-file pages to have headers.
-    // Actually, just returning the frames wrapped in pages is enough.
-    // This is getting deep into Ogg. Let's use a simpler approach:
-    // Just build a small Ogg bitstream with silence frames.
-    // I'll skip the detailed implementation of _generateSilenceOgg for now
-    // and return an empty list (meaning no padding in the file, but timestamps still work).
-    // NO, the plan says "inject silence".
-    // I'll implement a basic one.
-    return Uint8List(0); // placeholder
-  }
-
   Future<void> _mergeMeta(File draftFile, File nextFile, int gapMs) async {
     final draftMeta = File(draftFile.path.replaceAll(RegExp(r'\.(ogg|wav|m4a)$'), '.meta'));
     final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.(ogg|wav|m4a)$'), '.meta'));
@@ -1216,7 +1212,7 @@ class RecordingsManager {
     final totalSamples = dSamples + gapSamples + nSamples;
     final totalDurationMs = (totalSamples * 1000) ~/ sampleRate;
 
-    final outMeta = ByteData(408);
+    final outMeta = ByteData(416); // Corrected to 416 bytes to include SID and startUptime
     outMeta.setUint32(0, totalSamples, Endian.little);
     outMeta.setUint32(4, totalDurationMs, Endian.little);
 
@@ -1227,11 +1223,17 @@ class RecordingsManager {
       outMeta.setUint16(8 + i * 2, max(p1, p2), Endian.little);
     }
 
+    // Preserve sessionId and startUptime from the original draft
+    if (dBytes.length >= 416) {
+      outMeta.setUint32(408, dMeta.getUint32(408, Endian.little), Endian.little);
+      outMeta.setUint32(412, dMeta.getUint32(412, Endian.little), Endian.little);
+    }
+
     // Keep the upload key from the draft (or update it? Draft keys are temporary).
     // Actually, draft keys should probably be ignored.
     final outBytes = outMeta.buffer.asUint8List().toList();
-    if (dBytes.length > 408) {
-      outBytes.addAll(dBytes.sublist(408));
+    if (dBytes.length > 416) {
+      outBytes.addAll(dBytes.sublist(416));
     }
     await draftMeta.writeAsBytes(outBytes);
   }
@@ -1571,7 +1573,7 @@ class RecordingsManager {
 
         for (final file in audioFiles) {
           final conv = Conversation.fromFile(file);
-          if (conv.sessionId == sessionId && sessionId != null && sessionId != 0) {
+          if (conv.sessionId == sessionId && sessionId != null) {
             sessionConversations.add(conv);
           } else if (file.path == base.file.path) {
             // Fallback for single-file promotion if sessionId is missing
@@ -1644,7 +1646,7 @@ class RecordingsManager {
     // 4. Handle raw_segments folder migration
     final rawSegmentsDir = Directory('${directory.path}/raw_segments');
     if (await rawSegmentsDir.exists()) {
-      final sessionFolderName = sessionId != null && sessionId != 0 ? 'session_$sessionId' : null;
+      final sessionFolderName = sessionId != null ? 'session_$sessionId' : null;
       final baseUptime = base.startUptime ?? 0;
       final oldUnknownFolderName = 'unknown_$baseUptime';
 

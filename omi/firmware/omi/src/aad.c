@@ -254,7 +254,7 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
     uint32_t avg = avg_abs_amplitude(buffer, sample_count);
     int64_t now = k_uptime_get();
     bool has_voice = avg >= CONFIG_OMI_VAD_ABS_THRESHOLD
-                  || k_uptime_get() < force_wake_until_ms;
+                  || now < force_wake_until_ms;
 
     if (has_voice) {
         vad_last_voice_ms = now;
