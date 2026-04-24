@@ -1,0 +1,13 @@
+💡 What:
+Replaced basic `GestureDetector` widgets with `InkWell` components for the Play/Pause and Seek buttons in the `RecordingPlayerPage` and `MarkerConversationPlayerPage` screens. Wrapped these interactive elements with `Semantics`, `Tooltip`, and `Material` to provide full accessibility support. Additionally, added an `isForward` boolean to the `_SeekButton` and `_SeekBtn` to explicitly dictate the screen reader label instead of inferring it, preventing misleading announcements.
+
+🎯 Why:
+The `GestureDetector` widget does not offer any visual feedback or ripple effects when pressed, leaving the user unsure if the interaction was registered. It also does not carry implicit accessibility states. Upgrading to `InkWell` and providing `Semantics` makes the application more robust, accessible to screen readers, understandable via hover tooltips on desktop/web, and adds a small touch of visual delight (ripple effect) upon interactions.
+
+📸 Before/After:
+Before: Buttons had no visual feedback or screen reader semantics when tapped.
+After: Buttons show a deep purple circular ripple, show tooltips on hover, and announce actions accurately (e.g. "Pause", "Seek backward 30 seconds").
+
+♿ Accessibility:
+- Added `Semantics(button: true)` with accurate descriptions (e.g., "Play", "Pause", "Seek forward 30 seconds").
+- Corrected a potential screen reader issue where the rewinding Seek button would mistakenly announce itself as seeking "forward" if instantiated with a generic positive seconds value.
