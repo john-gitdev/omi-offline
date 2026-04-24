@@ -409,20 +409,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     Wal wal,
     List<int> rawData,
     int timerStart, {
-    String? subFolder,
-    int? deviceSessionId,
-    int? segmentIndex,
+    required String subFolder,
     bool append = false,
   }) async {
     final directory = await getApplicationDocumentsDirectory();
-    final folderPath = deviceSessionId != null
-        ? '${directory.path}/raw_segments/$deviceSessionId'
-        : '${directory.path}/raw_segments/$subFolder';
+    final folderPath = '${directory.path}/raw_segments/$subFolder';
 
     final folder = Directory(folderPath);
     if (!await folder.exists()) await folder.create(recursive: true);
 
-    final fileName = '${timerStart}_${segmentIndex ?? 0}.bin';
+    final fileName = '${timerStart}_0.bin';
 
     String filePath = '${folder.path}/$fileName';
     final file = File(filePath);
@@ -484,8 +480,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         rawData,
         timerStart,
         subFolder: subFolderPrefix,
-        deviceSessionId: null, // Force use of subFolderPrefix which includes 'unknown_'
-        segmentIndex: 0,
         append: appendMode,
       );
       writtenOffset += bytesWritten;
@@ -618,12 +612,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
               if (packageSize == 0xFFFFFFFE) {
                 if (scanOff + 20 <= batch.length) {
-                  if (lastDeviceSessionId != null) {
-                    await _saveMarker(
-                      lastDeviceSessionId,
-                      batchBd.getUint32(scanOff + 4, Endian.little),
-                    );
-                  }
+                  await _saveMarker(
+                    timerStart,
+                    batchBd.getUint32(scanOff + 4, Endian.little),
+                  );
                   scanOff += 20;
                   continue;
                 } else {
