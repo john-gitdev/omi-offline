@@ -148,24 +148,10 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
     if (!mounted || time == null) return;
 
     final newStart = DateTime(date.year, date.month, date.day, time.hour, time.minute);
-    final newTimestamp = newStart.millisecondsSinceEpoch;
-    final dateStr =
-        '${newStart.year}-${newStart.month.toString().padLeft(2, '0')}-${newStart.day.toString().padLeft(2, '0')}';
-
-    final docsDir = widget.conversation.file.parent.parent.parent.path;
-    final targetDir = Directory('$docsDir/$dateStr');
-    if (!await targetDir.exists()) await targetDir.create(recursive: true);
-
-    final extension = widget.conversation.file.path.split('.').last;
-    final newFilePath = '${targetDir.path}/recording_$newTimestamp.$extension';
-    final newMetaPath = '${targetDir.path}/recording_$newTimestamp.meta';
 
     try {
       await _player.stop();
-      final basePath = widget.conversation.file.path.substring(0, widget.conversation.file.path.lastIndexOf('.'));
-      final metaFile = File('$basePath.meta');
-      if (await metaFile.exists()) await metaFile.rename(newMetaPath);
-      await widget.conversation.file.rename(newFilePath);
+      await RecordingsManager.promoteSessionToDate(widget.conversation, newStart);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to assign date.')));
