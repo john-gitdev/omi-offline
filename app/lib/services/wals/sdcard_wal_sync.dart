@@ -383,6 +383,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future _deleteWalLocked(DeviceConnection connection, Wal wal, {int? overrideFileNum}) async {
     final targetIdx = overrideFileNum ?? wal.fileNum;
     Logger.debug('SDCardWalSync: deleting synced WAL from SD card: index=$targetIdx ts=${wal.timerStart}');
+    final connected = await connection.isConnected();
+    if (!connected) throw Exception('Device disconnected before deletion of index=$targetIdx ts=${wal.timerStart}');
     final success = await connection.deleteFile(
       StorageFile(index: targetIdx, timestamp: wal.timerStart, size: 0),
     );
