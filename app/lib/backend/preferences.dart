@@ -83,7 +83,7 @@ class SharedPreferencesUtil {
   set backgroundSyncIntervalMinutes(int v) => saveInt('backgroundSyncIntervalMinutes', v);
 
   // Whether to disconnect bluetooth after a sync to maximize battery.
-  bool get maximizeBattery => getBool('maximizeBattery', defaultValue: true);
+  bool get maximizeBattery => getBool('maximizeBattery', defaultValue: false);
   set maximizeBattery(bool v) => saveBool('maximizeBattery', v);
 
   // Whether to display times in 24-hour format (true) or 12-hour AM/PM (false).
