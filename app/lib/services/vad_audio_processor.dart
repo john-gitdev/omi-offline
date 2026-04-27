@@ -373,7 +373,7 @@ class VadAudioProcessor {
 
         if (frameIndex % 50 == 0) await Future.delayed(Duration.zero);
 
-        final opusBytes = bytes.sublist(offset + 4, offset + 4 + frameLength);
+        final opusBytes = Uint8List.sublistView(bytes, offset + 4, offset + 4 + frameLength);
 
         Int16List? pcmData;
         try {
@@ -558,7 +558,7 @@ class VadAudioProcessor {
         }
         if (currentFileBytes == null) continue;
         // Write 4-byte length prefix + Opus packet as-is.
-        sink.add(currentFileBytes.sublist(item.byteOffset, item.byteOffset + 4 + item.frameLength));
+        sink.add(Uint8List.sublistView(currentFileBytes, item.byteOffset, item.byteOffset + 4 + item.frameLength));
       }
       await sink.flush();
     } finally {
@@ -679,7 +679,7 @@ class VadAudioProcessor {
         if (currentFileBytes == null) continue;
 
         final frameDataOffset = ref.byteOffset + 4;
-        final opusBytes = currentFileBytes.sublist(frameDataOffset, frameDataOffset + ref.frameLength);
+        final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
 
         Int16List? pcmData;
         try {
@@ -859,7 +859,7 @@ class VadAudioProcessor {
         if (currentFileBytes == null) continue;
 
         final frameDataOffset = ref.byteOffset + 4;
-        final opusBytes = currentFileBytes.sublist(frameDataOffset, frameDataOffset + ref.frameLength);
+        final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
 
         Int16List? pcmData;
         try {
@@ -1304,7 +1304,7 @@ class VadAudioProcessor {
           if (currentFileBytes == null) continue;
 
           final frameDataOffset = ref.byteOffset + 4;
-          final opusBytes = currentFileBytes.sublist(frameDataOffset, frameDataOffset + ref.frameLength);
+          final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
 
           try {
             final decoded = wavDecoder.decode(input: opusBytes);
