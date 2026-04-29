@@ -563,6 +563,8 @@ static int flush_batch_buffer_chunked(void)
 
 static void process_write_data_req(const sd_req_t *req)
 {
+    bool spi_woken = false;
+
     if (sd_write_blocked) {
         if ((k_uptime_get() - last_write_error_uptime_ms) > 2000) {
             sd_write_blocked = false;
@@ -588,44 +590,52 @@ static void process_write_data_req(const sd_req_t *req)
     }
 
     if (current_filename[0] == '\0') {
+        if (!spi_woken) { sd_set_io_low_power(false); spi_woken = true; }
         int res = create_audio_file_with_timestamp();
         if (res < 0) {
             last_write_error_uptime_ms = k_uptime_get();
             sd_write_blocked = true;
-            return;
+            goto done;
         }
         atomic_clear(&current_file_deleted);
     }
 
     if (should_rotate_file()) {
         LOG_INF("[SD_WORK] Rotating file after %d min", (int)(FILE_ROTATION_INTERVAL_MS / 60000));
+        if (!spi_woken) { sd_set_io_low_power(false); spi_woken = true; }
         int flush_res = flush_batch_buffer_chunked();
         if (flush_res < 0) {
             LOG_ERR("[SD_WORK] flush failed before rotation: %d", flush_res);
             last_write_error_uptime_ms = k_uptime_get();
             sd_write_blocked = true;
-            return;
+            goto done;
         }
         int res = create_audio_file_with_timestamp();
         if (res < 0) {
             last_write_error_uptime_ms = k_uptime_get();
             sd_write_blocked = true;
-            return;
+            goto done;
         }
     }
 
     /* Overflow guard — flush first if this frame won't fit */
     if (write_batch_offset + req->u.write.len > sizeof(write_batch_buffer)) {
+        if (!spi_woken) { sd_set_io_low_power(false); spi_woken = true; }
         flush_batch_buffer_chunked();
         if (write_batch_offset + req->u.write.len > sizeof(write_batch_buffer)) {
             LOG_ERR("[SD_WORK] batch buffer overflow guard len=%u", (unsigned) req->u.write.len);
-            return;
+            goto done;
         }
     }
 
     memcpy(write_batch_buffer + write_batch_offset, req->u.write.buf, req->u.write.len);
     write_batch_offset += req->u.write.len;
     write_batch_counter++;
+
+done:
+    if (spi_woken) {
+        sd_set_io_low_power(true);
+    }
 }
 
 static void close_read_handle(void)
@@ -1660,16 +1670,21 @@ void sd_worker_thread(void)
         }
     }
 
+    /* Suspend SPI now that boot is complete — saves ~0.5 mA idle current
+     * during the initial batch accumulation window. OTA is protected: the
+     * MGMT_EVT_OP_IMG_MGMT_DFU_STARTED callback calls sd_set_ota_active(true)
+     * which resumes SPI before any flash writes occur. */
+    sd_set_io_low_power(true);
+
     /* ---- Main loop ---- */
     while (1) {
 
-
         /* Handle deferred control requests first (when queue was saturated). */
         if (atomic_cas(&pending_flush_on_ble_connect, 1, 0)) {
-            /* Attempt flush inline; if it fails, re-set the flag so the
-             * next loop iteration retries instead of silently losing it. */
             if (!atomic_get(&current_file_deleted) && current_filename[0] != '\0') {
+                sd_set_io_low_power(false);
                 int sr = lfs_file_sync(&lfs_fs, &lfs_fil_data);
+                sd_set_io_low_power(true);
                 if (sr < 0) {
                     atomic_set(&pending_flush_on_ble_connect, 1);
                 } else {
@@ -1686,57 +1701,60 @@ void sd_worker_thread(void)
             goto handle_req;
         }
 
-        #define MAX_BATCH_LATENCY_MS 100
-        static int64_t last_flush_time_ms = 0;
-        bool activity = false;
-
-        /* 1. STRICT PRIORITY: Always drain BLE reads and controls first */
+        /* Priority queue always checked first (no-wait). */
         if (k_msgq_get(&sd_prio_msgq, &req, K_NO_WAIT) == 0) {
-            activity = true;
             goto handle_req;
         }
 
-        /* 2. AUDIO WRITES: If no priority tasks, grab an audio frame */
-        if (k_msgq_get(&sd_msgq, &req, K_NO_WAIT) == 0) {
-            activity = true;
+        /* Block waiting for the next audio write.
+         * Short timeout when BLE connected (keeps reads responsive);
+         * longer when disconnected (saves CPU/power).
+         * On timeout, flush any partially-filled batch buffer. */
+        k_timeout_t write_wait = atomic_get(&ble_connected) ? K_MSEC(50) : K_MSEC(500);
+        if (k_msgq_get(&sd_msgq, &req, write_wait) == 0) {
             goto handle_req;
         }
 
-        /* 3. BATCHING LOGIC: Check limits if we didn't just grab a message */
-        bool size_limit_hit = (write_batch_counter >= WRITE_BATCH_COUNT);
-        bool time_limit_hit = (write_batch_offset > 0) && 
-                              ((k_uptime_get() - last_flush_time_ms) >= MAX_BATCH_LATENCY_MS);
-
-        if (size_limit_hit || time_limit_hit) {
+        /* Timeout: flush batch if data is waiting. */
+        if (write_batch_offset > 0) {
             sd_set_io_low_power(false);
             flush_batch_buffer_chunked();
-            last_flush_time_ms = k_uptime_get();
-            activity = true;
-            
-            if (bytes_since_sync > 0 && (k_uptime_get() - last_file_sync_uptime_ms) >= SD_FSYNC_INTERVAL_MS) {
+            if (bytes_since_sync > 0 &&
+                (k_uptime_get() - last_file_sync_uptime_ms) >= SD_FSYNC_INTERVAL_MS) {
                 lfs_file_sync(&lfs_fs, &lfs_fil_data);
                 data_sync_gen++;
                 bytes_since_sync = 0;
                 last_file_sync_uptime_ms = k_uptime_get();
             }
+            sd_set_io_low_power(true);
         }
-
-        if (!activity) {
-            k_msleep(5);
-            continue;
-        }
-
         continue;
 
     handle_req:
-        /* Activity detected — immediately wake SPI3 bus */
-        sd_set_io_low_power(false);
+        /* Wake SPI for all requests except write data — write data manages
+         * its own SPI gating internally via spi_woken in process_write_data_req. */
+        if (req.type != REQ_WRITE_DATA) {
+            sd_set_io_low_power(false);
+        }
 
         switch (req.type) {
 
         /* ---- Write data ---- */
         case REQ_WRITE_DATA:
             process_write_data_req(&req);
+            /* Drain up to 16 additional write/save_offset messages in one pass
+             * to improve SD throughput by batching more work per wake. */
+            for (int _d = 0; _d < 16; _d++) {
+                if (k_msgq_num_used_get(&sd_prio_msgq) > 0)
+                    break;
+                sd_req_t _next = {0};
+                if (k_msgq_get(&sd_msgq, &_next, K_NO_WAIT) != 0)
+                    break;
+                if (_next.type == REQ_WRITE_DATA)
+                    process_write_data_req(&_next);
+                else if (_next.type == REQ_SAVE_OFFSET)
+                    process_save_offset_req(&_next);
+            }
             break;
 
         /* ---- Read audio data (uses persistent file handle) ---- */
@@ -2078,6 +2096,12 @@ void sd_worker_thread(void)
 
         default:
             LOG_ERR("[SD_WORK] unknown request type %d", req.type);
+        }
+
+        /* Suspend SPI after non-write requests complete.
+         * Write data manages its own SPI state via spi_woken. */
+        if (req.type != REQ_WRITE_DATA) {
+            sd_set_io_low_power(true);
         }
     }
 }
