@@ -386,7 +386,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                _SeekButton(icon: FontAwesomeIcons.rotateLeft, seconds: 30, onTap: () => _seekRelative(-30)),
+                _SeekButton(isForward: false, icon: FontAwesomeIcons.rotateLeft, seconds: 30, onTap: () => _seekRelative(-30)),
                 const SizedBox(width: 40),
                 GestureDetector(
                   onTap: _togglePlay,
@@ -404,7 +404,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
                   ),
                 ),
                 const SizedBox(width: 40),
-                _SeekButton(icon: FontAwesomeIcons.rotateRight, seconds: 30, onTap: () => _seekRelative(30)),
+                _SeekButton(isForward: true, icon: FontAwesomeIcons.rotateRight, seconds: 30, onTap: () => _seekRelative(30)),
               ],
             ),
           ],
@@ -415,26 +415,43 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
 }
 
 class _SeekButton extends StatelessWidget {
+  final bool isForward;
   final IconData icon;
   final int seconds;
   final VoidCallback onTap;
 
-  const _SeekButton({required this.icon, required this.seconds, required this.onTap});
+  const _SeekButton({required this.isForward, required this.icon, required this.seconds, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          FaIcon(icon, color: Colors.grey.shade300, size: 32),
-          const SizedBox(height: 5),
-          Text(
-            '${seconds}s',
-            style: TextStyle(color: Colors.grey.shade400, fontSize: 11, fontWeight: FontWeight.w500),
+    final semanticLabel = isForward ? 'Seek forward $seconds seconds' : 'Seek backward $seconds seconds';
+    return Semantics(
+      button: true,
+      label: semanticLabel,
+      child: Tooltip(
+        message: semanticLabel,
+        child: Material(
+          color: Colors.transparent,
+          shape: const CircleBorder(),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FaIcon(icon, color: Colors.grey.shade300, size: 32),
+                  const SizedBox(height: 5),
+                  Text(
+                    '${seconds}s',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 11, fontWeight: FontWeight.w500),
+                  ),
+                ],
+              ),
+            ),
           ),
-        ],
+        ),
       ),
     );
   }
