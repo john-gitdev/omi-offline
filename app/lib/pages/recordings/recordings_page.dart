@@ -547,7 +547,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     color: Colors.white,
                     size: 20,
                   ),
-                  onPressed: () => SettingsDrawer.show(context),
+                  onPressed: () => SettingsDrawer.show(context, controller),
                   tooltip: 'Settings',
                 ),
               ],
