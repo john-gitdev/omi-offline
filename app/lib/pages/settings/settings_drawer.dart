@@ -231,37 +231,31 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                 children: [
                   _buildSectionContainer(
                     children: [
-                      _buildSettingsItem(
-                        title: 'Find Omi Devices',
-                        icon: const FaIcon(FontAwesomeIcons.magnifyingGlass, color: Color(0xFF8E8E93), size: 20),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => const FindDevicesPage(),
-                            ),
-                          );
-                        },
-                      ),
                       Consumer<DeviceProvider>(
                         builder: (context, deviceProvider, child) {
-                          if (!deviceProvider.isConnected) {
-                            return const SizedBox.shrink();
+                          if (deviceProvider.isConnected) {
+                            return _buildSettingsItem(
+                              title: 'Device Settings',
+                              icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Color(0xFF8E8E93), size: 20),
+                              onTap: () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (context) => const DeviceSettings(),
+                                  ),
+                                );
+                              },
+                            );
                           }
-                          return Column(
-                            children: [
-                              const Divider(height: 1, color: Color(0xFF3C3C43)),
-                              _buildSettingsItem(
-                                title: 'Device Settings',
-                                icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Color(0xFF8E8E93), size: 20),
-                                onTap: () {
-                                  Navigator.of(context).push(
-                                    MaterialPageRoute(
-                                      builder: (context) => const DeviceSettings(),
-                                    ),
-                                  );
-                                },
-                              ),
-                            ],
+                          return _buildSettingsItem(
+                            title: 'Find Omi Devices',
+                            icon: const FaIcon(FontAwesomeIcons.magnifyingGlass, color: Color(0xFF8E8E93), size: 20),
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (context) => const FindDevicesPage(),
+                                ),
+                              );
+                            },
                           );
                         },
                       ),
