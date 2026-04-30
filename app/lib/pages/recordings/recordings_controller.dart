@@ -893,10 +893,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_prefs.adjustmentMode) {
       throw Exception('Uploads are disabled in Adjustment Mode');
     }
-    final minDuration = _prefs.filterMinDurationSeconds;
-    if (conversation.duration.inSeconds < minDuration) {
-      throw Exception('This recording is shorter than your filter and cannot be uploaded.');
-    }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) throw Exception('Upload key unavailable');
     if (_uploadingFiles.contains(uploadKey)) return;
