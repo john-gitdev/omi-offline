@@ -7,6 +7,7 @@ import 'package:omi/providers/device_provider.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'app_settings_page.dart';
 import 'device_settings.dart';
 import 'find_devices_page.dart';
 import 'offline_audio_settings_page.dart';
@@ -287,6 +288,18 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => const IntegrationsPage(),
+                            ),
+                          );
+                        },
+                      ),
+                      const Divider(height: 1, color: Color(0xFF3C3C43)),
+                      _buildSettingsItem(
+                        title: 'App Settings',
+                        icon: const FaIcon(FontAwesomeIcons.gear, color: Color(0xFF8E8E93), size: 20),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => const AppSettingsPage(),
                             ),
                           );
                         },
