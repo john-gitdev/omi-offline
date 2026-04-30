@@ -1505,6 +1505,18 @@ class RecordingsManager {
         await binFile.delete();
       }
     } catch (_) {}
+    // Delete any marker EDL files in the same folder that reference this recording.
+    final filename = file.path.split('/').last;
+    try {
+      final dirEntities = await file.parent.list().toList();
+      for (final entity in dirEntities) {
+        if (entity is! File || !entity.path.endsWith('.edl')) continue;
+        try {
+          final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
+          if (json['segmentFilename'] == filename) await entity.delete();
+        } catch (_) {}
+      }
+    } catch (_) {}
     Logger.debug('RecordingsManager: Deleted conversation ${file.path}');
   }
 
