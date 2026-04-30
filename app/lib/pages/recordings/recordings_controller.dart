@@ -886,6 +886,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> uploadConversation(Conversation conversation) async {
+    if (_prefs.adjustmentMode) {
+      throw Exception('Uploads are disabled in Adjustment Mode');
+    }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) throw Exception('Upload key unavailable');
     if (_uploadingFiles.contains(uploadKey)) return;
