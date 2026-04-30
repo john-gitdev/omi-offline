@@ -1247,7 +1247,7 @@ class RecordingsManager {
     // Build sorted list of (file, startMs, endMs) from m4a/ogg + .meta pairs.
     final recordings = <({File file, int startMs, int endMs, int durationMs, int? sessionId, int? startUptime})>[];
     for (final entity in await liveDir.list().toList()) {
-      if (entity is! File || (!entity.path.endsWith('.m4a') && !entity.path.endsWith('.ogg'))) continue;
+      if (entity is! File || (!entity.path.endsWith('.m4a') && !entity.path.endsWith('.ogg') && !entity.path.endsWith('.wav'))) continue;
       
       final conv = Conversation.fromFile(entity);
       if (conv.duration.inMilliseconds <= 0) continue;

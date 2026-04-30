@@ -331,6 +331,14 @@ class VadAudioProcessor {
                     (_speechFrameCount * frameDurationMs >= _minSpeechMs || _forcedByMarker)) {
                   final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
                   if (filePath != null) savedFiles.add(filePath);
+                } else if (_forcedByMarker && _currentRefs.isEmpty && _recordingStartTime != null) {
+                  // Marker fired but no speech arrived — save a silence recording so the marker
+                  // has an audio file to attach to rather than disappearing.
+                  final filePath = await _saveRecording(
+                    [Duration(milliseconds: _silenceDurationToSplitMs)],
+                    _recordingStartTime!,
+                  );
+                  if (filePath != null) savedFiles.add(filePath);
                 }
                 _currentRefs = [];
                 _speechFrameCount = 0;
@@ -442,6 +450,16 @@ class VadAudioProcessor {
   }
 
   Future<String?> flushRemaining({bool isDraft = false}) async {
+    if (_forcedByMarker && _currentRefs.isEmpty && _recordingStartTime != null) {
+      // Marker fired but no speech arrived before flush — save silence so the marker survives.
+      final path = await _saveRecording(
+        [Duration(milliseconds: _silenceDurationToSplitMs)],
+        _recordingStartTime!,
+        isDraft: isDraft,
+      );
+      _resetState();
+      return path;
+    }
     if (_currentRefs.isEmpty || (_speechFrameCount * frameDurationMs < _minSpeechMs && !_forcedByMarker)) {
       if (_currentRefs.isNotEmpty) {
         Logger.debug(
@@ -559,7 +577,8 @@ class VadAudioProcessor {
       await dateFolder.create(recursive: true);
     }
 
-    if (refs.length < 5) {
+    final frameRefCount = refs.whereType<FrameRef>().length;
+    if (frameRefCount > 0 && frameRefCount < 5) {
       return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
     }
 
