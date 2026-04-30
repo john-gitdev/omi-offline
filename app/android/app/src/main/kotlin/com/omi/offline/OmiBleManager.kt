@@ -214,6 +214,14 @@ class OmiBleManager private constructor(private val application: Application) {
             completion(Result.success(true))
             return
         }
+        if (device.bondState == BluetoothDevice.BOND_BONDING) {
+            // Bonding already in progress (e.g. reconnect during first pairing attempt).
+            // Register callback to ride the existing bond completion — don't call createBond() again,
+            // which would show a second system pairing dialog.
+            bondingAddress = addr
+            bondCompletionCallback = { bonded -> completion(Result.success(bonded)) }
+            return
+        }
         bondingAddress = addr
         bondCompletionCallback = { bonded -> completion(Result.success(bonded)) }
         device.createBond()
