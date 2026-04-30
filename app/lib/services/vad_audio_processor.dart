@@ -20,7 +20,6 @@ class ProcessingSettings {
   final double speechThreshold;
   final int silenceDurationToSplitMs;
   final int minSpeechMs;
-  final int preSpeechBufferMs;
   final int maxChunkMs;
   final String deviceId; // used to generate upload key in .meta sidecar
   final bool convertOpusToM4a;
@@ -30,7 +29,6 @@ class ProcessingSettings {
     required this.speechThreshold,
     required this.silenceDurationToSplitMs,
     required this.minSpeechMs,
-    required this.preSpeechBufferMs,
     required this.maxChunkMs,
     required this.deviceId,
     required this.convertOpusToM4a,
@@ -44,7 +42,6 @@ class ProcessingSettings {
       speechThreshold: p.vadSpeechThreshold,
       silenceDurationToSplitMs: p.vadSplitSeconds * 1000,
       minSpeechMs: p.vadMinSpeechSeconds * 1000,
-      preSpeechBufferMs: (p.vadPreSpeechSeconds * 1000).round(),
       maxChunkMs: p.vadMaxConversationMinutes * 60 * 1000,
       deviceId: p.btDevice.id,
       convertOpusToM4a: p.convertOpusToM4a,
