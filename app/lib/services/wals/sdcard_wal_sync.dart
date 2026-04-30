@@ -788,7 +788,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     for (int i = 0; i < wals.length; i++) {
       final wal = wals[i];
-      _totalBytesDownloaded = 0;
       if (_isCancelled) break;
 
       // Abort if device disconnected between files
