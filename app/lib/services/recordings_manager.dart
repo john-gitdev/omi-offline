@@ -428,11 +428,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
 
     params.sendPort.send({'type': 'move'});
 
-    // Final pass: release any files still held only in the rolling pre-buffer.
-    // We can safely release all files because the next run will pick up from the draft audio file.
-    final finalSafe = processor.consumeSafeToDeletePaths(
-      forceAll: !cancelled,
-    );
+    final finalSafe = processor.consumeSafeToDeletePaths();
     if (finalSafe.isNotEmpty) {
       params.sendPort.send({
         'type': 'delete_segments',

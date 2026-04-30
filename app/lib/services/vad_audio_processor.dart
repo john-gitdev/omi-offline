@@ -1,4 +1,3 @@
-import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -24,8 +23,6 @@ class ProcessingSettings {
   final int minSpeechMs;
   final int preSpeechBufferMs;
   final int maxChunkMs;
-  final int markerLookbackMs;
-  final int maxRollingFrames;
   final String deviceId; // used to generate upload key in .meta sidecar
   final bool convertOpusToM4a;
   final bool omiSyncEnabled;
@@ -37,8 +34,6 @@ class ProcessingSettings {
     required this.minSpeechMs,
     required this.preSpeechBufferMs,
     required this.maxChunkMs,
-    required this.markerLookbackMs,
-    required this.maxRollingFrames,
     required this.deviceId,
     required this.convertOpusToM4a,
     required this.omiSyncEnabled,
@@ -54,8 +49,6 @@ class ProcessingSettings {
       minSpeechMs: p.vadMinSpeechSeconds * 1000,
       preSpeechBufferMs: (p.vadPreSpeechSeconds * 1000).round(),
       maxChunkMs: p.vadMaxConversationMinutes * 60 * 1000,
-      markerLookbackMs: p.markerLookbackSeconds * 1000,
-      maxRollingFrames: p.markerLookbackSeconds * 1000 ~/ frameDurationMs,
       deviceId: p.btDevice.id,
       convertOpusToM4a: p.convertOpusToM4a,
       omiSyncEnabled: p.omiSyncEnabled,
@@ -91,16 +84,9 @@ class VadAudioProcessor {
   // Marker-forced recording state
   bool _forcedByMarker = false;
 
-  // Rolling pre-buffer for marker lookback — receives every audio frame regardless of VAD state,
-  // never reset by splits. Sized to markerLookbackSeconds.
-  // Can contain Duration objects for bridged gaps.
-  final ListQueue<Object> _rbRefs = ListQueue();
-  final ListQueue<DateTime> _rbTimes = ListQueue();
-
   // Tracks segment files that have been fully processed. Used by consumeSafeToDeletePaths()
   // to determine which files are no longer referenced by any internal buffer.
   final Set<String> _processedFiles = {};
-  final int _maxRollingFrames;
 
   // Settings — cached at construction time for the lifetime of one processAll pass
   final double _speechThreshold;
@@ -161,7 +147,6 @@ class VadAudioProcessor {
         _silenceDurationToSplitMs = settings.silenceDurationToSplitMs,
         _minSpeechMs = settings.minSpeechMs,
         _maxChunkMs = settings.maxChunkMs,
-        _maxRollingFrames = settings.maxRollingFrames,
         _deviceId = settings.deviceId,
         _convertOpusToM4a = settings.convertOpusToM4a,
         _omiSyncEnabled = settings.omiSyncEnabled;
@@ -422,12 +407,6 @@ class VadAudioProcessor {
             ? vadResumeTime!.add(Duration(milliseconds: (frameIndex - vadResumeFrameIndex!) * frameDurationMs))
             : segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
         lastFrameWallTime = frameTime;
-        _rbRefs.addLast(frameRef);
-        _rbTimes.addLast(frameTime);
-        if (_rbRefs.length > _maxRollingFrames) {
-          _rbRefs.removeFirst();
-          _rbTimes.removeFirst();
-        }
 
         // Silence-based splits are handled by 0xFFFFFFFD timestamp packets.
         // Only enforce the max conversation duration cap here.
@@ -486,23 +465,11 @@ class VadAudioProcessor {
   }
 
   /// Returns the set of segment file paths that have been fully processed and are
-  /// no longer referenced by [_currentRefs] or the rolling pre-buffer [_rbRefs].
+  /// no longer referenced by [_currentRefs].
   /// Each path is returned at most once. The caller may safely delete these files.
-  ///
-  /// Pass [forceAll] = true after a complete flush (non-background mode) to also
-  /// release files still held in the rolling buffer — safe because no further
-  /// marker lookbacks will occur in that run.
-  Set<String> consumeSafeToDeletePaths({bool forceAll = false}) {
-    if (forceAll) {
-      final safe = Set<String>.from(_processedFiles);
-      _processedFiles.clear();
-      return safe;
-    }
+  Set<String> consumeSafeToDeletePaths() {
     final referenced = <String>{};
     for (final item in _currentRefs) {
-      if (item is FrameRef) referenced.add(item.segmentFile.path);
-    }
-    for (final item in _rbRefs) {
       if (item is FrameRef) referenced.add(item.segmentFile.path);
     }
     final safe = _processedFiles.difference(referenced);

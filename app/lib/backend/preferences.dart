@@ -74,11 +74,6 @@ class SharedPreferencesUtil {
   bool get convertOpusToM4a => getBool('convertOpusToM4a', defaultValue: false);
   set convertOpusToM4a(bool value) => saveBool('convertOpusToM4a', value);
 
-  // How far back (seconds) a forced marker recording reaches before the button tap.
-  // Capped at vadSplitSeconds so the lookback never overlaps with a prior recording.
-  int get markerLookbackSeconds => getInt('markerLookbackSeconds', defaultValue: 60).clamp(0, vadSplitSeconds);
-  set markerLookbackSeconds(int v) => saveInt('markerLookbackSeconds', v);
-
   int get backgroundSyncIntervalMinutes => getInt('backgroundSyncIntervalMinutes', defaultValue: 30);
   set backgroundSyncIntervalMinutes(int v) => saveInt('backgroundSyncIntervalMinutes', v);
 
