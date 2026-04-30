@@ -412,21 +412,6 @@ class VadAudioProcessor {
 
         // Silence-based splits are handled by 0xFFFFFFFD timestamp packets.
         // Only enforce the max conversation duration cap here.
-        // Marker-forced recording with no detected speech: cap at vadSplitSeconds of
-        // actual audio (music, ambient noise, etc.) so it doesn't run on indefinitely.
-        if (_forcedByMarker && _speechFrameCount == 0 && _currentChunkDurationMs >= _silenceDurationToSplitMs) {
-          Logger.debug('VadAudioProcessor: Marker-forced non-speech recording — cutting at ${_silenceDurationToSplitMs}ms.');
-          final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
-          if (filePath != null) savedFiles.add(filePath);
-          final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
-          _forcedByMarker = false;
-          _currentRefs = [];
-          _speechFrameCount = 0;
-          _hangoverFrames = 0;
-          _currentChunkDurationMs = 0;
-          _recordingStartTime = cutTime;
-        }
-
         if (_currentChunkDurationMs >= _maxChunkMs) {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
           final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
