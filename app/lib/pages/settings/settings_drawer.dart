@@ -19,12 +19,15 @@ class SettingsDrawer extends StatefulWidget {
   @override
   State<SettingsDrawer> createState() => _SettingsDrawerState();
 
-  static void show(BuildContext context) {
+  static void show(BuildContext context, RecordingsController controller) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => const SettingsDrawer(),
+      builder: (ctx) => ChangeNotifierProvider.value(
+        value: controller,
+        child: const SettingsDrawer(),
+      ),
     );
   }
 }
