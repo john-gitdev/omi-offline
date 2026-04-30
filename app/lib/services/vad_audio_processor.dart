@@ -291,13 +291,15 @@ class VadAudioProcessor {
             final markerUtcSeconds = byteData.getUint32(offset + 4, Endian.little);
             const kMinValidMarkerEpoch = 946684800;
             if (markerUtcSeconds > kMinValidMarkerEpoch) {
-              final markerFrameTime = lastFrameWallTime;
+              final markerFrameTime = DateTime.fromMillisecondsSinceEpoch(markerUtcSeconds * 1000, isUtc: true);
               if (isCapturing) {
                 // Marker during active recording — continue, don't split.
                 Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — continuing active recording.');
               } else {
                 // Marker while not recording — start immediately at this point.
-                // No lookback: firmware VAD means no silence frames exist to look back through.
+                // Reset lastFrameWallTime to the tap so the next VAD-resume gap is measured
+                // from the button press, not from whenever the previous conversation ended.
+                lastFrameWallTime = markerFrameTime;
                 _recordingStartTime = markerFrameTime;
                 _speechFrameCount = 0;
                 _hangoverFrames = 0;
