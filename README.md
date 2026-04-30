@@ -82,10 +82,7 @@ Settings are easily tweaked in the App's **Recording Settings** (backed by `Shar
 |---|---|---|---|
 | **Speech Sensitivity** | `vadSpeechThreshold` | 0.5 | Silero probability cutoff (0–1). Lower = more sensitive |
 | **Silence to Split** | `vadSplitSeconds` | 120s | Silence duration that triggers a conversation cut |
-| **Min. Length** | `vadMinSpeechSeconds` | 5s | Segments shorter than this are discarded |
-| **Holdover Buffer** | `vadHangoverSeconds` | 0.5s | How long to record after speech drops out |
-| **Pre-Speech Buffer** | `vadPreSpeechSeconds` | 1.0s | Audio captured before speech onset |
-| **Gap Threshold** | `vadGapSeconds` | 30s | Nearby segments closer than this are merged |
+| **Min. Length** | `filterMinDurationSeconds` | 0s | Recordings shorter than this are handled per "Discard Short" |
 | **Max Length** | `vadMaxConversationMinutes`| 60 min | Hard cap forcing a split, even without silence |
 
 ---
@@ -114,7 +111,7 @@ omi-offline/
 ├── omi/
 │   └── firmware/      # Zephyr RTOS C code for nRF5340 (Opus encode, eMMC, BLE)
 ├── NOMENCLATURE.md    # Definitive project glossary
-└── CLAUDE.md          # Agent configuration & architecture notes
+└── README.md          # Project overview & documentation
 ```
 
 ---
