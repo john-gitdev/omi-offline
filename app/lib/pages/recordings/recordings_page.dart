@@ -35,6 +35,143 @@ class _RecordingsPageState extends State<RecordingsPage> {
 
   bool _showMarkersOnly = false;
 
+  void _showAllRecordingsSheet(RecordingsController controller) {
+    final minSeconds = _prefs.filterMinDurationSeconds;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1C1C1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        final allBatches = controller.batches
+            .where((b) => b.finalizedRecordings.isNotEmpty)
+            .toList();
+        return DraggableScrollableSheet(
+          initialChildSize: 0.85,
+          maxChildSize: 0.95,
+          minChildSize: 0.4,
+          expand: false,
+          builder: (ctx, scrollController) {
+            return Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'All Recordings',
+                        style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      Row(
+                        children: [
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade600,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'hidden (too short)',
+                            style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(color: Color(0xFF2C2C2E), height: 1),
+                Expanded(
+                  child: allBatches.isEmpty
+                      ? const Center(child: Text('No recordings', style: TextStyle(color: Colors.grey)))
+                      : ListView.builder(
+                          controller: scrollController,
+                          padding: const EdgeInsets.all(16),
+                          itemCount: allBatches.length,
+                          itemBuilder: (ctx, i) {
+                            final batch = allBatches[i];
+                            final conversations = [...batch.finalizedRecordings]
+                              ..sort((a, b) => b.startTime.compareTo(a.startTime));
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 8),
+                                  child: Text(
+                                    batch.dateString,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                                ...conversations.map((c) {
+                                  final isHidden = c.duration.inSeconds < minSeconds;
+                                  return InkWell(
+                                    onTap: () {
+                                      Navigator.of(ctx).pop();
+                                      _openConversation(c);
+                                    },
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+                                      child: Row(
+                                        children: [
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  c.timeRangeLabel,
+                                                  style: TextStyle(
+                                                    color: isHidden ? Colors.grey.shade600 : Colors.white,
+                                                    fontSize: 15,
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 3),
+                                                Text(
+                                                  '${c.durationLabel}  ·  ${c.sizeLabel}',
+                                                  style: TextStyle(
+                                                    color: isHidden ? Colors.grey.shade700 : Colors.grey.shade500,
+                                                    fontSize: 12,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          FaIcon(
+                                            FontAwesomeIcons.chevronRight,
+                                            color: isHidden ? Colors.grey.shade800 : Colors.grey.shade600,
+                                            size: 14,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                }),
+                                const SizedBox(height: 4),
+                                const Divider(color: Color(0xFF2C2C2E), height: 1),
+                                const SizedBox(height: 8),
+                              ],
+                            );
+                          },
+                        ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -523,6 +660,18 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     ),
                     onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
                     tooltip: 'Toggle markers only',
+                  ),
+                if (_prefs.filterMinDurationSeconds > 0 &&
+                    controller.batches.any((b) => b.finalizedRecordings
+                        .any((c) => c.duration.inSeconds < _prefs.filterMinDurationSeconds)))
+                  IconButton(
+                    icon: const FaIcon(
+                      FontAwesomeIcons.listUl,
+                      color: Colors.white,
+                      size: 18,
+                    ),
+                    onPressed: () => _showAllRecordingsSheet(controller),
+                    tooltip: 'Show all recordings including hidden',
                   ),
                 IconButton(
                   icon: FaIcon(
