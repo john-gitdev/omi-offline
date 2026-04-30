@@ -46,11 +46,6 @@ class SharedPreferencesUtil {
   double get vadSpeechThreshold => getDouble('vadSpeechThreshold', defaultValue: 0.5);
   set vadSpeechThreshold(double v) => saveDouble('vadSpeechThreshold', v);
 
-  // Frames of speech to continue counting after Silero reports silence,
-  // to smooth out brief dropouts within a sentence.
-  double get vadHangoverSeconds => getDouble('vadHangoverSeconds', defaultValue: 0.5);
-  set vadHangoverSeconds(double v) => saveDouble('vadHangoverSeconds', v);
-
   // Continuous silence duration (seconds) that triggers a conversation cut.
   int get vadSplitSeconds => getInt('vadSplitSeconds', defaultValue: 120);
   set vadSplitSeconds(int v) => saveInt('vadSplitSeconds', v);

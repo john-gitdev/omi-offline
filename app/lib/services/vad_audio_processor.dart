@@ -18,7 +18,6 @@ import "package:meta/meta.dart";
 /// across isolate boundaries.
 class ProcessingSettings {
   final double speechThreshold;
-  final int hangoverFrameCount;
   final int silenceDurationToSplitMs;
   final int minSpeechMs;
   final int preSpeechBufferMs;
@@ -29,7 +28,6 @@ class ProcessingSettings {
 
   const ProcessingSettings({
     required this.speechThreshold,
-    required this.hangoverFrameCount,
     required this.silenceDurationToSplitMs,
     required this.minSpeechMs,
     required this.preSpeechBufferMs,
@@ -44,7 +42,6 @@ class ProcessingSettings {
     const frameDurationMs = VadAudioProcessor.frameDurationMs;
     return ProcessingSettings(
       speechThreshold: p.vadSpeechThreshold,
-      hangoverFrameCount: (p.vadHangoverSeconds * 1000).round() ~/ frameDurationMs,
       silenceDurationToSplitMs: p.vadSplitSeconds * 1000,
       minSpeechMs: p.vadMinSpeechSeconds * 1000,
       preSpeechBufferMs: (p.vadPreSpeechSeconds * 1000).round(),
@@ -78,7 +75,6 @@ class VadAudioProcessor {
   int? _currentStartUptime;
 
   // VAD state counters
-  int _hangoverFrames = 0; // frames remaining in hangover
   int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
 
   // Marker-forced recording state
@@ -90,7 +86,6 @@ class VadAudioProcessor {
 
   // Settings — cached at construction time for the lifetime of one processAll pass
   final double _speechThreshold;
-  final int _hangoverFrameCount;
   final int _silenceDurationToSplitMs;
   final int _minSpeechMs;
   final int _maxChunkMs;
@@ -143,7 +138,6 @@ class VadAudioProcessor {
                 : null),
         _outputDir = outputDir,
         _speechThreshold = settings.speechThreshold,
-        _hangoverFrameCount = settings.hangoverFrameCount,
         _silenceDurationToSplitMs = settings.silenceDurationToSplitMs,
         _minSpeechMs = settings.minSpeechMs,
         _maxChunkMs = settings.maxChunkMs,
@@ -306,7 +300,6 @@ class VadAudioProcessor {
                 lastFrameWallTime = markerFrameTime;
                 _recordingStartTime = markerFrameTime;
                 _speechFrameCount = 0;
-                _hangoverFrames = 0;
                 _currentChunkDurationMs = 0;
                 _currentRefs = [];
                 _forcedByMarker = true;
@@ -338,7 +331,6 @@ class VadAudioProcessor {
                 }
                 _currentRefs = [];
                 _speechFrameCount = 0;
-                _hangoverFrames = 0;
                 _currentChunkDurationMs = 0;
                 _forcedByMarker = false;
                 _recordingStartTime = newResumeTime;
@@ -389,17 +381,8 @@ class VadAudioProcessor {
           }
         }
 
-        bool effectiveSpeech = false;
-        if (isSpeech) {
-          _hangoverFrames = _hangoverFrameCount;
-          effectiveSpeech = true;
-        } else if (_hangoverFrames > 0) {
-          _hangoverFrames--;
-          effectiveSpeech = true;
-        }
-
         final frameRef = FrameRef(segmentFile: segmentFile, byteOffset: offset, frameLength: frameLength);
-        if (effectiveSpeech) {
+        if (isSpeech) {
           _speechFrameCount++;
           segmentSpeechFrames++;
         }
@@ -428,7 +411,6 @@ class VadAudioProcessor {
           _forcedByMarker = false;
           _currentRefs = [];
           _speechFrameCount = 0;
-          _hangoverFrames = 0;
           _currentChunkDurationMs = 0;
           _recordingStartTime = cutTime;
         }
@@ -490,7 +472,6 @@ class VadAudioProcessor {
   void _resetState() {
     _currentRefs = [];
     _speechFrameCount = 0;
-    _hangoverFrames = 0;
     _currentChunkDurationMs = 0;
     _recordingStartTime = null;
     _forcedByMarker = false;
