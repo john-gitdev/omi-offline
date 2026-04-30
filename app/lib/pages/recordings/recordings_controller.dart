@@ -814,11 +814,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final apiKey = _prefs.heypocketApiKey;
     final keySetAt = _prefs.heypocketKeySetAt;
     final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
+    final minDuration = _prefs.filterMinDurationSeconds;
 
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
         if (_autoUploadActive >= 3) continue;
         if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
+        if (conversation.duration.inSeconds < minDuration) continue;
         final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
         if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
@@ -856,9 +858,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void tryAutoSyncNext() {
     if (_prefs.adjustmentMode) return;
     if (!_prefs.omiSyncEnabled || _prefs.omiRefreshToken.isEmpty) return;
+    final minDuration = _prefs.filterMinDurationSeconds;
 
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
+        if (conversation.duration.inSeconds < minDuration) continue;
         final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
         final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
         if (_syncingBinFiles.contains(binPath)) continue;
@@ -888,6 +892,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   Future<void> uploadConversation(Conversation conversation) async {
     if (_prefs.adjustmentMode) {
       throw Exception('Uploads are disabled in Adjustment Mode');
+    }
+    final minDuration = _prefs.filterMinDurationSeconds;
+    if (conversation.duration.inSeconds < minDuration) {
+      throw Exception('This recording is shorter than your filter and cannot be uploaded.');
     }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) throw Exception('Upload key unavailable');

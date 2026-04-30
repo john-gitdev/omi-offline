@@ -124,10 +124,6 @@ void main() {
       prefsUtil.adjustmentModeWasEnabled = true;
       expect(prefsUtil.adjustmentModeWasEnabled, true);
 
-      expect(prefsUtil.vadHangoverSeconds, 0.5);
-      prefsUtil.vadHangoverSeconds = 0.7;
-      expect(prefsUtil.vadHangoverSeconds, 0.7);
-
       expect(prefsUtil.vadSplitSeconds, 120);
       prefsUtil.vadSplitSeconds = 60;
       expect(prefsUtil.vadSplitSeconds, 60);
@@ -136,9 +132,9 @@ void main() {
       prefsUtil.vadMinSpeechSeconds = 5;
       expect(prefsUtil.vadMinSpeechSeconds, 5);
 
-      expect(prefsUtil.vadPreSpeechSeconds, 1.0);
-      prefsUtil.vadPreSpeechSeconds = 2.0;
-      expect(prefsUtil.vadPreSpeechSeconds, 2.0);
+      expect(prefsUtil.filterMinDurationSeconds, 0);
+      prefsUtil.filterMinDurationSeconds = 60;
+      expect(prefsUtil.filterMinDurationSeconds, 60);
 
       expect(prefsUtil.vadMaxConversationMinutes, 60);
       prefsUtil.vadMaxConversationMinutes = 90;

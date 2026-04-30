@@ -198,7 +198,6 @@ class ConversationTile extends StatelessWidget {
 class BatchCard extends StatelessWidget {
   final Batch batch;
   final Map<String, List<MarkerConversation>> markerMap;
-  final int minFilterSeconds;
   final bool adjustmentMode;
   final String heypocketApiKey;
   final bool Function(String) isUploaded;
@@ -216,7 +215,6 @@ class BatchCard extends StatelessWidget {
     super.key,
     required this.batch,
     required this.markerMap,
-    required this.minFilterSeconds,
     required this.adjustmentMode,
     required this.heypocketApiKey,
     required this.isUploaded,
@@ -234,6 +232,7 @@ class BatchCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
+    final minFilterSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
     final filtered = minFilterSeconds > 0
         ? conversations.where((c) => c.duration.inSeconds >= minFilterSeconds).toList()
         : conversations;
