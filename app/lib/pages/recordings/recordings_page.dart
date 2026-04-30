@@ -34,7 +34,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
   late final RecordingsController _controller;
 
   bool _showMarkersOnly = false;
-  int _minFilterSeconds = 0; // 0 = no filter
 
   @override
   void initState() {
@@ -329,68 +328,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
     );
   }
 
-  void _showFilterSheet() {
-    const options = [0, 30, 60, 120, 300, 600];
-    const labels = ['Off', '30s', '1m', '2m', '5m', '10m'];
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: const Color(0xFF1C1C1E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Hide conversations shorter than',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: List.generate(options.length, (i) {
-                  final selected = _minFilterSeconds == options[i];
-                  return GestureDetector(
-                    onTap: () {
-                      setState(() => _minFilterSeconds = options[i]);
-                      Navigator.of(ctx).pop();
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: selected ? Colors.deepPurpleAccent : const Color(0xFF2C2C2E),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        labels[i],
-                        style: TextStyle(
-                          color: selected ? Colors.white : Colors.grey.shade300,
-                          fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                        ),
-                      ),
-                    ),
-                  );
-                }),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   Map<String, List<MarkerConversation>> _buildMarkerMap() {
     final map = <String, List<MarkerConversation>>{};
     for (final mc in _controller.markerConversations) {
@@ -603,15 +540,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
                       ? _forceSyncButtonPressed
                       : null,
                   tooltip: 'Force sync',
-                ),
-                IconButton(
-                  icon: FaIcon(
-                    FontAwesomeIcons.filter,
-                    color: _minFilterSeconds > 0 ? Colors.deepPurpleAccent : Colors.white,
-                    size: 18,
-                  ),
-                  onPressed: _showFilterSheet,
-                  tooltip: 'Filter recordings',
                 ),
                 IconButton(
                   icon: const FaIcon(
@@ -856,7 +784,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                         return BatchCard(
                                           batch: visibleBatches[batchIndex],
                                           markerMap: markerMap,
-                                          minFilterSeconds: _minFilterSeconds,
                                           adjustmentMode: _prefs.adjustmentMode,
                                           heypocketApiKey: _prefs.heypocketApiKey,
                                           isUploaded: _prefs.isUploadedToHeypocket,

@@ -24,6 +24,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late int _vadSplitSeconds;
   late int _vadMinSpeechSeconds;
   late int _vadMaxConversationMinutes;
+  late int _filterMinDurationSeconds;
 
   bool _isDirty = false;
 
@@ -40,6 +41,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _vadSplitSeconds = SharedPreferencesUtil().vadSplitSeconds;
     _vadMinSpeechSeconds = SharedPreferencesUtil().vadMinSpeechSeconds;
     _vadMaxConversationMinutes = SharedPreferencesUtil().vadMaxConversationMinutes;
+    _filterMinDurationSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
   }
 
   @override
@@ -67,6 +69,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     prefs.vadSplitSeconds = _vadSplitSeconds;
     prefs.vadMinSpeechSeconds = _vadMinSpeechSeconds;
     prefs.vadMaxConversationMinutes = _vadMaxConversationMinutes;
+    prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -359,6 +362,56 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     Text(
                       'When enabled, recordings are converted to M4A for maximum compatibility. When disabled, they are saved in the original Opus format (using OGG on Android or WAV on iOS).',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Filter Recordings
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Filter Recordings',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Hide recordings shorter than the selected duration from the conversation list and prevent them from auto-uploading to integrations.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                    const SizedBox(height: 16),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          for (final sec in [0, 10, 30, 60, 120, 300])
+                            Container(
+                              width: 80,
+                              margin: const EdgeInsets.only(right: 8),
+                              child: _WindowOption(
+                                label: sec == 0
+                                    ? 'Show All'
+                                    : sec < 60
+                                        ? '${sec}s'
+                                        : '${sec ~/ 60}m',
+                                selected: _filterMinDurationSeconds == sec,
+                                expand: false,
+                                onTap: () {
+                                  setState(() => _filterMinDurationSeconds = sec);
+                                  _markDirty();
+                                },
+                              ),
+                            ),
+                        ],
+                      ),
                     ),
                   ],
                 ),

@@ -50,6 +50,11 @@ class SharedPreferencesUtil {
   int get vadSplitSeconds => getInt('vadSplitSeconds', defaultValue: 120);
   set vadSplitSeconds(int v) => saveInt('vadSplitSeconds', v);
 
+  // Minimum duration (seconds) to show a recording in the list and upload it to integrations.
+  // Shorter recordings are kept on disk but hidden and not auto-uploaded.
+  int get filterMinDurationSeconds => getInt('filterMinDurationSeconds', defaultValue: 0);
+  set filterMinDurationSeconds(int v) => saveInt('filterMinDurationSeconds', v);
+
   // Minimum speech duration (seconds) for a conversation to be saved. Shorter conversations
   // are discarded (e.g. a cough, a door slam).
   int get vadMinSpeechSeconds => getInt('vadMinSpeechSeconds', defaultValue: 3);
