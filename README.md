@@ -1,128 +1,107 @@
-<div align="center">
-
-# 🎙️ Omi Offline
+# 🎙️ Omi Offline (v0.6.5)
 
 **An offline-first, highly private audio capture and processing system for wearables.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Flutter](https://img.shields.io/badge/Flutter-3.0+-blue.svg)](https://flutter.dev/)
 [![Zephyr](https://img.shields.io/badge/Zephyr-RTOS-green.svg)](https://zephyrproject.org/)
+[![Firmware](https://img.shields.io/badge/Firmware-oo--1.4.8-orange.svg)](omi/firmware/)
 
-Omi Offline is a personal fork of the Omi project focused entirely on local, private recording. By removing cloud dependencies and continuous internet constraints, this system ensures your audio never leaves your device until you decide to export it.
+Omi Offline is a privacy-centric fork of the Omi project, engineered for local-only operation. It transforms wearable hardware into a secure, personal audio journal where data never leaves your control.
 
-</div>
+---
+
+## 🚀 What's New (v0.6.x)
+
+The latest 100 commits have focused on **Industrial-Grade Stability** and **Power Efficiency**:
+
+- 🔄 **Persistent Sync Architecture:** The Write-Ahead Log (WAL) and session state now persist across app restarts and hardware disconnects, ensuring zero data loss during long syncs.
+- 🔋 **AAD Power Optimization:** Firmware `oo-1.4.0+` introduces Acoustic Activity Detection (AAD) to wake the processor only when speech is detected, significantly extending battery life.
+- 🛠️ **Refined Audio Pipeline:**
+  - **Stitched Silence Padding:** Gaps between segments are now filled with accurate silence padding to preserve the real-world timing of conversations.
+  - **Marker-Anchored Splitting:** Physical button-press markers (double-tap) now act as precision anchors for conversation boundaries.
+  - **Intelligent Filtering:** Unified short-recording filters and duration guards prevent clutter from noise or accidental triggers.
+- 📱 **Robust Connectivity:** A custom **Pigeon-based Native GATT Bridge** replaces fragile Dart BLE libraries, providing rock-solid reconnections and high-throughput "Zero-cost sync".
+- 📴 **Physical Power Control:** Triple-tap-hold gesture on the wearable now triggers a clean hardware power-off.
 
 ---
 
 ## ✨ Key Features
 
-- 🔒 **100% Offline by Default:** Zero cloud dependency. No internet connectivity checks, no forced cloud APIs. Your data, your rules.
-- 💾 **Continuous On-Device Recording:** Audio is encoded in Opus (16 kHz mono, 20ms frames) directly on the nRF5340 wearable and saved to an eMMC card.
-- 🔄 **Resumable BLE Sync (WAL):** Syncs data to your phone in batches over an ACK-gated, Write-Ahead Log (WAL) BLE protocol. Resumes cleanly on disconnects.
-- 🧠 **On-Phone Neural Processing:** Powered by **Silero VAD** (running via ONNX runtime) to segment speech from silence entirely on your mobile device.
-- 🎛 **Iterative Adjustment Mode:** Fine-tune Voice Activity Detection (VAD) parameters without needing to re-sync data from the hardware.
-- 🔌 **Integrations:** An optional external integration, allowing you to upload finalized recordings directly to HeyPocket or Omi.
+- 🔒 **100% Offline:** No cloud dependencies, no internet checks, no third-party APIs for core features.
+- 🧠 **On-Phone Neural Processing:** Powered by **Silero VAD** (via ONNX Runtime) to segment speech from silence entirely on-device.
+- 💾 **Continuous On-Device Storage:** High-quality Opus audio (16 kHz mono) is saved directly to eMMC/SD using a robust Queue Command Pattern.
+- 🔄 **Resumable WAL Sync:** Append-only byte-offset tracking allows syncs to resume exactly where they left off.
+- 🎛️ **Adjustment Mode:** Fine-tune VAD parameters (sensitivity, split duration, etc.) and re-process raw data without re-syncing from the hardware.
+- 📂 **Organized Exports:** Automatically groups recordings into daily batches and handles midnight-spanning conversations seamlessly.
 
 ---
 
 ## 🏗 System Architecture
 
-The ecosystem consists of two primary layers:
-
 ```mermaid
 graph TD
-    A[Wearable nRF5340] -->|PDM Microphones| B(Opus Encoder)
-    B -->|Frames| C{eMMC Card Storage .bin}
-    C -->|Native BLE GATT via Pigeon| D[Mobile App - Flutter]
-    D -->|Stores Raw .bin| E(VadAudioProcessor)
-    E -->|Silero ONNX| F[Final Recordings .m4a]
+    subgraph Wearable [nRF5340 Hardware]
+        A[PDM Microphones] --> B(Opus Encoder)
+        B -->|AAD Trigger| C[eMMC / SD Card]
+        C -->|Frames + Markers| D(BLE GATT Service)
+    end
+
+    subgraph Mobile [Flutter App]
+        D -->|Pigeon Native Bridge| E[WAL Manager]
+        E -->|Raw .bin Segments| F(VadAudioProcessor)
+        F -->|Silero VAD + FFmpeg| G[Final .m4a Recordings]
+        G -->|Optional| H(Integrations / Export)
+    end
 ```
 
-### 1. Hardware (Firmware)
-- **Audio Capture:** Uses PDM microphones.
-- **Encoding:** Compresses audio into Opus frames.
-- **Storage:** Writes contiguous `.bin` segments to the eMMC card.
-- **Markers:** Inserts a `0xFE` hardware packet into the stream upon button press (double tap) for easy moment tagging.
+### 1. Hardware & Firmware (`omi/firmware`)
+- **RTOS:** Zephyr-based implementation on nRF5340.
+- **Storage:** LittleFS on eMMC with atomic ring-buffers to prevent corruption.
+- **User Input:** Double-tap for Markers (`0xFE`), Triple-tap for Power-off.
+- **Feedback:** RGB LED for Mute, Sync, and Battery status.
 
-### 2. Software (Flutter App)
-- **Sync:** Connects via a robust Pigeon Native GATT bridge. Downloads raw `.bin` files via WAL offsets.
-- **Processing:** `VadAudioProcessor` decodes the Opus stream and splits audio into discrete conversations based on silence boundaries.
-- **Storage:** Final recordings are saved as `.m4a` files in `recordings/<YYYY-MM-DD>/`.
-
----
-
-## 🔄 Sync Pipeline (BLE + WAL)
-
-Instead of fragile real-time audio streaming, Omi Offline uses an append-only **Write-Ahead Log (WAL)**.
-
-- **Native Pigeon Bridge:** Overcomes Dart-based BLE library limitations by using highly stable native iOS/Android GATT implementations.
-- **Framed Protocol:**
-  - `0x01` (Data): Carries 4-byte file offset. Overlapping packets are trimmed; gaps are detected.
-  - `0x02` (EOT): Firmware end-of-file signal.
-  - `0x03` (ACK): App receipt confirmation.
-
----
-
-## 🧠 Processing Pipeline
-
-### VAD Engine (`VadAudioProcessor`)
-The core of the offline intelligence is the **Silero VAD** neural network.
-
-- **Disk-Backed Pointers:** PCM audio is never held completely in memory. The app uses `FrameRef` pointers to process frame-by-frame.
-- **Chronological Merging:** A conversation crossing midnight is never artificially cut. Segments are sorted by `(deviceSessionId, segmentIndex)`.
-- **Cleanup vs Adjustment:** Processed `.bin` files are automatically deleted to save space. However, if **Adjustment Mode** is enabled, raw segments are preserved, allowing you to tweak VAD parameters and re-process the day.
-
----
-
-## 🎛 VAD Tuning & Settings
-
-Settings are easily tweaked in the App's **Recording Settings** (backed by `SharedPreferencesUtil`).
-
-| Setting | Prefs Key | Default | Description |
-|---|---|---|---|
-| **Speech Sensitivity** | `vadSpeechThreshold` | 0.5 | Silero probability cutoff (0–1). Lower = more sensitive |
-| **Silence to Split** | `vadSplitSeconds` | 120s | Silence duration that triggers a conversation cut |
-| **Min. Length** | `vadMinSpeechSeconds` | 5s | Segments shorter than this are discarded |
-| **Holdover Buffer** | `vadHangoverSeconds` | 0.5s | How long to record after speech drops out |
-| **Pre-Speech Buffer** | `vadPreSpeechSeconds` | 1.0s | Audio captured before speech onset |
-| **Gap Threshold** | `vadGapSeconds` | 30s | Nearby segments closer than this are merged |
-| **Max Length** | `vadMaxConversationMinutes`| 60 min | Hard cap forcing a split, even without silence |
+### 2. Mobile Application (`app/`)
+- **Framework:** Flutter 3.x (State managed via Provider).
+- **Sync Engine:** Persistent session IDs and monotonic byte offsets.
+- **Processing:** Multi-stage pipeline: Decryption -> Opus Decode -> Silero VAD Segmentation -> FFmpeg Transcode.
+- **UI:** Interactive recording player, storage management, and real-time sync feedback.
 
 ---
 
 ## 📖 Core Nomenclature
 
-To maintain consistency across the codebase, please refer to the following terms (defined fully in `NOMENCLATURE.md`):
+To maintain consistency, the project adheres to a strict naming standard:
 
-- **Frame:** Single Opus unit (~20ms).
-- **Segment:** A `.bin` file containing frames (Never refer to this as a "chunk").
-- **DeviceSession:** Hardware recording session identified by a UTC start timestamp.
-- **Marker:** `0xFE` user event triggered by double tap.
-- **WAL:** Byte-offset sync state.
-- **Recording:** Final `.m4a` output.
-- **Conversation:** A VAD-delimited recording or marker-tagged clip.
+- **Frame:** Atomic Opus unit (~20ms).
+- **Segment:** A `.bin` file containing a sequence of frames.
+- **DeviceSession:** Hardware stream from boot to disconnect (ID = UTC start).
+- **WAL:** The monotonic Write-Ahead Log tracking sync progress.
+- **Recording:** The final transcoded `.m4a` artifact.
 
----
-
-## 🛠 Repository Structure
-
-```text
-omi-offline/
-├── app/               # Flutter mobile application (BLE sync, VAD, UI)
-│   ├── lib/           # Core Dart logic, providers, services
-│   └── test/          # Unit & integration tests
-├── omi/
-│   └── firmware/      # Zephyr RTOS C code for nRF5340 (Opus encode, eMMC, BLE)
-├── NOMENCLATURE.md    # Definitive project glossary
-└── CLAUDE.md          # Agent configuration & architecture notes
-```
+*See [NOMENCLATURE.md](./NOMENCLATURE.md) for the full glossary.*
 
 ---
 
-## 🤝 Reliability & Contributing
+## 🛠 Getting Started
 
-- **Firmware Integrity:** The firmware utilizes atomic ring buffers (`ring_buf_put_claim` / `ring_buf_put_finish`) to prevent partial storage corruption.
-- **App Connectivity:** Serialized operations using a `Mutex` prevent concurrent BLE command collision.
-- **Tests:** After modifying Flutter UI or backend code, verify with the test suite: `cd app && bash test.sh`.
+### Prerequisites
+- **App:** Flutter SDK 3.x, CocoaPods (for iOS), Android NDK.
+- **Firmware:** nRF Connect SDK, Zephyr RTOS toolchain.
 
-Enjoy completely private, offline, intelligent audio journaling! 🎙️
+### Installation
+1. **Clone the Repo:** `git clone https://github.com/john-gitdev/omi-offline.git`
+2. **Setup App:** `cd app && ./setup.sh`
+3. **Run App:** `flutter run` (Ensure a physical device is connected for BLE).
+4. **Flash Firmware:** Follow [Firmware Guide](./omi/firmware/readme.md).
+
+---
+
+## 🤝 Reliability & Tests
+
+We prioritize stability over features. 
+- **Unit Tests:** `cd app && bash test.sh`
+- **Integration Tests:** Located in `app/integration_test/` for profiling and UI stability.
+- **Firmware Stability:** Uses a Command Queue pattern for SD writes to prevent BLE timeouts.
+
+Enjoy your private, intelligent audio journal! 🎙️
