@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -875,30 +876,60 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   /// After a successful upload in passthrough mode, appends the passthrough flag
-  /// to the .meta sidecar and deletes the local audio file.
+  /// to the .meta sidecar and deletes the local audio and associated sidecar files.
   Future<void> _convertToPassthrough(Conversation conversation) async {
     try {
       final filePath = conversation.file.path;
+      final fileDir = conversation.file.parent.path;
+      final audioFileName = filePath.split('/').last;
       final basePath = filePath.contains('.') ? filePath.substring(0, filePath.lastIndexOf('.')) : filePath;
       final metaFile = File('$basePath.meta');
-      if (await metaFile.exists()) {
-        final bytes = await metaFile.readAsBytes();
-        // Check flag at the correct offset (after uploadKey) to avoid false positives.
-        bool alreadyPassthrough = false;
-        if (bytes.length >= 417) {
-          final keyLen = bytes[416];
-          final flagOffset = 417 + keyLen;
-          if (bytes.length > flagOffset) {
-            alreadyPassthrough = (bytes[flagOffset] & 0x01) != 0;
-          }
-        }
-        if (!alreadyPassthrough) {
-          await metaFile.writeAsBytes([...bytes, 0x01]);
+
+      // Guard: without a .meta sidecar the conversation would vanish entirely
+      // from the list after audio deletion. Bail out to preserve the recording.
+      if (!await metaFile.exists()) {
+        Logger.error('Passthrough: Aborting — no .meta sidecar found for $filePath');
+        return;
+      }
+
+      final bytes = await metaFile.readAsBytes();
+      bool alreadyPassthrough = false;
+      if (bytes.length >= 417) {
+        final keyLen = bytes[416];
+        final flagOffset = 417 + keyLen;
+        if (bytes.length > flagOffset) {
+          alreadyPassthrough = (bytes[flagOffset] & 0x01) != 0;
         }
       }
-      if (await conversation.file.exists()) {
-        await conversation.file.delete();
+      if (!alreadyPassthrough) {
+        await metaFile.writeAsBytes([...bytes, 0x01]);
       }
+
+      // Delete the processed audio file.
+      if (await conversation.file.exists()) await conversation.file.delete();
+
+      // Delete the Omi raw .bin sidecar if present (written when omiSyncEnabled = true).
+      final ts = audioFileName.split('_').last.split('.').first;
+      final binFile = File('$fileDir/recording_fs320_$ts.bin');
+      if (await binFile.exists()) await binFile.delete();
+
+      // Delete any EDL (marker) files whose segmentFilename points to this recording.
+      // Markers are meaningless without playable audio; leaving them causes the
+      // markers view to show "Processing…" indefinitely.
+      try {
+        final edlFiles = await Directory(fileDir)
+            .list()
+            .where((e) => e is File && e.path.split('/').last.startsWith('marker_') && e.path.endsWith('.edl'))
+            .cast<File>()
+            .toList();
+        for (final edl in edlFiles) {
+          try {
+            final json = jsonDecode(await edl.readAsString()) as Map<String, dynamic>;
+            if (json['segmentFilename'] == audioFileName) await edl.delete();
+          } catch (_) {}
+        }
+      } catch (_) {}
+
       RecordingsManager.notifyRecordingsChanged();
     } catch (e) {
       Logger.error('Passthrough: Failed to convert conversation: $e');
