@@ -152,11 +152,15 @@ class ConversationTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final sortedMarkers = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
+    final isPassthrough = conversation.passthrough;
+    final subtitle = isPassthrough
+        ? conversation.durationLabel
+        : '${conversation.durationLabel}  ·  ${conversation.sizeLabel}';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         InkWell(
-          onTap: () => onConversationTap(conversation),
+          onTap: isPassthrough ? null : () => onConversationTap(conversation),
           onLongPress: () => onDeleteConversation(conversation),
           borderRadius: BorderRadius.circular(8),
           child: Padding(
@@ -169,28 +173,38 @@ class ConversationTile extends StatelessWidget {
                     children: [
                       Text(
                         conversation.timeRangeLabel,
-                        style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+                        style: TextStyle(
+                          color: isPassthrough ? Colors.grey.shade400 : Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        '${conversation.durationLabel}  ·  ${conversation.sizeLabel}',
+                        subtitle,
                         style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
                       ),
                     ],
                   ),
                 ),
-                if (markers.isNotEmpty) ...[
+                if (!isPassthrough && markers.isNotEmpty) ...[
                   const FaIcon(FontAwesomeIcons.solidBookmark, color: Colors.amber, size: 13),
                   const SizedBox(width: 8),
                 ],
-                uploadIcon,
-                FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
+                if (isPassthrough) ...[
+                  Icon(Icons.send_rounded, size: 16, color: Colors.deepPurpleAccent.withValues(alpha: 0.8)),
+                  const SizedBox(width: 6),
+                ] else ...[
+                  uploadIcon,
+                  FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
+                ],
               ],
             ),
           ),
         ),
-        ...sortedMarkers.map((mc) =>
-            MarkerSubEntry(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
+        if (!isPassthrough)
+          ...sortedMarkers.map((mc) =>
+              MarkerSubEntry(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
       ],
     );
   }

@@ -835,6 +835,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
         if (_autoUploadActive >= 3) continue;
+        if (conversation.passthrough) continue;
         if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
         if (conversation.duration.inSeconds < minDuration) continue;
         final uploadKey = conversation.uploadKey;
@@ -846,9 +847,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _uploadingFiles.add(uploadKey);
         _autoUploadActive++;
 
+        final isPassthrough = _prefs.passthroughMode;
         unawaited(
           HeyPocketService.uploadRecording(apiKey, conversation).then((_) async {
             await _prefs.markUploadedToHeypocket(uploadKey);
+            if (isPassthrough) await _convertToPassthrough(conversation);
           }).catchError((e) {
             if (e is HeyPocketException && e.statusCode == 401) {
               _prefs.heypocketEnabled = false;
@@ -869,6 +872,37 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
     }
     if (!_isDisposed) notifyListeners();
+  }
+
+  /// After a successful upload in passthrough mode, appends the passthrough flag
+  /// to the .meta sidecar and deletes the local audio file.
+  Future<void> _convertToPassthrough(Conversation conversation) async {
+    try {
+      final filePath = conversation.file.path;
+      final basePath = filePath.contains('.') ? filePath.substring(0, filePath.lastIndexOf('.')) : filePath;
+      final metaFile = File('$basePath.meta');
+      if (await metaFile.exists()) {
+        final bytes = await metaFile.readAsBytes();
+        // Check flag at the correct offset (after uploadKey) to avoid false positives.
+        bool alreadyPassthrough = false;
+        if (bytes.length >= 417) {
+          final keyLen = bytes[416];
+          final flagOffset = 417 + keyLen;
+          if (bytes.length > flagOffset) {
+            alreadyPassthrough = (bytes[flagOffset] & 0x01) != 0;
+          }
+        }
+        if (!alreadyPassthrough) {
+          await metaFile.writeAsBytes([...bytes, 0x01]);
+        }
+      }
+      if (await conversation.file.exists()) {
+        await conversation.file.delete();
+      }
+      RecordingsManager.notifyRecordingsChanged();
+    } catch (e) {
+      Logger.error('Passthrough: Failed to convert conversation: $e');
+    }
   }
 
   void tryAutoSyncNext() {
@@ -920,6 +954,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     try {
       await HeyPocketService.uploadRecording(apiKey, conversation);
       await _prefs.markUploadedToHeypocket(uploadKey);
+      if (_prefs.passthroughMode) await _convertToPassthrough(conversation);
     } catch (e) {
       if (e is HeyPocketException && e.statusCode == 401) {
         _prefs.heypocketEnabled = false;
