@@ -35,7 +35,7 @@ graph TD
     B -->|Frames| C{eMMC Card Storage .bin}
     C -->|Native BLE GATT via Pigeon| D[Mobile App - Flutter]
     D -->|Stores Raw .bin| E(VadAudioProcessor)
-    E -->|Silero ONNX| F[Final Recordings .m4a]
+    E -->|Silero ONNX| F[Final .ogg/.wav or .m4a]
 ```
 
 ### 1. Hardware (Firmware)
@@ -47,7 +47,7 @@ graph TD
 ### 2. Software (Flutter App)
 - **Sync:** Connects via a robust Pigeon Native GATT bridge. Downloads raw `.bin` files via WAL offsets.
 - **Processing:** `VadAudioProcessor` decodes the Opus stream and splits audio into discrete conversations based on silence boundaries.
-- **Storage:** Final recordings are saved as `.m4a` files in `recordings/<YYYY-MM-DD>/`.
+- **Storage:** Final recordings are saved to `recordings/<YYYY-MM-DD>/`. By default, these are `.ogg` (Android) or `.wav` (iOS) files, but can be optionally converted to `.m4a` via app settings.
 
 ---
 
@@ -84,6 +84,7 @@ Settings are easily tweaked in the App's **Recording Settings** (backed by `Shar
 | **Silence to Split** | `vadSplitSeconds` | 120s | Silence duration that triggers a conversation cut |
 | **Min. Length** | `filterMinDurationSeconds` | 0s | Recordings shorter than this are handled per "Discard Short" |
 | **Max Length** | `vadMaxConversationMinutes`| 60 min | Hard cap forcing a split, even without silence |
+| **M4A Conversion** | `convertOpusToM4a` | false | When enabled, converts raw Opus to AAC (.m4a) |
 
 ---
 
@@ -96,7 +97,7 @@ To maintain consistency across the codebase, please refer to the following terms
 - **DeviceSession:** Hardware recording session identified by a UTC start timestamp.
 - **Marker:** `0xFE` user event triggered by double tap.
 - **WAL:** Byte-offset sync state.
-- **Recording:** Final `.m4a` output.
+- **Recording:** Final audio output (.ogg, .wav, or .m4a).
 - **Conversation:** A VAD-delimited recording or marker-tagged clip.
 
 ---
