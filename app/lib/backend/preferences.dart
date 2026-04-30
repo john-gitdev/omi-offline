@@ -55,11 +55,6 @@ class SharedPreferencesUtil {
   int get vadMinSpeechSeconds => getInt('vadMinSpeechSeconds', defaultValue: 3);
   set vadMinSpeechSeconds(int v) => saveInt('vadMinSpeechSeconds', v);
 
-  // Seconds of silence frames to prepend before a new conversation starts,
-  // so speech doesn't begin abruptly.
-  double get vadPreSpeechSeconds => getDouble('vadPreSpeechSeconds', defaultValue: 1.0);
-  set vadPreSpeechSeconds(double v) => saveDouble('vadPreSpeechSeconds', v);
-
   // Maximum continuous conversation length (minutes) before forcing a cut.
   int get vadMaxConversationMinutes => getInt('vadMaxConversationMinutes', defaultValue: 60);
   set vadMaxConversationMinutes(int v) => saveInt('vadMaxConversationMinutes', v);
