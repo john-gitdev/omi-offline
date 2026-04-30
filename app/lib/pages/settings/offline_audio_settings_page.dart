@@ -23,7 +23,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late double _vadSpeechThreshold;
   late int _vadSplitSeconds;
   late int _vadMinSpeechSeconds;
-  late double _vadHangoverSeconds;
   late double _vadPreSpeechSeconds;
   late int _vadMaxConversationMinutes;
 
@@ -41,7 +40,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _vadSpeechThreshold = SharedPreferencesUtil().vadSpeechThreshold;
     _vadSplitSeconds = SharedPreferencesUtil().vadSplitSeconds;
     _vadMinSpeechSeconds = SharedPreferencesUtil().vadMinSpeechSeconds;
-    _vadHangoverSeconds = SharedPreferencesUtil().vadHangoverSeconds;
     _vadPreSpeechSeconds = SharedPreferencesUtil().vadPreSpeechSeconds;
     _vadMaxConversationMinutes = SharedPreferencesUtil().vadMaxConversationMinutes;
   }
@@ -70,7 +68,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     prefs.vadSpeechThreshold = _vadSpeechThreshold;
     prefs.vadSplitSeconds = _vadSplitSeconds;
     prefs.vadMinSpeechSeconds = _vadMinSpeechSeconds;
-    prefs.vadHangoverSeconds = _vadHangoverSeconds;
     prefs.vadPreSpeechSeconds = _vadPreSpeechSeconds;
     prefs.vadMaxConversationMinutes = _vadMaxConversationMinutes;
 
@@ -455,32 +452,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                       selected: _vadMinSpeechSeconds == sec,
                       onTap: () {
                         setState(() => _vadMinSpeechSeconds = sec);
-                        _markDirty();
-                      },
-                    ),
-                ],
-              ),
-              const SizedBox(height: 24),
-
-              // Speech Holdover
-              const Text(
-                'Speech Holdover',
-                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'How long to keep recording after speech stops, to avoid cutting off the end of sentences.',
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  for (final sec in [0.0, 0.5, 1.0, 2.0])
-                    _WindowOption(
-                      label: '${sec}s',
-                      selected: _vadHangoverSeconds == sec,
-                      onTap: () {
-                        setState(() => _vadHangoverSeconds = sec);
                         _markDirty();
                       },
                     ),
