@@ -18,6 +18,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
   late bool _use24HourTime;
   late bool _adjustmentMode;
   late bool _convertOpusToM4a;
+  late bool _passthroughMode;
 
   bool _isDirty = false;
 
@@ -28,6 +29,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
     _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
     _convertOpusToM4a = SharedPreferencesUtil().convertOpusToM4a;
+    _passthroughMode = SharedPreferencesUtil().passthroughMode;
   }
 
   void _markDirty() {
@@ -44,6 +46,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     prefs.adjustmentMode = _adjustmentMode;
     if (_adjustmentMode) prefs.adjustmentModeWasEnabled = true;
     prefs.convertOpusToM4a = _convertOpusToM4a;
+    prefs.passthroughMode = _passthroughMode;
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -312,6 +315,68 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                     const SizedBox(height: 8),
                     Text(
                       'When enabled, recordings are converted to M4A for maximum compatibility. When disabled, they are saved in the original Opus format (using OGG on Android or WAV on iOS).',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Passthrough Mode
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Passthrough Mode',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        Switch(
+                          value: _passthroughMode,
+                          activeThumbColor: Colors.deepPurpleAccent,
+                          onChanged: (value) async {
+                            if (value) {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (c) => AlertDialog(
+                                  backgroundColor: const Color(0xFF1C1C1E),
+                                  title: const Text('Enable Passthrough Mode?', style: TextStyle(color: Colors.white)),
+                                  content: const Text(
+                                    'Recordings will be sent directly to your integrations and the audio will be deleted from your device after a successful upload.\n\n'
+                                    'Conversations will still appear in the list so you know they happened, but you won\'t be able to play them back.',
+                                    style: TextStyle(color: Colors.white70, fontSize: 14),
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.of(c).pop(false),
+                                      child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                                    ),
+                                    TextButton(
+                                      onPressed: () => Navigator.of(c).pop(true),
+                                      child: const Text('Enable', style: TextStyle(color: Colors.deepPurpleAccent)),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (confirm != true) return;
+                            }
+                            setState(() => _passthroughMode = value);
+                            _markDirty();
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Audio is sent to your integrations and deleted locally after upload. Conversations appear in the list but cannot be played back.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],

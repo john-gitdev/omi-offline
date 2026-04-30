@@ -89,6 +89,12 @@ class SharedPreferencesUtil {
 
   set extractionInProgress(bool value) => saveBool('extractionInProgress', value);
 
+  // When enabled, recordings are uploaded to integrations immediately and the
+  // local audio file is deleted after a successful upload. Only the metadata
+  // sidecar (.meta) is kept so the conversation still appears in the list.
+  bool get passthroughMode => getBool('passthroughMode', defaultValue: false);
+  set passthroughMode(bool v) => saveBool('passthroughMode', v);
+
   //--------------------------- Omi Server Sync --------------------------//
 
   bool get omiSyncEnabled => getBool('omiSyncEnabled', defaultValue: false);

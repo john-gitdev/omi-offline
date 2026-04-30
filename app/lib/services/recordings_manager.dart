@@ -23,6 +23,9 @@ class Conversation {
   final String? uploadKey;
   final int? sessionId;
   final int? startUptime;
+  // True when the audio was uploaded to an integration and the local file was
+  // deleted. Only the .meta sidecar remains; the conversation cannot be played.
+  final bool passthrough;
 
   const Conversation({
     required this.file,
@@ -31,6 +34,7 @@ class Conversation {
     this.uploadKey,
     this.sessionId,
     this.startUptime,
+    this.passthrough = false,
   });
 
   DateTime get endTime => startTime.add(duration);
@@ -85,6 +89,7 @@ class Conversation {
           }
 
           String? uploadKey;
+          bool passthrough = false;
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
@@ -94,6 +99,10 @@ class Conversation {
                 );
               } catch (_) {
                 uploadKey = null;
+              }
+              final flagOffset = 417 + keyLen;
+              if (metaBytes.length > flagOffset) {
+                passthrough = (metaBytes[flagOffset] & 0x01) != 0;
               }
             }
           }
@@ -107,6 +116,7 @@ class Conversation {
             uploadKey: effectiveKey,
             sessionId: sessionId,
             startUptime: startUptime,
+            passthrough: passthrough,
           );
         }
       } catch (_) {
@@ -130,6 +140,66 @@ class Conversation {
       duration: Duration(milliseconds: durationMs),
       uploadKey: fallbackKey,
     );
+  }
+
+  /// Builds a passthrough Conversation from a standalone .meta file (no audio file).
+  /// Returns null if the meta file does not have the passthrough flag set or cannot be parsed.
+  static Future<Conversation?> fromMetaOnly(File metaFile) async {
+    try {
+      final metaBytes = await metaFile.readAsBytes();
+      if (metaBytes.length < 8) return null;
+
+      final bd = ByteData.sublistView(metaBytes);
+      final durationMs = bd.getUint32(4, Endian.little);
+      if (durationMs == 0) return null;
+
+      int? sessionId;
+      int? startUptime;
+      if (metaBytes.length >= 416) {
+        sessionId = bd.getUint32(408, Endian.little);
+        startUptime = bd.getUint32(412, Endian.little);
+      }
+
+      String? uploadKey;
+      bool passthrough = false;
+      if (metaBytes.length >= 417) {
+        final keyLen = metaBytes[416];
+        if (417 + keyLen <= metaBytes.length) {
+          try {
+            uploadKey = String.fromCharCodes(metaBytes.sublist(417, 417 + keyLen));
+          } catch (_) {}
+          final flagOffset = 417 + keyLen;
+          if (metaBytes.length > flagOffset) {
+            passthrough = (metaBytes[flagOffset] & 0x01) != 0;
+          }
+        }
+      }
+
+      if (!passthrough) return null;
+
+      // Reconstruct the virtual audio path from the meta filename.
+      final metaName = metaFile.path.split('/').last;
+      final baseName = metaName.contains('.') ? metaName.substring(0, metaName.lastIndexOf('.')) : metaName;
+      final virtualAudioFile = File('${metaFile.parent.path}/$baseName.m4a');
+
+      final millisStr = baseName.contains('_') ? baseName.split('_').last : null;
+      final millis = millisStr != null ? int.tryParse(millisStr) : null;
+      final startTime = millis != null && millis > 0
+          ? DateTime.fromMillisecondsSinceEpoch(millis)
+          : await metaFile.lastModified();
+
+      return Conversation(
+        file: virtualAudioFile,
+        startTime: startTime,
+        duration: Duration(milliseconds: durationMs),
+        uploadKey: uploadKey,
+        sessionId: sessionId,
+        startUptime: startUptime,
+        passthrough: true,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Parses start time from the filename (`recording_<millis>.m4a` or `.wav`) and
@@ -168,6 +238,7 @@ class Conversation {
           }
 
           String? uploadKey;
+          bool passthrough = false;
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
@@ -177,6 +248,10 @@ class Conversation {
                 );
               } catch (_) {
                 uploadKey = null;
+              }
+              final flagOffset = 417 + keyLen;
+              if (metaBytes.length > flagOffset) {
+                passthrough = (metaBytes[flagOffset] & 0x01) != 0;
               }
             }
           }
@@ -190,6 +265,7 @@ class Conversation {
             uploadKey: effectiveKey,
             sessionId: sessionId,
             startUptime: startUptime,
+            passthrough: passthrough,
           );
         }
       } catch (_) {
@@ -230,6 +306,7 @@ class Conversation {
   }
 
   String get sizeLabel {
+    if (passthrough) return '';
     final bytes = fileSizeBytes;
     if (bytes >= 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
@@ -618,7 +695,23 @@ class RecordingsManager {
         final conversations = await Future.wait(
           files.map((f) => Conversation.fromFileAsync(f)),
         );
-        processedByDate[dateString] = conversations;
+
+        // Also pick up passthrough conversations: .meta files with no matching audio file.
+        final audioBasenames = files.map((f) {
+          final name = f.path.split('/').last;
+          return name.contains('.') ? name.substring(0, name.lastIndexOf('.')) : name;
+        }).toSet();
+        final metaFiles = folderEntities.whereType<File>().where((f) => f.path.endsWith('.meta')).toList();
+        final passthroughConvs = <Conversation>[];
+        for (final meta in metaFiles) {
+          final metaName = meta.path.split('/').last;
+          final baseName = metaName.contains('.') ? metaName.substring(0, metaName.lastIndexOf('.')) : metaName;
+          if (audioBasenames.contains(baseName)) continue;
+          final c = await Conversation.fromMetaOnly(meta);
+          if (c != null) passthroughConvs.add(c);
+        }
+
+        processedByDate[dateString] = [...conversations, ...passthroughConvs];
       }
     }
 
