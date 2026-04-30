@@ -22,9 +22,23 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
   late double _vadSpeechThreshold;
   late int _vadSplitSeconds;
-  late int _vadMinSpeechSeconds;
   late int _vadMaxConversationMinutes;
   late int _filterMinDurationSeconds;
+  late bool _discardShortRecordings;
+
+  static const List<int> _kShortRecordingOptions = [0, 10, 30, 60, 120, 300, 600, 1800, 3600];
+
+  static String _formatShortDuration(int seconds) {
+    if (seconds == 0) return 'Off';
+    if (seconds < 60) return '${seconds}s';
+    if (seconds < 3600) return '${seconds ~/ 60}m';
+    return '${seconds ~/ 3600}h';
+  }
+
+  static int _durationToIndex(int seconds) {
+    final i = _kShortRecordingOptions.indexOf(seconds);
+    return i < 0 ? 0 : i;
+  }
 
   bool _isDirty = false;
 
@@ -39,9 +53,9 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
     _vadSpeechThreshold = SharedPreferencesUtil().vadSpeechThreshold;
     _vadSplitSeconds = SharedPreferencesUtil().vadSplitSeconds;
-    _vadMinSpeechSeconds = SharedPreferencesUtil().vadMinSpeechSeconds;
     _vadMaxConversationMinutes = SharedPreferencesUtil().vadMaxConversationMinutes;
     _filterMinDurationSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
+    _discardShortRecordings = SharedPreferencesUtil().discardShortRecordings;
   }
 
   @override
@@ -67,9 +81,9 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
     prefs.vadSpeechThreshold = _vadSpeechThreshold;
     prefs.vadSplitSeconds = _vadSplitSeconds;
-    prefs.vadMinSpeechSeconds = _vadMinSpeechSeconds;
     prefs.vadMaxConversationMinutes = _vadMaxConversationMinutes;
     prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
+    prefs.discardShortRecordings = _discardShortRecordings;
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -366,56 +380,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   ],
                 ),
               ),
-              const SizedBox(height: 16),
-
-              // Filter Recordings
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Filter Recordings',
-                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Hide recordings shorter than the selected duration from the conversation list and prevent them from auto-uploading to integrations.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    ),
-                    const SizedBox(height: 16),
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: [
-                          for (final sec in [0, 10, 30, 60, 120, 300])
-                            Container(
-                              width: 80,
-                              margin: const EdgeInsets.only(right: 8),
-                              child: _WindowOption(
-                                label: sec == 0
-                                    ? 'Show All'
-                                    : sec < 60
-                                        ? '${sec}s'
-                                        : '${sec ~/ 60}m',
-                                selected: _filterMinDurationSeconds == sec,
-                                expand: false,
-                                onTap: () {
-                                  setState(() => _filterMinDurationSeconds = sec);
-                                  _markDirty();
-                                },
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
               const SizedBox(height: 32),
 
               // Conversation Detection
@@ -483,30 +447,68 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               ),
               const SizedBox(height: 24),
 
-              // Minimum Conversation Length
-              const Text(
-                'Minimum Conversation Length',
-                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+              // Short Recordings
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Short Recordings',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+                  ),
+                  Text(
+                    _formatShortDuration(_filterMinDurationSeconds),
+                    style: TextStyle(
+                      color: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade500,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 4),
               Text(
-                'Speech segments shorter than this are discarded. Increase to filter out brief accidental sounds.',
+                _filterMinDurationSeconds == 0
+                    ? 'All recordings are kept and shown regardless of length.'
+                    : _discardShortRecordings
+                        ? 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are permanently deleted during processing.'
+                        : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the list and skipped by integrations.',
                 style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
               ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  for (final sec in [3, 5, 10, 30])
+              Slider(
+                value: _durationToIndex(_filterMinDurationSeconds).toDouble(),
+                min: 0,
+                max: 8,
+                divisions: 8,
+                label: _formatShortDuration(_filterMinDurationSeconds),
+                activeColor: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade700,
+                onChanged: (v) {
+                  setState(() => _filterMinDurationSeconds = _kShortRecordingOptions[v.round()]);
+                  _markDirty();
+                },
+              ),
+              if (_filterMinDurationSeconds > 0) ...[
+                const SizedBox(height: 4),
+                Row(
+                  children: [
                     _WindowOption(
-                      label: '${sec}s',
-                      selected: _vadMinSpeechSeconds == sec,
+                      label: 'Keep',
+                      selected: !_discardShortRecordings,
                       onTap: () {
-                        setState(() => _vadMinSpeechSeconds = sec);
+                        setState(() => _discardShortRecordings = false);
                         _markDirty();
                       },
                     ),
-                ],
-              ),
+                    _WindowOption(
+                      label: 'Discard',
+                      selected: _discardShortRecordings,
+                      onTap: () {
+                        setState(() => _discardShortRecordings = true);
+                        _markDirty();
+                      },
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 24),
 
               const SizedBox(height: 32),

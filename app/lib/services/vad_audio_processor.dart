@@ -19,7 +19,8 @@ import "package:meta/meta.dart";
 class ProcessingSettings {
   final double speechThreshold;
   final int silenceDurationToSplitMs;
-  final int minSpeechMs;
+  final int minDurationMs;
+  final bool discardShort;
   final int maxChunkMs;
   final String deviceId; // used to generate upload key in .meta sidecar
   final bool convertOpusToM4a;
@@ -28,7 +29,8 @@ class ProcessingSettings {
   const ProcessingSettings({
     required this.speechThreshold,
     required this.silenceDurationToSplitMs,
-    required this.minSpeechMs,
+    required this.minDurationMs,
+    required this.discardShort,
     required this.maxChunkMs,
     required this.deviceId,
     required this.convertOpusToM4a,
@@ -37,11 +39,11 @@ class ProcessingSettings {
 
   factory ProcessingSettings.fromPrefs() {
     final p = SharedPreferencesUtil();
-    const frameDurationMs = VadAudioProcessor.frameDurationMs;
     return ProcessingSettings(
       speechThreshold: p.vadSpeechThreshold,
       silenceDurationToSplitMs: p.vadSplitSeconds * 1000,
-      minSpeechMs: p.vadMinSpeechSeconds * 1000,
+      minDurationMs: p.filterMinDurationSeconds * 1000,
+      discardShort: p.discardShortRecordings,
       maxChunkMs: p.vadMaxConversationMinutes * 60 * 1000,
       deviceId: p.btDevice.id,
       convertOpusToM4a: p.convertOpusToM4a,
@@ -74,6 +76,12 @@ class VadAudioProcessor {
   // VAD state counters
   int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
 
+  /// True after a [flushRemaining] call where the short-recording discard guard
+  /// fired (refs were non-empty but below the duration threshold). False if the
+  /// guard did not fire (either no refs, or proceeded to save). Test-only.
+  @visibleForTesting
+  bool discardGuardFiredOnLastFlush = false;
+
   // Marker-forced recording state
   bool _forcedByMarker = false;
 
@@ -84,7 +92,8 @@ class VadAudioProcessor {
   // Settings — cached at construction time for the lifetime of one processAll pass
   final double _speechThreshold;
   final int _silenceDurationToSplitMs;
-  final int _minSpeechMs;
+  final int _minDurationMs;
+  final bool _discardShort;
   final int _maxChunkMs;
   final String _deviceId;
   final bool _convertOpusToM4a;
@@ -136,7 +145,8 @@ class VadAudioProcessor {
         _outputDir = outputDir,
         _speechThreshold = settings.speechThreshold,
         _silenceDurationToSplitMs = settings.silenceDurationToSplitMs,
-        _minSpeechMs = settings.minSpeechMs,
+        _minDurationMs = settings.minDurationMs,
+        _discardShort = settings.discardShort,
         _maxChunkMs = settings.maxChunkMs,
         _deviceId = settings.deviceId,
         _convertOpusToM4a = settings.convertOpusToM4a,
@@ -322,7 +332,7 @@ class VadAudioProcessor {
               if (gapMs >= _silenceDurationToSplitMs) {
                 // Gap exceeds threshold — flush current recording, start new conversation.
                 if (_currentRefs.isNotEmpty &&
-                    (_speechFrameCount * frameDurationMs >= _minSpeechMs || _forcedByMarker)) {
+                    (!_discardShort || _currentChunkDurationMs >= _minDurationMs || _forcedByMarker)) {
                   final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
                   if (filePath != null) savedFiles.add(filePath);
                 }
@@ -429,16 +439,18 @@ class VadAudioProcessor {
   }
 
   Future<String?> flushRemaining({bool isDraft = false}) async {
-    if (_currentRefs.isEmpty || (_speechFrameCount * frameDurationMs < _minSpeechMs && !_forcedByMarker)) {
+    if (_currentRefs.isEmpty || (_discardShort && _currentChunkDurationMs < _minDurationMs && !_forcedByMarker)) {
+      discardGuardFiredOnLastFlush = _currentRefs.isNotEmpty;
       if (_currentRefs.isNotEmpty) {
         Logger.debug(
           'VadAudioProcessor: flushRemaining discarding ${_currentRefs.length} frames '
-          '(${_speechFrameCount * frameDurationMs}ms speech < ${_minSpeechMs}ms minimum)',
+          '(${_currentChunkDurationMs}ms < ${_minDurationMs}ms minimum)',
         );
       }
       _resetState();
       return null;
     }
+    discardGuardFiredOnLastFlush = false;
     final path = await _saveRecording(_currentRefs, _recordingStartTime!, isDraft: isDraft);
     _resetState();
     return path;
