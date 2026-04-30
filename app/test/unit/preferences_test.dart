@@ -128,13 +128,13 @@ void main() {
       prefsUtil.vadSplitSeconds = 60;
       expect(prefsUtil.vadSplitSeconds, 60);
 
-      expect(prefsUtil.vadMinSpeechSeconds, 3);
-      prefsUtil.vadMinSpeechSeconds = 5;
-      expect(prefsUtil.vadMinSpeechSeconds, 5);
-
       expect(prefsUtil.filterMinDurationSeconds, 0);
       prefsUtil.filterMinDurationSeconds = 60;
       expect(prefsUtil.filterMinDurationSeconds, 60);
+
+      expect(prefsUtil.discardShortRecordings, false);
+      prefsUtil.discardShortRecordings = true;
+      expect(prefsUtil.discardShortRecordings, true);
 
       expect(prefsUtil.vadMaxConversationMinutes, 60);
       prefsUtil.vadMaxConversationMinutes = 90;
