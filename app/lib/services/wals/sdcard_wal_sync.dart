@@ -234,10 +234,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<List<Wal>> _getMissingWalsLocked(DeviceConnection connection, String deviceId) async {
     final wals = await _buildWalsFromFilesLocked(connection, deviceId, ignoreThreshold: true);
     Logger.debug('SDCardWalSync: getMissingWals returned ${wals.length} WALs');
-
-    // Update stats at the beginning of the sync
-    await _updateStorageStatsLocked(connection);
-
     return wals;
   }
 
@@ -762,13 +758,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<SyncLocalFilesResponse?> _syncAllLocked(
     DeviceConnection connection,
     String deviceId, {
+    List<Wal>? prefetchedWals,
     IWalSyncProgressListener? progress,
   }) async {
-    // Refresh the file list from the device so files completed since setDevice()
-    // are included. Files with walOffset == storageTotalBytes (previous transfer
-    // succeeded but deletion failed) appear as miss and pass straight through to
-    // Phase 2 deletion without any re-download.
-    _wals = await _getMissingWalsLocked(connection, deviceId);
+    _wals = prefetchedWals ?? await _getMissingWalsLocked(connection, deviceId);
     listener.onWalUpdated();
 
     if (_isCancelled) return null;
@@ -1066,11 +1059,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       final rotated = await connection.rotateFile();
       if (!rotated) throw Exception('Rotation failed');
-      _wals = await _buildWalsFromFilesLocked(connection, dev.id, ignoreThreshold: true);
+      final wals = await _buildWalsFromFilesLocked(connection, dev.id, ignoreThreshold: true);
 
       if (_isCancelled) return null;
 
-      return await _syncAllLocked(connection, dev.id, progress: progress);
+      return await _syncAllLocked(connection, dev.id, prefetchedWals: wals, progress: progress);
     } finally {
       _isSyncing = false;
       _completeCancelIfPending();
