@@ -26,7 +26,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late double _vadHangoverSeconds;
   late double _vadPreSpeechSeconds;
   late int _vadMaxConversationMinutes;
-  late int _markerLookbackSeconds;
 
   bool _isDirty = false;
 
@@ -45,7 +44,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _vadHangoverSeconds = SharedPreferencesUtil().vadHangoverSeconds;
     _vadPreSpeechSeconds = SharedPreferencesUtil().vadPreSpeechSeconds;
     _vadMaxConversationMinutes = SharedPreferencesUtil().vadMaxConversationMinutes;
-    _markerLookbackSeconds = SharedPreferencesUtil().markerLookbackSeconds;
   }
 
   @override
@@ -75,7 +73,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     prefs.vadHangoverSeconds = _vadHangoverSeconds;
     prefs.vadPreSpeechSeconds = _vadPreSpeechSeconds;
     prefs.vadMaxConversationMinutes = _vadMaxConversationMinutes;
-    prefs.markerLookbackSeconds = _markerLookbackSeconds;
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -429,44 +426,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                           selected: _vadSplitSeconds == sec,
                           expand: false,
                           onTap: () {
-                            setState(() {
-                              _vadSplitSeconds = sec;
-                              if (_markerLookbackSeconds > sec) _markerLookbackSeconds = sec;
-                            });
-                            _markDirty();
-                          },
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-
-              // Button Tap Lookback
-              const Text(
-                'Button Tap Lookback',
-                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'How far back to include audio when the button is tapped outside of an active conversation.',
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    for (final sec in [30, 60, 120, 300].where((s) => s <= _vadSplitSeconds))
-                      Container(
-                        width: 80,
-                        margin: const EdgeInsets.only(right: 8),
-                        child: _WindowOption(
-                          label: sec < 60 ? '${sec}s' : '${sec ~/ 60} min',
-                          selected: _markerLookbackSeconds == sec,
-                          expand: false,
-                          onTap: () {
-                            setState(() => _markerLookbackSeconds = sec);
+                            setState(() => _vadSplitSeconds = sec);
                             _markDirty();
                           },
                         ),
