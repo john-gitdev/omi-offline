@@ -912,6 +912,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
+        if (conversation.passthrough) continue;
         if (conversation.duration.inSeconds < minDuration) continue;
         final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
         final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
@@ -920,13 +921,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         if (!binFile.existsSync()) continue;
 
         _syncingBinFiles.add(binPath);
+        final isPassthrough = _prefs.passthroughMode;
         unawaited(
           OmiApiClient.syncLocalFiles([binFile])
               .then((jobId) => OmiApiClient.pollSyncJob(jobId))
-              .then((_) => binFile.delete())
+              .then((_) async {
+                await binFile.delete();
+                if (isPassthrough) await _convertToPassthrough(conversation);
+              })
               .catchError((e) {
             Logger.error('Omi sync failed for $binPath: $e');
-            return binFile; // satisfy FileSystemEntity return type
           }).whenComplete(() {
             _syncingBinFiles.remove(binPath);
             if (!_isDisposed) {
