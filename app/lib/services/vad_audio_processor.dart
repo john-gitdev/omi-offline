@@ -331,14 +331,6 @@ class VadAudioProcessor {
                     (_speechFrameCount * frameDurationMs >= _minSpeechMs || _forcedByMarker)) {
                   final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
                   if (filePath != null) savedFiles.add(filePath);
-                } else if (_forcedByMarker && _currentRefs.isEmpty && _recordingStartTime != null) {
-                  // Marker fired but no speech arrived — save a silence recording so the marker
-                  // has an audio file to attach to rather than disappearing.
-                  final filePath = await _saveRecording(
-                    [Duration(milliseconds: _silenceDurationToSplitMs)],
-                    _recordingStartTime!,
-                  );
-                  if (filePath != null) savedFiles.add(filePath);
                 }
                 _currentRefs = [];
                 _speechFrameCount = 0;
@@ -420,6 +412,21 @@ class VadAudioProcessor {
 
         // Silence-based splits are handled by 0xFFFFFFFD timestamp packets.
         // Only enforce the max conversation duration cap here.
+        // Marker-forced recording with no detected speech: cap at vadSplitSeconds of
+        // actual audio (music, ambient noise, etc.) so it doesn't run on indefinitely.
+        if (_forcedByMarker && _speechFrameCount == 0 && _currentChunkDurationMs >= _silenceDurationToSplitMs) {
+          Logger.debug('VadAudioProcessor: Marker-forced non-speech recording — cutting at ${_silenceDurationToSplitMs}ms.');
+          final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
+          if (filePath != null) savedFiles.add(filePath);
+          final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
+          _forcedByMarker = false;
+          _currentRefs = [];
+          _speechFrameCount = 0;
+          _hangoverFrames = 0;
+          _currentChunkDurationMs = 0;
+          _recordingStartTime = cutTime;
+        }
+
         if (_currentChunkDurationMs >= _maxChunkMs) {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
           final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
@@ -450,16 +457,6 @@ class VadAudioProcessor {
   }
 
   Future<String?> flushRemaining({bool isDraft = false}) async {
-    if (_forcedByMarker && _currentRefs.isEmpty && _recordingStartTime != null) {
-      // Marker fired but no speech arrived before flush — save silence so the marker survives.
-      final path = await _saveRecording(
-        [Duration(milliseconds: _silenceDurationToSplitMs)],
-        _recordingStartTime!,
-        isDraft: isDraft,
-      );
-      _resetState();
-      return path;
-    }
     if (_currentRefs.isEmpty || (_speechFrameCount * frameDurationMs < _minSpeechMs && !_forcedByMarker)) {
       if (_currentRefs.isNotEmpty) {
         Logger.debug(
