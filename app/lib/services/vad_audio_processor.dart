@@ -246,8 +246,12 @@ class VadAudioProcessor {
         } else if (gapMs > 0 && gapMs <= _silenceDurationToSplitMs) {
           Logger.debug(
             'VadAudioProcessor: Small gap before ${segmentFile.path.split('/').last} — '
-            'gapMs=$gapMs (within threshold, continuing stream).',
+            'gapMs=$gapMs (within threshold, inserting silence).',
           );
+          if (_currentRefs.isNotEmpty) {
+            _currentRefs.add(Duration(milliseconds: gapMs));
+            _currentChunkDurationMs += gapMs;
+          }
         }
         // gapMs <= 0: sequential firmware files with no real gap — stitch seamlessly.
       }
@@ -340,8 +344,12 @@ class VadAudioProcessor {
                 _recordingStartTime = newResumeTime;
                 Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
               } else {
-                // Gap within threshold — stitch (continue current recording).
-                Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms < threshold, stitching.');
+                // Gap within threshold — stitch, padding with silence so playback reflects real timing.
+                if (_currentRefs.isNotEmpty && gapMs > 0) {
+                  _currentRefs.add(Duration(milliseconds: gapMs));
+                  _currentChunkDurationMs += gapMs;
+                }
+                Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms < threshold, stitching with silence pad.');
               }
 
               // Update anchor for subsequent frame timestamp calculations.
