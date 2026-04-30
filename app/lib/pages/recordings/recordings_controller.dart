@@ -701,6 +701,22 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await _loadBatches();
   }
 
+  int countShortRecordings(int minSeconds) => _batches
+      .expand((b) => b.finalizedRecordings)
+      .where((c) => c.duration.inSeconds < minSeconds)
+      .length;
+
+  Future<void> deleteShortRecordings(int minSeconds) async {
+    final toDelete = _batches
+        .expand((b) => b.finalizedRecordings)
+        .where((c) => c.duration.inSeconds < minSeconds)
+        .toList();
+    for (final c in toDelete) {
+      await RecordingsManager.deleteConversation(c);
+    }
+    await reloadBatchesSilently();
+  }
+
   Future<void> deleteMarkerConversation(MarkerConversation mc) async {
     await RecordingsManager.deleteMarkerConversation(mc);
     await _loadBatches();

@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
@@ -264,9 +265,13 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                         title: 'Recording Settings',
                         icon: const FaIcon(FontAwesomeIcons.microphoneLines, color: Color(0xFF8E8E93), size: 20),
                         onTap: () {
+                          final controller = Provider.of<RecordingsController>(context, listen: false);
                           Navigator.of(context).push(
                             MaterialPageRoute(
-                              builder: (context) => const OfflineAudioSettingsPage(),
+                              builder: (context) => OfflineAudioSettingsPage(
+                                onCountShortRecordings: controller.countShortRecordings,
+                                onDeleteShortRecordings: controller.deleteShortRecordings,
+                              ),
                             ),
                           );
                         },
