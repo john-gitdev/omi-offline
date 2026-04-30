@@ -7,7 +7,14 @@ import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
 
 class OfflineAudioSettingsPage extends StatefulWidget {
-  const OfflineAudioSettingsPage({super.key});
+  final int Function(int minSeconds)? onCountShortRecordings;
+  final Future<void> Function(int minSeconds)? onDeleteShortRecordings;
+
+  const OfflineAudioSettingsPage({
+    super.key,
+    this.onCountShortRecordings,
+    this.onDeleteShortRecordings,
+  });
 
   @override
   State<OfflineAudioSettingsPage> createState() => _OfflineAudioSettingsPageState();
@@ -65,6 +72,49 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
   void _markDirty() {
     if (!_isDirty) setState(() => _isDirty = true);
+  }
+
+  Future<void> _handleCleanUp() async {
+    final count = widget.onCountShortRecordings!(_filterMinDurationSeconds);
+    final label = _formatShortDuration(_filterMinDurationSeconds);
+    if (count == 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No recordings to clean up.')),
+        );
+      }
+      return;
+    }
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1C1C1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Delete short recordings?', style: TextStyle(color: Colors.white)),
+        content: Text(
+          '$count recording${count == 1 ? '' : 's'} shorter than $label will be permanently deleted and cannot be recovered.',
+          style: const TextStyle(color: Colors.white70, fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true && mounted) {
+      await widget.onDeleteShortRecordings!(_filterMinDurationSeconds);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Deleted $count short recording${count == 1 ? '' : 's'}.')),
+        );
+      }
+    }
   }
 
   Future<void> _saveSettings() async {
@@ -508,6 +558,27 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     ),
                   ],
                 ),
+                if (_discardShortRecordings && widget.onCountShortRecordings != null) ...[
+                  const SizedBox(height: 12),
+                  GestureDetector(
+                    onTap: _handleCleanUp,
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF2C2C2E),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.redAccent.withValues(alpha: 0.4)),
+                      ),
+                      child: Center(
+                        child: Text(
+                          'Clean up existing short recordings',
+                          style: TextStyle(color: Colors.redAccent.shade100, fontSize: 14, fontWeight: FontWeight.w500),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ],
               const SizedBox(height: 24),
 
