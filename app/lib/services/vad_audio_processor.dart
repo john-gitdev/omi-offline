@@ -367,7 +367,12 @@ class VadAudioProcessor {
 
         if (frameIndex % 50 == 0) await Future.delayed(Duration.zero);
 
-        final opusBytes = bytes.sublist(offset + 4, offset + 4 + frameLength);
+        // ⚡ Bolt Performance Optimization:
+        // Replaced deep-copying `bytes.sublist()` with zero-copy `Uint8List.sublistView()`.
+        // In tight loops processing hundreds of audio frames, this prevents excessive
+        // short-lived heap allocations and dramatically reduces Garbage Collection pauses,
+        // resulting in smoother continuous recording/syncing.
+        final opusBytes = Uint8List.sublistView(bytes, offset + 4, offset + 4 + frameLength);
 
         Int16List? pcmData;
         try {
@@ -397,9 +402,8 @@ class VadAudioProcessor {
         _currentChunkDurationMs += frameDurationMs;
 
         if (_recordingStartTime == null) {
-          _recordingStartTime = (vadResumeTime != null && vadResumeFrameIndex != null)
-              ? vadResumeTime!
-              : segmentStartTime;
+          _recordingStartTime =
+              (vadResumeTime != null && vadResumeFrameIndex != null) ? vadResumeTime! : segmentStartTime;
         }
 
         // Compute accurate wall-clock time for this frame using VAD-resume anchor if available.
@@ -647,7 +651,10 @@ class VadAudioProcessor {
         if (currentFileBytes == null) continue;
 
         final frameDataOffset = ref.byteOffset + 4;
-        final opusBytes = currentFileBytes.sublist(frameDataOffset, frameDataOffset + ref.frameLength);
+        // ⚡ Bolt Performance Optimization:
+        // Use zero-copy sublistView instead of sublist to avoid allocating hundreds
+        // of temporary arrays while stitching large files during conversion.
+        final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
 
         Int16List? pcmData;
         try {
@@ -827,7 +834,9 @@ class VadAudioProcessor {
         if (currentFileBytes == null) continue;
 
         final frameDataOffset = ref.byteOffset + 4;
-        final opusBytes = currentFileBytes.sublist(frameDataOffset, frameDataOffset + ref.frameLength);
+        // ⚡ Bolt Performance Optimization:
+        // Use zero-copy sublistView to eliminate O(N) memory allocation per frame slice.
+        final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
 
         Int16List? pcmData;
         try {
@@ -871,7 +880,8 @@ class VadAudioProcessor {
       await _saveMetadata(refs, dateFolderPath, timestamp, metaSamples, dynamicPeaks, waveformBuckets,
           prefix: prefix, extension: 'ogg', suffix: suffix);
 
-      Logger.debug('VadAudioProcessor: Saved OGG recording (${refs.length} items) starting at $timestamp$suffix to $oggPath');
+      Logger.debug(
+          'VadAudioProcessor: Saved OGG recording (${refs.length} items) starting at $timestamp$suffix to $oggPath');
       return oggPath;
     } catch (e) {
       Logger.error('VadAudioProcessor: OGG encoding failed, falling back to WAV: $e');
@@ -1272,7 +1282,9 @@ class VadAudioProcessor {
           if (currentFileBytes == null) continue;
 
           final frameDataOffset = ref.byteOffset + 4;
-          final opusBytes = currentFileBytes.sublist(frameDataOffset, frameDataOffset + ref.frameLength);
+          // ⚡ Bolt Performance Optimization:
+          // Zero-copy view prevents runaway heap growth during bulk PCM decoding loops.
+          final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
 
           try {
             final decoded = wavDecoder.decode(input: opusBytes);
