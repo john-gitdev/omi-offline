@@ -338,6 +338,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
   Future<void> _deleteProblematicEdls() async {
     Logger.debug('DebugTools: Delete Problematic EDLs tapped');
+    if (RecordingsManager.isProcessingAny) {
+      Logger.debug('DebugTools: Delete Problematic EDLs blocked — processing running');
+      _showProcessingSnackbar();
+      return;
+    }
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -481,7 +486,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 const SizedBox(height: 12),
                 _DebugButton(
                   label: 'Force Sync Omi',
-                  description: 'Syncs all pending segments immediately, ignoring the minimum buffer threshold.',
+                  description: 'Seals the current recording on the device and syncs everything, including the current session.',
                   icon: FontAwesomeIcons.arrowsRotate,
                   onTap: _forceSync,
                 ),
