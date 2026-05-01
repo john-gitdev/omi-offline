@@ -69,20 +69,25 @@ class AccumulatingBanner extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          Material(
-            color: Colors.transparent,
-            child: Ink(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
+          Tooltip(
+            message: 'View conversation in progress',
+            child: Semantics(
+              button: true,
+              label: 'View conversation in progress',
+              child: Material(
                 color: Colors.deepPurpleAccent.withValues(alpha: 0.2),
-                shape: BoxShape.circle,
-              ),
-              child: IconButton(
-                onPressed: onTap,
-                padding: EdgeInsets.zero,
-                tooltip: 'Process now',
-                icon: const FaIcon(FontAwesomeIcons.hourglassHalf, color: Colors.deepPurpleAccent, size: 16),
+                shape: const CircleBorder(),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: onTap,
+                  child: const SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: Center(
+                      child: FaIcon(FontAwesomeIcons.hourglassHalf, color: Colors.deepPurpleAccent, size: 16),
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
