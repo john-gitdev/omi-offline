@@ -723,6 +723,18 @@ void storage_write(void)
                 atomic_clear(&remaining_length);
             }
             transport_started = 0;  /* Clear flag after setup */
+
+            /* Offset was already at or past EOF — send EOT now so the host can
+             * proceed to the DELETE command (deletion-retry path). */
+            if (atomic_get(&remaining_length) == 0 && current_sync_file_index >= 0 && conn != NULL) {
+                uint8_t eot[1] = {PACKET_EOT};
+                int err;
+                do {
+                    err = storage_notify(conn, eot, sizeof(eot));
+                    if (err == -ENOMEM) k_msleep(10);
+                } while (err == -ENOMEM);
+                k_msleep(250);
+            }
         }
         if (list_files_requested) {
             list_files_requested = 0;
@@ -885,7 +897,7 @@ void storage_write(void)
                         } while (err == -ENOMEM);
                     }
                     put_current_connection(eot_conn);
-                    k_msleep(10);
+                    k_msleep(250);
                 }
             }
         }

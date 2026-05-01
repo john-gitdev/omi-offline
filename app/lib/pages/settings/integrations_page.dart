@@ -201,6 +201,28 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (_prefs.adjustmentMode)
+            Container(
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Colors.orangeAccent, size: 20),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Integrations are paused while Adjustment Mode is active.',
+                      style: TextStyle(color: Colors.orange.shade200, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           // Omi Server Sync
           _buildIntegrationSection(
             title: 'Omi Cloud',

@@ -356,6 +356,7 @@ class DeviceProvider extends ChangeNotifier
       await ForegroundUtil.startForegroundTask();
       await walSync.syncAll();
       await RecordingsManager.processAllCompletedSessions();
+      await walSync.syncAll();
     } catch (e) {
       lastSyncError = e.toString();
       lastSyncErrorTime = DateTime.now();
