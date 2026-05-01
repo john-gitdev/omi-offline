@@ -426,7 +426,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
   try {
     OrtEnv.instance.init();
   } catch (e) {
-    // Non-fatal: amplitude fallback will be used.
+    // Non-fatal: AAD mode, all audio treated as speech.
   }
 
   OrtSession? session;
@@ -910,17 +910,20 @@ class RecordingsManager {
       }
 
       // Pre-load the ONNX model on the main isolate (rootBundle requires main isolate).
+      // Skipped when VAD is disabled — isolate will run in AAD mode.
       Uint8List? modelBytes;
-      try {
-        final data = await rootBundle.load('assets/models/silero_vad.onnx');
-        modelBytes = data.buffer.asUint8List(
-          data.offsetInBytes,
-          data.lengthInBytes,
-        );
-      } catch (e) {
-        Logger.error(
-          'RecordingsManager: Failed to pre-load VAD model ($e) — amplitude fallback active.',
-        );
+      if (SharedPreferencesUtil().vadEnabled) {
+        try {
+          final data = await rootBundle.load('assets/models/silero_vad.onnx');
+          modelBytes = data.buffer.asUint8List(
+            data.offsetInBytes,
+            data.lengthInBytes,
+          );
+        } catch (e) {
+          Logger.error(
+            'RecordingsManager: Failed to pre-load VAD model ($e) — AAD mode active.',
+          );
+        }
       }
 
       final Set<String> deletedSegmentFolders = {};

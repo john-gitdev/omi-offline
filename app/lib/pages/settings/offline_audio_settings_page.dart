@@ -20,6 +20,7 @@ class OfflineAudioSettingsPage extends StatefulWidget {
 
 class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late bool _maximizeBattery;
+  late bool _vadEnabled;
 
   late double _vadSpeechThreshold;
   late int _vadSplitSeconds;
@@ -47,6 +48,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   void initState() {
     super.initState();
     _maximizeBattery = SharedPreferencesUtil().maximizeBattery;
+    _vadEnabled = SharedPreferencesUtil().vadEnabled;
 
     _vadSpeechThreshold = SharedPreferencesUtil().vadSpeechThreshold;
     _vadSplitSeconds = SharedPreferencesUtil().vadSplitSeconds;
@@ -110,6 +112,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   Future<void> _saveSettings() async {
     final prefs = SharedPreferencesUtil();
     prefs.maximizeBattery = _maximizeBattery;
+    prefs.vadEnabled = _vadEnabled;
 
     prefs.vadSpeechThreshold = _vadSpeechThreshold;
     prefs.vadSplitSeconds = _vadSplitSeconds;
@@ -224,29 +227,58 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               ),
               const SizedBox(height: 16),
 
-              // Speech Sensitivity
-              const Text(
-                'Speech Sensitivity',
-                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Lower = more sensitive (picks up quiet speech). Higher = stricter (ignores background noise).',
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              ),
-              Slider(
-                value: _vadSpeechThreshold,
-                min: 0.1,
-                max: 0.9,
-                divisions: 16,
-                label: '${(_vadSpeechThreshold * 100).round()}%',
-                activeColor: Colors.deepPurpleAccent,
-                onChanged: (value) {
-                  setState(() => _vadSpeechThreshold = value);
-                  _markDirty();
-                },
+              // VAD toggle
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white.withOpacity(0.05)),
+                ),
+                child: SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Voice Activity Detection', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  subtitle: Text(
+                    _vadEnabled
+                        ? 'Silero VAD classifies each frame as speech or silence.'
+                        : 'AAD mode — splits by firmware timestamps only.',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                  ),
+                  value: _vadEnabled,
+                  onChanged: (value) {
+                    setState(() => _vadEnabled = value);
+                    _markDirty();
+                  },
+                  activeColor: Colors.deepPurpleAccent,
+                ),
               ),
               const SizedBox(height: 16),
+
+              // Speech Sensitivity (Silero only)
+              if (_vadEnabled) ...[
+                const Text(
+                  'Speech Sensitivity',
+                  style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Lower = more sensitive (picks up quiet speech). Higher = stricter (ignores background noise).',
+                  style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                ),
+                Slider(
+                  value: _vadSpeechThreshold,
+                  min: 0.1,
+                  max: 0.9,
+                  divisions: 16,
+                  label: '${(_vadSpeechThreshold * 100).round()}%',
+                  activeColor: Colors.deepPurpleAccent,
+                  onChanged: (value) {
+                    setState(() => _vadSpeechThreshold = value);
+                    _markDirty();
+                  },
+                ),
+                const SizedBox(height: 16),
+              ],
 
               // Silence to End Conversation
               const Text(
@@ -409,7 +441,9 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     const SizedBox(width: 16),
                     Expanded(
                       child: Text(
-                        'Audio is processed locally using Silero voice activity detection. Each continuous conversation is saved as its own audio file. Tap the button on your Omi to tag a moment.',
+                        _vadEnabled
+                            ? 'Audio is processed locally using Silero voice activity detection. Each continuous conversation is saved as its own audio file. Double-tap the button on your Omi to tag a moment.'
+                            : 'Running in AAD mode — the firmware determines what is loud enough to record. Conversations are split using firmware timestamps only. Double-tap the button on your Omi to tag a moment.',
                         style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                       ),
                     ),

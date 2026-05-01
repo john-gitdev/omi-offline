@@ -17,6 +17,7 @@ import "package:meta/meta.dart";
 /// before spawning the processing isolate. All fields are primitives — safe to send
 /// across isolate boundaries.
 class ProcessingSettings {
+  final bool vadEnabled;
   final double speechThreshold;
   final int silenceDurationToSplitMs;
   final int minDurationMs;
@@ -27,6 +28,7 @@ class ProcessingSettings {
   final bool omiSyncEnabled;
 
   const ProcessingSettings({
+    required this.vadEnabled,
     required this.speechThreshold,
     required this.silenceDurationToSplitMs,
     required this.minDurationMs,
@@ -40,6 +42,7 @@ class ProcessingSettings {
   factory ProcessingSettings.fromPrefs() {
     final p = SharedPreferencesUtil();
     return ProcessingSettings(
+      vadEnabled: p.vadEnabled,
       speechThreshold: p.vadSpeechThreshold,
       silenceDurationToSplitMs: p.vadSplitSeconds * 1000,
       minDurationMs: p.filterMinDurationSeconds * 1000,
@@ -107,21 +110,23 @@ class VadAudioProcessor {
   /// Creates a processor in the main isolate, reading settings from SharedPreferences.
   static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
     final settings = ProcessingSettings.fromPrefs();
-    try {
-      OrtEnv.instance.init();
-    } catch (e) {
-      Logger.error("VadAudioProcessor: Failed to init OrtEnv: $e");
-    }
     OrtSession? session;
-    try {
-      final data = await rootBundle.load('assets/models/silero_vad.onnx');
-      final sessionOptions = OrtSessionOptions();
-      session = OrtSession.fromBuffer(data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes), sessionOptions);
-    } catch (e) {
-      Logger.error('VadAudioProcessor: Failed to load Silero VAD model, amplitude fallback active: $e');
+    if (settings.vadEnabled) {
+      try {
+        OrtEnv.instance.init();
+      } catch (e) {
+        Logger.error("VadAudioProcessor: Failed to init OrtEnv: $e");
+      }
+      try {
+        final data = await rootBundle.load('assets/models/silero_vad.onnx');
+        final sessionOptions = OrtSessionOptions();
+        session = OrtSession.fromBuffer(data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes), sessionOptions);
+      } catch (e) {
+        Logger.error('VadAudioProcessor: Failed to load Silero VAD model, AAD mode active: $e');
+      }
     }
     Logger.debug(
-        'VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'amplitude fallback active (threshold=${settings.speechThreshold})'}');
+        'VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'AAD mode${settings.vadEnabled ? ' (model unavailable)' : ''}'}');
     return VadAudioProcessor._(outputDir: outputDir, decoder: decoder, session: session, settings: settings);
   }
 
@@ -161,8 +166,8 @@ class VadAudioProcessor {
 
   bool _runVad(List<double> samples512) {
     if (_session == null) {
-      // Amplitude fallback when model didn't load or was disabled after a failure.
-      return samples512.any((s) => s.abs() > _speechThreshold);
+      // Hardware AAD mode — all audio treated as speech; splitting driven by firmware timestamps only.
+      return true;
     }
     final input = Float32List.fromList(samples512);
     final sr = Int64List.fromList([sampleRate]);
@@ -184,10 +189,9 @@ class VadAudioProcessor {
       _c = _flattenF32(outputs[2]!.value);
       return prob > _speechThreshold;
     } catch (e) {
-      Logger.error(
-          'VadAudioProcessor: Silero inference failed ($e) — disabling model, switching to amplitude fallback');
+      Logger.error('VadAudioProcessor: Silero inference failed ($e) — disabling model, AAD mode active');
       _session = null;
-      return samples512.any((s) => s.abs() > _speechThreshold);
+      return true;
     } finally {
       for (final t in inputs.values) {
         t.release();
