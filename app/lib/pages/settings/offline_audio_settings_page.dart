@@ -218,13 +218,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   activeColor: Colors.deepPurpleAccent,
                 ),
               ),
-              const SizedBox(height: 32),
-
-              // Conversation Detection
-              const Text(
-                'Conversation Detection',
-                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
-              ),
               const SizedBox(height: 16),
 
               // VAD toggle
@@ -256,196 +249,221 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
               // Speech Sensitivity (Silero only)
               if (_vadEnabled) ...[
-                const Text(
-                  'Speech Sensitivity',
-                  style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Lower = more sensitive (picks up quiet speech). Higher = stricter (ignores background noise).',
-                  style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                ),
-                Slider(
-                  value: _vadSpeechThreshold,
-                  min: 0.1,
-                  max: 0.9,
-                  divisions: 16,
-                  label: '${(_vadSpeechThreshold * 100).round()}%',
-                  activeColor: Colors.deepPurpleAccent,
-                  onChanged: (value) {
-                    setState(() => _vadSpeechThreshold = value);
-                    _markDirty();
-                  },
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white.withOpacity(0.05)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Speech Sensitivity',
+                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Lower = more sensitive (picks up quiet speech). Higher = stricter (ignores background noise).',
+                        style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                      ),
+                      Slider(
+                        value: _vadSpeechThreshold,
+                        min: 0.1,
+                        max: 0.9,
+                        divisions: 16,
+                        label: '${(_vadSpeechThreshold * 100).round()}%',
+                        activeColor: Colors.deepPurpleAccent,
+                        onChanged: (value) {
+                          setState(() => _vadSpeechThreshold = value);
+                          _markDirty();
+                        },
+                      ),
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 16),
               ],
 
               // Silence to End Conversation
-              const Text(
-                'Silence to End Conversation',
-                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'How long you need to be quiet before a new conversation begins.',
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    for (final sec in [30, 60, 120, 300])
-                      Container(
-                        width: 80,
-                        margin: const EdgeInsets.only(right: 8),
-                        child: _WindowOption(
-                          label: sec < 60 ? '${sec}s' : '${sec ~/ 60} min',
-                          selected: _vadSplitSeconds == sec,
-                          expand: false,
-                          onTap: () {
-                            setState(() => _vadSplitSeconds = sec);
-                            _markDirty();
-                          },
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-
-              // Short Recordings
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Short Recordings',
-                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
-                  ),
-                  Text(
-                    _formatShortDuration(_filterMinDurationSeconds),
-                    style: TextStyle(
-                      color: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade500,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                _filterMinDurationSeconds == 0
-                    ? 'All recordings are kept and shown regardless of length.'
-                    : _discardShortRecordings
-                        ? 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are permanently deleted during processing.'
-                        : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the list and skipped by integrations.',
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              ),
-              Slider(
-                value: _durationToIndex(_filterMinDurationSeconds).toDouble(),
-                min: 0,
-                max: 8,
-                divisions: 8,
-                label: _formatShortDuration(_filterMinDurationSeconds),
-                activeColor: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade700,
-                onChanged: (v) {
-                  setState(() => _filterMinDurationSeconds = _kShortRecordingOptions[v.round()]);
-                  _markDirty();
-                },
-              ),
-              if (_filterMinDurationSeconds > 0) ...[
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    _WindowOption(
-                      label: 'Keep',
-                      selected: !_discardShortRecordings,
-                      onTap: () {
-                        setState(() => _discardShortRecordings = false);
-                        _markDirty();
-                      },
-                    ),
-                    _WindowOption(
-                      label: 'Discard',
-                      selected: _discardShortRecordings,
-                      onTap: () {
-                        setState(() => _discardShortRecordings = true);
-                        _markDirty();
-                      },
-                    ),
-                  ],
-                ),
-                if (_discardShortRecordings && widget.onCountShortRecordings != null) ...[
-                  const SizedBox(height: 12),
-                  GestureDetector(
-                    onTap: _handleCleanUp,
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF2C2C2E),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.redAccent.withValues(alpha: 0.4)),
-                      ),
-                      child: Center(
-                        child: Text(
-                          'Clean up existing short recordings',
-                          style: TextStyle(color: Colors.redAccent.shade100, fontSize: 14, fontWeight: FontWeight.w500),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-              const SizedBox(height: 24),
-
-              const SizedBox(height: 32),
-
-              // Maximum Conversation Length
-              const Text(
-                'Max Conversation Length',
-                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Forces a cut if a conversation reaches this duration, even without silence.',
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  for (final mins in [30, 60, 120, 180])
-                    _WindowOption(
-                      label: mins >= 60 ? '${mins ~/ 60}h' : '${mins}m',
-                      selected: _vadMaxConversationMinutes == mins,
-                      onTap: () {
-                        setState(() => _vadMaxConversationMinutes = mins);
-                        _markDirty();
-                      },
-                    ),
-                ],
-              ),
-              const SizedBox(height: 32),
-
-              // Info box
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: const Color(0xFF1C1C1E),
                   borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white.withOpacity(0.05)),
                 ),
-                child: Row(
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const FaIcon(FontAwesomeIcons.circleInfo, size: 20, color: Colors.blueAccent),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Text(
-                        _vadEnabled
-                            ? 'Audio is processed locally using Silero voice activity detection. Each continuous conversation is saved as its own audio file. Double-tap the button on your Omi to tag a moment.'
-                            : 'Running in AAD mode — the firmware determines what is loud enough to record. Conversations are split using firmware timestamps only. Double-tap the button on your Omi to tag a moment.',
-                        style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    const Text(
+                      'Silence to End Conversation',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'How long you need to be quiet before a new conversation begins.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                    const SizedBox(height: 12),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          for (final sec in [30, 60, 120, 300])
+                            Container(
+                              width: 80,
+                              margin: const EdgeInsets.only(right: 8),
+                              child: _WindowOption(
+                                label: sec < 60 ? '${sec}s' : '${sec ~/ 60} min',
+                                selected: _vadSplitSeconds == sec,
+                                expand: false,
+                                onTap: () {
+                                  setState(() => _vadSplitSeconds = sec);
+                                  _markDirty();
+                                },
+                              ),
+                            ),
+                        ],
                       ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Short Recordings
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white.withOpacity(0.05)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Short Recordings',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        Text(
+                          _formatShortDuration(_filterMinDurationSeconds),
+                          style: TextStyle(
+                            color: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade500,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _filterMinDurationSeconds == 0
+                          ? 'All recordings are kept and shown regardless of length.'
+                          : _discardShortRecordings
+                              ? 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are permanently deleted during processing.'
+                              : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the list and skipped by integrations.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                    Slider(
+                      value: _durationToIndex(_filterMinDurationSeconds).toDouble(),
+                      min: 0,
+                      max: 8,
+                      divisions: 8,
+                      label: _formatShortDuration(_filterMinDurationSeconds),
+                      activeColor: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade700,
+                      onChanged: (v) {
+                        setState(() => _filterMinDurationSeconds = _kShortRecordingOptions[v.round()]);
+                        _markDirty();
+                      },
+                    ),
+                    if (_filterMinDurationSeconds > 0) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          _WindowOption(
+                            label: 'Keep',
+                            selected: !_discardShortRecordings,
+                            onTap: () {
+                              setState(() => _discardShortRecordings = false);
+                              _markDirty();
+                            },
+                          ),
+                          _WindowOption(
+                            label: 'Discard',
+                            selected: _discardShortRecordings,
+                            onTap: () {
+                              setState(() => _discardShortRecordings = true);
+                              _markDirty();
+                            },
+                          ),
+                        ],
+                      ),
+                      if (_discardShortRecordings && widget.onCountShortRecordings != null) ...[
+                        const SizedBox(height: 12),
+                        GestureDetector(
+                          onTap: _handleCleanUp,
+                          child: Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF2C2C2E),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.redAccent.withValues(alpha: 0.4)),
+                            ),
+                            child: Center(
+                              child: Text(
+                                'Clean up existing short recordings',
+                                style: TextStyle(color: Colors.redAccent.shade100, fontSize: 14, fontWeight: FontWeight.w500),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Maximum Conversation Length
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white.withOpacity(0.05)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Max Conversation Length',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Forces a cut if a conversation reaches this duration, even without silence.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        for (final mins in [30, 60, 120, 180])
+                          _WindowOption(
+                            label: mins >= 60 ? '${mins ~/ 60}h' : '${mins}m',
+                            selected: _vadMaxConversationMinutes == mins,
+                            onTap: () {
+                              setState(() => _vadMaxConversationMinutes = mins);
+                              _markDirty();
+                            },
+                          ),
+                      ],
                     ),
                   ],
                 ),
