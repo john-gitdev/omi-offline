@@ -243,30 +243,36 @@ void main() {
     late MockDeviceConnection mockConn;
     late SDCardWalSyncImpl sync;
 
+    Future<void> pump([int count = 5]) async {
+      for (int i = 0; i < count; i++) await Future.delayed(Duration.zero);
+    }
+
     Wal makeWal({int totalBytes = 10, int walOffset = 0}) => Wal(
           codec: BleAudioCodec.opus, channel: 1, device: 'test-device',
           fileNum: 1, walOffset: walOffset, storageTotalBytes: totalBytes,
           timerStart: 0, storage: WalStorage.sdcard,
         );
 
-    setUp(() {
+    setUp(() async {
       mockConn = MockDeviceConnection();
       sync = SDCardWalSyncImpl(
         MockWalSyncListener(),
         connectionProvider: (_) async => mockConn,
         inactivityTimeout: const Duration(seconds: 1),
       );
-      sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
     });
 
-    tearDown(() async => await mockConn.close());
-
-    Future<void> pump([int count = 5]) async {
-      for (int i = 0; i < count; i++) await Future.delayed(Duration.zero);
-    }
+    tearDown(() async {
+      sync.cancelSync();
+      await pump(10);
+      await mockConn.close();
+    });
 
     test('Error ACK aborts sync with an exception', () async {
-      final syncFuture = sync.syncWal(wal: makeWal()).catchError((_) {});
+      final syncFuture = sync.syncWal(wal: makeWal()).catchError((_) {
+        return null;
+      });
       await pump();
       mockConn.add(ackPacket(0x01));
       await syncFuture;
@@ -305,11 +311,11 @@ void main() {
         StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 3000000),
         StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 1000000)
       ];
-      sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       await pump(10);
 
       final syncAllFuture = sync.syncAll();
-      await Future.delayed(const Duration(milliseconds: 100));
+      await Future.delayed(const Duration(milliseconds: 300));
       await pump(10);
       expect(globalWriteCount, equals(1));
       expect(globalCurrentFileNum, equals(0));
@@ -345,11 +351,11 @@ void main() {
         StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 3000000),
         StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 1000000)
       ];
-      sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       await pump(10);
 
       final stallFuture = sync.syncAll();
-      await Future.delayed(const Duration(milliseconds: 100));
+      await Future.delayed(const Duration(milliseconds: 300));
       await pump(10);
       expect(globalWriteCount, equals(1));
 
