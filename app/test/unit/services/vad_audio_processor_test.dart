@@ -29,34 +29,6 @@ class MockPathProviderPlatform extends Fake
   }
 }
 
-/// Creates a valid bin file with [frameCount] dummy Opus frames (4 zero bytes each).
-/// Each frame is 20 ms → total duration = frameCount * 20 ms.
-File _makeBinFile(Directory dir, int frameCount, {String name = 'test.bin'}) {
-  final f = File('${dir.path}/$name');
-  final builder = BytesBuilder();
-  const frameLength = 4;
-  final header = ByteData(4)..setUint32(0, frameLength, Endian.little);
-  for (int i = 0; i < frameCount; i++) {
-    builder.add(header.buffer.asUint8List());
-    builder.add(List.filled(frameLength, 0));
-  }
-  f.writeAsBytesSync(builder.toBytes());
-  return f;
-}
-
-ProcessingSettings _settings({required int minDurationMs, required bool discardShort}) {
-  return ProcessingSettings(
-    speechThreshold: 0.5,
-    silenceDurationToSplitMs: 120000,
-    minDurationMs: minDurationMs,
-    discardShort: discardShort,
-    maxChunkMs: 3600000,
-    deviceId: 'test-device',
-    convertOpusToM4a: false,
-    omiSyncEnabled: false,
-  );
-}
-
 void main() {
   late Directory tempDir;
   late MockPathProviderPlatform mockPathProvider;
@@ -181,54 +153,5 @@ void main() {
     expect(startEncoderCalled, isTrue, reason: 'AAC startEncoder should have been called');
     expect(finishEncoderCalled, isFalse, reason: 'finishEncoder is not reached when no frames are encoded');
     expect(savedPath, isNull, reason: 'Empty segment is discarded, returning null');
-  });
-
-  group('short recording threshold (discardShort / keep)', () {
-    // Each dummy frame = 20 ms. 10 frames = 200 ms, 300 frames = 6000 ms.
-
-    test('discardShort=true fires guard when duration is below threshold', () async {
-      final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 5000, discardShort: true),
-        outputDir: tempDir.path,
-      );
-      await processor.processSegmentFile(_makeBinFile(tempDir, 10, name: 'a.bin'), DateTime.now());
-      await processor.flushRemaining();
-      expect(processor.discardGuardFiredOnLastFlush, isTrue);
-      processor.destroy();
-    });
-
-    test('discardShort=false does not fire guard when duration is below threshold', () async {
-      final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 5000, discardShort: false),
-        outputDir: tempDir.path,
-      );
-      await processor.processSegmentFile(_makeBinFile(tempDir, 10, name: 'b.bin'), DateTime.now());
-      await processor.flushRemaining();
-      expect(processor.discardGuardFiredOnLastFlush, isFalse);
-      processor.destroy();
-    });
-
-    test('discardShort=true does not fire guard when duration meets threshold', () async {
-      // 300 frames = 6000 ms >= 5000 ms threshold
-      final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 5000, discardShort: true),
-        outputDir: tempDir.path,
-      );
-      await processor.processSegmentFile(_makeBinFile(tempDir, 300, name: 'c.bin'), DateTime.now());
-      await processor.flushRemaining();
-      expect(processor.discardGuardFiredOnLastFlush, isFalse);
-      processor.destroy();
-    });
-
-    test('discardShort=true does not fire guard when threshold is 0 (Off)', () async {
-      final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: true),
-        outputDir: tempDir.path,
-      );
-      await processor.processSegmentFile(_makeBinFile(tempDir, 10, name: 'd.bin'), DateTime.now());
-      await processor.flushRemaining();
-      expect(processor.discardGuardFiredOnLastFlush, isFalse);
-      processor.destroy();
-    });
   });
 }

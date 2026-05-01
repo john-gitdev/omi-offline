@@ -234,6 +234,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<List<Wal>> _getMissingWalsLocked(DeviceConnection connection, String deviceId) async {
     final wals = await _buildWalsFromFilesLocked(connection, deviceId, ignoreThreshold: true);
     Logger.debug('SDCardWalSync: getMissingWals returned ${wals.length} WALs');
+
+    // Update stats at the beginning of the sync
+    await _updateStorageStatsLocked(connection);
+
     return wals;
   }
 
@@ -379,8 +383,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future _deleteWalLocked(DeviceConnection connection, Wal wal, {int? overrideFileNum}) async {
     final targetIdx = overrideFileNum ?? wal.fileNum;
     Logger.debug('SDCardWalSync: deleting synced WAL from SD card: index=$targetIdx ts=${wal.timerStart}');
-    final connected = await connection.isConnected();
-    if (!connected) throw Exception('Device disconnected before deletion of index=$targetIdx ts=${wal.timerStart}');
     final success = await connection.deleteFile(
       StorageFile(index: targetIdx, timestamp: wal.timerStart, size: 0),
     );
@@ -758,10 +760,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<SyncLocalFilesResponse?> _syncAllLocked(
     DeviceConnection connection,
     String deviceId, {
-    List<Wal>? prefetchedWals,
     IWalSyncProgressListener? progress,
   }) async {
-    _wals = prefetchedWals ?? await _getMissingWalsLocked(connection, deviceId);
+    // Refresh the file list from the device so files completed since setDevice()
+    // are included. Files with walOffset == storageTotalBytes (previous transfer
+    // succeeded but deletion failed) appear as miss and pass straight through to
+    // Phase 2 deletion without any re-download.
+    _wals = await _getMissingWalsLocked(connection, deviceId);
     listener.onWalUpdated();
 
     if (_isCancelled) return null;
@@ -788,6 +793,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     for (int i = 0; i < wals.length; i++) {
       final wal = wals[i];
+      _totalBytesDownloaded = 0;
       if (_isCancelled) break;
 
       // Abort if device disconnected between files
@@ -1058,11 +1064,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
       final rotated = await connection.rotateFile();
       if (!rotated) throw Exception('Rotation failed');
-      final wals = await _buildWalsFromFilesLocked(connection, dev.id, ignoreThreshold: true);
+      _wals = await _buildWalsFromFilesLocked(connection, dev.id, ignoreThreshold: true);
 
       if (_isCancelled) return null;
 
-      return await _syncAllLocked(connection, dev.id, prefetchedWals: wals, progress: progress);
+      return await _syncAllLocked(connection, dev.id, progress: progress);
     } finally {
       _isSyncing = false;
       _completeCancelIfPending();

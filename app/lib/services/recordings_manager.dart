@@ -23,9 +23,6 @@ class Conversation {
   final String? uploadKey;
   final int? sessionId;
   final int? startUptime;
-  // True when the audio was uploaded to an integration and the local file was
-  // deleted. Only the .meta sidecar remains; the conversation cannot be played.
-  final bool passthrough;
 
   const Conversation({
     required this.file,
@@ -34,7 +31,6 @@ class Conversation {
     this.uploadKey,
     this.sessionId,
     this.startUptime,
-    this.passthrough = false,
   });
 
   DateTime get endTime => startTime.add(duration);
@@ -89,7 +85,6 @@ class Conversation {
           }
 
           String? uploadKey;
-          bool passthrough = false;
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
@@ -99,10 +94,6 @@ class Conversation {
                 );
               } catch (_) {
                 uploadKey = null;
-              }
-              final flagOffset = 417 + keyLen;
-              if (metaBytes.length > flagOffset) {
-                passthrough = (metaBytes[flagOffset] & 0x01) != 0;
               }
             }
           }
@@ -116,7 +107,6 @@ class Conversation {
             uploadKey: effectiveKey,
             sessionId: sessionId,
             startUptime: startUptime,
-            passthrough: passthrough,
           );
         }
       } catch (_) {
@@ -140,66 +130,6 @@ class Conversation {
       duration: Duration(milliseconds: durationMs),
       uploadKey: fallbackKey,
     );
-  }
-
-  /// Builds a passthrough Conversation from a standalone .meta file (no audio file).
-  /// Returns null if the meta file does not have the passthrough flag set or cannot be parsed.
-  static Future<Conversation?> fromMetaOnly(File metaFile) async {
-    try {
-      final metaBytes = await metaFile.readAsBytes();
-      if (metaBytes.length < 8) return null;
-
-      final bd = ByteData.sublistView(metaBytes);
-      final durationMs = bd.getUint32(4, Endian.little);
-      if (durationMs == 0) return null;
-
-      int? sessionId;
-      int? startUptime;
-      if (metaBytes.length >= 416) {
-        sessionId = bd.getUint32(408, Endian.little);
-        startUptime = bd.getUint32(412, Endian.little);
-      }
-
-      String? uploadKey;
-      bool passthrough = false;
-      if (metaBytes.length >= 417) {
-        final keyLen = metaBytes[416];
-        if (417 + keyLen <= metaBytes.length) {
-          try {
-            uploadKey = String.fromCharCodes(metaBytes.sublist(417, 417 + keyLen));
-          } catch (_) {}
-          final flagOffset = 417 + keyLen;
-          if (metaBytes.length > flagOffset) {
-            passthrough = (metaBytes[flagOffset] & 0x01) != 0;
-          }
-        }
-      }
-
-      if (!passthrough) return null;
-
-      // Reconstruct the virtual audio path from the meta filename.
-      final metaName = metaFile.path.split('/').last;
-      final baseName = metaName.contains('.') ? metaName.substring(0, metaName.lastIndexOf('.')) : metaName;
-      final virtualAudioFile = File('${metaFile.parent.path}/$baseName.m4a');
-
-      final millisStr = baseName.contains('_') ? baseName.split('_').last : null;
-      final millis = millisStr != null ? int.tryParse(millisStr) : null;
-      final startTime = millis != null && millis > 0
-          ? DateTime.fromMillisecondsSinceEpoch(millis)
-          : await metaFile.lastModified();
-
-      return Conversation(
-        file: virtualAudioFile,
-        startTime: startTime,
-        duration: Duration(milliseconds: durationMs),
-        uploadKey: uploadKey,
-        sessionId: sessionId,
-        startUptime: startUptime,
-        passthrough: true,
-      );
-    } catch (_) {
-      return null;
-    }
   }
 
   /// Parses start time from the filename (`recording_<millis>.m4a` or `.wav`) and
@@ -238,7 +168,6 @@ class Conversation {
           }
 
           String? uploadKey;
-          bool passthrough = false;
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
@@ -248,10 +177,6 @@ class Conversation {
                 );
               } catch (_) {
                 uploadKey = null;
-              }
-              final flagOffset = 417 + keyLen;
-              if (metaBytes.length > flagOffset) {
-                passthrough = (metaBytes[flagOffset] & 0x01) != 0;
               }
             }
           }
@@ -265,7 +190,6 @@ class Conversation {
             uploadKey: effectiveKey,
             sessionId: sessionId,
             startUptime: startUptime,
-            passthrough: passthrough,
           );
         }
       } catch (_) {
@@ -306,7 +230,6 @@ class Conversation {
   }
 
   String get sizeLabel {
-    if (passthrough) return '';
     final bytes = fileSizeBytes;
     if (bytes >= 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
@@ -426,7 +349,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
   try {
     OrtEnv.instance.init();
   } catch (e) {
-    // Non-fatal: AAD mode, all audio treated as speech.
+    // Non-fatal: amplitude fallback will be used.
   }
 
   OrtSession? session;
@@ -505,7 +428,11 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
 
     params.sendPort.send({'type': 'move'});
 
-    final finalSafe = processor.consumeSafeToDeletePaths();
+    // Final pass: release any files still held only in the rolling pre-buffer.
+    // We can safely release all files because the next run will pick up from the draft audio file.
+    final finalSafe = processor.consumeSafeToDeletePaths(
+      forceAll: !cancelled,
+    );
     if (finalSafe.isNotEmpty) {
       params.sendPort.send({
         'type': 'delete_segments',
@@ -695,23 +622,7 @@ class RecordingsManager {
         final conversations = await Future.wait(
           files.map((f) => Conversation.fromFileAsync(f)),
         );
-
-        // Also pick up passthrough conversations: .meta files with no matching audio file.
-        final audioBasenames = files.map((f) {
-          final name = f.path.split('/').last;
-          return name.contains('.') ? name.substring(0, name.lastIndexOf('.')) : name;
-        }).toSet();
-        final metaFiles = folderEntities.whereType<File>().where((f) => f.path.endsWith('.meta')).toList();
-        final passthroughConvs = <Conversation>[];
-        for (final meta in metaFiles) {
-          final metaName = meta.path.split('/').last;
-          final baseName = metaName.contains('.') ? metaName.substring(0, metaName.lastIndexOf('.')) : metaName;
-          if (audioBasenames.contains(baseName)) continue;
-          final c = await Conversation.fromMetaOnly(meta);
-          if (c != null) passthroughConvs.add(c);
-        }
-
-        processedByDate[dateString] = [...conversations, ...passthroughConvs];
+        processedByDate[dateString] = conversations;
       }
     }
 
@@ -910,20 +821,17 @@ class RecordingsManager {
       }
 
       // Pre-load the ONNX model on the main isolate (rootBundle requires main isolate).
-      // Skipped when VAD is disabled — isolate will run in AAD mode.
       Uint8List? modelBytes;
-      if (SharedPreferencesUtil().vadEnabled) {
-        try {
-          final data = await rootBundle.load('assets/models/silero_vad.onnx');
-          modelBytes = data.buffer.asUint8List(
-            data.offsetInBytes,
-            data.lengthInBytes,
-          );
-        } catch (e) {
-          Logger.error(
-            'RecordingsManager: Failed to pre-load VAD model ($e) — AAD mode active.',
-          );
-        }
+      try {
+        final data = await rootBundle.load('assets/models/silero_vad.onnx');
+        modelBytes = data.buffer.asUint8List(
+          data.offsetInBytes,
+          data.lengthInBytes,
+        );
+      } catch (e) {
+        Logger.error(
+          'RecordingsManager: Failed to pre-load VAD model ($e) — amplitude fallback active.',
+        );
       }
 
       final Set<String> deletedSegmentFolders = {};
@@ -1343,7 +1251,7 @@ class RecordingsManager {
     // Build sorted list of (file, startMs, endMs) from m4a/ogg + .meta pairs.
     final recordings = <({File file, int startMs, int endMs, int durationMs, int? sessionId, int? startUptime})>[];
     for (final entity in await liveDir.list().toList()) {
-      if (entity is! File || (!entity.path.endsWith('.m4a') && !entity.path.endsWith('.ogg') && !entity.path.endsWith('.wav'))) continue;
+      if (entity is! File || (!entity.path.endsWith('.m4a') && !entity.path.endsWith('.ogg'))) continue;
       
       final conv = Conversation.fromFile(entity);
       if (conv.duration.inMilliseconds <= 0) continue;
@@ -1601,18 +1509,6 @@ class RecordingsManager {
         await binFile.delete();
       }
     } catch (_) {}
-    // Delete any marker EDL files in the same folder that reference this recording.
-    final filename = file.path.split('/').last;
-    try {
-      final dirEntities = await file.parent.list().toList();
-      for (final entity in dirEntities) {
-        if (entity is! File || !entity.path.endsWith('.edl')) continue;
-        try {
-          final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
-          if (json['segmentFilename'] == filename) await entity.delete();
-        } catch (_) {}
-      }
-    } catch (_) {}
     Logger.debug('RecordingsManager: Deleted conversation ${file.path}');
   }
 
@@ -1667,7 +1563,7 @@ class RecordingsManager {
     final List<Conversation> sessionConversations = [];
     final recordingsDir = Directory('${directory.path}/recordings');
     if (await recordingsDir.exists()) {
-      final dateFolders = (await recordingsDir.list().toList()).whereType<Directory>().toList();
+      final dateFolders = await recordingsDir.list().whereType<Directory>().toList();
       for (final folder in dateFolders) {
         final audioFiles = await folder
             .list()

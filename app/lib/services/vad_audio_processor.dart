@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -17,23 +18,27 @@ import "package:meta/meta.dart";
 /// before spawning the processing isolate. All fields are primitives — safe to send
 /// across isolate boundaries.
 class ProcessingSettings {
-  final bool vadEnabled;
   final double speechThreshold;
+  final int hangoverFrameCount;
   final int silenceDurationToSplitMs;
-  final int minDurationMs;
-  final bool discardShort;
+  final int minSpeechMs;
+  final int preSpeechBufferMs;
   final int maxChunkMs;
+  final int markerLookbackMs;
+  final int maxRollingFrames;
   final String deviceId; // used to generate upload key in .meta sidecar
   final bool convertOpusToM4a;
   final bool omiSyncEnabled;
 
   const ProcessingSettings({
-    required this.vadEnabled,
     required this.speechThreshold,
+    required this.hangoverFrameCount,
     required this.silenceDurationToSplitMs,
-    required this.minDurationMs,
-    required this.discardShort,
+    required this.minSpeechMs,
+    required this.preSpeechBufferMs,
     required this.maxChunkMs,
+    required this.markerLookbackMs,
+    required this.maxRollingFrames,
     required this.deviceId,
     required this.convertOpusToM4a,
     required this.omiSyncEnabled,
@@ -41,13 +46,16 @@ class ProcessingSettings {
 
   factory ProcessingSettings.fromPrefs() {
     final p = SharedPreferencesUtil();
+    const frameDurationMs = VadAudioProcessor.frameDurationMs;
     return ProcessingSettings(
-      vadEnabled: p.vadEnabled,
       speechThreshold: p.vadSpeechThreshold,
+      hangoverFrameCount: (p.vadHangoverSeconds * 1000).round() ~/ frameDurationMs,
       silenceDurationToSplitMs: p.vadSplitSeconds * 1000,
-      minDurationMs: p.filterMinDurationSeconds * 1000,
-      discardShort: p.discardShortRecordings,
+      minSpeechMs: p.vadMinSpeechSeconds * 1000,
+      preSpeechBufferMs: (p.vadPreSpeechSeconds * 1000).round(),
       maxChunkMs: p.vadMaxConversationMinutes * 60 * 1000,
+      markerLookbackMs: p.markerLookbackSeconds * 1000,
+      maxRollingFrames: p.markerLookbackSeconds * 1000 ~/ frameDurationMs,
       deviceId: p.btDevice.id,
       convertOpusToM4a: p.convertOpusToM4a,
       omiSyncEnabled: p.omiSyncEnabled,
@@ -77,26 +85,28 @@ class VadAudioProcessor {
   int? _currentStartUptime;
 
   // VAD state counters
+  int _hangoverFrames = 0; // frames remaining in hangover
   int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
-
-  /// True after a [flushRemaining] call where the short-recording discard guard
-  /// fired (refs were non-empty but below the duration threshold). False if the
-  /// guard did not fire (either no refs, or proceeded to save). Test-only.
-  @visibleForTesting
-  bool discardGuardFiredOnLastFlush = false;
 
   // Marker-forced recording state
   bool _forcedByMarker = false;
 
+  // Rolling pre-buffer for marker lookback — receives every audio frame regardless of VAD state,
+  // never reset by splits. Sized to markerLookbackSeconds.
+  // Can contain Duration objects for bridged gaps.
+  final ListQueue<Object> _rbRefs = ListQueue();
+  final ListQueue<DateTime> _rbTimes = ListQueue();
+
   // Tracks segment files that have been fully processed. Used by consumeSafeToDeletePaths()
   // to determine which files are no longer referenced by any internal buffer.
   final Set<String> _processedFiles = {};
+  final int _maxRollingFrames;
 
   // Settings — cached at construction time for the lifetime of one processAll pass
   final double _speechThreshold;
+  final int _hangoverFrameCount;
   final int _silenceDurationToSplitMs;
-  final int _minDurationMs;
-  final bool _discardShort;
+  final int _minSpeechMs;
   final int _maxChunkMs;
   final String _deviceId;
   final bool _convertOpusToM4a;
@@ -110,23 +120,21 @@ class VadAudioProcessor {
   /// Creates a processor in the main isolate, reading settings from SharedPreferences.
   static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
     final settings = ProcessingSettings.fromPrefs();
+    try {
+      OrtEnv.instance.init();
+    } catch (e) {
+      Logger.error("VadAudioProcessor: Failed to init OrtEnv: $e");
+    }
     OrtSession? session;
-    if (settings.vadEnabled) {
-      try {
-        OrtEnv.instance.init();
-      } catch (e) {
-        Logger.error("VadAudioProcessor: Failed to init OrtEnv: $e");
-      }
-      try {
-        final data = await rootBundle.load('assets/models/silero_vad.onnx');
-        final sessionOptions = OrtSessionOptions();
-        session = OrtSession.fromBuffer(data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes), sessionOptions);
-      } catch (e) {
-        Logger.error('VadAudioProcessor: Failed to load Silero VAD model, AAD mode active: $e');
-      }
+    try {
+      final data = await rootBundle.load('assets/models/silero_vad.onnx');
+      final sessionOptions = OrtSessionOptions();
+      session = OrtSession.fromBuffer(data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes), sessionOptions);
+    } catch (e) {
+      Logger.error('VadAudioProcessor: Failed to load Silero VAD model, amplitude fallback active: $e');
     }
     Logger.debug(
-        'VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'AAD mode${settings.vadEnabled ? ' (model unavailable)' : ''}'}');
+        'VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'amplitude fallback active (threshold=${settings.speechThreshold})'}');
     return VadAudioProcessor._(outputDir: outputDir, decoder: decoder, session: session, settings: settings);
   }
 
@@ -149,10 +157,11 @@ class VadAudioProcessor {
                 : null),
         _outputDir = outputDir,
         _speechThreshold = settings.speechThreshold,
+        _hangoverFrameCount = settings.hangoverFrameCount,
         _silenceDurationToSplitMs = settings.silenceDurationToSplitMs,
-        _minDurationMs = settings.minDurationMs,
-        _discardShort = settings.discardShort,
+        _minSpeechMs = settings.minSpeechMs,
         _maxChunkMs = settings.maxChunkMs,
+        _maxRollingFrames = settings.maxRollingFrames,
         _deviceId = settings.deviceId,
         _convertOpusToM4a = settings.convertOpusToM4a,
         _omiSyncEnabled = settings.omiSyncEnabled;
@@ -166,8 +175,8 @@ class VadAudioProcessor {
 
   bool _runVad(List<double> samples512) {
     if (_session == null) {
-      // Hardware AAD mode — all audio treated as speech; splitting driven by firmware timestamps only.
-      return true;
+      // Amplitude fallback when model didn't load or was disabled after a failure.
+      return samples512.any((s) => s.abs() > _speechThreshold);
     }
     final input = Float32List.fromList(samples512);
     final sr = Int64List.fromList([sampleRate]);
@@ -189,9 +198,10 @@ class VadAudioProcessor {
       _c = _flattenF32(outputs[2]!.value);
       return prob > _speechThreshold;
     } catch (e) {
-      Logger.error('VadAudioProcessor: Silero inference failed ($e) — disabling model, AAD mode active');
+      Logger.error(
+          'VadAudioProcessor: Silero inference failed ($e) — disabling model, switching to amplitude fallback');
       _session = null;
-      return true;
+      return samples512.any((s) => s.abs() > _speechThreshold);
     } finally {
       for (final t in inputs.values) {
         t.release();
@@ -251,12 +261,8 @@ class VadAudioProcessor {
         } else if (gapMs > 0 && gapMs <= _silenceDurationToSplitMs) {
           Logger.debug(
             'VadAudioProcessor: Small gap before ${segmentFile.path.split('/').last} — '
-            'gapMs=$gapMs (within threshold, inserting silence).',
+            'gapMs=$gapMs (within threshold, continuing stream).',
           );
-          if (_currentRefs.isNotEmpty) {
-            _currentRefs.add(Duration(milliseconds: gapMs));
-            _currentChunkDurationMs += gapMs;
-          }
         }
         // gapMs <= 0: sequential firmware files with no real gap — stitch seamlessly.
       }
@@ -300,17 +306,16 @@ class VadAudioProcessor {
             final markerUtcSeconds = byteData.getUint32(offset + 4, Endian.little);
             const kMinValidMarkerEpoch = 946684800;
             if (markerUtcSeconds > kMinValidMarkerEpoch) {
-              final markerFrameTime = DateTime.fromMillisecondsSinceEpoch(markerUtcSeconds * 1000, isUtc: true);
+              final markerFrameTime = lastFrameWallTime;
               if (isCapturing) {
                 // Marker during active recording — continue, don't split.
                 Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — continuing active recording.');
               } else {
                 // Marker while not recording — start immediately at this point.
-                // Reset lastFrameWallTime to the tap so the next VAD-resume gap is measured
-                // from the button press, not from whenever the previous conversation ended.
-                lastFrameWallTime = markerFrameTime;
+                // No lookback: firmware VAD means no silence frames exist to look back through.
                 _recordingStartTime = markerFrameTime;
                 _speechFrameCount = 0;
+                _hangoverFrames = 0;
                 _currentChunkDurationMs = 0;
                 _currentRefs = [];
                 _forcedByMarker = true;
@@ -336,23 +341,20 @@ class VadAudioProcessor {
               if (gapMs >= _silenceDurationToSplitMs) {
                 // Gap exceeds threshold — flush current recording, start new conversation.
                 if (_currentRefs.isNotEmpty &&
-                    (!_discardShort || _currentChunkDurationMs >= _minDurationMs || _forcedByMarker)) {
+                    (_speechFrameCount * frameDurationMs >= _minSpeechMs || _forcedByMarker)) {
                   final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
                   if (filePath != null) savedFiles.add(filePath);
                 }
                 _currentRefs = [];
                 _speechFrameCount = 0;
+                _hangoverFrames = 0;
                 _currentChunkDurationMs = 0;
                 _forcedByMarker = false;
                 _recordingStartTime = newResumeTime;
                 Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
               } else {
-                // Gap within threshold — stitch, padding with silence so playback reflects real timing.
-                if (_currentRefs.isNotEmpty && gapMs > 0) {
-                  _currentRefs.add(Duration(milliseconds: gapMs));
-                  _currentChunkDurationMs += gapMs;
-                }
-                Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms < threshold, stitching with silence pad.');
+                // Gap within threshold — stitch (continue current recording).
+                Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms < threshold, stitching.');
               }
 
               // Update anchor for subsequent frame timestamp calculations.
@@ -392,8 +394,17 @@ class VadAudioProcessor {
           }
         }
 
-        final frameRef = FrameRef(segmentFile: segmentFile, byteOffset: offset, frameLength: frameLength);
+        bool effectiveSpeech = false;
         if (isSpeech) {
+          _hangoverFrames = _hangoverFrameCount;
+          effectiveSpeech = true;
+        } else if (_hangoverFrames > 0) {
+          _hangoverFrames--;
+          effectiveSpeech = true;
+        }
+
+        final frameRef = FrameRef(segmentFile: segmentFile, byteOffset: offset, frameLength: frameLength);
+        if (effectiveSpeech) {
           _speechFrameCount++;
           segmentSpeechFrames++;
         }
@@ -411,6 +422,12 @@ class VadAudioProcessor {
             ? vadResumeTime!.add(Duration(milliseconds: (frameIndex - vadResumeFrameIndex!) * frameDurationMs))
             : segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
         lastFrameWallTime = frameTime;
+        _rbRefs.addLast(frameRef);
+        _rbTimes.addLast(frameTime);
+        if (_rbRefs.length > _maxRollingFrames) {
+          _rbRefs.removeFirst();
+          _rbTimes.removeFirst();
+        }
 
         // Silence-based splits are handled by 0xFFFFFFFD timestamp packets.
         // Only enforce the max conversation duration cap here.
@@ -422,6 +439,7 @@ class VadAudioProcessor {
           _forcedByMarker = false;
           _currentRefs = [];
           _speechFrameCount = 0;
+          _hangoverFrames = 0;
           _currentChunkDurationMs = 0;
           _recordingStartTime = cutTime;
         }
@@ -443,18 +461,16 @@ class VadAudioProcessor {
   }
 
   Future<String?> flushRemaining({bool isDraft = false}) async {
-    if (_currentRefs.isEmpty || (_discardShort && _currentChunkDurationMs < _minDurationMs && !_forcedByMarker)) {
-      discardGuardFiredOnLastFlush = _currentRefs.isNotEmpty;
+    if (_currentRefs.isEmpty || (_speechFrameCount * frameDurationMs < _minSpeechMs && !_forcedByMarker)) {
       if (_currentRefs.isNotEmpty) {
         Logger.debug(
           'VadAudioProcessor: flushRemaining discarding ${_currentRefs.length} frames '
-          '(${_currentChunkDurationMs}ms < ${_minDurationMs}ms minimum)',
+          '(${_speechFrameCount * frameDurationMs}ms speech < ${_minSpeechMs}ms minimum)',
         );
       }
       _resetState();
       return null;
     }
-    discardGuardFiredOnLastFlush = false;
     final path = await _saveRecording(_currentRefs, _recordingStartTime!, isDraft: isDraft);
     _resetState();
     return path;
@@ -470,11 +486,23 @@ class VadAudioProcessor {
   }
 
   /// Returns the set of segment file paths that have been fully processed and are
-  /// no longer referenced by [_currentRefs].
+  /// no longer referenced by [_currentRefs] or the rolling pre-buffer [_rbRefs].
   /// Each path is returned at most once. The caller may safely delete these files.
-  Set<String> consumeSafeToDeletePaths() {
+  ///
+  /// Pass [forceAll] = true after a complete flush (non-background mode) to also
+  /// release files still held in the rolling buffer — safe because no further
+  /// marker lookbacks will occur in that run.
+  Set<String> consumeSafeToDeletePaths({bool forceAll = false}) {
+    if (forceAll) {
+      final safe = Set<String>.from(_processedFiles);
+      _processedFiles.clear();
+      return safe;
+    }
     final referenced = <String>{};
     for (final item in _currentRefs) {
+      if (item is FrameRef) referenced.add(item.segmentFile.path);
+    }
+    for (final item in _rbRefs) {
       if (item is FrameRef) referenced.add(item.segmentFile.path);
     }
     final safe = _processedFiles.difference(referenced);
@@ -485,6 +513,7 @@ class VadAudioProcessor {
   void _resetState() {
     _currentRefs = [];
     _speechFrameCount = 0;
+    _hangoverFrames = 0;
     _currentChunkDurationMs = 0;
     _recordingStartTime = null;
     _forcedByMarker = false;
@@ -561,8 +590,7 @@ class VadAudioProcessor {
       await dateFolder.create(recursive: true);
     }
 
-    final frameRefCount = refs.whereType<FrameRef>().length;
-    if (frameRefCount > 0 && frameRefCount < 5) {
+    if (refs.length < 5) {
       return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
     }
 
@@ -968,7 +996,7 @@ class VadAudioProcessor {
       page.add(p);
     }
 
-    final pageBytes = page.toBytes();
+    final pageBytes = page.takeBytes();
     final crc = _computeOggCrc(pageBytes);
     ByteData.view(pageBytes.buffer).setUint32(22, crc, Endian.little);
     return pageBytes;

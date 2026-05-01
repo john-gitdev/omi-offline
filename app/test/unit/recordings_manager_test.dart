@@ -111,13 +111,12 @@ void main() {
       final m4aFile = File(p.join(recordingsDir.path, 'recording_1741687200000.m4a'))..writeAsBytesSync([0]);
       final metaFile = File(p.join(recordingsDir.path, 'recording_1741687200000.meta'));
 
-      // .meta layout: bytes 0-3 totalSamples, 4-7 durationMs, 8-407 waveform,
-      // 408-411 sessionId, 412-415 startUptime, 416 keyLen, 417+ key bytes.
-      final metaData = ByteData(417 + 5);
+      // .meta structure: 4 bytes version + 4 bytes durationMs (LE) + ... + byte 408 keyLen + N bytes key
+      final metaData = ByteData(409 + 5);
       metaData.setUint32(4, 5000, Endian.little); // 5s duration
-      metaData.setUint8(416, 5); // key length
+      metaData.setUint8(408, 5); // key length
       final metaBytes = metaData.buffer.asUint8List();
-      metaBytes.setRange(417, 422, utf8.encode('mykey'));
+      metaBytes.setRange(409, 414, utf8.encode('mykey'));
       metaFile.writeAsBytesSync(metaBytes);
 
       final conversation = await Conversation.fromFile(m4aFile);

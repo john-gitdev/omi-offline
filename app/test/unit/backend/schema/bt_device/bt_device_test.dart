@@ -80,7 +80,7 @@ class MockDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<bool> performDeleteFile(StorageFile file, {int? timestamp}) async {
+  Future<bool> performDeleteFile(StorageFile file) async {
     return false;
   }
 
@@ -176,7 +176,7 @@ class MockDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp}) async {
+  Future<bool> performWriteToStorage(int numFile, int command, int offset) async {
     return false;
   }
 
