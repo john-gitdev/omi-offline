@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/pages/recordings/recording_player_page.dart';
 
@@ -152,15 +151,11 @@ class ConversationTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final sortedMarkers = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
-    final isPassthrough = conversation.passthrough;
-    final subtitle = isPassthrough
-        ? conversation.durationLabel
-        : '${conversation.durationLabel}  ·  ${conversation.sizeLabel}';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         InkWell(
-          onTap: isPassthrough ? null : () => onConversationTap(conversation),
+          onTap: () => onConversationTap(conversation),
           onLongPress: () => onDeleteConversation(conversation),
           borderRadius: BorderRadius.circular(8),
           child: Padding(
@@ -173,38 +168,28 @@ class ConversationTile extends StatelessWidget {
                     children: [
                       Text(
                         conversation.timeRangeLabel,
-                        style: TextStyle(
-                          color: isPassthrough ? Colors.grey.shade400 : Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w500,
-                        ),
+                        style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w500),
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        subtitle,
+                        '${conversation.durationLabel}  ·  ${conversation.sizeLabel}',
                         style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
                       ),
                     ],
                   ),
                 ),
-                if (!isPassthrough && markers.isNotEmpty) ...[
+                if (markers.isNotEmpty) ...[
                   const FaIcon(FontAwesomeIcons.solidBookmark, color: Colors.amber, size: 13),
                   const SizedBox(width: 8),
                 ],
-                if (isPassthrough) ...[
-                  Icon(Icons.send_rounded, size: 16, color: Colors.deepPurpleAccent.withValues(alpha: 0.8)),
-                  const SizedBox(width: 6),
-                ] else ...[
-                  uploadIcon,
-                  FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
-                ],
+                uploadIcon,
+                FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
               ],
             ),
           ),
         ),
-        if (!isPassthrough)
-          ...sortedMarkers.map((mc) =>
-              MarkerSubEntry(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
+        ...sortedMarkers.map((mc) =>
+            MarkerSubEntry(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
       ],
     );
   }
@@ -213,6 +198,7 @@ class ConversationTile extends StatelessWidget {
 class BatchCard extends StatelessWidget {
   final Batch batch;
   final Map<String, List<MarkerConversation>> markerMap;
+  final int minFilterSeconds;
   final bool adjustmentMode;
   final String heypocketApiKey;
   final bool Function(String) isUploaded;
@@ -230,6 +216,7 @@ class BatchCard extends StatelessWidget {
     super.key,
     required this.batch,
     required this.markerMap,
+    required this.minFilterSeconds,
     required this.adjustmentMode,
     required this.heypocketApiKey,
     required this.isUploaded,
@@ -247,7 +234,6 @@ class BatchCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
-    final minFilterSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
     final filtered = minFilterSeconds > 0
         ? conversations.where((c) => c.duration.inSeconds >= minFilterSeconds).toList()
         : conversations;

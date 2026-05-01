@@ -474,36 +474,25 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        _SeekBtn(icon: FontAwesomeIcons.rotateLeft, seconds: 30, isForward: false, onTap: () => _seekRelative(-30)),
+                        _SeekBtn(icon: FontAwesomeIcons.rotateLeft, seconds: 30, onTap: () => _seekRelative(-30)),
                         const SizedBox(width: 40),
-                        Semantics(
-                          button: true,
-                          label: _isPlaying ? 'Pause' : 'Play',
-                          child: Tooltip(
-                            message: _isPlaying ? 'Pause' : 'Play',
-                            child: Material(
-                              color: Colors.deepPurpleAccent,
-                              shape: const CircleBorder(),
-                              clipBehavior: Clip.antiAlias,
-                              child: InkWell(
-                                onTap: _togglePlay,
-                                child: SizedBox(
-                                  width: 72,
-                                  height: 72,
-                                  child: Center(
-                                    child: FaIcon(
-                                      _isPlaying ? FontAwesomeIcons.pause : FontAwesomeIcons.play,
-                                      color: Colors.white,
-                                      size: 26,
-                                    ),
-                                  ),
-                                ),
+                        GestureDetector(
+                          onTap: _togglePlay,
+                          child: Container(
+                            width: 72,
+                            height: 72,
+                            decoration: const BoxDecoration(color: Colors.deepPurpleAccent, shape: BoxShape.circle),
+                            child: Center(
+                              child: FaIcon(
+                                _isPlaying ? FontAwesomeIcons.pause : FontAwesomeIcons.play,
+                                color: Colors.white,
+                                size: 26,
                               ),
                             ),
                           ),
                         ),
                         const SizedBox(width: 40),
-                        _SeekBtn(icon: FontAwesomeIcons.rotateRight, seconds: 30, isForward: true, onTap: () => _seekRelative(30)),
+                        _SeekBtn(icon: FontAwesomeIcons.rotateRight, seconds: 30, onTap: () => _seekRelative(30)),
                       ],
                     ),
                     const SizedBox(height: 24),
@@ -661,38 +650,21 @@ class _MarkerWaveformPainter extends CustomPainter {
 class _SeekBtn extends StatelessWidget {
   final IconData icon;
   final int seconds;
-  final bool isForward;
   final VoidCallback onTap;
 
-  const _SeekBtn({required this.icon, required this.seconds, required this.isForward, required this.onTap});
+  const _SeekBtn({required this.icon, required this.seconds, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final label = 'Seek ${isForward ? 'forward' : 'backward'} ${seconds.abs()} seconds';
-    return Semantics(
-      button: true,
-      label: label,
-      child: Tooltip(
-        message: label,
-        child: Material(
-          color: Colors.transparent,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            onTap: onTap,
-            child: Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  FaIcon(icon, color: Colors.grey.shade300, size: 32),
-                  const SizedBox(height: 5),
-                  Text('${seconds}s', style: TextStyle(color: Colors.grey.shade400, fontSize: 11, fontWeight: FontWeight.w500)),
-                ],
-              ),
-            ),
-          ),
-        ),
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FaIcon(icon, color: Colors.grey.shade300, size: 32),
+          const SizedBox(height: 5),
+          Text('${seconds}s', style: TextStyle(color: Colors.grey.shade400, fontSize: 11, fontWeight: FontWeight.w500)),
+        ],
       ),
     );
   }

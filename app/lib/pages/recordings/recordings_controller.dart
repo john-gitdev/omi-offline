@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -11,19 +10,12 @@ import 'package:omi/services/services.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
-import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:omi/utils/audio/foreground.dart';
 
 class RecordingsController extends ChangeNotifier implements IWalSyncProgressListener {
   final RecordingsManager _manager = RecordingsManager();
   final _prefs = SharedPreferencesUtil();
-
-  late final List<PassthroughIntegration> _integrations = [
-    HeyPocketPassthroughIntegration(_prefs),
-    OmiPassthroughIntegration(_prefs),
-    // Add new integrations here.
-  ];
 
   List<Batch> _batches = [];
   List<Batch> get batches => _batches;
@@ -709,22 +701,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await _loadBatches();
   }
 
-  int countShortRecordings(int minSeconds) => _batches
-      .expand((b) => b.finalizedRecordings)
-      .where((c) => c.duration.inSeconds < minSeconds)
-      .length;
-
-  Future<void> deleteShortRecordings(int minSeconds) async {
-    final toDelete = _batches
-        .expand((b) => b.finalizedRecordings)
-        .where((c) => c.duration.inSeconds < minSeconds)
-        .toList();
-    for (final c in toDelete) {
-      await RecordingsManager.deleteConversation(c);
-    }
-    await reloadBatchesSilently();
-  }
-
   Future<void> deleteMarkerConversation(MarkerConversation mc) async {
     await RecordingsManager.deleteMarkerConversation(mc);
     await _loadBatches();
@@ -838,14 +814,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final apiKey = _prefs.heypocketApiKey;
     final keySetAt = _prefs.heypocketKeySetAt;
     final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
-    final minDuration = _prefs.filterMinDurationSeconds;
 
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
         if (_autoUploadActive >= 3) continue;
-        if (conversation.passthrough) continue;
         if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
-        if (conversation.duration.inSeconds < minDuration) continue;
         final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
         if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
@@ -855,11 +828,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _uploadingFiles.add(uploadKey);
         _autoUploadActive++;
 
-        final isPassthrough = _prefs.passthroughMode;
         unawaited(
           HeyPocketService.uploadRecording(apiKey, conversation).then((_) async {
             await _prefs.markUploadedToHeypocket(uploadKey);
-            if (isPassthrough) await _convertToPassthrough(conversation);
           }).catchError((e) {
             if (e is HeyPocketException && e.statusCode == 401) {
               _prefs.heypocketEnabled = false;
@@ -882,90 +853,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (!_isDisposed) notifyListeners();
   }
 
-  Future<bool> _allIntegrationsDelivered(Conversation c, File binFile) async {
-    for (final integration in _integrations) {
-      if (integration.isEnabled(c)) {
-        if (!await integration.hasDelivered(c, binFile)) {
-          Logger.debug('Passthrough blocked by ${integration.runtimeType}');
-          return false;
-        }
-      }
-    }
-    return true;
-  }
-
-  /// After a successful upload in passthrough mode, appends the passthrough flag
-  /// to the .meta sidecar and deletes the local audio and associated sidecar files.
-  /// Deletion only proceeds once every enabled integration has confirmed delivery.
-  Future<void> _convertToPassthrough(Conversation conversation) async {
-    try {
-      final filePath = conversation.file.path;
-      final fileDir = conversation.file.parent.path;
-      final audioFileName = filePath.split('/').last;
-      final basePath = filePath.contains('.') ? filePath.substring(0, filePath.lastIndexOf('.')) : filePath;
-      final metaFile = File('$basePath.meta');
-
-      // Guard: without a .meta sidecar the conversation would vanish entirely
-      // from the list after audio deletion. Bail out to preserve the recording.
-      if (!await metaFile.exists()) {
-        Logger.error('Passthrough: Aborting — no .meta sidecar found for $filePath');
-        return;
-      }
-
-      final ts = audioFileName.split('_').last.split('.').first;
-      final binFile = File('$fileDir/recording_fs320_$ts.bin');
-
-      if (!await _allIntegrationsDelivered(conversation, binFile)) return;
-
-      // All enabled integrations have confirmed — safe to stamp and delete.
-      final bytes = await metaFile.readAsBytes();
-      bool alreadyPassthrough = false;
-      if (bytes.length >= 417) {
-        final keyLen = bytes[416];
-        final flagOffset = 417 + keyLen;
-        if (bytes.length > flagOffset) {
-          alreadyPassthrough = (bytes[flagOffset] & 0x01) != 0;
-        }
-      }
-      if (!alreadyPassthrough) {
-        await metaFile.writeAsBytes([...bytes, 0x01]);
-      }
-
-      // Delete the processed audio file.
-      if (await conversation.file.exists()) await conversation.file.delete();
-
-      // Delete any EDL (marker) files whose segmentFilename points to this recording.
-      // Markers are meaningless without playable audio; leaving them causes the
-      // markers view to show "Processing…" indefinitely.
-      try {
-        final edlFiles = await Directory(fileDir)
-            .list()
-            .where((e) => e is File && e.path.split('/').last.startsWith('marker_') && e.path.endsWith('.edl'))
-            .cast<File>()
-            .toList();
-        for (final edl in edlFiles) {
-          try {
-            final json = jsonDecode(await edl.readAsString()) as Map<String, dynamic>;
-            if (json['segmentFilename'] == audioFileName) await edl.delete();
-          } catch (_) {}
-        }
-      } catch (_) {}
-
-      RecordingsManager.notifyRecordingsChanged();
-    } catch (e) {
-      Logger.error('Passthrough: Failed to convert conversation: $e');
-    }
-  }
-
   void tryAutoSyncNext() {
     if (_prefs.adjustmentMode) return;
     if (!_prefs.omiSyncEnabled || _prefs.omiRefreshToken.isEmpty) return;
-    final minDuration = _prefs.filterMinDurationSeconds;
 
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
-        if (conversation.passthrough) continue;
-        if (conversation.duration.inSeconds < minDuration) continue;
         final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
         final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
         if (_syncingBinFiles.contains(binPath)) continue;
@@ -973,16 +866,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         if (!binFile.existsSync()) continue;
 
         _syncingBinFiles.add(binPath);
-        final isPassthrough = _prefs.passthroughMode;
         unawaited(
           OmiApiClient.syncLocalFiles([binFile])
               .then((jobId) => OmiApiClient.pollSyncJob(jobId))
-              .then((_) async {
-                await binFile.delete();
-                if (isPassthrough) await _convertToPassthrough(conversation);
-              })
+              .then((_) => binFile.delete())
               .catchError((e) {
             Logger.error('Omi sync failed for $binPath: $e');
+            return binFile; // satisfy FileSystemEntity return type
           }).whenComplete(() {
             _syncingBinFiles.remove(binPath);
             if (!_isDisposed) {
@@ -996,9 +886,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> uploadConversation(Conversation conversation) async {
-    if (_prefs.adjustmentMode) {
-      throw Exception('Uploads are disabled in Adjustment Mode');
-    }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) throw Exception('Upload key unavailable');
     if (_uploadingFiles.contains(uploadKey)) return;
@@ -1010,7 +897,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     try {
       await HeyPocketService.uploadRecording(apiKey, conversation);
       await _prefs.markUploadedToHeypocket(uploadKey);
-      if (_prefs.passthroughMode) await _convertToPassthrough(conversation);
     } catch (e) {
       if (e is HeyPocketException && e.statusCode == 401) {
         _prefs.heypocketEnabled = false;

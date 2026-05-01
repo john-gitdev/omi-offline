@@ -2,12 +2,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:device_info_plus/device_info_plus.dart';
-import 'app_settings_page.dart';
 import 'device_settings.dart';
 import 'find_devices_page.dart';
 import 'offline_audio_settings_page.dart';
@@ -20,15 +18,12 @@ class SettingsDrawer extends StatefulWidget {
   @override
   State<SettingsDrawer> createState() => _SettingsDrawerState();
 
-  static void show(BuildContext context, RecordingsController controller) {
+  static void show(BuildContext context) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) => ChangeNotifierProvider.value(
-        value: controller,
-        child: const SettingsDrawer(),
-      ),
+      builder: (context) => const SettingsDrawer(),
     );
   }
 }
@@ -236,31 +231,37 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                 children: [
                   _buildSectionContainer(
                     children: [
+                      _buildSettingsItem(
+                        title: 'Find Omi Devices',
+                        icon: const FaIcon(FontAwesomeIcons.magnifyingGlass, color: Color(0xFF8E8E93), size: 20),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => const FindDevicesPage(),
+                            ),
+                          );
+                        },
+                      ),
                       Consumer<DeviceProvider>(
                         builder: (context, deviceProvider, child) {
-                          if (deviceProvider.isConnected) {
-                            return _buildSettingsItem(
-                              title: 'Device Settings',
-                              icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Color(0xFF8E8E93), size: 20),
-                              onTap: () {
-                                Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (context) => const DeviceSettings(),
-                                  ),
-                                );
-                              },
-                            );
+                          if (!deviceProvider.isConnected) {
+                            return const SizedBox.shrink();
                           }
-                          return _buildSettingsItem(
-                            title: 'Find Omi Devices',
-                            icon: const FaIcon(FontAwesomeIcons.magnifyingGlass, color: Color(0xFF8E8E93), size: 20),
-                            onTap: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (context) => const FindDevicesPage(),
-                                ),
-                              );
-                            },
+                          return Column(
+                            children: [
+                              const Divider(height: 1, color: Color(0xFF3C3C43)),
+                              _buildSettingsItem(
+                                title: 'Device Settings',
+                                icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Color(0xFF8E8E93), size: 20),
+                                onTap: () {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (context) => const DeviceSettings(),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ],
                           );
                         },
                       ),
@@ -269,13 +270,9 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                         title: 'Recording Settings',
                         icon: const FaIcon(FontAwesomeIcons.microphoneLines, color: Color(0xFF8E8E93), size: 20),
                         onTap: () {
-                          final controller = Provider.of<RecordingsController>(context, listen: false);
                           Navigator.of(context).push(
                             MaterialPageRoute(
-                              builder: (context) => OfflineAudioSettingsPage(
-                                onCountShortRecordings: controller.countShortRecordings,
-                                onDeleteShortRecordings: controller.deleteShortRecordings,
-                              ),
+                              builder: (context) => const OfflineAudioSettingsPage(),
                             ),
                           );
                         },
@@ -288,18 +285,6 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => const IntegrationsPage(),
-                            ),
-                          );
-                        },
-                      ),
-                      const Divider(height: 1, color: Color(0xFF3C3C43)),
-                      _buildSettingsItem(
-                        title: 'App Settings',
-                        icon: const FaIcon(FontAwesomeIcons.gear, color: Color(0xFF8E8E93), size: 20),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => const AppSettingsPage(),
                             ),
                           );
                         },

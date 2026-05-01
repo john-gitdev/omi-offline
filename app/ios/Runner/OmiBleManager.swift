@@ -16,7 +16,6 @@ final class OmiBleManager: NSObject {
     private var readCompletions: [String: (Result<FlutterStandardTypedData, Error>) -> Void] = [:]
     private var writeCompletions: [String: (Result<Void, Error>) -> Void] = [:]
     private var manuallyDisconnected: Set<String> = []
-    private var connectionEstablishedAt: [String: Date] = [:]
 
     private var isScanning = false
     private var scanTimer: Timer?
@@ -233,7 +232,6 @@ extension OmiBleManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didConnect p: CBPeripheral) {
-        connectionEstablishedAt[p.identifier.uuidString] = Date()
         p.delegate = self
         p.discoverServices(nil)
     }
@@ -246,20 +244,10 @@ extension OmiBleManager: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
         let uuid = p.identifier.uuidString
-        let connectedAt = connectionEstablishedAt.removeValue(forKey: uuid)
         cleanupPeripheral(uuid)
         flutterApi?.onPeripheralDisconnected(peripheralUuid: uuid, error: error?.localizedDescription) { _ in }
         if !manuallyDisconnected.contains(uuid) {
-            // If the connection was very short-lived (< 5 s), it likely dropped during the
-            // initial bonding handshake. Delay the reconnect so iOS has time to commit the
-            // link key from the first pairing attempt — without this delay, the immediate
-            // reconnect triggers a second Security Request and a duplicate pairing dialog.
-            let uptime = connectedAt.map { Date().timeIntervalSince($0) } ?? Double.infinity
-            let delay = uptime < 5.0 ? 2.0 : 0.0
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, !self.manuallyDisconnected.contains(uuid) else { return }
-                self.centralManager.connect(p, options: nil)
-            }
+            centralManager.connect(p, options: nil)
         }
     }
 }
