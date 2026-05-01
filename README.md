@@ -21,7 +21,8 @@ Omi Offline is a personal fork of the Omi project focused entirely on local, pri
 - 🔄 **Resumable BLE Sync (WAL):** Syncs data to your phone in batches over an ACK-gated, Write-Ahead Log (WAL) BLE protocol. Resumes cleanly on disconnects.
 - 🧠 **On-Phone Neural Processing:** Powered by **Silero VAD** (running via ONNX runtime) to segment speech from silence entirely on your mobile device.
 - 🎛 **Iterative Adjustment Mode:** Fine-tune Voice Activity Detection (VAD) parameters without needing to re-sync data from the hardware.
-- 🔌 **Integrations:** An optional external integration, allowing you to upload finalized recordings directly to HeyPocket or Omi.
+- 🔌 **Integrations:** Upload finalized recordings to HeyPocket or Omi. Optionally enable **Passthrough Mode** to send audio directly to integrations and delete it locally — conversations remain listed but audio is not stored on-device.
+- 🔕 **VAD Toggle:** Disable Silero VAD entirely and run in All-As-Detected (AAD) mode — all audio is treated as speech and recordings split only on firmware timestamps.
 
 ---
 
@@ -71,22 +72,31 @@ The core of the offline intelligence is the **Silero VAD** neural network.
 - **Disk-Backed Pointers:** PCM audio is never held completely in memory. The app uses `FrameRef` pointers to process frame-by-frame.
 - **Chronological Merging:** A conversation crossing midnight is never artificially cut. Segments are sorted by `(deviceSessionId, segmentIndex)`.
 - **Cleanup vs Adjustment:** Processed `.bin` files are automatically deleted to save space. However, if **Adjustment Mode** is enabled, raw segments are preserved, allowing you to tweak VAD parameters and re-process the day.
+- **AAD Mode:** When VAD is disabled (`vadEnabled = false`), the Silero model is skipped entirely and all audio is treated as speech. Recordings split only on firmware timestamps — useful when you want complete audio without silence filtering.
 
 ---
 
-## 🎛 VAD Tuning & Settings
+## 🎛 Settings
 
-Settings are easily tweaked in the App's **Recording Settings** (backed by `SharedPreferencesUtil`).
+### Recording Settings
+VAD behaviour is tuned in the App's **Recording Settings** (backed by `SharedPreferencesUtil`).
 
 | Setting | Prefs Key | Default | Description |
 |---|---|---|---|
-| **Speech Sensitivity** | `vadSpeechThreshold` | 0.5 | Silero probability cutoff (0–1). Lower = more sensitive |
+| **VAD Enabled** | `vadEnabled` | true | Enable Silero VAD. When off, all audio is treated as speech (AAD mode) |
+| **Speech Sensitivity** | `vadSpeechThreshold` | 0.5 | Silero probability cutoff (0–1). Lower = more sensitive. Hidden when VAD is off |
 | **Silence to Split** | `vadSplitSeconds` | 120s | Silence duration that triggers a conversation cut |
-| **Min. Length** | `vadMinSpeechSeconds` | 5s | Segments shorter than this are discarded |
-| **Holdover Buffer** | `vadHangoverSeconds` | 0.5s | How long to record after speech drops out |
-| **Pre-Speech Buffer** | `vadPreSpeechSeconds` | 1.0s | Audio captured before speech onset |
-| **Gap Threshold** | `vadGapSeconds` | 30s | Nearby segments closer than this are merged |
-| **Max Length** | `vadMaxConversationMinutes`| 60 min | Hard cap forcing a split, even without silence |
+| **Min. Length** | `filterMinDurationSeconds` | 0s | Recordings shorter than this are handled per "Discard Short" |
+| **Max Length** | `vadMaxConversationMinutes` | 60 min | Hard cap forcing a split, even without silence |
+
+### App Settings
+General app behaviour is controlled in **App Settings** (accessible via the settings drawer).
+
+| Setting | Prefs Key | Default | Description |
+|---|---|---|---|
+| **M4A Conversion** | `convertOpusToM4a` | false | When enabled, converts raw Opus to AAC (.m4a) |
+| **Adjustment Mode** | `adjustmentMode` | false | Preserve raw `.bin` segments so VAD can be re-run without re-syncing |
+| **Passthrough Mode** | `passthroughMode` | false | Send recordings to integrations and delete audio locally after upload |
 
 ---
 
