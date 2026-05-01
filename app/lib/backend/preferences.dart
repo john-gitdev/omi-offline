@@ -41,29 +41,31 @@ class SharedPreferencesUtil {
   bool get adjustmentModeWasEnabled => getBool('adjustmentModeWasEnabled', defaultValue: false);
   set adjustmentModeWasEnabled(bool value) => saveBool('adjustmentModeWasEnabled', value);
 
+  // When true, Silero VAD classifies each audio frame as speech or silence.
+  // When false, all audio is treated as speech (AAD mode — splits by firmware timestamps only).
+  bool get vadEnabled => getBool('vadEnabled', defaultValue: true);
+  set vadEnabled(bool v) => saveBool('vadEnabled', v);
+
   // Silero VAD speech probability cutoff (0.0–1.0). Frames with probability
   // above this value are classified as speech.
   double get vadSpeechThreshold => getDouble('vadSpeechThreshold', defaultValue: 0.5);
   set vadSpeechThreshold(double v) => saveDouble('vadSpeechThreshold', v);
 
-  // Frames of speech to continue counting after Silero reports silence,
-  // to smooth out brief dropouts within a sentence.
-  double get vadHangoverSeconds => getDouble('vadHangoverSeconds', defaultValue: 0.5);
-  set vadHangoverSeconds(double v) => saveDouble('vadHangoverSeconds', v);
-
   // Continuous silence duration (seconds) that triggers a conversation cut.
   int get vadSplitSeconds => getInt('vadSplitSeconds', defaultValue: 120);
   set vadSplitSeconds(int v) => saveInt('vadSplitSeconds', v);
 
-  // Minimum speech duration (seconds) for a conversation to be saved. Shorter conversations
-  // are discarded (e.g. a cough, a door slam).
-  int get vadMinSpeechSeconds => getInt('vadMinSpeechSeconds', defaultValue: 3);
-  set vadMinSpeechSeconds(int v) => saveInt('vadMinSpeechSeconds', v);
+  // Minimum wall-clock duration (seconds) threshold for short-recording handling.
+  // What happens to recordings below this is controlled by discardShortRecordings.
+  // 0 = no filtering.
+  int get filterMinDurationSeconds => getInt('filterMinDurationSeconds', defaultValue: 0);
+  set filterMinDurationSeconds(int v) => saveInt('filterMinDurationSeconds', v);
 
-  // Seconds of silence frames to prepend before a new conversation starts,
-  // so speech doesn't begin abruptly.
-  double get vadPreSpeechSeconds => getDouble('vadPreSpeechSeconds', defaultValue: 1.0);
-  set vadPreSpeechSeconds(double v) => saveDouble('vadPreSpeechSeconds', v);
+  // When true, recordings shorter than filterMinDurationSeconds are permanently
+  // discarded during processing. When false, they are saved but hidden from the
+  // list and skipped by integrations.
+  bool get discardShortRecordings => getBool('discardShortRecordings', defaultValue: false);
+  set discardShortRecordings(bool v) => saveBool('discardShortRecordings', v);
 
   // Maximum continuous conversation length (minutes) before forcing a cut.
   int get vadMaxConversationMinutes => getInt('vadMaxConversationMinutes', defaultValue: 60);
@@ -74,16 +76,11 @@ class SharedPreferencesUtil {
   bool get convertOpusToM4a => getBool('convertOpusToM4a', defaultValue: false);
   set convertOpusToM4a(bool value) => saveBool('convertOpusToM4a', value);
 
-  // How far back (seconds) a forced marker recording reaches before the button tap.
-  // Capped at vadSplitSeconds so the lookback never overlaps with a prior recording.
-  int get markerLookbackSeconds => getInt('markerLookbackSeconds', defaultValue: 60).clamp(0, vadSplitSeconds);
-  set markerLookbackSeconds(int v) => saveInt('markerLookbackSeconds', v);
-
   int get backgroundSyncIntervalMinutes => getInt('backgroundSyncIntervalMinutes', defaultValue: 30);
   set backgroundSyncIntervalMinutes(int v) => saveInt('backgroundSyncIntervalMinutes', v);
 
   // Whether to disconnect bluetooth after a sync to maximize battery.
-  bool get maximizeBattery => getBool('maximizeBattery', defaultValue: true);
+  bool get maximizeBattery => getBool('maximizeBattery', defaultValue: false);
   set maximizeBattery(bool v) => saveBool('maximizeBattery', v);
 
   // Whether to display times in 24-hour format (true) or 12-hour AM/PM (false).
@@ -96,6 +93,12 @@ class SharedPreferencesUtil {
   bool get extractionInProgress => getBool('extractionInProgress', defaultValue: false);
 
   set extractionInProgress(bool value) => saveBool('extractionInProgress', value);
+
+  // When enabled, recordings are uploaded to integrations immediately and the
+  // local audio file is deleted after a successful upload. Only the metadata
+  // sidecar (.meta) is kept so the conversation still appears in the list.
+  bool get passthroughMode => getBool('passthroughMode', defaultValue: false);
+  set passthroughMode(bool v) => saveBool('passthroughMode', v);
 
   //--------------------------- Omi Server Sync --------------------------//
 

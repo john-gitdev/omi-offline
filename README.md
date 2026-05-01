@@ -36,7 +36,7 @@ graph TD
     B -->|Frames| C{eMMC Card Storage .bin}
     C -->|Native BLE GATT via Pigeon| D[Mobile App - Flutter]
     D -->|Stores Raw .bin| E(VadAudioProcessor)
-    E -->|Silero ONNX| F[Final Recordings .m4a]
+    E -->|Silero ONNX| F[Final .ogg/.wav or .m4a]
 ```
 
 ### 1. Hardware (Firmware)
@@ -48,7 +48,7 @@ graph TD
 ### 2. Software (Flutter App)
 - **Sync:** Connects via a robust Pigeon Native GATT bridge. Downloads raw `.bin` files via WAL offsets.
 - **Processing:** `VadAudioProcessor` decodes the Opus stream and splits audio into discrete conversations based on silence boundaries.
-- **Storage:** Final recordings are saved as `.m4a` files in `recordings/<YYYY-MM-DD>/`.
+- **Storage:** Final recordings are saved to `recordings/<YYYY-MM-DD>/`. By default, these are `.ogg` (Android) or `.wav` (iOS) files, but can be optionally converted to `.m4a` via app settings.
 
 ---
 
@@ -109,7 +109,7 @@ To maintain consistency across the codebase, please refer to the following terms
 - **DeviceSession:** Hardware recording session identified by a UTC start timestamp.
 - **Marker:** `0xFE` user event triggered by double tap.
 - **WAL:** Byte-offset sync state.
-- **Recording:** Final `.m4a` output.
+- **Recording:** Final audio output (.ogg, .wav, or .m4a).
 - **Conversation:** A VAD-delimited recording or marker-tagged clip.
 
 ---
@@ -124,7 +124,7 @@ omi-offline/
 ├── omi/
 │   └── firmware/      # Zephyr RTOS C code for nRF5340 (Opus encode, eMMC, BLE)
 ├── NOMENCLATURE.md    # Definitive project glossary
-└── CLAUDE.md          # Agent configuration & architecture notes
+└── README.md          # Project overview & documentation
 ```
 
 ---
