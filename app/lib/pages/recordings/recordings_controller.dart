@@ -11,12 +11,19 @@ import 'package:omi/services/services.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
+import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:omi/utils/audio/foreground.dart';
 
 class RecordingsController extends ChangeNotifier implements IWalSyncProgressListener {
   final RecordingsManager _manager = RecordingsManager();
   final _prefs = SharedPreferencesUtil();
+
+  late final List<PassthroughIntegration> _integrations = [
+    HeyPocketPassthroughIntegration(_prefs),
+    OmiPassthroughIntegration(_prefs),
+    // Add new integrations here.
+  ];
 
   List<Batch> _batches = [];
   List<Batch> get batches => _batches;
@@ -875,13 +882,21 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (!_isDisposed) notifyListeners();
   }
 
+  Future<bool> _allIntegrationsDelivered(Conversation c, File binFile) async {
+    for (final integration in _integrations) {
+      if (integration.isEnabled(c)) {
+        if (!await integration.hasDelivered(c, binFile)) {
+          Logger.debug('Passthrough blocked by ${integration.runtimeType}');
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
   /// After a successful upload in passthrough mode, appends the passthrough flag
   /// to the .meta sidecar and deletes the local audio and associated sidecar files.
-  ///
-  /// When both integrations are enabled this may be called by whichever finishes
-  /// first. The gate checks below ensure deletion only proceeds once ALL enabled
-  /// integrations have confirmed delivery, preventing either side from racing
-  /// ahead and deleting files the other still needs.
+  /// Deletion only proceeds once every enabled integration has confirmed delivery.
   Future<void> _convertToPassthrough(Conversation conversation) async {
     try {
       final filePath = conversation.file.path;
@@ -897,19 +912,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         return;
       }
 
-      // Gate: HeyPocket must have confirmed if it is enabled.
-      final uploadKey = conversation.uploadKey;
-      if (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty && uploadKey != null) {
-        if (!_prefs.isUploadedToHeypocket(uploadKey)) return;
-      }
-
-      // Gate: Omi sync must have confirmed if it is enabled.
-      // Confirmation is implicit: the .bin file is deleted after a successful sync job.
       final ts = audioFileName.split('_').last.split('.').first;
       final binFile = File('$fileDir/recording_fs320_$ts.bin');
-      if (_prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty) {
-        if (await binFile.exists()) return;
-      }
+
+      if (!await _allIntegrationsDelivered(conversation, binFile)) return;
 
       // All enabled integrations have confirmed — safe to stamp and delete.
       final bytes = await metaFile.readAsBytes();
