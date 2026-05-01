@@ -877,6 +877,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   /// After a successful upload in passthrough mode, appends the passthrough flag
   /// to the .meta sidecar and deletes the local audio and associated sidecar files.
+  ///
+  /// When both integrations are enabled this may be called by whichever finishes
+  /// first. The gate checks below ensure deletion only proceeds once ALL enabled
+  /// integrations have confirmed delivery, preventing either side from racing
+  /// ahead and deleting files the other still needs.
   Future<void> _convertToPassthrough(Conversation conversation) async {
     try {
       final filePath = conversation.file.path;
@@ -892,6 +897,21 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         return;
       }
 
+      // Gate: HeyPocket must have confirmed if it is enabled.
+      final uploadKey = conversation.uploadKey;
+      if (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty && uploadKey != null) {
+        if (!_prefs.isUploadedToHeypocket(uploadKey)) return;
+      }
+
+      // Gate: Omi sync must have confirmed if it is enabled.
+      // Confirmation is implicit: the .bin file is deleted after a successful sync job.
+      final ts = audioFileName.split('_').last.split('.').first;
+      final binFile = File('$fileDir/recording_fs320_$ts.bin');
+      if (_prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty) {
+        if (await binFile.exists()) return;
+      }
+
+      // All enabled integrations have confirmed — safe to stamp and delete.
       final bytes = await metaFile.readAsBytes();
       bool alreadyPassthrough = false;
       if (bytes.length >= 417) {
@@ -908,9 +928,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       // Delete the processed audio file.
       if (await conversation.file.exists()) await conversation.file.delete();
 
-      // Delete the Omi raw .bin sidecar if present (written when omiSyncEnabled = true).
-      final ts = audioFileName.split('_').last.split('.').first;
-      final binFile = File('$fileDir/recording_fs320_$ts.bin');
+      // Delete the Omi raw .bin sidecar if it somehow still exists.
       if (await binFile.exists()) await binFile.delete();
 
       // Delete any EDL (marker) files whose segmentFilename points to this recording.
