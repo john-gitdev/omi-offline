@@ -221,70 +221,6 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
               ),
               const SizedBox(height: 16),
 
-              // Adjustment Mode
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Adjustment Mode',
-                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                        ),
-                        Switch(
-                          value: _adjustmentMode,
-                          activeThumbColor: Colors.deepPurpleAccent,
-                          onChanged: (value) async {
-                            if (value) {
-                              final confirm = await showDialog<bool>(
-                                context: context,
-                                builder: (c) => AlertDialog(
-                                  backgroundColor: const Color(0xFF1C1C1E),
-                                  title: const Text('Enable Adjustment Mode?', style: TextStyle(color: Colors.white)),
-                                  content: const Text(
-                                    'Raw audio is kept on disk so you can reprocess days with different settings.\n\n'
-                                    'Uploads to HeyPocket and other integrations are paused while adjustment mode is on — '
-                                    'recordings may still change before you\'re done. '
-                                    'They resume automatically once you turn it off.',
-                                    style: TextStyle(color: Colors.white70, fontSize: 14),
-                                  ),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () => Navigator.of(c).pop(false),
-                                      child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-                                    ),
-                                    TextButton(
-                                      onPressed: () => Navigator.of(c).pop(true),
-                                      child: const Text('Enable', style: TextStyle(color: Colors.deepPurpleAccent)),
-                                    ),
-                                  ],
-                                ),
-                              );
-                              if (confirm != true) return;
-                            }
-                            setState(() => _adjustmentMode = value);
-                            _markDirty();
-                          },
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Raw audio files are kept on disk after processing. Use this when tweaking VAD settings — each day shows a Reprocess button to regenerate recordings from scratch.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-
               // Convert to M4A
               Container(
                 padding: const EdgeInsets.all(16),
@@ -377,6 +313,70 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                     const SizedBox(height: 8),
                     Text(
                       'Audio is sent to your integrations and deleted locally after upload. Conversations appear in the list but cannot be played back.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Adjustment Mode
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Adjustment Mode',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        Switch(
+                          value: _adjustmentMode,
+                          activeThumbColor: Colors.deepPurpleAccent,
+                          onChanged: (value) async {
+                            if (value) {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (c) => AlertDialog(
+                                  backgroundColor: const Color(0xFF1C1C1E),
+                                  title: const Text('Enable Adjustment Mode?', style: TextStyle(color: Colors.white)),
+                                  content: const Text(
+                                    'Raw audio is kept on disk so you can reprocess days with different settings.\n\n'
+                                    'Uploads to HeyPocket and other integrations are paused while adjustment mode is on — '
+                                    'recordings may still change before you\'re done. '
+                                    'They resume automatically once you turn it off.',
+                                    style: TextStyle(color: Colors.white70, fontSize: 14),
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.of(c).pop(false),
+                                      child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                                    ),
+                                    TextButton(
+                                      onPressed: () => Navigator.of(c).pop(true),
+                                      child: const Text('Enable', style: TextStyle(color: Colors.deepPurpleAccent)),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (confirm != true) return;
+                            }
+                            setState(() => _adjustmentMode = value);
+                            _markDirty();
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Raw audio files are kept on disk after processing. Use this when tweaking VAD settings — each day shows a Reprocess button to regenerate recordings from scratch.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],

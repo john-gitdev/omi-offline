@@ -349,6 +349,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
         messenger.showSnackBar(
           SnackBar(content: Text('Deleted marker at ${mc.markerTimeLabel}')),
         );
+        if (_controller.markerConversations.isEmpty) {
+          setState(() => _showMarkersOnly = false);
+        }
       }
     } catch (e) {
       if (mounted)

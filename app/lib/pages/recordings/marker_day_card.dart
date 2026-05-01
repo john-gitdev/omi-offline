@@ -73,7 +73,7 @@ class MarkerDayCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final sorted = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
+    final sorted = [...markers]..sort((a, b) => b.markerTime.compareTo(a.markerTime));
     return Card(
       color: const Color(0xFF1C1C1E),
       margin: const EdgeInsets.only(bottom: 16),
