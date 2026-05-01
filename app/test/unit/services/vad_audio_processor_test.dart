@@ -46,6 +46,7 @@ File _makeBinFile(Directory dir, int frameCount, {String name = 'test.bin'}) {
 
 ProcessingSettings _settings({required int minDurationMs, required bool discardShort}) {
   return ProcessingSettings(
+    vadEnabled: true,
     speechThreshold: 0.5,
     silenceDurationToSplitMs: 120000,
     minDurationMs: minDurationMs,
