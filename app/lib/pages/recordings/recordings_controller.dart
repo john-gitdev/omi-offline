@@ -934,9 +934,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       // Delete the processed audio file.
       if (await conversation.file.exists()) await conversation.file.delete();
 
-      // Delete the Omi raw .bin sidecar if it somehow still exists.
-      if (await binFile.exists()) await binFile.delete();
-
       // Delete any EDL (marker) files whose segmentFilename points to this recording.
       // Markers are meaningless without playable audio; leaving them causes the
       // markers view to show "Processing…" indefinitely.
