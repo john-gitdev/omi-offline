@@ -62,9 +62,19 @@ int globalWriteCount = 0;
 
 class MockDeviceConnection implements DeviceConnection {
   final StreamController<List<int>> _controller = StreamController<List<int>>.broadcast();
+  final _writeWaiters = <MapEntry<int, Completer<void>>>[];
+  int _writesDone = 0;
 
   void add(List<int> packet) => _controller.add(packet);
   Future<void> close() async => await _controller.close();
+
+  /// Resolves once [writeToStorage] has been called at least [atLeast] times.
+  Future<void> waitForWrite(int atLeast) {
+    if (_writesDone >= atLeast) return Future.value();
+    final c = Completer<void>();
+    _writeWaiters.add(MapEntry(atLeast, c));
+    return c.future;
+  }
 
   @override
   bool get isStorageBusy => false;
@@ -75,9 +85,16 @@ class MockDeviceConnection implements DeviceConnection {
 
   @override
   Future<bool> writeToStorage(int numFile, int command, int offset, {int? timestamp}) async {
-    
     globalCurrentFileNum = numFile;
     globalWriteCount++;
+    _writesDone++;
+    _writeWaiters.removeWhere((e) {
+      if (_writesDone >= e.key) {
+        if (!e.value.isCompleted) e.value.complete();
+        return true;
+      }
+      return false;
+    });
     return true;
   }
 
@@ -315,7 +332,7 @@ void main() {
       await pump(10);
 
       final syncAllFuture = sync.syncAll();
-      await Future.delayed(const Duration(milliseconds: 300));
+      await mockConn.waitForWrite(1);
       await pump(10);
       expect(globalWriteCount, equals(1));
       expect(globalCurrentFileNum, equals(0));
@@ -329,7 +346,7 @@ void main() {
         await pump();
       }
 
-      await Future.delayed(const Duration(milliseconds: 100));
+      await mockConn.waitForWrite(2);
       await pump(10);
       expect(globalWriteCount, equals(2));
 
@@ -355,7 +372,7 @@ void main() {
       await pump(10);
 
       final stallFuture = sync.syncAll();
-      await Future.delayed(const Duration(milliseconds: 300));
+      await mockConn.waitForWrite(1);
       await pump(10);
       expect(globalWriteCount, equals(1));
 
