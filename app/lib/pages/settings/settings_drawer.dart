@@ -282,24 +282,24 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                       ),
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
                       _buildSettingsItem(
-                        title: 'Integrations',
-                        icon: const FaIcon(FontAwesomeIcons.plug, color: Color(0xFF8E8E93), size: 20),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => const IntegrationsPage(),
-                            ),
-                          );
-                        },
-                      ),
-                      const Divider(height: 1, color: Color(0xFF3C3C43)),
-                      _buildSettingsItem(
                         title: 'App Settings',
                         icon: const FaIcon(FontAwesomeIcons.gear, color: Color(0xFF8E8E93), size: 20),
                         onTap: () {
                           Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => const AppSettingsPage(),
+                            ),
+                          );
+                        },
+                      ),
+                      const Divider(height: 1, color: Color(0xFF3C3C43)),
+                      _buildSettingsItem(
+                        title: 'Integrations',
+                        icon: const FaIcon(FontAwesomeIcons.plug, color: Color(0xFF8E8E93), size: 20),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => const IntegrationsPage(),
                             ),
                           );
                         },
