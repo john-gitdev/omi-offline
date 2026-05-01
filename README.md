@@ -35,7 +35,7 @@ graph TD
     B -->|Frames| C{eMMC Card Storage .bin}
     C -->|Native BLE GATT via Pigeon| D[Mobile App - Flutter]
     D -->|Stores Raw .bin| E(VadAudioProcessor)
-    E -->|Silero ONNX| F[Final .ogg/.wav or .m4a]
+    E -->|Silero ONNX| F[Final Recordings .m4a]
 ```
 
 ### 1. Hardware (Firmware)
@@ -47,7 +47,7 @@ graph TD
 ### 2. Software (Flutter App)
 - **Sync:** Connects via a robust Pigeon Native GATT bridge. Downloads raw `.bin` files via WAL offsets.
 - **Processing:** `VadAudioProcessor` decodes the Opus stream and splits audio into discrete conversations based on silence boundaries.
-- **Storage:** Final recordings are saved to `recordings/<YYYY-MM-DD>/`. By default, these are `.ogg` (Android) or `.wav` (iOS) files, but can be optionally converted to `.m4a` via app settings.
+- **Storage:** Final recordings are saved as `.m4a` files in `recordings/<YYYY-MM-DD>/`.
 
 ---
 
@@ -82,9 +82,11 @@ Settings are easily tweaked in the App's **Recording Settings** (backed by `Shar
 |---|---|---|---|
 | **Speech Sensitivity** | `vadSpeechThreshold` | 0.5 | Silero probability cutoff (0–1). Lower = more sensitive |
 | **Silence to Split** | `vadSplitSeconds` | 120s | Silence duration that triggers a conversation cut |
-| **Min. Length** | `filterMinDurationSeconds` | 0s | Recordings shorter than this are handled per "Discard Short" |
+| **Min. Length** | `vadMinSpeechSeconds` | 5s | Segments shorter than this are discarded |
+| **Holdover Buffer** | `vadHangoverSeconds` | 0.5s | How long to record after speech drops out |
+| **Pre-Speech Buffer** | `vadPreSpeechSeconds` | 1.0s | Audio captured before speech onset |
+| **Gap Threshold** | `vadGapSeconds` | 30s | Nearby segments closer than this are merged |
 | **Max Length** | `vadMaxConversationMinutes`| 60 min | Hard cap forcing a split, even without silence |
-| **M4A Conversion** | `convertOpusToM4a` | false | When enabled, converts raw Opus to AAC (.m4a) |
 
 ---
 
@@ -97,7 +99,7 @@ To maintain consistency across the codebase, please refer to the following terms
 - **DeviceSession:** Hardware recording session identified by a UTC start timestamp.
 - **Marker:** `0xFE` user event triggered by double tap.
 - **WAL:** Byte-offset sync state.
-- **Recording:** Final audio output (.ogg, .wav, or .m4a).
+- **Recording:** Final `.m4a` output.
 - **Conversation:** A VAD-delimited recording or marker-tagged clip.
 
 ---
@@ -112,7 +114,7 @@ omi-offline/
 ├── omi/
 │   └── firmware/      # Zephyr RTOS C code for nRF5340 (Opus encode, eMMC, BLE)
 ├── NOMENCLATURE.md    # Definitive project glossary
-└── README.md          # Project overview & documentation
+└── CLAUDE.md          # Agent configuration & architecture notes
 ```
 
 ---

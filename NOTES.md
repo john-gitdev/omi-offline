@@ -37,17 +37,16 @@ Applied on top of the base state above:
 ### Button Controls
 | Action | Effect | Haptic |
 |--------|--------|--------|
-| Single tap | No action | None |
+| Single tap | Toggle Stealth Mode (LED on/off) | None |
+| Long press (1s) | Toggle Mute — LED goes Red when muted, mic paused | 500ms |
 | Double tap | White flash ~1s (marker recorded) — ignored if muted | 300ms |
-| Double tap + hold (1s on second press) | Toggle Mute — LED goes Red when muted, mic paused | 500ms |
-| Triple tap | Toggle Stealth Mode (LED on/off) | 150ms |
-| Triple tap + hold (3s on third press) | Power off | 1000ms |
+| Double tap + hold (3s on second press) | Power off | 1000ms |
 
 ### Hardware Error LEDs
 **Removed in production.** All `error_*()` functions in `feedback.c` log to UART/RTT only. No visual LED feedback on errors.
 
 ### Stealth Mode Notes
-- Triple tap toggles `is_led_enabled`
+- Single tap toggles `is_led_enabled`
 - Stealth suppresses all base state LEDs (priority 4)
 - Stealth does **not** suppress double-tap white flash (priority 3 fires first)
 - Charging always overrides stealth back on
@@ -62,7 +61,9 @@ Applied on top of the base state above:
 
 Previously `check_button_level` unconditionally rescheduled itself every 40ms (25 Hz) via a Zephyr work queue, preventing the CPU from sleeping between presses.
 
-**Fix:** The GPIO interrupt (`button_gpio_callback`) schedules the work item (`K_NO_WAIT`) only when a press arrives while `fsm_state == STATE_IDLE`. The work item reschedules itself at 40ms while an interaction is in progress and stops when the state machine returns to `STATE_IDLE`. `activate_button_work()` still exists but is no longer called from `main.c` or `transport.c`.
+**Fix:** The GPIO interrupt (`button_gpio_callback`) now schedules the work item (`K_NO_WAIT`) only when a press arrives while `fsm_state == STATE_IDLE`. The work item reschedules itself at 40ms while an interaction is in progress (multi-tap window, hold timing), and stops rescheduling once the state machine returns to `STATE_IDLE`. The startup `activate_button_work()` calls in `main.c` and `transport.c` were removed.
+
+**Verify after flashing:** If presses are missed intermittently, try a 1–2ms delay in the interrupt before scheduling (mechanical debounce settling). The state machine's timing already handles debounce logic, so this is unlikely to be needed.
 
 ### Battery ADC Poll Interval (implemented)
 
@@ -89,13 +90,13 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
 
 **Current values:**
 ```c
-#define SD_REQ_QUEUE_MSGS  100   // main audio write queue depth
+#define SD_REQ_QUEUE_MSGS  200   // main audio write queue depth
 #define SD_PRIO_QUEUE_MSGS  10   // priority queue (control requests)
-#define WRITE_BATCH_COUNT  100   // frames accumulated per write batch
+#define WRITE_DRAIN_BURST   16   // frames drained per worker iteration
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)  // fsync every 60s
 ```
 
-Each slot in `sd_msgq` holds one `sd_req_t`. The queue is backed by `K_MSGQ_DEFINE` (static allocation). The worker accumulates up to `WRITE_BATCH_COUNT` (100) frames into a batch buffer before flushing to LittleFS.
+Each slot in `sd_msgq` holds one `sd_req_t`. The queue is backed by `K_MSGQ_DEFINE` (static allocation). The worker drains up to `WRITE_DRAIN_BURST` (16) messages per iteration before yielding.
 
 `SD_FSYNC_INTERVAL_MS` (60 s) controls durability: data is in the LittleFS write cache until fsync fires. A hard power-off within this window risks losing up to 60 s of audio, but LittleFS's copy-on-write metadata ensures the filesystem itself stays consistent.
 
@@ -161,31 +162,6 @@ This section reviews the functionality of the Debug Tools present in `app/lib/pa
 - Clears the HeyPocket upload history to allow re-upload if files are re-processed.
 **Conclusion:** Matches description. `recordings` stores the `.m4a` files and EDL data, while `processing_temp` holds files currently being worked on.
 
-### 7. Delete Problematic EDLs
-**Description:** "Deletes marker EDL files with no matching recording (pending or orphaned)."
-**Implementation:**
-- Shows a confirmation dialog.
-- Calls `RecordingsManager().getMarkerConversations()` and filters for entries where `isPending` is true.
-- Deletes the `.edl` file for each problematic entry.
-- Notifies listeners via `RecordingsManager.notifyRecordingsChanged()`.
-**Conclusion:** Matches description. Cleans up orphaned marker EDL files that have no corresponding finalized recording.
-
----
-
-## Firmware AAD: VAD Sensitivity Presets (Deferred)
-
-Brainstormed three sensitivity presets for the hardware AAD threshold, adjustable via a new BLE characteristic (same pattern as mic gain — `settings.c` + `transport.c` + `aad.c`).
-
-| Preset | Threshold | Debounce | Rationale |
-|--------|-----------|----------|-----------|
-| High sensitivity | 250 (~-42 dBFS) | 4 frames (80ms) | Current default. Extra debounce compensates for low threshold catching noise. |
-| Medium (balanced) | 500 (~-36 dBFS) | 3 frames (60ms) | Balanced start latency vs false triggers. |
-| Low (noise-resistant) | 1000 (~-30 dBFS) | 2 frames (40ms) | Higher threshold rejects noise, so fewer debounce frames needed. |
-
-Hold time (`CONFIG_OMI_VAD_HOLD_MS = 10000`) could also vary per preset — longer hold at high sensitivity (quiet speech trails off slowly), shorter at low sensitivity (trust the threshold drop).
-
-**Decision: deferred.** Risk of missing audio outweighs the benefit. No real user complaints driving this. Battery drain from AAD is less impactful than BLE/SD/codec — and hold time is a bigger battery lever than threshold anyway. Revisit if noise-environment complaints surface.
-
 ---
 
 ## SD Card Power-Gating and Locking Architecture
@@ -208,8 +184,8 @@ The firmware leverages priority queues to intelligently gate SD card power witho
 
 1. **`omi/firmware/omi/src/sd_card.c`**:
    - Runs the main SD worker thread.
-   - **Per-operation power gating (`sd_io_low_power` atomic)**: The SPI3 bus (and SD device) are suspended via `sd_set_io_low_power(true)` immediately after each operation completes, and resumed via `sd_set_io_low_power(false)` before the next one starts. There is no fixed sleep timer — the bus is off whenever no operation is in flight. Write data manages its own gate inline (`spi_woken` flag within `process_write_data_req`); all other request types are wrapped at the worker loop level.
-   - **OTA override**: `sd_set_ota_active(true)` keeps the bus awake for the duration of a firmware update.
+   - **Auto-Sleep (`sd_gate_sleep`)**: Triggers an automatic power down (`GATE_SLEEP_MS` = 15 seconds) when there are no pending read/write operations. This ensures buffers are fully flushed before sleeping.
+   - **Auto-Wake (`sd_gate_wake`)**: Triggers when a priority request arrives (such as the `REQ_GET_FILE_STATS` sent by the app's wake probe) or when the write queue exceeds `GATE_WAKE_THRESHOLD`. It remounts LittleFS and executes the command.
 
 2. **`omi/firmware/omi/src/lib/core/storage.c`**:
    - Acts as the BLE GATT translation layer.
