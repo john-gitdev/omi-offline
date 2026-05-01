@@ -69,17 +69,29 @@ class AccumulatingBanner extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          GestureDetector(
-            onTap: onTap,
-            child: Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: Colors.deepPurpleAccent.withValues(alpha: 0.2),
-                shape: BoxShape.circle,
-              ),
-              child: const Center(
-                child: FaIcon(FontAwesomeIcons.hourglassHalf, color: Colors.deepPurpleAccent, size: 16),
+          Semantics(
+            button: true,
+            label: 'View conversation in progress',
+            child: Tooltip(
+              message: 'View conversation in progress',
+              child: Material(
+                color: Colors.transparent,
+                shape: const CircleBorder(),
+                clipBehavior: Clip.antiAlias,
+                child: Ink(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.deepPurpleAccent.withValues(alpha: 0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: InkWell(
+                    onTap: onTap,
+                    child: const Center(
+                      child: FaIcon(FontAwesomeIcons.hourglassHalf, color: Colors.deepPurpleAccent, size: 16),
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
@@ -112,37 +124,52 @@ class AdjustmentCleanupBanner extends StatelessWidget {
     if (spState != SyncProcessState.idle) return const SizedBox.shrink();
     if (pendingDays == 0) return const SizedBox.shrink();
 
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.orange.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.orange.withValues(alpha: 0.3), width: 1),
-        ),
-        child: Row(
-          children: [
-            const FaIcon(FontAwesomeIcons.triangleExclamation, color: Colors.orange, size: 16),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Raw audio pending cleanup',
-                    style: TextStyle(color: Colors.orange, fontWeight: FontWeight.w500, fontSize: 14),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Semantics(
+        button: true,
+        label: 'Clean up raw audio',
+        child: Tooltip(
+          message: 'Clean up raw audio',
+          child: Material(
+            color: Colors.transparent,
+            child: Ink(
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.3), width: 1),
+              ),
+              child: InkWell(
+                onTap: onTap,
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      const FaIcon(FontAwesomeIcons.triangleExclamation, color: Colors.orange, size: 16),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Raw audio pending cleanup',
+                              style: TextStyle(color: Colors.orange, fontWeight: FontWeight.w500, fontSize: 14),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              '$pendingDays ${pendingDays == 1 ? 'day' : 'days'} of raw files still on disk. Tap to process & delete.',
+                              style: TextStyle(color: Colors.orange.shade300, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '$pendingDays ${pendingDays == 1 ? 'day' : 'days'} of raw files still on disk. Tap to process & delete.',
-                    style: TextStyle(color: Colors.orange.shade300, fontSize: 12),
-                  ),
-                ],
+                ),
               ),
             ),
-          ],
+          ),
         ),
       ),
     );
