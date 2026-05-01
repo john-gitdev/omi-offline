@@ -41,6 +41,11 @@ class SharedPreferencesUtil {
   bool get adjustmentModeWasEnabled => getBool('adjustmentModeWasEnabled', defaultValue: false);
   set adjustmentModeWasEnabled(bool value) => saveBool('adjustmentModeWasEnabled', value);
 
+  // When true, Silero VAD classifies each audio frame as speech or silence.
+  // When false, all audio is treated as speech (AAD mode — splits by firmware timestamps only).
+  bool get vadEnabled => getBool('vadEnabled', defaultValue: true);
+  set vadEnabled(bool v) => saveBool('vadEnabled', v);
+
   // Silero VAD speech probability cutoff (0.0–1.0). Frames with probability
   // above this value are classified as speech.
   double get vadSpeechThreshold => getDouble('vadSpeechThreshold', defaultValue: 0.5);
