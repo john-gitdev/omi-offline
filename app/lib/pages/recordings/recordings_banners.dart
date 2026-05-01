@@ -71,9 +71,9 @@ class AccumulatingBanner extends StatelessWidget {
           const SizedBox(width: 12),
           Semantics(
             button: true,
-            label: 'View conversation in progress',
+            label: 'Process accumulated audio',
             child: Tooltip(
-              message: 'View conversation in progress',
+              message: 'Process accumulated audio',
               child: Material(
                 color: Colors.transparent,
                 shape: const CircleBorder(),
