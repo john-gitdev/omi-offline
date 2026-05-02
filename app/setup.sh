@@ -51,20 +51,11 @@ echo ""
 
 API_BASE_URL=https://api.omiapi.com/
 
-######################################
-# Generate device suffix from hostname
-######################################
-function generate_device_suffix() {
-  # Use hostname or a hash of it as suffix
-  HOSTNAME=$(hostname -s | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')
-  echo "${HOSTNAME}"
-}
-
-
 #################
 # Set up App .env
 #################
 function setup_app_env() {
+  echo "📝 Creating .dev.env..."
   echo API_BASE_URL=$API_BASE_URL > .dev.env
   echo USE_AUTH_CUSTOM_TOKEN=true >> .dev.env
 }
@@ -73,6 +64,7 @@ function setup_app_env() {
 # Set up Android Keystore
 # #######################
 function setup_keystore_android() {
+  echo "🔑 Setting up Android keystore..."
   cp setup/prebuilt/key.properties android/
 }
 
@@ -80,8 +72,9 @@ function setup_keystore_android() {
 # Build
 # #####
 function run_build_android() {
+  echo "🚀 Building and running Android (dev flavor)..."
   flutter pub get \
-    && dart run build_runner build \
+    && dart run build_runner build --delete-conflicting-outputs \
     && flutter run --flavor dev
 }
 
@@ -89,9 +82,10 @@ function run_build_android() {
 # Build iOS
 # #########
 function run_build_ios() {
+  echo "🚀 Building and running iOS (dev flavor)..."
   flutter pub get \
     && pushd ios && pod install --repo-update && popd \
-    && dart run build_runner build \
+    && dart run build_runner build --delete-conflicting-outputs \
     && flutter run --flavor dev
 }
 
