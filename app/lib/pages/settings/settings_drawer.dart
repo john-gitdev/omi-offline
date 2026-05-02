@@ -88,40 +88,40 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
     required Widget icon,
     required VoidCallback onTap,
   }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 1),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1C1C1E),
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 24,
-                height: 24,
-                child: icon,
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w400,
+    return Container(
+      margin: const EdgeInsets.only(bottom: 1),
+      child: Material(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 18,
+            ),
+            child: Row(
+              children: [
+                SizedBox(width: 24, height: 24, child: icon),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w400,
+                    ),
                   ),
                 ),
-              ),
-              const Icon(
-                Icons.chevron_right,
-                color: Color(0xFF3C3C43),
-                size: 20,
-              ),
-            ],
+                const Icon(
+                  Icons.chevron_right,
+                  color: Color(0xFF3C3C43),
+                  size: 20,
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -134,9 +134,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
         color: const Color(0xFF1C1C1E),
         borderRadius: BorderRadius.circular(20),
       ),
-      child: Column(
-        children: children,
-      ),
+      child: Column(children: children),
     );
   }
 
@@ -159,14 +157,12 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
           onTap: () async {
             await Clipboard.setData(ClipboardData(text: displayText));
             if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Copied to clipboard')),
+              );
             }
           },
-          child: const Icon(
-            Icons.copy,
-            size: 12,
-            color: Color(0xFF8E8E93),
-          ),
+          child: const Icon(Icons.copy, size: 12, color: Color(0xFF8E8E93)),
         ),
       ],
     );
@@ -241,7 +237,11 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           if (deviceProvider.isConnected) {
                             return _buildSettingsItem(
                               title: 'Device Settings',
-                              icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Color(0xFF8E8E93), size: 20),
+                              icon: const FaIcon(
+                                FontAwesomeIcons.bluetooth,
+                                color: Color(0xFF8E8E93),
+                                size: 20,
+                              ),
                               onTap: () {
                                 Navigator.of(context).push(
                                   MaterialPageRoute(
@@ -253,7 +253,11 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           }
                           return _buildSettingsItem(
                             title: 'Find Omi Devices',
-                            icon: const FaIcon(FontAwesomeIcons.magnifyingGlass, color: Color(0xFF8E8E93), size: 20),
+                            icon: const FaIcon(
+                              FontAwesomeIcons.magnifyingGlass,
+                              color: Color(0xFF8E8E93),
+                              size: 20,
+                            ),
                             onTap: () {
                               Navigator.of(context).push(
                                 MaterialPageRoute(
@@ -267,9 +271,16 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
                       _buildSettingsItem(
                         title: 'Recording Settings',
-                        icon: const FaIcon(FontAwesomeIcons.microphoneLines, color: Color(0xFF8E8E93), size: 20),
+                        icon: const FaIcon(
+                          FontAwesomeIcons.microphoneLines,
+                          color: Color(0xFF8E8E93),
+                          size: 20,
+                        ),
                         onTap: () {
-                          final controller = Provider.of<RecordingsController>(context, listen: false);
+                          final controller = Provider.of<RecordingsController>(
+                            context,
+                            listen: false,
+                          );
                           Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => OfflineAudioSettingsPage(
@@ -283,7 +294,11 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
                       _buildSettingsItem(
                         title: 'App Settings',
-                        icon: const FaIcon(FontAwesomeIcons.gear, color: Color(0xFF8E8E93), size: 20),
+                        icon: const FaIcon(
+                          FontAwesomeIcons.gear,
+                          color: Color(0xFF8E8E93),
+                          size: 20,
+                        ),
                         onTap: () {
                           Navigator.of(context).push(
                             MaterialPageRoute(
@@ -295,7 +310,11 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
                       _buildSettingsItem(
                         title: 'Integrations',
-                        icon: const FaIcon(FontAwesomeIcons.plug, color: Color(0xFF8E8E93), size: 20),
+                        icon: const FaIcon(
+                          FontAwesomeIcons.plug,
+                          color: Color(0xFF8E8E93),
+                          size: 20,
+                        ),
                         onTap: () {
                           Navigator.of(context).push(
                             MaterialPageRoute(
@@ -307,7 +326,11 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
                       _buildSettingsItem(
                         title: 'Debug Tools',
-                        icon: const FaIcon(FontAwesomeIcons.bug, color: Color(0xFF8E8E93), size: 20),
+                        icon: const FaIcon(
+                          FontAwesomeIcons.bug,
+                          color: Color(0xFF8E8E93),
+                          size: 20,
+                        ),
                         onTap: () {
                           Navigator.of(context).push(
                             MaterialPageRoute(
