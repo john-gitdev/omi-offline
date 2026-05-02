@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/logger.dart';
 
@@ -49,11 +50,18 @@ class OmiApiClient {
 
     prefs.omiIdToken = idToken;
     prefs.omiTokenExpiry = now + expiresIn * 1000;
+
+    // Google can rotate the refresh token on each exchange — persist the new one.
+    final newRefreshToken = body['refresh_token'] as String?;
+    if (newRefreshToken != null && newRefreshToken.isNotEmpty && newRefreshToken != refreshToken) {
+      await prefs.setOmiRefreshToken(newRefreshToken);
+    }
+
     Logger.debug('OmiApiClient: Token refreshed, expires in ${expiresIn}s');
   }
 
-  /// Uploads [binFiles] to /v2/sync-local-files. Returns the job_id from the 202 response.
-  static Future<String> syncLocalFiles(List<File> binFiles) async {
+  /// Uploads [binFiles] to /v2/sync-local-files. Throws [OmiSyncException] on failure.
+  static Future<void> syncLocalFiles(List<File> binFiles) async {
     await refreshTokenIfNeeded();
     final token = SharedPreferencesUtil().omiIdToken;
     if (token.isEmpty) throw const OmiSyncException('No Omi ID token available');
@@ -61,59 +69,34 @@ class OmiApiClient {
     final request = http.MultipartRequest('POST', Uri.parse(_syncUrl))
       ..headers['Authorization'] = 'Bearer $token';
     for (final f in binFiles) {
-      request.files.add(await http.MultipartFile.fromPath('files', f.path));
+      request.files.add(http.MultipartFile(
+        'files',
+        f.openRead(),
+        await f.length(),
+        filename: f.uri.pathSegments.last,
+        contentType: MediaType('application', 'octet-stream'),
+      ));
     }
 
     final http.StreamedResponse streamed;
     try {
-      streamed = await request.send().timeout(const Duration(seconds: 30));
+      streamed = await request.send().timeout(const Duration(seconds: 120));
     } on SocketException {
       throw const OmiSyncException('No network connection');
     }
 
-    final responseBody = await streamed.stream.bytesToString();
-    if (streamed.statusCode != 202) {
-      throw OmiSyncException('Sync upload failed (${streamed.statusCode})');
+    // Drain the response body regardless of status.
+    await streamed.stream.bytesToString();
+
+    if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
+      final isAuth = streamed.statusCode == 401 || streamed.statusCode == 403;
+      throw OmiSyncException(
+        'Sync upload failed (${streamed.statusCode})',
+        isAuthError: isAuth,
+      );
     }
 
-    final body = jsonDecode(responseBody) as Map<String, dynamic>;
-    final jobId = body['job_id'] as String?;
-    if (jobId == null || jobId.isEmpty) throw const OmiSyncException('No job_id in sync response');
-    Logger.debug('OmiApiClient: Sync job started — $jobId');
-    return jobId;
-  }
-
-  /// Polls /v2/sync-local-files/{jobId} with exponential backoff until a terminal status is reached.
-  /// Returns true on completed/partial_failure. Throws [OmiSyncException] on failure or timeout.
-  static Future<bool> pollSyncJob(String jobId) async {
-    await refreshTokenIfNeeded();
-    final token = SharedPreferencesUtil().omiIdToken;
-    const delays = [2, 4, 8, 16, 30];
-    for (final delaySec in delays) {
-      await Future.delayed(Duration(seconds: delaySec));
-      final http.Response res;
-      try {
-        res = await http
-            .get(
-              Uri.parse('$_syncUrl/$jobId'),
-              headers: {'Authorization': 'Bearer $token'},
-            )
-            .timeout(const Duration(seconds: 10));
-      } on SocketException {
-        continue; // retry on transient network error
-      }
-
-      if (res.statusCode == 404) throw const OmiSyncException('Sync job expired');
-      if (res.statusCode == 403) throw const OmiSyncException('Unauthorized — check credentials', isAuthError: true);
-      if (res.statusCode != 200) continue;
-
-      final body = jsonDecode(res.body) as Map<String, dynamic>;
-      final status = body['status'] as String?;
-      Logger.debug('OmiApiClient: Poll $jobId — status=$status');
-      if (status == 'completed' || status == 'partial_failure') return true;
-      if (status == 'failed') throw OmiSyncException('Sync job failed: ${body['error']}');
-    }
-    throw const OmiSyncException('Sync job timed out after 60s of polling');
+    Logger.debug('OmiApiClient: Sync accepted (${streamed.statusCode})');
   }
 
   /// Verifies credentials by attempting a token refresh with the supplied values.
