@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/pages/settings/omi_login_webview.dart';
 import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/omi_api_client.dart';
 
@@ -28,6 +29,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
   final _omiRefreshTokenController = TextEditingController();
   final _omiFirebaseApiKeyController = TextEditingController();
   bool _omiObscured = true;
+  bool _showOmiManual = false;
   _ConnectionState _omiState = _ConnectionState.idle;
   Timer? _omiDebounce;
 
@@ -163,6 +165,29 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     }
   }
 
+  Future<void> _openOmiLogin() async {
+    final result = await Navigator.of(context).push<Map<String, String>>(
+      MaterialPageRoute(builder: (_) => const OmiLoginWebView()),
+    );
+
+    if (result != null) {
+      final rt = result['refreshToken']!;
+      final ak = result['apiKey']!;
+      
+      setState(() => _omiState = _ConnectionState.checking);
+      final valid = await OmiApiClient.testConnection(refreshToken: rt, apiKey: ak);
+      if (valid && mounted) {
+        await _prefs.setOmiRefreshToken(rt);
+        await _prefs.setOmiFirebaseApiKey(ak);
+        _omiRefreshTokenController.text = rt;
+        _omiFirebaseApiKeyController.text = ak;
+        setState(() => _omiState = _ConnectionState.connected);
+      } else if (mounted) {
+        setState(() => _omiState = _ConnectionState.error);
+      }
+    }
+  }
+
   Widget _buildIndicator(_ConnectionState state) {
     switch (state) {
       case _ConnectionState.checking:
@@ -234,19 +259,45 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               setState(() {});
             },
             fields: [
-              _buildField(
-                controller: _omiRefreshTokenController,
-                hint: 'Refresh Token',
-                obscured: _omiObscured,
-                onToggleObscure: () => setState(() => _omiObscured = !_omiObscured),
-              ),
-              const SizedBox(height: 12),
-              _buildField(
-                controller: _omiFirebaseApiKeyController,
-                hint: 'Firebase API Key',
-                obscured: _omiObscured,
-                onToggleObscure: () => setState(() => _omiObscured = !_omiObscured),
-              ),
+              if (_omiState != _ConnectionState.connected) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _omiState == _ConnectionState.checking ? null : _openOmiLogin,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.deepPurpleAccent,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('Log in with Omi', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Center(
+                  child: TextButton(
+                    onPressed: () => setState(() => _showOmiManual = !_showOmiManual),
+                    child: Text(
+                      _showOmiManual ? 'Hide manual entry' : 'Enter manually',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
+                    ),
+                  ),
+                ),
+              ],
+              if (_showOmiManual || _omiState == _ConnectionState.connected) ...[
+                _buildField(
+                  controller: _omiRefreshTokenController,
+                  hint: 'Refresh Token',
+                  obscured: _omiObscured,
+                  onToggleObscure: () => setState(() => _omiObscured = !_omiObscured),
+                ),
+                const SizedBox(height: 12),
+                _buildField(
+                  controller: _omiFirebaseApiKeyController,
+                  hint: 'Firebase API Key',
+                  obscured: _omiObscured,
+                  onToggleObscure: () => setState(() => _omiObscured = !_omiObscured),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 16),
