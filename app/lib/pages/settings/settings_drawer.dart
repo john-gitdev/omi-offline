@@ -88,46 +88,39 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
     required Widget icon,
     required VoidCallback onTap,
   }) {
-    return Semantics(
-      button: true,
-      label: title,
-      child: Tooltip(
-        message: title,
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 1),
-          child: Material(
-            color: const Color(0xFF1C1C1E),
-            borderRadius: BorderRadius.circular(20),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: onTap,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 18,
-                ),
-                child: Row(
-                  children: [
-                    SizedBox(width: 24, height: 24, child: icon),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Text(
-                        title,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 17,
-                          fontWeight: FontWeight.w400,
-                        ),
-                      ),
+    return Container(
+      margin: const EdgeInsets.only(bottom: 1),
+      child: Material(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 18,
+            ),
+            child: Row(
+              children: [
+                SizedBox(width: 24, height: 24, child: icon),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w400,
                     ),
-                    const Icon(
-                      Icons.chevron_right,
-                      color: Color(0xFF3C3C43),
-                      size: 20,
-                    ),
-                  ],
+                  ),
                 ),
-              ),
+                const Icon(
+                  Icons.chevron_right,
+                  color: Color(0xFF3C3C43),
+                  size: 20,
+                ),
+              ],
             ),
           ),
         ),
@@ -252,8 +245,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                               onTap: () {
                                 Navigator.of(context).push(
                                   MaterialPageRoute(
-                                    builder: (context) =>
-                                        const DeviceSettings(),
+                                    builder: (context) => const DeviceSettings(),
                                   ),
                                 );
                               },
@@ -292,10 +284,8 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => OfflineAudioSettingsPage(
-                                onCountShortRecordings:
-                                    controller.countShortRecordings,
-                                onDeleteShortRecordings:
-                                    controller.deleteShortRecordings,
+                                onCountShortRecordings: controller.countShortRecordings,
+                                onDeleteShortRecordings: controller.deleteShortRecordings,
                               ),
                             ),
                           );
