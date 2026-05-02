@@ -19,13 +19,11 @@ abstract class IDeviceService {
 
   Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false, bool requiresBond = true});
 
-  void subscribe(IDeviceServiceSubsciption subscription, Object context);
+  void subscribe(IDeviceServiceSubscription subscription, Object context);
   void unsubscribe(Object context);
 
   DateTime? getFirstConnectedAt();
 
-  // WiFi sync support - pause BLE reconnection during WiFi transfer
-  void setWifiSyncInProgress(bool value);
   Future<void> disconnectDevice();
 
   /// Fully tear down connection + transport for a device being forgotten/unpaired.
@@ -51,7 +49,7 @@ class OmiFeatures {
   static const int wifi = 1 << 9;
 }
 
-abstract class IDeviceServiceSubsciption {
+abstract class IDeviceServiceSubscription {
   void onDevices(List<BtDevice> devices);
   void onStatusChanged(DeviceServiceStatus status);
   void onDeviceConnectionStateChanged(String deviceId, DeviceConnectionState state);
@@ -65,7 +63,7 @@ class DeviceService implements IDeviceService {
     NativeBluetoothDiscoverer(),
   ];
 
-  final Map<Object, IDeviceServiceSubsciption> _subscriptions = {};
+  final Map<Object, IDeviceServiceSubscription> _subscriptions = {};
 
   DeviceConnection? _connection;
   List<BtDevice> get devices => _devices;
@@ -170,7 +168,7 @@ class DeviceService implements IDeviceService {
   }
 
   @override
-  void subscribe(IDeviceServiceSubsciption subscription, Object context) {
+  void subscribe(IDeviceServiceSubscription subscription, Object context) {
     _subscriptions.remove(context.hashCode);
     _subscriptions.putIfAbsent(context.hashCode, () => subscription);
 
@@ -282,15 +280,6 @@ class DeviceService implements IDeviceService {
       Logger.debug('Error getting stored device: $e');
     }
     return null;
-  }
-
-  bool _isWifiSyncInProgress = false;
-  bool get isWifiSyncInProgress => _isWifiSyncInProgress;
-
-  @override
-  void setWifiSyncInProgress(bool value) {
-    _isWifiSyncInProgress = value;
-    Logger.debug("DeviceService: WiFi sync in progress: $value");
   }
 
   @override

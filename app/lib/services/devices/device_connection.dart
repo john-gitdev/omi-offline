@@ -80,11 +80,6 @@ abstract class DeviceConnection {
     return [];
   }
 
-  Future<Stream<List<int>>> readFile(StorageFile file, {int offset = 0}) async {
-    if (await isConnected()) return performReadFile(file, offset: offset);
-    return const Stream.empty();
-  }
-
   Future<bool> deleteFile(StorageFile file) async {
     if (await isConnected()) return performDeleteFile(file, timestamp: file.timestamp);
     return false;
@@ -215,6 +210,5 @@ abstract class DeviceConnection {
   Future<bool> performRotateFile();
   Future<bool> performClearStorage();
   Future<List<StorageFile>> performListFiles();
-  Future<Stream<List<int>>> performReadFile(StorageFile file, {int offset = 0});
   Future<bool> performDeleteFile(StorageFile file, {int? timestamp});
 }

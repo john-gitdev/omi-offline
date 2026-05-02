@@ -519,9 +519,11 @@ class OmiDeviceConnection extends DeviceConnection {
 
       await transport.writeCharacteristic(
           storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, Uint8List.fromList(cmd));
-      final res = await completer.future.timeout(const Duration(seconds: 35));
-      await sub.cancel();
-      return res;
+      try {
+        return await completer.future.timeout(const Duration(seconds: 35));
+      } finally {
+        await sub.cancel();
+      }
     } catch (_) {
       return false;
     }
@@ -540,9 +542,11 @@ class OmiDeviceConnection extends DeviceConnection {
       });
 
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x03]);
-      final res = await completer.future.timeout(const Duration(seconds: 5));
-      await sub.cancel();
-      return res;
+      try {
+        return await completer.future.timeout(const Duration(seconds: 5));
+      } finally {
+        await sub.cancel();
+      }
     } catch (_) {
       return false;
     }
@@ -559,9 +563,11 @@ class OmiDeviceConnection extends DeviceConnection {
       });
       await Future.delayed(_cccdCommandDelay);
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x13]);
-      final res = await completer.future.timeout(const Duration(seconds: 25));
-      await sub.cancel();
-      return res;
+      try {
+        return await completer.future.timeout(const Duration(seconds: 25));
+      } finally {
+        await sub.cancel();
+      }
     } catch (_) {
       return false;
     }
@@ -579,9 +585,11 @@ class OmiDeviceConnection extends DeviceConnection {
         }
       });
       await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x14]);
-      final res = await completer.future.timeout(const Duration(seconds: 65));
-      await sub.cancel();
-      return res;
+      try {
+        return await completer.future.timeout(const Duration(seconds: 65));
+      } finally {
+        await sub.cancel();
+      }
     } catch (_) {
       return false;
     }
@@ -601,12 +609,6 @@ class OmiDeviceConnection extends DeviceConnection {
       }
     }
     return false;
-  }
-
-  @override
-  Future<Stream<List<int>>> performReadFile(StorageFile file, {int offset = 0}) async {
-    // This is handled by the WAL sync logic which sets up its own listener.
-    return const Stream.empty();
   }
 
   void _parseAndSuccess(List<int> buffer, void Function(List<StorageFile>) success) {

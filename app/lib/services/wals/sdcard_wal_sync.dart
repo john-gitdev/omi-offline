@@ -701,14 +701,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   Future<void> _checkDiskSpaceBeforeSync(int totalBytesToDownload) async {
+    double? freeSpaceMb;
     try {
-      final double? freeSpaceMb = await DiskSpace.getFreeDiskSpace;
-      if (freeSpaceMb != null) {
-        final double requiredMb = (totalBytesToDownload * 1.1) / (1024 * 1024);
-        if (freeSpaceMb < requiredMb) throw Exception("Phone Storage Full");
-      }
+      freeSpaceMb = await DiskSpace.getFreeDiskSpace;
     } catch (_) {
-      rethrow;
+      return; // Can't determine free space; proceed with sync.
+    }
+    if (freeSpaceMb != null) {
+      final double requiredMb = (totalBytesToDownload * 1.1) / (1024 * 1024);
+      if (freeSpaceMb < requiredMb) throw Exception("Phone Storage Full");
     }
   }
 

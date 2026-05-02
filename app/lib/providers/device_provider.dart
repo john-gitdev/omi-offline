@@ -17,7 +17,7 @@ import 'package:omi/utils/platform/platform_manager.dart';
 
 class DeviceProvider extends ChangeNotifier
     with WidgetsBindingObserver
-    implements IDeviceServiceSubsciption, IWalServiceListener {
+    implements IDeviceServiceSubscription, IWalServiceListener {
   bool _disposed = false;
   bool isConnecting = false;
   bool isConnected = false;
@@ -473,7 +473,6 @@ class DeviceProvider extends ChangeNotifier
     isCharging = false;
     notifyListeners();
     await setConnectedDevice(null);
-    await refreshStorageStats();
     setIsConnected(false);
     updateConnectingStatus(false);
 
