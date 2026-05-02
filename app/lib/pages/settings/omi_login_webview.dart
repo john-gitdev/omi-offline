@@ -64,39 +64,82 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
   void _injectExtractionScript() {
     const script = '''
       (function() {
-        var request = indexedDB.open("firebaseLocalStorageDb");
-        request.onsuccess = function(event) {
-          var db = event.target.result;
+        var attempts = 0;
+        var maxAttempts = 30; // 30 seconds
+
+        function tryExtract() {
+          attempts++;
+          
+          // 1. Try localStorage fallback
           try {
-            var transaction = db.transaction(["firebaseLocalStorage"], "readonly");
-            var objectStore = transaction.objectStore("firebaseLocalStorage");
-            var cursorRequest = objectStore.openCursor();
-            cursorRequest.onsuccess = function(event) {
-              var cursor = event.target.result;
-              if (cursor) {
-                var key = cursor.key;
-                if (typeof key === 'string' && key.startsWith('firebase:authUser:')) {
-                  var raw = cursor.value;
-                  // Firebase SDK v8 stores the user object directly; v9+ wraps it under .value
-                  var value = (raw && raw.stsTokenManager) ? raw : (raw && raw.value) ? raw.value : null;
-                  if (value && value.stsTokenManager && value.stsTokenManager.refreshToken && value.apiKey) {
-                    OmiLoginChannel.postMessage(JSON.stringify({
-                      refreshToken: value.stsTokenManager.refreshToken,
-                      apiKey: value.apiKey
-                    }));
-                    return;
-                  }
+            for (var i = 0; i < localStorage.length; i++) {
+              var key = localStorage.key(i);
+              if (key && key.startsWith('firebase:authUser:')) {
+                var raw = JSON.parse(localStorage.getItem(key));
+                var value = (raw && raw.stsTokenManager) ? raw : (raw && raw.value) ? raw.value : null;
+                if (value && value.stsTokenManager && value.stsTokenManager.refreshToken && value.apiKey) {
+                  OmiLoginChannel.postMessage(JSON.stringify({
+                    refreshToken: value.stsTokenManager.refreshToken,
+                    apiKey: value.apiKey
+                  }));
+                  return;
                 }
-                cursor.continue();
               }
-            };
+            }
           } catch (e) {
-            console.error("OmiLoginWebView: Error accessing IndexedDB", e);
+            console.error("OmiLoginWebView: localStorage error", e);
           }
-        };
-        request.onerror = function(event) {
-          console.error("OmiLoginWebView: IndexedDB open error", event);
-        };
+
+          // 2. Try IndexedDB (default for Firebase)
+          var request = indexedDB.open("firebaseLocalStorageDb");
+          request.onsuccess = function(event) {
+            var db = event.target.result;
+            try {
+              if (!db.objectStoreNames.contains("firebaseLocalStorage")) {
+                db.close();
+                if (attempts < maxAttempts) setTimeout(tryExtract, 1000);
+                return;
+              }
+              var transaction = db.transaction(["firebaseLocalStorage"], "readonly");
+              var objectStore = transaction.objectStore("firebaseLocalStorage");
+              var cursorRequest = objectStore.openCursor();
+              cursorRequest.onsuccess = function(event) {
+                var cursor = event.target.result;
+                if (cursor) {
+                  var key = cursor.key;
+                  if (typeof key === 'string' && key.startsWith('firebase:authUser:')) {
+                    var raw = cursor.value;
+                    var value = (raw && raw.stsTokenManager) ? raw : (raw && raw.value) ? raw.value : null;
+                    if (value && value.stsTokenManager && value.stsTokenManager.refreshToken && value.apiKey) {
+                      OmiLoginChannel.postMessage(JSON.stringify({
+                        refreshToken: value.stsTokenManager.refreshToken,
+                        apiKey: value.apiKey
+                      }));
+                      db.close();
+                      return;
+                    }
+                  }
+                  cursor.continue();
+                } else {
+                  db.close();
+                  if (attempts < maxAttempts) setTimeout(tryExtract, 1000);
+                }
+              };
+              cursorRequest.onerror = function() {
+                db.close();
+                if (attempts < maxAttempts) setTimeout(tryExtract, 1000);
+              };
+            } catch (e) {
+              if (db) db.close();
+              if (attempts < maxAttempts) setTimeout(tryExtract, 1000);
+            }
+          };
+          request.onerror = function(event) {
+            if (attempts < maxAttempts) setTimeout(tryExtract, 1000);
+          };
+        }
+
+        tryExtract();
       })();
     ''';
     _controller.runJavaScript(script);
