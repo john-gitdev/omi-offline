@@ -13,6 +13,7 @@ class OmiLoginWebView extends StatefulWidget {
 class _OmiLoginWebViewState extends State<OmiLoginWebView> {
   late final WebViewController _controller;
   bool _isLoading = true;
+  bool _credentialsCaptured = false;
 
   @override
   void initState() {
@@ -46,11 +47,13 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       ..addJavaScriptChannel(
         'OmiLoginChannel',
         onMessageReceived: (JavaScriptMessage message) {
+          if (_credentialsCaptured) return;
           try {
             final data = jsonDecode(message.message);
             final refreshToken = data['refreshToken'] as String?;
             final apiKey = data['apiKey'] as String?;
             if (refreshToken != null && apiKey != null) {
+              _credentialsCaptured = true;
               Navigator.of(context).pop({'refreshToken': refreshToken, 'apiKey': apiKey});
             }
           } catch (e) {
