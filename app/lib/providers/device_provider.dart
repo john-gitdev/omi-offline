@@ -398,7 +398,13 @@ class DeviceProvider extends ChangeNotifier
       ForegroundUtil.stopForegroundTask();
     }
     if (isConnected) {
-      _startBackgroundSyncTimer();
+      // Don't reset the timer if it's already ticking — preserves the overnight
+      // schedule so briefly unlocking the screen doesn't restart the 30-min clock.
+      if (!(_backgroundSyncTimer?.isActive ?? false)) {
+        _startBackgroundSyncTimer();
+      }
+      // Sync immediately in case the device connected while the screen was off.
+      _doBackgroundSync();
     } else {
       if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
         periodicConnect('app resumed', boundDeviceOnly: true);
