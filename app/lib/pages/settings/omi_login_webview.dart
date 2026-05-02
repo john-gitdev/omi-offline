@@ -20,6 +20,11 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFF0D0D0D))
+      // Google blocks OAuth in embedded WebViews (detects "wv" in default UA).
+      // Override with a standard Chrome Mobile UA so the sign-in flow is allowed.
+      ..setUserAgent(
+          'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36')
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (String url) {
@@ -27,7 +32,11 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
           },
           onPageFinished: (String url) {
             setState(() => _isLoading = false);
-            _injectExtractionScript();
+            // Only attempt extraction on app.omi.me — not on Google's auth pages
+            // or Firebase's intermediate redirect handler.
+            if (url.startsWith('https://app.omi.me')) {
+              _injectExtractionScript();
+            }
           },
           onWebResourceError: (WebResourceError error) {
             debugPrint('OmiLoginWebView: WebResourceError: ${error.description}');
