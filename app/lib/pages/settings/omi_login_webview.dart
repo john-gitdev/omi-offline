@@ -67,7 +67,9 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
               if (cursor) {
                 var key = cursor.key;
                 if (typeof key === 'string' && key.startsWith('firebase:authUser:')) {
-                  var value = cursor.value;
+                  var raw = cursor.value;
+                  // Firebase SDK v8 stores the user object directly; v9+ wraps it under .value
+                  var value = (raw && raw.stsTokenManager) ? raw : (raw && raw.value) ? raw.value : null;
                   if (value && value.stsTokenManager && value.stsTokenManager.refreshToken && value.apiKey) {
                     OmiLoginChannel.postMessage(JSON.stringify({
                       refreshToken: value.stsTokenManager.refreshToken,
