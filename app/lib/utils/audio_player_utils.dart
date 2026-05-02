@@ -304,8 +304,8 @@ class AudioPlayerUtils extends ChangeNotifier {
 
       if (offset + length > pcmFileData.length) break;
 
-      final frameData = pcmFileData.sublist(offset, offset + length.toInt());
-      pcmFrames.add(Uint8List.fromList(frameData));
+      final frameData = Uint8List.sublistView(pcmFileData, offset, offset + length.toInt());
+      pcmFrames.add(frameData);
       offset += length.toInt();
     }
 
