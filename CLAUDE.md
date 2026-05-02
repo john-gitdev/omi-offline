@@ -95,11 +95,13 @@ All Omi services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`:
 | Features | `0020` / `0021` | Capability flags |
 | Time sync | `0030` / `0031` | Write epoch seconds (u32 LE) |
 | Speaker/haptic | `0040` / `0041` | Playback commands |
-| Battery detail | `0050` / `0051` | Notify 4 bytes: uint16 LE millivolts (bytes 0–1), uint8 percentage 0–100 (byte 2), uint8 charging 0/1 (byte 3) |
+| Battery detail | `0050` / `0051` | Notify 1 byte: uint8 charging 0/1 |
 | Storage | `30295780-…` | File list + read/delete |
 | Button | `23ba7924-…` | Tap events (1=single, 2=double, 3=long, 4=press, 5=release) |
 
-Storage protocol: write commands to `storageDataStreamCharacteristicUuid`: `0x10`=LIST_FILES, `0x11`=READ `[cmd, fileNum, offset_4B LE]`, `0x12`=DELETE `[cmd, fileNum]`, `0x13`=ROTATE, `0x14`=CLEAR_STORAGE.
+Storage protocol: write commands to `storageDataStreamCharacteristicUuid`: `0x10`=LIST_FILES, `0x11`=READ `[cmd, fileNum, offset_4B LE, timestamp_4B LE]` (timestamp optional, used for index-shift recovery), `0x12`=DELETE `[cmd, fileNum, timestamp_4B LE]` (timestamp optional), `0x13`=ROTATE, `0x14`=CLEAR_STORAGE.
+
+File indices are **cache positions** (0-based sequential) that shift after each deletion — the firmware rebuilds its file-list cache on every CMD_LIST_FILES and after every delete, so after deleting index 0, what was index 1 becomes index 0. Supplying the timestamp in CMD_READ_FILE and CMD_DELETE_FILE lets the firmware re-locate the file by timestamp if the index shifted between LIST and READ/DELETE.
 
 Audio codec IDs: 1=pcm8, 20=opus (80 B/frame, 50 fps), 21=opusFS320 (40 B/frame, 50 fps).
 
