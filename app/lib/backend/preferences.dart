@@ -127,6 +127,26 @@ class SharedPreferencesUtil {
     await _secureStorage.write(key: 'omiFirebaseApiKey', value: v);
   }
 
+  List<String> get omiSyncedFiles => getStringList('omiSyncedFiles');
+
+  bool isOmiSynced(String binPath) => omiSyncedFiles.contains(binPath);
+
+  Future<void> markOmiSynced(String binPath) async {
+    if (isOmiSynced(binPath)) return;
+    final updated = {...omiSyncedFiles}..add(binPath);
+    await saveStringList('omiSyncedFiles', updated.toList());
+  }
+
+  Future<void> removeOmiSynced(Iterable<String> binPaths) async {
+    final paths = binPaths.toSet();
+    if (paths.isEmpty) return;
+    final current = omiSyncedFiles;
+    final pruned = current.where((p) => !paths.contains(p)).toList();
+    if (pruned.length != current.length) {
+      await saveStringList('omiSyncedFiles', pruned);
+    }
+  }
+
   //--------------------------- HeyPocket Integration ---------------------//
 
   String get heypocketApiKey => _heypocketApiKey;
