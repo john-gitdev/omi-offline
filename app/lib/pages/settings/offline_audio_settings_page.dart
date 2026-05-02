@@ -28,7 +28,16 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late int _filterMinDurationSeconds;
   late bool _discardShortRecordings;
 
-  static const List<int> _kShortRecordingOptions = [0, 10, 30, 60, 120, 300, 600, 1800, 3600];
+  static const List<int> _kShortRecordingOptions = [0, 10, 30, 60, 120, 300, 600, 1800];
+  static const List<(String, double)> _kSpeechSensitivityOptions = [
+    ('Sensitive', 0.3),
+    ('Balanced', 0.5),
+    ('Strict', 0.65),
+  ];
+
+  static double _snapToSensitivity(double v) => _kSpeechSensitivityOptions
+      .map((o) => o.$2)
+      .reduce((a, b) => (a - v).abs() < (b - v).abs() ? a : b);
 
   static String _formatShortDuration(int seconds) {
     if (seconds == 0) return 'Off';
@@ -50,7 +59,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _maximizeBattery = SharedPreferencesUtil().maximizeBattery;
     _vadEnabled = SharedPreferencesUtil().vadEnabled;
 
-    _vadSpeechThreshold = SharedPreferencesUtil().vadSpeechThreshold;
+    _vadSpeechThreshold = _snapToSensitivity(SharedPreferencesUtil().vadSpeechThreshold);
     _vadSplitSeconds = SharedPreferencesUtil().vadSplitSeconds;
     _vadMaxConversationMinutes = SharedPreferencesUtil().vadMaxConversationMinutes;
     _filterMinDurationSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
@@ -265,20 +274,22 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Lower = more sensitive (picks up quiet speech). Higher = stricter (ignores background noise).',
+                        'Sensitive picks up quiet speech; Strict ignores background noise.',
                         style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                       ),
-                      Slider(
-                        value: _vadSpeechThreshold,
-                        min: 0.1,
-                        max: 0.9,
-                        divisions: 16,
-                        label: '${(_vadSpeechThreshold * 100).round()}%',
-                        activeColor: Colors.deepPurpleAccent,
-                        onChanged: (value) {
-                          setState(() => _vadSpeechThreshold = value);
-                          _markDirty();
-                        },
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          for (final (label, value) in _kSpeechSensitivityOptions)
+                            _WindowOption(
+                              label: label,
+                              selected: _vadSpeechThreshold == value,
+                              onTap: () {
+                                setState(() => _vadSpeechThreshold = value);
+                                _markDirty();
+                              },
+                            ),
+                        ],
                       ),
                     ],
                   ),
@@ -373,8 +384,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                     Slider(
                       value: _durationToIndex(_filterMinDurationSeconds).toDouble(),
                       min: 0,
-                      max: 8,
-                      divisions: 8,
+                      max: 7,
+                      divisions: 7,
                       label: _formatShortDuration(_filterMinDurationSeconds),
                       activeColor: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade700,
                       onChanged: (v) {
