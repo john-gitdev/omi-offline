@@ -55,6 +55,7 @@ dependencies:
   pool: ^1.5.1
   collection: ^1.19.1
   http: ^1.4.0
+  http_parser: ^4.0.0
   pdf: ^3.11.0
   intl: 0.20.2
   permission_handler: ^12.0.0+1
