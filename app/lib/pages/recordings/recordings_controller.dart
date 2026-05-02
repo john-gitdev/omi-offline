@@ -985,7 +985,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final isPassthrough = _prefs.passthroughMode;
         unawaited(
           OmiApiClient.syncLocalFiles([binFile])
-              .then((jobId) => OmiApiClient.pollSyncJob(jobId))
               .then((_) async {
                 await binFile.delete();
                 await _prefs.markOmiSynced(binPath);
