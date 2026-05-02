@@ -37,7 +37,7 @@ class OmiApiClient {
     }
 
     if (res.statusCode != 200) {
-      throw OmiSyncException('Token refresh failed (${res.statusCode})');
+      throw OmiSyncException('Token refresh failed (${res.statusCode})', isAuthError: true);
     }
 
     final body = jsonDecode(res.body) as Map<String, dynamic>;
@@ -86,6 +86,7 @@ class OmiApiClient {
   /// Polls /v2/sync-local-files/{jobId} with exponential backoff until a terminal status is reached.
   /// Returns true on completed/partial_failure. Throws [OmiSyncException] on failure or timeout.
   static Future<bool> pollSyncJob(String jobId) async {
+    await refreshTokenIfNeeded();
     final token = SharedPreferencesUtil().omiIdToken;
     const delays = [2, 4, 8, 16, 30];
     for (final delaySec in delays) {
@@ -103,7 +104,7 @@ class OmiApiClient {
       }
 
       if (res.statusCode == 404) throw const OmiSyncException('Sync job expired');
-      if (res.statusCode == 403) throw const OmiSyncException('Unauthorized — check credentials');
+      if (res.statusCode == 403) throw const OmiSyncException('Unauthorized — check credentials', isAuthError: true);
       if (res.statusCode != 200) continue;
 
       final body = jsonDecode(res.body) as Map<String, dynamic>;
@@ -140,7 +141,8 @@ class OmiApiClient {
 
 class OmiSyncException implements Exception {
   final String message;
-  const OmiSyncException(this.message);
+  final bool isAuthError;
+  const OmiSyncException(this.message, {this.isAuthError = false});
   @override
   String toString() => 'OmiSyncException: $message';
 }
