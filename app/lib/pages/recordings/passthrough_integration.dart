@@ -27,5 +27,5 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
   bool isEnabled(Conversation c) => _prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty;
 
   @override
-  Future<bool> hasDelivered(Conversation c, File binFile) async => !await binFile.exists();
+  Future<bool> hasDelivered(Conversation c, File binFile) async => _prefs.isOmiSynced(binFile.path);
 }
