@@ -367,7 +367,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
             ),
             value: enabled,
-            activeColor: Colors.deepPurpleAccent,
+            activeThumbColor: Colors.deepPurpleAccent,
             onChanged: isChecking || !isConnected ? null : onEnabledChanged,
           ),
         ],
