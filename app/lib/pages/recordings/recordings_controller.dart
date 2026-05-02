@@ -700,11 +700,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   Future<void> deleteDay(Batch batch) async {
     final keys = batch.finalizedRecordings.map((c) => c.uploadKey).whereType<String>().toSet();
     await _prefs.removeUploadedFromHeypocket(keys);
+    await _prefs.removeOmiSynced(_binPathsForConversations(batch.finalizedRecordings));
     await _manager.deleteDay(batch);
     await _loadBatches();
   }
 
   Future<void> deleteConversation(Conversation conversation) async {
+    if (conversation.uploadKey != null) {
+      await _prefs.removeUploadedFromHeypocket({conversation.uploadKey!});
+    }
+    await _prefs.removeOmiSynced(_binPathsForConversations([conversation]));
     await RecordingsManager.deleteConversation(conversation);
     await _loadBatches();
   }
@@ -719,6 +724,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         .expand((b) => b.finalizedRecordings)
         .where((c) => c.duration.inSeconds < minSeconds)
         .toList();
+    final keys = toDelete.map((c) => c.uploadKey).whereType<String>().toSet();
+    await _prefs.removeUploadedFromHeypocket(keys);
+    await _prefs.removeOmiSynced(_binPathsForConversations(toDelete));
     for (final c in toDelete) {
       await RecordingsManager.deleteConversation(c);
     }
@@ -784,6 +792,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     final keys = batch.finalizedRecordings.map((c) => c.uploadKey).whereType<String>().toSet();
     await _prefs.removeUploadedFromHeypocket(keys);
+    await _prefs.removeOmiSynced(_binPathsForConversations(batch.finalizedRecordings));
     await RecordingsManager.reprocessDay(batch);
     await _loadBatches();
 
@@ -979,6 +988,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               .then((jobId) => OmiApiClient.pollSyncJob(jobId))
               .then((_) async {
                 await binFile.delete();
+                await _prefs.markOmiSynced(binPath);
                 if (isPassthrough) await _convertToPassthrough(conversation);
               })
               .catchError((e) {
@@ -1022,6 +1032,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       notifyListeners();
     }
   }
+
+  static Iterable<String> _binPathsForConversations(List<Conversation> conversations) =>
+      conversations.map((c) {
+        final ts = c.file.path.split('/').last.split('_').last.split('.').first;
+        return '${c.file.parent.path}/recording_fs320_$ts.bin';
+      });
 
   static double _computeAccumulatedMinutes(List<Batch> batches) {
     final rawTotalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (sum, f) {
