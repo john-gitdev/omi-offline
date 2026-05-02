@@ -276,7 +276,19 @@ class OmiBleForegroundService : Service() {
         }
 
         val existing = managedDevices[addr]
-        if (existing != null && bleManager.isPeripheralConnected(addr)) return
+        if (existing != null && bleManager.isPeripheralConnected(addr)) {
+            // Dart may have restarted (e.g. hot restart) while native kept the connection alive.
+            // Re-fire onDeviceReady so the new Dart layer discovers this existing connection.
+            val gatt = bleManager.connectedGatts[addr]
+            val services = gatt?.services?.map { svc ->
+                BleService(
+                    svc.uuid.toString().lowercase(),
+                    svc.characteristics?.map { it.uuid.toString().lowercase() } ?: emptyList()
+                )
+            } ?: emptyList()
+            fireDeviceReady(addr, services)
+            return
+        }
 
         if (existing != null) {
             if (requiresBond && !existing.requiresBond) existing.requiresBond = true
