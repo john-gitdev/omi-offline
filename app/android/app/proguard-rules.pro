@@ -63,3 +63,16 @@
 -dontwarn lombok.Generated
 -dontwarn lombok.**
 -keep class lombok.** { *; }
+
+# Flutter Pigeon-based plugins (Shared Preferences, etc.)
+-keep class dev.flutter.pigeon.** { *; }
+
+# App's own native bridge and implementation code
+-keep class com.omi.offline.** { *; }
+
+# ONNX Runtime
+-keep class ai.onnxruntime.** { *; }
+
+# Opus
+-keep class com.mdmohsin7.opus_flutter.** { *; }
+-keep class com.mdmohsin7.opus_dart.** { *; }
