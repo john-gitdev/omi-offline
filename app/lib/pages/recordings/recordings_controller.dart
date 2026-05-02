@@ -992,6 +992,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
                 if (isPassthrough) await _convertToPassthrough(conversation);
               })
               .catchError((e) {
+            if (e is OmiSyncException && e.isAuthError) {
+              _prefs.omiSyncEnabled = false;
+              _pendingSnackMessage = 'Omi sync: credentials invalid — update them in Integrations';
+            }
             Logger.error('Omi sync failed for $binPath: $e');
           }).whenComplete(() {
             _syncingBinFiles.remove(binPath);
