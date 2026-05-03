@@ -31,31 +31,43 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
           '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36')
       ..setNavigationDelegate(
         NavigationDelegate(
-          onPageStarted: (_) => setState(() => _isLoading = true),
-          onPageFinished: (_) => setState(() => _isLoading = false),
+          onPageStarted: (url) {
+            debugPrint('OmiLoginWebView: onPageStarted: $url');
+            setState(() => _isLoading = true);
+          },
+          onPageFinished: (url) {
+            debugPrint('OmiLoginWebView: onPageFinished: $url');
+            setState(() => _isLoading = false);
+          },
           onNavigationRequest: (NavigationRequest request) {
             final uri = Uri.tryParse(request.url);
+            debugPrint('OmiLoginWebView: onNavigationRequest to ${request.url}');
+            
             if (uri != null &&
                 uri.host == 'based-hardware.firebaseapp.com' &&
                 uri.path.startsWith('/__/auth/handler')) {
+              
+              // 1. Detect the OAuth callback to exchange the code for tokens.
               if (uri.queryParameters.containsKey('code')) {
-                // OAuth callback — exchange the code for tokens.
+                debugPrint('OmiLoginWebView: Detected OAuth code callback. Exchanging tokens...');
                 _exchangeCodeForTokens(request.url);
                 return NavigationDecision.prevent;
               }
+
+              // 2. Detect the initial popup trigger to extract the API key dynamically.
               if (uri.queryParameters['authType'] == 'signInViaPopup') {
-                // app.omi.me opened a popup. Extract the apiKey that Firebase
-                // embeds in this URL, then drive our own createAuthUri flow so
-                // we own the sessionId that signInWithIdp requires.
                 final apiKey = uri.queryParameters['apiKey'];
-                if (apiKey != null) _startDirectAuthFlow(apiKey, uri);
-                return NavigationDecision.prevent;
+                debugPrint('OmiLoginWebView: Detected popup trigger. Extracted apiKey: $apiKey');
+                if (apiKey != null) {
+                  _startDirectAuthFlow(apiKey, uri);
+                  return NavigationDecision.prevent;
+                }
               }
             }
             return NavigationDecision.navigate;
           },
           onWebResourceError: (WebResourceError error) {
-            debugPrint('OmiLoginWebView: WebResourceError: ${error.description}');
+            debugPrint('OmiLoginWebView: WebResourceError: ${error.description} (code: ${error.errorCode}, type: ${error.errorType})');
           },
         ),
       )
@@ -65,8 +77,11 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
   Future<void> _startDirectAuthFlow(String apiKey, Uri popupUri) async {
     _apiKey = apiKey;
     final continueUri = '${popupUri.scheme}://${popupUri.host}${popupUri.path}';
+    debugPrint('OmiLoginWebView: Starting direct auth flow with continueUri: $continueUri');
+    if (mounted) setState(() => _isLoading = true);
 
     try {
+      debugPrint('OmiLoginWebView: Calling createAuthUri...');
       final response = await http.post(
         Uri.parse(
           'https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri?key=$apiKey',
@@ -80,11 +95,14 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
         }),
       );
 
+      debugPrint('OmiLoginWebView: createAuthUri response: ${response.statusCode}');
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         _sessionId = data['sessionId'] as String?;
         final authUri = data['authUri'] as String?;
+        debugPrint('OmiLoginWebView: Obtained sessionId: ${_sessionId != null}, authUri: ${authUri != null}');
         if (_sessionId != null && authUri != null) {
+          debugPrint('OmiLoginWebView: Loading authUri: $authUri');
           _controller.loadRequest(Uri.parse(authUri));
           return;
         }
@@ -98,10 +116,14 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
   }
 
   Future<void> _exchangeCodeForTokens(String callbackUrl) async {
-    if (_credentialsCaptured || _apiKey == null || _sessionId == null) return;
+    if (_credentialsCaptured || _apiKey == null || _sessionId == null) {
+      debugPrint('OmiLoginWebView: Cannot exchange tokens. Captured: $_credentialsCaptured, ApiKey: ${_apiKey != null}, SessionId: ${_sessionId != null}');
+      return;
+    }
     if (mounted) setState(() => _isLoading = true);
 
     try {
+      debugPrint('OmiLoginWebView: Calling signInWithIdp...');
       final response = await http.post(
         Uri.parse(
           'https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=$_apiKey',
@@ -115,14 +137,17 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
         }),
       );
 
+      debugPrint('OmiLoginWebView: signInWithIdp response: ${response.statusCode}');
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final refreshToken = data['refreshToken'] as String?;
+        debugPrint('OmiLoginWebView: Token exchange success: ${refreshToken != null}');
         if (refreshToken != null && mounted && !_credentialsCaptured) {
           _credentialsCaptured = true;
-          Navigator.of(context).pop({
+          debugPrint('OmiLoginWebView: Popping with success result.');
+          Navigator.of(context).pop(<String, String>{
             'refreshToken': refreshToken,
-            'apiKey': _apiKey,
+            'apiKey': _apiKey!,
           });
           return;
         }
