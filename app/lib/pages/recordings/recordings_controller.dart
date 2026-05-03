@@ -562,7 +562,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _transitionTo(SyncProcessState.processing);
 
     final activeBatches = _batches.where((b) => b.rawSegments.isNotEmpty).toList();
-    if (activeBatches.isEmpty) {
+    final hasDrafts = _batches.any((b) => b.draftRecordings.isNotEmpty);
+    if (activeBatches.isEmpty && !(_isForcePipeline && hasDrafts)) {
       await _finishSuccess();
       return;
     }
@@ -589,9 +590,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await ForegroundUtil.startForegroundTask();
     try {
       await _manager.processAll(
-        activeBatches,
+        _batches,
         (_, __) {}, // global progress listener handles this
         backgroundMode: backgroundMode,
+        finalizeDrafts: _isForcePipeline,
         onRecordingFinalized: () {
           unawaited(reloadBatchesSilently());
         },

@@ -1539,7 +1539,7 @@ class RecordingsManager {
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
     final activeBatches = batches
-        .where((b) => b.rawSegments.isNotEmpty)
+        .where((b) => b.rawSegments.isNotEmpty || b.draftRecordings.isNotEmpty)
         .where(
           (b) => !SharedPreferencesUtil().adjustmentMode || b.finalizedRecordings.isEmpty,
         )
@@ -1550,6 +1550,7 @@ class RecordingsManager {
         activeBatches,
         (_, __) {},
         backgroundMode: false,
+        finalizeDrafts: true,
       );
     } catch (e) {
       Logger.error('RecordingsManager: forceProcessAll error: $e');
