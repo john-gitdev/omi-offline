@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:http/http.dart' as http;
 import 'package:webview_flutter/webview_flutter.dart';
 
 class OmiLoginWebView extends StatefulWidget {
@@ -14,6 +15,9 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
   late final WebViewController _controller;
   bool _isLoading = true;
   bool _credentialsCaptured = false;
+
+  // Public web API key — visible in every Firebase web app, safe to hardcode.
+  static const _firebaseApiKey = 'AIzaSyDSpVTxMinTZXuV89V07HkNJCgdNIhX0Dk';
 
   @override
   void initState() {
@@ -33,119 +37,65 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
           },
           onPageFinished: (String url) {
             setState(() => _isLoading = false);
-            // Only attempt extraction on app.omi.me — not on Google's auth pages
-            // or Firebase's intermediate redirect handler.
-            if (url.startsWith('https://app.omi.me')) {
-              _injectExtractionScript();
+          },
+          onNavigationRequest: (NavigationRequest request) {
+            final uri = Uri.tryParse(request.url);
+            // app.omi.me uses signInViaPopup. In a WebView there is no opener,
+            // so the Firebase handler page stalls forever waiting to postMessage
+            // to window.opener. Intercept the OAuth callback here and exchange
+            // the code via Firebase's REST API instead.
+            if (uri != null &&
+                uri.host == 'based-hardware.firebaseapp.com' &&
+                uri.path.startsWith('/__/auth/handler') &&
+                uri.queryParameters.containsKey('code')) {
+              _exchangeCodeForTokens(request.url);
+              return NavigationDecision.prevent;
             }
+            return NavigationDecision.navigate;
           },
           onWebResourceError: (WebResourceError error) {
             debugPrint('OmiLoginWebView: WebResourceError: ${error.description}');
           },
         ),
       )
-      ..addJavaScriptChannel(
-        'OmiLoginChannel',
-        onMessageReceived: (JavaScriptMessage message) {
-          if (_credentialsCaptured) return;
-          try {
-            final data = jsonDecode(message.message);
-            final refreshToken = data['refreshToken'] as String?;
-            final apiKey = data['apiKey'] as String?;
-            if (refreshToken != null && apiKey != null) {
-              _credentialsCaptured = true;
-              Navigator.of(context).pop({'refreshToken': refreshToken, 'apiKey': apiKey});
-            }
-          } catch (e) {
-            debugPrint('OmiLoginWebView: Error parsing JS message: $e');
-          }
-        },
-      )
       ..loadRequest(Uri.parse('https://app.omi.me'));
   }
 
-  void _injectExtractionScript() {
-    const script = '''
-      (function() {
-        var attempts = 0;
-        var maxAttempts = 30; // 30 seconds
+  Future<void> _exchangeCodeForTokens(String callbackUrl) async {
+    if (_credentialsCaptured) return;
+    if (mounted) setState(() => _isLoading = true);
 
-        function tryExtract() {
-          attempts++;
-          
-          // 1. Try localStorage fallback
-          try {
-            for (var i = 0; i < localStorage.length; i++) {
-              var key = localStorage.key(i);
-              if (key && key.startsWith('firebase:authUser:')) {
-                var raw = JSON.parse(localStorage.getItem(key));
-                var value = (raw && raw.stsTokenManager) ? raw : (raw && raw.value) ? raw.value : null;
-                if (value && value.stsTokenManager && value.stsTokenManager.refreshToken && value.apiKey) {
-                  OmiLoginChannel.postMessage(JSON.stringify({
-                    refreshToken: value.stsTokenManager.refreshToken,
-                    apiKey: value.apiKey
-                  }));
-                  return;
-                }
-              }
-            }
-          } catch (e) {
-            console.error("OmiLoginWebView: localStorage error", e);
-          }
+    try {
+      final response = await http.post(
+        Uri.parse(
+          'https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=$_firebaseApiKey',
+        ),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'requestUri': callbackUrl,
+          'returnSecureToken': true,
+          'returnIdpCredential': true,
+        }),
+      );
 
-          // 2. Try IndexedDB (default for Firebase)
-          var request = indexedDB.open("firebaseLocalStorageDb");
-          request.onsuccess = function(event) {
-            var db = event.target.result;
-            try {
-              if (!db.objectStoreNames.contains("firebaseLocalStorage")) {
-                db.close();
-                if (attempts < maxAttempts) setTimeout(tryExtract, 1000);
-                return;
-              }
-              var transaction = db.transaction(["firebaseLocalStorage"], "readonly");
-              var objectStore = transaction.objectStore("firebaseLocalStorage");
-              var cursorRequest = objectStore.openCursor();
-              cursorRequest.onsuccess = function(event) {
-                var cursor = event.target.result;
-                if (cursor) {
-                  var key = cursor.key;
-                  if (typeof key === 'string' && key.startsWith('firebase:authUser:')) {
-                    var raw = cursor.value;
-                    var value = (raw && raw.stsTokenManager) ? raw : (raw && raw.value) ? raw.value : null;
-                    if (value && value.stsTokenManager && value.stsTokenManager.refreshToken && value.apiKey) {
-                      OmiLoginChannel.postMessage(JSON.stringify({
-                        refreshToken: value.stsTokenManager.refreshToken,
-                        apiKey: value.apiKey
-                      }));
-                      db.close();
-                      return;
-                    }
-                  }
-                  cursor.continue();
-                } else {
-                  db.close();
-                  if (attempts < maxAttempts) setTimeout(tryExtract, 1000);
-                }
-              };
-              cursorRequest.onerror = function() {
-                db.close();
-                if (attempts < maxAttempts) setTimeout(tryExtract, 1000);
-              };
-            } catch (e) {
-              if (db) db.close();
-              if (attempts < maxAttempts) setTimeout(tryExtract, 1000);
-            }
-          };
-          request.onerror = function(event) {
-            if (attempts < maxAttempts) setTimeout(tryExtract, 1000);
-          };
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final refreshToken = data['refreshToken'] as String?;
+        if (refreshToken != null && mounted && !_credentialsCaptured) {
+          _credentialsCaptured = true;
+          Navigator.of(context).pop({
+            'refreshToken': refreshToken,
+            'apiKey': _firebaseApiKey,
+          });
+          return;
         }
+      }
+      debugPrint('OmiLoginWebView: signInWithIdp failed: ${response.statusCode} ${response.body}');
+    } catch (e) {
+      debugPrint('OmiLoginWebView: Token exchange error: $e');
+    }
 
-        tryExtract();
-      })();
-    ''';
-    _controller.runJavaScript(script);
+    if (mounted) setState(() => _isLoading = false);
   }
 
   @override
