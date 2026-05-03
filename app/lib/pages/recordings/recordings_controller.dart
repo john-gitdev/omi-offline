@@ -625,11 +625,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await _finishSuccess();
   }
 
-  Future<void> _finishSuccess() async {
-    _isForcePipeline = false;
-    _transitionTo(SyncProcessState.successUi);
-    await Future.delayed(const Duration(milliseconds: 10000));
-    if (_isDisposed) return;
+  void dismissSuccess() {
+    if (_spState != SyncProcessState.successUi) return;
 
     _lastCompletedStage = 'none';
     _syncedCount = 0;
@@ -644,6 +641,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _persistProgress();
     _transitionTo(SyncProcessState.idle);
     _loadBatches();
+  }
+
+  Future<void> _finishSuccess() async {
+    _isForcePipeline = false;
+    _transitionTo(SyncProcessState.successUi);
+    await Future.delayed(const Duration(milliseconds: 10000));
+    if (_isDisposed || _spState != SyncProcessState.successUi) return;
+
+    dismissSuccess();
   }
 
   void cancelPipeline() {
