@@ -1,0 +1,7 @@
+💡 What: Replaced `ByteData.sublistView(Uint8List.fromList(data))` with direct bitwise operations for reading Uint32 values in `OmiConnection`.
+
+🎯 Why: `Uint8List.fromList` creates a deep copy of the byte array. When parsing BLE payloads, this pattern causes unnecessary heap allocations and copying, creating extra GC pressure. Using a bitwise read directly from the `List<int>` bypasses these allocations completely.
+
+📊 Impact: Reduces memory allocations and CPU overhead during BLE parsing, improving happy-path performance.
+
+🔬 Measurement: Run BLE data sync and profile memory/CPU usage.
