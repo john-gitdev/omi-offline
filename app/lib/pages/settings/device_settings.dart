@@ -189,19 +189,42 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     );
 
     if (copyValue != null) {
-      return GestureDetector(
-        onTap: () {
-          Clipboard.setData(ClipboardData(text: copyValue));
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('$title copied to clipboard')));
-        },
-        child: content,
+      return Tooltip(
+        message: 'Copy $title',
+        child: Semantics(
+          button: true,
+          label: 'Copy $title',
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: copyValue));
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text('$title copied to clipboard')));
+              },
+              child: content,
+            ),
+          ),
+        ),
       );
     }
 
     if (onTap != null) {
-      return GestureDetector(onTap: onTap, child: content);
+      return Tooltip(
+        message: title,
+        child: Semantics(
+          button: true,
+          label: title,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: onTap,
+              child: content,
+            ),
+          ),
+        ),
+      );
     }
     return content;
   }
