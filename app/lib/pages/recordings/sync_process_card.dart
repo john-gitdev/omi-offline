@@ -11,11 +11,15 @@ class SyncProcessCard extends StatelessWidget {
   /// Called when the cancel button is tapped in syncing/processing states.
   final VoidCallback? onCancelTap;
 
+  /// Called when the success banner is dismissed.
+  final VoidCallback? onDismissTap;
+
   const SyncProcessCard({
     super.key,
     required this.data,
     this.onActionTap,
     this.onCancelTap,
+    this.onDismissTap,
   });
 
   @override
@@ -146,8 +150,8 @@ class SyncProcessCard extends StatelessWidget {
           color: Colors.white,
           size: 16,
         );
-        onIconTap = null;
-        tooltipText = 'Success';
+        onIconTap = onDismissTap;
+        tooltipText = 'Dismiss';
         showProgress = true;
         progressValue = 1.0;
         progressColor = Colors.green;

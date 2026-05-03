@@ -733,6 +733,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     lastActiveStage: controller.lastActiveStage,
                   ),
                   onCancelTap: () => unawaited(_showCancelModal()),
+                  onDismissTap: () => controller.dismissSuccess(),
                   onActionTap: () {
                     if (controller.spState == SyncProcessState.idle)
                       controller.startPipeline();
