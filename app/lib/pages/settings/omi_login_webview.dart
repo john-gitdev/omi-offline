@@ -15,9 +15,12 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
   late final WebViewController _controller;
   bool _isLoading = true;
   bool _credentialsCaptured = false;
+  String? _sessionId;
 
-  // Public web API key — visible in every Firebase web app, safe to hardcode.
+  // Public web API key visible in every Firebase web app — safe to hardcode.
   static const _firebaseApiKey = 'AIzaSyDSpVTxMinTZXuV89V07HkNJCgdNIhX0Dk';
+  // Standard Firebase Auth redirect handler for the based-hardware project.
+  static const _continueUri = 'https://based-hardware.firebaseapp.com/__/auth/handler';
 
   @override
   void initState() {
@@ -26,24 +29,19 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFF0D0D0D))
       // Google blocks OAuth in embedded WebViews (detects "wv" in default UA).
-      // Override with a standard Chrome Mobile UA so the sign-in flow is allowed.
+      // Override with a standard Chrome Mobile UA so sign-in is allowed.
       ..setUserAgent(
           'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 '
           '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36')
       ..setNavigationDelegate(
         NavigationDelegate(
-          onPageStarted: (String url) {
-            setState(() => _isLoading = true);
-          },
-          onPageFinished: (String url) {
-            setState(() => _isLoading = false);
-          },
+          onPageStarted: (_) => setState(() => _isLoading = true),
+          onPageFinished: (_) => setState(() => _isLoading = false),
           onNavigationRequest: (NavigationRequest request) {
             final uri = Uri.tryParse(request.url);
-            // app.omi.me uses signInViaPopup. In a WebView there is no opener,
-            // so the Firebase handler page stalls forever waiting to postMessage
-            // to window.opener. Intercept the OAuth callback here and exchange
-            // the code via Firebase's REST API instead.
+            // Intercept the OAuth callback before the WebView loads the Firebase
+            // handler page. We own the sessionId (from createAuthUri), so we can
+            // call signInWithIdp directly to complete the exchange.
             if (uri != null &&
                 uri.host == 'based-hardware.firebaseapp.com' &&
                 uri.path.startsWith('/__/auth/handler') &&
@@ -57,8 +55,44 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
             debugPrint('OmiLoginWebView: WebResourceError: ${error.description}');
           },
         ),
-      )
-      ..loadRequest(Uri.parse('https://app.omi.me'));
+      );
+
+    _startAuthFlow();
+  }
+
+  Future<void> _startAuthFlow() async {
+    try {
+      // createAuthUri returns our own sessionId + the Google auth URL.
+      // Using our sessionId in the subsequent signInWithIdp call satisfies the
+      // MISSING_SESSION_ID check that fails when we re-use app.omi.me's popup flow.
+      final response = await http.post(
+        Uri.parse(
+          'https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri?key=$_firebaseApiKey',
+        ),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'continueUri': _continueUri,
+          'providerId': 'google.com',
+          'oauthScope': 'profile email openid',
+          'customParameter': {'prompt': 'select_account'},
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        _sessionId = data['sessionId'] as String?;
+        final authUri = data['authUri'] as String?;
+        if (_sessionId != null && authUri != null) {
+          _controller.loadRequest(Uri.parse(authUri));
+          return;
+        }
+      }
+      debugPrint('OmiLoginWebView: createAuthUri failed: ${response.statusCode} ${response.body}');
+    } catch (e) {
+      debugPrint('OmiLoginWebView: createAuthUri error: $e');
+    }
+
+    if (mounted) setState(() => _isLoading = false);
   }
 
   Future<void> _exchangeCodeForTokens(String callbackUrl) async {
@@ -73,6 +107,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'requestUri': callbackUrl,
+          'sessionId': _sessionId,
           'returnSecureToken': true,
           'returnIdpCredential': true,
         }),
