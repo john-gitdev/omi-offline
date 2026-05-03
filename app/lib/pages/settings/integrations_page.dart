@@ -188,6 +188,22 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     }
   }
 
+  void _deleteOmi() {
+    _omiRefreshTokenController.clear();
+    _omiFirebaseApiKeyController.clear();
+    setState(() {
+      _omiState = _ConnectionState.idle;
+      _showOmiManual = false;
+    });
+  }
+
+  void _deleteHeyPocket() {
+    _heypocketController.clear();
+    setState(() {
+      _heypocketState = _ConnectionState.idle;
+    });
+  }
+
   Widget _buildIndicator(_ConnectionState state) {
     switch (state) {
       case _ConnectionState.checking:
@@ -258,6 +274,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               _prefs.omiSyncEnabled = v;
               setState(() {});
             },
+            onDelete: _deleteOmi,
             fields: [
               if (_omiState != _ConnectionState.connected) ...[
                 SizedBox(
@@ -312,6 +329,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               _prefs.heypocketEnabled = v;
               setState(() {});
             },
+            onDelete: _deleteHeyPocket,
             fields: [
               _buildField(
                 controller: _heypocketController,
@@ -333,6 +351,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     required bool enabled,
     required ValueChanged<bool> onEnabledChanged,
     required List<Widget> fields,
+    VoidCallback? onDelete,
   }) {
     final isChecking = state == _ConnectionState.checking;
     final isConnected = state == _ConnectionState.connected;
@@ -354,6 +373,16 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               ),
               const SizedBox(width: 8),
               _buildIndicator(state),
+              if (onDelete != null) ...[
+                const Spacer(),
+                IconButton(
+                  onPressed: onDelete,
+                  icon: const Icon(Icons.delete_outline, color: Colors.grey, size: 20),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 12),
