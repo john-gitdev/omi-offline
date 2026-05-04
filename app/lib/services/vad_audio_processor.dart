@@ -631,7 +631,7 @@ class VadAudioProcessor {
             }
           }
 
-          if (batchBuffer.length > 32000) {
+          if (batchBuffer.length > 16000) {
             await flushBatch();
           }
           continue;
@@ -780,7 +780,6 @@ class VadAudioProcessor {
     int totalSamples = 0;
 
     int granulePos = 0;
-    int lastFlushedGranulePos = 0;
     int pageSeqNum = 2;
     String? currentFilePath;
     Uint8List? currentFileBytes;
@@ -798,7 +797,6 @@ class VadAudioProcessor {
         if (item is Duration) {
           final ms = item.inMilliseconds;
           final durationSamples = (ms * sampleRate) ~/ 1000;
-          granulePos += durationSamples;
           
           // Still need to update waveform metadata for silence
           for (int s = 0; s < durationSamples; s++) {
@@ -809,6 +807,10 @@ class VadAudioProcessor {
             }
           }
           totalSamples += durationSamples;
+
+          // Note: We do NOT increment granulePos for silence. 
+          // This makes the OGG file continuous (no gaps), which is much more 
+          // compatible with cloud transcription services.
         } else {
           final ref = item as FrameRef;
           if (i % 50 == 0) await Future.delayed(Duration.zero);
@@ -844,22 +846,20 @@ class VadAudioProcessor {
             totalSamples += pcmData.length;
           }
 
-          granulePos += samplesPerFrame;
+          granulePos += 960; // 20ms frame at 48kHz
           pagePackets.add(opusBytes);
         }
 
-        if (pagePackets.length >= framesPerPage) {
-          lastFlushedGranulePos = granulePos;
-          sink.add(_createOggPage(granulePos * 3, pageSeqNum++, serial, pagePackets.toList()));
+        if (pagePackets.length >= 40) { // 40 frames per page (~800ms)
+          sink.add(_createOggPage(granulePos, pageSeqNum++, serial, pagePackets.toList()));
           pagePackets.clear();
         }
       }
 
       // Final flush with EOS flag.
-      // RFC 3533: "If a page contains no packets, its granule_position is the same as the
-      // granule_position of the last page containing at least one packet."
-      final finalGranulePos = pagePackets.isNotEmpty ? granulePos : lastFlushedGranulePos;
-      sink.add(_createOggPage(finalGranulePos * 3, pageSeqNum++, serial, pagePackets, isLastPage: true));
+      // Even if pagePackets is empty, we must send an EOS page.
+      // RFC 3533: granule_position is the same as the last packet-containing page if empty.
+      sink.add(_createOggPage(granulePos, pageSeqNum++, serial, pagePackets, isLastPage: true));
 
       await sink.close();
       await File(tmpPath).rename(oggPath);
@@ -902,7 +902,7 @@ class VadAudioProcessor {
     header.setUint8(8, 1); // Version
     header.setUint8(9, channels);
     header.setUint16(10, 0, Endian.little); // Pre-skip
-    header.setUint32(12, sampleRate, Endian.little); // Original sample rate
+    header.setUint32(12, 48000, Endian.little); // Ogg Opus spec prefers 48kHz original rate
     header.setUint16(16, 0, Endian.little); // Output gain
     header.setUint8(18, 0); // Mapping family
     return header.buffer.asUint8List();
