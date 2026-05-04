@@ -779,7 +779,11 @@ class VadAudioProcessor {
     int currentWindowSamples = 0;
     int totalSamples = 0;
 
-    final opusSilenceFrame = Uint8List.fromList([0xF8, 0xFF, 0xFE]);
+    int granulePos = 0;
+    int pageSeqNum = 2;
+    String? currentFilePath;
+    Uint8List? currentFileBytes;
+    final pagePackets = <Uint8List>[];
 
     bool renamed = false;
     try {
@@ -787,81 +791,70 @@ class VadAudioProcessor {
       sink.add(_createOggPage(0, 0, serial, [_createOggOpusIdHeader()], isFirstPage: true));
       sink.add(_createOggPage(0, 1, serial, [_createOggOpusCommentHeader()]));
 
-      int granulePos = 0;
-      int pageSeqNum = 2;
-      String? currentFilePath;
-      Uint8List? currentFileBytes;
-      final pagePackets = <Uint8List>[];
-
       for (var i = 0; i < refs.length; i++) {
         final item = refs[i];
 
         if (item is Duration) {
           final ms = item.inMilliseconds;
-          final silenceFrames = (ms / frameDurationMs).round();
-          for (int f = 0; f < silenceFrames; f++) {
-            granulePos += samplesPerFrame;
-            pagePackets.add(opusSilenceFrame);
-            for (int s = 0; s < samplesPerFrame; s++) {
-              currentWindowSamples++;
-              if (currentWindowSamples >= windowSize) {
-                dynamicPeaks.add(0.0);
-                currentWindowSamples = 0;
-              }
-            }
-            totalSamples += samplesPerFrame;
-
-            if (pagePackets.length >= framesPerPage) {
-              sink.add(_createOggPage(granulePos * 3, pageSeqNum++, serial, pagePackets.toList()));
-              pagePackets.clear();
-            }
-          }
-          continue;
-        }
-
-        final ref = item as FrameRef;
-        if (i % 50 == 0) await Future.delayed(Duration.zero);
-
-        if (ref.segmentFile.path != currentFilePath) {
-          currentFileBytes = await ref.segmentFile.readAsBytes();
-          currentFilePath = ref.segmentFile.path;
-          await Future.delayed(Duration.zero);
-        }
-
-        if (currentFileBytes == null) continue;
-
-        final frameDataOffset = ref.byteOffset + 4;
-        final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
-
-        Int16List? pcmData;
-        try {
-          pcmData = _decoder?.decode(input: opusBytes);
-        } catch (e) {
-          continue;
-        }
-        if (pcmData != null) {
-          for (int s = 0; s < pcmData.length; s++) {
-            final amplitude = pcmData[s].abs() / 32768.0;
-            if (amplitude > currentWindowMax) currentWindowMax = amplitude;
+          final durationSamples = (ms * sampleRate) ~/ 1000;
+          granulePos += durationSamples;
+          
+          // Still need to update waveform metadata for silence
+          for (int s = 0; s < durationSamples; s++) {
             currentWindowSamples++;
             if (currentWindowSamples >= windowSize) {
-              dynamicPeaks.add(currentWindowMax);
-              currentWindowMax = 0.0;
+              dynamicPeaks.add(0.0);
               currentWindowSamples = 0;
             }
           }
-          totalSamples += pcmData.length;
+          totalSamples += durationSamples;
+        } else {
+          final ref = item as FrameRef;
+          if (i % 50 == 0) await Future.delayed(Duration.zero);
+
+          if (ref.segmentFile.path != currentFilePath) {
+            currentFileBytes = await ref.segmentFile.readAsBytes();
+            currentFilePath = ref.segmentFile.path;
+            await Future.delayed(Duration.zero);
+          }
+
+          if (currentFileBytes == null) continue;
+
+          final frameDataOffset = ref.byteOffset + 4;
+          final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
+
+          Int16List? pcmData;
+          try {
+            pcmData = _decoder?.decode(input: opusBytes);
+          } catch (e) {
+            continue;
+          }
+          if (pcmData != null) {
+            for (int s = 0; s < pcmData.length; s++) {
+              final amplitude = pcmData[s].abs() / 32768.0;
+              if (amplitude > currentWindowMax) currentWindowMax = amplitude;
+              currentWindowSamples++;
+              if (currentWindowSamples >= windowSize) {
+                dynamicPeaks.add(currentWindowMax);
+                currentWindowMax = 0.0;
+                currentWindowSamples = 0;
+              }
+            }
+            totalSamples += pcmData.length;
+          }
+
+          granulePos += samplesPerFrame;
+          pagePackets.add(opusBytes);
         }
 
-        granulePos += samplesPerFrame;
-        pagePackets.add(opusBytes);
-
-        final isLast = (i == refs.length - 1);
-        if (pagePackets.length >= framesPerPage || isLast) {
-          sink.add(_createOggPage(granulePos * 3, pageSeqNum++, serial, pagePackets.toList(), isLastPage: isLast));
+        if (pagePackets.length >= framesPerPage) {
+          sink.add(_createOggPage(granulePos * 3, pageSeqNum++, serial, pagePackets.toList()));
           pagePackets.clear();
         }
       }
+
+      // Final flush with EOS flag. Even if pagePackets is empty, we must send an EOS page.
+      sink.add(_createOggPage(granulePos * 3, pageSeqNum++, serial, pagePackets, isLastPage: true));
 
       await sink.close();
       await File(tmpPath).rename(oggPath);
@@ -970,7 +963,7 @@ class VadAudioProcessor {
 
     final pageBytes = page.takeBytes();
     final crc = _computeOggCrc(pageBytes);
-    ByteData.view(pageBytes.buffer).setUint32(22, crc, Endian.little);
+    ByteData.view(pageBytes.buffer, pageBytes.offsetInBytes, pageBytes.length).setUint32(22, crc, Endian.little);
     return pageBytes;
   }
 

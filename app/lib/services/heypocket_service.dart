@@ -27,7 +27,8 @@ class HeyPocketService {
 
   static String _mimeType(String path) {
     if (path.endsWith('.wav')) return 'audio/wav';
-    if (path.endsWith('.ogg')) return 'audio/ogg';
+    if (path.endsWith('.ogg')) return 'audio/opus';
+    if (path.endsWith('.m4a')) return 'audio/m4a';
     return 'audio/mp4';
   }
 
@@ -88,27 +89,27 @@ class HeyPocketService {
         ..headers['Content-Type'] = contentType
         ..contentLength = fileLength;
 
-      Object? streamError;
-      final pipeFuture = rec.file.openRead().pipe(request.sink).catchError((e) {
-        streamError = e;
-        request.sink.close();
-      });
+      // Start piping data. Note: pipe() handles closing the sink automatically.
+      final pipeFuture = rec.file.openRead().pipe(request.sink);
 
-      final streamedRes = await request.send();
-      await pipeFuture.timeout(const Duration(seconds: 60));
+      // In IOClient, send() waits for the stream to finish before returning headers.
+      // We set a generous timeout for the entire upload (e.g. 10 mins for 15MB).
+      final streamedRes = await request.send().timeout(const Duration(minutes: 10));
 
-      if (streamError != null) throw HeyPocketException(0, 'File read failed during upload');
+      // Ensure the pipe operation also completed without disk-read errors.
+      await pipeFuture;
+
       if (streamedRes.statusCode != 200 && streamedRes.statusCode != 204) {
         throw HeyPocketException(streamedRes.statusCode, _errorMessage(streamedRes.statusCode));
       }
     } on HeyPocketException {
       rethrow;
     } on TimeoutException {
-      throw HeyPocketException(0, 'Connection timed out — check your network');
+      throw const HeyPocketException(0, 'Upload timed out — check your connection speed');
     } on SocketException {
-      throw HeyPocketException(0, 'No network connection');
+      throw const HeyPocketException(0, 'No network connection');
     } catch (e) {
-      throw HeyPocketException(0, 'Upload failed');
+      throw HeyPocketException(0, 'Upload failed: $e');
     }
   }
 
