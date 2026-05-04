@@ -71,10 +71,18 @@ class SharedPreferencesUtil {
   int get vadMaxConversationMinutes => getInt('vadMaxConversationMinutes', defaultValue: 60);
   set vadMaxConversationMinutes(int v) => saveInt('vadMaxConversationMinutes', v);
 
-  // When enabled, Opus audio is converted to M4A (AAC) after VAD processing.
-  // When disabled, raw Opus frames are saved directly to disk (as .ogg or .wav).
-  bool get convertOpusToM4a => getBool('convertOpusToM4a', defaultValue: false);
-  set convertOpusToM4a(bool value) => saveBool('convertOpusToM4a', value);
+  // The format to save processed audio files. Options: 'm4a', 'ogg', 'wav'.
+  String get audioSaveFormat {
+    if (_preferences?.containsKey('convertOpusToM4a') == true) {
+      final isM4a = getBool('convertOpusToM4a', defaultValue: false);
+      remove('convertOpusToM4a');
+      final format = isM4a ? 'm4a' : 'ogg';
+      saveString('audioSaveFormat', format);
+      return format;
+    }
+    return getString('audioSaveFormat', defaultValue: 'm4a');
+  }
+  set audioSaveFormat(String value) => saveString('audioSaveFormat', value);
 
   int get backgroundSyncIntervalMinutes => getInt('backgroundSyncIntervalMinutes', defaultValue: 30);
   set backgroundSyncIntervalMinutes(int v) => saveInt('backgroundSyncIntervalMinutes', v);
