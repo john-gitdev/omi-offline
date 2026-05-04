@@ -58,7 +58,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     final deviceProvider = context.read<DeviceProvider>();
     final pairedDevice = deviceProvider.pairedDevice;
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
-      var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+      var connection = await ServiceManager.instance().device.ensureConnection(
+        pairedDevice.id,
+      );
       if (connection != null) {
         var features = await connection.getFeatures();
         // Retry up to 2 more times if the first read fails (transient GATT error
@@ -67,8 +69,14 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           await Future.delayed(const Duration(milliseconds: 600));
           features = await connection.getFeatures();
         }
-        final hasDimming = OmiFeatures.hasFeature(features, OmiFeatures.ledDimming);
-        final hasMicGain = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
+        final hasDimming = OmiFeatures.hasFeature(
+          features,
+          OmiFeatures.ledDimming,
+        );
+        final hasMicGain = OmiFeatures.hasFeature(
+          features,
+          OmiFeatures.micGain,
+        );
 
         if (!mounted) return;
         setState(() {
@@ -119,7 +127,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     final deviceProvider = context.read<DeviceProvider>();
     final pairedDevice = deviceProvider.pairedDevice;
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
-      var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+      var connection = await ServiceManager.instance().device.ensureConnection(
+        pairedDevice.id,
+      );
       await connection?.setLedDimRatio(value.toInt());
     }
   }
@@ -128,7 +138,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     final deviceProvider = context.read<DeviceProvider>();
     final pairedDevice = deviceProvider.pairedDevice;
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
-      var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+      var connection = await ServiceManager.instance().device.ensureConnection(
+        pairedDevice.id,
+      );
       await connection?.setMicGain(value.toInt());
     }
   }
@@ -141,11 +153,18 @@ class _DeviceSettingsState extends State<DeviceSettings> {
         children: [
           Text(
             title,
-            style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w600),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 20,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           if (subtitle != null) ...[
             const SizedBox(height: 6),
-            Text(subtitle, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
+            Text(
+              subtitle,
+              style: TextStyle(color: Colors.grey.shade400, fontSize: 14),
+            ),
           ],
         ],
       ),
@@ -164,44 +183,74 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
       child: Row(
         children: [
-          SizedBox(width: 24, height: 24, child: FaIcon(icon, color: const Color(0xFF8E8E93), size: 20)),
+          SizedBox(
+            width: 24,
+            height: 24,
+            child: FaIcon(icon, color: const Color(0xFF8E8E93), size: 20),
+          ),
           const SizedBox(width: 16),
           Expanded(
             child: Text(
               title,
-              style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 17,
+                fontWeight: FontWeight.w400,
+              ),
             ),
           ),
           if (chipValue != null) ...[
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(color: const Color(0xFF2A2A2E), borderRadius: BorderRadius.circular(100)),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2A2A2E),
+                borderRadius: BorderRadius.circular(100),
+              ),
               child: Text(
                 chipValue,
-                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ),
             if (showChevron) const SizedBox(width: 8),
           ],
-          if (showChevron) const Icon(Icons.chevron_right, color: Color(0xFF3C3C43), size: 20),
+          if (showChevron)
+            const Icon(Icons.chevron_right, color: Color(0xFF3C3C43), size: 20),
         ],
       ),
     );
 
     if (copyValue != null) {
-      return GestureDetector(
-        onTap: () {
-          Clipboard.setData(ClipboardData(text: copyValue));
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('$title copied to clipboard')));
-        },
-        child: content,
+      return Material(
+        color: Colors.transparent,
+        child: Semantics(
+          button: true,
+          label: 'Copy $title',
+          child: InkWell(
+            onTap: () {
+              Clipboard.setData(ClipboardData(text: copyValue));
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('$title copied to clipboard')),
+              );
+            },
+            child: Tooltip(message: 'Tap to copy', child: content),
+          ),
+        ),
       );
     }
 
     if (onTap != null) {
-      return GestureDetector(onTap: onTap, child: content);
+      return Material(
+        color: Colors.transparent,
+        child: Semantics(
+          button: true,
+          label: title,
+          child: InkWell(onTap: onTap, child: content),
+        ),
+      );
     }
     return content;
   }
@@ -218,13 +267,18 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     }
 
     return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(20),
+      ),
       child: Column(
         children: [
           _buildProfileStyleItem(
             icon: FontAwesomeIcons.batteryFull,
             title: 'Battery Level',
-            chipValue: provider.batteryLevel >= 0 ? '${provider.batteryLevel}%' : '...',
+            chipValue: provider.batteryLevel >= 0
+                ? '${provider.batteryLevel}%'
+                : '...',
             showChevron: false,
           ),
           const Divider(height: 1, color: Color(0xFF3C3C43)),
@@ -242,19 +296,22 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             chipValue: device?.firmwareRevision ?? 'oo-1.0.9',
             showChevron: false,
           ),
-          if (provider.storageStats != null && provider.storageStats!.freeBytes > 0) ...[
+          if (provider.storageStats != null &&
+              provider.storageStats!.freeBytes > 0) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.microchip,
               title: 'Storage Free Space',
-              chipValue: '${(provider.storageStats!.freeBytes / 1024 / 1024).toStringAsFixed(1)} MB',
+              chipValue:
+                  '${(provider.storageStats!.freeBytes / 1024 / 1024).toStringAsFixed(1)} MB',
               showChevron: false,
             ),
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.fileAudio,
               title: 'File Count',
-              chipValue: '${(provider.storageStats!.fileCount - 1).clamp(0, 999)}',
+              chipValue:
+                  '${(provider.storageStats!.fileCount - 1).clamp(0, 999)}',
               showChevron: false,
             ),
           ],
@@ -269,7 +326,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     final manufacturer = device?.manufacturerName ?? 'Based Hardware';
 
     return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(20),
+      ),
       child: Column(
         children: [
           _buildProfileStyleItem(
@@ -304,7 +364,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1C1C1E),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (context, setSheetState) {
@@ -318,18 +380,29 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                       margin: const EdgeInsets.only(bottom: 16),
                       width: 36,
                       height: 4,
-                      decoration: BoxDecoration(color: const Color(0xFF3C3C43), borderRadius: BorderRadius.circular(2)),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF3C3C43),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
                     ),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
                           'LED Brightness',
-                          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                         Text(
                           '${_dimRatio.round()}%',
-                          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ],
                     ),
@@ -340,8 +413,13 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         inactiveTrackColor: Colors.grey.shade800,
                         thumbColor: Colors.white,
                         overlayColor: Colors.white.withOpacity(0.1),
-                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 12, elevation: 2),
-                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 24),
+                        thumbShape: const RoundSliderThumbShape(
+                          enabledThumbRadius: 12,
+                          elevation: 2,
+                        ),
+                        overlayShape: const RoundSliderOverlayShape(
+                          overlayRadius: 24,
+                        ),
                         trackHeight: 6,
                       ),
                       child: Slider(
@@ -355,9 +433,12 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                             _dimRatio = value;
                           });
                           _debounce?.cancel();
-                          _debounce = Timer(const Duration(milliseconds: 300), () {
-                            _updateDimRatio(value);
-                          });
+                          _debounce = Timer(
+                            const Duration(milliseconds: 300),
+                            () {
+                              _updateDimRatio(value);
+                            },
+                          );
                         },
                         onChangeEnd: (double value) {
                           _debounce?.cancel();
@@ -369,8 +450,20 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Off', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                        Text('Max', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                        Text(
+                          'Off',
+                          style: TextStyle(
+                            color: Colors.grey.shade500,
+                            fontSize: 12,
+                          ),
+                        ),
+                        Text(
+                          'Max',
+                          style: TextStyle(
+                            color: Colors.grey.shade500,
+                            fontSize: 12,
+                          ),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 16),
@@ -388,12 +481,24 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1C1C1E),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (context, setSheetState) {
             String getGainLabel(int level) {
-              const labels = ['Mute', '-20dB', '-10dB', '+0dB', '+6dB', '+10dB', '+20dB', '+30dB', '+40dB'];
+              const labels = [
+                'Mute',
+                '-20dB',
+                '-10dB',
+                '+0dB',
+                '+6dB',
+                '+10dB',
+                '+20dB',
+                '+30dB',
+                '+40dB',
+              ];
               return level >= 0 && level < labels.length ? labels[level] : '';
             }
 
@@ -409,7 +514,9 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                 'Very high - for very quiet sources',
                 'Maximum - use with caution',
               ];
-              return level >= 0 && level < descriptions.length ? descriptions[level] : '';
+              return level >= 0 && level < descriptions.length
+                  ? descriptions[level]
+                  : '';
             }
 
             final currentLevel = _micGain.round();
@@ -424,23 +531,40 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                       margin: const EdgeInsets.only(bottom: 16),
                       width: 36,
                       height: 4,
-                      decoration: BoxDecoration(color: const Color(0xFF3C3C43), borderRadius: BorderRadius.circular(2)),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF3C3C43),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
                     ),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
                           'Mic Gain',
-                          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                         Text(
                           getGainLabel(currentLevel),
-                          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 8),
-                    Text(getGainDescription(currentLevel), style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
+                    Text(
+                      getGainDescription(currentLevel),
+                      style: TextStyle(
+                        color: Colors.grey.shade500,
+                        fontSize: 13,
+                      ),
+                    ),
                     const SizedBox(height: 24),
                     SliderTheme(
                       data: SliderThemeData(
@@ -448,8 +572,13 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         inactiveTrackColor: Colors.grey.shade800,
                         thumbColor: Colors.white,
                         overlayColor: Colors.white.withOpacity(0.1),
-                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 12, elevation: 2),
-                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 24),
+                        thumbShape: const RoundSliderThumbShape(
+                          enabledThumbRadius: 12,
+                          elevation: 2,
+                        ),
+                        overlayShape: const RoundSliderOverlayShape(
+                          overlayRadius: 24,
+                        ),
                         trackHeight: 6,
                       ),
                       child: Slider(
@@ -463,9 +592,12 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                             _micGain = value;
                           });
                           _micGainDebounce?.cancel();
-                          _micGainDebounce = Timer(const Duration(milliseconds: 300), () {
-                            _updateMicGain(value);
-                          });
+                          _micGainDebounce = Timer(
+                            const Duration(milliseconds: 300),
+                            () {
+                              _updateMicGain(value);
+                            },
+                          );
                         },
                         onChangeEnd: (double value) {
                           _micGainDebounce?.cancel();
@@ -477,35 +609,62 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Mute', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                        Text('Max', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                        Text(
+                          'Mute',
+                          style: TextStyle(
+                            color: Colors.grey.shade500,
+                            fontSize: 12,
+                          ),
+                        ),
+                        Text(
+                          'Max',
+                          style: TextStyle(
+                            color: Colors.grey.shade500,
+                            fontSize: 12,
+                          ),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 20),
                     Row(
                       children: [
                         Expanded(
-                          child: _buildPresetButton('Quiet', 2, currentLevel, () {
-                            setSheetState(() {});
-                            setState(() => _micGain = 2.0);
-                            _updateMicGain(2.0);
-                          }),
+                          child: _buildPresetButton(
+                            'Quiet',
+                            2,
+                            currentLevel,
+                            () {
+                              setSheetState(() {});
+                              setState(() => _micGain = 2.0);
+                              _updateMicGain(2.0);
+                            },
+                          ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: _buildPresetButton('Normal', 4, currentLevel, () {
-                            setSheetState(() {});
-                            setState(() => _micGain = 4.0);
-                            _updateMicGain(4.0);
-                          }),
+                          child: _buildPresetButton(
+                            'Normal',
+                            4,
+                            currentLevel,
+                            () {
+                              setSheetState(() {});
+                              setState(() => _micGain = 4.0);
+                              _updateMicGain(4.0);
+                            },
+                          ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: _buildPresetButton('High', 6, currentLevel, () {
-                            setSheetState(() {});
-                            setState(() => _micGain = 6.0);
-                            _updateMicGain(6.0);
-                          }),
+                          child: _buildPresetButton(
+                            'High',
+                            6,
+                            currentLevel,
+                            () {
+                              setSheetState(() {});
+                              setState(() => _micGain = 6.0);
+                              _updateMicGain(6.0);
+                            },
+                          ),
                         ),
                       ],
                     ),
@@ -520,16 +679,28 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     );
   }
 
-  Widget _buildPresetButton(String label, int level, int currentLevel, VoidCallback onTap) {
+  Widget _buildPresetButton(
+    String label,
+    int level,
+    int currentLevel,
+    VoidCallback onTap,
+  ) {
     final isSelected = level == currentLevel;
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 10),
         decoration: BoxDecoration(
-          color: isSelected ? Colors.white.withOpacity(0.1) : const Color(0xFF2A2A2E),
+          color: isSelected
+              ? Colors.white.withOpacity(0.1)
+              : const Color(0xFF2A2A2E),
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: isSelected ? Colors.white.withOpacity(0.5) : Colors.transparent, width: 1),
+          border: Border.all(
+            color: isSelected
+                ? Colors.white.withOpacity(0.5)
+                : Colors.transparent,
+            width: 1,
+          ),
         ),
         child: Center(
           child: Text(
@@ -546,13 +717,26 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   }
 
   String _getMicGainLabel(int level) {
-    const labels = ['Mute', '-20dB', '-10dB', '+0dB', '+6dB', '+10dB', '+20dB', '+30dB', '+40dB'];
+    const labels = [
+      'Mute',
+      '-20dB',
+      '-10dB',
+      '+0dB',
+      '+6dB',
+      '+10dB',
+      '+20dB',
+      '+30dB',
+      '+40dB',
+    ];
     return level >= 0 && level < labels.length ? labels[level] : '';
   }
 
   Widget _buildCustomizationSection() {
     return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(20),
+      ),
       child: Column(
         children: [
           // LED Brightness
@@ -581,18 +765,25 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
   Widget _buildActionsSection(DeviceProvider provider) {
     return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(20),
+      ),
       child: Column(
         children: [
           if (provider.isConnected) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             GestureDetector(
               onTap: () async {
-                await SharedPreferencesUtil().btDeviceSet(BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0));
+                await SharedPreferencesUtil().btDeviceSet(
+                  BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0),
+                );
                 SharedPreferencesUtil().deviceName = '';
                 final pairedDeviceId = provider.pairedDevice!.id;
                 // Use forgetDevice() to explicitly clear associations
-                await ServiceManager.instance().device.forgetDevice(pairedDeviceId);
+                await ServiceManager.instance().device.forgetDevice(
+                  pairedDeviceId,
+                );
 
                 // Explicitly tell native to stop managing this device (PR 6200 alignment)
                 if (provider.pairedDevice != null) {
@@ -609,24 +800,35 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                 provider.updateConnectingStatus(false);
                 if (mounted) {
                   Navigator.of(context).pop();
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(const SnackBar(content: Text('Your Omi has been unpaired')));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Your Omi has been unpaired')),
+                  );
                 }
               },
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 18,
+                ),
                 child: Row(
                   children: [
                     const SizedBox(
                       width: 24,
                       height: 24,
-                      child: FaIcon(FontAwesomeIcons.linkSlash, color: Colors.redAccent, size: 20),
+                      child: FaIcon(
+                        FontAwesomeIcons.linkSlash,
+                        color: Colors.redAccent,
+                        size: 20,
+                      ),
                     ),
                     const SizedBox(width: 16),
                     Text(
                       'Unpair Device',
-                      style: const TextStyle(color: Colors.redAccent, fontSize: 17, fontWeight: FontWeight.w400),
+                      style: const TextStyle(
+                        color: Colors.redAccent,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w400,
+                      ),
                     ),
                   ],
                 ),
@@ -642,26 +844,46 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(32),
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(14)),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(14),
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
             width: 64,
             height: 64,
-            decoration: BoxDecoration(color: const Color(0xFF2A2A2E), borderRadius: BorderRadius.circular(16)),
-            child: Center(child: FaIcon(FontAwesomeIcons.linkSlash, color: Colors.grey.shade500, size: 24)),
+            decoration: BoxDecoration(
+              color: const Color(0xFF2A2A2E),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Center(
+              child: FaIcon(
+                FontAwesomeIcons.linkSlash,
+                color: Colors.grey.shade500,
+                size: 24,
+              ),
+            ),
           ),
           const SizedBox(height: 20),
           Text(
             'Device Not Connected',
-            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 8),
           Text(
             'Connect your Omi device to access\ndevice settings and customization',
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey.shade500, fontSize: 14, height: 1.4),
+            style: TextStyle(
+              color: Colors.grey.shade500,
+              fontSize: 14,
+              height: 1.4,
+            ),
           ),
         ],
       ),
@@ -685,7 +907,11 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           const SizedBox(height: 24),
           Text(
             device?.name ?? 'Omi CV1',
-            style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+            ),
           ),
           const SizedBox(height: 8),
           Row(
@@ -732,7 +958,11 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             ),
             title: Text(
               'Device Settings',
-              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             centerTitle: true,
           ),
