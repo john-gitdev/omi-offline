@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -192,22 +193,22 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                           'Time Format',
                           style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                         ),
-                        Row(
-                          children: [
-                            Text(
-                              _use24HourTime ? '24hr' : 'AM/PM',
-                              style: TextStyle(color: Colors.grey.shade400, fontSize: 14),
-                            ),
-                            const SizedBox(width: 8),
-                            Switch(
-                              value: _use24HourTime,
-                              activeThumbColor: Colors.deepPurpleAccent,
-                              onChanged: (value) {
-                                setState(() => _use24HourTime = value);
-                                _markDirty();
-                              },
-                            ),
+                        DropdownButton<bool>(
+                          value: _use24HourTime,
+                          dropdownColor: const Color(0xFF2C2C2E),
+                          icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                          underline: const SizedBox(),
+                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          items: const [
+                            DropdownMenuItem(value: false, child: Text('AM/PM')),
+                            DropdownMenuItem(value: true, child: Text('24-Hour')),
                           ],
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => _use24HourTime = value);
+                              _markDirty();
+                            }
+                          },
                         ),
                       ],
                     ),
@@ -231,39 +232,33 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Save File Format As',
-                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      value: _audioSaveFormat,
-                      dropdownColor: const Color(0xFF2C2C2E),
-                      icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
-                      decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
-                        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      ),
-                      items: const [
-                        DropdownMenuItem(
-                          value: 'm4a',
-                          child: Text('M4A (AAC)', style: TextStyle(color: Colors.white)),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Save File Format As',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                         ),
-                        DropdownMenuItem(
-                          value: 'ogg',
-                          child: Text('OGG (Opus)', style: TextStyle(color: Colors.white)),
-                        ),
-                        DropdownMenuItem(
-                          value: 'wav',
-                          child: Text('WAV (PCM)', style: TextStyle(color: Colors.white)),
+                        DropdownButton<String>(
+                          value: _audioSaveFormat,
+                          dropdownColor: const Color(0xFF2C2C2E),
+                          icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                          underline: const SizedBox(),
+                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          items: [
+                            const DropdownMenuItem(value: 'm4a', child: Text('M4A (AAC)')),
+                            if (!Platform.isIOS)
+                              const DropdownMenuItem(value: 'ogg', child: Text('OGG (Opus)')),
+                            const DropdownMenuItem(value: 'wav', child: Text('WAV (PCM)')),
+                          ],
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => _audioSaveFormat = value);
+                              _markDirty();
+                            }
+                          },
                         ),
                       ],
-                      onChanged: (value) {
-                        if (value != null) {
-                          setState(() => _audioSaveFormat = value);
-                          _markDirty();
-                        }
-                      },
                     ),
                     const SizedBox(height: 8),
                     Text(
