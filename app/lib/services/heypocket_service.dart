@@ -27,7 +27,7 @@ class HeyPocketService {
 
   static String _mimeType(String path) {
     if (path.endsWith('.wav')) return 'audio/wav';
-    if (path.endsWith('.ogg')) return 'audio/ogg; codecs=opus';
+    if (path.endsWith('.ogg')) return 'audio/ogg';
     if (path.endsWith('.m4a')) return 'audio/m4a';
     return 'audio/mp4';
   }
