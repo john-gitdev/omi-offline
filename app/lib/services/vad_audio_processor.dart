@@ -780,6 +780,7 @@ class VadAudioProcessor {
     int totalSamples = 0;
 
     int granulePos = 0;
+    int lastFlushedGranulePos = 0;
     int pageSeqNum = 2;
     String? currentFilePath;
     Uint8List? currentFileBytes;
@@ -848,13 +849,17 @@ class VadAudioProcessor {
         }
 
         if (pagePackets.length >= framesPerPage) {
+          lastFlushedGranulePos = granulePos;
           sink.add(_createOggPage(granulePos * 3, pageSeqNum++, serial, pagePackets.toList()));
           pagePackets.clear();
         }
       }
 
-      // Final flush with EOS flag. Even if pagePackets is empty, we must send an EOS page.
-      sink.add(_createOggPage(granulePos * 3, pageSeqNum++, serial, pagePackets, isLastPage: true));
+      // Final flush with EOS flag.
+      // RFC 3533: "If a page contains no packets, its granule_position is the same as the
+      // granule_position of the last page containing at least one packet."
+      final finalGranulePos = pagePackets.isNotEmpty ? granulePos : lastFlushedGranulePos;
+      sink.add(_createOggPage(finalGranulePos * 3, pageSeqNum++, serial, pagePackets, isLastPage: true));
 
       await sink.close();
       await File(tmpPath).rename(oggPath);
