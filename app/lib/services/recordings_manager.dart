@@ -776,8 +776,7 @@ class RecordingsManager {
     VoidCallback? onRecordingFinalized,
   }) async {
     final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
-    final hasDrafts = batches.any((b) => b.draftRecordings.isNotEmpty);
-    if (activeBatches.isEmpty && !(finalizeDrafts && hasDrafts)) return;
+    if (activeBatches.isEmpty) return;
     if (_isProcessingAny) throw Exception("Another processing task is already in progress.");
 
     _isProcessingAny = true;
@@ -787,266 +786,264 @@ class RecordingsManager {
     try {
       final directory = await getApplicationDocumentsDirectory();
 
-      if (activeBatches.isNotEmpty) {
-        // Disk space guard — bail before processing if free space is critically low.
-        final allRawFiles = activeBatches.expand((b) => b.rawSegments).toList();
-        final rawTotalBytes = allRawFiles.fold<int>(0, (sum, f) {
-          try {
-            return sum + f.lengthSync();
-          } catch (_) {
-            return sum;
-          }
-        });
-        if (rawTotalBytes > 50 * 1024 * 1024) {
-          try {
-            final probe = File('${directory.path}/.disk_probe');
-            final sink = probe.openWrite();
-            sink.add(Uint8List(1024 * 1024));
-            await sink.flush();
-            await sink.close();
-            await probe.delete();
-          } catch (e) {
-            Logger.error(
-              'RecordingsManager: Disk space probe failed ($e). '
-              'Skipping processing to preserve raw segments.',
-            );
-            return;
-          }
-        }
-
-        final tempProcessingPath = '${directory.path}/processing_temp/combined';
-        final tempDir = Directory(tempProcessingPath);
-        if (await tempDir.exists()) await tempDir.delete(recursive: true);
-        await tempDir.create(recursive: true);
-
-        // Moves any completed recordings from tempDir to their live recordings/<date>/ folder
-        // and fires onRecordingFinalized for each audio file moved.
-        Future<void> moveTempFilesToLive() async {
-          if (!await tempDir.exists()) return;
-          // Move .meta sidecars before .m4a/.wav so the sidecar is always present
-          // by the time onRecordingFinalized fires and the scan reads the file.
-          final folderEntities = await tempDir.list().toList();
-          final entities = folderEntities.whereType<File>().where((f) {
-            final name = f.path.split('/').last;
-            // Ignore temp files used during encoding to avoid race conditions
-            // where the main isolate moves a file while the background isolate is still writing it.
-            if (name.contains('.tmp')) return false;
-            // Only move known finalized file types
-            return name.endsWith('.m4a') ||
-                name.endsWith('.wav') ||
-                name.endsWith('.ogg') ||
-                name.endsWith('.meta') ||
-                name.endsWith('.bin');
-          }).toList()
-            ..sort((a, b) {
-              final aIsMeta = a.path.endsWith('.meta') ? 0 : 1;
-              final bIsMeta = b.path.endsWith('.meta') ? 0 : 1;
-              return aIsMeta.compareTo(bIsMeta);
-            });
-          for (final entity in entities) {
-            final fileName = entity.path.split('/').last;
-            final parts = fileName.split('_');
-            final millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
-            final dateStr =
-                (millis != null && millis > 0) ? _dateStringFromMillis(millis) : activeBatches.last.dateString;
-            final liveDir = Directory('${directory.path}/recordings/$dateStr');
-            await liveDir.create(recursive: true);
-            final dest = '${liveDir.path}/$fileName';
-            try {
-              await File(dest).delete();
-            } on FileSystemException catch (_) {}
-            await entity.rename(dest);
-            if (fileName.endsWith('.m4a')) {
-              final legacyWav = File(
-                '${liveDir.path}/${fileName.replaceAll('.m4a', '')}.wav',
-              );
-              try {
-                await legacyWav.delete();
-              } on FileSystemException catch (_) {}
-              onRecordingFinalized?.call();
-              notifyRecordingsChanged();
-            } else if (fileName.endsWith('.wav') || fileName.endsWith('.ogg')) {
-              onRecordingFinalized?.call();
-              notifyRecordingsChanged();
-            }
-          }
-        }
-
-        // Combine segments from all batches, sorted by (deviceSessionId, segmentIndex).
-        final allSegments = activeBatches.expand((b) => b.rawSegments).toList();
-        allSegments.sort((a, b) {
-          final ap = a.path.split('/').last.replaceAll('.bin', '').split('_');
-          final bp = b.path.split('/').last.replaceAll('.bin', '').split('_');
-          final as_ = int.tryParse(ap[0]) ?? 0;
-          final bs_ = int.tryParse(bp[0]) ?? 0;
-          if (as_ != bs_) return as_.compareTo(bs_);
-          return (int.tryParse(ap.length > 1 ? ap[1] : '0') ?? 0).compareTo(
-            int.tryParse(bp.length > 1 ? bp[1] : '0') ?? 0,
-          );
-        });
-
-        // Pre-compute segment timestamps and session IDs on the main isolate.
-        const kMinValidEpoch = 946684800;
-        final segmentStartTimesMs = <int>[];
-        final segmentSessionIds = <int?>[];
-        final segmentDerivedFlags = <bool>[];
-        final segmentFileSizes = <int>[];
-        for (final file in allSegments) {
-          segmentFileSizes.add(file.lengthSync());
-          final stem = file.path.split('/').last.split('.').first;
-          final parts = stem.split('_');
-          final timerStart = int.tryParse(parts[0]);
-          final sessionId = parts.length > 1 ? int.tryParse(parts[1]) : null;
-          
-          segmentSessionIds.add(sessionId);
-
-          if (timerStart != null && timerStart > kMinValidEpoch) {
-            segmentStartTimesMs.add(timerStart * 1000);
-            segmentDerivedFlags.add(false);
-          } else {
-            segmentStartTimesMs.add(
-              file.lastModifiedSync().millisecondsSinceEpoch,
-            );
-            segmentDerivedFlags.add(true);
-          }
-        }
-
-        // Pre-load the ONNX model on the main isolate (rootBundle requires main isolate).
-        // Skipped when VAD is disabled — isolate will run in AAD mode.
-        Uint8List? modelBytes;
-        if (SharedPreferencesUtil().vadEnabled) {
-          try {
-            final data = await rootBundle.load('assets/models/silero_vad.onnx');
-            modelBytes = data.buffer.asUint8List(
-              data.offsetInBytes,
-              data.lengthInBytes,
-            );
-          } catch (e) {
-            Logger.error(
-              'RecordingsManager: Failed to pre-load VAD model ($e) — AAD mode active.',
-            );
-          }
-        }
-
-        final Set<String> deletedSegmentFolders = {};
-
+      // Disk space guard — bail before processing if free space is critically low.
+      final allRawFiles = activeBatches.expand((b) => b.rawSegments).toList();
+      final rawTotalBytes = allRawFiles.fold<int>(0, (sum, f) {
         try {
-          final receivePort = ReceivePort();
-          final exitPort = ReceivePort();
-          bool isolateDone = false;
-
-          final startTime = DateTime.now();
-          int processedBytes = 0;
-
-          await Isolate.spawn(
-            _processingIsolateEntry,
-            _IsolateParams(
-              sendPort: receivePort.sendPort,
-              rootIsolateToken: RootIsolateToken.instance!,
-              modelBytes: modelBytes,
-              settings: ProcessingSettings.fromPrefs(),
-              tempProcessingPath: tempProcessingPath,
-              segmentPaths: allSegments.map((f) => f.path).toList(),
-              segmentFileSizes: segmentFileSizes,
-              segmentStartTimesMs: segmentStartTimesMs,
-              segmentSessionIds: segmentSessionIds,
-              segmentDerivedFlags: segmentDerivedFlags,
-              backgroundMode: backgroundMode,
-            ),
-            onExit: exitPort.sendPort,
+          return sum + f.lengthSync();
+        } catch (_) {
+          return sum;
+        }
+      });
+      if (rawTotalBytes > 50 * 1024 * 1024) {
+        try {
+          final probe = File('${directory.path}/.disk_probe');
+          final sink = probe.openWrite();
+          sink.add(Uint8List(1024 * 1024));
+          await sink.flush();
+          await sink.close();
+          await probe.delete();
+        } catch (e) {
+          Logger.error(
+            'RecordingsManager: Disk space probe failed ($e). '
+            'Skipping processing to preserve raw segments.',
           );
+          return;
+        }
+      }
 
-          // If the isolate dies without sending 'done'/'error', close receivePort so we don't hang.
-          exitPort.listen((_) {
-            if (!isolateDone) receivePort.close();
-            exitPort.close();
+      final tempProcessingPath = '${directory.path}/processing_temp/combined';
+      final tempDir = Directory(tempProcessingPath);
+      if (await tempDir.exists()) await tempDir.delete(recursive: true);
+      await tempDir.create(recursive: true);
+
+      // Moves any completed recordings from tempDir to their live recordings/<date>/ folder
+      // and fires onRecordingFinalized for each audio file moved.
+      Future<void> moveTempFilesToLive() async {
+        if (!await tempDir.exists()) return;
+        // Move .meta sidecars before .m4a/.wav so the sidecar is always present
+        // by the time onRecordingFinalized fires and the scan reads the file.
+        final folderEntities = await tempDir.list().toList();
+        final entities = folderEntities.whereType<File>().where((f) {
+          final name = f.path.split('/').last;
+          // Ignore temp files used during encoding to avoid race conditions
+          // where the main isolate moves a file while the background isolate is still writing it.
+          if (name.contains('.tmp')) return false;
+          // Only move known finalized file types
+          return name.endsWith('.m4a') ||
+              name.endsWith('.wav') ||
+              name.endsWith('.ogg') ||
+              name.endsWith('.meta') ||
+              name.endsWith('.bin');
+        }).toList()
+          ..sort((a, b) {
+            final aIsMeta = a.path.endsWith('.meta') ? 0 : 1;
+            final bIsMeta = b.path.endsWith('.meta') ? 0 : 1;
+            return aIsMeta.compareTo(bIsMeta);
           });
+        for (final entity in entities) {
+          final fileName = entity.path.split('/').last;
+          final parts = fileName.split('_');
+          final millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
+          final dateStr =
+              (millis != null && millis > 0) ? _dateStringFromMillis(millis) : activeBatches.last.dateString;
+          final liveDir = Directory('${directory.path}/recordings/$dateStr');
+          await liveDir.create(recursive: true);
+          final dest = '${liveDir.path}/$fileName';
+          try {
+            await File(dest).delete();
+          } on FileSystemException catch (_) {}
+          await entity.rename(dest);
+          if (fileName.endsWith('.m4a')) {
+            final legacyWav = File(
+              '${liveDir.path}/${fileName.replaceAll('.m4a', '')}.wav',
+            );
+            try {
+              await legacyWav.delete();
+            } on FileSystemException catch (_) {}
+            onRecordingFinalized?.call();
+            notifyRecordingsChanged();
+          } else if (fileName.endsWith('.wav') || fileName.endsWith('.ogg')) {
+            onRecordingFinalized?.call();
+            notifyRecordingsChanged();
+          }
+        }
+      }
 
-          await for (final msg in receivePort) {
-            if (msg is! Map) continue;
-            switch (msg['type'] as String) {
-              case 'control_port':
-                _activeIsolateControlPort = msg['port'] as SendPort;
-                // Forward a pending cancel if the user already called cancelProcessing().
-                if (_cancelRequested) {
-                  _activeIsolateControlPort?.send('cancel');
-                }
-              case 'move':
-                await moveTempFilesToLive();
-              case 'delete_segments':
-                if (!SharedPreferencesUtil().adjustmentMode) {
-                  final paths = (msg['paths'] as List).cast<String>();
-                  for (final path in paths) {
-                    final f = File(path);
-                    if (await f.exists()) {
-                      Logger.debug(
-                        'RecordingsManager: Deleting raw segment: $path',
-                      );
-                      await f.delete();
-                      deletedSegmentFolders.add(f.parent.path);
-                    }
+      // Combine segments from all batches, sorted by (deviceSessionId, segmentIndex).
+      final allSegments = activeBatches.expand((b) => b.rawSegments).toList();
+      allSegments.sort((a, b) {
+        final ap = a.path.split('/').last.replaceAll('.bin', '').split('_');
+        final bp = b.path.split('/').last.replaceAll('.bin', '').split('_');
+        final as_ = int.tryParse(ap[0]) ?? 0;
+        final bs_ = int.tryParse(bp[0]) ?? 0;
+        if (as_ != bs_) return as_.compareTo(bs_);
+        return (int.tryParse(ap.length > 1 ? ap[1] : '0') ?? 0).compareTo(
+          int.tryParse(bp.length > 1 ? bp[1] : '0') ?? 0,
+        );
+      });
+
+      // Pre-compute segment timestamps and session IDs on the main isolate.
+      const kMinValidEpoch = 946684800;
+      final segmentStartTimesMs = <int>[];
+      final segmentSessionIds = <int?>[];
+      final segmentDerivedFlags = <bool>[];
+      final segmentFileSizes = <int>[];
+      for (final file in allSegments) {
+        segmentFileSizes.add(file.lengthSync());
+        final stem = file.path.split('/').last.split('.').first;
+        final parts = stem.split('_');
+        final timerStart = int.tryParse(parts[0]);
+        final sessionId = parts.length > 1 ? int.tryParse(parts[1]) : null;
+        
+        segmentSessionIds.add(sessionId);
+
+        if (timerStart != null && timerStart > kMinValidEpoch) {
+          segmentStartTimesMs.add(timerStart * 1000);
+          segmentDerivedFlags.add(false);
+        } else {
+          segmentStartTimesMs.add(
+            file.lastModifiedSync().millisecondsSinceEpoch,
+          );
+          segmentDerivedFlags.add(true);
+        }
+      }
+
+      // Pre-load the ONNX model on the main isolate (rootBundle requires main isolate).
+      // Skipped when VAD is disabled — isolate will run in AAD mode.
+      Uint8List? modelBytes;
+      if (SharedPreferencesUtil().vadEnabled) {
+        try {
+          final data = await rootBundle.load('assets/models/silero_vad.onnx');
+          modelBytes = data.buffer.asUint8List(
+            data.offsetInBytes,
+            data.lengthInBytes,
+          );
+        } catch (e) {
+          Logger.error(
+            'RecordingsManager: Failed to pre-load VAD model ($e) — AAD mode active.',
+          );
+        }
+      }
+
+      final Set<String> deletedSegmentFolders = {};
+
+      try {
+        final receivePort = ReceivePort();
+        final exitPort = ReceivePort();
+        bool isolateDone = false;
+
+        final startTime = DateTime.now();
+        int processedBytes = 0;
+
+        await Isolate.spawn(
+          _processingIsolateEntry,
+          _IsolateParams(
+            sendPort: receivePort.sendPort,
+            rootIsolateToken: RootIsolateToken.instance!,
+            modelBytes: modelBytes,
+            settings: ProcessingSettings.fromPrefs(),
+            tempProcessingPath: tempProcessingPath,
+            segmentPaths: allSegments.map((f) => f.path).toList(),
+            segmentFileSizes: segmentFileSizes,
+            segmentStartTimesMs: segmentStartTimesMs,
+            segmentSessionIds: segmentSessionIds,
+            segmentDerivedFlags: segmentDerivedFlags,
+            backgroundMode: backgroundMode,
+          ),
+          onExit: exitPort.sendPort,
+        );
+
+        // If the isolate dies without sending 'done'/'error', close receivePort so we don't hang.
+        exitPort.listen((_) {
+          if (!isolateDone) receivePort.close();
+          exitPort.close();
+        });
+
+        await for (final msg in receivePort) {
+          if (msg is! Map) continue;
+          switch (msg['type'] as String) {
+            case 'control_port':
+              _activeIsolateControlPort = msg['port'] as SendPort;
+              // Forward a pending cancel if the user already called cancelProcessing().
+              if (_cancelRequested) {
+                _activeIsolateControlPort?.send('cancel');
+              }
+            case 'move':
+              await moveTempFilesToLive();
+            case 'delete_segments':
+              if (!SharedPreferencesUtil().adjustmentMode) {
+                final paths = (msg['paths'] as List).cast<String>();
+                for (final path in paths) {
+                  final f = File(path);
+                  if (await f.exists()) {
+                    Logger.debug(
+                      'RecordingsManager: Deleting raw segment: $path',
+                    );
+                    await f.delete();
+                    deletedSegmentFolders.add(f.parent.path);
                   }
                 }
-              case 'progress':
-                final segmentBytes = msg['processed_bytes'] as int;
-                processedBytes += segmentBytes;
-                final index = msg['index'] as int;
-                final totalSegments = msg['total'] as int;
+              }
+            case 'progress':
+              final segmentBytes = msg['processed_bytes'] as int;
+              processedBytes += segmentBytes;
+              final index = msg['index'] as int;
+              final totalSegments = msg['total'] as int;
 
-                final progressVal = rawTotalBytes > 0 ? processedBytes / rawTotalBytes : ((index + 1) / totalSegments);
-                final progress = (progressVal * 0.9).clamp(0.0, 0.9);
+              final progressVal = rawTotalBytes > 0 ? processedBytes / rawTotalBytes : ((index + 1) / totalSegments);
+              final progress = (progressVal * 0.9).clamp(0.0, 0.9);
 
-                Duration? eta;
-                if (progressVal >= 0.05 && processedBytes > 0) {
-                  final elapsed = DateTime.now().difference(startTime);
-                  final remainingBytes = rawTotalBytes - processedBytes;
-                  final etaMs = (elapsed.inMilliseconds * remainingBytes) ~/ processedBytes;
-                  eta = Duration(milliseconds: etaMs);
-                }
-                processingProgress.value = progressVal;
-                onProgress(progress, eta);
-              case 'done':
-                isolateDone = true;
-                receivePort.close();
-              case 'error':
-                isolateDone = true;
-                receivePort.close();
-                throw Exception(msg['message']);
-            }
+              Duration? eta;
+              if (progressVal >= 0.05 && processedBytes > 0) {
+                final elapsed = DateTime.now().difference(startTime);
+                final remainingBytes = rawTotalBytes - processedBytes;
+                final etaMs = (elapsed.inMilliseconds * remainingBytes) ~/ processedBytes;
+                eta = Duration(milliseconds: etaMs);
+              }
+              processingProgress.value = progressVal;
+              onProgress(progress, eta);
+            case 'done':
+              isolateDone = true;
+              receivePort.close();
+            case 'error':
+              isolateDone = true;
+              receivePort.close();
+              throw Exception(msg['message']);
           }
-
-          _activeIsolateControlPort = null;
-
-          await Future.delayed(const Duration(milliseconds: 200));
-          if (await tempDir.exists()) await tempDir.delete(recursive: true);
-
-          // Resolve marker conversations for each date that has markers.
-          // Must run after temp→live move so the m4a files are in place.
-          for (final batch in activeBatches) {
-            if (batch.markerTimestamps.isEmpty) continue;
-            final liveDir = '${directory.path}/recordings/${batch.dateString}';
-            await _resolveMarkerConversations(liveDir, batch.markerTimestamps);
-          }
-        } catch (e) {
-          _activeIsolateControlPort = null;
-          Logger.error("RecordingsManager: Combined processing failed: $e");
-          rethrow;
         }
 
-        // Clean up any device-session folders that are now empty after progressive deletion.
-        for (final folderPath in deletedSegmentFolders) {
-          final folder = Directory(folderPath);
-          if (await folder.exists()) {
-            try {
-              if (await folder.list().isEmpty) await folder.delete();
-            } catch (_) {}
-          }
+        _activeIsolateControlPort = null;
+
+        await Future.delayed(const Duration(milliseconds: 200));
+        if (await tempDir.exists()) await tempDir.delete(recursive: true);
+
+        // Resolve marker conversations for each date that has markers.
+        // Must run after temp→live move so the m4a files are in place.
+        for (final batch in activeBatches) {
+          if (batch.markerTimestamps.isEmpty) continue;
+          final liveDir = '${directory.path}/recordings/${batch.dateString}';
+          await _resolveMarkerConversations(liveDir, batch.markerTimestamps);
+        }
+      } catch (e) {
+        _activeIsolateControlPort = null;
+        Logger.error("RecordingsManager: Combined processing failed: $e");
+        rethrow;
+      }
+
+      // Clean up any device-session folders that are now empty after progressive deletion.
+      for (final folderPath in deletedSegmentFolders) {
+        final folder = Directory(folderPath);
+        if (await folder.exists()) {
+          try {
+            if (await folder.list().isEmpty) await folder.delete();
+          } catch (_) {}
         }
       }
 
       // Phase 3: Post-Sync Stitch Pass
       // After processing is complete, look for drafts and stitch them if within threshold.
-      await _stitchDraftRecordings(finalizeAll: finalizeDrafts, onRecordingFinalized: onRecordingFinalized);
+      await _stitchDraftRecordings(finalizeAll: finalizeDrafts);
 
       onProgress(1.0, Duration.zero);
     } finally {
@@ -1058,7 +1055,7 @@ class RecordingsManager {
 
   /// Scans for draft recordings across all dates and stitches them with subsequent
   /// recordings if the gap is within the 2-minute threshold.
-  Future<void> _stitchDraftRecordings({bool finalizeAll = false, VoidCallback? onRecordingFinalized}) async {
+  Future<void> _stitchDraftRecordings({bool finalizeAll = false}) async {
     final directory = await getApplicationDocumentsDirectory();
     final recordingsDir = Directory('${directory.path}/recordings');
     if (!await recordingsDir.exists()) return;
@@ -1096,7 +1093,7 @@ class RecordingsManager {
 
           if (!await draftMeta.exists()) {
             // No meta, can't stitch accurately. Finalize it.
-            await _finalizeDraft(draftFile, onRecordingFinalized: onRecordingFinalized);
+            await _finalizeDraft(draftFile);
             scanNeeded = true;
             break;
           }
@@ -1104,7 +1101,7 @@ class RecordingsManager {
           // Get draft duration from meta
           final metaBytes = await draftMeta.readAsBytes();
           if (metaBytes.length < 8) {
-            await _finalizeDraft(draftFile, onRecordingFinalized: onRecordingFinalized);
+            await _finalizeDraft(draftFile);
             scanNeeded = true;
             break;
           }
@@ -1116,7 +1113,7 @@ class RecordingsManager {
           if (currentIndex == -1 || currentIndex == allAudioFiles.length - 1) {
             // No next file in this folder.
             if (finalizeAll) {
-              await _finalizeDraft(draftFile, onRecordingFinalized: onRecordingFinalized);
+              await _finalizeDraft(draftFile);
               scanNeeded = true;
               break;
             }
@@ -1132,13 +1129,12 @@ class RecordingsManager {
             final success = await _performStitch(draftFile, nextFile, gapMs);
             if (success) {
               // After stitching, we need to re-scan this folder.
-              onRecordingFinalized?.call();
               scanNeeded = true;
               break;
             }
           } else {
             // Gap too large or next file is in the past (shouldn't happen). Finalize.
-            await _finalizeDraft(draftFile, onRecordingFinalized: onRecordingFinalized);
+            await _finalizeDraft(draftFile);
             scanNeeded = true;
             break;
           }
@@ -1156,7 +1152,7 @@ class RecordingsManager {
     return int.tryParse(tsPart) ?? 0;
   }
 
-  Future<void> _finalizeDraft(File file, {VoidCallback? onRecordingFinalized}) async {
+  Future<void> _finalizeDraft(File file) async {
     final path = file.path;
     if (!path.contains('_draft.')) return;
     final newPath = path.replaceAll('_draft.', '.');
@@ -1171,8 +1167,6 @@ class RecordingsManager {
         await File(metaPath).rename(newMetaPath);
       }
       Logger.debug('RecordingsManager: Finalized draft ${file.path}');
-      onRecordingFinalized?.call();
-      notifyRecordingsChanged();
     } catch (e) {
       Logger.error('RecordingsManager: Failed to finalize draft $path: $e');
     }
