@@ -850,7 +850,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   void tryAutoUploadNext() {
-    if (_prefs.adjustmentMode) return;
+    // TODO: Disable this later
+    // if (_prefs.adjustmentMode) return;
     if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty) return;
     final apiKey = _prefs.heypocketApiKey;
     final keySetAt = _prefs.heypocketKeySetAt;
@@ -975,7 +976,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   void tryAutoSyncNext() {
-    if (_prefs.adjustmentMode) return;
+    // TODO: Disable this later
+    // if (_prefs.adjustmentMode) return;
     if (!_prefs.omiSyncEnabled || _prefs.omiRefreshToken.isEmpty) return;
     final minDuration = _prefs.filterMinDurationSeconds;
 
@@ -1017,9 +1019,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> uploadConversation(Conversation conversation) async {
-    if (_prefs.adjustmentMode) {
-      throw Exception('Uploads are disabled in Adjustment Mode');
-    }
+    // TODO: Disable this later
+    // if (_prefs.adjustmentMode) {
+    //   throw Exception('Uploads are disabled in Adjustment Mode');
+    // }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) throw Exception('Upload key unavailable');
     if (_uploadingFiles.contains(uploadKey)) return;
