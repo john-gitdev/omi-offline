@@ -96,7 +96,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     );
 
     try {
-      await ServiceManager.instance().device.ensureConnection(device.id, force: true, requiresBond: true);
+      await ServiceManager.instance().device.ensureConnection(device.id, force: true);
 
       // Save paired device — state transitions (setConnectedDevice, setIsConnected, WAL sync, etc.)
       // are handled by DeviceProvider._onDeviceConnected via the onDeviceConnectionStateChanged callback.
