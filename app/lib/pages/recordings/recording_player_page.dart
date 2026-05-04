@@ -9,6 +9,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/widgets/dialog.dart';
 
 class ConversationPlayerPage extends StatefulWidget {
   final Conversation conversation;
@@ -173,18 +174,36 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   }
 
   Future<void> _handleUpload() async {
-    if (_prefs.adjustmentMode) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Uploads paused — turn off Adjustment Mode first')),
-        );
-      }
-      return;
-    }
+    // TODO: Disable this later
+    // if (_prefs.adjustmentMode) {
+    //   if (mounted) {
+    //     ScaffoldMessenger.of(context).showSnackBar(
+    //       const SnackBar(content: Text('Uploads paused — turn off Adjustment Mode first')),
+    //     );
+    //   }
+    //   return;
+    // }
     final apiKey = _prefs.heypocketApiKey;
     if (apiKey.isEmpty || _isUploading) return;
     final uploadKey = widget.conversation.uploadKey;
     if (uploadKey == null) return;
+
+    final alreadyUploaded = _prefs.isUploadedToHeypocket(uploadKey);
+    if (alreadyUploaded) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (c) => getDialog(
+          c,
+          () => Navigator.of(c).pop(false),
+          () => Navigator.of(c).pop(true),
+          'Re-upload Conversation',
+          'This conversation was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)',
+          confirmText: 'Upload',
+        ),
+      );
+      if (confirm != true) return;
+    }
+
     setState(() => _isUploading = true);
     try {
       await HeyPocketService.uploadRecording(apiKey, widget.conversation);

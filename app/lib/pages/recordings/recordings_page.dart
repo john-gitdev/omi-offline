@@ -417,14 +417,15 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _handleUploadTap(Conversation conversation) async {
-    if (_prefs.adjustmentMode) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Uploads paused — turn off Adjustment Mode first'),
-        ),
-      );
-      return;
-    }
+    // TODO: Disable this later
+    // if (_prefs.adjustmentMode) {
+    //   ScaffoldMessenger.of(context).showSnackBar(
+    //     const SnackBar(
+    //       content: Text('Uploads paused — turn off Adjustment Mode first'),
+    //     ),
+    //   );
+    //   return;
+    // }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -439,23 +440,20 @@ class _RecordingsPageState extends State<RecordingsPage> {
     if (_controller.uploadingFiles.contains(uploadKey)) return;
 
     final alreadyUploaded = _prefs.isUploadedToHeypocket(uploadKey);
-    final title = alreadyUploaded ? 'Re-upload Conversation' : 'Upload Conversation';
-    final content = alreadyUploaded
-        ? 'This conversation was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)'
-        : 'Upload this conversation to HeyPocket?';
-
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (c) => getDialog(
-        context,
-        () => Navigator.of(context).pop(false),
-        () => Navigator.of(context).pop(true),
-        title,
-        content,
-        confirmText: 'Upload',
-      ),
-    );
-    if (confirm != true) return;
+    if (alreadyUploaded) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (c) => getDialog(
+          c,
+          () => Navigator.of(c).pop(false),
+          () => Navigator.of(c).pop(true),
+          'Re-upload Conversation',
+          'This conversation was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)',
+          confirmText: 'Upload',
+        ),
+      );
+      if (confirm != true) return;
+    }
 
     unawaited(
       _controller.uploadConversation(conversation).catchError((e) {
