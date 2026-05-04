@@ -17,7 +17,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
   late int _backgroundSyncIntervalMinutes;
   late bool _use24HourTime;
   late bool _adjustmentMode;
-  late bool _convertOpusToM4a;
+  late String _audioSaveFormat;
   late bool _passthroughMode;
 
   bool _isDirty = false;
@@ -28,7 +28,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     _backgroundSyncIntervalMinutes = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
     _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
-    _convertOpusToM4a = SharedPreferencesUtil().convertOpusToM4a;
+    _audioSaveFormat = SharedPreferencesUtil().audioSaveFormat;
     _passthroughMode = SharedPreferencesUtil().passthroughMode;
   }
 
@@ -45,7 +45,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     prefs.use24HourTime = _use24HourTime;
     prefs.adjustmentMode = _adjustmentMode;
     if (_adjustmentMode) prefs.adjustmentModeWasEnabled = true;
-    prefs.convertOpusToM4a = _convertOpusToM4a;
+    prefs.audioSaveFormat = _audioSaveFormat;
     prefs.passthroughMode = _passthroughMode;
 
     if (mounted) setState(() => _isDirty = false);
@@ -221,7 +221,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
               ),
               const SizedBox(height: 16),
 
-              // Convert to M4A
+              // Save File Format As
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -231,26 +231,47 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Convert to M4A',
-                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                    const Text(
+                      'Save File Format As',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: _audioSaveFormat,
+                      dropdownColor: const Color(0xFF2C2C2E),
+                      icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'm4a',
+                          child: Text('M4A (AAC)', style: TextStyle(color: Colors.white)),
                         ),
-                        Switch(
-                          value: _convertOpusToM4a,
-                          activeThumbColor: Colors.deepPurpleAccent,
-                          onChanged: (value) {
-                            setState(() => _convertOpusToM4a = value);
-                            _markDirty();
-                          },
+                        DropdownMenuItem(
+                          value: 'ogg',
+                          child: Text('OGG (Opus)', style: TextStyle(color: Colors.white)),
+                        ),
+                        DropdownMenuItem(
+                          value: 'wav',
+                          child: Text('WAV (PCM)', style: TextStyle(color: Colors.white)),
                         ),
                       ],
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() => _audioSaveFormat = value);
+                          _markDirty();
+                        }
+                      },
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'When enabled, recordings are converted to M4A for maximum compatibility. When disabled, they are saved in the original Opus format (using OGG on Android or WAV on iOS).',
+                      _audioSaveFormat == 'm4a'
+                          ? 'M4A provides maximum compatibility for cloud services and mobile players.'
+                          : _audioSaveFormat == 'ogg'
+                              ? 'OGG provides the smallest file size by saving the original Opus stream (Android only).'
+                              : 'WAV provides uncompressed, lossless PCM audio but results in very large file sizes.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],

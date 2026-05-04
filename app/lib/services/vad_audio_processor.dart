@@ -99,7 +99,7 @@ class VadAudioProcessor {
   final bool _discardShort;
   final int _maxChunkMs;
   final String _deviceId;
-  final bool _convertOpusToM4a;
+  final String _audioSaveFormat;
   final bool _omiSyncEnabled;
 
   static const int sampleRate = 16000;
@@ -154,7 +154,7 @@ class VadAudioProcessor {
         _discardShort = settings.discardShort,
         _maxChunkMs = settings.maxChunkMs,
         _deviceId = settings.deviceId,
-        _convertOpusToM4a = settings.convertOpusToM4a,
+        _audioSaveFormat = settings.audioSaveFormat,
         _omiSyncEnabled = settings.omiSyncEnabled;
 
   void destroy() {
@@ -566,7 +566,9 @@ class VadAudioProcessor {
       return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
     }
 
-    if (!_convertOpusToM4a) {
+    if (_audioSaveFormat == 'wav') {
+      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
+    } else if (_audioSaveFormat == 'ogg') {
       if (Platform.isIOS) {
         return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
       } else {
@@ -1375,3 +1377,4 @@ class VadAudioProcessor {
     return wavPath;
   }
 }
+
