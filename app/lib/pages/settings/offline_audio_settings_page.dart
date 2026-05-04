@@ -46,11 +46,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     return '${seconds ~/ 3600}h';
   }
 
-  static int _durationToIndex(int seconds) {
-    final i = _kShortRecordingOptions.indexOf(seconds);
-    return i < 0 ? 0 : i;
-  }
-
   bool _isDirty = false;
 
   @override
@@ -268,28 +263,38 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Speech Sensitivity',
-                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Speech Sensitivity',
+                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                          ),
+                          DropdownButton<double>(
+                            value: _snapToSensitivity(_vadSpeechThreshold),
+                            dropdownColor: const Color(0xFF2C2C2E),
+                            icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                            underline: const SizedBox(),
+                            style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                            items: _kSpeechSensitivityOptions.map((option) {
+                              return DropdownMenuItem(
+                                value: option.$2,
+                                child: Text(option.$1),
+                              );
+                            }).toList(),
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() => _vadSpeechThreshold = value);
+                                _markDirty();
+                              }
+                            },
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 8),
                       Text(
                         'Sensitive picks up quiet speech; Strict ignores background noise.',
                         style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          for (final (label, value) in _kSpeechSensitivityOptions)
-                            _WindowOption(
-                              label: label,
-                              selected: _vadSpeechThreshold == value,
-                              onTap: () {
-                                setState(() => _vadSpeechThreshold = value);
-                                _markDirty();
-                              },
-                            ),
-                        ],
                       ),
                     ],
                   ),
@@ -308,36 +313,38 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Silence to End Conversation',
-                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Silence to End Conversation',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        DropdownButton<int>(
+                          value: _vadSplitSeconds,
+                          dropdownColor: const Color(0xFF2C2C2E),
+                          icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                          underline: const SizedBox(),
+                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          items: [30, 60, 120, 300].map((sec) {
+                            return DropdownMenuItem(
+                              value: sec,
+                              child: Text(sec < 60 ? '${sec}s' : '${sec ~/ 60} min'),
+                            );
+                          }).toList(),
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => _vadSplitSeconds = value);
+                              _markDirty();
+                            }
+                          },
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 8),
                     Text(
                       'How long you need to be quiet before a new conversation begins.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    ),
-                    const SizedBox(height: 12),
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: [
-                          for (final sec in [30, 60, 120, 300])
-                            Container(
-                              width: 80,
-                              margin: const EdgeInsets.only(right: 8),
-                              child: _WindowOption(
-                                label: sec < 60 ? '${sec}s' : '${sec ~/ 60} min',
-                                selected: _vadSplitSeconds == sec,
-                                expand: false,
-                                onTap: () {
-                                  setState(() => _vadSplitSeconds = sec);
-                                  _markDirty();
-                                },
-                              ),
-                            ),
-                        ],
-                      ),
                     ),
                   ],
                 ),
@@ -362,17 +369,32 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                           'Short Recordings',
                           style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                         ),
-                        Text(
-                          _formatShortDuration(_filterMinDurationSeconds),
+                        DropdownButton<int>(
+                          value: _filterMinDurationSeconds,
+                          dropdownColor: const Color(0xFF2C2C2E),
+                          icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                          underline: const SizedBox(),
                           style: TextStyle(
                             color: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade500,
-                            fontSize: 15,
+                            fontSize: 16,
                             fontWeight: FontWeight.w500,
                           ),
+                          items: _kShortRecordingOptions.map((sec) {
+                            return DropdownMenuItem(
+                              value: sec,
+                              child: Text(_formatShortDuration(sec)),
+                            );
+                          }).toList(),
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => _filterMinDurationSeconds = value);
+                              _markDirty();
+                            }
+                          },
                         ),
                       ],
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 8),
                     Text(
                       _filterMinDurationSeconds == 0
                           ? 'All recordings are kept and shown regardless of length.'
@@ -381,42 +403,64 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                               : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the list and skipped by integrations.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
-                    Slider(
-                      value: _durationToIndex(_filterMinDurationSeconds).toDouble(),
-                      min: 0,
-                      max: 7,
-                      divisions: 7,
-                      label: _formatShortDuration(_filterMinDurationSeconds),
-                      activeColor: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade700,
-                      onChanged: (v) {
-                        setState(() => _filterMinDurationSeconds = _kShortRecordingOptions[v.round()]);
-                        _markDirty();
-                      },
-                    ),
-                    if (_filterMinDurationSeconds > 0) ...[
-                      const SizedBox(height: 4),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              if (_filterMinDurationSeconds > 0) ...[
+                // Action for Short Recordings
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white.withOpacity(0.05)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          _WindowOption(
-                            label: 'Keep',
-                            selected: !_discardShortRecordings,
-                            onTap: () {
-                              setState(() => _discardShortRecordings = false);
-                              _markDirty();
-                            },
+                          const Text(
+                            'Action for Short Recordings',
+                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                           ),
-                          _WindowOption(
-                            label: 'Discard',
-                            selected: _discardShortRecordings,
-                            onTap: () {
-                              setState(() => _discardShortRecordings = true);
-                              _markDirty();
+                          DropdownButton<bool>(
+                            value: _discardShortRecordings,
+                            dropdownColor: const Color(0xFF2C2C2E),
+                            icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                            underline: const SizedBox(),
+                            style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                            items: const [
+                              DropdownMenuItem(
+                                value: false,
+                                child: Text('Hide'),
+                              ),
+                              DropdownMenuItem(
+                                value: true,
+                                child: Text('Delete'),
+                              ),
+                            ],
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() => _discardShortRecordings = value);
+                                _markDirty();
+                              }
                             },
                           ),
                         ],
                       ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _discardShortRecordings
+                            ? 'Short recordings will be permanently deleted and cannot be recovered.'
+                            : 'Short recordings will be hidden from the main list but remain on the device.',
+                        style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                      ),
                       if (_discardShortRecordings && widget.onCountShortRecordings != null) ...[
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 16),
                         GestureDetector(
                           onTap: _handleCleanUp,
                           child: Container(
@@ -425,7 +469,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                             decoration: BoxDecoration(
                               color: const Color(0xFF2C2C2E),
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: Colors.redAccent.withValues(alpha: 0.4)),
+                              border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
                             ),
                             child: Center(
                               child: Text(
@@ -437,9 +481,9 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                         ),
                       ],
                     ],
-                  ],
+                  ),
                 ),
-              ),
+              ],
               const SizedBox(height: 16),
 
               // Maximum Conversation Length
@@ -453,28 +497,38 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Max Conversation Length',
-                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Max Conversation Length',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        DropdownButton<int>(
+                          value: _vadMaxConversationMinutes,
+                          dropdownColor: const Color(0xFF2C2C2E),
+                          icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                          underline: const SizedBox(),
+                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          items: [30, 60, 120, 180].map((mins) {
+                            return DropdownMenuItem(
+                              value: mins,
+                              child: Text(mins >= 60 ? '${mins ~/ 60}h' : '${mins}m'),
+                            );
+                          }).toList(),
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => _vadMaxConversationMinutes = value);
+                              _markDirty();
+                            }
+                          },
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 8),
                     Text(
                       'Forces a cut if a conversation reaches this duration, even without silence.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        for (final mins in [30, 60, 120, 180])
-                          _WindowOption(
-                            label: mins >= 60 ? '${mins ~/ 60}h' : '${mins}m',
-                            selected: _vadMaxConversationMinutes == mins,
-                            onTap: () {
-                              setState(() => _vadMaxConversationMinutes = mins);
-                              _markDirty();
-                            },
-                          ),
-                      ],
                     ),
                   ],
                 ),
@@ -484,41 +538,5 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
         ),
       ),
     );
-  }
-}
-
-class _WindowOption extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  final bool expand;
-
-  const _WindowOption({required this.label, required this.selected, required this.onTap, this.expand = true});
-
-  @override
-  Widget build(BuildContext context) {
-    Widget content = GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.only(right: 8),
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1C1C1E),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: selected ? Colors.deepPurpleAccent : Colors.transparent, width: 1.5),
-        ),
-        child: Center(
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? Colors.deepPurpleAccent : Colors.grey.shade400,
-              fontSize: 14,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-            ),
-          ),
-        ),
-      ),
-    );
-    return expand ? Expanded(child: content) : content;
   }
 }

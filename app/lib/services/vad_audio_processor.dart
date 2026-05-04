@@ -24,7 +24,7 @@ class ProcessingSettings {
   final bool discardShort;
   final int maxChunkMs;
   final String deviceId; // used to generate upload key in .meta sidecar
-  final bool convertOpusToM4a;
+  final String audioSaveFormat;
   final bool omiSyncEnabled;
 
   const ProcessingSettings({
@@ -35,7 +35,7 @@ class ProcessingSettings {
     required this.discardShort,
     required this.maxChunkMs,
     required this.deviceId,
-    required this.convertOpusToM4a,
+    required this.audioSaveFormat,
     required this.omiSyncEnabled,
   });
 
@@ -49,7 +49,7 @@ class ProcessingSettings {
       discardShort: p.discardShortRecordings,
       maxChunkMs: p.vadMaxConversationMinutes * 60 * 1000,
       deviceId: p.btDevice.id,
-      convertOpusToM4a: p.convertOpusToM4a,
+      audioSaveFormat: p.audioSaveFormat,
       omiSyncEnabled: p.omiSyncEnabled,
     );
   }
