@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/services/recordings_manager.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
 
@@ -44,10 +45,13 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
       Provider.of<DeviceProvider>(context, listen: false).restartBackgroundSyncTimer();
     }
     prefs.use24HourTime = _use24HourTime;
+    final prevAdjustmentMode = prefs.adjustmentMode;
     prefs.adjustmentMode = _adjustmentMode;
     if (_adjustmentMode) prefs.adjustmentModeWasEnabled = true;
     prefs.audioSaveFormat = _audioSaveFormat;
     prefs.passthroughMode = _passthroughMode;
+
+    if (prevAdjustmentMode != _adjustmentMode) RecordingsManager.notifyRecordingsChanged();
 
     if (mounted) setState(() => _isDirty = false);
   }
