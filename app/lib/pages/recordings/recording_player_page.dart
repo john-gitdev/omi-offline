@@ -8,7 +8,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/recordings_manager.dart';
-import 'package:omi/pages/recordings/recordings_controller.dart';
+import 'package:omi/pages/recordings/recordings_controller.dart' show RecordingsController, UploadStatus, UploadFailure;
 import 'package:omi/widgets/dialog.dart';
 
 class ConversationPlayerPage extends StatefulWidget {
@@ -179,7 +179,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
         (_prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty);
     if (!anyIntegrationEnabled || _isUploading) return;
 
-    if (widget.controller.isUploaded(widget.conversation)) {
+    final alreadyUploaded = widget.controller.isUploaded(widget.conversation);
+    if (alreadyUploaded) {
       final confirm = await showDialog<bool>(
         context: context,
         builder: (c) => getDialog(
@@ -196,41 +197,12 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
 
     setState(() => _isUploading = true);
     try {
-      final failures = await widget.controller.uploadConversation(widget.conversation);
+      final failures = await widget.controller.uploadConversation(widget.conversation, force: alreadyUploaded);
       if (!mounted) return;
-      
       for (final failure in failures) {
-        if (!mounted) break;
-        final deleteKeys = await showDialog<bool>(
-          context: context,
-          builder: (c) => getDialog(
-            c,
-            () => Navigator.of(c).pop(false),
-            () => Navigator.of(c).pop(true),
-            'Upload Failed (${failure.integration})',
-            'Integration ${failure.integration} failed to upload. Would you like to delete its API keys or dismiss?\n\nError: ${failure.error}',
-            cancelText: 'Dismiss',
-            confirmText: 'Delete keys',
-          ),
-        );
-
-        if (deleteKeys == true) {
-          if (failure.integration == 'HeyPocket') {
-            _prefs.heypocketEnabled = false;
-            await _prefs.setHeypocketApiKey('');
-          } else if (failure.integration == 'Omi Cloud') {
-            _prefs.omiSyncEnabled = false;
-            await _prefs.setOmiRefreshToken('');
-            await _prefs.setOmiFirebaseApiKey('');
-          }
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${failure.integration} keys deleted.')));
-            setState(() {});
-          }
-        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
       }
-      
-      if (mounted) setState(() {});
+      setState(() {});
     } finally {
       if (mounted) setState(() => _isUploading = false);
     }
@@ -250,11 +222,20 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
         child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
       );
     }
-    final uploaded = widget.controller.isUploaded(widget.conversation);
+    final status = widget.controller.uploadStatus(widget.conversation);
+    final color = switch (status) {
+      UploadStatus.all => Colors.green,
+      UploadStatus.partial => Colors.amber,
+      UploadStatus.none => Colors.redAccent,
+    };
+    final tooltip = switch (status) {
+      UploadStatus.all => 'Re-upload to integrations',
+      UploadStatus.partial => 'Some integrations pending — tap to retry',
+      UploadStatus.none => 'Upload to integrations',
+    };
     return IconButton(
-      icon: Icon(uploaded ? Icons.cloud_done : Icons.cloud_upload,
-          color: uploaded ? Colors.green : Colors.redAccent, size: 22),
-      tooltip: uploaded ? 'Re-upload to integrations' : 'Upload to integrations',
+      icon: Icon(status == UploadStatus.all ? Icons.cloud_done : Icons.cloud_upload, color: color, size: 22),
+      tooltip: tooltip,
       onPressed: _handleUpload,
     );
   }
