@@ -996,8 +996,7 @@ bool write_marker_to_storage(void)
 
     uint8_t temp_buffer[16];
     uint32_t utc_time = get_utc_time();
-    /* Use 64-bit uptime to avoid the ~49-day rollover of k_uptime_get_32(). */
-    uint64_t uptime_ms = (uint64_t)k_uptime_get();
+    uint32_t uptime_ms = (uint32_t)k_uptime_get();
 
     memcpy(temp_buffer, &utc_time, 4);
     memcpy(temp_buffer + 4, &uptime_ms, 4);
