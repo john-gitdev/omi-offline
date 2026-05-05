@@ -9,37 +9,59 @@ import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/mutex.dart';
 
 class OmiDeviceConnection extends DeviceConnection {
-  static const String batteryServiceUuid = '0000180f-0000-1000-8000-00805f9b34fb';
-  static const String batteryLevelCharacteristicUuid = '00002a19-0000-1000-8000-00805f9b34fb';
+  static const String batteryServiceUuid =
+      '0000180f-0000-1000-8000-00805f9b34fb';
+  static const String batteryLevelCharacteristicUuid =
+      '00002a19-0000-1000-8000-00805f9b34fb';
 
   // 1-byte battery detail: [charging:1]
-  static const String batteryDetailServiceUuid = '19b10050-e8f2-537e-4f6c-d104768a1214';
-  static const String batteryDetailCharacteristicUuid = '19b10051-e8f2-537e-4f6c-d104768a1214';
+  static const String batteryDetailServiceUuid =
+      '19b10050-e8f2-537e-4f6c-d104768a1214';
+  static const String batteryDetailCharacteristicUuid =
+      '19b10051-e8f2-537e-4f6c-d104768a1214';
 
-  static const String buttonServiceUuid = '19b10040-e8f2-537e-4f6c-d104768a1214';
-  static const String buttonTriggerCharacteristicUuid = '19b10041-e8f2-537e-4f6c-d104768a1214';
+  static const String buttonServiceUuid =
+      '19b10040-e8f2-537e-4f6c-d104768a1214';
+  static const String buttonTriggerCharacteristicUuid =
+      '19b10041-e8f2-537e-4f6c-d104768a1214';
 
-  static const String featuresServiceUuid = '19b10020-e8f2-537e-4f6c-d104768a1214';
-  static const String featuresCharacteristicUuid = '19b10021-e8f2-537e-4f6c-d104768a1214';
-  static const String audioCodecCharacteristicUuid = '19b10002-e8f2-537e-4f6c-d104768a1214';
+  static const String featuresServiceUuid =
+      '19b10020-e8f2-537e-4f6c-d104768a1214';
+  static const String featuresCharacteristicUuid =
+      '19b10021-e8f2-537e-4f6c-d104768a1214';
+  static const String audioCodecCharacteristicUuid =
+      '19b10002-e8f2-537e-4f6c-d104768a1214';
 
-  static const String storageDataStreamServiceUuid = '30295780-4301-eabd-2904-2849adfeae43';
-  static const String storageDataStreamCharacteristicUuid = '30295781-4301-eabd-2904-2849adfeae43';
-  static const String storageReadControlCharacteristicUuid = '30295782-4301-eabd-2904-2849adfeae43';
+  static const String storageDataStreamServiceUuid =
+      '30295780-4301-eabd-2904-2849adfeae43';
+  static const String storageDataStreamCharacteristicUuid =
+      '30295781-4301-eabd-2904-2849adfeae43';
+  static const String storageReadControlCharacteristicUuid =
+      '30295782-4301-eabd-2904-2849adfeae43';
 
-  static const String timeSyncServiceUuid = '19b10030-e8f2-537e-4f6c-d104768a1214';
-  static const String timeSyncWriteCharacteristicUuid = '19b10031-e8f2-537e-4f6c-d104768a1214';
+  static const String timeSyncServiceUuid =
+      '19b10030-e8f2-537e-4f6c-d104768a1214';
+  static const String timeSyncWriteCharacteristicUuid =
+      '19b10031-e8f2-537e-4f6c-d104768a1214';
 
   static const String disServiceUuid = '0000180a-0000-1000-8000-00805f9b34fb';
-  static const String disModelNumberCharacteristicUuid = '00002a24-0000-1000-8000-00805f9b34fb';
-  static const String disFirmwareRevisionCharacteristicUuid = '00002a26-0000-1000-8000-00805f9b34fb';
-  static const String disHardwareRevisionCharacteristicUuid = '00002a27-0000-1000-8000-00805f9b34fb';
-  static const String disManufacturerNameCharacteristicUuid = '00002a29-0000-1000-8000-00805f9b34fb';
-  static const String disSerialNumberCharacteristicUuid = '00002a25-0000-1000-8000-00805f9b34fb';
+  static const String disModelNumberCharacteristicUuid =
+      '00002a24-0000-1000-8000-00805f9b34fb';
+  static const String disFirmwareRevisionCharacteristicUuid =
+      '00002a26-0000-1000-8000-00805f9b34fb';
+  static const String disHardwareRevisionCharacteristicUuid =
+      '00002a27-0000-1000-8000-00805f9b34fb';
+  static const String disManufacturerNameCharacteristicUuid =
+      '00002a29-0000-1000-8000-00805f9b34fb';
+  static const String disSerialNumberCharacteristicUuid =
+      '00002a25-0000-1000-8000-00805f9b34fb';
 
-  static const String settingsServiceUuid = '19b10010-e8f2-537e-4f6c-d104768a1214';
-  static const String settingsDimRatioCharacteristicUuid = '19b10011-e8f2-537e-4f6c-d104768a1214';
-  static const String settingsMicGainCharacteristicUuid = '19b10012-e8f2-537e-4f6c-d104768a1214';
+  static const String settingsServiceUuid =
+      '19b10010-e8f2-537e-4f6c-d104768a1214';
+  static const String settingsDimRatioCharacteristicUuid =
+      '19b10011-e8f2-537e-4f6c-d104768a1214';
+  static const String settingsMicGainCharacteristicUuid =
+      '19b10012-e8f2-537e-4f6c-d104768a1214';
 
   // Protects against stale packets from previous calls
   int _listFilesGeneration = 0;
@@ -86,7 +108,7 @@ class OmiDeviceConnection extends DeviceConnection {
       }
     } catch (e) {
       Logger.error(
-        'Failed to acquire SD lock for [$owner]. Current owner: $_lockOwner. Error: $e'
+        'Failed to acquire SD lock for [$owner]. Current owner: $_lockOwner. Error: $e',
       );
       rethrow;
     }
@@ -136,10 +158,14 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<void> connect({
-    void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged,
+    void Function(String deviceId, DeviceConnectionState state)?
+    onConnectionStateChanged,
     bool requiresBond = false,
   }) async {
-    await super.connect(onConnectionStateChanged: onConnectionStateChanged, requiresBond: requiresBond);
+    await super.connect(
+      onConnectionStateChanged: onConnectionStateChanged,
+      requiresBond: requiresBond,
+    );
     await performSyncDeviceTime();
   }
 
@@ -159,14 +185,32 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<StorageFileStats?> performGetStorageFileStats() async {
     try {
-      final data =
-          await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
+      final data = await transport.readCharacteristic(
+        storageDataStreamServiceUuid,
+        storageReadControlCharacteristicUuid,
+      );
       if (data.length >= 8) {
-        final byteData = ByteData.sublistView(Uint8List.fromList(data));
+        // ⚡ Bolt: Use direct bitwise reads instead of ByteData.sublistView(Uint8List.fromList(data)) to prevent unnecessary allocations
         return StorageFileStats(
-          totalUsedBytes: byteData.getUint32(0, Endian.little),
-          fileCount: byteData.getUint32(4, Endian.little),
-          freeBytes: data.length >= 12 ? byteData.getUint32(8, Endian.little) : 0,
+          totalUsedBytes:
+              ((data[0] |
+                  (data[1] << 8) |
+                  (data[2] << 16) |
+                  (data[3] << 24)) >>>
+              0),
+          fileCount:
+              ((data[4] |
+                  (data[5] << 8) |
+                  (data[6] << 16) |
+                  (data[7] << 24)) >>>
+              0),
+          freeBytes: data.length >= 12
+              ? ((data[8] |
+                        (data[9] << 8) |
+                        (data[10] << 16) |
+                        (data[11] << 24)) >>>
+                    0)
+              : 0,
         );
       }
     } catch (e) {
@@ -177,13 +221,19 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<Stream<List<int>>> getBleStorageBytesStream() async {
-    return await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+    return await transport.getCharacteristicStream(
+      storageDataStreamServiceUuid,
+      storageDataStreamCharacteristicUuid,
+    );
   }
 
   @override
   Future<int> performRetrieveBatteryLevel() async {
     try {
-      final data = await transport.readCharacteristic(batteryServiceUuid, batteryLevelCharacteristicUuid);
+      final data = await transport.readCharacteristic(
+        batteryServiceUuid,
+        batteryLevelCharacteristicUuid,
+      );
       if (data.isNotEmpty) return data[0];
     } catch (_) {}
     return -1;
@@ -192,7 +242,10 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<bool> performRetrieveChargingState() async {
     try {
-      final data = await transport.readCharacteristic(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      final data = await transport.readCharacteristic(
+        batteryDetailServiceUuid,
+        batteryDetailCharacteristicUuid,
+      );
       if (data.isNotEmpty) return data[0] == 1;
     } catch (_) {}
     return false;
@@ -206,24 +259,35 @@ class OmiDeviceConnection extends DeviceConnection {
     // BAS level stream
     StreamSubscription<List<int>>? levelSub;
     try {
-      final levelStream = await transport.getCharacteristicStream(batteryServiceUuid, batteryLevelCharacteristicUuid);
+      final levelStream = await transport.getCharacteristicStream(
+        batteryServiceUuid,
+        batteryLevelCharacteristicUuid,
+      );
       levelSub = levelStream.listen((v) {
-        if (v.isNotEmpty && onBatteryLevelChange != null) onBatteryLevelChange(v[0]);
+        if (v.isNotEmpty && onBatteryLevelChange != null)
+          onBatteryLevelChange(v[0]);
       });
     } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error subscribing to battery level: $e');
+      Logger.debug(
+        'OmiDeviceConnection: Error subscribing to battery level: $e',
+      );
     }
 
     // Charging stream from custom service
     try {
-      final chargingStream =
-          await transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      final chargingStream = await transport.getCharacteristicStream(
+        batteryDetailServiceUuid,
+        batteryDetailCharacteristicUuid,
+      );
       await _chargingSubscription?.cancel();
       _chargingSubscription = chargingStream.listen((v) {
-        if (v.isNotEmpty && onChargingStateChange != null) onChargingStateChange(v[0] == 1);
+        if (v.isNotEmpty && onChargingStateChange != null)
+          onChargingStateChange(v[0] == 1);
       });
     } catch (e) {
-      Logger.debug('OmiDeviceConnection: Error subscribing to charging state: $e');
+      Logger.debug(
+        'OmiDeviceConnection: Error subscribing to charging state: $e',
+      );
     }
 
     return levelSub;
@@ -240,7 +304,10 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<List<int>> performGetButtonState() async {
     try {
-      return await transport.readCharacteristic(buttonServiceUuid, buttonTriggerCharacteristicUuid);
+      return await transport.readCharacteristic(
+        buttonServiceUuid,
+        buttonTriggerCharacteristicUuid,
+      );
     } catch (_) {
       return [];
     }
@@ -250,7 +317,10 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<BleAudioCodec> performGetAudioCodec() async {
     if (_cachedAudioCodec != null) return _cachedAudioCodec!;
     try {
-      final data = await transport.readCharacteristic(featuresServiceUuid, audioCodecCharacteristicUuid);
+      final data = await transport.readCharacteristic(
+        featuresServiceUuid,
+        audioCodecCharacteristicUuid,
+      );
       if (data.isNotEmpty) {
         if (data[0] == 20) return _cachedAudioCodec = BleAudioCodec.opus;
         if (data[0] == 21) return _cachedAudioCodec = BleAudioCodec.opusFS320;
@@ -264,7 +334,10 @@ class OmiDeviceConnection extends DeviceConnection {
     required void Function(List<int>) onButtonReceived,
   }) async {
     try {
-      final stream = await transport.getCharacteristicStream(buttonServiceUuid, buttonTriggerCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(
+        buttonServiceUuid,
+        buttonTriggerCharacteristicUuid,
+      );
       return stream.listen((value) {
         if (value.isNotEmpty) onButtonReceived(value);
       });
@@ -276,12 +349,21 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<List<int>> performGetStorageList() async {
     try {
-      final data =
-          await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
+      final data = await transport.readCharacteristic(
+        storageDataStreamServiceUuid,
+        storageReadControlCharacteristicUuid,
+      );
       List<int> result = [];
-      final bd = ByteData.sublistView(Uint8List.fromList(data));
+      // ⚡ Bolt: Use direct bitwise reads instead of ByteData.sublistView(Uint8List.fromList(data)) to prevent unnecessary allocations
       for (int i = 0; i < (data.length ~/ 4); i++) {
-        result.add(bd.getUint32(i * 4, Endian.little));
+        int offset = i * 4;
+        result.add(
+          ((data[offset] |
+                  (data[offset + 1] << 8) |
+                  (data[offset + 2] << 16) |
+                  (data[offset + 3] << 24)) >>>
+              0),
+        );
       }
       return result;
     } catch (_) {
@@ -290,7 +372,12 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp}) async {
+  Future<bool> performWriteToStorage(
+    int numFile,
+    int command,
+    int offset, {
+    int? timestamp,
+  }) async {
     try {
       final List<int> cmd = [
         command & 0xFF,
@@ -310,7 +397,10 @@ class OmiDeviceConnection extends DeviceConnection {
         ]);
       }
       await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, Uint8List.fromList(cmd));
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+        Uint8List.fromList(cmd),
+      );
       return true;
     } catch (_) {
       return false;
@@ -320,8 +410,17 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<int> performGetFeatures() async {
     try {
-      final data = await transport.readCharacteristic(featuresServiceUuid, featuresCharacteristicUuid);
-      if (data.length >= 4) return ByteData.sublistView(Uint8List.fromList(data)).getUint32(0, Endian.little);
+      final data = await transport.readCharacteristic(
+        featuresServiceUuid,
+        featuresCharacteristicUuid,
+      );
+      // ⚡ Bolt: Use direct bitwise reads instead of ByteData.sublistView(Uint8List.fromList(data)) to prevent unnecessary allocations
+      if (data.length >= 4)
+        return ((data[0] |
+                (data[1] << 8) |
+                (data[2] << 16) |
+                (data[3] << 24)) >>>
+            0);
     } catch (_) {}
     return 0;
   }
@@ -329,14 +428,21 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<void> performSetLedDimRatio(int ratio) async {
     try {
-      await transport.writeCharacteristic(settingsServiceUuid, settingsDimRatioCharacteristicUuid, [ratio]);
+      await transport.writeCharacteristic(
+        settingsServiceUuid,
+        settingsDimRatioCharacteristicUuid,
+        [ratio],
+      );
     } catch (_) {}
   }
 
   @override
   Future<int?> performGetLedDimRatio() async {
     try {
-      final data = await transport.readCharacteristic(settingsServiceUuid, settingsDimRatioCharacteristicUuid);
+      final data = await transport.readCharacteristic(
+        settingsServiceUuid,
+        settingsDimRatioCharacteristicUuid,
+      );
       if (data.isNotEmpty) return data[0];
     } catch (_) {}
     return null;
@@ -345,14 +451,21 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<void> performSetMicGain(int gain) async {
     try {
-      await transport.writeCharacteristic(settingsServiceUuid, settingsMicGainCharacteristicUuid, [gain]);
+      await transport.writeCharacteristic(
+        settingsServiceUuid,
+        settingsMicGainCharacteristicUuid,
+        [gain],
+      );
     } catch (_) {}
   }
 
   @override
   Future<int?> performGetMicGain() async {
     try {
-      final data = await transport.readCharacteristic(settingsServiceUuid, settingsMicGainCharacteristicUuid);
+      final data = await transport.readCharacteristic(
+        settingsServiceUuid,
+        settingsMicGainCharacteristicUuid,
+      );
       if (data.isNotEmpty) return data[0];
     } catch (_) {}
     return null;
@@ -363,27 +476,52 @@ class OmiDeviceConnection extends DeviceConnection {
     try {
       String? model, fw, hw, manuf, sn;
       try {
-        model =
-            String.fromCharCodes(await transport.readCharacteristic(disServiceUuid, disModelNumberCharacteristicUuid));
+        model = String.fromCharCodes(
+          await transport.readCharacteristic(
+            disServiceUuid,
+            disModelNumberCharacteristicUuid,
+          ),
+        );
       } catch (_) {}
       try {
         fw = String.fromCharCodes(
-            await transport.readCharacteristic(disServiceUuid, disFirmwareRevisionCharacteristicUuid));
+          await transport.readCharacteristic(
+            disServiceUuid,
+            disFirmwareRevisionCharacteristicUuid,
+          ),
+        );
       } catch (_) {}
       try {
         hw = String.fromCharCodes(
-            await transport.readCharacteristic(disServiceUuid, disHardwareRevisionCharacteristicUuid));
+          await transport.readCharacteristic(
+            disServiceUuid,
+            disHardwareRevisionCharacteristicUuid,
+          ),
+        );
       } catch (_) {}
       try {
         manuf = String.fromCharCodes(
-            await transport.readCharacteristic(disServiceUuid, disManufacturerNameCharacteristicUuid));
+          await transport.readCharacteristic(
+            disServiceUuid,
+            disManufacturerNameCharacteristicUuid,
+          ),
+        );
       } catch (_) {}
       try {
-        sn =
-            String.fromCharCodes(await transport.readCharacteristic(disServiceUuid, disSerialNumberCharacteristicUuid));
+        sn = String.fromCharCodes(
+          await transport.readCharacteristic(
+            disServiceUuid,
+            disSerialNumberCharacteristicUuid,
+          ),
+        );
       } catch (_) {}
       return device.copyWith(
-          modelNumber: model, firmwareRevision: fw, hardwareRevision: hw, manufacturerName: manuf, serialNumber: sn);
+        modelNumber: model,
+        firmwareRevision: fw,
+        hardwareRevision: hw,
+        manufacturerName: manuf,
+        serialNumber: sn,
+      );
     } catch (_) {
       return device;
     }
@@ -403,7 +541,8 @@ class OmiDeviceConnection extends DeviceConnection {
     bool isStale() => gen != _listFilesGeneration;
 
     void fail(String reason) {
-      if (!currentCompleter.isCompleted) currentCompleter.completeError(TimeoutException(reason));
+      if (!currentCompleter.isCompleted)
+        currentCompleter.completeError(TimeoutException(reason));
       unawaited(stop());
     }
 
@@ -418,8 +557,10 @@ class OmiDeviceConnection extends DeviceConnection {
     }
 
     try {
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+      );
       int? expectedTotalBytes;
 
       _listFilesSub = stream.listen((blePacket) {
@@ -435,14 +576,15 @@ class OmiDeviceConnection extends DeviceConnection {
         // PACKET_EOT (0x02) marks the end of the file list transfer.
         if (blePacket[0] == 0x02) {
           Logger.debug('OmiDeviceConnection: CMD_LIST_FILES EOT received');
-          if (expectedTotalBytes == null || buffer.length < expectedTotalBytes!) {
-            // If we got EOT but haven't received all expected bytes (or any bytes), 
+          if (expectedTotalBytes == null ||
+              buffer.length < expectedTotalBytes!) {
+            // If we got EOT but haven't received all expected bytes (or any bytes),
             // complete with what we have if it's a valid list.
             if (buffer.length >= 4) {
-               // We have at least the count, so we can try parsing.
-               _parseAndSuccess(buffer, success);
+              // We have at least the count, so we can try parsing.
+              _parseAndSuccess(buffer, success);
             } else {
-               success([]); // Empty list or malformed
+              success([]); // Empty list or malformed
             }
           }
           return;
@@ -459,7 +601,13 @@ class OmiDeviceConnection extends DeviceConnection {
 
         // Once we have the first 4 bytes of data, we know the total count
         if (expectedTotalBytes == null && buffer.length >= 4) {
-          final count = ByteData.sublistView(Uint8List.fromList(buffer)).getUint32(0, Endian.little);
+          // ⚡ Bolt: Use direct bitwise reads instead of ByteData.sublistView(Uint8List.fromList(buffer)) to prevent unnecessary allocations
+          final count =
+              ((buffer[0] |
+                  (buffer[1] << 8) |
+                  (buffer[2] << 16) |
+                  (buffer[3] << 24)) >>>
+              0);
           if (count == 0) {
             // Firmware sends [0x01][0,0,0,0] followed by [0x02] for empty list.
             expectedTotalBytes = 4;
@@ -469,24 +617,37 @@ class OmiDeviceConnection extends DeviceConnection {
           } else {
             // Entry format: [index:4][timestamp:4][size:4][sessionId:4] = 16 bytes
             expectedTotalBytes = 4 + (count * 16);
-            Logger.debug('OmiDeviceConnection: Expecting $count files ($expectedTotalBytes bytes total)');
+            Logger.debug(
+              'OmiDeviceConnection: Expecting $count files ($expectedTotalBytes bytes total)',
+            );
           }
         }
 
         // Keep accumulating until we reach the expected size
-        if (expectedTotalBytes != null && buffer.length >= expectedTotalBytes!) {
+        if (expectedTotalBytes != null &&
+            buffer.length >= expectedTotalBytes!) {
           _parseAndSuccess(buffer, success);
         }
       });
 
       await Future.delayed(_cccdSettleDelay);
-      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
-      _timeoutTimer = Timer(const Duration(seconds: 120), () => fail("Timeout"));
+      await transport.writeCharacteristic(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+        [0x10],
+      );
+      _timeoutTimer = Timer(
+        const Duration(seconds: 120),
+        () => fail("Timeout"),
+      );
       _cccdRetryTimer = Timer(const Duration(seconds: 10), () async {
         if (isStale() || currentCompleter.isCompleted) return;
         try {
-          await transport
-              .writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
+          await transport.writeCharacteristic(
+            storageDataStreamServiceUuid,
+            storageDataStreamCharacteristicUuid,
+            [0x10],
+          );
         } catch (_) {}
       });
       return await currentCompleter.future;
@@ -499,11 +660,14 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<bool> performDeleteFile(StorageFile file, {int? timestamp}) async {
     try {
       final completer = Completer<bool>();
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+      );
       final sub = stream.listen((data) {
         if (completer.isCompleted) return;
-        if (data.isNotEmpty && data[0] == 0x03) completer.complete(data.length < 2 || data[1] == 0);
+        if (data.isNotEmpty && data[0] == 0x03)
+          completer.complete(data.length < 2 || data[1] == 0);
       });
       await Future.delayed(_cccdCommandDelay);
 
@@ -518,7 +682,10 @@ class OmiDeviceConnection extends DeviceConnection {
       }
 
       await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, Uint8List.fromList(cmd));
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+        Uint8List.fromList(cmd),
+      );
       try {
         return await completer.future.timeout(const Duration(seconds: 35));
       } finally {
@@ -533,15 +700,21 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<bool> performStopStorageSync() async {
     try {
       final completer = Completer<bool>();
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+      );
       final sub = stream.listen((data) {
         if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
           completer.complete(data.length < 2 || data[1] == 0);
         }
       });
 
-      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x03]);
+      await transport.writeCharacteristic(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+        [0x03],
+      );
       try {
         return await completer.future.timeout(const Duration(seconds: 5));
       } finally {
@@ -556,13 +729,20 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<bool> performRotateFile() async {
     try {
       final completer = Completer<bool>();
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+      );
       final sub = stream.listen((data) {
-        if (!completer.isCompleted && data.length >= 2 && data[0] == 0x03) completer.complete(data[1] == 0);
+        if (!completer.isCompleted && data.length >= 2 && data[0] == 0x03)
+          completer.complete(data[1] == 0);
       });
       await Future.delayed(_cccdCommandDelay);
-      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x13]);
+      await transport.writeCharacteristic(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+        [0x13],
+      );
       try {
         return await completer.future.timeout(const Duration(seconds: 25));
       } finally {
@@ -577,14 +757,20 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<bool> performClearStorage() async {
     try {
       final completer = Completer<bool>();
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+      );
       final sub = stream.listen((data) {
         if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
           completer.complete(data.length < 2 || data[1] == 0);
         }
       });
-      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x14]);
+      await transport.writeCharacteristic(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+        [0x14],
+      );
       try {
         return await completer.future.timeout(const Duration(seconds: 65));
       } finally {
@@ -602,7 +788,10 @@ class OmiDeviceConnection extends DeviceConnection {
         int epoch = DateTime.now().millisecondsSinceEpoch ~/ 1000;
         final data = ByteData(4)..setUint32(0, epoch, Endian.little);
         await transport.writeCharacteristic(
-            timeSyncServiceUuid, timeSyncWriteCharacteristicUuid, data.buffer.asUint8List());
+          timeSyncServiceUuid,
+          timeSyncWriteCharacteristicUuid,
+          data.buffer.asUint8List(),
+        );
         return true;
       } catch (_) {
         await Future.delayed(Duration(milliseconds: 100 * (i + 1)));
@@ -611,28 +800,70 @@ class OmiDeviceConnection extends DeviceConnection {
     return false;
   }
 
-  void _parseAndSuccess(List<int> buffer, void Function(List<StorageFile>) success) {
-    final count = ByteData.sublistView(Uint8List.fromList(buffer)).getUint32(0, Endian.little);
+  void _parseAndSuccess(
+    List<int> buffer,
+    void Function(List<StorageFile>) success,
+  ) {
+    // ⚡ Bolt: Use direct bitwise reads instead of ByteData.sublistView(Uint8List.fromList(buffer)) to prevent unnecessary allocations
+    final count =
+        ((buffer[0] |
+            (buffer[1] << 8) |
+            (buffer[2] << 16) |
+            (buffer[3] << 24)) >>>
+        0);
     final files = <StorageFile>[];
     final totalExpected = 4 + (count * 16);
 
     // Guard against partial data if called from EOT branch
-    final actualBuffer = buffer.length > totalExpected ? buffer.sublist(0, totalExpected) : buffer;
+    final actualBuffer = buffer.length > totalExpected
+        ? buffer.sublist(0, totalExpected)
+        : buffer;
 
-    final bd = ByteData.sublistView(Uint8List.fromList(actualBuffer));
-    for (int i = 0; i < count && (4 + (i + 1) * 16) <= actualBuffer.length; i++) {
-      files.add(StorageFile(
-        index: bd.getUint32(4 + i * 16, Endian.little),
-        timestamp: bd.getUint32(8 + i * 16, Endian.little),
-        size: bd.getUint32(12 + i * 16, Endian.little),
-        sessionId: bd.getUint32(16 + i * 16, Endian.little),
-      ));
+    // ⚡ Bolt: Use direct bitwise reads to parse list files without ByteData / Uint8List allocations
+    for (
+      int i = 0;
+      i < count && (4 + (i + 1) * 16) <= actualBuffer.length;
+      i++
+    ) {
+      int baseOffset = 4 + i * 16;
+      files.add(
+        StorageFile(
+          index:
+              ((actualBuffer[baseOffset] |
+                  (actualBuffer[baseOffset + 1] << 8) |
+                  (actualBuffer[baseOffset + 2] << 16) |
+                  (actualBuffer[baseOffset + 3] << 24)) >>>
+              0),
+          timestamp:
+              ((actualBuffer[baseOffset + 4] |
+                  (actualBuffer[baseOffset + 5] << 8) |
+                  (actualBuffer[baseOffset + 6] << 16) |
+                  (actualBuffer[baseOffset + 7] << 24)) >>>
+              0),
+          size:
+              ((actualBuffer[baseOffset + 8] |
+                  (actualBuffer[baseOffset + 9] << 8) |
+                  (actualBuffer[baseOffset + 10] << 16) |
+                  (actualBuffer[baseOffset + 11] << 24)) >>>
+              0),
+          sessionId:
+              ((actualBuffer[baseOffset + 12] |
+                  (actualBuffer[baseOffset + 13] << 8) |
+                  (actualBuffer[baseOffset + 14] << 16) |
+                  (actualBuffer[baseOffset + 15] << 24)) >>>
+              0),
+        ),
+      );
     }
 
     for (int i = 0; i < files.length; i++) {
-      Logger.debug('OmiDeviceConnection: file[$i] index=${files[i].index} ts=${files[i].timestamp} size=${files[i].size} sid=${files[i].sessionId}');
+      Logger.debug(
+        'OmiDeviceConnection: file[$i] index=${files[i].index} ts=${files[i].timestamp} size=${files[i].size} sid=${files[i].sessionId}',
+      );
     }
-    Logger.debug('OmiDeviceConnection: Successfully parsed ${files.length} files (count field said $count)');
+    Logger.debug(
+      'OmiDeviceConnection: Successfully parsed ${files.length} files (count field said $count)',
+    );
     success(files);
   }
 }
