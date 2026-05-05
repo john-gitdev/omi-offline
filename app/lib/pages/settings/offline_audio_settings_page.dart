@@ -412,7 +412,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                             items: const [
                               DropdownMenuItem(
                                 value: false,
-                                child: Text('Separate'),
+                                child: Text('Hide'),
                               ),
                               DropdownMenuItem(
                                 value: true,
