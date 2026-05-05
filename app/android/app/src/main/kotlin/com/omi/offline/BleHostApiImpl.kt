@@ -35,7 +35,8 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
 
     override fun manageDevice(uuid: String, requiresBond: Boolean) {
         val activity = getActivity() ?: return
-        OmiBleForegroundService.startService(activity, uuid, requiresBond = requiresBond, caller = "BleHostApi.manageDevice")
+        val actualRequiresBond = requiresBond && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU
+        OmiBleForegroundService.startService(activity, uuid, requiresBond = actualRequiresBond, caller = "BleHostApi.manageDevice")
     }
 
     override fun unmanageDevice(uuid: String) {
