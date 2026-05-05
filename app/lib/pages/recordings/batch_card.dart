@@ -3,6 +3,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/pages/recordings/recording_player_page.dart';
+import 'package:omi/pages/recordings/recordings_types.dart';
 
 class UploadIconButton extends StatelessWidget {
   final String? uploadKey;
@@ -216,13 +217,14 @@ class BatchCard extends StatelessWidget {
   final Map<String, List<MarkerConversation>> markerMap;
   final bool adjustmentMode;
   final String heypocketApiKey;
+  final RecordingFilterMode filterMode;
   final bool Function(String) isUploaded;
   final bool Function(String) isUploading;
   final void Function(Conversation) onUploadTap;
   final void Function(Conversation) onConversationTap;
   final void Function(MarkerConversation) onMarkerTap;
   final void Function(List<Conversation>) onExportAll;
-  final VoidCallback onDeleteDay;
+  final void Function(List<Conversation>) onDeleteDay;
   final VoidCallback onReprocessDay;
   final void Function(Conversation) onDeleteConversation;
   final void Function(MarkerConversation) onDeleteMarkerConversation;
@@ -233,6 +235,7 @@ class BatchCard extends StatelessWidget {
     required this.markerMap,
     required this.adjustmentMode,
     required this.heypocketApiKey,
+    required this.filterMode,
     required this.isUploaded,
     required this.isUploading,
     required this.onUploadTap,
@@ -250,7 +253,11 @@ class BatchCard extends StatelessWidget {
     final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
     final minFilterSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
     final filtered = minFilterSeconds > 0
-        ? conversations.where((c) => c.duration.inSeconds >= minFilterSeconds).toList()
+        ? switch (filterMode) {
+            RecordingFilterMode.visible => conversations.where((c) => c.duration.inSeconds >= minFilterSeconds).toList(),
+            RecordingFilterMode.hidden => conversations.where((c) => c.duration.inSeconds < minFilterSeconds).toList(),
+            RecordingFilterMode.all => conversations,
+          }
         : conversations;
     if (filtered.isEmpty) return const SizedBox.shrink();
 
@@ -311,7 +318,7 @@ class BatchCard extends StatelessWidget {
                 else
                   TextButton.icon(
                     key: Key('delete_day_${batch.dateString}'),
-                    onPressed: onDeleteDay,
+                    onPressed: () => onDeleteDay(filtered),
                     icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
                     label: Text('Delete Day', style: TextStyle(color: Colors.red.shade400, fontSize: 13)),
                   ),
