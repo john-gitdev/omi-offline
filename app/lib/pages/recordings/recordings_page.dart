@@ -145,7 +145,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
     final messenger = ScaffoldMessenger.of(context);
     final description = _filterMode == RecordingFilterMode.all
         ? 'all processed recordings for ${batch.dateString}'
-        : '${toDelete.length} ${_filterMode == RecordingFilterMode.hidden ? 'hidden' : 'visible'} recording${toDelete.length == 1 ? '' : 's'} for ${batch.dateString}';
+        : '${toDelete.length} ${_filterMode == RecordingFilterMode.hidden ? 'short' : 'filtered'} recording${toDelete.length == 1 ? '' : 's'} for ${batch.dateString}';
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -604,14 +604,14 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     ),
                   ),
                 ),
-                if (!_showMarkersOnly && _prefs.filterMinDurationSeconds > 0)
+                if (!_showMarkersOnly && _prefs.filterMinDurationSeconds > 0 && !_prefs.discardShortRecordings)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                     child: Row(
                       children: [
-                        _buildFilterBubble('Visible', RecordingFilterMode.visible),
+                        _buildFilterBubble('Filtered', RecordingFilterMode.visible),
                         const SizedBox(width: 8),
-                        _buildFilterBubble('Hidden', RecordingFilterMode.hidden),
+                        _buildFilterBubble('Short', RecordingFilterMode.hidden),
                         const SizedBox(width: 8),
                         _buildFilterBubble('All', RecordingFilterMode.all),
                       ],

@@ -19,7 +19,6 @@ class OfflineAudioSettingsPage extends StatefulWidget {
 }
 
 class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
-  late bool _maximizeBattery;
   late bool _vadEnabled;
 
   late double _vadSpeechThreshold;
@@ -51,7 +50,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   @override
   void initState() {
     super.initState();
-    _maximizeBattery = SharedPreferencesUtil().maximizeBattery;
     _vadEnabled = SharedPreferencesUtil().vadEnabled;
 
     _vadSpeechThreshold = _snapToSensitivity(SharedPreferencesUtil().vadSpeechThreshold);
@@ -115,7 +113,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
   Future<void> _saveSettings() async {
     final prefs = SharedPreferencesUtil();
-    prefs.maximizeBattery = _maximizeBattery;
     prefs.vadEnabled = _vadEnabled;
 
     prefs.vadSpeechThreshold = _vadSpeechThreshold;
@@ -203,27 +200,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.white.withOpacity(0.05)),
-                ),
-                child: SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Maximize Battery', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Disconnects Bluetooth after a sync completes to maximize battery life.', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
-                  value: _maximizeBattery,
-                  onChanged: (value) {
-                    setState(() => _maximizeBattery = value);
-                    _markDirty();
-                  },
-                  activeColor: Colors.deepPurpleAccent,
-                ),
-              ),
-              const SizedBox(height: 16),
-
               // VAD toggle
               Container(
                 padding: const EdgeInsets.all(16),
@@ -400,7 +376,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                           ? 'All recordings are kept and shown regardless of length.'
                           : _discardShortRecordings
                               ? 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are permanently deleted during processing.'
-                              : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the list and skipped by integrations.',
+                              : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are separated from the main list and skipped by integrations.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],
@@ -436,7 +412,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                             items: const [
                               DropdownMenuItem(
                                 value: false,
-                                child: Text('Hide'),
+                                child: Text('Separate'),
                               ),
                               DropdownMenuItem(
                                 value: true,
@@ -456,7 +432,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                       Text(
                         _discardShortRecordings
                             ? 'Short recordings will be permanently deleted and cannot be recovered.'
-                            : 'Short recordings will be hidden from the main list but remain on the device.',
+                            : 'Short recordings will be separated from the main list but remain on the device.',
                         style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                       ),
                       if (_discardShortRecordings && widget.onCountShortRecordings != null) ...[

@@ -16,6 +16,7 @@ class AppSettingsPage extends StatefulWidget {
 }
 
 class _AppSettingsPageState extends State<AppSettingsPage> {
+  late bool _maximizeBattery;
   late int _backgroundSyncIntervalMinutes;
   late bool _use24HourTime;
   late bool _adjustmentMode;
@@ -27,6 +28,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
   @override
   void initState() {
     super.initState();
+    _maximizeBattery = SharedPreferencesUtil().maximizeBattery;
     _backgroundSyncIntervalMinutes = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
     _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
@@ -40,6 +42,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
 
   Future<void> _saveSettings() async {
     final prefs = SharedPreferencesUtil();
+    prefs.maximizeBattery = _maximizeBattery;
     prefs.backgroundSyncIntervalMinutes = _backgroundSyncIntervalMinutes;
     if (context.mounted) {
       Provider.of<DeviceProvider>(context, listen: false).restartBackgroundSyncTimer();
@@ -132,6 +135,27 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white.withOpacity(0.05)),
+                ),
+                child: SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Maximize Battery', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  subtitle: Text('Disconnects Bluetooth after a sync completes to maximize battery life.', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+                  value: _maximizeBattery,
+                  onChanged: (value) {
+                    setState(() => _maximizeBattery = value);
+                    _markDirty();
+                  },
+                  activeColor: Colors.deepPurpleAccent,
+                ),
+              ),
+              const SizedBox(height: 16),
+
               // Auto Sync Interval
               Container(
                 padding: const EdgeInsets.all(16),

@@ -390,7 +390,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
           const SizedBox(height: 12),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('Enabled', style: TextStyle(color: Colors.white, fontSize: 14)),
+            title: const Text('Auto-Upload', style: TextStyle(color: Colors.white, fontSize: 14)),
             subtitle: Text(
               subtitle,
               style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
