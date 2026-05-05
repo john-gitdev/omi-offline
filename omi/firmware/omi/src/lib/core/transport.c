@@ -470,8 +470,13 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_
 #define BATTERY_REFRESH_INTERVAL_CONNECTED    60000  // 60 seconds while connected
 #define BATTERY_REFRESH_INTERVAL_DISCONNECTED 300000 // 5 minutes while offline
 #define CONFIG_OMI_BATTERY_CRITICAL_MV        3500  // mV
+/* Flush and pause SD writes at this percentage to prevent brownout corruption.
+ * The 150mAh cell's internal resistance rises sharply below ~15%, and SD write
+ * bursts or LFS alloc scans can dip voltage below the CPU reset threshold. */
+#define BATTERY_LOW_SD_FLUSH_THRESHOLD        15    // %
 uint8_t battery_percentage = 100;
 bool battery_ready = false;
+static bool sd_paused_for_low_battery = false;
 void broadcast_battery_level(struct k_work *work_item);
 
 K_WORK_DELAYABLE_DEFINE(battery_work, broadcast_battery_level);
@@ -504,6 +509,22 @@ void broadcast_battery_level(struct k_work *work_item)
             bt_gatt_notify(NULL, &battery_detail_service_attr[2], &is_charging_byte, 1);
         }
         put_current_connection(conn);
+
+        /* Flush and pause SD writes before the cell voltage collapses.
+         * A write burst or LFS alloc scan at low charge can brownout the CPU. */
+        if (!is_charging && battery_percentage <= BATTERY_LOW_SD_FLUSH_THRESHOLD &&
+            !sd_paused_for_low_battery) {
+            LOG_WRN("Battery low (%d%%) — flushing SD and pausing writes to prevent brownout",
+                    battery_percentage);
+            sd_flush_current_file();
+            sd_write_pause(true);
+            sd_paused_for_low_battery = true;
+        } else if (sd_paused_for_low_battery &&
+                   (is_charging || battery_percentage > BATTERY_LOW_SD_FLUSH_THRESHOLD)) {
+            LOG_INF("Battery recovered (%d%%) — resuming SD writes", battery_percentage);
+            sd_write_pause(false);
+            sd_paused_for_low_battery = false;
+        }
 
         if (battery_millivolt < CONFIG_OMI_BATTERY_CRITICAL_MV) {
             LOG_WRN("Battery critical level reached (%d mV). Initiating shutdown.", battery_millivolt);
