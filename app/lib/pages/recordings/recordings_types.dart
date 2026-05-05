@@ -1,3 +1,5 @@
+enum RecordingFilterMode { visible, hidden, all }
+
 enum SyncProcessState {
   idle,
   syncing,
