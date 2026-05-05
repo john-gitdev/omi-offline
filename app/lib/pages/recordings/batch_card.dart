@@ -3,12 +3,13 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
+import 'package:omi/pages/recordings/recordings_controller.dart';
 
 class UploadIconButton extends StatelessWidget {
   final Conversation? conversation;
   final bool anyIntegrationEnabled;
   final bool isUploading;
-  final bool isUploaded;
+  final UploadStatus uploadStatus;
   final bool adjustmentMode;
   final VoidCallback? onTap;
 
@@ -17,7 +18,7 @@ class UploadIconButton extends StatelessWidget {
     required this.conversation,
     required this.anyIntegrationEnabled,
     required this.isUploading,
-    required this.isUploaded,
+    required this.uploadStatus,
     required this.adjustmentMode,
     this.onTap,
   });
@@ -48,12 +49,21 @@ class UploadIconButton extends StatelessWidget {
         onPressed: null,
       );
     }
-    if (isUploaded) {
+    if (uploadStatus == UploadStatus.all) {
       return IconButton(
         padding: const EdgeInsets.symmetric(horizontal: 6),
         constraints: const BoxConstraints(),
         icon: const Icon(Icons.cloud_done, color: Colors.green, size: 18),
         tooltip: 'Re-upload to integrations',
+        onPressed: onTap,
+      );
+    }
+    if (uploadStatus == UploadStatus.partial) {
+      return IconButton(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        constraints: const BoxConstraints(),
+        icon: const Icon(Icons.cloud_upload, color: Colors.amber, size: 18),
+        tooltip: 'Some integrations pending — tap to retry',
         onPressed: onTap,
       );
     }
@@ -208,7 +218,7 @@ class BatchCard extends StatelessWidget {
   final bool adjustmentMode;
   final bool anyIntegrationEnabled;
   final RecordingFilterMode filterMode;
-  final bool Function(Conversation) isUploaded;
+  final UploadStatus Function(Conversation) uploadStatus;
   final bool Function(String) isUploading;
   final void Function(Conversation) onUploadTap;
   final void Function(Conversation) onConversationTap;
@@ -226,7 +236,7 @@ class BatchCard extends StatelessWidget {
     required this.adjustmentMode,
     required this.anyIntegrationEnabled,
     required this.filterMode,
-    required this.isUploaded,
+    required this.uploadStatus,
     required this.isUploading,
     required this.onUploadTap,
     required this.onConversationTap,
@@ -279,7 +289,7 @@ class BatchCard extends StatelessWidget {
                   conversation: c,
                   anyIntegrationEnabled: anyIntegrationEnabled,
                   isUploading: uploadKey != null && isUploading(uploadKey),
-                  isUploaded: isUploaded(c),
+                  uploadStatus: uploadStatus(c),
                   adjustmentMode: adjustmentMode,
                   onTap: () => onUploadTap(c),
                 ),
