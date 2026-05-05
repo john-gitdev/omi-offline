@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "rtc.h"
+#include "imu.h"
 #include "lib/core/settings.h"
 #include "lib/core/sd_card.h"
 
@@ -36,6 +37,12 @@ static void rtc_persist_work_handler(struct k_work *work)
     if (err) {
         LOG_ERR("Failed to persist rtc_epoch (err %d)", err);
     }
+
+#ifdef CONFIG_LSM6DSL
+    /* Establish an IMU timestamp baseline for this new UTC epoch so we can
+     * recover the clock accurately after a reboot or crash. */
+    lsm6dsl_time_prepare_for_system_off();
+#endif
 }
 
 // Debug functions to format UTC datetime strings
