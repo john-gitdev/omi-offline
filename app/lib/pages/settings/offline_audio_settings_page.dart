@@ -126,7 +126,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
   Future<void> _saveAndPop() async {
     await _saveSettings();
-    if (mounted) Navigator.of(context).pop();
+    if (mounted) Navigator.of(context).pop(true);
   }
 
   Future<void> _handleBack() async {

@@ -276,12 +276,12 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           color: Color(0xFF8E8E93),
                           size: 20,
                         ),
-                        onTap: () {
+                        onTap: () async {
                           final controller = Provider.of<RecordingsController>(
                             context,
                             listen: false,
                           );
-                          Navigator.of(context).push(
+                          await Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => OfflineAudioSettingsPage(
                                 onCountShortRecordings: controller.countShortRecordings,
@@ -289,6 +289,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                               ),
                             ),
                           );
+                          controller.reloadBatchesSilently();
                         },
                       ),
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
@@ -299,12 +300,15 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           color: Color(0xFF8E8E93),
                           size: 20,
                         ),
-                        onTap: () {
-                          Navigator.of(context).push(
+                        onTap: () async {
+                          await Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => const AppSettingsPage(),
                             ),
                           );
+                          if (context.mounted) {
+                            Provider.of<RecordingsController>(context, listen: false).reloadBatchesSilently();
+                          }
                         },
                       ),
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
@@ -315,12 +319,15 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           color: Color(0xFF8E8E93),
                           size: 20,
                         ),
-                        onTap: () {
-                          Navigator.of(context).push(
+                        onTap: () async {
+                          await Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => const IntegrationsPage(),
                             ),
                           );
+                          if (context.mounted) {
+                            Provider.of<RecordingsController>(context, listen: false).reloadBatchesSilently();
+                          }
                         },
                       ),
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
