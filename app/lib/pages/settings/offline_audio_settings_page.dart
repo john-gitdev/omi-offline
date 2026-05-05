@@ -376,7 +376,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                           ? 'All recordings are kept and shown regardless of length.'
                           : _discardShortRecordings
                               ? 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are permanently deleted during processing.'
-                              : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are separated from the main list and skipped by integrations.',
+                              : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the main list and skipped by integrations.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],
@@ -432,7 +432,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                       Text(
                         _discardShortRecordings
                             ? 'Short recordings will be permanently deleted and cannot be recovered.'
-                            : 'Short recordings will be separated from the main list but remain on the device.',
+                            : 'Short recordings will be hidden from the main list but remain on the device.',
                         style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                       ),
                       if (_discardShortRecordings && widget.onCountShortRecordings != null) ...[
