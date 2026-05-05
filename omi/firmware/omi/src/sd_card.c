@@ -303,7 +303,7 @@ static int64_t last_file_sync_uptime_ms = 0;
 /* Current writing file info */
 static char current_filename[MAX_FILENAME_LEN] = {0};
 static char current_file_path[64] = {0};
-static int64_t current_file_created_uptime_ms = 0;
+static int64_t current_file_created_uptime_ms = -1;
 static bool current_file_needs_rename = false;
 static uint32_t cached_stats_file_count = 0;
 static uint64_t cached_stats_total_size = 0;
@@ -744,16 +744,32 @@ void sd_write_pause(bool pause)
 
         if (k_current_get() != sd_worker_tid) {
             if (is_mounted && sd_worker_tid) {
-                struct read_resp resp;
+                /* Static storage prevents UAR: if k_sem_take times out and the caller
+                 * returns, the sd_worker still has a valid pointer when it later calls
+                 * k_sem_give.  The atomic guards against concurrent callers sharing the
+                 * same resp/req while a previous pause is still in-flight. */
+                static atomic_t pause_in_flight;
+                static struct read_resp resp;
+                static sd_req_t req;
+
+                if (!atomic_cas(&pause_in_flight, 0, 1)) {
+                    LOG_WRN("[SD] sd_write_pause: pause already in-flight, skipping");
+                    return;
+                }
+
+                /* Reset semaphore inside the guard so a stale give from a previous
+                 * timed-out request cannot satisfy this new wait. */
                 k_sem_init(&resp.sem, 0, 1);
                 resp.res = 0;
-                sd_req_t req = {0};
+                memset(&req, 0, sizeof(req));
                 req.type = REQ_PAUSE_IO;
                 req.u.create_file.resp = &resp;
+
                 int qret = k_msgq_put(&sd_prio_msgq, &req, K_MSEC(500));
                 if (qret == 0) {
                     k_sem_take(&resp.sem, K_MSEC(10000));
                 }
+                atomic_set(&pause_in_flight, 0);
             }
             return;
         }
@@ -1219,7 +1235,7 @@ static int create_audio_file_with_timestamp(void)
 
 static bool should_rotate_file(void)
 {
-    if (current_file_created_uptime_ms == 0)
+    if (current_file_created_uptime_ms < 0)
         return false;
 
     int64_t file_age_ms = k_uptime_get() - current_file_created_uptime_ms;
