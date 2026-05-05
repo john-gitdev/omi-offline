@@ -722,11 +722,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> deleteConversation(Conversation conversation) async {
-    if (conversation.uploadKey != null) {
-      await _prefs.removeUploadedFromHeypocket({conversation.uploadKey!});
-    }
-    await _prefs.removeOmiSynced(_binPathsForConversations([conversation]));
-    await RecordingsManager.deleteConversation(conversation);
+    await deleteConversations([conversation]);
+  }
+
+  Future<void> deleteConversations(List<Conversation> conversations) async {
+    if (conversations.isEmpty) return;
+    final keys = conversations.map((c) => c.uploadKey).whereType<String>().toSet();
+    await _prefs.removeUploadedFromHeypocket(keys);
+    await _prefs.removeOmiSynced(_binPathsForConversations(conversations));
+    await RecordingsManager.deleteConversations(conversations);
     await _loadBatches();
   }
 
@@ -740,13 +744,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         .expand((b) => b.finalizedRecordings)
         .where((c) => c.duration.inSeconds < minSeconds)
         .toList();
-    final keys = toDelete.map((c) => c.uploadKey).whereType<String>().toSet();
-    await _prefs.removeUploadedFromHeypocket(keys);
-    await _prefs.removeOmiSynced(_binPathsForConversations(toDelete));
-    for (final c in toDelete) {
-      await RecordingsManager.deleteConversation(c);
-    }
-    await reloadBatchesSilently();
+    await deleteConversations(toDelete);
   }
 
   Future<void> deleteMarkerConversation(MarkerConversation mc) async {

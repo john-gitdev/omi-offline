@@ -162,9 +162,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
       if (_filterMode == RecordingFilterMode.all) {
         await _controller.deleteDay(batch);
       } else {
-        for (final c in toDelete) {
-          await _controller.deleteConversation(c);
-        }
+        await _controller.deleteConversations(toDelete);
       }
     } catch (e) {
       if (mounted)

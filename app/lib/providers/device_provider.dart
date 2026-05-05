@@ -403,8 +403,6 @@ class DeviceProvider extends ChangeNotifier
       if (!(_backgroundSyncTimer?.isActive ?? false)) {
         _startBackgroundSyncTimer();
       }
-      // Sync immediately in case the device connected while the screen was off.
-      _doBackgroundSync();
     } else {
       if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
         periodicConnect('app resumed', boundDeviceOnly: true);
@@ -562,7 +560,6 @@ class DeviceProvider extends ChangeNotifier
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
 
-    _doBackgroundSync();
     notifyListeners();
     onDeviceConnected?.call(device);
   }

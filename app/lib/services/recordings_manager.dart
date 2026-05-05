@@ -1581,40 +1581,69 @@ class RecordingsManager {
 
   /// Deletes a single processed conversation and its associated meta/bin files.
   static Future<void> deleteConversation(Conversation conversation) async {
-    final key = conversation.uploadKey;
-    if (key != null) {
-      await SharedPreferencesUtil().removeUploadedFromHeypocket({key});
+    await deleteConversations([conversation]);
+  }
+
+  /// Deletes multiple processed conversations and their associated meta/bin/marker files.
+  /// Efficiently groups by directory to minimize directory listings for EDL cleanup.
+  static Future<void> deleteConversations(List<Conversation> conversations) async {
+    if (conversations.isEmpty) return;
+
+    // Group conversations by directory to minimize directory listings for EDL cleanup
+    final Map<String, List<Conversation>> byDir = {};
+    for (final c in conversations) {
+      final dir = c.file.parent.path;
+      byDir.putIfAbsent(dir, () => []).add(c);
     }
-    final file = conversation.file;
-    if (await file.exists()) {
-      await file.delete();
-    }
-    final metaPath = '${file.path.substring(0, file.path.lastIndexOf('.'))}.meta';
-    final metaFile = File(metaPath);
-    if (await metaFile.exists()) {
-      await metaFile.delete();
-    }
-    try {
-      final ts = file.path.split('/').last.split('_').last.split('.').first;
-      final binPath = '${file.parent.path}/recording_fs320_$ts.bin';
-      final binFile = File(binPath);
-      if (await binFile.exists()) {
-        await binFile.delete();
-      }
-    } catch (_) {}
-    // Delete any marker EDL files in the same folder that reference this recording.
-    final filename = file.path.split('/').last;
-    try {
-      final dirEntities = await file.parent.list().toList();
-      for (final entity in dirEntities) {
-        if (entity is! File || !entity.path.endsWith('.edl')) continue;
+
+    for (final dirPath in byDir.keys) {
+      final convsInDir = byDir[dirPath]!;
+      final filenames = convsInDir.map((c) => c.file.path.split('/').last).toSet();
+
+      // 1. Delete audio, meta, bin files
+      for (final c in convsInDir) {
+        final key = c.uploadKey;
+        if (key != null) {
+          await SharedPreferencesUtil().removeUploadedFromHeypocket({key});
+        }
+        final file = c.file;
+        if (await file.exists()) {
+          await file.delete();
+        }
+        final metaPath = '${file.path.substring(0, file.path.lastIndexOf('.'))}.meta';
+        final metaFile = File(metaPath);
+        if (await metaFile.exists()) {
+          await metaFile.delete();
+        }
         try {
-          final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
-          if (json['segmentFilename'] == filename) await entity.delete();
+          final ts = file.path.split('/').last.split('_').last.split('.').first;
+          final binPath = '${file.parent.path}/recording_fs320_$ts.bin';
+          final binFile = File(binPath);
+          if (await binFile.exists()) {
+            await binFile.delete();
+          }
         } catch (_) {}
       }
-    } catch (_) {}
-    Logger.debug('RecordingsManager: Deleted conversation ${file.path}');
+
+      // 2. Delete EDL files for all deleted conversations in this directory at once
+      try {
+        final dir = Directory(dirPath);
+        if (await dir.exists()) {
+          final dirEntities = await dir.list().toList();
+          for (final entity in dirEntities) {
+            if (entity is! File || !entity.path.endsWith('.edl')) continue;
+            try {
+              final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
+              if (filenames.contains(json['segmentFilename'])) {
+                await entity.delete();
+              }
+            } catch (_) {}
+          }
+        }
+      } catch (e) {
+        Logger.error('RecordingsManager: Failed to cleanup EDLs in $dirPath: $e');
+      }
+    }
   }
 
   /// Deletes a marker conversation.
