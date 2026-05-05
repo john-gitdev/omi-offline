@@ -26,6 +26,7 @@
 #include "lib/core/sd_card.h"
 #include "lib/core/transport.h"
 #include "rtc.h"
+#include "imu.h"
 
 LOG_MODULE_REGISTER(aad, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -287,6 +288,13 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
             if (silent_ms >= CONFIG_OMI_VAD_HOLD_MS) {
                 vad_is_recording = false;
                 vad_sleeping = true;
+
+#ifdef CONFIG_LSM6DSL
+                /* Checkpoint the RTC vs IMU timestamp before we stop processing.
+                 * This allows us to recover lost time if we reboot during silence. */
+                lsm6dsl_time_prepare_for_system_off();
+#endif
+
                 atomic_set(&sd_pause_pending, 1);
                 atomic_set(&adv_slow_req, 1);
                 k_sem_give(&aad_sem);

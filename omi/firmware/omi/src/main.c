@@ -229,6 +229,11 @@ int main(void)
     }
     init_rtc();
 
+#ifdef CONFIG_LSM6DSL
+    /* Recover UTC time using IMU timestamp delta if we just rebooted. */
+    lsm6dsl_time_boot_adjust_rtc();
+#endif
+
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     storage_init();
 #endif
