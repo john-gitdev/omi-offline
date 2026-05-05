@@ -356,11 +356,31 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
 
     unawaited(
-      _controller.uploadConversation(conversation).catchError((e) {
-        if (e is HeyPocketException && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('HeyPocket ${e.statusCode}: ${e.message}')),
+      _controller.uploadConversation(conversation).catchError((e) async {
+        if (mounted) {
+          final deleteKeys = await showDialog<bool>(
+            context: context,
+            builder: (c) => getDialog(
+              c,
+              () => Navigator.of(c).pop(false),
+              () => Navigator.of(c).pop(true),
+              'Upload Failed',
+              'One or more integrations failed to upload. Would you like to delete your API keys or dismiss?\n\nError: $e',
+              cancelText: 'Dismiss',
+              confirmText: 'Delete keys',
+            ),
           );
+          if (deleteKeys == true) {
+            _prefs.heypocketEnabled = false;
+            _prefs.omiSyncEnabled = false;
+            await _prefs.setHeypocketApiKey('');
+            await _prefs.setOmiRefreshToken('');
+            await _prefs.setOmiFirebaseApiKey('');
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Integration keys deleted.')));
+              setState(() {});
+            }
+          }
         }
       }),
     );

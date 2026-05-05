@@ -200,7 +200,29 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
       if (mounted) setState(() {});
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Upload failed: $e')));
+        final deleteKeys = await showDialog<bool>(
+          context: context,
+          builder: (c) => getDialog(
+            c,
+            () => Navigator.of(c).pop(false),
+            () => Navigator.of(c).pop(true),
+            'Upload Failed',
+            'One or more integrations failed to upload. Would you like to delete your API keys or dismiss?\n\nError: $e',
+            cancelText: 'Dismiss',
+            confirmText: 'Delete keys',
+          ),
+        );
+        if (deleteKeys == true) {
+          _prefs.heypocketEnabled = false;
+          _prefs.omiSyncEnabled = false;
+          await _prefs.setHeypocketApiKey('');
+          await _prefs.setOmiRefreshToken('');
+          await _prefs.setOmiFirebaseApiKey('');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Integration keys deleted.')));
+            setState(() {});
+          }
+        }
       }
     } finally {
       if (mounted) setState(() => _isUploading = false);
