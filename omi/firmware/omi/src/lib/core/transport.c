@@ -595,8 +595,8 @@ static void post_connect_work_handler(struct k_work *work)
         return;
     }
 
-    // Schedule the rest of the updates after 1500ms to allow pairing to settle
-    // WITHOUT blocking the system work queue thread.
+    // Delay PHY/data-length/MTU updates to give the Central time to complete bonding first.
+    // Without this gap, connection-parameter negotiations can race with the SMP exchange.
     k_work_schedule(&post_pairing_work, K_MSEC(1500));
 }
 K_WORK_DELAYABLE_DEFINE(post_connect_work, post_connect_work_handler);
