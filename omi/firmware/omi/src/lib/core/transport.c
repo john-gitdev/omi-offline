@@ -595,14 +595,6 @@ static void post_connect_work_handler(struct k_work *work)
         return;
     }
 
-#if defined(CONFIG_BT_SMP)
-    /* Request bonding so link keys are persisted by BT settings backend. */
-    int sec_err = bt_conn_set_security(current_connection, BT_SECURITY_L2);
-    if (sec_err && sec_err != -EALREADY) {
-        LOG_WRN("bt_conn_set_security failed (err %d)", sec_err);
-    }
-#endif
-
     // Schedule the rest of the updates after 1500ms to allow pairing to settle
     // WITHOUT blocking the system work queue thread.
     k_work_schedule(&post_pairing_work, K_MSEC(1500));

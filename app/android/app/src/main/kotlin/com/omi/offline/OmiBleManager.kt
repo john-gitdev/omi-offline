@@ -224,14 +224,7 @@ class OmiBleManager private constructor(private val application: Application) {
         }
         bondingAddress = addr
         bondCompletionCallback = { bonded -> completion(Result.success(bonded)) }
-        
-        // Wait 1.5s to see if the firmware's security request arrives first, avoiding double dialogs
-        mainHandler.postDelayed({
-            if (device.bondState == BluetoothDevice.BOND_NONE) {
-                device.createBond()
-            }
-        }, 1500)
-        
+        device.createBond()
         val timeout = Runnable {
             bondingAddress = null
             bondCompletionCallback?.invoke(false)
