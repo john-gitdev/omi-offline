@@ -15,6 +15,12 @@ import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:omi/utils/audio/foreground.dart';
 
+class UploadFailure {
+  final String integration;
+  final Object error;
+  UploadFailure(this.integration, this.error);
+}
+
 class RecordingsController extends ChangeNotifier implements IWalSyncProgressListener {
   final RecordingsManager _manager = RecordingsManager();
   final _prefs = SharedPreferencesUtil();
@@ -1018,13 +1024,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
   }
 
-  Future<void> uploadConversation(Conversation conversation) async {
+  Future<List<UploadFailure>> uploadConversation(Conversation conversation) async {
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) throw Exception('Upload key unavailable');
-    if (_uploadingFiles.contains(uploadKey)) return;
+    if (_uploadingFiles.contains(uploadKey)) return [];
 
     _uploadingFiles.add(uploadKey);
     notifyListeners();
+
+    final List<UploadFailure> failures = [];
 
     try {
       final List<Future<void>> uploads = [];
@@ -1039,7 +1047,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
             _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
           }
           Logger.error('HeyPocket manual upload failed: $e');
-          throw e;
+          failures.add(UploadFailure('HeyPocket', e));
         }));
       }
 
@@ -1058,17 +1066,19 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               _pendingSnackMessage = 'Omi sync: credentials invalid — update them in Integrations';
             }
             Logger.error('Omi manual sync failed for $binPath: $e');
-            throw e;
+            failures.add(UploadFailure('Omi Cloud', e));
           }));
         }
       }
 
       if (uploads.isEmpty) {
-        throw Exception('No integrations enabled for upload');
+        failures.add(UploadFailure('Integrations', Exception('No integrations enabled for upload')));
+      } else {
+        await Future.wait(uploads);
+        if (failures.isEmpty && _prefs.passthroughMode) await _convertToPassthrough(conversation);
       }
-
-      await Future.wait(uploads);
-      if (_prefs.passthroughMode) await _convertToPassthrough(conversation);
+      
+      return failures;
     } finally {
       _uploadingFiles.remove(uploadKey);
       notifyListeners();

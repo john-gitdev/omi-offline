@@ -355,35 +355,39 @@ class _RecordingsPageState extends State<RecordingsPage> {
       if (confirm != true) return;
     }
 
-    unawaited(
-      _controller.uploadConversation(conversation).catchError((e) async {
-        if (mounted) {
-          final deleteKeys = await showDialog<bool>(
-            context: context,
-            builder: (c) => getDialog(
-              c,
-              () => Navigator.of(c).pop(false),
-              () => Navigator.of(c).pop(true),
-              'Upload Failed',
-              'One or more integrations failed to upload. Would you like to delete your API keys or dismiss?\n\nError: $e',
-              cancelText: 'Dismiss',
-              confirmText: 'Delete keys',
-            ),
-          );
-          if (deleteKeys == true) {
-            _prefs.heypocketEnabled = false;
-            _prefs.omiSyncEnabled = false;
-            await _prefs.setHeypocketApiKey('');
-            await _prefs.setOmiRefreshToken('');
-            await _prefs.setOmiFirebaseApiKey('');
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Integration keys deleted.')));
-              setState(() {});
-            }
-          }
+    final failures = await _controller.uploadConversation(conversation);
+    if (!mounted) return;
+
+    for (final failure in failures) {
+      if (!mounted) break;
+      final deleteKeys = await showDialog<bool>(
+        context: context,
+        builder: (c) => getDialog(
+          c,
+          () => Navigator.of(c).pop(false),
+          () => Navigator.of(c).pop(true),
+          'Upload Failed (${failure.integration})',
+          'Integration ${failure.integration} failed to upload. Would you like to delete its API keys or dismiss?\n\nError: ${failure.error}',
+          cancelText: 'Dismiss',
+          confirmText: 'Delete keys',
+        ),
+      );
+
+      if (deleteKeys == true) {
+        if (failure.integration == 'HeyPocket') {
+          _prefs.heypocketEnabled = false;
+          await _prefs.setHeypocketApiKey('');
+        } else if (failure.integration == 'Omi Cloud') {
+          _prefs.omiSyncEnabled = false;
+          await _prefs.setOmiRefreshToken('');
+          await _prefs.setOmiFirebaseApiKey('');
         }
-      }),
-    );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${failure.integration} keys deleted.')));
+          setState(() {});
+        }
+      }
+    }
   }
 
   Map<String, List<MarkerConversation>> _buildMarkerMap() {
