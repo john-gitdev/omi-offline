@@ -35,7 +35,7 @@ static const struct gpio_dt_spec pin_wake = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(pdm
 static struct gpio_callback wake_cb_data;
 
 /* ---- Thread plumbing ---- */
-#define AAD_THREAD_STACK_SIZE 1024
+#define AAD_THREAD_STACK_SIZE 2048
 #define AAD_THREAD_PRIORITY 5
 
 static K_THREAD_STACK_DEFINE(aad_stack, AAD_THREAD_STACK_SIZE);
