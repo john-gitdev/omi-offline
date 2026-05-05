@@ -2,12 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/recordings_manager.dart';
-import 'package:omi/pages/recordings/recording_player_page.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
 
 class UploadIconButton extends StatelessWidget {
-  final String? uploadKey;
-  final bool apiKeyEmpty;
+  final Conversation? conversation;
+  final bool anyIntegrationEnabled;
   final bool isUploading;
   final bool isUploaded;
   final bool adjustmentMode;
@@ -15,8 +14,8 @@ class UploadIconButton extends StatelessWidget {
 
   const UploadIconButton({
     super.key,
-    required this.uploadKey,
-    required this.apiKeyEmpty,
+    required this.conversation,
+    required this.anyIntegrationEnabled,
     required this.isUploading,
     required this.isUploaded,
     required this.adjustmentMode,
@@ -25,18 +24,9 @@ class UploadIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (apiKeyEmpty) return const SizedBox.shrink();
-    // TODO: Disable this later
-    // if (adjustmentMode) {
-    //   return IconButton(
-    //     padding: const EdgeInsets.symmetric(horizontal: 6),
-    //     constraints: const BoxConstraints(),
-    //     icon: Icon(Icons.cloud_off, color: Colors.grey.shade700, size: 18),
-    //     tooltip: 'Uploads paused in Adjustment Mode',
-    //     onPressed: onTap,
-    //   );
-    // }
-    if (uploadKey == null) {
+    if (!anyIntegrationEnabled) return const SizedBox.shrink();
+
+    if (conversation == null) {
       return IconButton(
         padding: const EdgeInsets.symmetric(horizontal: 6),
         constraints: const BoxConstraints(),
@@ -54,7 +44,7 @@ class UploadIconButton extends StatelessWidget {
           height: 18,
           child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
         ),
-        tooltip: 'Uploading to HeyPocket',
+        tooltip: 'Uploading to integrations',
         onPressed: null,
       );
     }
@@ -63,7 +53,7 @@ class UploadIconButton extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 6),
         constraints: const BoxConstraints(),
         icon: const Icon(Icons.cloud_done, color: Colors.green, size: 18),
-        tooltip: 'Re-upload to HeyPocket',
+        tooltip: 'Re-upload to integrations',
         onPressed: onTap,
       );
     }
@@ -71,7 +61,7 @@ class UploadIconButton extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 6),
       constraints: const BoxConstraints(),
       icon: const Icon(Icons.cloud_upload, color: Colors.redAccent, size: 18),
-      tooltip: 'Upload to HeyPocket',
+      tooltip: 'Upload to integrations',
       onPressed: onTap,
     );
   }
@@ -216,9 +206,9 @@ class BatchCard extends StatelessWidget {
   final Batch batch;
   final Map<String, List<MarkerConversation>> markerMap;
   final bool adjustmentMode;
-  final String heypocketApiKey;
+  final bool anyIntegrationEnabled;
   final RecordingFilterMode filterMode;
-  final bool Function(String) isUploaded;
+  final bool Function(Conversation) isUploaded;
   final bool Function(String) isUploading;
   final void Function(Conversation) onUploadTap;
   final void Function(Conversation) onConversationTap;
@@ -234,7 +224,7 @@ class BatchCard extends StatelessWidget {
     required this.batch,
     required this.markerMap,
     required this.adjustmentMode,
-    required this.heypocketApiKey,
+    required this.anyIntegrationEnabled,
     required this.filterMode,
     required this.isUploaded,
     required this.isUploading,
@@ -286,10 +276,10 @@ class BatchCard extends StatelessWidget {
                 onDeleteConversation: onDeleteConversation,
                 onDeleteMarkerConversation: onDeleteMarkerConversation,
                 uploadIcon: UploadIconButton(
-                  uploadKey: uploadKey,
-                  apiKeyEmpty: heypocketApiKey.isEmpty,
+                  conversation: c,
+                  anyIntegrationEnabled: anyIntegrationEnabled,
                   isUploading: uploadKey != null && isUploading(uploadKey),
-                  isUploaded: uploadKey != null && isUploaded(uploadKey),
+                  isUploaded: isUploaded(c),
                   adjustmentMode: adjustmentMode,
                   onTap: () => onUploadTap(c),
                 ),

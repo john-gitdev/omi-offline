@@ -7,14 +7,15 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:omi/backend/preferences.dart';
-import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/widgets/dialog.dart';
 
 class ConversationPlayerPage extends StatefulWidget {
   final Conversation conversation;
+  final RecordingsController controller;
 
-  const ConversationPlayerPage({super.key, required this.conversation});
+  const ConversationPlayerPage({super.key, required this.conversation, required this.controller});
 
   @override
   State<ConversationPlayerPage> createState() => _ConversationPlayerPageState();
@@ -174,22 +175,11 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   }
 
   Future<void> _handleUpload() async {
-    // TODO: Disable this later
-    // if (_prefs.adjustmentMode) {
-    //   if (mounted) {
-    //     ScaffoldMessenger.of(context).showSnackBar(
-    //       const SnackBar(content: Text('Uploads paused — turn off Adjustment Mode first')),
-    //     );
-    //   }
-    //   return;
-    // }
-    final apiKey = _prefs.heypocketApiKey;
-    if (apiKey.isEmpty || _isUploading) return;
-    final uploadKey = widget.conversation.uploadKey;
-    if (uploadKey == null) return;
+    final anyIntegrationEnabled = (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
+        (_prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty);
+    if (!anyIntegrationEnabled || _isUploading) return;
 
-    final alreadyUploaded = _prefs.isUploadedToHeypocket(uploadKey);
-    if (alreadyUploaded) {
+    if (widget.controller.isUploaded(widget.conversation)) {
       final confirm = await showDialog<bool>(
         context: context,
         builder: (c) => getDialog(
@@ -197,7 +187,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           () => Navigator.of(c).pop(false),
           () => Navigator.of(c).pop(true),
           'Re-upload Conversation',
-          'This conversation was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)',
+          'This conversation was already uploaded to your enabled integrations. Upload again? (It may create duplicates.)',
           confirmText: 'Upload',
         ),
       );
@@ -206,15 +196,11 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
 
     setState(() => _isUploading = true);
     try {
-      await HeyPocketService.uploadRecording(apiKey, widget.conversation);
-      await _prefs.markUploadedToHeypocket(uploadKey);
+      await widget.controller.uploadConversation(widget.conversation);
       if (mounted) setState(() {});
-    } on HeyPocketException catch (e) {
-      if (e.statusCode == 401) {
-        SharedPreferencesUtil().heypocketEnabled = false;
-      }
+    } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('HeyPocket: ${e.message}')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Upload failed: $e')));
       }
     } finally {
       if (mounted) setState(() => _isUploading = false);
@@ -222,21 +208,24 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   }
 
   Widget _buildUploadAction() {
-    final apiKey = _prefs.heypocketApiKey;
-    if (apiKey.isEmpty) return const SizedBox.shrink();
+    final anyIntegrationEnabled = (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
+        (_prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty);
+    if (!anyIntegrationEnabled) return const SizedBox.shrink();
+
     final uploadKey = widget.conversation.uploadKey;
     if (uploadKey == null) return const SizedBox.shrink();
-    if (_isUploading) {
+
+    if (_isUploading || widget.controller.uploadingFiles.contains(uploadKey)) {
       return const Padding(
         padding: EdgeInsets.symmetric(horizontal: 16),
         child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
       );
     }
-    final uploaded = _prefs.isUploadedToHeypocket(uploadKey);
+    final uploaded = widget.controller.isUploaded(widget.conversation);
     return IconButton(
       icon: Icon(uploaded ? Icons.cloud_done : Icons.cloud_upload,
           color: uploaded ? Colors.green : Colors.redAccent, size: 22),
-      tooltip: uploaded ? 'Re-upload to HeyPocket' : 'Upload to HeyPocket',
+      tooltip: uploaded ? 'Re-upload to integrations' : 'Upload to integrations',
       onPressed: _handleUpload,
     );
   }
