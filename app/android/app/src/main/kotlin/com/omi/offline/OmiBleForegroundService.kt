@@ -262,15 +262,19 @@ class OmiBleForegroundService : Service() {
 
     fun manageDevice(address: String, requiresBond: Boolean) {
         val addr = address.uppercase()
-        Log.i(TAG, "manageDevice: $addr (requiresBond=$requiresBond)")
+        // Bonding on Android 12 and below causes an endless pairing loop: the OS fails to persist
+        // bond keys, so every reconnect triggers a new pairing dialog. Gate here (not just in
+        // BleHostApiImpl) so the BleCompanionService restore-from-prefs path is also covered.
+        val bond = requiresBond && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU
+        Log.i(TAG, "manageDevice: $addr (requiresBond=$bond)")
 
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .putString(PREFS_KEY, "$addr|$requiresBond")
+            .putString(PREFS_KEY, "$addr|$bond")
             .putBoolean(PREFS_USER_DISCONNECTED, false)
             .apply()
 
         if (!isBluetoothEnabled) {
-            managedDevices[addr] = ManagedDevice(address = addr, requiresBond = requiresBond)
+            managedDevices[addr] = ManagedDevice(address = addr, requiresBond = bond)
             updateNotification("Bluetooth is off")
             return
         }
@@ -291,14 +295,14 @@ class OmiBleForegroundService : Service() {
         }
 
         if (existing != null) {
-            if (requiresBond && !existing.requiresBond) existing.requiresBond = true
+            if (bond && !existing.requiresBond) existing.requiresBond = true
             // Don't interfere with pending GATT connection or scheduled retry
             if (existing.currentGattHash != null || existing.pendingReconnect != null) return
             triggerReconnection(addr, "re-manage")
             return
         }
 
-        managedDevices[addr] = ManagedDevice(address = addr, requiresBond = requiresBond)
+        managedDevices[addr] = ManagedDevice(address = addr, requiresBond = bond)
         connectToDevice(addr, "manageDevice")
     }
 
