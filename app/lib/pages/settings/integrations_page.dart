@@ -267,7 +267,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
           // Omi Server Sync
           _buildIntegrationSection(
             title: 'Omi Cloud',
-            subtitle: 'Auto-sync recordings categorized as > Threshold',
+            subtitle: 'Auto-sync main recordings to your Omi account',
             state: _omiState,
             enabled: _prefs.omiSyncEnabled,
             onEnabledChanged: (v) {
@@ -322,7 +322,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
           // HeyPocket
           _buildIntegrationSection(
             title: 'HeyPocket',
-            subtitle: 'Auto-upload recordings categorized as > Threshold',
+            subtitle: 'Auto-upload main recordings to HeyPocket',
             state: _heypocketState,
             enabled: _prefs.heypocketEnabled,
             onEnabledChanged: (v) {
