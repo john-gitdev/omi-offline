@@ -339,7 +339,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
     if (_controller.uploadingFiles.contains(uploadKey)) return;
 
-    final alreadyUploaded = _prefs.isUploadedToHeypocket(uploadKey);
+    final alreadyUploaded = _controller.isUploaded(conversation);
     if (alreadyUploaded) {
       final confirm = await showDialog<bool>(
         context: context,
@@ -348,45 +348,17 @@ class _RecordingsPageState extends State<RecordingsPage> {
           () => Navigator.of(c).pop(false),
           () => Navigator.of(c).pop(true),
           'Re-upload Conversation',
-          'This conversation was already uploaded to HeyPocket. Upload again? (It may create a duplicate.)',
+          'This conversation was already uploaded to your enabled integrations. Upload again? (It may create duplicates.)',
           confirmText: 'Upload',
         ),
       );
       if (confirm != true) return;
     }
 
-    final failures = await _controller.uploadConversation(conversation);
+    final failures = await _controller.uploadConversation(conversation, force: alreadyUploaded);
     if (!mounted) return;
-
     for (final failure in failures) {
-      if (!mounted) break;
-      final deleteKeys = await showDialog<bool>(
-        context: context,
-        builder: (c) => getDialog(
-          c,
-          () => Navigator.of(c).pop(false),
-          () => Navigator.of(c).pop(true),
-          'Upload Failed (${failure.integration})',
-          'Integration ${failure.integration} failed to upload. Would you like to delete its API keys or dismiss?\n\nError: ${failure.error}',
-          cancelText: 'Dismiss',
-          confirmText: 'Delete keys',
-        ),
-      );
-
-      if (deleteKeys == true) {
-        if (failure.integration == 'HeyPocket') {
-          _prefs.heypocketEnabled = false;
-          await _prefs.setHeypocketApiKey('');
-        } else if (failure.integration == 'Omi Cloud') {
-          _prefs.omiSyncEnabled = false;
-          await _prefs.setOmiRefreshToken('');
-          await _prefs.setOmiFirebaseApiKey('');
-        }
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${failure.integration} keys deleted.')));
-          setState(() {});
-        }
-      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
     }
   }
 
@@ -878,7 +850,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           adjustmentMode: _prefs.adjustmentMode,
                                           anyIntegrationEnabled: anyIntegrationEnabled,
                                           filterMode: _filterMode,
-                                          isUploaded: controller.isUploaded,
+                                          uploadStatus: controller.uploadStatus,
                                           isUploading: controller.uploadingFiles.contains,
                                           onUploadTap: _handleUploadTap,
                                           onConversationTap: _openConversation,
