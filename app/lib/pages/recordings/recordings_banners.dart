@@ -40,9 +40,15 @@ class AccumulatingBanner extends StatelessWidget {
     if (spState == SyncProcessState.syncing ||
         spState == SyncProcessState.processing ||
         spState == SyncProcessState.stopping) return const SizedBox.shrink();
-    if (accumulatedMinutes < 1.0) return const SizedBox.shrink();
+    if (accumulatedMinutes < (1.0 / 60.0)) return const SizedBox.shrink();
 
-    final int accMin = accumulatedMinutes.floor();
+    final totalSeconds = (accumulatedMinutes * 60).round();
+    final mins = totalSeconds ~/ 60;
+    final secs = totalSeconds % 60;
+    final String label = mins > 0
+        ? (secs > 0 ? '${mins}m ${secs}s accumulated' : '$mins ${mins == 1 ? 'minute' : 'minutes'} accumulated')
+        : '$secs ${secs == 1 ? 'second' : 'seconds'} accumulated';
+
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
       padding: const EdgeInsets.all(12),
@@ -62,7 +68,7 @@ class AccumulatingBanner extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '$accMin ${accMin == 1 ? 'minute' : 'minutes'} accumulated',
+                  label,
                   style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
                 ),
               ],
