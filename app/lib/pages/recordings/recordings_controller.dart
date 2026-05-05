@@ -15,6 +15,8 @@ import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:omi/utils/audio/foreground.dart';
 
+enum UploadStatus { none, partial, all }
+
 class UploadFailure {
   final String integration;
   final Object error;
@@ -1024,7 +1026,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
   }
 
-  Future<List<UploadFailure>> uploadConversation(Conversation conversation) async {
+  Future<List<UploadFailure>> uploadConversation(Conversation conversation, {bool force = false}) async {
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) throw Exception('Upload key unavailable');
     if (_uploadingFiles.contains(uploadKey)) return [];
@@ -1039,16 +1041,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
       // HeyPocket
       if (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) {
-        uploads.add(HeyPocketService.uploadRecording(_prefs.heypocketApiKey, conversation).then((_) {
-          return _prefs.markUploadedToHeypocket(uploadKey);
-        }).catchError((e) {
-          if (e is HeyPocketException && e.statusCode == 401) {
-            _prefs.heypocketEnabled = false;
-            _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
-          }
-          Logger.error('HeyPocket manual upload failed: $e');
-          failures.add(UploadFailure('HeyPocket', e));
-        }));
+        if (force || !_prefs.isUploadedToHeypocket(uploadKey)) {
+          uploads.add(HeyPocketService.uploadRecording(_prefs.heypocketApiKey, conversation).then((_) {
+            return _prefs.markUploadedToHeypocket(uploadKey);
+          }).catchError((e) {
+            Logger.error('HeyPocket manual upload failed: $e');
+            failures.add(UploadFailure('HeyPocket', e));
+          }));
+        }
       }
 
       // Omi Cloud
@@ -1056,15 +1056,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
         final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
         final binFile = File(binPath);
-        if (binFile.existsSync()) {
+        if (binFile.existsSync() && (force || !_prefs.isOmiSynced(binPath))) {
           uploads.add(OmiApiClient.syncLocalFiles([binFile]).then((_) async {
             await binFile.delete();
             return _prefs.markOmiSynced(binPath);
           }).catchError((e) {
-            if (e is OmiSyncException && e.isAuthError) {
-              _prefs.omiSyncEnabled = false;
-              _pendingSnackMessage = 'Omi sync: credentials invalid — update them in Integrations';
-            }
             Logger.error('Omi manual sync failed for $binPath: $e');
             failures.add(UploadFailure('Omi Cloud', e));
           }));
@@ -1085,26 +1081,26 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
   }
 
-  bool isUploaded(Conversation c) {
+  UploadStatus uploadStatus(Conversation c) {
     final ts = c.file.path.split('/').last.split('_').last.split('.').first;
     final binPath = '${c.file.parent.path}/recording_fs320_$ts.bin';
 
-    bool anyEnabled = false;
-    // We check enablement directly to keep this sync.
     final hpEnabled = _prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty && c.uploadKey != null;
     final omiEnabled = _prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty;
 
-    if (hpEnabled) {
-      anyEnabled = true;
-      if (!_prefs.isUploadedToHeypocket(c.uploadKey!)) return false;
-    }
-    if (omiEnabled) {
-      anyEnabled = true;
-      if (!_prefs.isOmiSynced(binPath)) return false;
-    }
+    if (!hpEnabled && !omiEnabled) return UploadStatus.none;
 
-    return anyEnabled;
+    final hpDone = hpEnabled && _prefs.isUploadedToHeypocket(c.uploadKey!);
+    final omiDone = omiEnabled && _prefs.isOmiSynced(binPath);
+    final doneCnt = (hpDone ? 1 : 0) + (omiDone ? 1 : 0);
+    final enabledCnt = (hpEnabled ? 1 : 0) + (omiEnabled ? 1 : 0);
+
+    if (doneCnt == 0) return UploadStatus.none;
+    if (doneCnt == enabledCnt) return UploadStatus.all;
+    return UploadStatus.partial;
   }
+
+  bool isUploaded(Conversation c) => uploadStatus(c) == UploadStatus.all;
 
   static Iterable<String> _binPathsForConversations(List<Conversation> conversations) =>
       conversations.map((c) {
