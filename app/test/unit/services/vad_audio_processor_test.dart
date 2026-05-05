@@ -53,7 +53,7 @@ ProcessingSettings _settings({required int minDurationMs, required bool discardS
     discardShort: discardShort,
     maxChunkMs: 3600000,
     deviceId: 'test-device',
-    convertOpusToM4a: false,
+    audioSaveFormat: 'm4a',
     omiSyncEnabled: false,
   );
 }
