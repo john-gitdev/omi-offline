@@ -398,7 +398,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
   Future<void> _openConversation(Conversation conv) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => ConversationPlayerPage(conversation: conv),
+        builder: (_) => ConversationPlayerPage(conversation: conv, controller: _controller),
       ),
     );
     await _controller.reloadBatchesSilently();
@@ -846,13 +846,15 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           );
                                         }
                                         final batchIndex = index - 1;
+                                        final anyIntegrationEnabled = (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
+                                            (_prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty);
                                         return BatchCard(
                                           batch: visibleBatches[batchIndex],
                                           markerMap: markerMap,
                                           adjustmentMode: _prefs.adjustmentMode,
-                                          heypocketApiKey: _prefs.heypocketApiKey,
+                                          anyIntegrationEnabled: anyIntegrationEnabled,
                                           filterMode: _filterMode,
-                                          isUploaded: _prefs.isUploadedToHeypocket,
+                                          isUploaded: controller.isUploaded,
                                           isUploading: controller.uploadingFiles.contains,
                                           onUploadTap: _handleUploadTap,
                                           onConversationTap: _openConversation,
