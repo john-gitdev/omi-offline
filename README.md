@@ -21,7 +21,7 @@ Omi Offline is a personal fork of the Omi project focused entirely on local, pri
 - 🔄 **Resumable BLE Sync (WAL):** Syncs data to your phone in batches over an ACK-gated, Write-Ahead Log (WAL) BLE protocol. Resumes cleanly on disconnects.
 - 🧠 **On-Phone Neural Processing:** Powered by **Silero VAD** (running via ONNX runtime) to segment speech from silence entirely on your mobile device.
 - 🎛 **Iterative Adjustment Mode:** Fine-tune Voice Activity Detection (VAD) parameters without needing to re-sync data from the hardware.
-- 🔌 **Integrations:** Upload finalized recordings to HeyPocket or Omi. Optionally enable **Passthrough Mode** to send audio directly to integrations and delete it locally — conversations remain listed but audio is not stored on-device.
+- 🔌 **Integrations:** Upload finalized recordings to HeyPocket or Omi. Optionally set **Keep Recordings For** to "Immediately" to send audio directly to integrations and delete it locally — conversations remain listed but audio is not stored on-device.
 - 🔕 **VAD Toggle:** Disable Silero VAD entirely and run in All-As-Detected (AAD) mode — all audio is treated as speech and recordings split only on firmware timestamps.
 
 ---
@@ -96,7 +96,7 @@ General app behaviour is controlled in **App Settings** (accessible via the sett
 |---|---|---|---|
 | **M4A Conversion** | `convertOpusToM4a` | false | When enabled, converts raw Opus to AAC (.m4a) |
 | **Adjustment Mode** | `adjustmentMode` | false | Preserve raw `.bin` segments so VAD can be re-run without re-syncing |
-| **Passthrough Mode** | `passthroughMode` | false | Send recordings to integrations and delete audio locally after upload |
+| **Keep Recordings For** | `keepRecordingsDays` | -1 | How long to keep recordings locally before auto-deletion (-1: Always, 0: Immediately, 3: 3 days, 7: 7 days) |
 
 ---
 
