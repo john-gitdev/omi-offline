@@ -327,20 +327,20 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                           style: const TextStyle(color: Colors.white, fontSize: 16),
                           items: const [
                             DropdownMenuItem(value: -1, child: Text('Always Keep')),
-                            DropdownMenuItem(value: 0, child: Text('Immediately')),
                             DropdownMenuItem(value: 3, child: Text('3 Days')),
                             DropdownMenuItem(value: 7, child: Text('7 Days')),
+                            DropdownMenuItem(value: 0, child: Text('Delete After Upload')),
                           ],
                           onChanged: (value) async {
+                            if (value == null) return;
                             if (value == 0) {
                               final confirm = await showDialog<bool>(
                                 context: context,
                                 builder: (c) => AlertDialog(
                                   backgroundColor: const Color(0xFF1C1C1E),
-                                  title: const Text('Enable Immediately Deletion?', style: TextStyle(color: Colors.white)),
+                                  title: const Text('Enable Delete After Upload?', style: TextStyle(color: Colors.white)),
                                   content: const Text(
-                                    'Recordings will be sent directly to your integrations and the audio will be deleted from your device after a successful upload.\n\n'
-                                    'Conversations will still appear in the list so you know they happened, but you won\'t be able to play them back.',
+                                    'Recordings will be sent to your integrations and deleted from your device after a successful upload.',
                                     style: TextStyle(color: Colors.white70, fontSize: 14),
                                   ),
                                   actions: [
@@ -357,7 +357,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                               );
                               if (confirm != true) return;
                             }
-                            setState(() => _keepRecordingsDays = value!);
+                            setState(() => _keepRecordingsDays = value);
                             _markDirty();
                           },
                         ),
@@ -368,7 +368,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                       _keepRecordingsDays == -1
                           ? 'Audio recordings are kept on your device permanently.'
                           : _keepRecordingsDays == 0
-                              ? 'Audio is sent to your integrations and deleted locally after upload. Conversations appear in the list but cannot be played back.'
+                              ? 'Audio is sent to your integrations and deleted locally after a successful upload.'
                               : 'Audio recordings older than $_keepRecordingsDays days will be automatically deleted from your device.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),

@@ -688,6 +688,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
         if (await _enforceRetentionPolicy()) {
           _batches = await _manager.getBatches();
+          _markerConversations = await _manager.getMarkerConversations();
         }
 
         _isLoading = false;
@@ -717,6 +718,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
         if (await _enforceRetentionPolicy()) {
           _batches = await _manager.getBatches();
+          _markerConversations = await _manager.getMarkerConversations();
         }
 
         _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
@@ -767,13 +769,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final cutoff = DateTime.now().subtract(Duration(days: days));
     final toDelete = _batches
         .expand((b) => b.finalizedRecordings)
-        .where((c) => !c.passthrough && c.startTime.isBefore(cutoff))
+        .where((c) => c.startTime.isBefore(cutoff))
         .toList();
 
     if (toDelete.isNotEmpty) {
-      Logger.debug('Retention: auto-deleting ${toDelete.length} recordings older than $days days');
-      final keys = toDelete.map((c) => c.uploadKey).whereType<String>().toSet();
-      await _prefs.removeUploadedFromHeypocket(keys);
+      Logger.debug('Retention: deleting ${toDelete.length} recordings older than $days days');
       await _prefs.removeOmiSynced(_binPathsForConversations(toDelete));
       await RecordingsManager.deleteConversations(toDelete);
       return true;
