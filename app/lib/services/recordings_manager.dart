@@ -1760,6 +1760,7 @@ class RecordingsManager {
       int deletedCount = 0;
       for (final conv in allToProcess) {
         if (conv.sessionId != null && availableSessionIds.contains(conv.sessionId)) {
+          final audioFilename = conv.file.path.split('/').last;
           if (await conv.file.exists()) await conv.file.delete();
           final metaFile = File('${conv.file.path.substring(0, conv.file.path.lastIndexOf('.'))}.meta');
           if (await metaFile.exists()) await metaFile.delete();
@@ -1769,6 +1770,20 @@ class RecordingsManager {
           final ts = conv.file.path.split('/').last.split('_').last.split('.').first;
           final recordingsBin = File('${conv.file.parent.path}/recording_fs320_$ts.bin');
           if (await recordingsBin.exists()) await recordingsBin.delete();
+
+          // Delete EDL files referencing this recording so the re-resolver can
+          // recreate them after reprocessing. Without this, stale EDL files with
+          // a non-empty segmentFilename cause the re-resolver to skip the marker
+          // as already-resolved, leaving it permanently broken.
+          try {
+            final dirEntities = await recordingsDir.list().toList();
+            for (final entity in dirEntities) {
+              if (entity is! File || !entity.path.endsWith('.edl')) continue;
+              final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
+              if (json['segmentFilename'] == audioFilename) await entity.delete();
+            }
+          } catch (_) {}
+
           deletedCount++;
         }
       }
@@ -1782,18 +1797,13 @@ class RecordingsManager {
       } catch (_) {}
     }
 
-    // Remove markers for this day from markers.txt only if we are doing a full delete
-    // or if the marker falls within a reprocessable session.
+    // Remove all markers for this day from markers.txt. In surgical mode the morning
+    // session EDL files are still intact so those markers remain resolved; afternoon
+    // markers whose EDL files were just deleted above will be re-resolved by the
+    // re-resolver on the next processing cycle.
     if (batch.markerTimestamps.isNotEmpty) {
-      final markerSecondsToRemove = batch.markerTimestamps.where((dt) {
-        if (!onlyReprocessable) return true;
-        // In surgical mode, we only remove markers that can be re-resolved.
-        // For simplicity, we remove all markers for the day and let the
-        // re-resolver find them again. If a marker was in the morning session
-        // (which we didn't delete), its EDL file still exists and points to
-        // the old recording. The re-resolver (processAll) skips already resolved markers.
-        return true;
-      }).map((dt) => dt.millisecondsSinceEpoch ~/ 1000).toSet();
+      final markerSecondsToRemove =
+          batch.markerTimestamps.map((dt) => dt.millisecondsSinceEpoch ~/ 1000).toSet();
 
       final rawSegmentsDir = Directory('${directory.path}/raw_segments');
       if (await rawSegmentsDir.exists()) {
