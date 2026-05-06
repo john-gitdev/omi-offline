@@ -66,9 +66,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   Future<List<double>> _computeWaveform(File file) async {
     try {
       // Check for .meta sidecar (written alongside .m4a files)
-      final basePath = file.path.contains('.')
-          ? file.path.substring(0, file.path.lastIndexOf('.'))
-          : file.path;
+      final basePath = file.path.contains('.') ? file.path.substring(0, file.path.lastIndexOf('.')) : file.path;
       final metaFile = File('$basePath.meta');
       if (await metaFile.exists()) {
         final metaBytes = await metaFile.readAsBytes();
@@ -176,7 +174,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
 
   Future<void> _handleUpload() async {
     final anyIntegrationEnabled = (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
-        (_prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty);
+        (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty);
     if (!anyIntegrationEnabled || _isUploading) return;
 
     final alreadyUploaded = widget.controller.isUploaded(widget.conversation);
@@ -200,7 +198,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
       final failures = await widget.controller.uploadConversation(widget.conversation, force: alreadyUploaded);
       if (!mounted) return;
       for (final failure in failures) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
       }
       setState(() {});
     } finally {
@@ -210,7 +209,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
 
   Widget _buildUploadAction() {
     final anyIntegrationEnabled = (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
-        (_prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty);
+        (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty);
     if (!anyIntegrationEnabled) return const SizedBox.shrink();
 
     final uploadKey = widget.conversation.uploadKey;
@@ -286,7 +285,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
                 builder: (c) => AlertDialog(
                   backgroundColor: Colors.grey.shade900,
                   title: const Text('Delete Conversation', style: TextStyle(color: Colors.white)),
-                  content: const Text('This will permanently delete this conversation. This cannot be undone.', style: TextStyle(color: Colors.white70)),
+                  content: const Text('This will permanently delete this conversation. This cannot be undone.',
+                      style: TextStyle(color: Colors.white70)),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.of(c).pop(false),
@@ -345,8 +345,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
                     ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
                     : _waveform.isEmpty
                         ? Center(
-                            child:
-                                Text('Waveform unavailable', style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                            child: Text('Waveform unavailable',
+                                style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
                           )
                         : LayoutBuilder(
                             builder: (ctx, constraints) => GestureDetector(
@@ -404,7 +404,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                _SeekButton(icon: FontAwesomeIcons.rotateLeft, seconds: 30, isForward: false, onTap: () => _seekRelative(-30)),
+                _SeekButton(
+                    icon: FontAwesomeIcons.rotateLeft, seconds: 30, isForward: false, onTap: () => _seekRelative(-30)),
                 const SizedBox(width: 40),
                 Semantics(
                   button: true,
@@ -433,7 +434,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
                   ),
                 ),
                 const SizedBox(width: 40),
-                _SeekButton(icon: FontAwesomeIcons.rotateRight, seconds: 30, isForward: true, onTap: () => _seekRelative(30)),
+                _SeekButton(
+                    icon: FontAwesomeIcons.rotateRight, seconds: 30, isForward: true, onTap: () => _seekRelative(30)),
               ],
             ),
           ],
