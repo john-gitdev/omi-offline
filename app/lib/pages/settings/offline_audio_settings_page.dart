@@ -25,6 +25,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   late int _vadSplitSeconds;
   late int _vadMaxConversationMinutes;
   late int _filterMinDurationSeconds;
+  late int _vadMinSpeechSeconds;
   late bool _discardShortRecordings;
 
   static const List<int> _kShortRecordingOptions = [0, 10, 30, 60, 120, 300, 600, 1800];
@@ -56,6 +57,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     _vadSplitSeconds = SharedPreferencesUtil().vadSplitSeconds;
     _vadMaxConversationMinutes = SharedPreferencesUtil().vadMaxConversationMinutes;
     _filterMinDurationSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
+    _vadMinSpeechSeconds = SharedPreferencesUtil().vadMinSpeechSeconds;
     _discardShortRecordings = SharedPreferencesUtil().discardShortRecordings;
   }
 
@@ -119,6 +121,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     prefs.vadSplitSeconds = _vadSplitSeconds;
     prefs.vadMaxConversationMinutes = _vadMaxConversationMinutes;
     prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
+    prefs.vadMinSpeechSeconds = _vadMinSpeechSeconds;
     prefs.discardShortRecordings = _discardShortRecordings;
 
     if (mounted) setState(() => _isDirty = false);
@@ -270,6 +273,56 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                       const SizedBox(height: 8),
                       Text(
                         'Sensitive picks up quiet speech; Strict ignores background noise.',
+                        style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white.withOpacity(0.05)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Minimum Speech Required',
+                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                          ),
+                          DropdownButton<int>(
+                            value: _vadMinSpeechSeconds,
+                            dropdownColor: const Color(0xFF2C2C2E),
+                            icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                            underline: const SizedBox(),
+                            style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                            items: [0, 3, 10, 30].map((sec) {
+                              return DropdownMenuItem(
+                                value: sec,
+                                child: Text(sec == 0 ? 'Off' : '${sec}s'),
+                              );
+                            }).toList(),
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() => _vadMinSpeechSeconds = value);
+                                _markDirty();
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _vadMinSpeechSeconds == 0
+                            ? 'All recordings with any detected speech are kept.'
+                            : 'Recordings with less than ${_vadMinSpeechSeconds}s of actual speech will be discarded.',
                         style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                       ),
                     ],

@@ -61,6 +61,11 @@ class SharedPreferencesUtil {
   int get filterMinDurationSeconds => getInt('filterMinDurationSeconds', defaultValue: 0);
   set filterMinDurationSeconds(int v) => saveInt('filterMinDurationSeconds', v);
 
+  // Minimum detected speech duration (seconds) required to save a recording.
+  // Options: 0 (off), 3, 10, 30.
+  int get vadMinSpeechSeconds => getInt('vadMinSpeechSeconds', defaultValue: 3);
+  set vadMinSpeechSeconds(int v) => saveInt('vadMinSpeechSeconds', v);
+
   // When true, recordings shorter than filterMinDurationSeconds are permanently
   // discarded during processing. When false, they are saved but hidden from the
   // list and skipped by integrations.
