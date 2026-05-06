@@ -223,8 +223,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       return id;
     }
 
-    return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+    return Material(
+      color: const Color(0xFF1C1C1E),
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           _buildProfileStyleItem(
@@ -274,8 +276,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     final modelNumber = device?.modelNumber ?? 'Omi CV1';
     final manufacturer = device?.manufacturerName ?? 'Based Hardware';
 
-    return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+    return Material(
+      color: const Color(0xFF1C1C1E),
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           _buildProfileStyleItem(
@@ -561,8 +565,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   }
 
   Widget _buildCustomizationSection() {
-    return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+    return Material(
+      color: const Color(0xFF1C1C1E),
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           // LED Brightness
@@ -590,8 +596,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   }
 
   Widget _buildActionsSection(DeviceProvider provider) {
-    return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+    return Material(
+      color: const Color(0xFF1C1C1E),
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           if (provider.isConnected) ...[
