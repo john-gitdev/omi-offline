@@ -189,19 +189,22 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     );
 
     if (copyValue != null) {
-      return GestureDetector(
-        onTap: () {
-          Clipboard.setData(ClipboardData(text: copyValue));
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('$title copied to clipboard')));
-        },
-        child: content,
+      return Tooltip(
+        message: 'Tap to copy $title',
+        child: InkWell(
+          onTap: () {
+            Clipboard.setData(ClipboardData(text: copyValue));
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('$title copied to clipboard')));
+          },
+          child: content,
+        ),
       );
     }
 
     if (onTap != null) {
-      return GestureDetector(onTap: onTap, child: content);
+      return InkWell(onTap: onTap, child: content);
     }
     return content;
   }
@@ -217,8 +220,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       return id;
     }
 
-    return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+    return Material(
+      color: const Color(0xFF1C1C1E),
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           _buildProfileStyleItem(
@@ -268,8 +273,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     final modelNumber = device?.modelNumber ?? 'Omi CV1';
     final manufacturer = device?.manufacturerName ?? 'Based Hardware';
 
-    return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+    return Material(
+      color: const Color(0xFF1C1C1E),
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           _buildProfileStyleItem(
@@ -522,22 +529,26 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
   Widget _buildPresetButton(String label, int level, int currentLevel, VoidCallback onTap) {
     final isSelected = level == currentLevel;
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        decoration: BoxDecoration(
-          color: isSelected ? Colors.white.withOpacity(0.1) : const Color(0xFF2A2A2E),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: isSelected ? Colors.white.withOpacity(0.5) : Colors.transparent, width: 1),
-        ),
-        child: Center(
-          child: Text(
-            label,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-              color: isSelected ? Colors.white : Colors.grey.shade400,
+    return Material(
+      color: isSelected ? Colors.white.withValues(alpha: 0.1) : const Color(0xFF2A2A2E),
+      borderRadius: BorderRadius.circular(10),
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: isSelected ? Colors.white.withValues(alpha: 0.5) : Colors.transparent, width: 1),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Center(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                color: isSelected ? Colors.white : Colors.grey.shade400,
+              ),
             ),
           ),
         ),
@@ -551,8 +562,10 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   }
 
   Widget _buildCustomizationSection() {
-    return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+    return Material(
+      color: const Color(0xFF1C1C1E),
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           // LED Brightness
@@ -580,13 +593,15 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   }
 
   Widget _buildActionsSection(DeviceProvider provider) {
-    return Container(
-      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
+    return Material(
+      color: const Color(0xFF1C1C1E),
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           if (provider.isConnected) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
-            GestureDetector(
+            InkWell(
               onTap: () async {
                 await SharedPreferencesUtil().btDeviceSet(BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0));
                 SharedPreferencesUtil().deviceName = '';
