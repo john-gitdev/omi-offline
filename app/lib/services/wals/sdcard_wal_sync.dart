@@ -283,7 +283,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     const int kMaxStorageBytes = 0x1E000000;
 
     for (final file in files) {
-      if (file.size == 0) continue;
       if (file.size > kMaxStorageBytes) {
         Logger.error(
           'SDCardWalSync: file[${file.index}] has impossible size ${file.size} (> 480 MB)',
