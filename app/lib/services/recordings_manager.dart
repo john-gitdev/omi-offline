@@ -797,7 +797,8 @@ class RecordingsManager {
     VoidCallback? onRecordingFinalized,
   }) async {
     final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
-    if (activeBatches.isEmpty) return;
+    final hasDrafts = batches.any((b) => b.draftRecordings.isNotEmpty);
+    if (activeBatches.isEmpty && !(finalizeDrafts && hasDrafts)) return;
     if (_isProcessingAny) throw Exception("Another processing task is already in progress.");
 
     _isProcessingAny = true;
@@ -893,6 +894,13 @@ class RecordingsManager {
 
       // Combine segments from all batches, sorted by (deviceSessionId, segmentIndex).
       final allSegments = activeBatches.expand((b) => b.rawSegments).toList();
+
+      if (allSegments.isEmpty) {
+        await _stitchDraftRecordings(finalizeAll: finalizeDrafts);
+        onProgress(1.0, Duration.zero);
+        return;
+      }
+
       allSegments.sort((a, b) {
         final ap = a.path.split('/').last.replaceAll('.bin', '').split('_');
         final bp = b.path.split('/').last.replaceAll('.bin', '').split('_');

@@ -640,7 +640,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   spState: controller.spState,
                   accumulatedMinutes: controller.accumulatedMinutes,
                   onTap: () {
-                    if (controller.spState != SyncProcessState.idle && controller.spState != SyncProcessState.error)
+                    if (controller.spState == SyncProcessState.syncing ||
+                        controller.spState == SyncProcessState.processing ||
+                        controller.spState == SyncProcessState.stopping)
                       return;
                     showDialog(
                       context: context,

@@ -374,9 +374,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> startProcessingWithoutSync() async {
-    if (_spState != SyncProcessState.idle) return;
+    const activeStates = {SyncProcessState.syncing, SyncProcessState.processing, SyncProcessState.stopping};
+    if (activeStates.contains(_spState)) return;
     _poll();
-    if (_spState != SyncProcessState.idle) return;
+    if (activeStates.contains(_spState)) return;
 
     _pipelineCompleter = Completer<void>();
     _isForcePipeline = false;
@@ -386,9 +387,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> startForceProcessingWithoutSync() async {
-    if (_spState != SyncProcessState.idle) return;
+    const activeStates = {SyncProcessState.syncing, SyncProcessState.processing, SyncProcessState.stopping};
+    if (activeStates.contains(_spState)) return;
     _poll();
-    if (_spState != SyncProcessState.idle) return;
+    if (activeStates.contains(_spState)) return;
 
     _pipelineCompleter = Completer<void>();
     _isForcePipeline = true;
