@@ -245,7 +245,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          if (_prefs.adjustmentMode)
+          if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment)
             Container(
               margin: const EdgeInsets.only(bottom: 16),
               padding: const EdgeInsets.all(12),

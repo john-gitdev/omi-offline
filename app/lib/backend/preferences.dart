@@ -35,6 +35,11 @@ class SharedPreferencesUtil {
   bool get adjustmentMode => getBool('adjustmentMode', defaultValue: false);
   set adjustmentMode(bool value) => saveBool('adjustmentMode', value);
 
+  // When true, uploads to integrations are permitted even when adjustmentMode is ON.
+  // This is a debug setting; normally uploads are paused during adjustment.
+  bool get allowUploadDuringAdjustment => getBool('allowUploadDuringAdjustment', defaultValue: false);
+  set allowUploadDuringAdjustment(bool value) => saveBool('allowUploadDuringAdjustment', value);
+
   // Set to true the first time adjustment mode is turned ON; cleared only after
   // the cleanup banner's "Process & Delete" completes. Used to suppress the
   // cleanup banner when adjustment mode has never been enabled.

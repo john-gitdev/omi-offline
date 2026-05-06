@@ -321,10 +321,10 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                         ),
                         DropdownButton<int>(
                           value: _keepRecordingsDays,
-                          dropdownColor: const Color(0xFF1C1C1E),
+                          dropdownColor: const Color(0xFF2C2C2E),
                           underline: const SizedBox(),
-                          icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
-                          style: const TextStyle(color: Colors.white, fontSize: 16),
+                          icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
                           items: const [
                             DropdownMenuItem(value: -1, child: Text('Always Keep')),
                             DropdownMenuItem(value: 3, child: Text('3 Days')),
@@ -404,12 +404,10 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                                 builder: (c) => AlertDialog(
                                   backgroundColor: const Color(0xFF1C1C1E),
                                   title: const Text('Enable Adjustment Mode?', style: TextStyle(color: Colors.white)),
-                                  content: const Text(
+                                  content: Text(
                                     'Raw audio is kept on disk so you can reprocess days with different settings.\n\n'
-                                    'Uploads to HeyPocket and other integrations are paused while adjustment mode is on — '
-                                    'recordings may still change before you\'re done. '
-                                    'They resume automatically once you turn it off.',
-                                    style: TextStyle(color: Colors.white70, fontSize: 14),
+                                    '${SharedPreferencesUtil().allowUploadDuringAdjustment ? 'Integrations remain active because you enabled "Allow Upload During Adjustment" in Debug Tools.' : 'Uploads to HeyPocket and other integrations are paused while adjustment mode is on — recordings may still change before you\'re done. They resume automatically once you turn it off.'}',
+                                    style: const TextStyle(color: Colors.white70, fontSize: 14),
                                   ),
                                   actions: [
                                     TextButton(

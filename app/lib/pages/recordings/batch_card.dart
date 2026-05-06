@@ -27,6 +27,16 @@ class UploadIconButton extends StatelessWidget {
   Widget build(BuildContext context) {
     if (!anyIntegrationEnabled) return const SizedBox.shrink();
 
+    if (adjustmentMode && !SharedPreferencesUtil().allowUploadDuringAdjustment) {
+      return IconButton(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        constraints: const BoxConstraints(),
+        icon: Icon(Icons.cloud_off, color: Colors.grey.shade600, size: 18),
+        tooltip: 'Uploads paused (Adjustment Mode)',
+        onPressed: null,
+      );
+    }
+
     if (conversation == null) {
       return IconButton(
         padding: const EdgeInsets.symmetric(horizontal: 6),
