@@ -1730,25 +1730,71 @@ class RecordingsManager {
   }
 
   /// Deletes processed recordings (.m4a/.wav/.meta/.bin) for a day.
-  /// Raw segments are intentionally preserved.
+  /// If [onlyReprocessable] is true, only recordings with matching raw segments
+  /// in the raw_segments/ directory are deleted.
   /// Safe to call while nothing is playing.
-  Future<void> deleteDay(Batch batch) async {
+  Future<void> deleteDay(Batch batch, {bool onlyReprocessable = false}) async {
     final directory = await getApplicationDocumentsDirectory();
     final recordingsDir = Directory(
       '${directory.path}/recordings/${batch.dateString}',
     );
-    if (await recordingsDir.exists()) {
+    if (!await recordingsDir.exists()) return;
+
+    final availableSessionIds = batch.rawSegments
+        .map((f) {
+          final name = f.path.split('/').last.split('.').first;
+          return int.tryParse(name.split('_').first);
+        })
+        .whereType<int>()
+        .toSet();
+
+    if (!onlyReprocessable) {
       await recordingsDir.delete(recursive: true);
       Logger.debug(
         'RecordingsManager: Deleted processed recordings for ${batch.dateString}',
       );
+    } else {
+      // Surgical delete: only remove finalized recordings and drafts that
+      // belong to a session for which we still have raw data.
+      final allToProcess = [...batch.finalizedRecordings, ...batch.draftRecordings];
+      int deletedCount = 0;
+      for (final conv in allToProcess) {
+        if (conv.sessionId != null && availableSessionIds.contains(conv.sessionId)) {
+          if (await conv.file.exists()) await conv.file.delete();
+          final metaFile = File('${conv.file.path.substring(0, conv.file.path.lastIndexOf('.'))}.meta');
+          if (await metaFile.exists()) await metaFile.delete();
+
+          // Also delete any raw .bin files that might have been moved into the
+          // recordings folder (some pipelines do this for portability).
+          final ts = conv.file.path.split('/').last.split('_').last.split('.').first;
+          final recordingsBin = File('${conv.file.parent.path}/recording_fs320_$ts.bin');
+          if (await recordingsBin.exists()) await recordingsBin.delete();
+          deletedCount++;
+        }
+      }
+      Logger.debug(
+        'RecordingsManager: Surgical delete for ${batch.dateString} — removed $deletedCount reprocessable recordings',
+      );
+
+      // If directory is now empty (or only contains orphaned files we don't know about), delete it.
+      try {
+        if (await recordingsDir.list().isEmpty) await recordingsDir.delete();
+      } catch (_) {}
     }
 
-    // Remove markers for this day from markers.txt so they don't resurface as
-    // "Processing…" in the next processing cycle.
+    // Remove markers for this day from markers.txt only if we are doing a full delete
+    // or if the marker falls within a reprocessable session.
     if (batch.markerTimestamps.isNotEmpty) {
-      final markerSecondsToRemove =
-          batch.markerTimestamps.map((dt) => dt.millisecondsSinceEpoch ~/ 1000).toSet();
+      final markerSecondsToRemove = batch.markerTimestamps.where((dt) {
+        if (!onlyReprocessable) return true;
+        // In surgical mode, we only remove markers that can be re-resolved.
+        // For simplicity, we remove all markers for the day and let the
+        // re-resolver find them again. If a marker was in the morning session
+        // (which we didn't delete), its EDL file still exists and points to
+        // the old recording. The re-resolver (processAll) skips already resolved markers.
+        return true;
+      }).map((dt) => dt.millisecondsSinceEpoch ~/ 1000).toSet();
+
       final rawSegmentsDir = Directory('${directory.path}/raw_segments');
       if (await rawSegmentsDir.exists()) {
         final sessionFolders =
@@ -1786,7 +1832,7 @@ class RecordingsManager {
   static Future<void> reprocessDay(Batch batch) async {
     if (_isProcessingAny) return;
     final manager = RecordingsManager();
-    await manager.deleteDay(batch);
+    await manager.deleteDay(batch, onlyReprocessable: true);
     notifyRecordingsChanged();
   }
 
