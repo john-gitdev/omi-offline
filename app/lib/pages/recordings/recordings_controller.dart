@@ -997,7 +997,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final isPassthrough = _prefs.passthroughMode;
         unawaited(
           OmiApiClient.syncLocalFiles([binFile]).then((_) async {
-            await binFile.delete();
             await _prefs.markOmiSynced(binPath);
             if (isPassthrough) await _convertToPassthrough(conversation);
           }).catchError((e) {
@@ -1050,7 +1049,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final binFile = File(binPath);
         if (binFile.existsSync() && (force || !_prefs.isOmiSynced(binPath))) {
           uploads.add(OmiApiClient.syncLocalFiles([binFile]).then((_) async {
-            await binFile.delete();
             return _prefs.markOmiSynced(binPath);
           }).catchError((e) {
             Logger.error('Omi manual sync failed for $binPath: $e');
