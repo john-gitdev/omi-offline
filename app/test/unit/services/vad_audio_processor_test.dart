@@ -48,6 +48,7 @@ ProcessingSettings _settings({required int minDurationMs, required bool discardS
     speechThreshold: 0.5,
     silenceDurationToSplitMs: 120000,
     minDurationMs: minDurationMs,
+    minSpeechMs: 0,
     discardShort: discardShort,
     maxChunkMs: 3600000,
     deviceId: 'test-device',
