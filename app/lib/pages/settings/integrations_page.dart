@@ -18,7 +18,7 @@ class IntegrationsPage extends StatefulWidget {
 
 class _IntegrationsPageState extends State<IntegrationsPage> {
   final _prefs = SharedPreferencesUtil();
-  
+
   // HeyPocket
   final _heypocketController = TextEditingController();
   bool _heypocketObscured = true;
@@ -36,7 +36,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
   @override
   void initState() {
     super.initState();
-    
+
     // Init HeyPocket
     final hpKey = _prefs.heypocketApiKey;
     _heypocketController.text = hpKey;
@@ -73,7 +73,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     if (rt.isEmpty || ak.isEmpty) return;
     final valid = await OmiApiClient.testConnection(refreshToken: rt, apiKey: ak).catchError((_) => true);
     if (!valid && mounted) {
-      _prefs.omiSyncEnabled = false;
+      _prefs.omiEnabled = false;
       setState(() => _omiState = _ConnectionState.error);
     }
   }
@@ -83,13 +83,13 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     _heypocketDebounce?.cancel();
     _heypocketController.removeListener(_onHeyPocketChanged);
     _heypocketController.dispose();
-    
+
     _omiDebounce?.cancel();
     _omiRefreshTokenController.removeListener(_onOmiChanged);
     _omiFirebaseApiKeyController.removeListener(_onOmiChanged);
     _omiRefreshTokenController.dispose();
     _omiFirebaseApiKeyController.dispose();
-    
+
     super.dispose();
   }
 
@@ -132,16 +132,16 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
   void _onOmiChanged() {
     final rt = _omiRefreshTokenController.text.trim();
     final ak = _omiFirebaseApiKeyController.text.trim();
-    
+
     if (rt.isEmpty || ak.isEmpty) {
       _omiDebounce?.cancel();
       _prefs.setOmiRefreshToken(rt);
       _prefs.setOmiFirebaseApiKey(ak);
-      _prefs.omiSyncEnabled = false;
+      _prefs.omiEnabled = false;
       setState(() => _omiState = _ConnectionState.idle);
       return;
     }
-    
+
     _omiDebounce?.cancel();
     _omiDebounce = Timer(const Duration(milliseconds: 800), () => _testOmi(rt, ak));
   }
@@ -156,11 +156,11 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
         await _prefs.setOmiFirebaseApiKey(ak);
         setState(() => _omiState = _ConnectionState.connected);
       } else {
-        _prefs.omiSyncEnabled = false;
+        _prefs.omiEnabled = false;
         setState(() => _omiState = _ConnectionState.error);
       }
     } catch (_) {
-      _prefs.omiSyncEnabled = false;
+      _prefs.omiEnabled = false;
       setState(() => _omiState = _ConnectionState.error);
     }
   }
@@ -173,7 +173,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     if (result != null) {
       final rt = result['refreshToken']!;
       final ak = result['apiKey']!;
-      
+
       setState(() => _omiState = _ConnectionState.checking);
       final valid = await OmiApiClient.testConnection(refreshToken: rt, apiKey: ak);
       if (valid && mounted) {
@@ -213,11 +213,14 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
           child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.grey),
         );
       case _ConnectionState.connected:
-        return Container(width: 10, height: 10, decoration: const BoxDecoration(color: Colors.green, shape: BoxShape.circle));
+        return Container(
+            width: 10, height: 10, decoration: const BoxDecoration(color: Colors.green, shape: BoxShape.circle));
       case _ConnectionState.error:
-        return Container(width: 10, height: 10, decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle));
+        return Container(
+            width: 10, height: 10, decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle));
       case _ConnectionState.idle:
-        return Container(width: 10, height: 10, decoration: BoxDecoration(color: Colors.grey.shade600, shape: BoxShape.circle));
+        return Container(
+            width: 10, height: 10, decoration: BoxDecoration(color: Colors.grey.shade600, shape: BoxShape.circle));
     }
   }
 
@@ -269,9 +272,14 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             title: 'Omi Cloud',
             subtitle: 'Auto-upload main recordings to your Omi account',
             state: _omiState,
-            enabled: _prefs.omiSyncEnabled,
+            enabled: _prefs.omiEnabled,
             onEnabledChanged: (v) {
-              _prefs.omiSyncEnabled = v;
+              _prefs.omiEnabled = v;
+              setState(() {});
+            },
+            autoUpload: _prefs.omiAutoUpload,
+            onAutoUploadChanged: (v) {
+              _prefs.omiAutoUpload = v;
               setState(() {});
             },
             onDelete: _deleteOmi,
@@ -286,7 +294,8 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
-                    child: const Text('Log in with Omi', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    child: const Text('Log in with Omi',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -329,6 +338,11 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               _prefs.heypocketEnabled = v;
               setState(() {});
             },
+            autoUpload: _prefs.heypocketAutoUpload,
+            onAutoUploadChanged: (v) {
+              _prefs.heypocketAutoUpload = v;
+              setState(() {});
+            },
             onDelete: _deleteHeyPocket,
             fields: [
               _buildField(
@@ -350,6 +364,8 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     required _ConnectionState state,
     required bool enabled,
     required ValueChanged<bool> onEnabledChanged,
+    required bool autoUpload,
+    required ValueChanged<bool> onAutoUploadChanged,
     required List<Widget> fields,
     VoidCallback? onDelete,
   }) {
@@ -390,14 +406,25 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
           const SizedBox(height: 12),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('Auto-Upload', style: TextStyle(color: Colors.white, fontSize: 14)),
+            title: const Text('Enabled', style: TextStyle(color: Colors.white, fontSize: 14)),
             subtitle: Text(
-              subtitle,
+              'Use this integration for uploads and passthrough',
               style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
             ),
             value: enabled,
             activeThumbColor: Colors.deepPurpleAccent,
             onChanged: isChecking || !isConnected ? null : onEnabledChanged,
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Auto-Upload', style: TextStyle(color: Colors.white, fontSize: 14)),
+            subtitle: Text(
+              subtitle,
+              style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+            ),
+            value: autoUpload,
+            activeThumbColor: Colors.deepPurpleAccent,
+            onChanged: isChecking || !isConnected || !enabled ? null : onAutoUploadChanged,
           ),
         ],
       ),
