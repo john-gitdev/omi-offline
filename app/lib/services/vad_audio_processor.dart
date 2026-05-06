@@ -21,6 +21,7 @@ class ProcessingSettings {
   final double speechThreshold;
   final int silenceDurationToSplitMs;
   final int minDurationMs;
+  final int minSpeechMs;
   final bool discardShort;
   final int maxChunkMs;
   final String deviceId; // used to generate upload key in .meta sidecar
@@ -32,6 +33,7 @@ class ProcessingSettings {
     required this.speechThreshold,
     required this.silenceDurationToSplitMs,
     required this.minDurationMs,
+    required this.minSpeechMs,
     required this.discardShort,
     required this.maxChunkMs,
     required this.deviceId,
@@ -46,6 +48,7 @@ class ProcessingSettings {
       speechThreshold: p.vadSpeechThreshold,
       silenceDurationToSplitMs: p.vadSplitSeconds * 1000,
       minDurationMs: p.filterMinDurationSeconds * 1000,
+      minSpeechMs: p.vadMinSpeechSeconds * 1000,
       discardShort: p.discardShortRecordings,
       maxChunkMs: p.vadMaxConversationMinutes * 60 * 1000,
       deviceId: p.btDevice.id,
@@ -96,6 +99,7 @@ class VadAudioProcessor {
   final double _speechThreshold;
   final int _silenceDurationToSplitMs;
   final int _minDurationMs;
+  final int _minSpeechMs;
   final bool _discardShort;
   final int _maxChunkMs;
   final String _deviceId;
@@ -152,6 +156,7 @@ class VadAudioProcessor {
         _speechThreshold = settings.speechThreshold,
         _silenceDurationToSplitMs = settings.silenceDurationToSplitMs,
         _minDurationMs = settings.minDurationMs,
+        _minSpeechMs = settings.minSpeechMs,
         _discardShort = settings.discardShort,
         _maxChunkMs = settings.maxChunkMs,
         _deviceId = settings.deviceId,
@@ -336,10 +341,18 @@ class VadAudioProcessor {
 
               if (gapMs >= _silenceDurationToSplitMs) {
                 // Gap exceeds threshold — flush current recording, start new conversation.
+                final speechMs = _speechFrameCount * frameDurationMs;
+                final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+
                 if (_currentRefs.isNotEmpty &&
-                    (!_discardShort || _currentChunkDurationMs >= _minDurationMs || _forcedByMarker)) {
+                    (!_discardShort || _currentChunkDurationMs >= _minDurationMs || _forcedByMarker) &&
+                    !tooShortSpeech) {
                   final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
                   if (filePath != null) savedFiles.add(filePath);
+                } else if (_currentRefs.isNotEmpty) {
+                  Logger.debug(
+                    'VadAudioProcessor: Discarding ${tooShortSpeech ? "noise" : "short"} conversation before split.',
+                  );
                 }
                 _currentRefs = [];
                 _speechFrameCount = 0;
@@ -416,8 +429,15 @@ class VadAudioProcessor {
         // Only enforce the max conversation duration cap here.
         if (_currentChunkDurationMs >= _maxChunkMs) {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
-          final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
-          if (filePath != null) savedFiles.add(filePath);
+          final speechMs = _speechFrameCount * frameDurationMs;
+          final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+
+          if (!tooShortSpeech) {
+            final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
+            if (filePath != null) savedFiles.add(filePath);
+          } else {
+            Logger.debug('VadAudioProcessor: Discarding noise conversation during max-duration cut.');
+          }
           final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
           _forcedByMarker = false;
           _currentRefs = [];
@@ -443,13 +463,18 @@ class VadAudioProcessor {
   }
 
   Future<String?> flushRemaining({bool isDraft = false}) async {
-    if (_currentRefs.isEmpty || (_discardShort && _currentChunkDurationMs < _minDurationMs && !_forcedByMarker)) {
+    final speechMs = _speechFrameCount * frameDurationMs;
+    final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+
+    if (_currentRefs.isEmpty ||
+        (_discardShort && _currentChunkDurationMs < _minDurationMs && !_forcedByMarker) ||
+        tooShortSpeech) {
       discardGuardFiredOnLastFlush = _currentRefs.isNotEmpty;
       if (_currentRefs.isNotEmpty) {
-        Logger.debug(
-          'VadAudioProcessor: flushRemaining discarding ${_currentRefs.length} frames '
-          '(${_currentChunkDurationMs}ms < ${_minDurationMs}ms minimum)',
-        );
+        final reason = tooShortSpeech
+            ? "${speechMs}ms speech < ${_minSpeechMs}ms minimum"
+            : "${_currentChunkDurationMs}ms < ${_minDurationMs}ms minimum";
+        Logger.debug('VadAudioProcessor: flushRemaining discarding ${_currentRefs.length} frames ($reason)');
       }
       _resetState();
       return null;
