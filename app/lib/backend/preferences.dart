@@ -82,6 +82,7 @@ class SharedPreferencesUtil {
     }
     return getString('audioSaveFormat', defaultValue: 'm4a');
   }
+
   set audioSaveFormat(String value) => saveString('audioSaveFormat', value);
 
   int get backgroundSyncIntervalMinutes => getInt('backgroundSyncIntervalMinutes', defaultValue: 30);
@@ -110,8 +111,13 @@ class SharedPreferencesUtil {
 
   //--------------------------- Omi Server Sync --------------------------//
 
-  bool get omiSyncEnabled => getBool('omiSyncEnabled', defaultValue: false);
-  set omiSyncEnabled(bool v) => saveBool('omiSyncEnabled', v);
+  // Whether the Omi integration is active (controls bin generation, upload button, passthrough gating).
+  bool get omiEnabled => getBool('omiSyncEnabled', defaultValue: false);
+  set omiEnabled(bool v) => saveBool('omiSyncEnabled', v);
+
+  // Whether recordings are automatically uploaded after processing. Requires omiEnabled.
+  bool get omiAutoUpload => getBool('omiAutoUpload', defaultValue: true);
+  set omiAutoUpload(bool v) => saveBool('omiAutoUpload', v);
 
   // Short-lived JWT — refreshed automatically; stored in regular prefs.
   String get omiIdToken => getString('omiIdToken', defaultValue: '');
@@ -165,6 +171,10 @@ class SharedPreferencesUtil {
 
   bool get heypocketEnabled => getBool('heypocketEnabled', defaultValue: false);
   set heypocketEnabled(bool v) => saveBool('heypocketEnabled', v);
+
+  // Whether recordings are automatically uploaded after processing. Requires heypocketEnabled.
+  bool get heypocketAutoUpload => getBool('heypocketAutoUpload', defaultValue: true);
+  set heypocketAutoUpload(bool v) => saveBool('heypocketAutoUpload', v);
 
   List<String> get heypocketUploadedFiles => getStringList('heypocketUploadedFiles');
   set heypocketUploadedFiles(List<String> v) => saveStringList('heypocketUploadedFiles', v);
