@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/gen/flutter_communicator.g.dart';
+import 'package:omi/services/bridges/apple_watch_bridge.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/omi_api_client.dart';
 import 'package:omi/services/wals.dart';
@@ -37,6 +39,8 @@ class ServiceManager {
       throw Exception("Service manager is initiated");
     }
     _instance = ServiceManager._create();
+    final appleWatchBridge = AppleWatchFlutterBridge();
+    WatchRecorderFlutterAPI.setUp(appleWatchBridge);
   }
 
   Future<void> start() async {
