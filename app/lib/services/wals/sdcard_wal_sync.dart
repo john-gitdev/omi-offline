@@ -775,8 +775,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
     if (wals.isEmpty) return null;
 
-    // Ascending = oldest first. Device indices are stable — deleting a file does
-    // not renumber the remaining ones, so original fileNums are always correct.
+    // Ascending = oldest first.
     wals.sort((a, b) => a.fileNum.compareTo(b.fileNum));
 
     bool anyPartial = false;

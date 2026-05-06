@@ -247,7 +247,7 @@ class VadAudioProcessor {
           Logger.debug(
             'VadAudioProcessor: Gap detected before ${segmentFile.path.split('/').last} — '
             'gapMs=$gapMs (threshold=${_silenceDurationToSplitMs}ms), '
-            'lastEnd=$_lastSegmentEndTime segmentStart=$segmentStartTime — flushing.',
+            'lastEnd=${_lastSegmentEndTime?.toUtc()} segmentStart=${segmentStartTime.toUtc()} — flushing.',
           );
           _h = Float32List(2 * 1 * 64);
           _c = Float32List(2 * 1 * 64);

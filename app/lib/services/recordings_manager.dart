@@ -932,7 +932,7 @@ class RecordingsManager {
           segmentDerivedFlags.add(false);
         } else {
           segmentStartTimesMs.add(
-            file.lastModifiedSync().millisecondsSinceEpoch,
+            file.lastModifiedSync().toUtc().millisecondsSinceEpoch,
           );
           segmentDerivedFlags.add(true);
         }
