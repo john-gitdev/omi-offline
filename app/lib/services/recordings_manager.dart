@@ -1757,6 +1757,8 @@ class RecordingsManager {
       // Surgical delete: only remove finalized recordings and drafts that
       // belong to a session for which we still have raw data.
       final allToProcess = [...batch.finalizedRecordings, ...batch.draftRecordings];
+      final dirEntities = await recordingsDir.list().toList();
+      final edlFiles = dirEntities.whereType<File>().where((f) => f.path.endsWith('.edl')).toList();
       int deletedCount = 0;
       for (final conv in allToProcess) {
         if (conv.sessionId != null && availableSessionIds.contains(conv.sessionId)) {
@@ -1775,14 +1777,12 @@ class RecordingsManager {
           // recreate them after reprocessing. Without this, stale EDL files with
           // a non-empty segmentFilename cause the re-resolver to skip the marker
           // as already-resolved, leaving it permanently broken.
-          try {
-            final dirEntities = await recordingsDir.list().toList();
-            for (final entity in dirEntities) {
-              if (entity is! File || !entity.path.endsWith('.edl')) continue;
-              final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
-              if (json['segmentFilename'] == audioFilename) await entity.delete();
-            }
-          } catch (_) {}
+          for (final edl in edlFiles) {
+            try {
+              final json = jsonDecode(await edl.readAsString()) as Map<String, dynamic>;
+              if (json['segmentFilename'] == audioFilename) await edl.delete();
+            } catch (_) {}
+          }
 
           deletedCount++;
         }
