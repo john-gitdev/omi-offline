@@ -1735,6 +1735,42 @@ class RecordingsManager {
         'RecordingsManager: Deleted processed recordings for ${batch.dateString}',
       );
     }
+
+    // Remove markers for this day from markers.txt so they don't resurface as
+    // "Processing…" in the next processing cycle.
+    if (batch.markerTimestamps.isNotEmpty) {
+      final markerSecondsToRemove =
+          batch.markerTimestamps.map((dt) => dt.millisecondsSinceEpoch ~/ 1000).toSet();
+      final rawSegmentsDir = Directory('${directory.path}/raw_segments');
+      if (await rawSegmentsDir.exists()) {
+        final sessionFolders =
+            (await rawSegmentsDir.list().toList()).whereType<Directory>().toList();
+        for (final folder in sessionFolders) {
+          final markerFile = File('${folder.path}/markers.txt');
+          if (!await markerFile.exists()) continue;
+          try {
+            final lines = await markerFile.readAsLines();
+            final filtered = lines.where((line) {
+              final utc = int.tryParse(line.split(',')[0].trim());
+              return utc == null || !markerSecondsToRemove.contains(utc);
+            }).toList();
+            if (filtered.length < lines.length) {
+              if (filtered.isEmpty) {
+                await markerFile.delete();
+              } else {
+                await markerFile.writeAsString('${filtered.join('\n')}\n');
+              }
+              Logger.debug(
+                'RecordingsManager: Removed ${lines.length - filtered.length} marker(s) for '
+                '${batch.dateString} from ${markerFile.path}',
+              );
+            }
+          } catch (e) {
+            Logger.error('RecordingsManager: Failed to clean up markers.txt in ${folder.path}: $e');
+          }
+        }
+      }
+    }
   }
 
   /// Deletes processed recordings for [batch] so the day can be reprocessed
