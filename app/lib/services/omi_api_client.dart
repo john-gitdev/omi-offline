@@ -16,11 +16,17 @@ class OmiApiClient {
     final prefs = SharedPreferencesUtil();
     final expiry = prefs.omiTokenExpiry;
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (expiry - now > 60 * 1000) return;
+    final remainingMs = expiry - now;
+    if (remainingMs > 60 * 1000) {
+      Logger.debug('OmiApiClient: Token still valid, expires in ${(remainingMs / 1000).round()}s');
+      return;
+    }
+    Logger.debug('OmiApiClient: Token expired or expiring soon (${(remainingMs / 1000).round()}s remaining), refreshing...');
 
     final refreshToken = prefs.omiRefreshToken;
     final apiKey = prefs.omiFirebaseApiKey;
     if (refreshToken.isEmpty || apiKey.isEmpty) {
+      Logger.error('OmiApiClient: refreshToken empty=${refreshToken.isEmpty}, apiKey empty=${apiKey.isEmpty}');
       throw const OmiSyncException('Omi credentials not configured');
     }
 
@@ -38,6 +44,7 @@ class OmiApiClient {
     }
 
     if (res.statusCode != 200) {
+      Logger.error('OmiApiClient: Token refresh HTTP ${res.statusCode}: ${res.body}');
       throw OmiSyncException('Token refresh failed (${res.statusCode})', isAuthError: true);
     }
 
@@ -45,6 +52,7 @@ class OmiApiClient {
     final idToken = body['id_token'] as String?;
     final expiresIn = int.tryParse(body['expires_in']?.toString() ?? '') ?? 3600;
     if (idToken == null || idToken.isEmpty) {
+      Logger.error('OmiApiClient: Token refresh response missing id_token. Keys: ${body.keys.toList()}');
       throw const OmiSyncException('Token refresh returned no id_token');
     }
 
@@ -66,13 +74,20 @@ class OmiApiClient {
     final token = SharedPreferencesUtil().omiIdToken;
     if (token.isEmpty) throw const OmiSyncException('No Omi ID token available');
 
+    final fileSizes = <String, int>{};
+    for (final f in binFiles) {
+      final size = await f.length();
+      fileSizes[f.uri.pathSegments.last] = size;
+    }
+    Logger.debug('OmiApiClient: Uploading ${binFiles.length} file(s): $fileSizes');
+
     final request = http.MultipartRequest('POST', Uri.parse(_syncUrl))
       ..headers['Authorization'] = 'Bearer $token';
     for (final f in binFiles) {
       request.files.add(http.MultipartFile(
         'files',
         f.openRead(),
-        await f.length(),
+        fileSizes[f.uri.pathSegments.last]!,
         filename: f.uri.pathSegments.last,
         contentType: MediaType('application', 'octet-stream'),
       ));
@@ -85,8 +100,8 @@ class OmiApiClient {
       throw const OmiSyncException('No network connection');
     }
 
-    // Drain the response body regardless of status.
-    await streamed.stream.bytesToString();
+    final responseBody = await streamed.stream.bytesToString();
+    Logger.debug('OmiApiClient: Upload response ${streamed.statusCode}: $responseBody');
 
     if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
       final isAuth = streamed.statusCode == 401 || streamed.statusCode == 403;
