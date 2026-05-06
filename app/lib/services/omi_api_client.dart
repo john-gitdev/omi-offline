@@ -111,7 +111,62 @@ class OmiApiClient {
       );
     }
 
+    // 202 = async job queued — poll until the server finishes processing.
+    if (streamed.statusCode == 202) {
+      final json = jsonDecode(responseBody) as Map<String, dynamic>;
+      final jobId = json['job_id'] as String?;
+      final pollAfterMs = (json['poll_after_ms'] as int?) ?? 3000;
+      if (jobId != null) {
+        await _pollJob(jobId, pollAfterMs);
+        return;
+      }
+    }
+
     Logger.debug('OmiApiClient: Sync accepted (${streamed.statusCode})');
+  }
+
+  static Future<void> _pollJob(String jobId, int initialDelayMs) async {
+    await Future.delayed(Duration(milliseconds: initialDelayMs));
+
+    const maxAttempts = 20;
+    var delayMs = 3000;
+    for (var i = 0; i < maxAttempts; i++) {
+      await refreshTokenIfNeeded();
+      final token = SharedPreferencesUtil().omiIdToken;
+      final http.Response res;
+      try {
+        res = await http
+            .get(Uri.parse('$_syncUrl/$jobId'), headers: {'Authorization': 'Bearer $token'})
+            .timeout(const Duration(seconds: 15));
+      } on SocketException {
+        throw const OmiSyncException('No network connection');
+      }
+
+      Logger.debug('OmiApiClient: Job $jobId poll ${res.statusCode}: ${res.body}');
+
+      if (res.statusCode == 401 || res.statusCode == 403) {
+        throw OmiSyncException('Job poll auth error (${res.statusCode})', isAuthError: true);
+      }
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        final body = jsonDecode(res.body) as Map<String, dynamic>;
+        final status = body['status'] as String?;
+        if (status == 'completed') {
+          Logger.debug('OmiApiClient: Job $jobId completed');
+          return;
+        }
+        if (status == 'failed') {
+          final err = body['error'] ?? body['message'] ?? 'unknown error';
+          throw OmiSyncException('Omi job failed: $err');
+        }
+        // queued / processing — keep polling
+        delayMs = (body['poll_after_ms'] as int?) ?? delayMs;
+      }
+
+      await Future.delayed(Duration(milliseconds: delayMs));
+    }
+
+    throw const OmiSyncException('Omi job timed out after polling');
   }
 
   /// Verifies credentials by attempting a token refresh with the supplied values.
