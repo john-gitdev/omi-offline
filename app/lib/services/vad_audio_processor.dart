@@ -25,7 +25,7 @@ class ProcessingSettings {
   final int maxChunkMs;
   final String deviceId; // used to generate upload key in .meta sidecar
   final String audioSaveFormat;
-  final bool omiSyncEnabled;
+  final bool omiEnabled;
 
   const ProcessingSettings({
     required this.vadEnabled,
@@ -36,7 +36,7 @@ class ProcessingSettings {
     required this.maxChunkMs,
     required this.deviceId,
     required this.audioSaveFormat,
-    required this.omiSyncEnabled,
+    required this.omiEnabled,
   });
 
   factory ProcessingSettings.fromPrefs() {
@@ -50,7 +50,7 @@ class ProcessingSettings {
       maxChunkMs: p.vadMaxConversationMinutes * 60 * 1000,
       deviceId: p.btDevice.id,
       audioSaveFormat: p.audioSaveFormat,
-      omiSyncEnabled: p.omiSyncEnabled,
+      omiEnabled: p.omiEnabled,
     );
   }
 }
@@ -100,7 +100,7 @@ class VadAudioProcessor {
   final int _maxChunkMs;
   final String _deviceId;
   final String _audioSaveFormat;
-  final bool _omiSyncEnabled;
+  final bool _omiEnabled;
 
   static const int sampleRate = 16000;
   static const int channels = 1;
@@ -120,7 +120,8 @@ class VadAudioProcessor {
       try {
         final data = await rootBundle.load('assets/models/silero_vad.onnx');
         final sessionOptions = OrtSessionOptions();
-        session = OrtSession.fromBuffer(data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes), sessionOptions);
+        session =
+            OrtSession.fromBuffer(data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes), sessionOptions);
       } catch (e) {
         Logger.error('VadAudioProcessor: Failed to load Silero VAD model, AAD mode active: $e');
       }
@@ -155,7 +156,7 @@ class VadAudioProcessor {
         _maxChunkMs = settings.maxChunkMs,
         _deviceId = settings.deviceId,
         _audioSaveFormat = settings.audioSaveFormat,
-        _omiSyncEnabled = settings.omiSyncEnabled;
+        _omiEnabled = settings.omiEnabled;
 
   void destroy() {
     _decoder?.destroy();
@@ -401,9 +402,8 @@ class VadAudioProcessor {
         _currentChunkDurationMs += frameDurationMs;
 
         if (_recordingStartTime == null) {
-          _recordingStartTime = (vadResumeTime != null && vadResumeFrameIndex != null)
-              ? vadResumeTime!
-              : segmentStartTime;
+          _recordingStartTime =
+              (vadResumeTime != null && vadResumeFrameIndex != null) ? vadResumeTime! : segmentStartTime;
         }
 
         // Compute accurate wall-clock time for this frame using VAD-resume anchor if available.
@@ -497,7 +497,7 @@ class VadAudioProcessor {
   Future<String?> _saveRecording(List<Object> refs, DateTime startTime,
       {bool? isDerivedTimestamp, bool isDraft = false}) async {
     final result = await _saveRecordingCore(refs, startTime, isDerivedTimestamp: isDerivedTimestamp, isDraft: isDraft);
-    if (result != null && _omiSyncEnabled) {
+    if (result != null && _omiEnabled) {
       try {
         final dateFolderPath = File(result).parent.path;
         await _saveBin(refs, dateFolderPath, startTime.millisecondsSinceEpoch);
@@ -609,7 +609,7 @@ class VadAudioProcessor {
       final bytes = batchBuffer.takeBytes();
       batchFrameCount = 0;
       hasEncodedAnyFrames = true;
-      
+
       int offset = 0;
       while (offset < bytes.length) {
         final chunkLen = (bytes.length - offset > 16000) ? 16000 : bytes.length - offset;
@@ -809,7 +809,7 @@ class VadAudioProcessor {
           final ms = item.inMilliseconds;
           final durationSamples = (ms * sampleRate) ~/ 1000;
           final silenceFrames = (ms / frameDurationMs).round();
-          
+
           for (int f = 0; f < silenceFrames; f++) {
             granulePos += 960; // 20ms at 48kHz
             pagePackets.add(opusSilenceFrame);
@@ -820,7 +820,7 @@ class VadAudioProcessor {
               pagePackets.clear();
             }
           }
-          
+
           // Still need to update waveform metadata for silence
           for (int s = 0; s < durationSamples; s++) {
             currentWindowSamples++;
@@ -830,7 +830,6 @@ class VadAudioProcessor {
             }
           }
           totalSamples += durationSamples;
-
         } else {
           final ref = item as FrameRef;
           if (i % 50 == 0) await Future.delayed(Duration.zero);
@@ -870,7 +869,8 @@ class VadAudioProcessor {
           pagePackets.add(opusBytes);
         }
 
-        if (pagePackets.length >= 40) { // 40 frames per page (~800ms)
+        if (pagePackets.length >= 40) {
+          // 40 frames per page (~800ms)
           lastFlushedGranulePos = granulePos;
           sink.add(_createOggPage(granulePos, pageSeqNum++, serial, pagePackets.toList()));
           pagePackets.clear();
@@ -895,7 +895,8 @@ class VadAudioProcessor {
       await _saveMetadata(refs, dateFolderPath, timestamp, metaSamples, dynamicPeaks, waveformBuckets,
           prefix: prefix, extension: 'ogg', suffix: suffix);
 
-      Logger.debug('VadAudioProcessor: Saved OGG recording (${refs.length} items) starting at $timestamp$suffix to $oggPath');
+      Logger.debug(
+          'VadAudioProcessor: Saved OGG recording (${refs.length} items) starting at $timestamp$suffix to $oggPath');
       return oggPath;
     } catch (e) {
       Logger.error('VadAudioProcessor: OGG encoding failed, falling back to WAV: $e');
@@ -1377,4 +1378,3 @@ class VadAudioProcessor {
     return wavPath;
   }
 }
-
