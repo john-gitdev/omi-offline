@@ -163,7 +163,6 @@ class OmiDeviceConnection extends DeviceConnection {
       final data =
           await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
       if (data.length >= 8) {
-        // ⚡ Bolt: Use zero-allocation getUint32LittleEndian to prevent unnecessary Uint8List copies and ByteData allocations
         return StorageFileStats(
           totalUsedBytes: data.getUint32LittleEndian(0),
           fileCount: data.getUint32LittleEndian(4),
@@ -280,7 +279,6 @@ class OmiDeviceConnection extends DeviceConnection {
       final data =
           await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
       List<int> result = [];
-      // ⚡ Bolt: Use zero-allocation getUint32LittleEndian to prevent unnecessary Uint8List copies and ByteData allocations
       for (int i = 0; i < (data.length ~/ 4); i++) {
         result.add(data.getUint32LittleEndian(i * 4));
       }
@@ -322,7 +320,6 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<int> performGetFeatures() async {
     try {
       final data = await transport.readCharacteristic(featuresServiceUuid, featuresCharacteristicUuid);
-      // ⚡ Bolt: Use zero-allocation getUint32LittleEndian to prevent unnecessary Uint8List copies and ByteData allocations
       if (data.length >= 4) return data.getUint32LittleEndian(0);
     } catch (_) {}
     return 0;
@@ -461,7 +458,6 @@ class OmiDeviceConnection extends DeviceConnection {
 
         // Once we have the first 4 bytes of data, we know the total count
         if (expectedTotalBytes == null && buffer.length >= 4) {
-          // ⚡ Bolt: Use zero-allocation getUint32LittleEndian to prevent unnecessary Uint8List copies and ByteData allocations
           final count = buffer.getUint32LittleEndian(0);
           if (count == 0) {
             // Firmware sends [0x01][0,0,0,0] followed by [0x02] for empty list.
@@ -615,7 +611,6 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   void _parseAndSuccess(List<int> buffer, void Function(List<StorageFile>) success) {
-    // ⚡ Bolt: Use zero-allocation getUint32LittleEndian to prevent unnecessary Uint8List copies and ByteData allocations
     final count = buffer.getUint32LittleEndian(0);
     final files = <StorageFile>[];
     final totalExpected = 4 + (count * 16);
