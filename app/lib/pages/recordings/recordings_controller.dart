@@ -833,9 +833,23 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   Future<void> reprocessDay(Batch batch) async {
     if (_spState != SyncProcessState.idle) return;
 
-    final keys = batch.finalizedRecordings.map((c) => c.uploadKey).whereType<String>().toSet();
+    // Surgical flag cleanup: only remove flags for recordings that belong to a
+    // session for which we still have raw data (and thus will be deleted by reprocessDay).
+    final availableSessionIds = batch.rawSegments
+        .map((f) {
+          final name = f.path.split('/').last.split('.').first;
+          return int.tryParse(name.split('_').first);
+        })
+        .whereType<int>()
+        .toSet();
+
+    final reprocessable =
+        batch.finalizedRecordings.where((c) => c.sessionId != null && availableSessionIds.contains(c.sessionId));
+
+    final keys = reprocessable.map((c) => c.uploadKey).whereType<String>().toSet();
     await _prefs.removeUploadedFromHeypocket(keys);
-    await _prefs.removeOmiSynced(_binPathsForConversations(batch.finalizedRecordings));
+    await _prefs.removeOmiSynced(_binPathsForConversations(reprocessable.toList()));
+
     await RecordingsManager.reprocessDay(batch);
     await _loadBatches();
 
