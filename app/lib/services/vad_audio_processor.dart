@@ -572,8 +572,9 @@ class VadAudioProcessor {
       dateFolderPath = _outputDir!;
     } else {
       final directory = await getApplicationDocumentsDirectory();
+      final localStart = startTime.toLocal();
       final dateString =
-          '${startTime.year}-${startTime.month.toString().padLeft(2, '0')}-${startTime.day.toString().padLeft(2, '0')}';
+          '${localStart.year}-${localStart.month.toString().padLeft(2, '0')}-${localStart.day.toString().padLeft(2, '0')}';
       dateFolderPath = '${directory.path}/recordings/$dateString';
     }
 
