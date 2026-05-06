@@ -60,14 +60,14 @@ class Conversation {
     final name = file.path.split('/').last;
     final nameNoExt = name.split('.').first;
     final parts = nameNoExt.split('_');
-    
+
     // Format: recording_<ts> or recording_<ts>_draft
     int? millis;
     if (parts.length >= 2) {
       final tsStr = parts.contains('draft') ? parts[parts.length - 2] : parts.last;
       millis = int.tryParse(tsStr);
     }
-    
+
     DateTime startTime;
     if (millis != null && millis > 0) {
       startTime = DateTime.fromMillisecondsSinceEpoch(millis);
@@ -88,7 +88,7 @@ class Conversation {
         if (metaBytes.length >= 8) {
           final bd = ByteData.sublistView(metaBytes);
           final durationMs = bd.getUint32(4, Endian.little);
-          
+
           int? sessionId;
           int? startUptime;
           if (metaBytes.length >= 416) {
@@ -192,9 +192,8 @@ class Conversation {
 
       final millisStr = baseName.contains('_') ? baseName.split('_').last : null;
       final millis = millisStr != null ? int.tryParse(millisStr) : null;
-      final startTime = millis != null && millis > 0
-          ? DateTime.fromMillisecondsSinceEpoch(millis)
-          : await metaFile.lastModified();
+      final startTime =
+          millis != null && millis > 0 ? DateTime.fromMillisecondsSinceEpoch(millis) : await metaFile.lastModified();
 
       return Conversation(
         file: virtualAudioFile,
@@ -237,7 +236,7 @@ class Conversation {
         if (metaBytes.length >= 8) {
           final bd = ByteData.sublistView(metaBytes);
           final durationMs = bd.getUint32(4, Endian.little);
-          
+
           int? sessionId;
           int? startUptime;
           if (metaBytes.length >= 416) {
@@ -636,10 +635,10 @@ class RecordingsManager {
         final bName = b.path.split('/').last;
         final aIdStr = aName.replaceFirst('unknown_', '').replaceFirst('session_', '');
         final bIdStr = bName.replaceFirst('unknown_', '').replaceFirst('session_', '');
-        
+
         final aId = aName.startsWith('session_') ? int.tryParse(aIdStr, radix: 16) : int.tryParse(aIdStr);
         final bId = bName.startsWith('session_') ? int.tryParse(bIdStr, radix: 16) : int.tryParse(bIdStr);
-        
+
         return (aId ?? 0).compareTo(bId ?? 0);
       });
 
@@ -659,9 +658,7 @@ class RecordingsManager {
               final utc = int.tryParse(parts[0].trim());
               if (utc != null) {
                 final date = DateTime.fromMillisecondsSinceEpoch(utc * 1000);
-                final dateString =
-                    '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
-                markersByDate.putIfAbsent(dateString, () => []).add(date);
+                markersByDate.putIfAbsent(fmtDate(date), () => []).add(date);
               }
             }
           } catch (e) {
@@ -695,9 +692,7 @@ class RecordingsManager {
             } catch (_) {
               date = await file.lastModified();
             }
-            final dateString =
-                '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
-            rawSegmentsByDate.putIfAbsent(dateString, () => []).add(file);
+            rawSegmentsByDate.putIfAbsent(fmtDate(date), () => []).add(file);
           }),
         );
       }
@@ -921,7 +916,7 @@ class RecordingsManager {
         final parts = stem.split('_');
         final timerStart = int.tryParse(parts[0]);
         final sessionId = parts.length > 1 ? int.tryParse(parts[1]) : null;
-        
+
         segmentSessionIds.add(sessionId);
 
         if (timerStart != null && timerStart > kMinValidEpoch) {
@@ -1100,17 +1095,15 @@ class RecordingsManager {
         if (draftFiles.isEmpty) break;
 
         // Sort files in this folder chronologically to find what comes after each draft.
-        final allAudioFiles = entities
-            .where((f) {
-              final p = f.path;
-              return (p.endsWith('.m4a') || p.endsWith('.wav') || p.endsWith('.ogg')) && !p.contains('.tmp');
-            })
-            .toList()
-            ..sort((a, b) {
-              final tsA = _extractTimestamp(a.path);
-              final tsB = _extractTimestamp(b.path);
-              return tsA.compareTo(tsB);
-            });
+        final allAudioFiles = entities.where((f) {
+          final p = f.path;
+          return (p.endsWith('.m4a') || p.endsWith('.wav') || p.endsWith('.ogg')) && !p.contains('.tmp');
+        }).toList()
+          ..sort((a, b) {
+            final tsA = _extractTimestamp(a.path);
+            final tsB = _extractTimestamp(b.path);
+            return tsA.compareTo(tsB);
+          });
 
         for (final draftFile in draftFiles) {
           final draftTs = _extractTimestamp(draftFile.path);
@@ -1174,7 +1167,7 @@ class RecordingsManager {
     final nameNoExt = name.split('.').first;
     final parts = nameNoExt.split('_');
     if (parts.length < 2) return 0;
-    
+
     // Format: recording_<ts> or recording_<ts>_draft
     final tsStr = parts.contains('draft') ? parts[parts.length - 2] : parts.last;
     return int.tryParse(tsStr) ?? 0;
@@ -1223,6 +1216,7 @@ class RecordingsManager {
       Logger.error('RecordingsManager: Failed to finalize draft $path: $e');
     }
   }
+
   Future<bool> _performStitch(File draftFile, File nextFile, int gapMs) async {
     final ext = draftFile.path.split('.').last;
     if (nextFile.path.split('.').last != ext) {
@@ -1578,10 +1572,7 @@ class RecordingsManager {
   /// and device markers use UTC internally, but folder placement is always
   /// local.  A recording that starts before midnight local time and ends after
   /// midnight is placed under the *start* date.
-  static String _dateStringFromMillis(int millis) {
-    final dt = DateTime.fromMillisecondsSinceEpoch(millis).toLocal();
-    return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
-  }
+  static String _dateStringFromMillis(int millis) => fmtDate(DateTime.fromMillisecondsSinceEpoch(millis).toLocal());
 
   /// Background auto-process: processes all batches as one continuous stream.
   /// Skips the newest segment per DeviceSession (may still be written by firmware).
@@ -1838,7 +1829,7 @@ class RecordingsManager {
             final oldMarkerMs = json['markerTimestampMs'] as int;
             // Marker uptime = oldMarkerMs (since it was Dec 1969/Jan 1970)
             final newMarkerMs = oldMarkerMs + rtcOffsetMs;
-            
+
             final updatedJson = Map<String, dynamic>.from(json);
             updatedJson['markerTimestampMs'] = newMarkerMs;
             updatedJson['segmentFilename'] = newAudioPath.split('/').last;
@@ -1874,7 +1865,7 @@ class RecordingsManager {
         final newBaseStartMs = (baseUptime * 1000) + rtcOffsetMs;
         final newBaseStartSecs = newBaseStartMs ~/ 1000;
         final targetFolder = Directory('${rawSegmentsDir.path}/$newBaseStartSecs');
-        
+
         if (await targetFolder.exists()) {
           // Merge contents if target already exists (unlikely but safe)
           await for (final entity in sourceFolder.list()) {
