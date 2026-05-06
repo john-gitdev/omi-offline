@@ -58,8 +58,16 @@ class Conversation {
   /// WAV file size calculation.
   static Conversation fromFile(File file) {
     final name = file.path.split('/').last;
-    final millisStr = name.contains('_') ? name.split('_').last.split('.').first : null;
-    final millis = millisStr != null ? int.tryParse(millisStr) : null;
+    final nameNoExt = name.split('.').first;
+    final parts = nameNoExt.split('_');
+    
+    // Format: recording_<ts> or recording_<ts>_draft
+    int? millis;
+    if (parts.length >= 2) {
+      final tsStr = parts.contains('draft') ? parts[parts.length - 2] : parts.last;
+      millis = int.tryParse(tsStr);
+    }
+    
     DateTime startTime;
     if (millis != null && millis > 0) {
       startTime = DateTime.fromMillisecondsSinceEpoch(millis);
@@ -669,7 +677,24 @@ class RecordingsManager {
 
         await Future.wait(
           files.map((file) async {
-            final date = await file.lastModified();
+            DateTime date;
+            try {
+              final name = file.path.split('/').last;
+              final tsStr = name.split('_').first;
+              final ts = int.tryParse(tsStr);
+              if (ts != null && ts > 0) {
+                // If timestamp is uptime (very small), use lastModified as fallback for date grouping
+                if (ts < 1000000000) {
+                  date = await file.lastModified();
+                } else {
+                  date = DateTime.fromMillisecondsSinceEpoch(ts * 1000);
+                }
+              } else {
+                date = await file.lastModified();
+              }
+            } catch (_) {
+              date = await file.lastModified();
+            }
             final dateString =
                 '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
             rawSegmentsByDate.putIfAbsent(dateString, () => []).add(file);
@@ -719,6 +744,7 @@ class RecordingsManager {
     final allDates = {
       ...rawSegmentsByDate.keys,
       ...processedByDate.keys,
+      ...markersByDate.keys,
     }.toList();
     List<Batch> batches = [];
 
@@ -1145,17 +1171,21 @@ class RecordingsManager {
 
   int _extractTimestamp(String path) {
     final name = path.split('/').last;
-    final parts = name.split('_');
+    final nameNoExt = name.split('.').first;
+    final parts = nameNoExt.split('_');
     if (parts.length < 2) return 0;
-    // timestamp is usually the last part before extension
-    final tsPart = parts[parts.length - 1].split('.').first;
-    return int.tryParse(tsPart) ?? 0;
+    
+    // Format: recording_<ts> or recording_<ts>_draft
+    final tsStr = parts.contains('draft') ? parts[parts.length - 2] : parts.last;
+    return int.tryParse(tsStr) ?? 0;
   }
 
   Future<void> _finalizeDraft(File file) async {
     final path = file.path;
     if (!path.contains('_draft.')) return;
+    final oldFilename = path.split('/').last;
     final newPath = path.replaceAll('_draft.', '.');
+    final newFilename = newPath.split('/').last;
     final metaPath = path.replaceAll(RegExp(r'\.(m4a|wav|ogg)$'), '.meta');
     final newMetaPath = metaPath.replaceAll('_draft.', '.');
 
@@ -1166,12 +1196,33 @@ class RecordingsManager {
         if (await File(newMetaPath).exists()) await File(newMetaPath).delete();
         await File(metaPath).rename(newMetaPath);
       }
+
+      // Update any .edl files that were pointing to this draft
+      final dir = file.parent;
+      if (await dir.exists()) {
+        final entities = await dir.list().toList();
+        for (final entity in entities) {
+          if (entity is File && entity.path.endsWith('.edl')) {
+            try {
+              final content = await entity.readAsString();
+              final json = jsonDecode(content) as Map<String, dynamic>;
+              if (json['segmentFilename'] == oldFilename) {
+                json['segmentFilename'] = newFilename;
+                await entity.writeAsString(jsonEncode(json));
+                Logger.debug('RecordingsManager: Updated EDL ${entity.path} for finalized draft');
+              }
+            } catch (e) {
+              Logger.error('RecordingsManager: Failed to update EDL ${entity.path}: $e');
+            }
+          }
+        }
+      }
+
       Logger.debug('RecordingsManager: Finalized draft ${file.path}');
     } catch (e) {
       Logger.error('RecordingsManager: Failed to finalize draft $path: $e');
     }
   }
-
   Future<bool> _performStitch(File draftFile, File nextFile, int gapMs) async {
     final ext = draftFile.path.split('.').last;
     if (nextFile.path.split('.').last != ext) {
@@ -1226,8 +1277,8 @@ class RecordingsManager {
 
     if (draftBytes.length < 44 || nextBytes.length < 44) return false;
 
-    final sampleRate = 16000;
-    final channels = 1;
+    const sampleRate = 16000;
+    const channels = 1;
     final silenceSamples = (gapMs * sampleRate) ~/ 1000;
     final silenceBytes = Uint8List(silenceSamples * channels * 2);
 
@@ -1297,7 +1348,7 @@ class RecordingsManager {
     final dMeta = ByteData.sublistView(dBytes);
     final nMeta = ByteData.sublistView(nBytes);
 
-    final sampleRate = 16000;
+    const sampleRate = 16000;
     final dSamples = dMeta.getUint32(0, Endian.little);
     final gapSamples = (gapMs * sampleRate) ~/ 1000;
     final nSamples = nMeta.getUint32(0, Endian.little);
@@ -1330,6 +1381,10 @@ class RecordingsManager {
     await draftMeta.writeAsBytes(outBytes);
   }
 
+  static String fmtDate(DateTime date) {
+    return "${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}";
+  }
+
   /// Writes EDL sidecars for all markers in [markerTimestamps] into [liveRecordingsDirPath].
   /// Idempotent: skips EDLs that already exist with non-empty segments.
   /// Resolves previously-pending EDLs (empty segments) when the backing m4a is now available.
@@ -1337,46 +1392,61 @@ class RecordingsManager {
     String liveRecordingsDirPath,
     List<DateTime> markerTimestamps,
   ) async {
-    final liveDir = Directory(liveRecordingsDirPath);
-    if (!await liveDir.exists() || markerTimestamps.isEmpty) return;
+    final recordingsRootDir = Directory(liveRecordingsDirPath).parent;
+    if (!await recordingsRootDir.exists() || markerTimestamps.isEmpty) return;
 
-    // Build sorted list of (file, startMs, endMs) from m4a/ogg + .meta pairs.
+    // Build global sorted list of (file, startMs, endMs) from m4a/ogg + .meta pairs across ALL date folders.
     final recordings = <({File file, int startMs, int endMs, int durationMs, int? sessionId, int? startUptime})>[];
-    for (final entity in await liveDir.list().toList()) {
-      if (entity is! File || (!entity.path.endsWith('.m4a') && !entity.path.endsWith('.ogg') && !entity.path.endsWith('.wav'))) continue;
-      
-      final conv = Conversation.fromFile(entity);
-      if (conv.duration.inMilliseconds <= 0) continue;
+    final dateFolders = await recordingsRootDir.list().where((e) => e is Directory).toList();
 
-      recordings.add((
-        file: entity,
-        startMs: conv.startTime.millisecondsSinceEpoch,
-        endMs: conv.endTime.millisecondsSinceEpoch,
-        durationMs: conv.duration.inMilliseconds,
-        sessionId: conv.sessionId,
-        startUptime: conv.startUptime,
-      ));
+    for (final dateFolder in dateFolders) {
+      final entities = await (dateFolder as Directory).list().toList();
+      for (final entity in entities) {
+        if (entity is! File ||
+            (!entity.path.endsWith('.m4a') && !entity.path.endsWith('.ogg') && !entity.path.endsWith('.wav'))) {
+          continue;
+        }
+
+        final conv = Conversation.fromFile(entity);
+        if (conv.duration.inMilliseconds <= 0) continue;
+
+        recordings.add((
+          file: entity,
+          startMs: conv.startTime.millisecondsSinceEpoch,
+          endMs: conv.endTime.millisecondsSinceEpoch,
+          durationMs: conv.duration.inMilliseconds,
+          sessionId: conv.sessionId,
+          startUptime: conv.startUptime,
+        ));
+      }
     }
     recordings.sort((a, b) => a.startMs.compareTo(b.startMs));
 
-    // Also read markers.txt if it exists to get the uptime/sessionId for each marker.
-    // If the file is just timestamps (legacy), we'll have only markerTimestamps.
-    final markerFile = File('$liveRecordingsDirPath/../markers.txt'); // Look in raw_segments session folder?
-    // Wait, liveDir is recordings/date/. raw_segments is in a different sibling tree.
-    // markers.txt is passed in markerTimestamps.
-    // For now we rely on the markerMs (timestamp).
-
     for (final markerTime in markerTimestamps) {
       final markerMs = markerTime.millisecondsSinceEpoch;
-      final edlFile = File('$liveRecordingsDirPath/marker_$markerMs.edl');
+      // Primary location: the marker's own date folder (default for pending/orphan)
+      final dateStr = fmtDate(markerTime);
+      final defaultEdlFile = File('${recordingsRootDir.path}/$dateStr/marker_$markerMs.edl');
 
-      // Skip already-resolved EDLs.
-      if (await edlFile.exists()) {
-        try {
-          final existing = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
-          if ((existing['segmentFilename'] as String?)?.isNotEmpty == true) continue;
-        } catch (_) {}
+      // Check if this marker is already resolved in ANY date folder
+      bool alreadyResolved = false;
+      File? existingEdlFile;
+
+      for (final dateFolder in dateFolders) {
+        final f = File('${dateFolder.path}/marker_$markerMs.edl');
+        if (await f.exists()) {
+          existingEdlFile = f;
+          try {
+            final existing = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+            if ((existing['segmentFilename'] as String?)?.isNotEmpty == true) {
+              alreadyResolved = true;
+              break;
+            }
+          } catch (_) {}
+        }
       }
+
+      if (alreadyResolved) continue;
 
       // Strict containment only: marker must fall within a recording that was actually
       // produced from the audio around that time.
@@ -1384,16 +1454,12 @@ class RecordingsManager {
         (r) => markerMs >= r.startMs && markerMs < r.endMs,
       );
 
-      // If no time match, and this is an "unknown" recording (Dec 1969/Jan 1970), 
-      // we could try matching by sessionId, but we'd need the SID from the marker.
-      // Since markerTimestamps only contains DateTime, we'll implement that in a future
-      // update when we pass MarkerInfo objects.
-      // For now, relative positioning logic below handles the "unknown" case if a time match occurred.
-
       if (matchIdx >= 0) {
         final rec = recordings[matchIdx];
         final segmentFilename = rec.file.path.split('/').last;
-        
+        final targetDir = rec.file.parent;
+        final targetEdlFile = File('${targetDir.path}/marker_$markerMs.edl');
+
         int markerOffsetMs = markerMs - rec.startMs;
 
         // Relative positioning for unknown sessions (markerMs is uptime, startUptime is uptime)
@@ -1409,24 +1475,34 @@ class RecordingsManager {
           'cropEndMs': rec.durationMs,
           'userSaved': false,
         };
-        await edlFile.writeAsString(jsonEncode(edlData));
+
+        // If it was previously pending in a different folder, delete it
+        if (existingEdlFile != null && existingEdlFile.path != targetEdlFile.path) {
+          await existingEdlFile.delete();
+        }
+
+        if (!await targetDir.exists()) await targetDir.create(recursive: true);
+        await targetEdlFile.writeAsString(jsonEncode(edlData));
         Logger.debug(
-          'RecordingsManager: Wrote EDL for marker at $markerTime → $segmentFilename',
+          'RecordingsManager: Wrote EDL for marker at $markerTime → $segmentFilename in ${targetDir.path}',
         );
       } else {
-        // ... (Pending EDL logic)
-        final edlData = {
-          'markerTimestampMs': markerMs,
-          'segmentFilename': null,
-          'markerOffsetMs': 0,
-          'cropStartMs': 0,
-          'cropEndMs': 0,
-          'userSaved': false,
-        };
-        await edlFile.writeAsString(jsonEncode(edlData));
-        Logger.debug(
-          'RecordingsManager: Wrote PENDING EDL for marker at $markerTime',
-        );
+        // No match found yet (still pending or a silent marker)
+        if (existingEdlFile == null) {
+          final edlData = {
+            'markerTimestampMs': markerMs,
+            'segmentFilename': null,
+            'markerOffsetMs': 0,
+            'cropStartMs': 0,
+            'cropEndMs': 0,
+            'userSaved': false,
+          };
+          if (!await defaultEdlFile.parent.exists()) await defaultEdlFile.parent.create(recursive: true);
+          await defaultEdlFile.writeAsString(jsonEncode(edlData));
+          Logger.debug(
+            'RecordingsManager: Wrote PENDING EDL for marker at $markerTime in ${defaultEdlFile.path}',
+          );
+        }
       }
     }
   }
