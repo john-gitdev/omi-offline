@@ -475,7 +475,22 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: Colors.white, fontSize: 16),
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 24),
+              SwitchListTile(
+                title: const Text('Allow Upload During Adjustment',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+                subtitle: const Text('Integrations will remain active even when Adjustment Mode is enabled.',
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
+                value: SharedPreferencesUtil().allowUploadDuringAdjustment,
+                onChanged: (val) {
+                  setState(() {
+                    SharedPreferencesUtil().allowUploadDuringAdjustment = val;
+                  });
+                },
+                activeColor: Colors.amber,
+                contentPadding: EdgeInsets.zero,
+              ),
+              const SizedBox(height: 16),
               if (_isProcessing) ...[
                 const Text('Processing recordings...', style: TextStyle(color: Colors.white70, fontSize: 14)),
                 const SizedBox(height: 16),

@@ -315,15 +315,14 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _handleUploadTap(Conversation conversation) async {
-    // TODO: Disable this later
-    // if (_prefs.adjustmentMode) {
-    //   ScaffoldMessenger.of(context).showSnackBar(
-    //     const SnackBar(
-    //       content: Text('Uploads paused — turn off Adjustment Mode first'),
-    //     ),
-    //   );
-    //   return;
-    // }
+    if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Uploads paused — turn off Adjustment Mode first'),
+        ),
+      );
+      return;
+    }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) {
       ScaffoldMessenger.of(context).showSnackBar(

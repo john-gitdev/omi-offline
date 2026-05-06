@@ -1057,6 +1057,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<List<UploadFailure>> uploadConversation(Conversation conversation, {bool force = false}) async {
+    if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) {
+      throw Exception('Uploads paused — turn off Adjustment Mode first');
+    }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) throw Exception('Upload key unavailable');
     if (_uploadingFiles.contains(uploadKey)) return [];
