@@ -155,9 +155,8 @@ class ConversationTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final sortedMarkers = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
     final isPassthrough = conversation.passthrough;
-    final subtitle = isPassthrough
-        ? conversation.durationLabel
-        : '${conversation.durationLabel}  ·  ${conversation.sizeLabel}';
+    final subtitle =
+        isPassthrough ? conversation.durationLabel : '${conversation.durationLabel}  ·  ${conversation.sizeLabel}';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -189,10 +188,6 @@ class ConversationTile extends StatelessWidget {
                     ],
                   ),
                 ),
-                if (!isPassthrough && markers.isNotEmpty) ...[
-                  const FaIcon(FontAwesomeIcons.solidBookmark, color: Colors.amber, size: 13),
-                  const SizedBox(width: 8),
-                ],
                 if (isPassthrough) ...[
                   Icon(Icons.send_rounded, size: 16, color: Colors.deepPurpleAccent.withValues(alpha: 0.8)),
                   const SizedBox(width: 6),
@@ -254,7 +249,8 @@ class BatchCard extends StatelessWidget {
     final minFilterSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
     final filtered = minFilterSeconds > 0
         ? switch (filterMode) {
-            RecordingFilterMode.visible => conversations.where((c) => c.duration.inSeconds >= minFilterSeconds).toList(),
+            RecordingFilterMode.visible =>
+              conversations.where((c) => c.duration.inSeconds >= minFilterSeconds).toList(),
             RecordingFilterMode.hidden => conversations.where((c) => c.duration.inSeconds < minFilterSeconds).toList(),
             RecordingFilterMode.all => conversations,
           }
