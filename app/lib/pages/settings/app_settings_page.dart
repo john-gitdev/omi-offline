@@ -21,7 +21,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
   late bool _use24HourTime;
   late bool _adjustmentMode;
   late String _audioSaveFormat;
-  late bool _passthroughMode;
+  late int _keepRecordingsDays;
 
   bool _isDirty = false;
 
@@ -33,7 +33,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
     _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
     _audioSaveFormat = SharedPreferencesUtil().audioSaveFormat;
-    _passthroughMode = SharedPreferencesUtil().passthroughMode;
+    _keepRecordingsDays = SharedPreferencesUtil().keepRecordingsDays;
   }
 
   void _markDirty() {
@@ -52,7 +52,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     prefs.adjustmentMode = _adjustmentMode;
     if (_adjustmentMode) prefs.adjustmentModeWasEnabled = true;
     prefs.audioSaveFormat = _audioSaveFormat;
-    prefs.passthroughMode = _passthroughMode;
+    prefs.keepRecordingsDays = _keepRecordingsDays;
 
     if (prevAdjustmentMode != _adjustmentMode) RecordingsManager.notifyRecordingsChanged();
 
@@ -302,7 +302,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
               ),
               const SizedBox(height: 16),
 
-              // Passthrough Mode
+              // Keep Recordings For
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -316,19 +316,28 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         const Text(
-                          'Passthrough Mode',
+                          'Keep Recordings For',
                           style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                         ),
-                        Switch(
-                          value: _passthroughMode,
-                          activeThumbColor: Colors.deepPurpleAccent,
+                        DropdownButton<int>(
+                          value: _keepRecordingsDays,
+                          dropdownColor: const Color(0xFF1C1C1E),
+                          underline: const SizedBox(),
+                          icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
+                          style: const TextStyle(color: Colors.white, fontSize: 16),
+                          items: const [
+                            DropdownMenuItem(value: -1, child: Text('Always Keep')),
+                            DropdownMenuItem(value: 0, child: Text('Immediately')),
+                            DropdownMenuItem(value: 3, child: Text('3 Days')),
+                            DropdownMenuItem(value: 7, child: Text('7 Days')),
+                          ],
                           onChanged: (value) async {
-                            if (value) {
+                            if (value == 0) {
                               final confirm = await showDialog<bool>(
                                 context: context,
                                 builder: (c) => AlertDialog(
                                   backgroundColor: const Color(0xFF1C1C1E),
-                                  title: const Text('Enable Passthrough Mode?', style: TextStyle(color: Colors.white)),
+                                  title: const Text('Enable Immediately Deletion?', style: TextStyle(color: Colors.white)),
                                   content: const Text(
                                     'Recordings will be sent directly to your integrations and the audio will be deleted from your device after a successful upload.\n\n'
                                     'Conversations will still appear in the list so you know they happened, but you won\'t be able to play them back.',
@@ -348,7 +357,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                               );
                               if (confirm != true) return;
                             }
-                            setState(() => _passthroughMode = value);
+                            setState(() => _keepRecordingsDays = value!);
                             _markDirty();
                           },
                         ),
@@ -356,7 +365,11 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Audio is sent to your integrations and deleted locally after upload. Conversations appear in the list but cannot be played back.',
+                      _keepRecordingsDays == -1
+                          ? 'Audio recordings are kept on your device permanently.'
+                          : _keepRecordingsDays == 0
+                              ? 'Audio is sent to your integrations and deleted locally after upload. Conversations appear in the list but cannot be played back.'
+                              : 'Audio recordings older than $_keepRecordingsDays days will be automatically deleted from your device.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],

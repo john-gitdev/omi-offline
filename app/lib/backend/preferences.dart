@@ -108,11 +108,19 @@ class SharedPreferencesUtil {
 
   set extractionInProgress(bool value) => saveBool('extractionInProgress', value);
 
+  // How long to keep recordings locally before they are auto-deleted.
+  // -1: Never (Always keep)
+  //  0: Immediately (Passthrough Mode)
+  //  3: 3 days
+  //  7: 7 days
+  int get keepRecordingsDays => getInt('keepRecordingsDays', defaultValue: -1);
+  set keepRecordingsDays(int v) => saveInt('keepRecordingsDays', v);
+
   // When enabled, recordings are uploaded to integrations immediately and the
   // local audio file is deleted after a successful upload. Only the metadata
   // sidecar (.meta) is kept so the conversation still appears in the list.
-  bool get passthroughMode => getBool('passthroughMode', defaultValue: false);
-  set passthroughMode(bool v) => saveBool('passthroughMode', v);
+  bool get passthroughMode => keepRecordingsDays == 0;
+  set passthroughMode(bool v) => keepRecordingsDays = v ? 0 : -1;
 
   //--------------------------- Omi Server Sync --------------------------//
 

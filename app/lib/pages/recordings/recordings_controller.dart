@@ -685,6 +685,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (!_isDisposed) {
         _batches = results[0] as List<Batch>;
         _markerConversations = results[1] as List<MarkerConversation>;
+
+        if (await _enforceRetentionPolicy()) {
+          _batches = await _manager.getBatches();
+        }
+
         _isLoading = false;
         _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
         notifyListeners();
@@ -709,6 +714,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (!_isDisposed) {
         _batches = results[0] as List<Batch>;
         _markerConversations = results[1] as List<MarkerConversation>;
+
+        if (await _enforceRetentionPolicy()) {
+          _batches = await _manager.getBatches();
+        }
+
         _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
         notifyListeners();
       }
@@ -748,6 +758,27 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   Future<void> deleteMarkerConversation(MarkerConversation mc) async {
     await RecordingsManager.deleteMarkerConversation(mc);
     await _loadBatches();
+  }
+
+  Future<bool> _enforceRetentionPolicy() async {
+    final days = _prefs.keepRecordingsDays;
+    if (days <= 0) return false;
+
+    final cutoff = DateTime.now().subtract(Duration(days: days));
+    final toDelete = _batches
+        .expand((b) => b.finalizedRecordings)
+        .where((c) => !c.passthrough && c.startTime.isBefore(cutoff))
+        .toList();
+
+    if (toDelete.isNotEmpty) {
+      Logger.debug('Retention: auto-deleting ${toDelete.length} recordings older than $days days');
+      final keys = toDelete.map((c) => c.uploadKey).whereType<String>().toSet();
+      await _prefs.removeUploadedFromHeypocket(keys);
+      await _prefs.removeOmiSynced(_binPathsForConversations(toDelete));
+      await RecordingsManager.deleteConversations(toDelete);
+      return true;
+    }
+    return false;
   }
 
   Future<void> runAdjustmentCleanup() async {
