@@ -151,6 +151,8 @@ class SharedPreferencesUtil {
     await saveStringList('omiSyncedFiles', updated.toList());
   }
 
+  Future<void> clearOmiSyncedFiles() async => saveStringList('omiSyncedFiles', []);
+
   Future<void> removeOmiSynced(Iterable<String> binPaths) async {
     final paths = binPaths.toSet();
     if (paths.isEmpty) return;

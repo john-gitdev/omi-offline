@@ -317,8 +317,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       await prefs.remove('sp_last_completed_stage');
       await prefs.remove('sp_last_active_stage');
 
-      // Clear HeyPocket upload history to allow re-upload if re-processed
+      // Clear upload history to allow re-upload if re-processed
       prefs.heypocketUploadedFiles = [];
+      await prefs.clearOmiSyncedFiles();
 
       // Notify UI listeners (like RecordingsPage) to refresh
       RecordingsManager.notifyRecordingsChanged();
@@ -373,9 +374,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       }
       RecordingsManager.notifyRecordingsChanged();
       setState(() {
-        _statusMessage = problematic.isEmpty
-            ? 'No problematic EDLs found.'
-            : 'Deleted ${problematic.length} problematic EDL(s).';
+        _statusMessage =
+            problematic.isEmpty ? 'No problematic EDLs found.' : 'Deleted ${problematic.length} problematic EDL(s).';
       });
     } catch (e) {
       Logger.error('DebugTools: _deleteProblematicEdls error — $e');
@@ -486,7 +486,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 const SizedBox(height: 12),
                 _DebugButton(
                   label: 'Force Sync Omi',
-                  description: 'Seals the current recording on the device and syncs everything, including the current session.',
+                  description:
+                      'Seals the current recording on the device and syncs everything, including the current session.',
                   icon: FontAwesomeIcons.arrowsRotate,
                   onTap: _forceSync,
                 ),
@@ -519,7 +520,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 const SizedBox(height: 12),
                 _DebugButton(
                   label: 'Delete Omi Segments',
-                  description: 'Permanently deletes raw segments from your Omi. The device immediately starts a new recording file.',
+                  description:
+                      'Permanently deletes raw segments from your Omi. The device immediately starts a new recording file.',
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllPending,
