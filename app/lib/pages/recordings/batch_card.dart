@@ -25,6 +25,7 @@ class UploadIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (adjustmentMode) return const SizedBox.shrink();
     if (!anyIntegrationEnabled) return const SizedBox.shrink();
 
     if (conversation == null) {

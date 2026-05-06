@@ -173,6 +173,14 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   }
 
   Future<void> _handleUpload() async {
+    if (_prefs.adjustmentMode) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Uploads paused — turn off Adjustment Mode first'),
+        ),
+      );
+      return;
+    }
     final anyIntegrationEnabled = (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
         (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty);
     if (!anyIntegrationEnabled || _isUploading) return;

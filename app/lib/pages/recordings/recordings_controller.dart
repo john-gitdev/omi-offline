@@ -885,8 +885,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   void tryAutoUploadNext() {
-    // TODO: Disable this later
-    // if (_prefs.adjustmentMode) return;
+    if (_prefs.adjustmentMode) return;
     if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty || !_prefs.heypocketAutoUpload) return;
     final apiKey = _prefs.heypocketApiKey;
     final keySetAt = _prefs.heypocketKeySetAt;
@@ -1011,8 +1010,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   void tryAutoSyncNext() {
-    // TODO: Disable this later
-    // if (_prefs.adjustmentMode) return;
+    if (_prefs.adjustmentMode) return;
     if (!_prefs.omiEnabled || _prefs.omiRefreshToken.isEmpty || !_prefs.omiAutoUpload) return;
     final minDuration = _prefs.filterMinDurationSeconds;
 
@@ -1057,6 +1055,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<List<UploadFailure>> uploadConversation(Conversation conversation, {bool force = false}) async {
+    if (_prefs.adjustmentMode) throw Exception('Uploads paused during Adjustment Mode');
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) throw Exception('Upload key unavailable');
     if (_uploadingFiles.contains(uploadKey)) return [];
