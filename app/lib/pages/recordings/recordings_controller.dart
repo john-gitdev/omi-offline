@@ -989,14 +989,20 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         if (conversation.duration.inSeconds < minDuration) continue;
         final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
         final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
+        if (_prefs.isOmiSynced(binPath)) continue;
         if (_syncingBinFiles.contains(binPath)) continue;
         final binFile = File(binPath);
-        if (!binFile.existsSync()) continue;
+        if (!binFile.existsSync()) {
+          Logger.debug('OmiAutoSync: bin missing for ${conversation.file.path.split('/').last}');
+          continue;
+        }
 
+        Logger.debug('OmiAutoSync: uploading $binPath (${binFile.lengthSync()} bytes)');
         _syncingBinFiles.add(binPath);
         final isPassthrough = _prefs.passthroughMode;
         unawaited(
           OmiApiClient.syncLocalFiles([binFile]).then((_) async {
+            Logger.debug('OmiAutoSync: marked synced $binPath');
             await _prefs.markOmiSynced(binPath);
             if (isPassthrough) await _convertToPassthrough(conversation);
           }).catchError((e) {
@@ -1047,13 +1053,23 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
         final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
         final binFile = File(binPath);
-        if (binFile.existsSync() && (force || !_prefs.isOmiSynced(binPath))) {
+        final binExists = binFile.existsSync();
+        final alreadySynced = _prefs.isOmiSynced(binPath);
+        Logger.debug(
+          'OmiUpload: binPath=$binPath exists=$binExists alreadySynced=$alreadySynced force=$force',
+        );
+        if (binExists && (force || !alreadySynced)) {
+          Logger.debug('OmiUpload: starting upload (${binFile.lengthSync()} bytes)');
           uploads.add(OmiApiClient.syncLocalFiles([binFile]).then((_) async {
+            Logger.debug('OmiUpload: success, marking synced');
             return _prefs.markOmiSynced(binPath);
           }).catchError((e) {
             Logger.error('Omi manual sync failed for $binPath: $e');
             failures.add(UploadFailure('Omi Cloud', e));
           }));
+        } else if (!binExists) {
+          Logger.error('OmiUpload: bin file missing — nothing to upload for ${conversation.file.path}');
+          failures.add(UploadFailure('Omi Cloud', Exception('Binary file not found: $binPath')));
         }
       }
 
