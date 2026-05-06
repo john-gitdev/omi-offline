@@ -734,16 +734,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await _loadBatches();
   }
 
-  int countShortRecordings(int minSeconds) => _batches
-      .expand((b) => b.finalizedRecordings)
-      .where((c) => c.duration.inSeconds < minSeconds)
-      .length;
+  int countShortRecordings(int minSeconds) =>
+      _batches.expand((b) => b.finalizedRecordings).where((c) => c.duration.inSeconds < minSeconds).length;
 
   Future<void> deleteShortRecordings(int minSeconds) async {
-    final toDelete = _batches
-        .expand((b) => b.finalizedRecordings)
-        .where((c) => c.duration.inSeconds < minSeconds)
-        .toList();
+    final toDelete =
+        _batches.expand((b) => b.finalizedRecordings).where((c) => c.duration.inSeconds < minSeconds).toList();
     await deleteConversations(toDelete);
   }
 
@@ -858,7 +854,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void tryAutoUploadNext() {
     // TODO: Disable this later
     // if (_prefs.adjustmentMode) return;
-    if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty) return;
+    if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty || !_prefs.heypocketAutoUpload) return;
     final apiKey = _prefs.heypocketApiKey;
     final keySetAt = _prefs.heypocketKeySetAt;
     final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
@@ -984,7 +980,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void tryAutoSyncNext() {
     // TODO: Disable this later
     // if (_prefs.adjustmentMode) return;
-    if (!_prefs.omiSyncEnabled || _prefs.omiRefreshToken.isEmpty) return;
+    if (!_prefs.omiEnabled || _prefs.omiRefreshToken.isEmpty || !_prefs.omiAutoUpload) return;
     final minDuration = _prefs.filterMinDurationSeconds;
 
     for (final batch in _batches) {
@@ -1000,15 +996,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _syncingBinFiles.add(binPath);
         final isPassthrough = _prefs.passthroughMode;
         unawaited(
-          OmiApiClient.syncLocalFiles([binFile])
-              .then((_) async {
-                await binFile.delete();
-                await _prefs.markOmiSynced(binPath);
-                if (isPassthrough) await _convertToPassthrough(conversation);
-              })
-              .catchError((e) {
+          OmiApiClient.syncLocalFiles([binFile]).then((_) async {
+            await binFile.delete();
+            await _prefs.markOmiSynced(binPath);
+            if (isPassthrough) await _convertToPassthrough(conversation);
+          }).catchError((e) {
             if (e is OmiSyncException && e.isAuthError) {
-              _prefs.omiSyncEnabled = false;
+              _prefs.omiEnabled = false;
               _pendingSnackMessage = 'Omi sync: credentials invalid — update them in Integrations';
             }
             Logger.error('Omi sync failed for $binPath: $e');
@@ -1050,7 +1044,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
 
       // Omi Cloud
-      if (_prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty) {
+      if (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty) {
         final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
         final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
         final binFile = File(binPath);
@@ -1071,7 +1065,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         await Future.wait(uploads);
         if (failures.isEmpty && _prefs.passthroughMode) await _convertToPassthrough(conversation);
       }
-      
+
       return failures;
     } finally {
       _uploadingFiles.remove(uploadKey);
@@ -1084,7 +1078,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final binPath = '${c.file.parent.path}/recording_fs320_$ts.bin';
 
     final hpEnabled = _prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty && c.uploadKey != null;
-    final omiEnabled = _prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty;
+    final omiEnabled = _prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty;
 
     if (!hpEnabled && !omiEnabled) return UploadStatus.none;
 
@@ -1100,8 +1094,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   bool isUploaded(Conversation c) => uploadStatus(c) == UploadStatus.all;
 
-  static Iterable<String> _binPathsForConversations(List<Conversation> conversations) =>
-      conversations.map((c) {
+  static Iterable<String> _binPathsForConversations(List<Conversation> conversations) => conversations.map((c) {
         final ts = c.file.path.split('/').last.split('_').last.split('.').first;
         return '${c.file.parent.path}/recording_fs320_$ts.bin';
       });

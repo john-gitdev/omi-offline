@@ -42,7 +42,7 @@ class ServiceManager {
   Future<void> start() async {
     _device.start();
     _wal.start();
-    if (SharedPreferencesUtil().omiSyncEnabled) {
+    if (SharedPreferencesUtil().omiEnabled) {
       OmiApiClient.refreshTokenIfNeeded().catchError((e) {
         Logger.error('ServiceManager: Omi token refresh on startup failed: $e');
       });

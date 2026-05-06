@@ -12,8 +12,7 @@ class HeyPocketPassthroughIntegration implements PassthroughIntegration {
   HeyPocketPassthroughIntegration(this._prefs);
 
   @override
-  bool isEnabled(Conversation c) =>
-      _prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty && c.uploadKey != null;
+  bool isEnabled(Conversation c) => _prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty && c.uploadKey != null;
 
   @override
   Future<bool> hasDelivered(Conversation c, File binFile) async => _prefs.isUploadedToHeypocket(c.uploadKey!);
@@ -24,7 +23,7 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
   OmiPassthroughIntegration(this._prefs);
 
   @override
-  bool isEnabled(Conversation c) => _prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty;
+  bool isEnabled(Conversation c) => _prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty;
 
   @override
   Future<bool> hasDelivered(Conversation c, File binFile) async => _prefs.isOmiSynced(binFile.path);

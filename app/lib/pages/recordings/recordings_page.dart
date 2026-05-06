@@ -356,7 +356,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
     final failures = await _controller.uploadConversation(conversation, force: alreadyUploaded);
     if (!mounted) return;
     for (final failure in failures) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
     }
   }
 
@@ -744,12 +745,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
                             final visibleBatches = minSeconds > 0
                                 ? switch (_filterMode) {
                                     RecordingFilterMode.visible => controller.batches
-                                        .where((b) => b.finalizedRecordings
-                                            .any((c) => c.duration.inSeconds >= minSeconds))
+                                        .where(
+                                            (b) => b.finalizedRecordings.any((c) => c.duration.inSeconds >= minSeconds))
                                         .toList(),
                                     RecordingFilterMode.hidden => controller.batches
-                                        .where((b) => b.finalizedRecordings
-                                            .any((c) => c.duration.inSeconds < minSeconds))
+                                        .where(
+                                            (b) => b.finalizedRecordings.any((c) => c.duration.inSeconds < minSeconds))
                                         .toList(),
                                     RecordingFilterMode.all =>
                                       controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList(),
@@ -840,8 +841,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           );
                                         }
                                         final batchIndex = index - 1;
-                                        final anyIntegrationEnabled = (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
-                                            (_prefs.omiSyncEnabled && _prefs.omiRefreshToken.isNotEmpty);
+                                        final anyIntegrationEnabled =
+                                            (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
+                                                (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty);
                                         return BatchCard(
                                           batch: visibleBatches[batchIndex],
                                           markerMap: markerMap,
