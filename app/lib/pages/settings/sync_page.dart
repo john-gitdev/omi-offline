@@ -351,7 +351,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
         'Delete Problematic EDLs',
-        'This will permanently delete marker EDL files that have no matching recording (pending or orphaned). This cannot be undone. Continue?',
+        'This will permanently delete marker EDL files that have no matching recording (pending or orphaned), and remove their entries from markers.txt so they are not re-created. This cannot be undone. Continue?',
         confirmText: 'Delete',
       ),
     );
@@ -372,6 +372,42 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           Logger.debug('DebugTools: Deleted ${mc.edlFile.path}');
         }
       }
+
+      // Remove the corresponding marker timestamps from every markers.txt so the
+      // deleted EDLs don't get re-created on the next processing cycle.
+      if (problematic.isNotEmpty) {
+        final markerSecondsToRemove =
+            problematic.map((mc) => mc.markerTime.millisecondsSinceEpoch ~/ 1000).toSet();
+        final appDir = await getApplicationDocumentsDirectory();
+        final rawSegmentsDir = Directory('${appDir.path}/raw_segments');
+        if (await rawSegmentsDir.exists()) {
+          final sessionFolders = (await rawSegmentsDir.list().toList()).whereType<Directory>().toList();
+          for (final folder in sessionFolders) {
+            final markerFile = File('${folder.path}/markers.txt');
+            if (!await markerFile.exists()) continue;
+            try {
+              final lines = await markerFile.readAsLines();
+              final filtered = lines.where((line) {
+                final utc = int.tryParse(line.split(',')[0].trim());
+                return utc == null || !markerSecondsToRemove.contains(utc);
+              }).toList();
+              if (filtered.length < lines.length) {
+                if (filtered.isEmpty) {
+                  await markerFile.delete();
+                } else {
+                  await markerFile.writeAsString('${filtered.join('\n')}\n');
+                }
+                Logger.debug(
+                  'DebugTools: Removed ${lines.length - filtered.length} marker(s) from ${markerFile.path}',
+                );
+              }
+            } catch (e) {
+              Logger.error('DebugTools: Failed to clean markers.txt in ${folder.path}: $e');
+            }
+          }
+        }
+      }
+
       RecordingsManager.notifyRecordingsChanged();
       setState(() {
         _statusMessage =
