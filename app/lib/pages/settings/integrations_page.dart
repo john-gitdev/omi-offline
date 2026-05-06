@@ -267,7 +267,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
           // Omi Server Sync
           _buildIntegrationSection(
             title: 'Omi Cloud',
-            subtitle: 'Auto-sync main recordings to your Omi account',
+            subtitle: 'Auto-upload main recordings to your Omi account',
             state: _omiState,
             enabled: _prefs.omiSyncEnabled,
             onEnabledChanged: (v) {
