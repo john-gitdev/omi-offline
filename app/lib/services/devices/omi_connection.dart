@@ -5,6 +5,7 @@ import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/storage_file.dart';
+import 'package:omi/utils/byte_utils.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/mutex.dart';
 
@@ -162,11 +163,10 @@ class OmiDeviceConnection extends DeviceConnection {
       final data =
           await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
       if (data.length >= 8) {
-        final byteData = ByteData.sublistView(Uint8List.fromList(data));
         return StorageFileStats(
-          totalUsedBytes: byteData.getUint32(0, Endian.little),
-          fileCount: byteData.getUint32(4, Endian.little),
-          freeBytes: data.length >= 12 ? byteData.getUint32(8, Endian.little) : 0,
+          totalUsedBytes: data.getUint32LittleEndian(0),
+          fileCount: data.getUint32LittleEndian(4),
+          freeBytes: data.length >= 12 ? data.getUint32LittleEndian(8) : 0,
         );
       }
     } catch (e) {
@@ -279,9 +279,8 @@ class OmiDeviceConnection extends DeviceConnection {
       final data =
           await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
       List<int> result = [];
-      final bd = ByteData.sublistView(Uint8List.fromList(data));
       for (int i = 0; i < (data.length ~/ 4); i++) {
-        result.add(bd.getUint32(i * 4, Endian.little));
+        result.add(data.getUint32LittleEndian(i * 4));
       }
       return result;
     } catch (_) {
@@ -321,7 +320,7 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<int> performGetFeatures() async {
     try {
       final data = await transport.readCharacteristic(featuresServiceUuid, featuresCharacteristicUuid);
-      if (data.length >= 4) return ByteData.sublistView(Uint8List.fromList(data)).getUint32(0, Endian.little);
+      if (data.length >= 4) return data.getUint32LittleEndian(0);
     } catch (_) {}
     return 0;
   }
@@ -459,7 +458,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
         // Once we have the first 4 bytes of data, we know the total count
         if (expectedTotalBytes == null && buffer.length >= 4) {
-          final count = ByteData.sublistView(Uint8List.fromList(buffer)).getUint32(0, Endian.little);
+          final count = buffer.getUint32LittleEndian(0);
           if (count == 0) {
             // Firmware sends [0x01][0,0,0,0] followed by [0x02] for empty list.
             expectedTotalBytes = 4;
@@ -612,20 +611,19 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   void _parseAndSuccess(List<int> buffer, void Function(List<StorageFile>) success) {
-    final count = ByteData.sublistView(Uint8List.fromList(buffer)).getUint32(0, Endian.little);
+    final count = buffer.getUint32LittleEndian(0);
     final files = <StorageFile>[];
     final totalExpected = 4 + (count * 16);
 
     // Guard against partial data if called from EOT branch
     final actualBuffer = buffer.length > totalExpected ? buffer.sublist(0, totalExpected) : buffer;
 
-    final bd = ByteData.sublistView(Uint8List.fromList(actualBuffer));
     for (int i = 0; i < count && (4 + (i + 1) * 16) <= actualBuffer.length; i++) {
       files.add(StorageFile(
-        index: bd.getUint32(4 + i * 16, Endian.little),
-        timestamp: bd.getUint32(8 + i * 16, Endian.little),
-        size: bd.getUint32(12 + i * 16, Endian.little),
-        sessionId: bd.getUint32(16 + i * 16, Endian.little),
+        index: actualBuffer.getUint32LittleEndian(4 + i * 16),
+        timestamp: actualBuffer.getUint32LittleEndian(8 + i * 16),
+        size: actualBuffer.getUint32LittleEndian(12 + i * 16),
+        sessionId: actualBuffer.getUint32LittleEndian(16 + i * 16),
       ));
     }
 
