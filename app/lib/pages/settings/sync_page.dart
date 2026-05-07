@@ -495,7 +495,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               const SizedBox(height: 24),
               Consumer<DeviceProvider>(
                 builder: (context, deviceProvider, _) {
-                  return _CrashLogSection(logs: deviceProvider.crashLogs);
+                  return _CrashLogSection(
+                    logs: deviceProvider.crashLogs,
+                    onClear: () => deviceProvider.clearCrashLogs(),
+                  );
                 },
               ),
               const SizedBox(height: 16),
@@ -620,8 +623,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
 class _CrashLogSection extends StatelessWidget {
   final List<DeviceCrashLog> logs;
+  final VoidCallback onClear;
 
-  const _CrashLogSection({required this.logs});
+  const _CrashLogSection({required this.logs, required this.onClear});
 
   @override
   Widget build(BuildContext context) {
@@ -634,6 +638,9 @@ class _CrashLogSection extends StatelessWidget {
             const SizedBox(width: 8),
             const Text('Device Crash Log',
                 style: TextStyle(color: Colors.amber, fontSize: 14, fontWeight: FontWeight.w600)),
+            const Spacer(),
+            Text('${logs.length} entr${logs.length == 1 ? 'y' : 'ies'}',
+                style: const TextStyle(color: Colors.grey, fontSize: 12)),
           ],
         ),
         const SizedBox(height: 8),
@@ -645,6 +652,28 @@ class _CrashLogSection extends StatelessWidget {
           )
         else
           ...logs.map((log) => _CrashLogRow(log: log)),
+        if (logs.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          GestureDetector(
+            onTap: onClear,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1C1C1E),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  FaIcon(FontAwesomeIcons.trashCan, size: 12, color: Colors.grey),
+                  SizedBox(width: 8),
+                  Text('Clear Crash Log', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                ],
+              ),
+            ),
+          ),
+        ],
         const Divider(color: Color(0xFF2C2C2E), height: 32),
       ],
     );
