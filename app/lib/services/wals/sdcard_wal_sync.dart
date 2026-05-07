@@ -1055,7 +1055,14 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     try {
       if (_isCancelled) return null;
 
-      final rotated = await connection.rotateFile();
+      bool rotated = false;
+      for (int i = 0; i < 3; i++) {
+        if (_isCancelled) return null;
+        rotated = await connection.rotateFile();
+        if (rotated) break;
+        Logger.warning('Rotation failed, retrying in 2 seconds...');
+        await Future.delayed(const Duration(seconds: 2));
+      }
       if (!rotated) throw Exception('Rotation failed');
       final wals = await _buildWalsFromFilesLocked(connection, dev.id, ignoreThreshold: true);
 
