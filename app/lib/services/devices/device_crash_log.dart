@@ -31,4 +31,16 @@ class DeviceCrashLog {
     if (uptimeSeconds < 3600) return '${uptimeSeconds ~/ 60}m ${uptimeSeconds % 60}s';
     return '${uptimeSeconds ~/ 3600}h ${(uptimeSeconds % 3600) ~/ 60}m';
   }
+
+  Map<String, dynamic> toJson() => {
+        'at': connectedAt.millisecondsSinceEpoch,
+        'cause': resetCause,
+        'uptime': uptimeSeconds,
+      };
+
+  factory DeviceCrashLog.fromJson(Map<String, dynamic> json) => DeviceCrashLog(
+        connectedAt: DateTime.fromMillisecondsSinceEpoch(json['at'] as int),
+        resetCause: json['cause'] as int,
+        uptimeSeconds: json['uptime'] as int,
+      );
 }
