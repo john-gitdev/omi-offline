@@ -44,6 +44,7 @@ static uint32_t current_read_offset = 0;
 #define INVALID_COMMAND 6
 #define FILE_NOT_FOUND 7
 #define FILE_INDEX_OUT_OF_RANGE 8
+#define STORAGE_NOT_READY 9
 
 #define MAX_HEARTBEAT_FRAMES 100
 #define HEARTBEAT 50
@@ -253,9 +254,17 @@ static int send_file_list_response(struct bt_conn *conn)
     int sync_file_count = sd_get_cached_file_count();
     if (sync_file_count == 0) {
         uint8_t zero_resp[5] = {PACKET_DATA, 0, 0, 0, 0};
-        storage_notify(conn, zero_resp, 5);
+        int err;
+        do {
+            err = storage_notify(conn, zero_resp, 5);
+            if (err == -ENOMEM) k_msleep(10);
+        } while (err == -ENOMEM);
+        
         uint8_t eot = PACKET_EOT;
-        storage_notify(conn, &eot, 1);
+        do {
+            err = storage_notify(conn, &eot, 1);
+            if (err == -ENOMEM) k_msleep(10);
+        } while (err == -ENOMEM);
         return 0;
     }
 
@@ -340,13 +349,22 @@ static int send_file_list_response(struct bt_conn *conn)
         }
 
         if (chunk_count > 0 || (files_processed == sync_file_count && total_included == 0)) {
-            storage_notify(conn, storage_buffer, resp_len);
+            int err;
+            do {
+                err = storage_notify(conn, storage_buffer, resp_len);
+                if (err == -ENOMEM) k_msleep(10);
+            } while (err == -ENOMEM);
             k_msleep(15); /* Small gap for BLE stability */
+
         }
     }
 
     uint8_t eot = PACKET_EOT;
-    storage_notify(conn, &eot, 1);
+    int err;
+    do {
+        err = storage_notify(conn, &eot, 1);
+        if (err == -ENOMEM) k_msleep(10);
+    } while (err == -ENOMEM);
     
     return 0;
 }
@@ -575,7 +593,11 @@ static ssize_t storage_write_handler(struct bt_conn *conn,
     /* 0xFF means the storage thread will send its own response (list/delete) */
     if (result != 0xFF) {
         uint8_t ack[2] = {PACKET_ACK, result};
-        storage_notify(conn, ack, sizeof(ack));
+        int err;
+        do {
+            err = storage_notify(conn, ack, sizeof(ack));
+            if (err == -ENOMEM) k_msleep(10);
+        } while (err == -ENOMEM);
     }
     
     return len;
@@ -749,7 +771,16 @@ void storage_write(void)
             }
 
             if (!sd_is_boot_ready()) {
-                LOG_WRN("CMD_LIST_FILES: SD card still busy after 10s, proceeding anyway");
+                LOG_WRN("CMD_LIST_FILES: SD card still busy after 10s, aborting");
+                if (conn) {
+                    uint8_t ack[2] = {PACKET_ACK, STORAGE_NOT_READY};
+                    int err;
+                    do {
+                        err = storage_notify(conn, ack, sizeof(ack));
+                        if (err == -ENOMEM) k_msleep(10);
+                    } while (err == -ENOMEM);
+                }
+                continue;
             }
 
             if (conn) {
@@ -817,7 +848,11 @@ void storage_write(void)
 
             if (conn) {
                 uint8_t ack[2] = {PACKET_ACK, result};
-                storage_notify(conn, ack, sizeof(ack));
+                int err;
+                do {
+                    err = storage_notify(conn, ack, sizeof(ack));
+                    if (err == -ENOMEM) k_msleep(10);
+                } while (err == -ENOMEM);
             }
             LOG_INF("Delete file[%d] (ts=%u) result: %d", idx, expected_ts, result);
         }
@@ -828,7 +863,11 @@ void storage_write(void)
             if (conn) {
                 uint8_t result = (ret >= 0) ? 0 : 1;
                 uint8_t ack[2] = {PACKET_ACK, result};
-                storage_notify(conn, ack, sizeof(ack));
+                int err;
+                do {
+                    err = storage_notify(conn, ack, sizeof(ack));
+                    if (err == -ENOMEM) k_msleep(10);
+                } while (err == -ENOMEM);
             }
             LOG_INF("CMD_CLEAR_STORAGE: SD card wiped, ret=%d", ret);
         }
@@ -843,7 +882,11 @@ void storage_write(void)
             if (conn) {
                 uint8_t result = (ret >= 0) ? 0 : 1;
                 uint8_t ack[2] = {PACKET_ACK, result};
-                storage_notify(conn, ack, sizeof(ack));
+                int err;
+                do {
+                    err = storage_notify(conn, ack, sizeof(ack));
+                    if (err == -ENOMEM) k_msleep(10);
+                } while (err == -ENOMEM);
                 LOG_INF("CMD_ROTATE_FILE: new file created, ret=%d", ret);
             }
         }
