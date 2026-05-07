@@ -714,7 +714,7 @@ class _CrashLogRow extends StatelessWidget {
                 children: [
                   Text(log.causeLabel, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500)),
                   const SizedBox(height: 2),
-                  Text('uptime ${log.uptimeStr} · read at $timeStr',
+                  Text('${log.isCrash ? 'crashed after' : 'session'} ${log.uptimeStr} · read at $timeStr',
                       style: const TextStyle(color: Colors.grey, fontSize: 11)),
                 ],
               ),
