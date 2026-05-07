@@ -72,7 +72,9 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     final ak = _prefs.omiFirebaseApiKey;
     if (rt.isEmpty || ak.isEmpty) return;
     final valid = await OmiApiClient.testConnection(refreshToken: rt, apiKey: ak).catchError((_) => true);
-    if (!valid && mounted) {
+    if (valid) {
+      OmiApiClient.refreshSpeechProfileStatus();
+    } else if (mounted) {
       _prefs.omiEnabled = false;
       setState(() => _omiState = _ConnectionState.error);
     }
@@ -189,6 +191,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
   }
 
   void _deleteOmi() {
+    OmiApiClient.signOut();
     _omiRefreshTokenController.clear();
     _omiFirebaseApiKeyController.clear();
     setState(() {

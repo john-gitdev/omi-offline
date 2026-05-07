@@ -138,8 +138,9 @@ class SharedPreferencesUtil {
   set omiAutoUpload(bool v) => saveBool('omiAutoUpload', v);
 
   // Short-lived JWT — refreshed automatically; stored in regular prefs.
-  String get omiIdToken => getString('omiIdToken', defaultValue: '');
-  set omiIdToken(String v) => saveString('omiIdToken', v);
+  // omiIdToken is stored in secure storage as it is a sensitive credential.
+  Future<String> get omiIdToken async => await _secureStorage.read(key: 'omiIdToken') ?? '';
+  Future<void> setOmiIdToken(String v) async => await _secureStorage.write(key: 'omiIdToken', value: v);
 
   // Unix ms when the current ID token expires.
   int get omiTokenExpiry => getInt('omiTokenExpiry', defaultValue: 0);
@@ -180,6 +181,12 @@ class SharedPreferencesUtil {
       await saveStringList('omiSyncedFiles', pruned);
     }
   }
+
+  bool get omiHasSpeechProfile => getBool('omiHasSpeechProfile', defaultValue: false);
+  set omiHasSpeechProfile(bool v) => saveBool('omiHasSpeechProfile', v);
+
+  int get omiSpeechProfileCheckedAtMs => getInt('omiSpeechProfileCheckedAtMs', defaultValue: 0);
+  set omiSpeechProfileCheckedAtMs(int v) => saveInt('omiSpeechProfileCheckedAtMs', v);
 
   //--------------------------- HeyPocket Integration ---------------------//
 
