@@ -131,7 +131,7 @@ class OmiApiClient {
 
     final headers = {
       'Authorization': 'Bearer $token',
-      'X-App-Platform': 'android-ambient-companion',
+      'X-App-Platform': 'omi-offline',
     };
 
     // Attempt v2 first
@@ -188,8 +188,12 @@ class OmiApiClient {
       ));
     }
 
-    final streamed = await request.send().timeout(const Duration(seconds: 120));
-    return http.Response.fromStream(streamed);
+    try {
+      final streamed = await request.send().timeout(const Duration(seconds: 120));
+      return http.Response.fromStream(streamed);
+    } on SocketException {
+      throw const OmiSyncException('No network connection');
+    }
   }
 
   static Future<OmiSyncResult> _pollJob(String baseUrl, String jobId, int initialDelayMs) async {
@@ -265,13 +269,13 @@ class OmiApiClient {
   /// Verifies a conversation was actually created on the server and checks its metadata.
   static Future<void> traceSyncResult(OmiSyncResult result) async {
     if (!result.success || result.allConversationIds.isEmpty) return;
-    
-    await refreshTokenIfNeeded();
-    final token = await SharedPreferencesUtil().omiIdToken;
-    final headers = {'Authorization': 'Bearer $token'};
 
-    for (final id in result.allConversationIds.take(3)) {
-      try {
+    try {
+      await refreshTokenIfNeeded();
+      final token = await SharedPreferencesUtil().omiIdToken;
+      final headers = {'Authorization': 'Bearer $token'};
+
+      for (final id in result.allConversationIds.take(3)) {
         final res = await http.get(
           Uri.parse('$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true'),
           headers: headers,
@@ -282,14 +286,13 @@ class OmiApiClient {
           final segments = (json['transcript_segments'] as List?)?.length ?? 0;
           final title = (json['structured'] as Map?)?['title'] ?? 'No Title';
           final discarded = json['discarded'] == true;
-          
           Logger.debug('OmiApiClient: Trace result for $id: "$title", segments: $segments, discarded: $discarded');
         } else {
           Logger.error('OmiApiClient: Trace failed for $id (HTTP ${res.statusCode})');
         }
-      } catch (e) {
-        Logger.error('OmiApiClient: Trace error for $id: $e');
       }
+    } catch (e) {
+      Logger.error('OmiApiClient: Trace error: $e');
     }
   }
 
