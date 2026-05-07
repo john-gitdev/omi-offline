@@ -6,6 +6,7 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/services/devices.dart';
+import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
@@ -49,6 +50,9 @@ class DeviceProvider extends ChangeNotifier
 
   String? lastSyncError;
   DateTime? lastSyncErrorTime;
+
+  // Crash logs collected each time the device connects (newest first, capped at 20)
+  final List<DeviceCrashLog> crashLogs = [];
 
   void Function(BtDevice device)? onDeviceConnected;
 
@@ -559,6 +563,16 @@ class DeviceProvider extends ChangeNotifier
 
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
+
+    // Read crash diagnostics and store for Debug Tools display
+    final conn = await ServiceManager.instance().device.ensureConnection(device.id);
+    if (conn != null) {
+      final log = await conn.getDiagnostics();
+      if (log != null) {
+        crashLogs.insert(0, log);
+        if (crashLogs.length > 20) crashLogs.removeLast();
+      }
+    }
 
     notifyListeners();
     onDeviceConnected?.call(device);
