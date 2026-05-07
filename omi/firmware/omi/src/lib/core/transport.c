@@ -275,7 +275,7 @@ static struct bt_gatt_service battery_detail_service = BT_GATT_SERVICE(battery_d
 //   reset_cause: Zephyr HWINFO bitmask for why the current boot started
 //     RESET_PIN=0x01  RESET_SOFTWARE=0x02  RESET_BROWNOUT=0x04  RESET_POR=0x08
 //     RESET_WATCHDOG=0x10  RESET_CPU_LOCKUP=0x100
-//   uptime_seconds: how long this session has been running (checkpointed every 10 min)
+//   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
 static struct bt_uuid_128 diagnostics_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_characteristic_uuid =
@@ -285,7 +285,7 @@ static ssize_t diagnostics_read_handler(struct bt_conn *conn, const struct bt_ga
                                         void *buf, uint16_t len, uint16_t offset)
 {
     uint32_t cause   = app_settings_get_last_reset_cause();
-    uint32_t uptime_s = (uint32_t)(app_settings_get_last_reset_uptime_ms() / 1000);
+    uint32_t uptime_s = (uint32_t)(app_settings_get_crash_session_uptime() / 1000);
     uint8_t payload[8] = {
         (uint8_t)(cause),        (uint8_t)(cause >> 8),
         (uint8_t)(cause >> 16),  (uint8_t)(cause >> 24),
