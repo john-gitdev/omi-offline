@@ -199,7 +199,7 @@ static void log_reset_cause(uint32_t cause)
     if (cause & RESET_WATCHDOG) {
         LOG_WRN("[BOOT] Reset cause: WATCHDOG TIMEOUT (0x%08x) — firmware hung for >30 s", cause);
     }
-    if (cause & RESET_LOCKUP) {
+    if (cause & RESET_CPU_LOCKUP) {
         LOG_WRN("[BOOT] Reset cause: CPU LOCKUP / HARDFAULT (0x%08x)", cause);
     }
     if (cause & RESET_SOFTWARE) {
@@ -257,7 +257,7 @@ int main(void)
             LOG_WRN("[BOOT] *** Previous session reset cause: 0x%08x (ran ~%llu ms) ***",
                     prev_cause, prev_uptime);
             log_reset_cause(prev_cause);
-            if (prev_cause & (RESET_WATCHDOG | RESET_LOCKUP)) {
+            if (prev_cause & (RESET_WATCHDOG | RESET_CPU_LOCKUP)) {
                 LOG_WRN("[BOOT] *** CRASH DETECTED — see reset cause above ***");
             }
         }
