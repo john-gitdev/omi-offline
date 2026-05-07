@@ -457,7 +457,12 @@ class OmiDeviceConnection extends DeviceConnection {
         // PACKET_ACK (0x03) is just an acknowledgement that the command was received.
         // The actual data follows in PACKET_DATA (0x01) packets.
         if (blePacket[0] == 0x03) {
-          Logger.debug('OmiDeviceConnection: CMD_LIST_FILES ACK received');
+          if (blePacket.length >= 2 && blePacket[1] == 9) {
+            Logger.warning('OmiDeviceConnection: CMD_LIST_FILES returned STORAGE_NOT_READY');
+            fail('STORAGE_NOT_READY');
+          } else {
+            Logger.debug('OmiDeviceConnection: CMD_LIST_FILES ACK received');
+          }
           return;
         }
 
