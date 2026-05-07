@@ -599,9 +599,17 @@ class DeviceProvider extends ChangeNotifier
     if (conn != null) {
       final log = await conn.getDiagnostics();
       if (log != null) {
-        crashLogs.insert(0, log);
-        if (crashLogs.length > 50) crashLogs.removeLast();
-        await _saveCrashLogs();
+        // Only add if it's a new event (different device, cause, or uptime)
+        bool isDuplicate = crashLogs.isNotEmpty &&
+            crashLogs.first.deviceId == log.deviceId &&
+            crashLogs.first.resetCause == log.resetCause &&
+            crashLogs.first.uptimeSeconds == log.uptimeSeconds;
+
+        if (!isDuplicate) {
+          crashLogs.insert(0, log);
+          if (crashLogs.length > 50) crashLogs.removeLast();
+          await _saveCrashLogs();
+        }
       }
     }
 

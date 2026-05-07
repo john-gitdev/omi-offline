@@ -156,6 +156,7 @@ class OmiDeviceConnection extends DeviceConnection {
       if (data.length < 8) return null;
 
       final log = DeviceCrashLog(
+        deviceId: device.id,
         connectedAt: DateTime.now(),
         resetCause: data.getUint32LittleEndian(0),
         uptimeSeconds: data.getUint32LittleEndian(4),
