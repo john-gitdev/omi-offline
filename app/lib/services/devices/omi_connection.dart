@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
+import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/utils/byte_utils.dart';
 import 'package:omi/utils/logger.dart';
@@ -146,48 +147,30 @@ class OmiDeviceConnection extends DeviceConnection {
   }) async {
     await super.connect(onConnectionStateChanged: onConnectionStateChanged, requiresBond: requiresBond);
     await performSyncDeviceTime();
-    await performGetDiagnostics();
   }
 
-  Future<void> performGetDiagnostics() async {
+  @override
+  Future<DeviceCrashLog?> performGetDiagnostics() async {
     try {
       final data = await transport.readCharacteristic(diagnosticsServiceUuid, diagnosticsCharacteristicUuid);
-      if (data.length < 8) return;
+      if (data.length < 8) return null;
 
-      final resetCause = data.getUint32LittleEndian(0);
-      final uptimeSec = data.getUint32LittleEndian(4);
+      final log = DeviceCrashLog(
+        connectedAt: DateTime.now(),
+        resetCause: data.getUint32LittleEndian(0),
+        uptimeSeconds: data.getUint32LittleEndian(4),
+      );
 
-      final causeLabel = _decodeResetCause(resetCause);
-      final uptimeStr = _formatUptime(uptimeSec);
-
-      if (resetCause & 0x110 != 0) {
-        // RESET_WATCHDOG (0x10) or RESET_CPU_LOCKUP (0x100)
-        Logger.warning('Device diagnostics: CRASH detected — $causeLabel (session uptime: $uptimeStr)');
+      if (log.isCrash) {
+        Logger.warning('Device diagnostics: CRASH — ${log.causeLabel} (uptime: ${log.uptimeStr})');
       } else {
-        Logger.debug('Device diagnostics: $causeLabel (session uptime: $uptimeStr)');
+        Logger.debug('Device diagnostics: ${log.causeLabel} (uptime: ${log.uptimeStr})');
       }
+      return log;
     } catch (e) {
       Logger.debug('Device diagnostics not available (older firmware): $e');
+      return null;
     }
-  }
-
-  static String _decodeResetCause(int cause) {
-    if (cause == 0) return 'unknown reset cause';
-    final parts = <String>[];
-    if (cause & 0x001 != 0) parts.add('pin/button reset');
-    if (cause & 0x002 != 0) parts.add('software reset');
-    if (cause & 0x004 != 0) parts.add('brownout');
-    if (cause & 0x008 != 0) parts.add('power-on reset');
-    if (cause & 0x010 != 0) parts.add('WATCHDOG TIMEOUT (firmware crash)');
-    if (cause & 0x020 != 0) parts.add('debug reset');
-    if (cause & 0x100 != 0) parts.add('CPU LOCKUP (hard fault)');
-    return parts.isEmpty ? 'cause=0x${cause.toRadixString(16).padLeft(8, '0')}' : parts.join(', ');
-  }
-
-  static String _formatUptime(int seconds) {
-    if (seconds < 60) return '${seconds}s';
-    if (seconds < 3600) return '${seconds ~/ 60}m ${seconds % 60}s';
-    return '${seconds ~/ 3600}h ${(seconds % 3600) ~/ 60}m';
   }
 
   Future<void> stop() async {
