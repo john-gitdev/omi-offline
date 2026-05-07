@@ -121,7 +121,18 @@ class NativeBleTransport extends DeviceTransport {
   @override
   Future<bool> isConnected() async {
     try {
-      return _hostApi.isPeripheralConnected(_peripheralUuid);
+      final nativeConnected = await _hostApi.isPeripheralConnected(_peripheralUuid);
+      if (!nativeConnected && _state == DeviceTransportState.connected) {
+        Logger.warning('[NativeBleTransport] State mismatch detected! Native OS is disconnected but Dart is connected. Forcing cleanup.');
+        // Don't call disconnect() directly as it might interfere with callers waiting on states.
+        // Just trigger the same cleanup path a native disconnection would.
+        _handleConnectionState(false, 'native_state_mismatch');
+        // Also force the native side to drop the stuck GATT object so it can reconnect.
+        try {
+          await _hostApi.disconnectPeripheral(_peripheralUuid);
+        } catch (_) {}
+      }
+      return nativeConnected;
     } catch (e) {
       return false;
     }
@@ -129,11 +140,7 @@ class NativeBleTransport extends DeviceTransport {
 
   @override
   Future<bool> ping() async {
-    try {
-      return _hostApi.isPeripheralConnected(_peripheralUuid);
-    } catch (e) {
-      return false;
-    }
+    return isConnected();
   }
 
   @override
