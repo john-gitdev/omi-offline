@@ -32,6 +32,7 @@ struct last_reset_record {
 };
 
 static struct last_reset_record last_reset = {0};
+static uint64_t crash_session_uptime_ms = 0;
 
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
@@ -152,6 +153,18 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         rc = read_cb(cb_arg, &last_reset, sizeof(last_reset));
         if (rc >= 0) {
             LOG_INF("Loaded last_reset: cause=0x%08x uptime=%llums", last_reset.cause, last_reset.uptime_ms);
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "crash_uptime", &next) && !next) {
+        if (len != sizeof(crash_session_uptime_ms)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &crash_session_uptime_ms, sizeof(crash_session_uptime_ms));
+        if (rc >= 0) {
+            LOG_INF("Loaded crash_uptime: %llums", crash_session_uptime_ms);
             return 0;
         }
         return rc;
@@ -302,6 +315,21 @@ uint32_t app_settings_get_last_reset_cause(void)
 uint64_t app_settings_get_last_reset_uptime_ms(void)
 {
     return last_reset.uptime_ms;
+}
+
+int app_settings_save_crash_session_uptime(uint64_t uptime_ms)
+{
+    crash_session_uptime_ms = uptime_ms;
+    int err = settings_save_one("omi/crash_uptime", &crash_session_uptime_ms, sizeof(crash_session_uptime_ms));
+    if (err) {
+        LOG_ERR("Failed to save crash_uptime (err %d)", err);
+    }
+    return err;
+}
+
+uint64_t app_settings_get_crash_session_uptime(void)
+{
+    return crash_session_uptime_ms;
 }
 
 int app_settings_save_fw_version(const char *version)
