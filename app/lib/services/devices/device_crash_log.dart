@@ -26,7 +26,7 @@ class DeviceCrashLog {
   }
 
   String get uptimeStr {
-    if (uptimeSeconds == 0) return 'just started';
+    if (uptimeSeconds == 0) return '<10m';
     if (uptimeSeconds < 60) return '${uptimeSeconds}s';
     if (uptimeSeconds < 3600) return '${uptimeSeconds ~/ 60}m ${uptimeSeconds % 60}s';
     return '${uptimeSeconds ~/ 3600}h ${(uptimeSeconds % 3600) ~/ 60}m';
