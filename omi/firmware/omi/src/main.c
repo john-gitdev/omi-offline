@@ -250,21 +250,27 @@ int main(void)
         hwinfo_get_reset_cause(&this_cause);
         hwinfo_clear_reset_cause();
 
+        /* this_cause = why THIS boot started = how the PREVIOUS session ended.
+         * prev_cause = NVS value = why the PREVIOUS boot started = how boot-before-that ended.
+         * Log both for full history, but only warn on this_cause for the current-session crash. */
         uint32_t prev_cause = app_settings_get_last_reset_cause();
         uint64_t prev_uptime = app_settings_get_last_reset_uptime_ms();
 
-        if (prev_cause != 0) {
-            LOG_WRN("[BOOT] *** Previous session reset cause: 0x%08x (ran ~%llu ms) ***",
-                    prev_cause, prev_uptime);
-            log_reset_cause(prev_cause);
-            if (prev_cause & (RESET_WATCHDOG | RESET_CPU_LOCKUP)) {
-                LOG_WRN("[BOOT] *** CRASH DETECTED — see reset cause above ***");
-            }
+        if (this_cause & (RESET_WATCHDOG | RESET_CPU_LOCKUP)) {
+            LOG_WRN("[BOOT] *** PREVIOUS SESSION CRASHED (cause: 0x%08x, ran ~%llu ms) ***",
+                    this_cause, prev_uptime);
+            log_reset_cause(this_cause);
+        } else {
+            LOG_INF("[BOOT] This boot cause: 0x%08x (prev session ran ~%llu ms)", this_cause, prev_uptime);
+            log_reset_cause(this_cause);
         }
 
-        /* Overwrite with this boot's cause; uptime starts at 0 and is updated in the main loop */
+        if (prev_cause != 0) {
+            LOG_INF("[BOOT] Boot-before-last cause: 0x%08x", prev_cause);
+        }
+
+        /* Overwrite NVS with this boot's cause; uptime starts at 0 and is updated in the main loop */
         app_settings_save_last_reset(this_cause, 0);
-        LOG_INF("[BOOT] This reset cause: 0x%08x", this_cause);
     }
 #endif
 
