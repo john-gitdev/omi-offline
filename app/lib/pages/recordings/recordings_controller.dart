@@ -1048,10 +1048,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _syncingBinFiles.add(binPath);
         final isPassthrough = _prefs.passthroughMode;
         unawaited(
-          OmiApiClient.syncLocalFiles([binFile]).then((_) async {
-            Logger.debug('OmiAutoSync: marked synced $binPath');
-            await _prefs.markOmiSynced(binPath);
-            if (isPassthrough) await _convertToPassthrough(conversation);
+          OmiApiClient.syncLocalFiles([binFile]).then((result) async {
+            if (result != null && result.success) {
+              Logger.debug('OmiAutoSync: marked synced $binPath');
+              await _prefs.markOmiSynced(binPath);
+              if (isPassthrough) await _convertToPassthrough(conversation);
+              unawaited(OmiApiClient.traceSyncResult(result));
+            } else {
+              Logger.error('OmiAutoSync: result success=false for $binPath: ${result?.status}');
+            }
           }).catchError((e) {
             if (e is OmiSyncException && e.isAuthError) {
               _prefs.omiEnabled = false;
@@ -1110,9 +1115,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         );
         if (binExists && (force || !alreadySynced)) {
           Logger.debug('OmiUpload: starting upload (${binFile.lengthSync()} bytes)');
-          uploads.add(OmiApiClient.syncLocalFiles([binFile]).then((_) async {
-            Logger.debug('OmiUpload: success, marking synced');
-            return _prefs.markOmiSynced(binPath);
+          uploads.add(OmiApiClient.syncLocalFiles([binFile]).then((result) async {
+            if (result != null && result.success) {
+              Logger.debug('OmiUpload: success, marking synced');
+              await _prefs.markOmiSynced(binPath);
+              unawaited(OmiApiClient.traceSyncResult(result));
+            } else {
+              throw Exception('Omi upload failed: ${result?.status}');
+            }
           }).catchError((e) {
             Logger.error('Omi manual sync failed for $binPath: $e');
             failures.add(UploadFailure('Omi Cloud', e));
