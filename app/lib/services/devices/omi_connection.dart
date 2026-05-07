@@ -602,7 +602,8 @@ class OmiDeviceConnection extends DeviceConnection {
       } finally {
         await sub.cancel();
       }
-    } catch (_) {
+    } catch (e, stack) {
+      Logger.error('performRotateFile error: $e\n$stack');
       return false;
     }
   }
