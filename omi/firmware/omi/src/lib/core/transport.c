@@ -1251,13 +1251,13 @@ int transport_start()
 #ifdef CONFIG_OMI_ENABLE_BATTERY
     bt_gatt_service_register(&battery_detail_service);
 #endif
-    bt_gatt_service_register(&diagnostics_service);
-
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     // Register storage service for offline audio
     memset(storage_temp_data, 0, OPUS_PADDED_LENGTH * 4);
     bt_gatt_service_register(&storage_service);
 #endif
+    // Diagnostics registered last so existing storage handles stay stable across firmware updates
+    bt_gatt_service_register(&diagnostics_service);
     err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
     if (err) {
         LOG_ERR("Transport advertising failed to start (err %d)", err);
