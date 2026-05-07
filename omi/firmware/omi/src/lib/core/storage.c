@@ -257,14 +257,20 @@ static int send_file_list_response(struct bt_conn *conn)
         int err;
         do {
             err = storage_notify(conn, zero_resp, 5);
-            if (err == -ENOMEM) k_msleep(10);
+            if (err == -ENOMEM) k_yield();
         } while (err == -ENOMEM);
+        if (err && err != -EAGAIN) {
+            LOG_ERR("GATT notify error: %d", err);
+        }
         
         uint8_t eot = PACKET_EOT;
         do {
             err = storage_notify(conn, &eot, 1);
-            if (err == -ENOMEM) k_msleep(10);
+            if (err == -ENOMEM) k_yield();
         } while (err == -ENOMEM);
+        if (err && err != -EAGAIN) {
+            LOG_ERR("GATT notify error: %d", err);
+        }
         return 0;
     }
 
@@ -352,8 +358,11 @@ static int send_file_list_response(struct bt_conn *conn)
             int err;
             do {
                 err = storage_notify(conn, storage_buffer, resp_len);
-                if (err == -ENOMEM) k_msleep(10);
+                if (err == -ENOMEM) k_yield();
             } while (err == -ENOMEM);
+            if (err && err != -EAGAIN) {
+                LOG_ERR("GATT notify error: %d", err);
+            }
             k_msleep(15); /* Small gap for BLE stability */
 
         }
@@ -363,8 +372,11 @@ static int send_file_list_response(struct bt_conn *conn)
     int err;
     do {
         err = storage_notify(conn, &eot, 1);
-        if (err == -ENOMEM) k_msleep(10);
+        if (err == -ENOMEM) k_yield();
     } while (err == -ENOMEM);
+    if (err && err != -EAGAIN) {
+        LOG_ERR("GATT notify error: %d", err);
+    }
     
     return 0;
 }
@@ -596,8 +608,11 @@ static ssize_t storage_write_handler(struct bt_conn *conn,
         int err;
         do {
             err = storage_notify(conn, ack, sizeof(ack));
-            if (err == -ENOMEM) k_msleep(10);
+            if (err == -ENOMEM) k_yield();
         } while (err == -ENOMEM);
+        if (err && err != -EAGAIN) {
+            LOG_ERR("GATT notify error: %d", err);
+        }
     }
     
     return len;
@@ -654,9 +669,12 @@ static void write_to_gatt(struct bt_conn *conn)
             do {
                 err = storage_notify(conn, err_ack, sizeof(err_ack));
                 if (err == -ENOMEM) {
-                    k_msleep(10);
+                    k_yield();
                 }
             } while (err == -ENOMEM);
+            if (err && err != -EAGAIN) {
+                LOG_ERR("GATT notify error: %d", err);
+            }
             return;
         }
         uint32_t bytes_read = (uint32_t)r;
@@ -753,8 +771,11 @@ void storage_write(void)
                 int err;
                 do {
                     err = storage_notify(conn, eot, sizeof(eot));
-                    if (err == -ENOMEM) k_msleep(10);
+                    if (err == -ENOMEM) k_yield();
                 } while (err == -ENOMEM);
+                if (err && err != -EAGAIN) {
+                    LOG_ERR("GATT notify error: %d", err);
+                }
                 k_msleep(250);
             }
         }
@@ -777,8 +798,11 @@ void storage_write(void)
                     int err;
                     do {
                         err = storage_notify(conn, ack, sizeof(ack));
-                        if (err == -ENOMEM) k_msleep(10);
+                        if (err == -ENOMEM) k_yield();
                     } while (err == -ENOMEM);
+                    if (err && err != -EAGAIN) {
+                        LOG_ERR("GATT notify error: %d", err);
+                    }
                 }
                 continue;
             }
@@ -851,8 +875,11 @@ void storage_write(void)
                 int err;
                 do {
                     err = storage_notify(conn, ack, sizeof(ack));
-                    if (err == -ENOMEM) k_msleep(10);
+                    if (err == -ENOMEM) k_yield();
                 } while (err == -ENOMEM);
+                if (err && err != -EAGAIN) {
+                    LOG_ERR("GATT notify error: %d", err);
+                }
             }
             LOG_INF("Delete file[%d] (ts=%u) result: %d", idx, expected_ts, result);
         }
@@ -866,8 +893,11 @@ void storage_write(void)
                 int err;
                 do {
                     err = storage_notify(conn, ack, sizeof(ack));
-                    if (err == -ENOMEM) k_msleep(10);
+                    if (err == -ENOMEM) k_yield();
                 } while (err == -ENOMEM);
+                if (err && err != -EAGAIN) {
+                    LOG_ERR("GATT notify error: %d", err);
+                }
             }
             LOG_INF("CMD_CLEAR_STORAGE: SD card wiped, ret=%d", ret);
         }
@@ -885,8 +915,11 @@ void storage_write(void)
                 int err;
                 do {
                     err = storage_notify(conn, ack, sizeof(ack));
-                    if (err == -ENOMEM) k_msleep(10);
+                    if (err == -ENOMEM) k_yield();
                 } while (err == -ENOMEM);
+                if (err && err != -EAGAIN) {
+                    LOG_ERR("GATT notify error: %d", err);
+                }
                 LOG_INF("CMD_ROTATE_FILE: new file created, ret=%d", ret);
             }
         }
@@ -935,9 +968,12 @@ void storage_write(void)
                         do {
                             err = storage_notify(eot_conn, eot, sizeof(eot));
                             if (err == -ENOMEM) {
-                                k_msleep(10);
+                                k_yield();
                             }
                         } while (err == -ENOMEM);
+                        if (err && err != -EAGAIN) {
+                            LOG_ERR("GATT notify error: %d", err);
+                        }
                     }
                     put_current_connection(eot_conn);
                     k_msleep(250);
