@@ -269,6 +269,11 @@ int main(void)
             LOG_INF("[BOOT] Boot-before-last cause: 0x%08x", prev_cause);
         }
 
+        /* Snapshot previous session's final uptime before overwriting the main record.
+         * This is the value the BLE diagnostics char returns so the app can show
+         * "crashed after Xh Ym" rather than current-session uptime (which starts at 0). */
+        app_settings_save_crash_session_uptime(prev_uptime);
+
         /* Overwrite NVS with this boot's cause; uptime starts at 0 and is updated in the main loop */
         app_settings_save_last_reset(this_cause, 0);
     }
