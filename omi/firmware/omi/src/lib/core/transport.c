@@ -268,6 +268,45 @@ static struct bt_gatt_attr battery_detail_service_attr[] = {
 static struct bt_gatt_service battery_detail_service = BT_GATT_SERVICE(battery_detail_service_attr);
 #endif
 
+// --- Diagnostics Service ---
+// Service UUID:       19B10060-E8F2-537E-4F6C-D104768A1214
+// Characteristic:     19B10061-E8F2-537E-4F6C-D104768A1214
+// Returns 8 bytes LE: [uint32 reset_cause] [uint32 uptime_seconds]
+//   reset_cause: Zephyr HWINFO bitmask for why the current boot started
+//     RESET_PIN=0x01  RESET_SOFTWARE=0x02  RESET_BROWNOUT=0x04  RESET_POR=0x08
+//     RESET_WATCHDOG=0x10  RESET_CPU_LOCKUP=0x100
+//   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
+static struct bt_uuid_128 diagnostics_service_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+static struct bt_uuid_128 diagnostics_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10061, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+
+static ssize_t diagnostics_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                        void *buf, uint16_t len, uint16_t offset)
+{
+    uint32_t cause   = app_settings_get_last_reset_cause();
+    uint32_t uptime_s = (uint32_t)(app_settings_get_crash_session_uptime() / 1000);
+    uint8_t payload[8] = {
+        (uint8_t)(cause),        (uint8_t)(cause >> 8),
+        (uint8_t)(cause >> 16),  (uint8_t)(cause >> 24),
+        (uint8_t)(uptime_s),     (uint8_t)(uptime_s >> 8),
+        (uint8_t)(uptime_s >> 16),(uint8_t)(uptime_s >> 24),
+    };
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
+}
+
+static struct bt_gatt_attr diagnostics_service_attr[] = {
+    BT_GATT_PRIMARY_SERVICE(&diagnostics_service_uuid),
+    BT_GATT_CHARACTERISTIC(&diagnostics_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ,
+                           diagnostics_read_handler,
+                           NULL,
+                           NULL),
+};
+
+static struct bt_gatt_service diagnostics_service = BT_GATT_SERVICE(diagnostics_service_attr);
+
 // --- Button Service ---
 // Service UUID: 23BA7924-0000-1000-7450-346EAC492E92
 // Characteristics:
@@ -1212,6 +1251,7 @@ int transport_start()
 #ifdef CONFIG_OMI_ENABLE_BATTERY
     bt_gatt_service_register(&battery_detail_service);
 #endif
+    bt_gatt_service_register(&diagnostics_service);
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     // Register storage service for offline audio

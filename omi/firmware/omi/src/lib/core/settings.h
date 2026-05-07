@@ -109,4 +109,34 @@ int app_settings_get_fw_version(char *buf, size_t len);
  */
 int app_settings_save_fw_version(const char *version);
 
+/**
+ * @brief Persist reset cause + session uptime for the current boot.
+ *
+ * Call once at boot with the HWINFO reset cause. Call again periodically
+ * (e.g. every 10 min) with cause=0 and updated uptime_ms so the next boot
+ * can report how long the session ran before the reset.
+ *
+ * @param cause   HWINFO reset-cause bitmask (RESET_WATCHDOG, RESET_POR, etc.).
+ * @param uptime_ms  k_uptime_get() at time of call.
+ */
+int app_settings_save_last_reset(uint32_t cause, uint64_t uptime_ms);
+
+/** @brief Return the reset-cause bitmask saved by the previous boot. */
+uint32_t app_settings_get_last_reset_cause(void);
+
+/** @brief Return the uptime_ms saved by the previous boot (approximate session length). */
+uint64_t app_settings_get_last_reset_uptime_ms(void);
+
+/**
+ * @brief Persist the previous session's final uptime before overwriting the last_reset record.
+ *
+ * Call this once at boot with prev_uptime (read from NVS before clearing it).
+ * The BLE diagnostics characteristic returns this value so the app can show
+ * how long the crashed session ran, not how long the current session has run.
+ */
+int app_settings_save_crash_session_uptime(uint64_t uptime_ms);
+
+/** @brief Return the previous session's final uptime checkpoint (ms). */
+uint64_t app_settings_get_crash_session_uptime(void);
+
 #endif // SETTINGS_H
