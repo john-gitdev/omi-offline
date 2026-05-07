@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
+import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/utils/byte_utils.dart';
 import 'package:omi/utils/logger.dart';
@@ -41,6 +42,10 @@ class OmiDeviceConnection extends DeviceConnection {
   static const String settingsServiceUuid = '19b10010-e8f2-537e-4f6c-d104768a1214';
   static const String settingsDimRatioCharacteristicUuid = '19b10011-e8f2-537e-4f6c-d104768a1214';
   static const String settingsMicGainCharacteristicUuid = '19b10012-e8f2-537e-4f6c-d104768a1214';
+
+  // 8-byte diagnostics: [uint32 reset_cause LE] [uint32 uptime_seconds LE]
+  static const String diagnosticsServiceUuid = '19b10060-e8f2-537e-4f6c-d104768a1214';
+  static const String diagnosticsCharacteristicUuid = '19b10061-e8f2-537e-4f6c-d104768a1214';
 
   // Protects against stale packets from previous calls
   int _listFilesGeneration = 0;
@@ -142,6 +147,30 @@ class OmiDeviceConnection extends DeviceConnection {
   }) async {
     await super.connect(onConnectionStateChanged: onConnectionStateChanged, requiresBond: requiresBond);
     await performSyncDeviceTime();
+  }
+
+  @override
+  Future<DeviceCrashLog?> performGetDiagnostics() async {
+    try {
+      final data = await transport.readCharacteristic(diagnosticsServiceUuid, diagnosticsCharacteristicUuid);
+      if (data.length < 8) return null;
+
+      final log = DeviceCrashLog(
+        connectedAt: DateTime.now(),
+        resetCause: data.getUint32LittleEndian(0),
+        uptimeSeconds: data.getUint32LittleEndian(4),
+      );
+
+      if (log.isCrash) {
+        Logger.warning('Device diagnostics: CRASH — ${log.causeLabel} (uptime: ${log.uptimeStr})');
+      } else {
+        Logger.debug('Device diagnostics: ${log.causeLabel} (uptime: ${log.uptimeStr})');
+      }
+      return log;
+    } catch (e) {
+      Logger.debug('Device diagnostics not available (older firmware): $e');
+      return null;
+    }
   }
 
   Future<void> stop() async {

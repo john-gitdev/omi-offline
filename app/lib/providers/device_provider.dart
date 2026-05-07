@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
@@ -6,6 +7,7 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/services/devices.dart';
+import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
@@ -50,6 +52,37 @@ class DeviceProvider extends ChangeNotifier
   String? lastSyncError;
   DateTime? lastSyncErrorTime;
 
+  // Crash logs collected each time the device connects (newest first, capped at 50)
+  final List<DeviceCrashLog> crashLogs = [];
+  static const _crashLogsKey = 'deviceCrashLogs';
+
+  void _loadCrashLogs() {
+    try {
+      final raw = SharedPreferencesUtil().getString(_crashLogsKey);
+      if (raw.isEmpty) return;
+      final list = jsonDecode(raw) as List<dynamic>;
+      crashLogs
+        ..clear()
+        ..addAll(list.map((e) => DeviceCrashLog.fromJson(e as Map<String, dynamic>)));
+    } catch (e) {
+      Logger.debug('DeviceProvider: failed to load crash logs: $e');
+    }
+  }
+
+  Future<void> _saveCrashLogs() async {
+    try {
+      await SharedPreferencesUtil().saveString(_crashLogsKey, jsonEncode(crashLogs.map((e) => e.toJson()).toList()));
+    } catch (e) {
+      Logger.debug('DeviceProvider: failed to save crash logs: $e');
+    }
+  }
+
+  Future<void> clearCrashLogs() async {
+    crashLogs.clear();
+    await _saveCrashLogs();
+    notifyListeners();
+  }
+
   void Function(BtDevice device)? onDeviceConnected;
 
   DeviceProvider() {
@@ -61,6 +94,7 @@ class DeviceProvider extends ChangeNotifier
     // Seed from last known value so battery indicator isn't grey on launch.
     final saved = SharedPreferencesUtil().lastBatteryLevel;
     if (saved >= 0) batteryLevel = saved;
+    _loadCrashLogs();
     ServiceManager.instance().device.subscribe(this, this);
     ServiceManager.instance().wal.subscribe(this, this);
     BleBridge.instance.bluetoothStateChangedCallback = (state) {
@@ -559,6 +593,17 @@ class DeviceProvider extends ChangeNotifier
 
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
+
+    // Read crash diagnostics and store for Debug Tools display
+    final conn = await ServiceManager.instance().device.ensureConnection(device.id);
+    if (conn != null) {
+      final log = await conn.getDiagnostics();
+      if (log != null) {
+        crashLogs.insert(0, log);
+        if (crashLogs.length > 50) crashLogs.removeLast();
+        await _saveCrashLogs();
+      }
+    }
 
     notifyListeners();
     onDeviceConnected?.call(device);
