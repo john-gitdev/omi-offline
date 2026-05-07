@@ -25,6 +25,14 @@ struct lsm6dsl_time_base {
 
 static struct lsm6dsl_time_base lsm6dsl_time_base = {0};
 
+struct last_reset_record {
+    uint32_t cause;
+    uint32_t _pad;
+    uint64_t uptime_ms;
+};
+
+static struct last_reset_record last_reset = {0};
+
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
     const char *next;
@@ -135,6 +143,18 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         LOG_WRN("lsm6dsl_time_base size mismatch: len=%u expected=%u (or legacy %u)",
             (unsigned)len, (unsigned)sizeof(lsm6dsl_time_base), (unsigned)(sizeof(uint64_t) + sizeof(uint32_t)));
         return -EINVAL;
+    }
+
+    if (settings_name_steq(name, "last_reset", &next) && !next) {
+        if (len != sizeof(last_reset)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &last_reset, sizeof(last_reset));
+        if (rc >= 0) {
+            LOG_INF("Loaded last_reset: cause=0x%08x uptime=%llums", last_reset.cause, last_reset.uptime_ms);
+            return 0;
+        }
+        return rc;
     }
 
     return -ENOENT;
@@ -261,6 +281,27 @@ int app_settings_get_fw_version(char *buf, size_t len)
     strncpy(buf, last_fw_version, len - 1);
     buf[len - 1] = '\0';
     return 0;
+}
+
+int app_settings_save_last_reset(uint32_t cause, uint64_t uptime_ms)
+{
+    last_reset.cause = cause;
+    last_reset.uptime_ms = uptime_ms;
+    int err = settings_save_one("omi/last_reset", &last_reset, sizeof(last_reset));
+    if (err) {
+        LOG_ERR("Failed to save last_reset (err %d)", err);
+    }
+    return err;
+}
+
+uint32_t app_settings_get_last_reset_cause(void)
+{
+    return last_reset.cause;
+}
+
+uint64_t app_settings_get_last_reset_uptime_ms(void)
+{
+    return last_reset.uptime_ms;
 }
 
 int app_settings_save_fw_version(const char *version)
