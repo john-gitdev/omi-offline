@@ -130,13 +130,15 @@ class WaveformUtils {
       return null;
     }
 
-    final riffHeader = String.fromCharCodes(wavData.sublist(0, 4));
+    // ⚡ Bolt: Use direct offset indexing with String.fromCharCodes instead of creating sublists
+    final riffHeader = String.fromCharCodes(wavData, 0, 4);
     if (riffHeader != 'RIFF') {
       Logger.debug('Invalid RIFF header: $riffHeader');
       return null;
     }
 
-    final waveFormat = String.fromCharCodes(wavData.sublist(8, 12));
+    // ⚡ Bolt: Use direct offset indexing with String.fromCharCodes instead of creating sublists
+    final waveFormat = String.fromCharCodes(wavData, 8, 12);
     if (waveFormat != 'WAVE') {
       Logger.debug('Invalid WAVE format: $waveFormat');
       return null;
@@ -148,16 +150,19 @@ class WaveformUtils {
     int channels = 0;
     int bitsPerSample = 0;
 
+    // ⚡ Bolt: Hoist ByteData view to avoid allocating thousands of short-lived views inside loops
+    final bd = ByteData.sublistView(wavData);
+
     while (offset < wavData.length - 8) {
-      final chunkId = String.fromCharCodes(wavData.sublist(offset, offset + 4));
-      final chunkSize = ByteData.sublistView(wavData, offset + 4, offset + 8).getUint32(0, Endian.little);
+      final chunkId = String.fromCharCodes(wavData, offset, offset + 4);
+      final chunkSize = bd.getUint32(offset + 4, Endian.little);
 
       if (chunkId == 'fmt ') {
         fmtChunkSize = chunkSize;
-        final audioFormat = ByteData.sublistView(wavData, offset + 8, offset + 10).getUint16(0, Endian.little);
-        channels = ByteData.sublistView(wavData, offset + 10, offset + 12).getUint16(0, Endian.little);
-        sampleRate = ByteData.sublistView(wavData, offset + 12, offset + 16).getUint32(0, Endian.little);
-        bitsPerSample = ByteData.sublistView(wavData, offset + 22, offset + 24).getUint16(0, Endian.little);
+        final audioFormat = bd.getUint16(offset + 8, Endian.little);
+        channels = bd.getUint16(offset + 10, Endian.little);
+        sampleRate = bd.getUint32(offset + 12, Endian.little);
+        bitsPerSample = bd.getUint16(offset + 22, Endian.little);
 
         if (audioFormat != 1) {
           Logger.debug('Unsupported audio format: $audioFormat (only PCM supported)');
@@ -178,8 +183,8 @@ class WaveformUtils {
     // Find data chunk
     offset = 12;
     while (offset < wavData.length - 8) {
-      final chunkId = String.fromCharCodes(wavData.sublist(offset, offset + 4));
-      final chunkSize = ByteData.sublistView(wavData, offset + 4, offset + 8).getUint32(0, Endian.little);
+      final chunkId = String.fromCharCodes(wavData, offset, offset + 4);
+      final chunkSize = bd.getUint32(offset + 4, Endian.little);
 
       if (chunkId == 'data') {
         return WavInfo(
