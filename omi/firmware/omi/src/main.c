@@ -25,6 +25,10 @@
 #include "spi_flash.h"
 #include "wdog_facade.h"
 
+#ifdef CONFIG_HWINFO
+#include <zephyr/drivers/hwinfo.h>
+#endif
+
 #include <zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt.h>
 #include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
 #include <zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt_callbacks.h>
@@ -185,6 +189,34 @@ void set_led_state()
     }
 }
 
+#ifdef CONFIG_HWINFO
+static void log_reset_cause(uint32_t cause)
+{
+    if (cause == 0) {
+        LOG_INF("[BOOT] Reset cause: unknown/none (0x00000000)");
+        return;
+    }
+    if (cause & RESET_WATCHDOG) {
+        LOG_WRN("[BOOT] Reset cause: WATCHDOG TIMEOUT (0x%08x) — firmware hung for >30 s", cause);
+    }
+    if (cause & RESET_LOCKUP) {
+        LOG_WRN("[BOOT] Reset cause: CPU LOCKUP / HARDFAULT (0x%08x)", cause);
+    }
+    if (cause & RESET_SOFTWARE) {
+        LOG_INF("[BOOT] Reset cause: software reset (0x%08x)", cause);
+    }
+    if (cause & RESET_PIN) {
+        LOG_INF("[BOOT] Reset cause: pin/button reset (0x%08x)", cause);
+    }
+    if (cause & RESET_POR) {
+        LOG_INF("[BOOT] Reset cause: power-on reset (0x%08x)", cause);
+    }
+    if (cause & RESET_BROWNOUT) {
+        LOG_WRN("[BOOT] Reset cause: brownout / low voltage (0x%08x)", cause);
+    }
+}
+#endif
+
 static int suspend_unused_modules(void)
 {
     flash_off();
@@ -211,6 +243,30 @@ int main(void)
     play_haptic_milli(100);
 
     app_settings_init();
+
+#ifdef CONFIG_HWINFO
+    {
+        uint32_t this_cause = 0;
+        hwinfo_get_reset_cause(&this_cause);
+        hwinfo_clear_reset_cause();
+
+        uint32_t prev_cause = app_settings_get_last_reset_cause();
+        uint64_t prev_uptime = app_settings_get_last_reset_uptime_ms();
+
+        if (prev_cause != 0) {
+            LOG_WRN("[BOOT] *** Previous session reset cause: 0x%08x (ran ~%llu ms) ***",
+                    prev_cause, prev_uptime);
+            log_reset_cause(prev_cause);
+            if (prev_cause & (RESET_WATCHDOG | RESET_LOCKUP)) {
+                LOG_WRN("[BOOT] *** CRASH DETECTED — see reset cause above ***");
+            }
+        }
+
+        /* Overwrite with this boot's cause; uptime starts at 0 and is updated in the main loop */
+        app_settings_save_last_reset(this_cause, 0);
+        LOG_INF("[BOOT] This reset cause: 0x%08x", this_cause);
+    }
+#endif
 
     /* Check for firmware version change to trigger a clean wipe */
     char saved_version[32] = {0};
@@ -284,6 +340,14 @@ int main(void)
 
     LOG_INF("Ready\n");
 
+    /* Save uptime every 10 minutes so the next boot can report session length on crash.
+     * Re-reads the cause we saved at boot (hwinfo was already cleared by then). */
+#ifdef CONFIG_HWINFO
+    static uint32_t uptime_save_ticks = 0;
+    static const uint32_t UPTIME_SAVE_INTERVAL_MS = 10 * 60 * 1000;
+    uint32_t this_boot_cause = app_settings_get_last_reset_cause();
+#endif
+
     while (1) {
         watchdog_feed();
 #ifdef CONFIG_OMI_ENABLE_MONITOR
@@ -291,11 +355,21 @@ int main(void)
 #endif
 
         set_led_state();
-        
+
         // Transient effect handling
         if (marker_flash_count > 0) {
             marker_flash_count--;
         }
+
+#ifdef CONFIG_HWINFO
+        {
+            uint32_t now_ms = (uint32_t)k_uptime_get();
+            if ((now_ms - uptime_save_ticks) >= UPTIME_SAVE_INTERVAL_MS) {
+                uptime_save_ticks = now_ms;
+                app_settings_save_last_reset(this_boot_cause, (uint64_t)now_ms);
+            }
+        }
+#endif
 
         k_msleep(500); // More responsive loop for blinking
     }
