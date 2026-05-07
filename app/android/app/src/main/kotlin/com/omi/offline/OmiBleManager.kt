@@ -397,6 +397,7 @@ class OmiBleManager private constructor(private val application: Application) {
                 mainHandler.postDelayed(discoveryTimeout, DISCOVERY_TIMEOUT_MS)
 
                 enqueueCommand {
+                    try { gatt.javaClass.getMethod("refresh").invoke(gatt) } catch (_: Exception) {}
                     if (!gatt.discoverServices()) {
                         mainHandler.removeCallbacks(discoveryTimeout)
                         discoveryTimeouts.remove(address)
