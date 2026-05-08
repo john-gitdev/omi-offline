@@ -230,5 +230,95 @@ void main() {
       expect(processor.discardGuardFiredOnLastFlush, isFalse);
       processor.destroy();
     });
+
+    test('gaps under 10 seconds are stitched without padding', () async {
+      final processor = VadAudioProcessor.fromSettings(
+        settings: _settings(minDurationMs: 0, discardShort: false),
+        outputDir: tempDir.path,
+      );
+
+      final startTime = DateTime(2024, 1, 1, 10, 0, 0);
+      const startUptime = 10000;
+      // File 1: 5 frames = 100 ms
+      await processor.processSegmentFile(
+        _makeBinFile(tempDir, 5, name: 'file1.bin'),
+        startTime,
+        startUptimeMs: startUptime,
+      );
+
+      // File 2: starts 5 seconds after File 1 ends
+      // File 1 end = 10:00:00.100, uptime end = 10100
+      final file2Start = startTime.add(const Duration(milliseconds: 100 + 5000));
+      const file2Uptime = startUptime + 100 + 5000;
+      await processor.processSegmentFile(
+        _makeBinFile(tempDir, 5, name: 'file2.bin'),
+        file2Start,
+        startUptimeMs: file2Uptime,
+      );
+
+      // Expected duration: 100ms (file1) + 100ms (file2) = 200ms
+      // (Gap is 5s < 10s, so no padding even if uptime matches)
+      expect(processor.currentChunkDurationMs, 200);
+      processor.destroy();
+    });
+
+    test('gaps over 10 seconds but under threshold are padded', () async {
+      final processor = VadAudioProcessor.fromSettings(
+        settings: _settings(minDurationMs: 0, discardShort: false),
+        outputDir: tempDir.path,
+      );
+
+      final startTime = DateTime(2024, 1, 1, 10, 0, 0);
+      const startUptime = 10000;
+      // File 1: 5 frames = 100 ms
+      await processor.processSegmentFile(
+        _makeBinFile(tempDir, 5, name: 'file1.bin'),
+        startTime,
+        startUptimeMs: startUptime,
+      );
+
+      // File 2: starts 15 seconds after File 1 ends
+      // File 1 end = 10:00:00.100, uptime end = 10100
+      final file2Start = startTime.add(const Duration(milliseconds: 100 + 15000));
+      const file2Uptime = startUptime + 100 + 15000; // Uptime advances normally (real silence)
+      await processor.processSegmentFile(
+        _makeBinFile(tempDir, 5, name: 'file2.bin'),
+        file2Start,
+        startUptimeMs: file2Uptime,
+      );
+
+      // Expected duration: 100ms (file1) + 100ms (file2) + 15000ms (padding) = 15200ms
+      expect(processor.currentChunkDurationMs, 15200);
+      processor.destroy();
+    });
+
+    test('clock sync jumps (uptime gap < 5s) are NOT padded even if > 10s', () async {
+      final processor = VadAudioProcessor.fromSettings(
+        settings: _settings(minDurationMs: 0, discardShort: false),
+        outputDir: tempDir.path,
+      );
+
+      final startTime = DateTime(2024, 1, 1, 10, 0, 0);
+      const startUptime = 10000;
+      // File 1: 5 frames = 100 ms
+      await processor.processSegmentFile(
+        _makeBinFile(tempDir, 5, name: 'file1.bin'),
+        startTime,
+        startUptimeMs: startUptime,
+      );
+
+      // File 2: starts 15 seconds after File 1 ends in UTC, but ONLY 100ms in Uptime (Clock Sync)
+      final file2Start = startTime.add(const Duration(milliseconds: 100 + 15000));
+      const file2Uptime = startUptime + 100; // Uptime didn't advance (it's a jump)
+      await processor.processSegmentFile(
+        _makeBinFile(tempDir, 5, name: 'file2.bin'),
+        file2Start,
+        startUptimeMs: file2Uptime,
+      );
+
+      // Expected duration: 100ms (file1) + 100ms (file2) = 200ms (No padding!)
+      expect(processor.currentChunkDurationMs, 200);
+      processor.destroy();
+    });
   });
 }

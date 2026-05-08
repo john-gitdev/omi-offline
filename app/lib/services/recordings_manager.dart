@@ -910,7 +910,7 @@ class RecordingsManager {
               await File(dest.replaceAll('_draft', '')).delete();
               await File(dest.replaceAll(RegExp(r'_draft\.(m4a|wav|ogg)$'), '.meta')).delete();
             } else {
-              await File(dest.replaceAll(RegExp(r'\.(m4a|wav|ogg)$'), '_draft.\$1')).delete();
+              await File(dest.replaceAllMapped(RegExp(r'\.(m4a|wav|ogg)$'), (m) => '_draft${m[0]}')).delete();
               await File(dest.replaceAll(RegExp(r'\.(m4a|wav|ogg)$'), '_draft.meta')).delete();
             }
           } on FileSystemException catch (_) {}
@@ -1193,10 +1193,38 @@ class RecordingsManager {
 
           final nextFile = allAudioFiles[currentIndex + 1];
           final nextTs = _extractTimestamp(nextFile.path);
-          final gapMs = nextTs - draftEndTs;
+          final nextExt = nextFile.path.split('.').last;
+          final nextMeta = File(nextFile.path.replaceAll('.$nextExt', '.meta'));
+
+          int gapMs = nextTs - draftEndTs;
 
           if (gapMs >= 0 && gapMs <= thresholdMs) {
-            Logger.debug('RecordingsManager: Stitching draft $draftTs with next $nextTs (gap=${gapMs}ms)');
+            // Check for clock jump using hardware uptime if both have meta files
+            bool isClockJump = false;
+            if (await nextMeta.exists()) {
+              try {
+                final nBytes = await nextMeta.readAsBytes();
+                if (metaBytes.length >= 416 && nBytes.length >= 416) {
+                  final dUptime = ByteData.sublistView(metaBytes).getUint32(412, Endian.little);
+                  final nUptime = ByteData.sublistView(nBytes).getUint32(412, Endian.little);
+                  if (dUptime > 0 && nUptime > dUptime) {
+                    final uptimeDurationMs = durationMs;
+                    final uptimeGapMs = (nUptime * 1000) - ((dUptime * 1000) + uptimeDurationMs);
+                    if (uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000) {
+                      isClockJump = true;
+                    }
+                  }
+                }
+              } catch (_) {}
+            }
+
+            // If it's a clock jump or a very small gap (under 10s AAD tail), stitch without padding.
+            if (isClockJump || gapMs < 10000) {
+              gapMs = 0;
+            }
+
+            Logger.debug(
+                'RecordingsManager: Stitching draft $draftTs with next $nextTs (gap=${gapMs}ms${isClockJump ? ", CLOCK JUMP" : ""})');
             final success = await _performStitch(draftFile, nextFile, gapMs);
             if (success) {
               // After stitching, we need to re-scan this folder.

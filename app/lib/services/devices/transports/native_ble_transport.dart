@@ -26,6 +26,7 @@ class NativeBleTransport extends DeviceTransport {
   Completer<List<BleService>>? _deviceReadyCompleter;
 
   DeviceTransportState _state = DeviceTransportState.disconnected;
+  DateTime? _lastConnectedAt;
 
   NativeBleTransport(this._peripheralUuid, {this.requiresBond = false}) {
     BleBridge.instance.registerPeripheral(
@@ -122,7 +123,10 @@ class NativeBleTransport extends DeviceTransport {
   Future<bool> isConnected() async {
     try {
       final nativeConnected = await _hostApi.isPeripheralConnected(_peripheralUuid);
-      if (!nativeConnected && _state == DeviceTransportState.connected) {
+      final bool isStablyConnected = _lastConnectedAt != null &&
+          DateTime.now().difference(_lastConnectedAt!).inSeconds > 5;
+
+      if (!nativeConnected && _state == DeviceTransportState.connected && isStablyConnected) {
         Logger.warning('[NativeBleTransport] State mismatch detected! Native OS is disconnected but Dart is connected. Forcing cleanup.');
         // Don't call disconnect() directly as it might interfere with callers waiting on states.
         // Just trigger the same cleanup path a native disconnection would.
@@ -234,6 +238,11 @@ class NativeBleTransport extends DeviceTransport {
   void _updateState(DeviceTransportState newState) {
     if (_state != newState) {
       _state = newState;
+      if (_state == DeviceTransportState.connected) {
+        _lastConnectedAt = DateTime.now();
+      } else if (_state == DeviceTransportState.disconnected) {
+        _lastConnectedAt = null;
+      }
       _connectionStateController.add(_state);
     }
   }

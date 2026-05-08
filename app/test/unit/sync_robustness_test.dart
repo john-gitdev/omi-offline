@@ -6,6 +6,7 @@ import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
+import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/omi_connection.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
@@ -97,6 +98,12 @@ class MockDeviceConnection implements DeviceConnection {
     });
     return true;
   }
+
+  @override
+  Future<DeviceCrashLog?> getDiagnostics() async => null;
+
+  @override
+  Future<DeviceCrashLog?> performGetDiagnostics() async => null;
 
   @override
   Future<bool> deleteFile(StorageFile file, {int? timestamp}) async => true;
