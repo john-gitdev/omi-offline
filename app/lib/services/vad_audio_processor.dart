@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 import 'package:opus_dart/opus_dart.dart';
@@ -10,8 +11,6 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/services/frame_ref.dart';
 import 'package:omi/utils/logger.dart';
-
-import "package:meta/meta.dart";
 
 /// All VAD/processing settings captured from SharedPreferences in the main isolate
 /// before spawning the processing isolate. All fields are primitives — safe to send
@@ -78,6 +77,7 @@ class VadAudioProcessor {
   bool _isDerivedTimestamp = false; // true when segment had no valid device RTC timestamp
   int? _currentSessionId;
   int? _currentStartUptime;
+  int? _currentFrameUptimeMs;
 
   // VAD state counters
   int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
@@ -222,7 +222,7 @@ class VadAudioProcessor {
   }
 
   Future<List<String>> processSegmentFile(File segmentFile, DateTime segmentStartTime,
-      {bool isDerivedTimestamp = false, int? sessionId}) async {
+      {int startUptimeMs = 0, bool isDerivedTimestamp = false, int? sessionId}) async {
     final savedFiles = <String>[];
     _isDerivedTimestamp = isDerivedTimestamp;
 
@@ -243,10 +243,16 @@ class VadAudioProcessor {
 
       if (_lastSegmentEndTime != null) {
         final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds;
-        if (_currentRefs.isNotEmpty && gapMs > _silenceDurationToSplitMs) {
+        final sessionChanged = _currentSessionId != null && sessionId != null && _currentSessionId != sessionId;
+
+        // If the gap is very small or negative (and same session), it's a clock sync or contiguous file.
+        // We only split if the gap is genuinely large and NOT a clock sync.
+        final bool isClockJump = !sessionChanged && gapMs.abs() > 10000;
+
+        if (_currentRefs.isNotEmpty && (sessionChanged || (gapMs > _silenceDurationToSplitMs && !isClockJump))) {
           Logger.debug(
-            'VadAudioProcessor: Gap detected before ${segmentFile.path.split('/').last} — '
-            'gapMs=$gapMs (threshold=${_silenceDurationToSplitMs}ms), '
+            'VadAudioProcessor: Split triggered before ${segmentFile.path.split('/').last} — '
+            'sessionChanged=$sessionChanged, gapMs=$gapMs (threshold=${_silenceDurationToSplitMs}ms), '
             'lastEnd=${_lastSegmentEndTime?.toUtc()} segmentStart=${segmentStartTime.toUtc()} — flushing.',
           );
           _h = Float32List(2 * 1 * 64);
@@ -264,7 +270,7 @@ class VadAudioProcessor {
             _currentChunkDurationMs += gapMs;
           }
         }
-        // gapMs <= 0: sequential firmware files with no real gap — stitch seamlessly.
+        // gapMs <= 0 or isClockJump: sequential firmware files or clock sync — stitch seamlessly.
       }
 
       if (_currentRefs.isEmpty) {
@@ -278,7 +284,8 @@ class VadAudioProcessor {
         if (!capJustFired) {
           _recordingStartTime = segmentStartTime;
           _currentSessionId = sessionId;
-          _currentStartUptime = isDerivedTimestamp ? segmentStartTime.millisecondsSinceEpoch ~/ 1000 : 0;
+          _currentStartUptime = isDerivedTimestamp ? (startUptimeMs ~/ 1000) : 0;
+          _currentFrameUptimeMs = startUptimeMs;
         }
       }
 
@@ -302,8 +309,9 @@ class VadAudioProcessor {
         // Marker packet (0xFFFFFFFE = button-tap marker, 20 bytes: 4-byte header + 16-byte payload).
         // Payload layout: [0..3] UTC epoch seconds (u32 LE), [4..7] uptime ms, [8..11] session id.
         if (frameLength == 0xFFFFFFFE) {
-          if (offset + 8 <= fileLength) {
+          if (offset + 12 <= fileLength) {
             final markerUtcSeconds = byteData.getUint32(offset + 4, Endian.little);
+            final markerUptimeMs = byteData.getUint32(offset + 8, Endian.little);
             const kMinValidMarkerEpoch = 946684800;
             if (markerUtcSeconds > kMinValidMarkerEpoch) {
               final markerFrameTime = DateTime.fromMillisecondsSinceEpoch(markerUtcSeconds * 1000, isUtc: true);
@@ -314,6 +322,7 @@ class VadAudioProcessor {
                 _recordingStartTime = markerFrameTime;
                 _speechFrameCount = 0;
                 _currentChunkDurationMs = 0;
+                _currentFrameUptimeMs = markerUptimeMs;
                 Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — starting new recording.');
               } else {
                 Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — protecting active recording.');
@@ -328,14 +337,23 @@ class VadAudioProcessor {
         // from silence. Used to decide stitch vs split and recalibrate frame timestamps.
         // Payload: [0..3] UTC epoch seconds (u32 LE), [4..7] uptime ms (u32 LE), [8..15] padding.
         if (frameLength == 0xFFFFFFFD) {
-          if (offset + 8 <= fileLength) {
+          if (offset + 12 <= fileLength) {
             final vadUtcSeconds = byteData.getUint32(offset + 4, Endian.little);
+            final vadUptimeMs = byteData.getUint32(offset + 8, Endian.little);
             const kMinValidEpoch = 946684800;
             if (vadUtcSeconds > kMinValidEpoch) {
               final newResumeTime = DateTime.fromMillisecondsSinceEpoch(vadUtcSeconds * 1000, isUtc: true);
               final gapMs = newResumeTime.difference(lastFrameWallTime).inMilliseconds;
 
-              if (gapMs >= _silenceDurationToSplitMs) {
+              // Calculate uptime gap to distinguish clock jumps from silence.
+              int uptimeGapMs = 0;
+              if (_currentFrameUptimeMs != null) {
+                uptimeGapMs = vadUptimeMs - _currentFrameUptimeMs!;
+              }
+              // If uptime Gap matches frame count (small gap) but UTC gap is large, it's a clock sync.
+              final bool isClockJump = uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000;
+
+              if (gapMs >= _silenceDurationToSplitMs && !isClockJump) {
                 // Gap exceeds threshold — flush current recording, start new conversation.
                 final speechMs = _speechFrameCount * frameDurationMs;
                 final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
@@ -357,17 +375,19 @@ class VadAudioProcessor {
                 _recordingStartTime = newResumeTime;
                 Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
               } else {
-                // Gap within threshold — stitch, padding with silence so playback reflects real timing.
-                if (_currentRefs.isNotEmpty && gapMs > 0) {
+                // Gap within threshold or clock jump — stitch, padding with silence so playback reflects real timing.
+                if (_currentRefs.isNotEmpty && gapMs > 0 && !isClockJump) {
                   _currentRefs.add(Duration(milliseconds: gapMs));
                   _currentChunkDurationMs += gapMs;
                 }
-                Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms < threshold, stitching with silence pad.');
+                Logger.debug(
+                    'VadAudioProcessor: VAD resume — gap ${gapMs}ms ${isClockJump ? "(CLOCK JUMP)" : "< threshold"}, stitching.');
               }
 
-              // Update anchor for subsequent frame timestamp calculations.
+              // Update anchors for subsequent frame calculations.
               vadResumeTime = newResumeTime;
               vadResumeFrameIndex = frameIndex;
+              _currentFrameUptimeMs = vadUptimeMs;
             }
           }
           offset += 20;
@@ -409,15 +429,16 @@ class VadAudioProcessor {
         }
         _currentRefs.add(frameRef);
         _currentChunkDurationMs += frameDurationMs;
+        if (_currentFrameUptimeMs != null) _currentFrameUptimeMs = _currentFrameUptimeMs! + frameDurationMs;
 
         if (_recordingStartTime == null) {
           _recordingStartTime =
-              (vadResumeTime != null && vadResumeFrameIndex != null) ? vadResumeTime! : segmentStartTime;
+              (vadResumeTime != null && vadResumeFrameIndex != null) ? vadResumeTime : segmentStartTime;
         }
 
         // Compute accurate wall-clock time for this frame using VAD-resume anchor if available.
         final frameTime = (vadResumeTime != null && vadResumeFrameIndex != null)
-            ? vadResumeTime!.add(Duration(milliseconds: (frameIndex - vadResumeFrameIndex!) * frameDurationMs))
+            ? vadResumeTime.add(Duration(milliseconds: (frameIndex - vadResumeFrameIndex) * frameDurationMs))
             : segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
         lastFrameWallTime = frameTime;
 
@@ -612,59 +633,44 @@ class VadAudioProcessor {
     int batchFrameCount = 0;
 
     String? sessionId;
-    bool aacFailed = false;
     bool hasEncodedAnyFrames = false;
 
-    try {
-      sessionId = await AacEncoder.startEncoder(sampleRate, m4aPath);
-    } on Exception catch (e) {
-      Logger.error('VadAudioProcessor: AAC startEncoder failed, falling back to WAV: $e');
-      aacFailed = true;
-    }
-
-    if (aacFailed) {
-      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix);
-    }
-
     Future<void> flushBatch() async {
-      if (batchBuffer.isEmpty) return;
-      final bytes = batchBuffer.takeBytes();
-      batchFrameCount = 0;
-      hasEncodedAnyFrames = true;
-
-      int offset = 0;
-      while (offset < bytes.length) {
-        final chunkLen = (bytes.length - offset > 16000) ? 16000 : bytes.length - offset;
-        final chunk = Uint8List.sublistView(bytes, offset, offset + chunkLen);
-        await AacEncoder.encodeBuffer(sessionId!, chunk);
-        offset += chunkLen;
+      if (batchFrameCount == 0) return;
+      if (sessionId == null) {
+        sessionId = await AacEncoder.startEncoder(sampleRate, m4aPath);
       }
+      final chunk = batchBuffer.takeBytes();
+      await AacEncoder.encodeBuffer(sessionId!, chunk);
+      hasEncodedAnyFrames = true;
+      batchFrameCount = 0;
     }
 
-    String? currentFilePath;
-    Uint8List? currentFileBytes;
-
     try {
+      String? currentFilePath;
+      Uint8List? currentFileBytes;
+
       for (var i = 0; i < refs.length; i++) {
         final item = refs[i];
 
         if (item is Duration) {
-          final pcmSamples = (item.inMilliseconds * sampleRate) ~/ 1000;
-          final silenceBytes = Uint8List(pcmSamples * channels * 2);
-          batchBuffer.add(silenceBytes);
-          totalSamples += pcmSamples;
+          final ms = item.inMilliseconds;
+          final silenceSamples = (ms * sampleRate) ~/ 1000;
+          final silenceBytes = Uint8List(silenceSamples * 2); // 16-bit mono
 
-          for (int s = 0; s < pcmSamples; s++) {
+          batchBuffer.add(silenceBytes);
+          totalSamples += silenceSamples;
+
+          // Waveform for silence
+          for (int s = 0; s < silenceSamples; s++) {
             currentWindowSamples++;
             if (currentWindowSamples >= windowSize) {
               dynamicPeaks.add(0.0);
               currentWindowSamples = 0;
             }
           }
-
-          if (batchBuffer.length > 32000) {
-            await flushBatch();
-          }
+          batchFrameCount += (ms / frameDurationMs).ceil();
+          if (batchFrameCount >= batchFrames) await flushBatch();
           continue;
         }
 
@@ -672,8 +678,6 @@ class VadAudioProcessor {
         if (i % 50 == 0) await Future.delayed(Duration.zero);
 
         if (ref.segmentFile.path != currentFilePath) {
-          // Note: reading the entire file into memory is a tradeoff (avoids thousands of native file seek/read calls).
-          // Segment files are typically small enough (a few MBs) to make this safe and dramatically faster.
           currentFileBytes = await ref.segmentFile.readAsBytes();
           currentFilePath = ref.segmentFile.path;
           await Future.delayed(Duration.zero);
@@ -687,9 +691,7 @@ class VadAudioProcessor {
         Int16List? pcmData;
         try {
           pcmData = _decoder?.decode(input: opusBytes);
-        } catch (e) {
-          continue;
-        }
+        } catch (_) {}
 
         if (pcmData == null) continue;
 
@@ -743,7 +745,7 @@ class VadAudioProcessor {
 
     Logger.debug(
         'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
-        'starting at $startTime to $m4aPath');
+        'starting at $_recordingStartTime to $m4aPath');
     return m4aPath;
   }
 
@@ -899,504 +901,263 @@ class VadAudioProcessor {
         }
       }
 
-      // Final flush with EOS flag.
-      // RFC 3533: "If a page contains no packets, its granule_position is the same as the
-      // granule_position of the last page containing at least one packet."
-      final finalGranulePos = pagePackets.isNotEmpty ? granulePos : lastFlushedGranulePos;
-      sink.add(_createOggPage(finalGranulePos, pageSeqNum++, serial, pagePackets, isLastPage: true));
-
-      await sink.close();
-      await File(tmpPath).rename(oggPath);
-      renamed = true;
-
-      if (currentWindowSamples > 0) {
-        dynamicPeaks.add(currentWindowMax);
+      if (pagePackets.isNotEmpty) {
+        sink.add(_createOggPage(granulePos, pageSeqNum++, serial, pagePackets, isLastPage: true));
+      } else {
+        // Rewrite last page with last-page flag
+        // OGG needs at least one page with the EOS flag.
+        sink.add(_createOggPage(granulePos, pageSeqNum - 1, serial, [], isLastPage: true));
       }
 
-      final metaSamples = totalSamples > 0 ? totalSamples : granulePos;
-      await _saveMetadata(refs, dateFolderPath, timestamp, metaSamples, dynamicPeaks, waveformBuckets,
+      await sink.flush();
+      await sink.close();
+
+      await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
           prefix: prefix, extension: 'ogg', suffix: suffix);
 
+      await oggFile.rename(oggPath);
+      renamed = true;
       Logger.debug(
-          'VadAudioProcessor: Saved OGG recording (${refs.length} items) starting at $timestamp$suffix to $oggPath');
+          'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
+          'starting at $_recordingStartTime to $oggPath');
       return oggPath;
     } catch (e) {
-      Logger.error('VadAudioProcessor: OGG encoding failed, falling back to WAV: $e');
-      try {
-        await sink.close();
-      } catch (_) {}
-      final pathToClean = renamed ? oggPath : tmpPath;
-      try {
-        final f = File(pathToClean);
-        if (await f.exists()) await f.delete();
-      } catch (_) {}
+      Logger.error('VadAudioProcessor: _saveOgg failed: $e');
+      if (!renamed && await oggFile.exists()) await oggFile.delete();
       return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
     }
   }
 
   Uint8List _createOggOpusIdHeader() {
     final header = ByteData(19);
-    header.setUint8(0, 0x4f); // 'O'
-    header.setUint8(1, 0x70); // 'p'
-    header.setUint8(2, 0x75); // 'u'
-    header.setUint8(3, 0x73); // 's'
-    header.setUint8(4, 0x48); // 'H'
-    header.setUint8(5, 0x65); // 'e'
-    header.setUint8(6, 0x61); // 'a'
-    header.setUint8(7, 0x64); // 'd'
-    header.setUint8(8, 1); // Version
+    header.setUint8(0, 0x4F); // O
+    header.setUint8(1, 0x70); // p
+    header.setUint8(2, 0x75); // u
+    header.setUint8(3, 0x73); // s
+    header.setUint8(4, 0x48); // H
+    header.setUint8(5, 0x65); // e
+    header.setUint8(6, 0x61); // a
+    header.setUint8(7, 0x64); // d
+    header.setUint8(8, 0x01); // Version
     header.setUint8(9, channels);
     header.setUint16(10, 0, Endian.little); // Pre-skip
-    header.setUint32(12, 48000, Endian.little); // Ogg Opus spec prefers 48kHz original rate
+    header.setUint32(12, 48000, Endian.little); // Input sample rate
     header.setUint16(16, 0, Endian.little); // Output gain
-    header.setUint8(18, 0); // Mapping family
+    header.setUint8(18, 0x00); // Channel map
     return header.buffer.asUint8List();
   }
 
   Uint8List _createOggOpusCommentHeader() {
-    const vendor = 'Omi';
+    const vendor = "Omi Offline";
     final vendorBytes = utf8.encode(vendor);
     final header = ByteData(8 + 4 + vendorBytes.length + 4);
-    header.setUint8(0, 0x4f); // 'O'
-    header.setUint8(1, 0x70); // 'p'
-    header.setUint8(2, 0x75); // 'u'
-    header.setUint8(3, 0x73); // 's'
-    header.setUint8(4, 0x54); // 'T'
-    header.setUint8(5, 0x61); // 'a'
-    header.setUint8(6, 0x67); // 'g'
-    header.setUint8(7, 0x73); // 's'
+    header.setUint8(0, 0x4F); // O
+    header.setUint8(1, 0x70); // p
+    header.setUint8(2, 0x75); // u
+    header.setUint8(3, 0x73); // s
+    header.setUint8(4, 0x54); // T
+    header.setUint8(5, 0x61); // a
+    header.setUint8(6, 0x67); // g
+    header.setUint8(7, 0x73); // s
     header.setUint32(8, vendorBytes.length, Endian.little);
-    final list = header.buffer.asUint8List();
-    list.setAll(12, vendorBytes);
-    ByteData.view(list.buffer).setUint32(12 + vendorBytes.length, 0, Endian.little); // 0 comments
-    return list;
+    for (int i = 0; i < vendorBytes.length; i++) {
+      header.setUint8(12 + i, vendorBytes[i]);
+    }
+    header.setUint32(12 + vendorBytes.length, 0, Endian.little); // User comment count
+    return header.buffer.asUint8List();
   }
 
-  Uint8List _createOggPage(int granulePos, int seqNum, int serial, List<Uint8List> packets,
+  Uint8List _createOggPage(int granulePos, int pageSeqNum, int serial, List<Uint8List> packets,
       {bool isFirstPage = false, bool isLastPage = false}) {
-    int segmentCount = 0;
-    for (final p in packets) {
-      segmentCount += (p.length / 255).floor() + 1;
+    int pageHeaderSize = 27 + packets.length;
+    int pageDataSize = packets.fold(0, (sum, p) => sum + p.length);
+    final page = ByteData(pageHeaderSize + pageDataSize);
+
+    page.setUint8(0, 0x4F); // O
+    page.setUint8(1, 0x67); // g
+    page.setUint8(2, 0x67); // g
+    page.setUint8(3, 0x53); // S
+    page.setUint8(4, 0x00); // Version
+    int flags = 0;
+    if (isFirstPage) flags |= 0x02;
+    if (isLastPage) flags |= 0x04;
+    page.setUint8(5, flags);
+    page.setUint64(6, granulePos, Endian.little);
+    page.setUint32(14, serial, Endian.little);
+    page.setUint32(18, pageSeqNum, Endian.little);
+    page.setUint32(22, 0, Endian.little); // Checksum (filled later)
+    page.setUint8(26, packets.length);
+
+    int offset = 27;
+    for (var p in packets) {
+      page.setUint8(offset++, p.length);
     }
-
-    final header = ByteData(27 + segmentCount);
-    header.setUint8(0, 0x4f); // 'O'
-    header.setUint8(1, 0x67); // 'g'
-    header.setUint8(2, 0x67); // 'g'
-    header.setUint8(3, 0x53); // 'S'
-    header.setUint8(4, 0); // Version
-    int headerType = 0;
-    if (isFirstPage) headerType |= 0x02;
-    if (isLastPage) headerType |= 0x04;
-    header.setUint8(5, headerType);
-    header.setUint64(6, granulePos, Endian.little);
-    header.setUint32(14, serial, Endian.little);
-    header.setUint32(18, seqNum, Endian.little);
-    header.setUint32(22, 0, Endian.little); // CRC placeholder
-    header.setUint8(26, segmentCount);
-
-    int pos = 27;
-    for (final p in packets) {
-      int remaining = p.length;
-      while (remaining >= 255) {
-        header.setUint8(pos++, 255);
-        remaining -= 255;
+    for (var p in packets) {
+      for (int i = 0; i < p.length; i++) {
+        page.setUint8(offset++, p[i]);
       }
-      header.setUint8(pos++, remaining);
     }
 
-    final page = BytesBuilder(copy: false);
-    page.add(header.buffer.asUint8List());
-    for (final p in packets) {
-      page.add(p);
-    }
+    // CRC-32 (Ogg variant)
+    final crc = _computeOggCrc(page.buffer.asUint8List());
+    page.setUint32(22, crc, Endian.little);
 
-    final pageBytes = page.takeBytes();
-    final crc = _computeOggCrc(pageBytes);
-    ByteData.view(pageBytes.buffer, pageBytes.offsetInBytes, pageBytes.lengthInBytes).setUint32(22, crc, Endian.little);
-    return pageBytes;
+    return page.buffer.asUint8List();
   }
-
-  static const List<int> _crcTable = [
-    0x00000000,
-    0x04c11db7,
-    0x09823b6e,
-    0x0d4326d9,
-    0x130476dc,
-    0x17c56b6b,
-    0x1a864db2,
-    0x1e475005,
-    0x2608edb8,
-    0x22c9f00f,
-    0x2f8ad6d6,
-    0x2b4bcb61,
-    0x350c9b64,
-    0x31cd86d3,
-    0x3c8ea00a,
-    0x384fbdbd,
-    0x4c11db70,
-    0x48d0c6c7,
-    0x4593e01e,
-    0x4152fda9,
-    0x5f15adac,
-    0x5bd4b01b,
-    0x569796c2,
-    0x52568b75,
-    0x6a1936c8,
-    0x6ed82b7f,
-    0x639b0da6,
-    0x675a1011,
-    0x791d4014,
-    0x7ddc5da3,
-    0x709f7b7a,
-    0x745e66cd,
-    0x9823b6e0,
-    0x9ce2ab57,
-    0x91a18d8e,
-    0x95609039,
-    0x8b27c03c,
-    0x8fe6dd8b,
-    0x82a5fb52,
-    0x8664e6e5,
-    0xbe2b5b58,
-    0xbaea46ef,
-    0xb7a96036,
-    0xb3687d81,
-    0xad2f2d84,
-    0xa9ee3033,
-    0xa4ad16ea,
-    0xa06c0b5d,
-    0xd4326d90,
-    0xd0f37027,
-    0xddb056fe,
-    0xd9714b49,
-    0xc7361b4c,
-    0xc3f706fb,
-    0xceb42022,
-    0xca753d95,
-    0xf23a8028,
-    0xf6fb9d9f,
-    0xfbb8bb46,
-    0xff79a6f1,
-    0xe13ef6f4,
-    0xe5ffeb43,
-    0xe8bccd9a,
-    0xec7dd02d,
-    0x34867077,
-    0x30476dc0,
-    0x3d044b19,
-    0x39c556ae,
-    0x278206ab,
-    0x23431b1c,
-    0x2e003dc5,
-    0x2ac12072,
-    0x128e9dcf,
-    0x164f8078,
-    0x1b0ca6a1,
-    0x1fcdbb16,
-    0x018aeb13,
-    0x054bf6a4,
-    0x0808d07d,
-    0x0cc9cdca,
-    0x7897ab07,
-    0x7c56b6b0,
-    0x71159069,
-    0x75d48dde,
-    0x6b93dddb,
-    0x6f52c06c,
-    0x6211e6b5,
-    0x66d0fb02,
-    0x5e9f46bf,
-    0x5a5e5b08,
-    0x571d7dd1,
-    0x53dc6066,
-    0x4d9b3063,
-    0x495a2dd4,
-    0x44190b0d,
-    0x40d816ba,
-    0xaca5c697,
-    0xa864db20,
-    0xa527fdf9,
-    0xa1e6e04e,
-    0xbfa1b04b,
-    0xbb60adfc,
-    0xb6238b25,
-    0xb2e29692,
-    0x8aad2b2f,
-    0x8e6c3698,
-    0x832f1041,
-    0x87ee0df6,
-    0x99a95df3,
-    0x9d684044,
-    0x902b669d,
-    0x94ea7b2a,
-    0xe0b41de7,
-    0xe4750050,
-    0xe9362689,
-    0xedf73b3e,
-    0xf3b06b3b,
-    0xf771768c,
-    0xfa325055,
-    0xfef34de2,
-    0xc6bcf05f,
-    0xc27dede8,
-    0xcf3ecb31,
-    0xcbffd686,
-    0xd5b88683,
-    0xd1799b34,
-    0xdc3abded,
-    0xd8fba05a,
-    0x690ce0ee,
-    0x6dcdfd59,
-    0x608edb80,
-    0x644fc637,
-    0x7a089632,
-    0x7ec98b85,
-    0x738aad5c,
-    0x774bb0eb,
-    0x4f040d56,
-    0x4bc510e1,
-    0x46863638,
-    0x42472b8f,
-    0x5c007b8a,
-    0x58c1663d,
-    0x558240e4,
-    0x51435d53,
-    0x251d3b9e,
-    0x21dc2629,
-    0x2c9f00f0,
-    0x285e1d47,
-    0x36194d42,
-    0x32d850f5,
-    0x3f9b762c,
-    0x3b5a6b9b,
-    0x0315d626,
-    0x07d4cb91,
-    0x0a97ed48,
-    0x0e56f0ff,
-    0x1011a0fa,
-    0x14d0bd4d,
-    0x19939b94,
-    0x1d528623,
-    0xf12f560e,
-    0xf5ee4bb9,
-    0xf8ad6d60,
-    0xfc6c70d7,
-    0xe22b20d2,
-    0xe6ea3d65,
-    0xeba91bbc,
-    0xef68060b,
-    0xd727bbb6,
-    0xd3e6a601,
-    0xdea580d8,
-    0xda649d6f,
-    0xc423cd6a,
-    0xc0e2d0dd,
-    0xcd11f604,
-    0xc9d0ebb3,
-    0xbd3e8d7e,
-    0xb9ff90c9,
-    0xb4bcb610,
-    0xb07daba7,
-    0xae3afba2,
-    0xaafbe615,
-    0xa7b8c0cc,
-    0xa379dd7b,
-    0x9b3660c6,
-    0x9ff77d71,
-    0x92b45ba8,
-    0x9675461f,
-    0x8832161a,
-    0x8cf30bad,
-    0x81b02d74,
-    0x857130c3,
-    0x5d8a9099,
-    0x594b8d2e,
-    0x5408abf7,
-    0x50c9b640,
-    0x4e8ee645,
-    0x4a4ffbf2,
-    0x470cdd2b,
-    0x43cd309c,
-    0x7b827d21,
-    0x7f436096,
-    0x7200464f,
-    0x76c15bf8,
-    0x68860bfd,
-    0x6c47164a,
-    0x61043093,
-    0x65c52d24,
-    0x119b4be9,
-    0x155a565e,
-    0x18197087,
-    0x1cd86d30,
-    0x029f3d35,
-    0x065e2082,
-    0x0b1d065b,
-    0x0fdc1bec,
-    0x3793a651,
-    0x3352bbe6,
-    0x3e119d3f,
-    0x3ad08088,
-    0x2497d08d,
-    0x2056cd3a,
-    0x2d15ebe3,
-    0x29d4f654,
-    0xc5a92679,
-    0xc1683bce,
-    0xcc2b1d17,
-    0xc8ea00a0,
-    0xd6ad50a5,
-    0xd26c4d12,
-    0xdf2f6bcb,
-    0xdbee767c,
-    0xe3a1cbc1,
-    0xe760d676,
-    0xea23f0af,
-    0xeee2ed18,
-    0xf0a5bd1d,
-    0xf464a0aa,
-    0xf9278673,
-    0xfde69bc4,
-    0x89b8fd09,
-    0x8d79e0be,
-    0x803ac667,
-    0x84fbdbd0,
-    0x9abc8bd5,
-    0x9e7d9662,
-    0x933eb0bb,
-    0x97ffad0c,
-    0xafb010b1,
-    0xab710d06,
-    0xa6322bdf,
-    0xa2f33668,
-    0xbcb4666d,
-    0xb8757bda,
-    0xb5365d03,
-    0xb1f740b4
-  ];
 
   int _computeOggCrc(Uint8List data) {
     int crc = 0;
     for (int i = 0; i < data.length; i++) {
-      crc = ((crc << 8) ^ _crcTable[((crc >> 24) ^ data[i]) & 0xff]) & 0xffffffff;
+      crc = (crc << 8) ^ _oggCrcTable[((crc >> 24) ^ data[i]) & 0xFF];
     }
-    return crc;
+    return crc & 0xFFFFFFFF;
   }
 
-  Future<String> _saveWav(List<Object> refs, String dateFolderPath, int timestamp,
+  static final List<int> _oggCrcTable = _generateOggCrcTable();
+  static List<int> _generateOggCrcTable() {
+    final table = List<int>.filled(256, 0);
+    for (int i = 0; i < 256; i++) {
+      int r = i << 24;
+      for (int j = 0; j < 8; j++) {
+        if ((r & 0x80000000) != 0) {
+          r = (r << 1) ^ 0x04c11db7;
+        } else {
+          r <<= 1;
+        }
+      }
+      table[i] = r & 0xFFFFFFFF;
+    }
+    return table;
+  }
+
+  Future<String?> _saveWav(List<Object> refs, String dateFolderPath, int timestamp,
       {String prefix = 'recording', String suffix = ''}) async {
     final wavPath = '$dateFolderPath/${prefix}_$timestamp$suffix.wav';
-    final wavFile = File(wavPath);
-    final IOSink sink = wavFile.openWrite();
+    final tmpPath = '$wavPath.tmp';
+    final wavFile = File(tmpPath);
+    final sink = wavFile.openWrite();
 
-    String? currentFilePath;
-    Uint8List? currentFileBytes;
-
-    final List<Uint8List> decodedSegments = [];
-    final wavDecoder =
-        Platform.isIOS || Platform.isAndroid ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels) : null;
-    if (wavDecoder != null) {
-      try {
-        for (var i = 0; i < refs.length; i++) {
-          final item = refs[i];
-
-          if (item is Duration) {
-            final pcmSamples = (item.inMilliseconds * sampleRate) ~/ 1000;
-            final silenceBytes = Uint8List(pcmSamples * channels * 2); // 16-bit PCM
-            decodedSegments.add(silenceBytes);
-            continue;
-          }
-
-          final ref = item as FrameRef;
-          if (i % 50 == 0) await Future.delayed(Duration.zero);
-
-          if (ref.segmentFile.path != currentFilePath) {
-            currentFileBytes = await ref.segmentFile.readAsBytes();
-            currentFilePath = ref.segmentFile.path;
-          }
-
-          if (currentFileBytes == null) continue;
-
-          final frameDataOffset = ref.byteOffset + 4;
-          final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
-
-          try {
-            final decoded = wavDecoder.decode(input: opusBytes);
-            decodedSegments.add(decoded.buffer.asUint8List());
-          } catch (e) {
-            // Skip corrupt frame
-          }
-        }
-      } finally {
-        wavDecoder.destroy();
-      }
-    }
-
-    final int totalPcmBytes = decodedSegments.fold(0, (sum, segment) => sum + segment.length);
-
-    final header = ByteData(44);
-    // RIFF
-    header.setUint8(0, 0x52);
-    header.setUint8(1, 0x49);
-    header.setUint8(2, 0x46);
-    header.setUint8(3, 0x46);
-    header.setUint32(4, 36 + totalPcmBytes, Endian.little);
-    // WAVE
-    header.setUint8(8, 0x57);
-    header.setUint8(9, 0x41);
-    header.setUint8(10, 0x56);
-    header.setUint8(11, 0x45);
-    // fmt
-    header.setUint8(12, 0x66);
-    header.setUint8(13, 0x6D);
-    header.setUint8(14, 0x74);
-    header.setUint8(15, 0x20);
-    header.setUint32(16, 16, Endian.little); // chunk size
-    header.setUint16(20, 1, Endian.little); // PCM
-    header.setUint16(22, channels, Endian.little);
-    header.setUint32(24, sampleRate, Endian.little);
-    header.setUint32(28, sampleRate * channels * 2, Endian.little); // byte rate
-    header.setUint16(32, channels * 2, Endian.little); // block align
-    header.setUint16(34, 16, Endian.little); // bits per sample
-    // data
-    header.setUint8(36, 0x64);
-    header.setUint8(37, 0x61);
-    header.setUint8(38, 0x74);
-    header.setUint8(39, 0x61);
-    header.setUint32(40, totalPcmBytes, Endian.little);
-
-    sink.add(header.buffer.asUint8List());
-    for (final segment in decodedSegments) {
-      sink.add(segment);
-    }
-    await sink.close();
-
-    // Compute waveform peaks from the decoded PCM we already have in memory.
     const waveformBuckets = 200;
     const windowSize = 800;
+
     final dynamicPeaks = <double>[];
     double currentWindowMax = 0.0;
     int currentWindowSamples = 0;
-    for (final segment in decodedSegments) {
-      final pcm = Int16List.sublistView(segment);
-      for (int j = 0; j < pcm.length; j++) {
-        final amplitude = pcm[j].abs() / 32768.0;
-        if (amplitude > currentWindowMax) currentWindowMax = amplitude;
-        currentWindowSamples++;
-        if (currentWindowSamples >= windowSize) {
-          dynamicPeaks.add(currentWindowMax);
-          currentWindowMax = 0.0;
-          currentWindowSamples = 0;
+    int totalSamples = 0;
+
+    try {
+      // Dummy header
+      sink.add(Uint8List(44));
+
+      String? currentFilePath;
+      Uint8List? currentFileBytes;
+      for (var i = 0; i < refs.length; i++) {
+        final item = refs[i];
+
+        if (item is Duration) {
+          final ms = item.inMilliseconds;
+          final silenceSamples = (ms * sampleRate) ~/ 1000;
+          final silenceBytes = Uint8List(silenceSamples * 2); // 16-bit mono
+          sink.add(silenceBytes);
+          totalSamples += silenceSamples;
+          for (int s = 0; s < silenceSamples; s++) {
+            currentWindowSamples++;
+            if (currentWindowSamples >= windowSize) {
+              dynamicPeaks.add(0.0);
+              currentWindowSamples = 0;
+            }
+          }
+          continue;
         }
+
+        final ref = item as FrameRef;
+        if (i % 50 == 0) await Future.delayed(Duration.zero);
+
+        if (ref.segmentFile.path != currentFilePath) {
+          currentFileBytes = await ref.segmentFile.readAsBytes();
+          currentFilePath = ref.segmentFile.path;
+          await Future.delayed(Duration.zero);
+        }
+
+        if (currentFileBytes == null) continue;
+
+        final frameDataOffset = ref.byteOffset + 4;
+        final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
+
+        Int16List? pcmData;
+        try {
+          pcmData = _decoder?.decode(input: opusBytes);
+        } catch (_) {}
+
+        if (pcmData == null) continue;
+
+        for (int s = 0; s < pcmData.length; s++) {
+          final amplitude = pcmData[s].abs() / 32768.0;
+          if (amplitude > currentWindowMax) currentWindowMax = amplitude;
+          currentWindowSamples++;
+          if (currentWindowSamples >= windowSize) {
+            dynamicPeaks.add(currentWindowMax);
+            currentWindowMax = 0.0;
+            currentWindowSamples = 0;
+          }
+        }
+        totalSamples += pcmData.length;
+        sink.add(pcmData.buffer.asUint8List(pcmData.offsetInBytes, pcmData.lengthInBytes));
       }
+
+      await sink.flush();
+      await sink.close();
+
+      // Write real header
+      final pcmBytes = totalSamples * 2;
+      final header = _generateWavHeader(pcmBytes, sampleRate, 1);
+      final randomAccess = await wavFile.open(mode: FileMode.append);
+      await randomAccess.setPosition(0);
+      await randomAccess.writeFrom(header);
+      await randomAccess.close();
+
+      await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
+          prefix: prefix, extension: 'wav', suffix: suffix);
+
+      await wavFile.rename(wavPath);
+      Logger.debug(
+          'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
+          'starting at $_recordingStartTime to $wavPath');
+      return wavPath;
+    } catch (e) {
+      Logger.error('VadAudioProcessor: _saveWav failed: $e');
+      if (await wavFile.exists()) await wavFile.delete();
+      return null;
     }
-    if (currentWindowSamples > 0) dynamicPeaks.add(currentWindowMax);
+  }
 
-    await _saveMetadata(refs, dateFolderPath, timestamp, totalPcmBytes ~/ (channels * 2), dynamicPeaks, waveformBuckets,
-        prefix: prefix, extension: 'wav', suffix: suffix);
-
-    Logger.debug('VadAudioProcessor: Saved WAV recording to $wavPath');
-    return wavPath;
+  Uint8List _generateWavHeader(int pcmBytes, int sampleRate, int channels) {
+    final header = ByteData(44);
+    header.setUint8(0, 0x52); // R
+    header.setUint8(1, 0x49); // I
+    header.setUint8(2, 0x46); // F
+    header.setUint8(3, 0x46); // F
+    header.setUint32(4, 36 + pcmBytes, Endian.little);
+    header.setUint8(8, 0x57); // W
+    header.setUint8(9, 0x41); // A
+    header.setUint8(10, 0x56); // V
+    header.setUint8(11, 0x45); // E
+    header.setUint8(12, 0x66); // f
+    header.setUint8(13, 0x6D); // m
+    header.setUint8(14, 0x74); // t
+    header.setUint8(15, 0x20);
+    header.setUint32(16, 16, Endian.little);
+    header.setUint16(20, 1, Endian.little);
+    header.setUint16(22, channels, Endian.little);
+    header.setUint32(24, sampleRate, Endian.little);
+    header.setUint32(28, sampleRate * channels * 2, Endian.little);
+    header.setUint16(32, channels * 2, Endian.little);
+    header.setUint16(34, 16, Endian.little);
+    header.setUint8(36, 0x64); // d
+    header.setUint8(37, 0x61); // a
+    header.setUint8(38, 0x74); // t
+    header.setUint8(39, 0x61); // a
+    header.setUint32(40, pcmBytes, Endian.little);
+    return header.buffer.asUint8List();
   }
 }
