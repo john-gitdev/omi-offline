@@ -29,6 +29,7 @@
 #include <zephyr/sys/atomic.h>
 
 #include "rtc.h"
+#include "imu.h"
 
 LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -1209,7 +1210,26 @@ static int create_audio_file_with_timestamp(void)
         return ret;
     }
 
-    current_file_size = 0;
+    if (lfs_file_size(&lfs_fs, &lfs_fil_data) == 0) {
+        RecordingHeader_v1_t header = {
+            .marker = 0xFFFFFFFB,
+            .payload_len = 28,
+            .utc_start_ms = rtc_get_utc_time_ms(),
+            .uptime_start_ms = (uint64_t)k_uptime_get(),
+            .session_id = device_session_id,
+            .version = 1,
+        };
+        uint32_t imu_ts = 0;
+        if (lsm6dsl_timestamp_read(&imu_ts) == 0) {
+            header.imu_ticks = imu_ts;
+        } else {
+            header.imu_ticks = 0;
+        }
+        lfs_file_write(&lfs_fs, &lfs_fil_data, &header, sizeof(header));
+        lfs_file_sync(&lfs_fs, &lfs_fil_data);
+    }
+
+    current_file_size = (uint32_t) lfs_file_size(&lfs_fs, &lfs_fil_data);
     bytes_since_sync = 0;
     write_batch_offset = 0;
     write_batch_counter = 0;
@@ -1472,57 +1492,34 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
 
     /* 
      * Retroactively rename all CLOSED temporary files.
-     * Use a search-and-repeat loop to avoid renaming while iterating the directory
-     * (safe for LittleFS) and to save RAM (no large buffer of filenames).
+     * We do a single pass to rename existing TMP_ segments.
      */
-    while (1) {
-        lfs_dir_t dir;
-        struct lfs_info info;
-        char old_fn[MAX_FILENAME_LEN] = {0};
-        char new_fn[MAX_FILENAME_LEN] = {0};
-        char old_path[64], new_path[64];
-
-        if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) < 0) {
-            break;
-        }
-
+    lfs_dir_t dir;
+    struct lfs_info info;
+    if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) == 0) {
         while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
-            /* Only rename finished TMP_ segments. The active one was already
-             * rotated out by the worker before calling this function. */
             if (info.type == LFS_TYPE_REG && strncmp(info.name, "TMP_", 4) == 0 &&
                 strcmp(info.name, current_filename) != 0) {
-                strncpy(old_fn, info.name, MAX_FILENAME_LEN - 1);
-                break;
+                
+                char old_path[64], new_path[64], new_fn[MAX_FILENAME_LEN];
+                uint32_t original_uptime_ms = (uint32_t)strtoul(info.name + 4, NULL, 16);
+                uint32_t session_id = 0;
+                const char *sep = strchr(info.name + 4, '_');
+                if (sep) {
+                    session_id = (uint32_t)strtoul(sep + 1, NULL, 16);
+                }
+                uint32_t correct_ts = (original_uptime_ms / 1000U) + rtc_offset;
+                
+                snprintf(new_fn, MAX_FILENAME_LEN, "%08X_%08X.txt", correct_ts, session_id);
+                build_file_path(info.name, old_path, sizeof(old_path));
+                build_file_path(new_fn, new_path, sizeof(new_path));
+                
+                if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
+                    LOG_INF("Retroactive rename: %s -> %s", info.name, new_fn);
+                }
             }
         }
         lfs_dir_close(&lfs_fs, &dir);
-
-        if (old_fn[0] == '\0') {
-            break; /* No more TMP files found */
-        }
-
-        uint32_t original_uptime_ms = (uint32_t)strtoul(old_fn + 4, NULL, 16);
-        uint32_t session_id = 0;
-        const char *sep = strchr(old_fn + 4, '_');
-        if (sep) {
-            session_id = (uint32_t)strtoul(sep + 1, NULL, 16);
-        }
-        uint32_t correct_ts = (original_uptime_ms / 1000U) + rtc_offset;
-        
-        snprintf(new_fn, MAX_FILENAME_LEN, "%08X_%08X.txt", correct_ts, session_id);
-        build_file_path(old_fn, old_path, sizeof(old_path));
-        build_file_path(new_fn, new_path, sizeof(new_path));
-        
-        if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
-            LOG_INF("Retroactive rename: %s -> %s", old_fn, new_fn);
-        } else {
-            LOG_ERR("Failed to rename %s", old_fn);
-            break; /* Stop on error to avoid infinite loops */
-        }
-        
-        /* Yield to allow other prio-msgq requests (like get list) to be processed
-         * between renames if there are many files. */
-        k_yield();
     }
     
     invalidate_file_cache();

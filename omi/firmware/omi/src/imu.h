@@ -22,4 +22,12 @@ void lsm6dsl_time_prepare_for_system_off(void);
  */
 int lsm6dsl_time_boot_adjust_rtc(void);
 
+/**
+ * @brief Read the current 24-bit IMU timestamp counter.
+ *
+ * @param ts Pointer to store the timestamp.
+ * @return 0 on success, negative error code otherwise.
+ */
+int lsm6dsl_timestamp_read(uint32_t *ts);
+
 #endif

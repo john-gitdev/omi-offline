@@ -59,8 +59,17 @@ struct bt_conn *get_current_connection();
  */
 void put_current_connection(struct bt_conn *conn);
 
+typedef struct __attribute__((packed)) {
+    uint32_t marker;            // 0xFFFFFFFB
+    uint32_t payload_len;       // 28
+    uint64_t utc_start_ms;      // Wall clock at file creation (ms precision)
+    uint64_t uptime_start_ms;   // Monotonic time at file creation (ms precision)
+    uint32_t imu_ticks;         // Raw 24-bit LSM6DSL ticks
+    uint32_t session_id;        // Unique boot ID
+    uint32_t version;           // Struct version (v1 = 1)
+} RecordingHeader_v1_t;
+
 extern uint32_t device_session_id;
-extern uint32_t segment_index;
 
 bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t data_size);
 

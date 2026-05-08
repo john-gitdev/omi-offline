@@ -160,12 +160,11 @@ static int lsm6dsl_timestamp_set_resolution_6p4ms(void)
 	return 0;
 }
 
-static int lsm6dsl_timestamp_read(uint32_t *ts)
+int lsm6dsl_timestamp_read(uint32_t *ts)
 {
-	if (ts == NULL) {
-		return -EINVAL;
-	}
-	if (!device_is_ready(lsm6dsl_i2c.bus)) {
+    if (ts == NULL) {
+        return -EINVAL;
+    }	if (!device_is_ready(lsm6dsl_i2c.bus)) {
 		LOG_WRN("lsm6dso i2c bus not ready");
 		return -ENODEV;
 	}

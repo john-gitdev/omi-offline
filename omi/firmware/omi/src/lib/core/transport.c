@@ -1014,7 +1014,6 @@ bool write_to_storage(void)
 }
 
 uint32_t device_session_id = 0;
-uint32_t segment_index = 0;
 
 bool write_marker_to_storage(void)
 {

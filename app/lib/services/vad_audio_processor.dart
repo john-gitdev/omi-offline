@@ -78,6 +78,7 @@ class VadAudioProcessor {
   int? _currentSessionId;
   int? _currentStartUptime;
   int? _currentFrameUptimeMs;
+  int? _lastImuTicks;
 
   // VAD state counters
   int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
@@ -88,6 +89,8 @@ class VadAudioProcessor {
   @visibleForTesting
   bool discardGuardFiredOnLastFlush = false;
 
+  @visibleForTesting
+  int get currentChunkDurationMs => _currentChunkDurationMs;
   // Marker-forced recording state
   bool _forcedByMarker = false;
 
@@ -233,6 +236,7 @@ class VadAudioProcessor {
 
     // Wall-clock time of the last processed audio frame (updated each frame).
     DateTime lastFrameWallTime = segmentStartTime;
+    int? currentImuTicks;
 
     try {
       if (!await segmentFile.exists()) return [];
@@ -241,15 +245,57 @@ class VadAudioProcessor {
       if (fileLength == 0) return [];
       final byteData = ByteData.sublistView(bytes);
 
+      int offset = 0;
+      int frameIndex = 0;
+      int totalFrameCount = 0;
+      int segmentSpeechFrames = 0;
+      double segmentMaxAmp = 0.0;
+
+      // FIRST PASS: Peek for metadata header at offset 0
+      if (fileLength >= 36 && byteData.getUint32(0, Endian.little) == 0xFFFFFFFB) {
+        final utcStartMs = byteData.getUint64(8, Endian.little);
+        final uptimeStartMs = byteData.getUint64(16, Endian.little);
+        currentImuTicks = byteData.getUint32(24, Endian.little);
+        final sessionIdInHeader = byteData.getUint32(28, Endian.little);
+
+        if (utcStartMs > 946684800000) {
+          segmentStartTime = DateTime.fromMillisecondsSinceEpoch(utcStartMs, isUtc: true);
+          startUptimeMs = uptimeStartMs.toInt();
+          sessionId = sessionIdInHeader;
+          lastFrameWallTime = segmentStartTime;
+          _isDerivedTimestamp = false;
+        }
+      }
+
       if (_lastSegmentEndTime != null) {
         final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds;
         final sessionChanged = _currentSessionId != null && sessionId != null && _currentSessionId != sessionId;
 
-        // If the gap is very small or negative (and same session), it's a clock sync or contiguous file.
-        // We only split if the gap is genuinely large and NOT a clock sync.
-        final bool isClockJump = !sessionChanged && gapMs.abs() > 10000;
+        // Better isClockJump detection using uptime if available.
+        // If uptime gap matches audio duration (small gap) but UTC gap is large, it's a clock sync.
+        int uptimeGapMs = 0;
+        bool hasUptime = _currentFrameUptimeMs != null && startUptimeMs > 0;
+        if (hasUptime) {
+          uptimeGapMs = (startUptimeMs - _currentFrameUptimeMs!).abs();
+        }
 
-        if (_currentRefs.isNotEmpty && (sessionChanged || (gapMs > _silenceDurationToSplitMs && !isClockJump))) {
+        // IMU Bridge: Check if the gap can be explained by IMU ticks even if session changed.
+        bool imuGapMatches = false;
+        if (sessionChanged && _lastImuTicks != null && currentImuTicks != null) {
+          final int tickDelta = (currentImuTicks! - _lastImuTicks!) & 0x00FFFFFF;
+          final int imuGapMs = (tickDelta * 6.4).toInt();
+          final gapDiff = (gapMs - imuGapMs).abs();
+          if (gapDiff < 5000) {
+            imuGapMatches = true;
+            Logger.debug('VadAudioProcessor: IMU Bridge matched gap of ${imuGapMs}ms across reboot.');
+          }
+        }
+
+        final bool isClockJump = !sessionChanged &&
+            (hasUptime ? (uptimeGapMs < 5000 && gapMs.abs() > 10000) : (gapMs.abs() > 10000));
+
+        if (_currentRefs.isNotEmpty &&
+            (sessionChanged && !imuGapMatches || (gapMs > _silenceDurationToSplitMs && !isClockJump))) {
           Logger.debug(
             'VadAudioProcessor: Split triggered before ${segmentFile.path.split('/').last} — '
             'sessionChanged=$sessionChanged, gapMs=$gapMs (threshold=${_silenceDurationToSplitMs}ms), '
@@ -260,7 +306,7 @@ class VadAudioProcessor {
           _pcmWindow.clear();
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
-        } else if (gapMs > 0 && gapMs <= _silenceDurationToSplitMs) {
+        } else if (gapMs > 10000 && gapMs <= _silenceDurationToSplitMs && !isClockJump) {
           Logger.debug(
             'VadAudioProcessor: Small gap before ${segmentFile.path.split('/').last} — '
             'gapMs=$gapMs (within threshold, inserting silence).',
@@ -270,7 +316,7 @@ class VadAudioProcessor {
             _currentChunkDurationMs += gapMs;
           }
         }
-        // gapMs <= 0 or isClockJump: sequential firmware files or clock sync — stitch seamlessly.
+        // gapMs <= 10000 or isClockJump: sequential firmware files or clock sync — stitch seamlessly.
       }
 
       if (_currentRefs.isEmpty) {
@@ -284,16 +330,10 @@ class VadAudioProcessor {
         if (!capJustFired) {
           _recordingStartTime = segmentStartTime;
           _currentSessionId = sessionId;
-          _currentStartUptime = isDerivedTimestamp ? (startUptimeMs ~/ 1000) : 0;
+          _currentStartUptime = startUptimeMs ~/ 1000;
           _currentFrameUptimeMs = startUptimeMs;
         }
       }
-
-      int offset = 0;
-      int frameIndex = 0;
-      int totalFrameCount = 0;
-      int segmentSpeechFrames = 0;
-      double segmentMaxAmp = 0.0;
 
       while (offset < fileLength) {
         if (offset + 4 > fileLength) break;
@@ -303,6 +343,13 @@ class VadAudioProcessor {
         // Skip null/sentinel words.
         if (frameLength == 0 || frameLength == 0xFFFFFFFF) {
           offset += 4;
+          continue;
+        }
+
+        // Metadata header (0xFFFFFFFB, 36 bytes: 4-byte header + 4-byte len + 28-byte payload).
+        // Handled in the peek pass above, just skip it here.
+        if (frameLength == 0xFFFFFFFB) {
+          offset += 36;
           continue;
         }
 
@@ -469,6 +516,11 @@ class VadAudioProcessor {
       }
 
       _lastSegmentEndTime = lastFrameWallTime.add(const Duration(milliseconds: frameDurationMs));
+      if (currentImuTicks != null) {
+        final int segmentDurationMs = totalFrameCount * frameDurationMs;
+        final int ticksPassed = (segmentDurationMs / 6.4).toInt();
+        _lastImuTicks = (currentImuTicks! + ticksPassed) & 0x00FFFFFF;
+      }
       Logger.debug('VadAudioProcessor: ${segmentFile.path.split('/').last} — '
           '$totalFrameCount frames, $segmentSpeechFrames speech frames, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}');
     } catch (e) {
@@ -635,11 +687,15 @@ class VadAudioProcessor {
     String? sessionId;
     bool hasEncodedAnyFrames = false;
 
+    try {
+      sessionId = await AacEncoder.startEncoder(sampleRate, m4aPath);
+    } on Exception catch (e) {
+      Logger.error('VadAudioProcessor: AAC startEncoder failed, falling back to WAV: $e');
+      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
+    }
+
     Future<void> flushBatch() async {
       if (batchFrameCount == 0) return;
-      if (sessionId == null) {
-        sessionId = await AacEncoder.startEncoder(sampleRate, m4aPath);
-      }
       final chunk = batchBuffer.takeBytes();
       await AacEncoder.encodeBuffer(sessionId!, chunk);
       hasEncodedAnyFrames = true;
@@ -904,9 +960,8 @@ class VadAudioProcessor {
       if (pagePackets.isNotEmpty) {
         sink.add(_createOggPage(granulePos, pageSeqNum++, serial, pagePackets, isLastPage: true));
       } else {
-        // Rewrite last page with last-page flag
         // OGG needs at least one page with the EOS flag.
-        sink.add(_createOggPage(granulePos, pageSeqNum - 1, serial, [], isLastPage: true));
+        sink.add(_createOggPage(granulePos, pageSeqNum++, serial, [], isLastPage: true));
       }
 
       await sink.flush();
@@ -1033,9 +1088,9 @@ class VadAudioProcessor {
   Future<String?> _saveWav(List<Object> refs, String dateFolderPath, int timestamp,
       {String prefix = 'recording', String suffix = ''}) async {
     final wavPath = '$dateFolderPath/${prefix}_$timestamp$suffix.wav';
-    final tmpPath = '$wavPath.tmp';
-    final wavFile = File(tmpPath);
-    final sink = wavFile.openWrite();
+    final rawPath = '$dateFolderPath/${prefix}_$timestamp$suffix.raw';
+    final rawFile = File(rawPath);
+    final sink = rawFile.openWrite();
 
     const waveformBuckets = 200;
     const windowSize = 800;
@@ -1046,9 +1101,6 @@ class VadAudioProcessor {
     int totalSamples = 0;
 
     try {
-      // Dummy header
-      sink.add(Uint8List(44));
-
       String? currentFilePath;
       Uint8List? currentFileBytes;
       for (var i = 0; i < refs.length; i++) {
@@ -1108,13 +1160,19 @@ class VadAudioProcessor {
       await sink.flush();
       await sink.close();
 
-      // Write real header
-      final pcmBytes = totalSamples * 2;
-      final header = _generateWavHeader(pcmBytes, sampleRate, 1);
-      final randomAccess = await wavFile.open(mode: FileMode.append);
-      await randomAccess.setPosition(0);
-      await randomAccess.writeFrom(header);
-      await randomAccess.close();
+      // Assemble final WAV with header + raw PCM stream
+      final wavFile = File('$wavPath.tmp');
+      final wavSink = wavFile.openWrite();
+      try {
+        final header = _generateWavHeader(totalSamples * 2, sampleRate, 1);
+        wavSink.add(header);
+        await wavSink.addStream(rawFile.openRead());
+        await wavSink.flush();
+      } finally {
+        await wavSink.close();
+      }
+
+      await rawFile.delete();
 
       await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
           prefix: prefix, extension: 'wav', suffix: suffix);
@@ -1126,7 +1184,7 @@ class VadAudioProcessor {
       return wavPath;
     } catch (e) {
       Logger.error('VadAudioProcessor: _saveWav failed: $e');
-      if (await wavFile.exists()) await wavFile.delete();
+      if (await rawFile.exists()) await rawFile.delete();
       return null;
     }
   }
