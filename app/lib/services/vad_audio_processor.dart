@@ -662,7 +662,9 @@ class VadAudioProcessor {
       return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
     }
 
-    if (_audioSaveFormat == 'wav') {
+    // Always use WAV for drafts if M4A is requested, as M4A doesn't support easy stitching.
+    // The RecordingsManager will convert the finalized WAV to M4A during the promotion phase.
+    if (_audioSaveFormat == 'wav' || (isDraft && _audioSaveFormat == 'm4a')) {
       return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
     } else if (_audioSaveFormat == 'ogg') {
       if (Platform.isIOS) {

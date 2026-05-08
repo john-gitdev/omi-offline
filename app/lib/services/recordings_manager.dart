@@ -11,6 +11,7 @@ import 'package:opus_dart/opus_dart.dart';
 import 'package:opus_flutter/opus_flutter.dart' as opus_flutter;
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/services/vad_audio_processor.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/time_utils.dart';
@@ -1251,41 +1252,79 @@ class RecordingsManager {
   Future<void> _finalizeDraft(File file, {bool isForceSynced = false}) async {
     final path = file.path;
     if (!path.contains('_draft.')) return;
+    final currentExt = path.split('.').last;
+    final targetExt = SharedPreferencesUtil().audioSaveFormat;
     final oldFilename = path.split('/').last;
-    final newPath = path.replaceAll('_draft.', '.');
-    final newFilename = newPath.split('/').last;
+
     final metaPath = path.replaceAll(RegExp(r'\.(m4a|wav|ogg)$'), '.meta');
-    final newMetaPath = metaPath.replaceAll('_draft.', '.');
 
     try {
-      if (await File(newPath).exists()) await File(newPath).delete();
-      await file.rename(newPath);
+      String finalAudioPath;
+      bool transcoded = false;
+
+      if (currentExt == 'wav' && targetExt == 'm4a') {
+        // Transcode from WAV to M4A
+        finalAudioPath = path.replaceAll('_draft.wav', '.m4a');
+        if (await File(finalAudioPath).exists()) await File(finalAudioPath).delete();
+
+        final success = await _transcodeWavToM4a(file, finalAudioPath);
+        if (success) {
+          await file.delete();
+          transcoded = true;
+        } else {
+          finalAudioPath = path.replaceAll('_draft.', '.');
+          if (await File(finalAudioPath).exists()) await File(finalAudioPath).delete();
+          await file.rename(finalAudioPath);
+        }
+      } else {
+        finalAudioPath = path.replaceAll('_draft.', '.');
+        if (await File(finalAudioPath).exists()) await File(finalAudioPath).delete();
+        await file.rename(finalAudioPath);
+      }
+
+      final newFilename = finalAudioPath.split('/').last;
+      final newMetaPath = metaPath.replaceAll('_draft.', '.');
+
       if (await File(metaPath).exists()) {
-        if (isForceSynced) {
-          final bytes = await File(metaPath).readAsBytes();
-          if (bytes.length >= 417) {
-            final keyLen = bytes[416];
-            final flagOffset = 417 + keyLen;
-            if (bytes.length == flagOffset + 1) {
-              final newBytes = Uint8List(bytes.length + 1);
-              newBytes.setAll(0, bytes);
-              newBytes[flagOffset + 1] = 1;
-              await File(metaPath).writeAsBytes(newBytes);
-            } else if (bytes.length > flagOffset + 1) {
-              final newBytes = Uint8List.fromList(bytes);
-              newBytes[flagOffset + 1] = 1;
-              await File(metaPath).writeAsBytes(newBytes);
-            } else if (bytes.length == flagOffset) {
-              final newBytes = Uint8List(bytes.length + 2);
-              newBytes.setAll(0, bytes);
-              newBytes[flagOffset] = 0; // passthrough
-              newBytes[flagOffset + 1] = 1; // force synced
-              await File(metaPath).writeAsBytes(newBytes);
-            }
+        final bytes = await File(metaPath).readAsBytes();
+        var outBytes = bytes;
+
+        // 1. Update flags (passthrough, forceSynced)
+        if (bytes.length >= 417) {
+          final keyLen = bytes[416];
+          final flagOffset = 417 + keyLen;
+          if (bytes.length <= flagOffset + 1) {
+            // Re-allocate to ensure space for both flags
+            final newBytes = Uint8List(flagOffset + 2);
+            newBytes.setRange(0, bytes.length, bytes);
+            newBytes[flagOffset] = 0; // passthrough
+            newBytes[flagOffset + 1] = isForceSynced ? 1 : 0; // forceSynced
+            outBytes = newBytes;
+          } else {
+            outBytes[flagOffset + 1] = isForceSynced ? 1 : 0;
           }
         }
+
+        // 2. Update uploadKey extension if transcoded
+        if (transcoded) {
+          final keyLen = outBytes[416];
+          final key = String.fromCharCodes(outBytes.sublist(417, 417 + keyLen));
+          final newKey = key.replaceAll('.$currentExt', '.m4a');
+          final newKeyBytes = Uint8List.fromList(newKey.codeUnits);
+          
+          final builder = BytesBuilder();
+          builder.add(outBytes.sublist(0, 416));
+          builder.addByte(newKeyBytes.length);
+          builder.add(newKeyBytes);
+          if (outBytes.length > 417 + keyLen) {
+            builder.add(outBytes.sublist(417 + keyLen));
+          }
+          outBytes = builder.takeBytes();
+        }
+
         if (await File(newMetaPath).exists()) await File(newMetaPath).delete();
-        await File(metaPath).rename(newMetaPath);
+        await File(newMetaPath).writeAsBytes(outBytes);
+        await File(metaPath).delete();
       }
 
       // Update any .edl files that were pointing to this draft
@@ -1309,9 +1348,36 @@ class RecordingsManager {
         }
       }
 
-      Logger.debug('RecordingsManager: Finalized draft ${file.path}');
+      Logger.debug('RecordingsManager: Finalized draft $path -> $finalAudioPath');
     } catch (e) {
       Logger.error('RecordingsManager: Failed to finalize draft $path: $e');
+    }
+  }
+
+  Future<bool> _transcodeWavToM4a(File wavFile, String m4aPath) async {
+    String? sessionId;
+    try {
+      final bytes = await wavFile.readAsBytes();
+      if (bytes.length < 44) return false;
+
+      final data = ByteData.sublistView(bytes);
+      final sampleRate = data.getUint32(24, Endian.little);
+      final pcmBytes = bytes.sublist(44);
+
+      sessionId = await AacEncoder.startEncoder(sampleRate, m4aPath);
+      const chunkSize = 4096;
+      for (int i = 0; i < pcmBytes.length; i += chunkSize) {
+        final end = (i + chunkSize > pcmBytes.length) ? pcmBytes.length : i + chunkSize;
+        await AacEncoder.encodeBuffer(sessionId, pcmBytes.sublist(i, end));
+      }
+      await AacEncoder.finishEncoder(sessionId);
+      return true;
+    } catch (e) {
+      Logger.error('RecordingsManager: Transcoding failed: $e');
+      if (sessionId != null) {
+        try { await AacEncoder.finishEncoder(sessionId); } catch (_) {}
+      }
+      return false;
     }
   }
 
