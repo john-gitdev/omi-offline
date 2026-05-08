@@ -1197,9 +1197,12 @@ class RecordingsManager {
               try {
                 final nBytes = await nextMeta.readAsBytes();
                 if (metaBytes.length >= 416 && nBytes.length >= 416) {
+                  final dSessionId = ByteData.sublistView(metaBytes).getUint32(408, Endian.little);
+                  final nSessionId = ByteData.sublistView(nBytes).getUint32(408, Endian.little);
                   final dUptime = ByteData.sublistView(metaBytes).getUint32(412, Endian.little);
                   final nUptime = ByteData.sublistView(nBytes).getUint32(412, Endian.little);
-                  if (dUptime > 0 && nUptime > dUptime) {
+                  
+                  if (dSessionId == nSessionId && dUptime > 0 && nUptime > dUptime) {
                     final uptimeDurationMs = durationMs;
                     final uptimeGapMs = (nUptime * 1000) - ((dUptime * 1000) + uptimeDurationMs);
                     if (uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000) {
