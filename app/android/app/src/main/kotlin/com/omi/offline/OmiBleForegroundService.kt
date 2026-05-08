@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.util.concurrent.ConcurrentHashMap
@@ -83,32 +84,10 @@ class OmiBleForegroundService : Service() {
                 putExtra("requires_bond", requiresBond)
                 putExtra("caller", caller)
             }
-            val appCtx = context.applicationContext
             try {
                 ContextCompat.startForegroundService(context, intent)
-
-                // Watchdog: if the main thread is saturated (e.g. by audio processing platform
-                // channel calls), onCreate/onStartCommand cannot run and startForeground() is
-                // never called. Android throws ForegroundServiceDidNotStartInTimeException after
-                // 5s. We cancel the pending service record at 4s from a background thread
-                // (stopService is an IPC to system_server — bypasses the busy main thread),
-                // clearing the ANR timer before it fires. The service restarts on the next
-                // reconnect attempt once the main thread has a free window.
-                Thread {
-                    Thread.sleep(4000)
-                    if (instance == null && !isDestroyingStatic) {
-                        Log.w(TAG, "startService($caller): service did not start within 4s — cancelling to prevent ForegroundServiceDidNotStartInTimeException")
-                        try { appCtx.stopService(Intent(appCtx, OmiBleForegroundService::class.java)) } catch (_: Exception) {}
-                    }
-                }.apply { isDaemon = true; start() }
-
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start foreground service", e)
-                // Also cancel on immediate failure: some OEM devices start the ANR timer
-                // even when ForegroundServiceStartNotAllowedException is thrown.
-                try {
-                    appCtx.stopService(Intent(appCtx, OmiBleForegroundService::class.java))
-                } catch (_: Exception) {}
             }
         }
 
@@ -561,6 +540,19 @@ class OmiBleForegroundService : Service() {
         // a pending intent after process death before MainActivity initializes OmiBleManager.
         if (!OmiBleManager.isInitialized) OmiBleManager.initialize(application)
         createNotificationChannel()
+
+        // Call startForeground in onCreate to satisfy the OS requirement as early as possible.
+        // Android 14+ requires providing the service type.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID, 
+                buildNotification("Connecting to Omi..."),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification("Connecting to Omi..."))
+        }
+
         registerReceiver(
             bluetoothReceiver,
             IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
@@ -572,12 +564,10 @@ class OmiBleForegroundService : Service() {
             RECEIVER_NOT_EXPORTED
         )
         bleManager.connectionListener = connectionListener
-        Log.d(TAG, "Service created")
+        Log.d(TAG, "Service created and promoted to foreground")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, buildNotification("Connecting to Omi..."))
-
         val address = intent?.getStringExtra("device_address")
 
         if (address != null) {
