@@ -130,13 +130,16 @@ class WaveformUtils {
       return null;
     }
 
-    final riffHeader = String.fromCharCodes(wavData.sublist(0, 4));
+    // ⚡ Bolt: Prevent memory allocation by using String.fromCharCodes with offsets and hoisting ByteData view
+    final byteData = ByteData.sublistView(wavData);
+
+    final riffHeader = String.fromCharCodes(wavData, 0, 4);
     if (riffHeader != 'RIFF') {
       Logger.debug('Invalid RIFF header: $riffHeader');
       return null;
     }
 
-    final waveFormat = String.fromCharCodes(wavData.sublist(8, 12));
+    final waveFormat = String.fromCharCodes(wavData, 8, 12);
     if (waveFormat != 'WAVE') {
       Logger.debug('Invalid WAVE format: $waveFormat');
       return null;
@@ -149,15 +152,15 @@ class WaveformUtils {
     int bitsPerSample = 0;
 
     while (offset < wavData.length - 8) {
-      final chunkId = String.fromCharCodes(wavData.sublist(offset, offset + 4));
-      final chunkSize = ByteData.sublistView(wavData, offset + 4, offset + 8).getUint32(0, Endian.little);
+      final chunkId = String.fromCharCodes(wavData, offset, offset + 4);
+      final chunkSize = byteData.getUint32(offset + 4, Endian.little);
 
       if (chunkId == 'fmt ') {
         fmtChunkSize = chunkSize;
-        final audioFormat = ByteData.sublistView(wavData, offset + 8, offset + 10).getUint16(0, Endian.little);
-        channels = ByteData.sublistView(wavData, offset + 10, offset + 12).getUint16(0, Endian.little);
-        sampleRate = ByteData.sublistView(wavData, offset + 12, offset + 16).getUint32(0, Endian.little);
-        bitsPerSample = ByteData.sublistView(wavData, offset + 22, offset + 24).getUint16(0, Endian.little);
+        final audioFormat = byteData.getUint16(offset + 8, Endian.little);
+        channels = byteData.getUint16(offset + 10, Endian.little);
+        sampleRate = byteData.getUint32(offset + 12, Endian.little);
+        bitsPerSample = byteData.getUint16(offset + 22, Endian.little);
 
         if (audioFormat != 1) {
           Logger.debug('Unsupported audio format: $audioFormat (only PCM supported)');
@@ -178,8 +181,8 @@ class WaveformUtils {
     // Find data chunk
     offset = 12;
     while (offset < wavData.length - 8) {
-      final chunkId = String.fromCharCodes(wavData.sublist(offset, offset + 4));
-      final chunkSize = ByteData.sublistView(wavData, offset + 4, offset + 8).getUint32(0, Endian.little);
+      final chunkId = String.fromCharCodes(wavData, offset, offset + 4);
+      final chunkSize = byteData.getUint32(offset + 4, Endian.little);
 
       if (chunkId == 'data') {
         return WavInfo(
