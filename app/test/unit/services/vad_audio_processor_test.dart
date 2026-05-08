@@ -42,6 +42,39 @@ File _makeBinFile(Directory dir, int frameCount, {String name = 'test.bin'}) {
   return f;
 }
 
+File _makeBinFileWithHeader(
+  Directory dir,
+  int frameCount, {
+  String name = 'test_with_header.bin',
+  required int utcStartMs,
+  required int uptimeStartMs,
+  required int imuTicks,
+  required int sessionId,
+}) {
+  final f = File('${dir.path}/$name');
+  final builder = BytesBuilder();
+
+  // 36-byte header
+  final headerData = ByteData(36);
+  headerData.setUint32(0, 0xFFFFFFFB, Endian.little);
+  headerData.setUint32(4, 28, Endian.little);
+  headerData.setUint64(8, utcStartMs, Endian.little);
+  headerData.setUint64(16, uptimeStartMs, Endian.little);
+  headerData.setUint32(24, imuTicks, Endian.little);
+  headerData.setUint32(28, sessionId, Endian.little);
+  headerData.setUint32(32, 1, Endian.little); // version 1
+  builder.add(headerData.buffer.asUint8List());
+
+  const frameLength = 4;
+  final frameHeader = ByteData(4)..setUint32(0, frameLength, Endian.little);
+  for (int i = 0; i < frameCount; i++) {
+    builder.add(frameHeader.buffer.asUint8List());
+    builder.add(List.filled(frameLength, 0));
+  }
+  f.writeAsBytesSync(builder.toBytes());
+  return f;
+}
+
 ProcessingSettings _settings({required int minDurationMs, required bool discardShort}) {
   return ProcessingSettings(
     vadEnabled: true,
@@ -318,6 +351,57 @@ void main() {
 
       // Expected duration: 100ms (file1) + 100ms (file2) = 200ms (No padding!)
       expect(processor.currentChunkDurationMs, 200);
+      processor.destroy();
+    });
+
+    test('IMU Bridge: stitches audio across reboots using IMU tick delta', () async {
+      final processor = VadAudioProcessor.fromSettings(
+        settings: _settings(minDurationMs: 0, discardShort: false),
+        outputDir: tempDir.path,
+      );
+
+      final utcEpochMs = 1000000000000;
+      final startTime = DateTime.fromMillisecondsSinceEpoch(utcEpochMs, isUtc: true);
+      
+      // File 1 (Session 1): 5 frames = 100 ms
+      final file1 = _makeBinFileWithHeader(
+        tempDir, 
+        5, 
+        name: 'file1_imu.bin',
+        utcStartMs: utcEpochMs,
+        uptimeStartMs: 10000,
+        imuTicks: 100000,
+        sessionId: 1,
+      );
+      
+      await processor.processSegmentFile(file1, startTime);
+
+      // File 2 (Session 2): Starts 15 seconds after File 1 ends
+      // Gap = 15000 ms
+      // File 1 duration = 100 ms. 
+      // Ticks passed during file 1 = 100 / 6.4 = 15
+      // Ticks passed during gap = 15000 / 6.4 = 2343
+      // Expected currentImuTicks = 100000 + 15 + 2343 = 102358
+      final gapMs = 15000;
+      final nextUtcEpochMs = utcEpochMs + 100 + gapMs;
+      final file2Start = DateTime.fromMillisecondsSinceEpoch(nextUtcEpochMs, isUtc: true);
+      
+      final file2 = _makeBinFileWithHeader(
+        tempDir, 
+        5, 
+        name: 'file2_imu.bin',
+        utcStartMs: nextUtcEpochMs,
+        uptimeStartMs: 5000, // Re-booted, uptime resets
+        imuTicks: 102358,
+        sessionId: 2, // Re-booted, session ID changes
+      );
+
+      await processor.processSegmentFile(file2, file2Start);
+
+      // If IMU bridge works, session change doesn't split the file.
+      // It should insert gap padding. 
+      // Expected: 100 (file1) + 15000 (padding) + 100 (file2) = 15200 ms
+      expect(processor.currentChunkDurationMs, 15200);
       processor.destroy();
     });
   });
