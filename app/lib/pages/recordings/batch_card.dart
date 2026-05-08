@@ -182,13 +182,21 @@ class ConversationTile extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        conversation.timeRangeLabel,
-                        style: TextStyle(
-                          color: isPassthrough ? Colors.grey.shade400 : Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w500,
-                        ),
+                      Row(
+                        children: [
+                          Text(
+                            conversation.timeRangeLabel,
+                            style: TextStyle(
+                              color: isPassthrough ? Colors.grey.shade400 : Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          if (conversation.forceSynced) ...[
+                            const SizedBox(width: 6),
+                            const Icon(Icons.bolt, color: Colors.amber, size: 16),
+                          ],
+                        ],
                       ),
                       const SizedBox(height: 3),
                       Text(

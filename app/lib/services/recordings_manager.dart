@@ -26,6 +26,7 @@ class Conversation {
   // True when the audio was uploaded to an integration and the local file was
   // deleted. Only the .meta sidecar remains; the conversation cannot be played.
   final bool passthrough;
+  final bool forceSynced;
 
   const Conversation({
     required this.file,
@@ -35,6 +36,7 @@ class Conversation {
     this.sessionId,
     this.startUptime,
     this.passthrough = false,
+    this.forceSynced = false,
   });
 
   DateTime get endTime => startTime.add(duration);
@@ -64,8 +66,14 @@ class Conversation {
     // Format: recording_<ts> or recording_<ts>_draft
     int? millis;
     if (parts.length >= 2) {
-      final tsStr = parts.contains('draft') ? parts[parts.length - 2] : parts.last;
-      millis = int.tryParse(tsStr);
+      // Find the first part that is a long numeric timestamp (e.g. seconds or millis)
+      for (final p in parts) {
+        final val = int.tryParse(p);
+        if (val != null && val > 946684800) {
+          millis = val.toString().length <= 10 ? val * 1000 : val;
+          break;
+        }
+      }
     }
 
     DateTime startTime;
@@ -98,6 +106,7 @@ class Conversation {
 
           String? uploadKey;
           bool passthrough = false;
+          bool forceSynced = false;
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
@@ -112,6 +121,9 @@ class Conversation {
               if (metaBytes.length > flagOffset) {
                 passthrough = (metaBytes[flagOffset] & 0x01) != 0;
               }
+              if (metaBytes.length > flagOffset + 1) {
+                forceSynced = (metaBytes[flagOffset + 1] & 0x01) != 0;
+              }
             }
           }
           // Fall back to filename (without extension) as upload key for recordings
@@ -125,6 +137,7 @@ class Conversation {
             sessionId: sessionId,
             startUptime: startUptime,
             passthrough: passthrough,
+            forceSynced: forceSynced,
           );
         }
       } catch (_) {
@@ -170,6 +183,7 @@ class Conversation {
 
       String? uploadKey;
       bool passthrough = false;
+      bool forceSynced = false;
       if (metaBytes.length >= 417) {
         final keyLen = metaBytes[416];
         if (417 + keyLen <= metaBytes.length) {
@@ -179,6 +193,9 @@ class Conversation {
           final flagOffset = 417 + keyLen;
           if (metaBytes.length > flagOffset) {
             passthrough = (metaBytes[flagOffset] & 0x01) != 0;
+          }
+          if (metaBytes.length > flagOffset + 1) {
+            forceSynced = (metaBytes[flagOffset + 1] & 0x01) != 0;
           }
         }
       }
@@ -203,6 +220,7 @@ class Conversation {
         sessionId: sessionId,
         startUptime: startUptime,
         passthrough: true,
+        forceSynced: forceSynced,
       );
     } catch (_) {
       return null;
@@ -246,6 +264,7 @@ class Conversation {
 
           String? uploadKey;
           bool passthrough = false;
+          bool forceSynced = false;
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
@@ -260,6 +279,9 @@ class Conversation {
               if (metaBytes.length > flagOffset) {
                 passthrough = (metaBytes[flagOffset] & 0x01) != 0;
               }
+              if (metaBytes.length > flagOffset + 1) {
+                forceSynced = (metaBytes[flagOffset + 1] & 0x01) != 0;
+              }
             }
           }
           // Fall back to filename (without extension) as upload key for recordings
@@ -273,6 +295,7 @@ class Conversation {
             sessionId: sessionId,
             startUptime: startUptime,
             passthrough: passthrough,
+            forceSynced: forceSynced,
           );
         }
       } catch (_) {
@@ -384,6 +407,7 @@ class _IsolateParams {
   final List<String> segmentPaths;
   final List<int> segmentFileSizes; // used for accurate processing ETA
   final List<int> segmentStartTimesMs; // milliseconds since epoch
+  final List<int> segmentStartUptimesMs; // milliseconds since epoch (raw device uptime)
   final List<int?> segmentSessionIds;
   final List<bool> segmentDerivedFlags;
   final bool backgroundMode;
@@ -397,6 +421,7 @@ class _IsolateParams {
     required this.segmentPaths,
     required this.segmentFileSizes,
     required this.segmentStartTimesMs,
+    required this.segmentStartUptimesMs,
     required this.segmentSessionIds,
     required this.segmentDerivedFlags,
     required this.backgroundMode,
@@ -475,12 +500,14 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       final startTime = DateTime.fromMillisecondsSinceEpoch(
         params.segmentStartTimesMs[i],
       );
+      final startUptimeMs = params.segmentStartUptimesMs[i];
       final isDerived = params.segmentDerivedFlags[i];
       final sessionId = params.segmentSessionIds[i];
 
       await processor.processSegmentFile(
         file,
         startTime,
+        startUptimeMs: startUptimeMs,
         isDerivedTimestamp: isDerived,
         sessionId: sessionId,
       );
@@ -875,6 +902,19 @@ class RecordingsManager {
           try {
             await File(dest).delete();
           } on FileSystemException catch (_) {}
+          
+          // If we are moving a draft, delete any existing finalized version.
+          // If we are moving a finalized file, delete any existing draft version.
+          try {
+            if (fileName.contains('_draft')) {
+              await File(dest.replaceAll('_draft', '')).delete();
+              await File(dest.replaceAll(RegExp(r'_draft\.(m4a|wav|ogg)$'), '.meta')).delete();
+            } else {
+              await File(dest.replaceAll(RegExp(r'\.(m4a|wav|ogg)$'), '_draft.\$1')).delete();
+              await File(dest.replaceAll(RegExp(r'\.(m4a|wav|ogg)$'), '_draft.meta')).delete();
+            }
+          } on FileSystemException catch (_) {}
+
           await entity.rename(dest);
           if (fileName.endsWith('.m4a')) {
             final legacyWav = File(
@@ -915,6 +955,7 @@ class RecordingsManager {
       // Pre-compute segment timestamps and session IDs on the main isolate.
       const kMinValidEpoch = 946684800;
       final segmentStartTimesMs = <int>[];
+      final segmentStartUptimesMs = <int>[];
       final segmentSessionIds = <int?>[];
       final segmentDerivedFlags = <bool>[];
       final segmentFileSizes = <int>[];
@@ -929,11 +970,13 @@ class RecordingsManager {
 
         if (timerStart != null && timerStart > kMinValidEpoch) {
           segmentStartTimesMs.add(timerStart * 1000);
+          segmentStartUptimesMs.add(0); // Hardware syncs RTC -> uptime in filename is lost
           segmentDerivedFlags.add(false);
         } else {
           segmentStartTimesMs.add(
             file.lastModifiedSync().toUtc().millisecondsSinceEpoch,
           );
+          segmentStartUptimesMs.add((timerStart ?? 0) * 1000);
           segmentDerivedFlags.add(true);
         }
       }
@@ -976,6 +1019,7 @@ class RecordingsManager {
             segmentPaths: allSegments.map((f) => f.path).toList(),
             segmentFileSizes: segmentFileSizes,
             segmentStartTimesMs: segmentStartTimesMs,
+            segmentStartUptimesMs: segmentStartUptimesMs,
             segmentSessionIds: segmentSessionIds,
             segmentDerivedFlags: segmentDerivedFlags,
             backgroundMode: backgroundMode,
@@ -1120,7 +1164,7 @@ class RecordingsManager {
 
           if (!await draftMeta.exists()) {
             // No meta, can't stitch accurately. Finalize it.
-            await _finalizeDraft(draftFile);
+            await _finalizeDraft(draftFile, isForceSynced: finalizeAll);
             scanNeeded = true;
             break;
           }
@@ -1128,7 +1172,7 @@ class RecordingsManager {
           // Get draft duration from meta
           final metaBytes = await draftMeta.readAsBytes();
           if (metaBytes.length < 8) {
-            await _finalizeDraft(draftFile);
+            await _finalizeDraft(draftFile, isForceSynced: finalizeAll);
             scanNeeded = true;
             break;
           }
@@ -1140,7 +1184,7 @@ class RecordingsManager {
           if (currentIndex == -1 || currentIndex == allAudioFiles.length - 1) {
             // No next file in this folder.
             if (finalizeAll) {
-              await _finalizeDraft(draftFile);
+              await _finalizeDraft(draftFile, isForceSynced: true);
               scanNeeded = true;
               break;
             }
@@ -1151,7 +1195,7 @@ class RecordingsManager {
           final nextTs = _extractTimestamp(nextFile.path);
           final gapMs = nextTs - draftEndTs;
 
-          if (gapMs > 0 && gapMs <= thresholdMs) {
+          if (gapMs >= 0 && gapMs <= thresholdMs) {
             Logger.debug('RecordingsManager: Stitching draft $draftTs with next $nextTs (gap=${gapMs}ms)');
             final success = await _performStitch(draftFile, nextFile, gapMs);
             if (success) {
@@ -1161,7 +1205,7 @@ class RecordingsManager {
             }
           } else {
             // Gap too large or next file is in the past (shouldn't happen). Finalize.
-            await _finalizeDraft(draftFile);
+            await _finalizeDraft(draftFile, isForceSynced: false);
             scanNeeded = true;
             break;
           }
@@ -1181,7 +1225,7 @@ class RecordingsManager {
     return int.tryParse(tsStr) ?? 0;
   }
 
-  Future<void> _finalizeDraft(File file) async {
+  Future<void> _finalizeDraft(File file, {bool isForceSynced = false}) async {
     final path = file.path;
     if (!path.contains('_draft.')) return;
     final oldFilename = path.split('/').last;
@@ -1194,6 +1238,29 @@ class RecordingsManager {
       if (await File(newPath).exists()) await File(newPath).delete();
       await file.rename(newPath);
       if (await File(metaPath).exists()) {
+        if (isForceSynced) {
+          final bytes = await File(metaPath).readAsBytes();
+          if (bytes.length >= 417) {
+            final keyLen = bytes[416];
+            final flagOffset = 417 + keyLen;
+            if (bytes.length == flagOffset + 1) {
+              final newBytes = Uint8List(bytes.length + 1);
+              newBytes.setAll(0, bytes);
+              newBytes[flagOffset + 1] = 1;
+              await File(metaPath).writeAsBytes(newBytes);
+            } else if (bytes.length > flagOffset + 1) {
+              final newBytes = Uint8List.fromList(bytes);
+              newBytes[flagOffset + 1] = 1;
+              await File(metaPath).writeAsBytes(newBytes);
+            } else if (bytes.length == flagOffset) {
+              final newBytes = Uint8List(bytes.length + 2);
+              newBytes.setAll(0, bytes);
+              newBytes[flagOffset] = 0; // passthrough
+              newBytes[flagOffset + 1] = 1; // force synced
+              await File(metaPath).writeAsBytes(newBytes);
+            }
+          }
+        }
         if (await File(newMetaPath).exists()) await File(newMetaPath).delete();
         await File(metaPath).rename(newMetaPath);
       }
