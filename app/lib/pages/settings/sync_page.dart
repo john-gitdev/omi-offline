@@ -654,22 +654,30 @@ class _CrashLogSection extends StatelessWidget {
           ...logs.map((log) => _CrashLogRow(log: log)),
         if (logs.isNotEmpty) ...[
           const SizedBox(height: 8),
-          GestureDetector(
-            onTap: onClear,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              decoration: BoxDecoration(
+          Semantics(
+            button: true,
+            label: 'Clear Crash Log',
+            child: Tooltip(
+              message: 'Clear Crash Log',
+              child: Material(
                 color: const Color(0xFF1C1C1E),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  FaIcon(FontAwesomeIcons.trashCan, size: 12, color: Colors.grey),
-                  SizedBox(width: 8),
-                  Text('Clear Crash Log', style: TextStyle(color: Colors.grey, fontSize: 13)),
-                ],
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: onClear,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        FaIcon(FontAwesomeIcons.trashCan, size: 12, color: Colors.grey),
+                        SizedBox(width: 8),
+                        Text('Clear Crash Log', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
@@ -746,32 +754,43 @@ class _DebugButton extends StatelessWidget {
     final bool disabled = onTap == null;
     return Opacity(
       opacity: disabled ? 0.4 : 1.0,
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-          decoration: BoxDecoration(
+      child: Semantics(
+        button: true,
+        label: label,
+        hint: description,
+        child: Tooltip(
+          message: description,
+          child: Material(
             color: const Color(0xFF1C1C1E),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: color.withValues(alpha: 0.35), width: 1),
-          ),
-          child: Row(
-            children: [
-              FaIcon(icon, size: 16, color: color),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(color: color.withValues(alpha: 0.35), width: 1),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: onTap,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                child: Row(
                   children: [
-                    Text(label, style: TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 2),
-                    Text(description, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                    FaIcon(icon, size: 16, color: color),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(label, style: TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 2),
+                          Text(description, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                        ],
+                      ),
+                    ),
+                    const FaIcon(FontAwesomeIcons.chevronRight, size: 12, color: Color(0xFF3C3C43)),
                   ],
                 ),
               ),
-              const FaIcon(FontAwesomeIcons.chevronRight, size: 12, color: Color(0xFF3C3C43)),
-            ],
+            ),
           ),
         ),
       ),
