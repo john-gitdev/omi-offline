@@ -391,7 +391,8 @@ class VadAudioProcessor {
             if (vadUtcSeconds > kMinValidEpoch) {
               final newResumeTime = DateTime.fromMillisecondsSinceEpoch(vadUtcSeconds * 1000, isUtc: true);
               final lastFrameEndTime = lastFrameWallTime.add(const Duration(milliseconds: frameDurationMs));
-              final gapMs = newResumeTime.difference(lastFrameEndTime).inMilliseconds;
+              int gapMs = newResumeTime.difference(lastFrameEndTime).inMilliseconds;
+              if (gapMs < 0) gapMs = 0; // Prevent negative gaps from RTC sync jitter
 
               // Calculate uptime gap to distinguish clock jumps from silence.
               int uptimeGapMs = 0;
@@ -700,7 +701,15 @@ class VadAudioProcessor {
     Future<void> flushBatch() async {
       if (batchFrameCount == 0) return;
       final chunk = batchBuffer.takeBytes();
-      await AacEncoder.encodeBuffer(sessionId!, chunk);
+      
+      // Split large chunks into smaller segments (e.g. 4KB) for the native encoder.
+      // Silence gaps can produce massive buffers that exceed hardware MediaCodec capacity.
+      const maxNativeChunkSize = 4096;
+      for (int i = 0; i < chunk.length; i += maxNativeChunkSize) {
+        final end = (i + maxNativeChunkSize > chunk.length) ? chunk.length : i + maxNativeChunkSize;
+        await AacEncoder.encodeBuffer(sessionId!, chunk.sublist(i, end));
+      }
+      
       hasEncodedAnyFrames = true;
       batchFrameCount = 0;
     }
