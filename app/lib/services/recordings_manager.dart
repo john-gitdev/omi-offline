@@ -779,15 +779,12 @@ class RecordingsManager {
       );
 
       final raw = rawSegmentsByDate[dateStr] ?? [];
-      // Sort raw segments numerically by their filename (segmentIndex) to avoid
-      // string-order bugs like "100_10.bin" sorting before "100_2.bin".
+      // Sort raw segments chronologically by their filename. Since filenames are
+      // zero-padded hex strings (timestamp_sessionId.bin), string order is correct.
       raw.sort((a, b) {
-        final nameA = a.path.split('/').last.split('.').first;
-        final nameB = b.path.split('/').last.split('.').first;
-        final numA = int.tryParse(nameA.split('_').last) ?? 0;
-        final numB = int.tryParse(nameB.split('_').last) ?? 0;
-        final prefixCmp = nameA.split('_').first.compareTo(nameB.split('_').first);
-        return prefixCmp != 0 ? prefixCmp : numA.compareTo(numB);
+        final nameA = a.path.split('/').last;
+        final nameB = b.path.split('/').last;
+        return nameA.compareTo(nameB);
       });
 
       final allConversations = processedByDate[dateStr] ?? <Conversation>[];
@@ -932,7 +929,7 @@ class RecordingsManager {
         }
       }
 
-      // Combine segments from all batches, sorted by (deviceSessionId, segmentIndex).
+      // Combine segments from all batches, sorted chronologically by timestamp.
       final allSegments = activeBatches.expand((b) => b.rawSegments).toList();
 
       if (allSegments.isEmpty) {
@@ -942,14 +939,9 @@ class RecordingsManager {
       }
 
       allSegments.sort((a, b) {
-        final ap = a.path.split('/').last.replaceAll('.bin', '').split('_');
-        final bp = b.path.split('/').last.replaceAll('.bin', '').split('_');
-        final as_ = int.tryParse(ap[0]) ?? 0;
-        final bs_ = int.tryParse(bp[0]) ?? 0;
-        if (as_ != bs_) return as_.compareTo(bs_);
-        return (int.tryParse(ap.length > 1 ? ap[1] : '0') ?? 0).compareTo(
-          int.tryParse(bp.length > 1 ? bp[1] : '0') ?? 0,
-        );
+        final nameA = a.path.split('/').last;
+        final nameB = b.path.split('/').last;
+        return nameA.compareTo(nameB);
       });
 
       // Pre-compute segment timestamps and session IDs on the main isolate.
