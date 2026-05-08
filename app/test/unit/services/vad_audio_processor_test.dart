@@ -75,6 +75,43 @@ File _makeBinFileWithHeader(
   return f;
 }
 
+File _makeBinFileWithVadResume(
+  Directory dir,
+  int frameCountBefore,
+  int frameCountAfter, {
+  String name = 'test_vad_resume.bin',
+  required int vadUtcSeconds,
+  required int vadUptimeMs,
+}) {
+  final f = File('${dir.path}/$name');
+  final builder = BytesBuilder();
+
+  const frameLength = 4;
+  final frameHeader = ByteData(4)..setUint32(0, frameLength, Endian.little);
+
+  // Frames before VAD sleep
+  for (int i = 0; i < frameCountBefore; i++) {
+    builder.add(frameHeader.buffer.asUint8List());
+    builder.add(List.filled(frameLength, 0));
+  }
+
+  // VAD Resume Marker (0xFFFFFFFD)
+  final markerData = ByteData(20);
+  markerData.setUint32(0, 0xFFFFFFFD, Endian.little);
+  markerData.setUint32(4, vadUtcSeconds, Endian.little);
+  markerData.setUint32(8, vadUptimeMs, Endian.little);
+  builder.add(markerData.buffer.asUint8List());
+
+  // Frames after VAD sleep
+  for (int i = 0; i < frameCountAfter; i++) {
+    builder.add(frameHeader.buffer.asUint8List());
+    builder.add(List.filled(frameLength, 0));
+  }
+
+  f.writeAsBytesSync(builder.toBytes());
+  return f;
+}
+
 ProcessingSettings _settings({required int minDurationMs, required bool discardShort}) {
   return ProcessingSettings(
     vadEnabled: true,
@@ -402,6 +439,42 @@ void main() {
       // It should insert gap padding. 
       // Expected: 100 (file1) + 15000 (padding) + 100 (file2) = 15200 ms
       expect(processor.currentChunkDurationMs, 15200);
+      processor.destroy();
+    });
+
+    test('AAD Padding: pads offline gaps with digital silence using VAD resume marker', () async {
+      final processor = VadAudioProcessor.fromSettings(
+        settings: _settings(minDurationMs: 0, discardShort: false),
+        outputDir: tempDir.path,
+      );
+
+      final startTimeMs = 1000000000000;
+      final startTime = DateTime.fromMillisecondsSinceEpoch(startTimeMs, isUtc: true);
+      final startUptime = 10000;
+      
+      final framesBefore = 50; // 1000 ms
+      final framesAfter = 50; // 1000 ms
+      final sleepGapMs = 5000; // 5 seconds of VAD sleep
+
+      final vadResumeUtcSeconds = (startTimeMs + (framesBefore * 20) + sleepGapMs) ~/ 1000;
+      final vadResumeUptimeMs = startUptime + (framesBefore * 20) + sleepGapMs;
+
+      final file = _makeBinFileWithVadResume(
+        tempDir,
+        framesBefore,
+        framesAfter,
+        vadUtcSeconds: vadResumeUtcSeconds,
+        vadUptimeMs: vadResumeUptimeMs,
+      );
+
+      await processor.processSegmentFile(file, startTime, startUptimeMs: startUptime);
+
+      // Expected: 
+      // 1000 ms (framesBefore) 
+      // + 5000 ms (padding inserted by VAD resume marker) 
+      // + 1000 ms (framesAfter)
+      // = 7000 ms
+      expect(processor.currentChunkDurationMs, 7000);
       processor.destroy();
     });
   });

@@ -390,12 +390,13 @@ class VadAudioProcessor {
             const kMinValidEpoch = 946684800;
             if (vadUtcSeconds > kMinValidEpoch) {
               final newResumeTime = DateTime.fromMillisecondsSinceEpoch(vadUtcSeconds * 1000, isUtc: true);
-              final gapMs = newResumeTime.difference(lastFrameWallTime).inMilliseconds;
+              final lastFrameEndTime = lastFrameWallTime.add(const Duration(milliseconds: frameDurationMs));
+              final gapMs = newResumeTime.difference(lastFrameEndTime).inMilliseconds;
 
               // Calculate uptime gap to distinguish clock jumps from silence.
               int uptimeGapMs = 0;
               if (_currentFrameUptimeMs != null) {
-                uptimeGapMs = vadUptimeMs - _currentFrameUptimeMs!;
+                uptimeGapMs = vadUptimeMs - (_currentFrameUptimeMs! + frameDurationMs);
               }
               // If uptime Gap matches frame count (small gap) but UTC gap is large, it's a clock sync.
               final bool isClockJump = uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000;
