@@ -1195,16 +1195,16 @@ class RecordingsManager {
             bool isClockJump = false;
             if (await nextMeta.exists()) {
               try {
-                final nBytes = await nextMeta.readAsBytes();
-                if (metaBytes.length >= 416 && nBytes.length >= 416) {
-                  final dSessionId = ByteData.sublistView(metaBytes).getUint32(408, Endian.little);
-                  final nSessionId = ByteData.sublistView(nBytes).getUint32(408, Endian.little);
-                  final dUptime = ByteData.sublistView(metaBytes).getUint32(412, Endian.little);
-                  final nUptime = ByteData.sublistView(nBytes).getUint32(412, Endian.little);
+                final nextMetaBytes = await nextMeta.readAsBytes();
+                if (metaBytes.length >= 416 && nextMetaBytes.length >= 416) {
+                  final draftSessionId = ByteData.sublistView(metaBytes).getUint32(408, Endian.little);
+                  final nextSessionId = ByteData.sublistView(nextMetaBytes).getUint32(408, Endian.little);
+                  final draftUptimeSec = ByteData.sublistView(metaBytes).getUint32(412, Endian.little);
+                  final nextUptimeSec = ByteData.sublistView(nextMetaBytes).getUint32(412, Endian.little);
                   
-                  if (dSessionId == nSessionId && dUptime > 0 && nUptime > dUptime) {
-                    final uptimeDurationMs = durationMs;
-                    final uptimeGapMs = (nUptime * 1000) - ((dUptime * 1000) + uptimeDurationMs);
+                  if (draftSessionId == nextSessionId && draftUptimeSec > 0 && nextUptimeSec > draftUptimeSec) {
+                    final draftDurationMs = durationMs;
+                    final uptimeGapMs = (nextUptimeSec * 1000) - ((draftUptimeSec * 1000) + draftDurationMs);
                     if (uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000) {
                       isClockJump = true;
                     }
