@@ -1492,15 +1492,25 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
 
     /* 
      * Retroactively rename all CLOSED temporary files.
-     * We do a single pass to rename existing TMP_ segments.
+     * Use a search-and-repeat loop to avoid renaming while iterating the directory
+     * (safe for LittleFS) and to save RAM (no large buffer of filenames).
      */
-    lfs_dir_t dir;
-    struct lfs_info info;
-    if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) == 0) {
+    bool file_renamed;
+    do {
+        file_renamed = false;
+        lfs_dir_t dir;
+        struct lfs_info info;
+
+        if (lfs_dir_open(&lfs_fs, &dir, FILE_DATA_DIR) < 0) {
+            break;
+        }
+
         while (lfs_dir_read(&lfs_fs, &dir, &info) > 0) {
+            /* Only rename finished TMP_ segments. The active one was already
+             * rotated out by the worker before calling this function. */
             if (info.type == LFS_TYPE_REG && strncmp(info.name, "TMP_", 4) == 0 &&
                 strcmp(info.name, current_filename) != 0) {
-                
+
                 char old_path[64], new_path[64], new_fn[MAX_FILENAME_LEN];
                 uint32_t original_uptime_ms = (uint32_t)strtoul(info.name + 4, NULL, 16);
                 uint32_t session_id = 0;
@@ -1509,19 +1519,32 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
                     session_id = (uint32_t)strtoul(sep + 1, NULL, 16);
                 }
                 uint32_t correct_ts = (original_uptime_ms / 1000U) + rtc_offset;
-                
+
                 snprintf(new_fn, MAX_FILENAME_LEN, "%08X_%08X.txt", correct_ts, session_id);
                 build_file_path(info.name, old_path, sizeof(old_path));
                 build_file_path(new_fn, new_path, sizeof(new_path));
-                
+
+                lfs_dir_close(&lfs_fs, &dir);
+
                 if (lfs_rename(&lfs_fs, old_path, new_path) == 0) {
                     LOG_INF("Retroactive rename: %s -> %s", info.name, new_fn);
+                } else {
+                    LOG_ERR("Failed to rename %s", info.name);
                 }
+
+                file_renamed = true;
+                break;
             }
         }
-        lfs_dir_close(&lfs_fs, &dir);
-    }
-    
+
+        if (!file_renamed) {
+            lfs_dir_close(&lfs_fs, &dir);
+        }
+
+        /* Yield to allow other prio-msgq requests (like get list) to be processed
+         * between renames if there are many files. */
+        k_yield();
+    } while (file_renamed);    
     invalidate_file_cache();
 }
 
