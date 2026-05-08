@@ -23,6 +23,8 @@ class DeviceCrashLog {
     if (resetCause & 0x008 != 0) parts.add('power-on reset');
     if (resetCause & 0x010 != 0) parts.add('watchdog timeout');
     if (resetCause & 0x020 != 0) parts.add('debug reset');
+    if (resetCause & 0x040 != 0) parts.add('security violation');
+    if (resetCause & 0x080 != 0) parts.add('low power wake');
     if (resetCause & 0x100 != 0) parts.add('CPU lockup');
     return parts.isEmpty ? '0x${resetCause.toRadixString(16).padLeft(8, '0')}' : parts.join(', ');
   }
