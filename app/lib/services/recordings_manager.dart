@@ -1160,7 +1160,7 @@ class RecordingsManager {
         for (final draftFile in draftFiles) {
           final draftTs = _extractTimestamp(draftFile.path);
           final draftExt = draftFile.path.split('.').last;
-          final draftMeta = File(draftFile.path.replaceAll('.$draftExt', '.meta'));
+          final draftMeta = File(draftFile.path.replaceAllMapped(RegExp(r'\.' + draftExt + r'$'), (_) => '.meta'));
 
           if (!await draftMeta.exists()) {
             // No meta, can't stitch accurately. Finalize it.
@@ -1194,7 +1194,7 @@ class RecordingsManager {
           final nextFile = allAudioFiles[currentIndex + 1];
           final nextTs = _extractTimestamp(nextFile.path);
           final nextExt = nextFile.path.split('.').last;
-          final nextMeta = File(nextFile.path.replaceAll('.$nextExt', '.meta'));
+          final nextMeta = File(nextFile.path.replaceAllMapped(RegExp(r'\.' + nextExt + r'$'), (_) => '.meta'));
 
           int gapMs = nextTs - draftEndTs;
 
@@ -1361,7 +1361,7 @@ class RecordingsManager {
 
     // Delete next
     await nextFile.delete();
-    final nextMeta = File(nextFile.path.replaceAll('.ogg', '.meta'));
+    final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.ogg$'), '.meta'));
     if (await nextMeta.exists()) await nextMeta.delete();
 
     return true;
@@ -1397,7 +1397,7 @@ class RecordingsManager {
 
     // Delete next
     await nextFile.delete();
-    final nextMeta = File(nextFile.path.replaceAll('.wav', '.meta'));
+    final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.wav$'), '.meta'));
     if (await nextMeta.exists()) await nextMeta.delete();
 
     return true;
