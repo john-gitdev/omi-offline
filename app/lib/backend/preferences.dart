@@ -134,7 +134,7 @@ class SharedPreferencesUtil {
   set omiEnabled(bool v) => saveBool('omiSyncEnabled', v);
 
   // Whether recordings are automatically uploaded after processing. Requires omiEnabled.
-  bool get omiAutoUpload => getBool('omiAutoUpload', defaultValue: true);
+  bool get omiAutoUpload => getBool('omiAutoUpload', defaultValue: false);
   set omiAutoUpload(bool v) => saveBool('omiAutoUpload', v);
 
   // Short-lived JWT — refreshed automatically; stored in regular prefs.
@@ -200,7 +200,7 @@ class SharedPreferencesUtil {
   set heypocketEnabled(bool v) => saveBool('heypocketEnabled', v);
 
   // Whether recordings are automatically uploaded after processing. Requires heypocketEnabled.
-  bool get heypocketAutoUpload => getBool('heypocketAutoUpload', defaultValue: true);
+  bool get heypocketAutoUpload => getBool('heypocketAutoUpload', defaultValue: false);
   set heypocketAutoUpload(bool v) => saveBool('heypocketAutoUpload', v);
 
   List<String> get heypocketUploadedFiles => getStringList('heypocketUploadedFiles');
