@@ -1,5 +1,13 @@
-fix: resolve issues from metadata refactor
+⚡ Bolt: Eliminate deep memory copies in bytes processing
 
-- Firmware: Fixed LittleFS directory iteration corruption in sd_card.c by safely closing the directory iterator before renaming files during time-sync updates.
-- App: Fixed unsafe .meta path generation in recordings_manager.dart by using regex with end-of-string bounds to replace extensions safely.
-- Firmware: Restored correct formatting and line breaks in imu.c lsm6dsl_timestamp_read.
+💡 What:
+Replaced `Uint8List.sublist()` calls with zero-copy equivalents like `Uint8List.sublistView()` and positional arguments in `String.fromCharCodes(data, start, end)`. Hoisted `ByteData.sublistView()` views outside tight loops.
+
+🎯 Why:
+In Dart, slicing lists using `.sublist()` generates an expensive deep copy. Doing this repeatedly within loops, especially for processing audio frames and chunk parsing, creates massive unnecessary memory allocation overhead and spikes Garbage Collection (GC) pressure.
+
+📊 Impact:
+Significantly reduces memory footprint and Garbage Collection sweeps during heavy operations like extracting frames from WAVs, assembling chunks, and converting bytes arrays to Strings across several critical subsystems.
+
+🔬 Measurement:
+Run the application with the Dart DevTools memory profiler and observe reduced memory thrashing and allocation spikes while viewing or assembling audio recordings.

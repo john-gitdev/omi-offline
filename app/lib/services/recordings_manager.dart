@@ -112,9 +112,8 @@ class Conversation {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
               try {
-                uploadKey = String.fromCharCodes(
-                  metaBytes.sublist(417, 417 + keyLen),
-                );
+                // ⚡ Bolt: Use positional arguments to prevent copying
+                uploadKey = String.fromCharCodes(metaBytes, 417, 417 + keyLen);
               } catch (_) {
                 uploadKey = null;
               }
@@ -189,7 +188,8 @@ class Conversation {
         final keyLen = metaBytes[416];
         if (417 + keyLen <= metaBytes.length) {
           try {
-            uploadKey = String.fromCharCodes(metaBytes.sublist(417, 417 + keyLen));
+            // ⚡ Bolt: Use positional arguments to prevent copying
+            uploadKey = String.fromCharCodes(metaBytes, 417, 417 + keyLen);
           } catch (_) {}
           final flagOffset = 417 + keyLen;
           if (metaBytes.length > flagOffset) {
@@ -903,16 +903,25 @@ class RecordingsManager {
           try {
             await File(dest).delete();
           } on FileSystemException catch (_) {}
-          
+
           // If we are moving a draft, delete any existing finalized version.
           // If we are moving a finalized file, delete any existing draft version.
           try {
             if (fileName.contains('_draft')) {
               await File(dest.replaceAll('_draft', '')).delete();
-              await File(dest.replaceAll(RegExp(r'_draft\.(m4a|wav|ogg)$'), '.meta')).delete();
+              await File(
+                dest.replaceAll(RegExp(r'_draft\.(m4a|wav|ogg)$'), '.meta'),
+              ).delete();
             } else {
-              await File(dest.replaceAllMapped(RegExp(r'\.(m4a|wav|ogg)$'), (m) => '_draft${m[0]}')).delete();
-              await File(dest.replaceAll(RegExp(r'\.(m4a|wav|ogg)$'), '_draft.meta')).delete();
+              await File(
+                dest.replaceAllMapped(
+                  RegExp(r'\.(m4a|wav|ogg)$'),
+                  (m) => '_draft${m[0]}',
+                ),
+              ).delete();
+              await File(
+                dest.replaceAll(RegExp(r'\.(m4a|wav|ogg)$'), '_draft.meta'),
+              ).delete();
             }
           } on FileSystemException catch (_) {}
 
@@ -972,7 +981,9 @@ class RecordingsManager {
 
         if (timerStart != null && timerStart > kMinValidEpoch) {
           segmentStartTimesMs.add(timerStart * 1000);
-          segmentStartUptimesMs.add(0); // Hardware syncs RTC -> uptime in filename is lost
+          segmentStartUptimesMs.add(
+            0,
+          ); // Hardware syncs RTC -> uptime in filename is lost
           segmentDerivedFlags.add(false);
         } else {
           segmentStartTimesMs.add(
@@ -1151,7 +1162,11 @@ class RecordingsManager {
       while (scanNeeded) {
         scanNeeded = false;
         final entities = (await folder.list().toList()).whereType<File>().toList();
-        final draftFiles = entities.where((f) => f.path.contains('_draft.') && !f.path.endsWith('.meta')).toList();
+        final draftFiles = entities
+            .where(
+              (f) => f.path.contains('_draft.') && !f.path.endsWith('.meta'),
+            )
+            .toList();
 
         if (draftFiles.isEmpty) break;
 
@@ -1169,7 +1184,12 @@ class RecordingsManager {
         for (final draftFile in draftFiles) {
           final draftTs = _extractTimestamp(draftFile.path);
           final draftExt = draftFile.path.split('.').last;
-          final draftMeta = File(draftFile.path.replaceAllMapped(RegExp(r'\.' + draftExt + r'$'), (_) => '.meta'));
+          final draftMeta = File(
+            draftFile.path.replaceAllMapped(
+              RegExp(r'\.' + draftExt + r'$'),
+              (_) => '.meta',
+            ),
+          );
 
           if (!await draftMeta.exists()) {
             // No meta, can't stitch accurately. Finalize it.
@@ -1185,11 +1205,15 @@ class RecordingsManager {
             scanNeeded = true;
             break;
           }
-          final durationMs = ByteData.sublistView(metaBytes).getUint32(4, Endian.little);
+          final durationMs = ByteData.sublistView(
+            metaBytes,
+          ).getUint32(4, Endian.little);
           final draftEndTs = draftTs + durationMs;
 
           // Find the next chronological file
-          final currentIndex = allAudioFiles.indexWhere((f) => f.path == draftFile.path);
+          final currentIndex = allAudioFiles.indexWhere(
+            (f) => f.path == draftFile.path,
+          );
           if (currentIndex == -1 || currentIndex == allAudioFiles.length - 1) {
             // No next file in this folder.
             if (finalizeAll) {
@@ -1203,7 +1227,12 @@ class RecordingsManager {
           final nextFile = allAudioFiles[currentIndex + 1];
           final nextTs = _extractTimestamp(nextFile.path);
           final nextExt = nextFile.path.split('.').last;
-          final nextMeta = File(nextFile.path.replaceAllMapped(RegExp(r'\.' + nextExt + r'$'), (_) => '.meta'));
+          final nextMeta = File(
+            nextFile.path.replaceAllMapped(
+              RegExp(r'\.' + nextExt + r'$'),
+              (_) => '.meta',
+            ),
+          );
 
           int gapMs = nextTs - draftEndTs;
 
@@ -1214,11 +1243,19 @@ class RecordingsManager {
               try {
                 final nextMetaBytes = await nextMeta.readAsBytes();
                 if (metaBytes.length >= 416 && nextMetaBytes.length >= 416) {
-                  final draftSessionId = ByteData.sublistView(metaBytes).getUint32(408, Endian.little);
-                  final nextSessionId = ByteData.sublistView(nextMetaBytes).getUint32(408, Endian.little);
-                  final draftUptimeSec = ByteData.sublistView(metaBytes).getUint32(412, Endian.little);
-                  final nextUptimeSec = ByteData.sublistView(nextMetaBytes).getUint32(412, Endian.little);
-                  
+                  final draftSessionId = ByteData.sublistView(
+                    metaBytes,
+                  ).getUint32(408, Endian.little);
+                  final nextSessionId = ByteData.sublistView(
+                    nextMetaBytes,
+                  ).getUint32(408, Endian.little);
+                  final draftUptimeSec = ByteData.sublistView(
+                    metaBytes,
+                  ).getUint32(412, Endian.little);
+                  final nextUptimeSec = ByteData.sublistView(
+                    nextMetaBytes,
+                  ).getUint32(412, Endian.little);
+
                   if (draftSessionId == nextSessionId && draftUptimeSec > 0 && nextUptimeSec > draftUptimeSec) {
                     final draftDurationMs = durationMs;
                     final uptimeGapMs = (nextUptimeSec * 1000) - ((draftUptimeSec * 1000) + draftDurationMs);
@@ -1236,7 +1273,8 @@ class RecordingsManager {
             }
 
             Logger.debug(
-                'RecordingsManager: Stitching draft $draftTs with next $nextTs (gap=${gapMs}ms${isClockJump ? ", CLOCK JUMP" : ""})');
+              'RecordingsManager: Stitching draft $draftTs with next $nextTs (gap=${gapMs}ms${isClockJump ? ", CLOCK JUMP" : ""})',
+            );
             final success = await _performStitch(draftFile, nextFile, gapMs);
             if (success) {
               // After stitching, we need to re-scan this folder.
@@ -1324,10 +1362,11 @@ class RecordingsManager {
         // 2. Update uploadKey extension if transcoded
         if (transcoded) {
           final keyLen = outBytes[416];
-          final key = String.fromCharCodes(outBytes.sublist(417, 417 + keyLen));
+          // ⚡ Bolt: Use positional arguments to prevent copying
+          final key = String.fromCharCodes(outBytes, 417, 417 + keyLen);
           final newKey = key.replaceAll('.$currentExt', '.m4a');
           final newKeyBytes = Uint8List.fromList(newKey.codeUnits);
-          
+
           final builder = BytesBuilder();
           builder.add(outBytes.sublist(0, 416));
           builder.addByte(newKeyBytes.length);
@@ -1355,16 +1394,22 @@ class RecordingsManager {
               if (json['segmentFilename'] == oldFilename) {
                 json['segmentFilename'] = newFilename;
                 await entity.writeAsString(jsonEncode(json));
-                Logger.debug('RecordingsManager: Updated EDL ${entity.path} for finalized draft');
+                Logger.debug(
+                  'RecordingsManager: Updated EDL ${entity.path} for finalized draft',
+                );
               }
             } catch (e) {
-              Logger.error('RecordingsManager: Failed to update EDL ${entity.path}: $e');
+              Logger.error(
+                'RecordingsManager: Failed to update EDL ${entity.path}: $e',
+              );
             }
           }
         }
       }
 
-      Logger.debug('RecordingsManager: Finalized draft $path -> $finalAudioPath');
+      Logger.debug(
+        'RecordingsManager: Finalized draft $path -> $finalAudioPath',
+      );
     } catch (e) {
       Logger.error('RecordingsManager: Failed to finalize draft $path: $e');
     }
@@ -1378,20 +1423,27 @@ class RecordingsManager {
 
       final data = ByteData.sublistView(bytes);
       final sampleRate = data.getUint32(24, Endian.little);
-      final pcmBytes = bytes.sublist(44);
+      // ⚡ Bolt: Use sublistView to prevent deep copy
+      final pcmBytes = Uint8List.sublistView(bytes, 44);
 
       sessionId = await AacEncoder.startEncoder(sampleRate, m4aPath);
       const chunkSize = 4096;
       for (int i = 0; i < pcmBytes.length; i += chunkSize) {
         final end = (i + chunkSize > pcmBytes.length) ? pcmBytes.length : i + chunkSize;
-        await AacEncoder.encodeBuffer(sessionId, pcmBytes.sublist(i, end));
+        // ⚡ Bolt: Use sublistView to prevent deep copy
+        await AacEncoder.encodeBuffer(
+          sessionId,
+          Uint8List.sublistView(pcmBytes, i, end),
+        );
       }
       await AacEncoder.finishEncoder(sessionId);
       return true;
     } catch (e) {
       Logger.error('RecordingsManager: Transcoding failed: $e');
       if (sessionId != null) {
-        try { await AacEncoder.finishEncoder(sessionId); } catch (_) {}
+        try {
+          await AacEncoder.finishEncoder(sessionId);
+        } catch (_) {}
       }
       return false;
     }
@@ -1511,8 +1563,12 @@ class RecordingsManager {
   }
 
   Future<void> _mergeMeta(File draftFile, File nextFile, int gapMs) async {
-    final draftMeta = File(draftFile.path.replaceAll(RegExp(r'\.(ogg|wav|m4a)$'), '.meta'));
-    final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.(ogg|wav|m4a)$'), '.meta'));
+    final draftMeta = File(
+      draftFile.path.replaceAll(RegExp(r'\.(ogg|wav|m4a)$'), '.meta'),
+    );
+    final nextMeta = File(
+      nextFile.path.replaceAll(RegExp(r'\.(ogg|wav|m4a)$'), '.meta'),
+    );
     if (!await draftMeta.exists() || !await nextMeta.exists()) return;
 
     final dBytes = await draftMeta.readAsBytes();
@@ -1529,7 +1585,9 @@ class RecordingsManager {
     final totalSamples = dSamples + gapSamples + nSamples;
     final totalDurationMs = (totalSamples * 1000) ~/ sampleRate;
 
-    final outMeta = ByteData(416); // Corrected to 416 bytes to include SID and startUptime
+    final outMeta = ByteData(
+      416,
+    ); // Corrected to 416 bytes to include SID and startUptime
     outMeta.setUint32(0, totalSamples, Endian.little);
     outMeta.setUint32(4, totalDurationMs, Endian.little);
 
@@ -1542,8 +1600,16 @@ class RecordingsManager {
 
     // Preserve sessionId and startUptime from the original draft
     if (dBytes.length >= 416) {
-      outMeta.setUint32(408, dMeta.getUint32(408, Endian.little), Endian.little);
-      outMeta.setUint32(412, dMeta.getUint32(412, Endian.little), Endian.little);
+      outMeta.setUint32(
+        408,
+        dMeta.getUint32(408, Endian.little),
+        Endian.little,
+      );
+      outMeta.setUint32(
+        412,
+        dMeta.getUint32(412, Endian.little),
+        Endian.little,
+      );
     }
 
     // Keep the upload key from the draft (or update it? Draft keys are temporary).
@@ -1570,7 +1636,14 @@ class RecordingsManager {
     if (!await recordingsRootDir.exists() || markerTimestamps.isEmpty) return;
 
     // Build global sorted list of (file, startMs, endMs) from m4a/ogg + .meta pairs across ALL date folders.
-    final recordings = <({File file, int startMs, int endMs, int durationMs, int? sessionId, int? startUptime})>[];
+    final recordings = <({
+      File file,
+      int startMs,
+      int endMs,
+      int durationMs,
+      int? sessionId,
+      int? startUptime,
+    })>[];
     final dateFolders = await recordingsRootDir.list().where((e) => e is Directory).toList();
 
     for (final dateFolder in dateFolders) {
@@ -1600,7 +1673,9 @@ class RecordingsManager {
       final markerMs = markerTime.millisecondsSinceEpoch;
       // Primary location: the marker's own date folder (default for pending/orphan)
       final dateStr = fmtDate(markerTime);
-      final defaultEdlFile = File('${recordingsRootDir.path}/$dateStr/marker_$markerMs.edl');
+      final defaultEdlFile = File(
+        '${recordingsRootDir.path}/$dateStr/marker_$markerMs.edl',
+      );
 
       // Check if this marker is already resolved in ANY date folder
       bool alreadyResolved = false;
@@ -1833,7 +1908,9 @@ class RecordingsManager {
 
   /// Deletes multiple processed conversations and their associated meta/bin/marker files.
   /// Efficiently groups by directory to minimize directory listings for EDL cleanup.
-  static Future<void> deleteConversations(List<Conversation> conversations) async {
+  static Future<void> deleteConversations(
+    List<Conversation> conversations,
+  ) async {
     if (conversations.isEmpty) return;
 
     // Group conversations by directory to minimize directory listings for EDL cleanup
@@ -1888,7 +1965,9 @@ class RecordingsManager {
           }
         }
       } catch (e) {
-        Logger.error('RecordingsManager: Failed to cleanup EDLs in $dirPath: $e');
+        Logger.error(
+          'RecordingsManager: Failed to cleanup EDLs in $dirPath: $e',
+        );
       }
     }
   }
@@ -1897,7 +1976,9 @@ class RecordingsManager {
   static Future<void> deleteMarkerConversation(MarkerConversation mc) async {
     if (await mc.edlFile.exists()) {
       await mc.edlFile.delete();
-      Logger.debug('RecordingsManager: Deleted marker conversation ${mc.edlFile.path}');
+      Logger.debug(
+        'RecordingsManager: Deleted marker conversation ${mc.edlFile.path}',
+      );
     }
   }
 
@@ -1928,7 +2009,10 @@ class RecordingsManager {
     } else {
       // Surgical delete: only remove finalized recordings and drafts that
       // belong to a session for which we still have raw data.
-      final allToProcess = [...batch.finalizedRecordings, ...batch.draftRecordings];
+      final allToProcess = [
+        ...batch.finalizedRecordings,
+        ...batch.draftRecordings,
+      ];
       final dirEntities = await recordingsDir.list().toList();
       final edlFiles = dirEntities.whereType<File>().where((f) => f.path.endsWith('.edl')).toList();
       int deletedCount = 0;
@@ -1936,13 +2020,17 @@ class RecordingsManager {
         if (conv.sessionId != null && availableSessionIds.contains(conv.sessionId)) {
           final audioFilename = conv.file.path.split('/').last;
           if (await conv.file.exists()) await conv.file.delete();
-          final metaFile = File('${conv.file.path.substring(0, conv.file.path.lastIndexOf('.'))}.meta');
+          final metaFile = File(
+            '${conv.file.path.substring(0, conv.file.path.lastIndexOf('.'))}.meta',
+          );
           if (await metaFile.exists()) await metaFile.delete();
 
           // Also delete any raw .bin files that might have been moved into the
           // recordings folder (some pipelines do this for portability).
           final ts = conv.file.path.split('/').last.split('_').last.split('.').first;
-          final recordingsBin = File('${conv.file.parent.path}/recording_fs320_$ts.bin');
+          final recordingsBin = File(
+            '${conv.file.parent.path}/recording_fs320_$ts.bin',
+          );
           if (await recordingsBin.exists()) await recordingsBin.delete();
 
           // Delete EDL files referencing this recording so the re-resolver can
@@ -1974,13 +2062,11 @@ class RecordingsManager {
     // markers whose EDL files were just deleted above will be re-resolved by the
     // re-resolver on the next processing cycle.
     if (batch.markerTimestamps.isNotEmpty) {
-      final markerSecondsToRemove =
-          batch.markerTimestamps.map((dt) => dt.millisecondsSinceEpoch ~/ 1000).toSet();
+      final markerSecondsToRemove = batch.markerTimestamps.map((dt) => dt.millisecondsSinceEpoch ~/ 1000).toSet();
 
       final rawSegmentsDir = Directory('${directory.path}/raw_segments');
       if (await rawSegmentsDir.exists()) {
-        final sessionFolders =
-            (await rawSegmentsDir.list().toList()).whereType<Directory>().toList();
+        final sessionFolders = (await rawSegmentsDir.list().toList()).whereType<Directory>().toList();
         for (final folder in sessionFolders) {
           final markerFile = File('${folder.path}/markers.txt');
           if (!await markerFile.exists()) continue;
@@ -2002,7 +2088,9 @@ class RecordingsManager {
               );
             }
           } catch (e) {
-            Logger.error('RecordingsManager: Failed to clean up markers.txt in ${folder.path}: $e');
+            Logger.error(
+              'RecordingsManager: Failed to clean up markers.txt in ${folder.path}: $e',
+            );
           }
         }
       }
@@ -2022,11 +2110,16 @@ class RecordingsManager {
   ///
   /// This renames and moves all processed recordings, .meta sidecars, .bin raw syncs,
   /// and .edl markers belonging to the same sessionId.
-  static Future<void> promoteSessionToDate(Conversation base, DateTime newStartTime) async {
+  static Future<void> promoteSessionToDate(
+    Conversation base,
+    DateTime newStartTime,
+  ) async {
     final sessionId = base.sessionId;
     final startUptime = base.startUptime;
     if (startUptime == null || startUptime == 0) {
-      throw Exception('Cannot promote session: startUptime is missing or zero.');
+      throw Exception(
+        'Cannot promote session: startUptime is missing or zero.',
+      );
     }
 
     final rtcOffsetMs = newStartTime.millisecondsSinceEpoch - (startUptime * 1000);
@@ -2040,7 +2133,9 @@ class RecordingsManager {
       for (final folder in dateFolders) {
         final audioFiles = await folder
             .list()
-            .where((e) => e is File && (e.path.endsWith('.m4a') || e.path.endsWith('.wav') || e.path.endsWith('.ogg')))
+            .where(
+              (e) => e is File && (e.path.endsWith('.m4a') || e.path.endsWith('.wav') || e.path.endsWith('.ogg')),
+            )
             .cast<File>()
             .toList();
 
@@ -2068,7 +2163,10 @@ class RecordingsManager {
       final newAudioPath = '${targetDir.path}/recording_$newConvStartMs.$extension';
       final newMetaPath = '${targetDir.path}/recording_$newConvStartMs.meta';
 
-      final basePath = conv.file.path.substring(0, conv.file.path.lastIndexOf('.'));
+      final basePath = conv.file.path.substring(
+        0,
+        conv.file.path.lastIndexOf('.'),
+      );
       final metaFile = File('$basePath.meta');
 
       // Update .meta content with new UTC time if we were to be super thorough,
@@ -2088,7 +2186,9 @@ class RecordingsManager {
       final parentDir = conv.file.parent;
       final markerFiles = await parentDir
           .list()
-          .where((e) => e is File && e.path.split('/').last.startsWith('marker_') && e.path.endsWith('.edl'))
+          .where(
+            (e) => e is File && e.path.split('/').last.startsWith('marker_') && e.path.endsWith('.edl'),
+          )
           .cast<File>()
           .toList();
 
@@ -2107,11 +2207,15 @@ class RecordingsManager {
             updatedJson['segmentFilename'] = newAudioPath.split('/').last;
 
             await edlFile.delete(); // Delete old EDL
-            final newEdlFile = File('${targetDir.path}/marker_$newMarkerMs.edl');
+            final newEdlFile = File(
+              '${targetDir.path}/marker_$newMarkerMs.edl',
+            );
             await newEdlFile.writeAsString(jsonEncode(updatedJson));
           }
         } catch (e) {
-          Logger.error('RecordingsManager: Failed to migrate EDL ${edlFile.path}: $e');
+          Logger.error(
+            'RecordingsManager: Failed to migrate EDL ${edlFile.path}: $e',
+          );
         }
       }
     }
@@ -2136,13 +2240,17 @@ class RecordingsManager {
       if (sourceFolder != null) {
         final newBaseStartMs = (baseUptime * 1000) + rtcOffsetMs;
         final newBaseStartSecs = newBaseStartMs ~/ 1000;
-        final targetFolder = Directory('${rawSegmentsDir.path}/$newBaseStartSecs');
+        final targetFolder = Directory(
+          '${rawSegmentsDir.path}/$newBaseStartSecs',
+        );
 
         if (await targetFolder.exists()) {
           // Merge contents if target already exists (unlikely but safe)
           await for (final entity in sourceFolder.list()) {
             if (entity is File) {
-              await entity.rename('${targetFolder.path}/${entity.path.split('/').last}');
+              await entity.rename(
+                '${targetFolder.path}/${entity.path.split('/').last}',
+              );
             }
           }
           await sourceFolder.delete(recursive: true);
