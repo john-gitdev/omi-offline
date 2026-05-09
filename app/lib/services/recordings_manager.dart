@@ -570,6 +570,9 @@ class RecordingsManager {
   /// Global progress of the current processing task (0.0 to 1.0).
   static final ValueNotifier<double> processingProgress = ValueNotifier(0.0);
 
+  /// True when a WAV file is being transcoded to M4A.
+  static final ValueNotifier<bool> isTranscoding = ValueNotifier(false);
+
   static bool _cancelRequested = false;
   static SendPort? _activeIsolateControlPort;
 
@@ -934,7 +937,13 @@ class RecordingsManager {
       final allSegments = activeBatches.expand((b) => b.rawSegments).toList();
 
       if (allSegments.isEmpty) {
-        await _stitchDraftRecordings(finalizeAll: finalizeDrafts);
+        final isM4a = SharedPreferencesUtil().audioSaveFormat == 'm4a';
+        if (isM4a) isTranscoding.value = true;
+        try {
+          await _stitchDraftRecordings(finalizeAll: finalizeDrafts);
+        } finally {
+          isTranscoding.value = false;
+        }
         onProgress(1.0, Duration.zero);
         return;
       }
@@ -1109,12 +1118,19 @@ class RecordingsManager {
 
       // Phase 3: Post-Sync Stitch Pass
       // After processing is complete, look for drafts and stitch them if within threshold.
-      await _stitchDraftRecordings(finalizeAll: finalizeDrafts);
+      final isM4a = SharedPreferencesUtil().audioSaveFormat == 'm4a';
+      if (isM4a) isTranscoding.value = true;
+      try {
+        await _stitchDraftRecordings(finalizeAll: finalizeDrafts);
+      } finally {
+        isTranscoding.value = false;
+      }
 
       onProgress(1.0, Duration.zero);
     } finally {
       _isProcessingAny = false;
       processingProgress.value = 0.0;
+      isTranscoding.value = false;
       SharedPreferencesUtil().extractionInProgress = false;
     }
   }

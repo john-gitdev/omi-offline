@@ -19,6 +19,7 @@ class SyncCardData {
   final double syncSpeed;
   final double minutesRemaining;
   final double processingProgress;
+  final bool isTranscoding;
   final String lastActiveStage;
 
   const SyncCardData({
@@ -29,6 +30,7 @@ class SyncCardData {
     required this.syncSpeed,
     required this.minutesRemaining,
     required this.processingProgress,
+    required this.isTranscoding,
     required this.lastActiveStage,
   });
 }

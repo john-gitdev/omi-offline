@@ -84,11 +84,13 @@ class SyncProcessCard extends StatelessWidget {
 
       case SyncProcessState.processing:
         mainText = 'Preparing conversations';
-        subText = data.minutesRemaining >= 1
-            ? '~${data.minutesRemaining.ceil()} min remaining'
-            : (data.minutesRemaining >= 0
-                  ? '< 1 min remaining'
-                  : 'Calculating ETA…');
+        subText = data.isTranscoding
+            ? 'Converting to m4a'
+            : (data.minutesRemaining >= 1
+                ? '~${data.minutesRemaining.ceil()} min remaining'
+                : (data.minutesRemaining >= 0
+                    ? '< 1 min remaining'
+                    : 'Calculating ETA…'));
         iconBg = Colors.deepPurpleAccent;
         iconChild = const SizedBox(
           width: 16,

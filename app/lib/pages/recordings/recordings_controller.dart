@@ -57,6 +57,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   double _processingProgress = 0.0;
   double get processingProgress => _processingProgress;
 
+  bool _isTranscoding = false;
+  bool get isTranscoding => _isTranscoding;
+
   double _totalMinutes = 0.0;
   double get totalMinutes => _totalMinutes;
 
@@ -121,6 +124,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(this);
     RecordingsManager.recordingsChangeNotifier.addListener(_onRecordingsChanged);
     RecordingsManager.processingProgress.addListener(_onProgressChanged);
+    RecordingsManager.isTranscoding.addListener(_onTranscodingChanged);
     _pollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _poll());
   }
 
@@ -132,7 +136,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(null);
     RecordingsManager.recordingsChangeNotifier.removeListener(_onRecordingsChanged);
     RecordingsManager.processingProgress.removeListener(_onProgressChanged);
+    RecordingsManager.isTranscoding.removeListener(_onTranscodingChanged);
     super.dispose();
+  }
+
+  void _onTranscodingChanged() {
+    if (_isDisposed) return;
+    _isTranscoding = RecordingsManager.isTranscoding.value;
+    notifyListeners();
   }
 
   void _onProgressChanged() {
@@ -193,6 +204,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _totalCount = syncs.estimatedTotalSegments;
       } else if (RecordingsManager.isProcessingAny) {
         _spState = SyncProcessState.processing;
+        _isTranscoding = RecordingsManager.isTranscoding.value;
       }
     }
     notifyListeners();
