@@ -705,6 +705,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
         _isLoading = false;
         _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
+        _checkCleanupFlag();
         notifyListeners();
         tryAutoUploadNext();
         tryAutoSyncNext();
@@ -734,9 +735,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         }
 
         _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
+        _checkCleanupFlag();
         notifyListeners();
       }
     } catch (_) {}
+  }
+
+  void _checkCleanupFlag() {
+    if (!_prefs.adjustmentMode && _prefs.adjustmentModeWasEnabled && _batches.every((b) => b.rawSegments.isEmpty)) {
+      _prefs.adjustmentModeWasEnabled = false;
+    }
   }
 
   Future<void> deleteDay(Batch batch) async {
