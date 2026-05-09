@@ -85,7 +85,7 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
           child: Container(
             // Use a container with specific alignment instead of padding to avoid overflow
             alignment: Alignment.centerLeft,
-            padding: const EdgeInsets.only(left: 16.0),
+            padding: const EdgeInsets.only(left: 8.0),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
