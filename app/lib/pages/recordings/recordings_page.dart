@@ -523,16 +523,21 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                 ),
                               ),
                             )
-                          : IconButton(
-                              icon: const FaIcon(
-                                FontAwesomeIcons.bluetooth,
-                                color: Colors.grey,
-                                size: 20,
-                              ),
-                              tooltip: 'Find devices',
-                              onPressed: () => Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (c) => const FindDevicesPage(),
+                          : Padding(
+                              padding: const EdgeInsets.only(left: 8.0),
+                              child: IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                icon: const FaIcon(
+                                  FontAwesomeIcons.bluetooth,
+                                  color: Colors.grey,
+                                  size: 20,
+                                ),
+                                tooltip: 'Find devices',
+                                onPressed: () => Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (c) => const FindDevicesPage(),
+                                  ),
                                 ),
                               ),
                             ),
