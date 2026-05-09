@@ -510,7 +510,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
               leading: !deviceProvider.isConnected
                   ? Container(
                       alignment: Alignment.centerLeft,
-                      padding: const EdgeInsets.only(left: 8.0),
                       child: deviceProvider.isConnecting
                           ? const Padding(
                               padding: EdgeInsets.only(left: 8.0),
