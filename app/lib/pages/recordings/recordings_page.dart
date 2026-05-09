@@ -512,7 +512,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                       alignment: Alignment.centerLeft,
                       padding: const EdgeInsets.only(left: 8.0),
                       child: deviceProvider.isConnecting
-                          ? const Center(
+                          ? const Padding(
+                              padding: EdgeInsets.only(left: 8.0),
                               child: SizedBox(
                                 width: 20,
                                 height: 20,
