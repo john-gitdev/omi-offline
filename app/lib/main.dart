@@ -27,6 +27,7 @@ void main() async {
   await SharedPreferencesUtil.init();
   await NotificationsService.initialize();
   await ForegroundUtil.initializeForegroundService();
+  await ForegroundUtil.requestPermissions();
   await ServiceManager.init();
   await ServiceManager.instance().start();
   await RecordingsManager.cleanUpIncompleteExtraction();
