@@ -96,7 +96,10 @@ class ForegroundUtil {
     }
   }
 
-  static Future<ServiceRequestResult> startForegroundTask() async {
+  static Future<ServiceRequestResult> startForegroundTask({
+    String title = 'Scanning for Omi device...',
+    String text = 'Transcription service is running in the background.',
+  }) async {
     if (_isStarting) {
       Logger.debug('ForegroundTask already starting, skipping');
       return const ServiceRequestSuccess();
@@ -108,11 +111,14 @@ class ForegroundUtil {
     try {
       ServiceRequestResult result;
       if (await FlutterForegroundTask.isRunningService) {
-        result = await FlutterForegroundTask.restartService();
+        result = await FlutterForegroundTask.updateService(
+          notificationTitle: title,
+          notificationText: text,
+        );
       } else {
         result = await FlutterForegroundTask.startService(
-          notificationTitle: 'Scanning for Omi device...',
-          notificationText: 'Transcription service is running in the background.',
+          notificationTitle: title,
+          notificationText: text,
           callback: _startForegroundCallback,
         );
       }
@@ -124,6 +130,11 @@ class ForegroundUtil {
     } finally {
       _isStarting = false;
     }
+  }
+
+  static Future<void> updateNotification({required String title, required String text}) async {
+    if (!await FlutterForegroundTask.isRunningService) return;
+    await FlutterForegroundTask.updateService(notificationTitle: title, notificationText: text);
   }
 
   static Future<void> stopForegroundTask() async {

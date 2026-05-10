@@ -154,7 +154,24 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (_totalMinutes > 0) {
         _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
       }
+      _updateForegroundProgress();
       notifyListeners();
+    }
+  }
+
+  void _updateForegroundProgress() {
+    if (_spState == SyncProcessState.syncing) {
+      final percent = _totalCount > 0 ? (_syncedCount / _totalCount * 100).toStringAsFixed(0) : '0';
+      ForegroundUtil.updateNotification(
+        title: 'Syncing recordings ($percent%)',
+        text: '$_syncedCount of $_totalCount segments synced...',
+      );
+    } else if (_spState == SyncProcessState.processing) {
+      final mins = _minutesRemaining.ceil();
+      ForegroundUtil.updateNotification(
+        title: 'Processing recordings',
+        text: 'About $mins min remaining...',
+      );
     }
   }
 
@@ -372,6 +389,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     } else {
       _syncedCount = 0;
     }
+    _updateForegroundProgress();
     notifyListeners();
   }
 
@@ -449,7 +467,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
     _persistProgress();
     WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask();
+    await ForegroundUtil.startForegroundTask(title: 'Syncing recordings...', text: 'Preparing to sync segments...');
 
     try {
       await syncs.rotateAndSync(progress: this);
@@ -466,9 +484,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
       return;
     }
-    WakelockPlus.disable();
 
     if (_spState == SyncProcessState.stopping) {
+      WakelockPlus.disable();
       await ForegroundUtil.stopForegroundTask();
       _isForcePipeline = false;
       _transitionTo(SyncProcessState.idle);
@@ -533,7 +551,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
     _persistProgress();
     WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask();
+    await ForegroundUtil.startForegroundTask(title: 'Syncing recordings...', text: 'Preparing to sync segments...');
 
     try {
       final result = await syncs.syncAll(progress: this);
@@ -552,9 +570,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
       return;
     }
-    WakelockPlus.disable();
 
     if (_spState == SyncProcessState.stopping) {
+      WakelockPlus.disable();
       await ForegroundUtil.stopForegroundTask();
       _transitionTo(SyncProcessState.idle);
       unawaited(reloadBatchesSilently());
@@ -609,7 +627,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _persistProgress();
 
     WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask();
+    await ForegroundUtil.startForegroundTask(title: 'Processing recordings...', text: 'Preparing to process segments...');
     try {
       await _manager.processAll(
         _batches,
@@ -631,14 +649,17 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
       return;
     }
-    WakelockPlus.disable();
-    await ForegroundUtil.stopForegroundTask();
 
     if (_spState == SyncProcessState.stopping) {
+      WakelockPlus.disable();
+      await ForegroundUtil.stopForegroundTask();
       _transitionTo(SyncProcessState.idle);
       unawaited(reloadBatchesSilently());
       return;
     }
+
+    WakelockPlus.disable();
+    await ForegroundUtil.stopForegroundTask();
 
     _minutesRemaining = 0;
     _lastCompletedStage = 'processing';
@@ -825,7 +846,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       notifyListeners();
 
       WakelockPlus.enable();
-      await ForegroundUtil.startForegroundTask();
+      await ForegroundUtil.startForegroundTask(title: 'Cleaning up recordings...', text: 'Processing segments before deletion...');
       try {
         await _manager.processAll(unprocessed, (_, __) {}, backgroundMode: false);
       } catch (e) {
@@ -896,7 +917,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
 
     WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask();
+    await ForegroundUtil.startForegroundTask(title: 'Reprocessing day...', text: 'Processing segments...');
     try {
       await _manager.processAll(
         freshBatch,
