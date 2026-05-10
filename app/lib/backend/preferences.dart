@@ -333,8 +333,10 @@ class SharedPreferencesUtil {
 
   // Developer Diagnostics
   bool get devLogsToFileEnabled => getBool('devLogsToFileEnabled');
-
   set devLogsToFileEnabled(bool value) => saveBool('devLogsToFileEnabled', value);
+
+  bool get devCrashLogsToFileEnabled => getBool('devCrashLogsToFileEnabled');
+  set devCrashLogsToFileEnabled(bool value) => saveBool('devCrashLogsToFileEnabled', value);
 
   //--------------------------- Setters & Getters -----------------------------//
 
