@@ -477,13 +477,15 @@ class DeviceProvider extends ChangeNotifier
     // wake lock — without this the CPU sleeps and the Dart timer never fires.
     final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     if (interval > 0 && SharedPreferencesUtil().btDevice.id.isNotEmpty) {
-      ForegroundUtil.startForegroundTask();
+      if (!await FlutterForegroundTask.isRunningService) {
+        ForegroundUtil.startForegroundTask();
+      }
     }
     if (SharedPreferencesUtil().maximizeBattery) {
       final walSync = ServiceManager.instance().wal.getSyncs();
       if (!walSync.isSyncing) {
         Logger.debug('Maximizing battery: disconnecting device because app is paused.');
-        ServiceManager.instance().device.disconnectDevice();
+        ServiceManager.instance().device.disconnectDevice(isManual: true);
       }
     }
   }
@@ -557,7 +559,7 @@ class DeviceProvider extends ChangeNotifier
     super.dispose();
   }
 
-  void onDeviceDisconnected() async {
+  void onDeviceDisconnected({bool isManual = false}) async {
     if (_isHandlingDisconnect) return;
     _isHandlingDisconnect = true;
     if (!isConnected && connectedDevice == null) {
@@ -576,13 +578,13 @@ class DeviceProvider extends ChangeNotifier
     walSync.cancelSync();
     walSync.setDevice(null);
 
-    PlatformManager.instance.crashReporter.logInfo('Omi Device Disconnected');
+    PlatformManager.instance.crashReporter.logInfo('Omi Device Disconnected (isManual: $isManual)');
     _disconnectNotificationTimer?.cancel();
     _isHandlingDisconnect = false;
 
     _reconnectDelayTimer?.cancel();
-    // Skip reconnect when maximize-battery intentionally disconnected while in background.
-    if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground) return;
+    // Skip reconnect only when maximize-battery intentionally disconnected while in background.
+    if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground && isManual) return;
     _reconnectDelayTimer = Timer(const Duration(seconds: 1), () {
       if (!_disposed) periodicConnect('coming from onDisconnect');
     });
@@ -626,7 +628,7 @@ class DeviceProvider extends ChangeNotifier
         Logger.debug(
           'Maximizing battery: disconnecting device after sync completion because app is in background and no segments remain.',
         );
-        ServiceManager.instance().device.disconnectDevice();
+        ServiceManager.instance().device.disconnectDevice(isManual: true);
       } else {
         Logger.debug(
           'Maximizing battery: keeping device connected after sync pause — $missingCount segments still remaining.',
@@ -745,7 +747,8 @@ class DeviceProvider extends ChangeNotifier
   }
 
   @override
-  void onDeviceConnectionStateChanged(String deviceId, DeviceConnectionState state) async {
+  void onDeviceConnectionStateChanged(String deviceId, DeviceConnectionState state, {bool isManual = false}) {
+    if (isManual) _isIntentionallyDisconnecting = true;
     switch (state) {
       case DeviceConnectionState.connected:
         updateConnectingStatus(false);
@@ -759,7 +762,7 @@ class DeviceProvider extends ChangeNotifier
         updateConnectingStatus(false);
         _connectDebouncer.cancel();
         if (deviceId == connectedDevice?.id || deviceId == pairedDevice?.id) {
-          _disconnectDebouncer.run(onDeviceDisconnected);
+          _disconnectDebouncer.run(() => onDeviceDisconnected(isManual: isManual));
         }
         break;
     }

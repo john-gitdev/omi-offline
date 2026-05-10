@@ -22,7 +22,7 @@ abstract class DeviceConnection {
   final DeviceTransport transport;
 
   DeviceConnectionState _connectionState = DeviceConnectionState.disconnected;
-  void Function(String deviceId, DeviceConnectionState state)? _connectionStateChangedCallback;
+  void Function(String deviceId, DeviceConnectionState state, {bool isManual})? _connectionStateChangedCallback;
   StreamSubscription<DeviceTransportState>? _transportStateSubscription;
 
   DeviceConnection(this._device, this.transport);
@@ -31,7 +31,7 @@ abstract class DeviceConnection {
   DeviceConnectionState get status => _connectionState;
 
   Future<void> connect({
-    void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged,
+    void Function(String deviceId, DeviceConnectionState state, {bool isManual})? onConnectionStateChanged,
     bool requiresBond = false,
   }) async {
     if (_connectionState == DeviceConnectionState.connected) {
@@ -45,7 +45,7 @@ abstract class DeviceConnection {
       final deviceState = _mapTransportStateToDeviceState(transportState);
       if (_connectionState != deviceState) {
         _connectionState = deviceState;
-        _connectionStateChangedCallback?.call(device.id, _connectionState);
+        _connectionStateChangedCallback?.call(device.id, _connectionState, isManual: false);
       }
     });
 
@@ -53,13 +53,15 @@ abstract class DeviceConnection {
       await transport.connect(requiresBond: requiresBond);
     } catch (e) {
       _connectionState = DeviceConnectionState.disconnected;
-      _connectionStateChangedCallback?.call(device.id, _connectionState);
+      _connectionStateChangedCallback?.call(device.id, _connectionState, isManual: false);
       rethrow;
     }
   }
 
-  Future<void> disconnect() async {
+  Future<void> disconnect({bool isManual = true}) async {
     await transport.disconnect();
+    _connectionState = DeviceConnectionState.disconnected;
+    _connectionStateChangedCallback?.call(device.id, _connectionState, isManual: isManual);
   }
 
   Future<bool> isConnected() async {

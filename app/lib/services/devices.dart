@@ -24,7 +24,7 @@ abstract class IDeviceService {
 
   DateTime? getFirstConnectedAt();
 
-  Future<void> disconnectDevice();
+  Future<void> disconnectDevice({bool isManual = true});
 
   /// Fully tear down connection + transport for a device being forgotten/unpaired.
   Future<void> forgetDevice(String deviceId);
@@ -52,7 +52,7 @@ class OmiFeatures {
 abstract class IDeviceServiceSubscription {
   void onDevices(List<BtDevice> devices);
   void onStatusChanged(DeviceServiceStatus status);
-  void onDeviceConnectionStateChanged(String deviceId, DeviceConnectionState state);
+  void onDeviceConnectionStateChanged(String deviceId, DeviceConnectionState state, {bool isManual = false});
 }
 
 class DeviceService implements IDeviceService {
@@ -210,11 +210,11 @@ class DeviceService implements IDeviceService {
     }
   }
 
-  void onDeviceConnectionStateChanged(String deviceId, DeviceConnectionState state) {
-    Logger.debug("device connection state changed...$deviceId...$state");
-    DebugLogManager.logEvent('device_connection_state', {'device_id': deviceId, 'state': state.name});
+  void onDeviceConnectionStateChanged(String deviceId, DeviceConnectionState state, {bool isManual = false}) {
+    Logger.debug("device connection state changed...$deviceId...$state (isManual: $isManual)");
+    DebugLogManager.logEvent('device_connection_state', {'device_id': deviceId, 'state': state.name, 'is_manual': isManual});
     for (var s in _subscriptions.values) {
-      s.onDeviceConnectionStateChanged(deviceId, state);
+      s.onDeviceConnectionStateChanged(deviceId, state, isManual: isManual);
     }
   }
 
@@ -287,10 +287,10 @@ class DeviceService implements IDeviceService {
   }
 
   @override
-  Future<void> disconnectDevice() async {
+  Future<void> disconnectDevice({bool isManual = true}) async {
     if (_connection != null) {
-      Logger.debug("DeviceService: Disconnecting device...");
-      await _connection?.disconnect();
+      Logger.debug("DeviceService: Disconnecting device (isManual: $isManual)...");
+      await _connection?.disconnect(isManual: isManual);
       _connection = null;
     }
   }
@@ -301,14 +301,14 @@ class DeviceService implements IDeviceService {
     if (_connection != null) {
       if (_connection!.status == DeviceConnectionState.connected) {
         try {
-          await _connection!.disconnect();
+          await disconnectDevice(isManual: true);
         } catch (e) {
           Logger.debug("DeviceService: disconnect during forget failed: $e");
         }
       }
 
       try {
-        await _connection!.transport.dispose();
+        await _connection?.transport.dispose();
       } catch (e) {
         Logger.debug("DeviceService: transport dispose during forget failed: $e");
       }
