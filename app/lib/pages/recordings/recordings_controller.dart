@@ -1226,17 +1226,60 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         return '${c.file.parent.path}/recording_fs320_$ts.bin';
       });
 
-  static double _computeAccumulatedMinutes(List<Batch> batches) {
-    final rawTotalBytes = batches.expand((b) => b.rawSegments).fold<int>(0, (sum, f) {
-      try {
-        return sum + f.lengthSync();
-      } catch (_) {
-        return sum;
-      }
-    });
-    final draftDurationMs =
-        batches.expand((b) => b.draftRecordings).fold<int>(0, (sum, c) => sum + c.duration.inMilliseconds);
+  double _computeAccumulatedMinutes(List<Batch> batches) {
+    final finalizedSessionIds = batches.expand((b) => b.finalizedRecordings).map((c) => c.sessionId).whereType<int>().toSet();
 
-    return (rawTotalBytes / 252000.0) + (draftDurationMs / 60000.0);
+    final Map<int, int> sessionRawBytes = {};
+    int unknownRawBytes = 0;
+
+    for (final f in batches.expand((b) => b.rawSegments)) {
+      final name = f.path.split('/').last;
+      final parts = name.split('_');
+      int? sid;
+      if (parts.length > 1) {
+        sid = int.tryParse(parts[1].split('.').first);
+      }
+
+      // If session is already finalized, its raw segments don't count towards "accumulated"
+      if (sid != null && finalizedSessionIds.contains(sid)) continue;
+
+      try {
+        final len = f.lengthSync();
+        if (sid != null) {
+          sessionRawBytes[sid] = (sessionRawBytes[sid] ?? 0) + len;
+        } else {
+          unknownRawBytes += len;
+        }
+      } catch (_) {}
+    }
+
+    double totalMinutes = (unknownRawBytes / 252000.0);
+
+    final Map<int, int> draftDurations = {};
+    for (final c in batches.expand((b) => b.draftRecordings)) {
+      if (c.sessionId != null) {
+        draftDurations[c.sessionId!] = c.duration.inMilliseconds;
+      } else {
+        totalMinutes += (c.duration.inMilliseconds / 60000.0);
+      }
+    }
+
+    final allPendingSids = {...sessionRawBytes.keys, ...draftDurations.keys};
+    for (final sid in allPendingSids) {
+      final rawMin = (sessionRawBytes[sid] ?? 0) / 252000.0;
+      final draftMin = (draftDurations[sid] ?? 0) / 60000.0;
+
+      if (_prefs.adjustmentMode) {
+        // In adjustment mode, we take the max of raw vs draft to avoid double-counting
+        // the same audio that exists both as a .bin and as a .m4a draft.
+        totalMinutes += (rawMin > draftMin ? rawMin : draftMin);
+      } else {
+        // In normal mode, segments are deleted once processed into a draft,
+        // so they are disjoint and should be summed.
+        totalMinutes += (rawMin + draftMin);
+      }
+    }
+
+    return totalMinutes;
   }
 }
