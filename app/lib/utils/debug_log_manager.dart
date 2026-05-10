@@ -93,6 +93,27 @@ class DebugLogManager {
     }
   }
 
+  static Future<List<Map<String, dynamic>>> getRecentLogs({int limit = 10}) async {
+    try {
+      final f = await _ensureFile();
+      if (!await f.exists()) return [];
+      final lines = await f.readAsLines();
+      return lines.reversed
+          .take(limit)
+          .map((l) {
+            try {
+              return jsonDecode(l) as Map<String, dynamic>;
+            } catch (_) {
+              return null;
+            }
+          })
+          .whereType<Map<String, dynamic>>()
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   static Future<void> clear() async {
     try {
       final f = await _ensureFile();
