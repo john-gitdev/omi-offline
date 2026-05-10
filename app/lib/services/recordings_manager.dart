@@ -739,7 +739,9 @@ class RecordingsManager {
         final files = folderEntities
             .whereType<File>()
             .where(
-              (f) => f.path.endsWith('.m4a') || f.path.endsWith('.wav') || f.path.endsWith('.ogg'),
+              (f) =>
+                  (f.path.endsWith('.m4a') || f.path.endsWith('.wav') || f.path.endsWith('.ogg')) &&
+                  !f.path.endsWith('.tmp.m4a'),
             )
             .toList();
 

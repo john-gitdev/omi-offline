@@ -44,10 +44,12 @@ class Logger {
 
   static void info(dynamic message) {
     instance.talker.info(message);
+    DebugLogManager.logInfo(message.toString());
   }
 
   static void debug(dynamic message) {
     instance.talker.debug(message);
+    DebugLogManager.logInfo('[DEBUG] ${message.toString()}');
   }
 
   static void handle(dynamic exception, StackTrace? stackTrace, {String? message}) {

@@ -13,7 +13,9 @@ import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/logger.dart';
+import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/widgets/dialog.dart';
+import 'package:share_plus/share_plus.dart';
 
 class SyncPage extends StatefulWidget {
   const SyncPage({super.key});
@@ -492,6 +494,61 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 activeColor: Colors.amber,
                 contentPadding: EdgeInsets.zero,
               ),
+              const SizedBox(height: 12),
+              SwitchListTile(
+                title: const Text('Save Diagnostic Logs to File',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+                subtitle: const Text('Persists info/debug logs to a daily file on your device.',
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
+                value: SharedPreferencesUtil().devLogsToFileEnabled,
+                onChanged: (val) async {
+                  await DebugLogManager.setEnabled(val);
+                  setState(() {});
+                },
+                activeColor: Colors.amber,
+                contentPadding: EdgeInsets.zero,
+              ),
+              if (SharedPreferencesUtil().devLogsToFileEnabled) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      final files = await DebugLogManager.listLogFiles();
+                      if (files.isEmpty) {
+                        setState(() => _statusMessage = 'No log files available to share');
+                        return;
+                      }
+                      // Share the most recent log file
+                      final xFile = XFile(files.first.path);
+                      await Share.shareXFiles([xFile], text: 'Omi Diagnostic Logs');
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.amber,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('Share Diagnostic Logs',
+                        style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () async {
+                      await DebugLogManager.clear();
+                      setState(() => _statusMessage = 'Diagnostic logs cleared');
+                    },
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.amber, width: 1),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: const Text('Clear Diagnostic Logs',
+                        style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
               const SizedBox(height: 24),
               Consumer<DeviceProvider>(
                 builder: (context, deviceProvider, _) {
