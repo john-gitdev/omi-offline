@@ -13,6 +13,7 @@ import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
 import 'package:omi/utils/audio/foreground.dart';
+import 'package:omi/utils/device_crash_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/debouncer.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
@@ -80,6 +81,7 @@ class DeviceProvider extends ChangeNotifier
   Future<void> clearCrashLogs() async {
     crashLogs.clear();
     await _saveCrashLogs();
+    await DeviceCrashLogManager.clear();
     notifyListeners();
   }
 
@@ -609,8 +611,8 @@ class DeviceProvider extends ChangeNotifier
           crashLogs.insert(0, log);
           if (crashLogs.length > 50) crashLogs.removeLast();
           await _saveCrashLogs();
-        }
-      }
+          await DeviceCrashLogManager.logCrash(log);
+        }      }
     }
 
     notifyListeners();

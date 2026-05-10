@@ -14,6 +14,7 @@ import 'package:omi/services/wals.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/debug_log_manager.dart';
+import 'package:omi/utils/device_crash_log_manager.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -545,6 +546,61 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                     ),
                     child: const Text('Clear Diagnostic Logs',
+                        style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              SwitchListTile(
+                title: const Text('Save Device Crash Logs to File',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+                subtitle: const Text('Persists device reset causes and uptime to a daily file.',
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
+                value: SharedPreferencesUtil().devCrashLogsToFileEnabled,
+                onChanged: (val) async {
+                  await DeviceCrashLogManager.setEnabled(val);
+                  setState(() {});
+                },
+                activeColor: Colors.amber,
+                contentPadding: EdgeInsets.zero,
+              ),
+              if (SharedPreferencesUtil().devCrashLogsToFileEnabled) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      final files = await DeviceCrashLogManager.listLogFiles();
+                      if (files.isEmpty) {
+                        setState(() => _statusMessage = 'No crash log files available to share');
+                        return;
+                      }
+                      final xFile = XFile(files.first.path);
+                      await Share.shareXFiles([xFile], text: 'Omi Device Crash Logs');
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.amber,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('Share Device Crash Logs',
+                        style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () async {
+                      await DeviceCrashLogManager.clear();
+                      Provider.of<DeviceProvider>(context, listen: false).clearCrashLogs();
+                      setState(() => _statusMessage = 'Device crash logs cleared');
+                    },
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.amber, width: 1),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: const Text('Clear Device Crash Logs',
                         style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
                   ),
                 ),
