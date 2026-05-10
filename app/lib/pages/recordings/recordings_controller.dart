@@ -249,7 +249,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final isBackground = state != null && state != AppLifecycleState.resumed;
     final now = DateTime.now();
 
-    if (isBackground && now.difference(_lastPollTime).inSeconds < 10) {
+    if (isBackground && now.difference(_lastPollTime).inSeconds < 2) {
       return;
     }
     _lastPollTime = now;
