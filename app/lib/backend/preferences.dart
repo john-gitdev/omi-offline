@@ -252,6 +252,17 @@ class SharedPreferencesUtil {
     }
   }
 
+  int getAutoUploadRetries(String key) => getInt('autoUploadRetry_$key', defaultValue: 0);
+
+  Future<void> incrementAutoUploadRetry(String key) async {
+    final current = getAutoUploadRetries(key);
+    await saveInt('autoUploadRetry_$key', current + 1);
+  }
+
+  Future<void> clearAutoUploadRetry(String key) async {
+    await remove('autoUploadRetry_$key');
+  }
+
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _preferences = prefs;
