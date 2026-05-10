@@ -75,6 +75,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
       Logger.debug('DebugTools: Calling syncAll()');
       final result = await ServiceManager.instance().wal.getSyncs().syncAll(progress: this);
+      deviceProvider.restartBackgroundSyncTimer();
       Logger.debug(
           'DebugTools: syncAll complete — result=${result == null ? 'null (nothing to sync)' : 'SyncLocalFilesResponse'}');
       setState(() {
@@ -133,6 +134,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
 
       Logger.debug('DebugTools: Calling rotateAndSync()');
       await ServiceManager.instance().wal.getSyncs().rotateAndSync(progress: this);
+      deviceProvider.restartBackgroundSyncTimer();
       Logger.debug('DebugTools: Force sync complete');
       setState(() {
         _statusMessage = 'Force Sync Complete.';
