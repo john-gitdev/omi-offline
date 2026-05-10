@@ -700,7 +700,8 @@ class RecordingsManager {
               final parts = line.split(',');
               final utc = int.tryParse(parts[0].trim());
               if (utc != null) {
-                final date = DateTime.fromMillisecondsSinceEpoch(utc * 1000);
+                // The sync service writes UTC in milliseconds.
+                final date = DateTime.fromMillisecondsSinceEpoch(utc);
                 markersByDate.putIfAbsent(fmtDate(date), () => []).add(date);
               }
             }
@@ -2042,8 +2043,8 @@ class RecordingsManager {
     // markers whose EDL files were just deleted above will be re-resolved by the
     // re-resolver on the next processing cycle.
     if (batch.markerTimestamps.isNotEmpty) {
-      final markerSecondsToRemove =
-          batch.markerTimestamps.map((dt) => dt.millisecondsSinceEpoch ~/ 1000).toSet();
+      final markerMillisToRemove =
+          batch.markerTimestamps.map((dt) => dt.millisecondsSinceEpoch).toSet();
 
       final rawSegmentsDir = Directory('${directory.path}/raw_segments');
       if (await rawSegmentsDir.exists()) {
@@ -2056,7 +2057,7 @@ class RecordingsManager {
             final lines = await markerFile.readAsLines();
             final filtered = lines.where((line) {
               final utc = int.tryParse(line.split(',')[0].trim());
-              return utc == null || !markerSecondsToRemove.contains(utc);
+              return utc == null || !markerMillisToRemove.contains(utc);
             }).toList();
             if (filtered.length < lines.length) {
               if (filtered.isEmpty) {
