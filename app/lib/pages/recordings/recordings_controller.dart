@@ -116,6 +116,20 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   bool _isDisposed = false;
   bool _pendingProcessingTransition = false;
+  DateTime _lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+
+  void _throttledUpdate({bool force = false}) {
+    if (_isDisposed) return;
+    final now = DateTime.now();
+    final state = WidgetsBinding.instance.lifecycleState;
+    final isForeground = state == null || state == AppLifecycleState.resumed;
+    final throttleMs = isForeground ? 1000 : 2000;
+
+    if (!force && now.difference(_lastUiUpdate).inMilliseconds < throttleMs) return;
+    _lastUiUpdate = now;
+    _updateForegroundProgress();
+    notifyListeners();
+  }
 
   void init() {
     _lastHpKey = _prefs.heypocketApiKey;
@@ -154,8 +168,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (_totalMinutes > 0) {
         _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
       }
-      _updateForegroundProgress();
-      notifyListeners();
+      _throttledUpdate();
     }
   }
 
@@ -224,7 +237,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _isTranscoding = RecordingsManager.isTranscoding.value;
       }
     }
-    notifyListeners();
+    _throttledUpdate(force: true);
   }
 
   void _poll() {
@@ -249,7 +262,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _totalCount = syncs.estimatedTotalSegments;
         _syncedCount = 0;
         _syncSpeed = 0.0;
-        notifyListeners();
+        _throttledUpdate(force: true);
       }
 
       if (serviceIsProcessing && _spState == SyncProcessState.idle && !_pendingProcessingTransition) {
@@ -267,7 +280,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
             _minutesRemaining =
                 (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
             _processingProgress = RecordingsManager.processingProgress.value;
-            notifyListeners();
+            _throttledUpdate(force: true);
           }),
         );
       }
@@ -290,7 +303,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               _processingProgress = RecordingsManager.processingProgress.value;
               _syncedCount = 0;
               _syncSpeed = 0.0;
-              notifyListeners();
+              _throttledUpdate(force: true);
             }),
           );
         } else {
@@ -298,7 +311,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
           _syncedCount = 0;
           _totalCount = 0;
           _syncSpeed = 0.0;
-          notifyListeners();
+          _throttledUpdate(force: true);
           unawaited(reloadBatchesSilently());
         }
       }
@@ -308,7 +321,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _minutesRemaining = 0;
         _processingProgress = 0.0;
         _totalMinutes = 0;
-        notifyListeners();
+        _throttledUpdate(force: true);
         _loadBatches();
       }
     }
@@ -320,7 +333,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final currentKey = _prefs.heypocketApiKey;
     if (currentKey != _lastHpKey) {
       _lastHpKey = currentKey;
-      notifyListeners();
+      _throttledUpdate(force: true);
       if (currentKey.isNotEmpty) tryAutoUploadNext();
     }
   }
@@ -328,7 +341,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void _transitionTo(SyncProcessState newState) {
     if (_isDisposed) return;
     _spState = newState;
-    notifyListeners();
+    _throttledUpdate(force: true);
 
     if (newState != SyncProcessState.successUi) {
       _prefs.saveString(_kSpState, newState.name);
@@ -352,7 +365,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       'RecordingsController: Pipeline error [$activeStage]: $message',
     );
     _spState = SyncProcessState.error;
-    notifyListeners();
+    _throttledUpdate(force: true);
     _prefs.saveString(_kSpState, 'error');
     _prefs.saveString(_kSpLastActive, activeStage);
     _pipelineCompleter?.complete();
@@ -389,8 +402,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     } else {
       _syncedCount = 0;
     }
-    _updateForegroundProgress();
-    notifyListeners();
+    _throttledUpdate();
   }
 
   Future<void> startPipeline() async {
