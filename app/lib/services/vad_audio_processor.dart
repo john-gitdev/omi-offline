@@ -306,17 +306,14 @@ class VadAudioProcessor {
           _pcmWindow.clear();
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
-        } else if (gapMs > 10000 && gapMs <= _silenceDurationToSplitMs && !isClockJump) {
-          Logger.debug(
-            'VadAudioProcessor: Small gap before ${segmentFile.path.split('/').last} — '
-            'gapMs=$gapMs (within threshold, inserting silence).',
-          );
-          if (_currentRefs.isNotEmpty) {
-            _currentRefs.add(Duration(milliseconds: gapMs));
-            _currentChunkDurationMs += gapMs;
-          }
+        } else if (_currentRefs.isNotEmpty && (_currentChunkDurationMs + gapMs) >= _maxChunkMs) {
+          // INTER-FILE CUT: If this gap would push us over the 1hr/2hr limit, cut now.
+          Logger.debug('VadAudioProcessor: Max duration reached during inter-file gap — forcing cut.');
+          final filePath = await flushRemaining();
+          if (filePath != null) savedFiles.add(filePath);
         }
-        // gapMs <= 10000 or isClockJump: sequential firmware files or clock sync — stitch seamlessly.
+        // Gaps between files (small gaps) are now handled strictly by the internal packets (0xFFFFFFFD) 
+        // to avoid double-counting.
       }
 
       if (_currentRefs.isEmpty) {
@@ -360,20 +357,25 @@ class VadAudioProcessor {
             final markerUtcSeconds = byteData.getUint32(offset + 4, Endian.little);
             final markerUptimeMs = byteData.getUint32(offset + 8, Endian.little);
             const kMinValidMarkerEpoch = 946684800;
-            if (markerUtcSeconds > kMinValidMarkerEpoch) {
-              final markerFrameTime = DateTime.fromMillisecondsSinceEpoch(markerUtcSeconds * 1000, isUtc: true);
-              _forcedByMarker = true;
-              if (_currentRefs.isEmpty) {
-                // Start a new recording if we weren't already capturing (not even noise accumulation).
-                lastFrameWallTime = markerFrameTime;
-                _recordingStartTime = markerFrameTime;
-                _speechFrameCount = 0;
-                _currentChunkDurationMs = 0;
-                _currentFrameUptimeMs = markerUptimeMs;
-                Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — starting new recording.');
-              } else {
-                Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — protecting active recording.');
-              }
+
+            // 1. Primary: Use the derived wall time (locked to high-precision audio header)
+            // 2. Fallback: If no header found yet or wall time is suspicious, use marker's UTC
+            DateTime markerFrameTime = lastFrameWallTime;
+            if (_isDerivedTimestamp && markerUtcSeconds > kMinValidMarkerEpoch) {
+              markerFrameTime = DateTime.fromMillisecondsSinceEpoch(markerUtcSeconds * 1000, isUtc: true);
+              Logger.debug('VadAudioProcessor: Using marker UTC fallback: $markerFrameTime');
+            }
+
+            _forcedByMarker = true;
+            if (_currentRefs.isEmpty) {
+              lastFrameWallTime = markerFrameTime;
+              _recordingStartTime = markerFrameTime;
+              _speechFrameCount = 0;
+              _currentChunkDurationMs = 0;
+              _currentFrameUptimeMs = markerUptimeMs;
+              Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — starting new recording.');
+            } else {
+              Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — protecting active recording.');
             }
           }
           offset += 20;
@@ -407,11 +409,10 @@ class VadAudioProcessor {
                 final speechMs = _speechFrameCount * frameDurationMs;
                 final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
-                if (_currentRefs.isNotEmpty &&
-                    (!_discardShort || _currentChunkDurationMs >= _minDurationMs || _forcedByMarker) &&
-                    !tooShortSpeech) {
+                if (_currentRefs.isNotEmpty) {
                   final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
                   if (filePath != null) savedFiles.add(filePath);
+                  _forcedByMarker = false;
                 } else if (_currentRefs.isNotEmpty) {
                   Logger.debug(
                     'VadAudioProcessor: Discarding ${tooShortSpeech ? "noise" : "short"} conversation before split.',
@@ -420,7 +421,6 @@ class VadAudioProcessor {
                 _currentRefs = [];
                 _speechFrameCount = 0;
                 _currentChunkDurationMs = 0;
-                _forcedByMarker = false;
                 _recordingStartTime = newResumeTime;
                 Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
               } else {
@@ -579,11 +579,13 @@ class VadAudioProcessor {
   }
 
   void _resetState() {
+    if (_currentRefs.isNotEmpty) {
+      _forcedByMarker = false;
+    }
     _currentRefs = [];
     _speechFrameCount = 0;
     _currentChunkDurationMs = 0;
     _recordingStartTime = null;
-    _forcedByMarker = false;
   }
 
   @visibleForTesting

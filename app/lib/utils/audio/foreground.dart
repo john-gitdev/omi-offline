@@ -71,9 +71,10 @@ class ForegroundUtil {
     try {
       FlutterForegroundTask.init(
         androidNotificationOptions: AndroidNotificationOptions(
-          channelId: 'foreground_service',
-          channelName: 'Foreground Service Notification',
-          channelDescription: 'Transcription service is running in the background.',
+          id: 2001,
+          channelId: 'omi_ble_channel',
+          channelName: 'Omi BLE',
+          channelDescription: 'Omi background services.',
           channelImportance: NotificationChannelImportance.LOW,
           priority: NotificationPriority.HIGH,
         ),
@@ -97,8 +98,8 @@ class ForegroundUtil {
   }
 
   static Future<ServiceRequestResult> startForegroundTask({
-    String title = 'Scanning for Omi device...',
-    String text = 'Transcription service is running in the background.',
+    String title = 'Omi is active',
+    String text = 'Running in the background',
   }) async {
     if (_isStarting) {
       Logger.debug('ForegroundTask already starting, skipping');
