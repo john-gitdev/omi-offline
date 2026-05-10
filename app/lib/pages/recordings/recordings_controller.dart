@@ -470,12 +470,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _isUserTriggered = true;
     _isForcePipeline = true;
     _lastActiveStage = 'syncing';
-    _transitionTo(SyncProcessState.syncing);
 
-    final syncs = ServiceManager.instance().wal.getSyncs();
     _totalCount = 0;
     _syncedCount = 0;
     _syncSpeed = 0.0;
+    _transitionTo(SyncProcessState.syncing);
+
+    final syncs = ServiceManager.instance().wal.getSyncs();
     notifyListeners();
     _persistProgress();
     WakelockPlus.enable();
@@ -547,19 +548,20 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   Future<void> _runPipeline() async {
     _isUserTriggered = true;
     _lastActiveStage = 'syncing';
+
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    _totalCount = syncs.estimatedTotalSegments;
+    _syncedCount = 0;
+    _syncSpeed = 0.0;
+
     _transitionTo(SyncProcessState.syncing);
 
     await Future.delayed(const Duration(seconds: 1));
 
-    final syncs = ServiceManager.instance().wal.getSyncs();
-    final estimatedTotal = syncs.estimatedTotalSegments;
     Logger.debug(
-      'RecordingsController: _runPipeline start — estimatedTotalSegments=$estimatedTotal',
+      'RecordingsController: _runPipeline start — estimatedTotalSegments=$_totalCount',
     );
 
-    _totalCount = estimatedTotal;
-    _syncedCount = 0;
-    _syncSpeed = 0.0;
     notifyListeners();
     _persistProgress();
     WakelockPlus.enable();
@@ -611,6 +613,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   Future<void> _runProcessing() async {
     _lastActiveStage = 'processing';
+
+    _totalMinutes = 0.0;
+    _minutesRemaining = 0.0;
+    _processingProgress = 0.0;
+
     _transitionTo(SyncProcessState.processing);
 
     final activeBatches = _batches.where((b) => b.rawSegments.isNotEmpty).toList();
