@@ -170,7 +170,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       final mins = _minutesRemaining.ceil();
       ForegroundUtil.updateNotification(
         title: 'Processing recordings',
-        text: 'About $mins min remaining...',
+        text: '$mins min of audio to process...',
       );
     }
   }

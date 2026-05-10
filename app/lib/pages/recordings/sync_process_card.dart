@@ -87,10 +87,10 @@ class SyncProcessCard extends StatelessWidget {
         subText = data.isTranscoding
             ? 'Converting to m4a'
             : (data.minutesRemaining >= 1
-                ? '~${data.minutesRemaining.ceil()} min remaining to process'
+                ? '~${data.minutesRemaining.ceil()} min of audio to process'
                 : (data.minutesRemaining >= 0
-                    ? '< 1 min remaining to process'
-                    : 'Calculating ETA…'));
+                    ? '< 1 min of audio to process'
+                    : 'Calculating…'));
         iconBg = Colors.deepPurpleAccent;
         iconChild = const SizedBox(
           width: 16,
