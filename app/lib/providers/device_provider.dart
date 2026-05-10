@@ -26,6 +26,7 @@ class DeviceProvider extends ChangeNotifier
   bool isConnected = false;
   bool _isAppInForeground = true;
   bool isDeviceStorageSupport = false;
+  bool _isIntentionallyDisconnecting = false;
   BtDevice? connectedDevice;
   BtDevice? pairedDevice;
   StreamSubscription<List<int>>? _bleBatteryLevelListener;
@@ -433,7 +434,7 @@ class DeviceProvider extends ChangeNotifier
     }
 
     try {
-      if (!await FlutterForegroundTask.isRunningService) {
+      if (!await ForegroundUtil.isRunningService) {
         await ForegroundUtil.startForegroundTask(
           title: 'Syncing recordings...',
           text: 'Preparing to sync segments...',
@@ -478,7 +479,7 @@ class DeviceProvider extends ChangeNotifier
     }
   }
 
-  void onAppPaused() {
+  void onAppPaused() async {
     if (!_isAppInForeground) return;
     _isAppInForeground = false;
     _reconnectionTimer?.cancel();
@@ -487,7 +488,7 @@ class DeviceProvider extends ChangeNotifier
     // wake lock — without this the CPU sleeps and the Dart timer never fires.
     final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     if (interval > 0 && SharedPreferencesUtil().btDevice.id.isNotEmpty) {
-      if (!await FlutterForegroundTask.isRunningService) {
+      if (!await ForegroundUtil.isRunningService) {
         ForegroundUtil.startForegroundTask();
       }
     }
