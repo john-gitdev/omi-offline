@@ -102,12 +102,10 @@ class ForegroundUtil {
     String text = 'Running in the background',
   }) async {
     if (_isStarting) {
-      Logger.debug('ForegroundTask already starting, skipping');
       return const ServiceRequestSuccess();
     }
 
     _isStarting = true;
-    Logger.debug('startForegroundTask');
 
     try {
       ServiceRequestResult result;

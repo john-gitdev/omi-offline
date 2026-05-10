@@ -14,7 +14,6 @@ import 'package:omi/services/wals.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/debug_log_manager.dart';
-import 'package:omi/utils/device_crash_log_manager.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -578,88 +577,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 ),
               ],
               const SizedBox(height: 24),
-              SwitchListTile(
-                title: const Text('Save Device Crash Logs to File',
-                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
-                subtitle: const Text('Persists device reset causes and uptime to a daily file.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12)),
-                value: SharedPreferencesUtil().devCrashLogsToFileEnabled,
-                onChanged: (val) async {
-                  await DeviceCrashLogManager.setEnabled(val);
-                  setState(() {});
-                },
-                activeColor: Colors.amber,
-                contentPadding: EdgeInsets.zero,
-              ),
-              if (SharedPreferencesUtil().devCrashLogsToFileEnabled) ...[
-                const SizedBox(height: 12),
-                Consumer<DeviceProvider>(
-                  builder: (context, deviceProvider, _) {
-                    final logs = deviceProvider.crashLogs;
-                    if (logs.isEmpty) return const SizedBox.shrink();
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            const FaIcon(FontAwesomeIcons.triangleExclamation, size: 13, color: Colors.amber),
-                            const SizedBox(width: 8),
-                            const Text('Recent Reset Events',
-                                style: TextStyle(color: Colors.amber, fontSize: 14, fontWeight: FontWeight.w600)),
-                            const Spacer(),
-                            Text('${logs.length} entries', style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        ...logs.take(5).map((log) => _CrashLogRow(log: log)),
-                        const SizedBox(height: 12),
-                      ],
-                    );
-                  },
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () async {
-                          final files = await DeviceCrashLogManager.listLogFiles();
-                          if (files.isEmpty) {
-                            setState(() => _statusMessage = 'No crash log files available to share');
-                            return;
-                          }
-                          final xFile = XFile(files.first.path);
-                          await Share.shareXFiles([xFile], text: 'Omi Device Crash Logs');
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.amber,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                        child: const Text('Share Logs',
-                            style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () async {
-                          await DeviceCrashLogManager.clear();
-                          Provider.of<DeviceProvider>(context, listen: false).clearCrashLogs();
-                          setState(() => _statusMessage = 'Device crash logs cleared');
-                        },
-                        style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Colors.amber, width: 1),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                        child: const Text('Clear Logs',
-                            style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-              const SizedBox(height: 24),
               const Divider(color: Color(0xFF2C2C2E), height: 1),
               const SizedBox(height: 24),
               if (_isProcessing) ...[
@@ -826,52 +743,6 @@ class _DiagnosticLogRow extends StatelessWidget {
                     const SizedBox(height: 2),
                     Text(ts, style: const TextStyle(color: Colors.grey, fontSize: 10)),
                   ],
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CrashLogRow extends StatelessWidget {
-  final DeviceCrashLog log;
-
-  const _CrashLogRow({required this.log});
-
-  @override
-  Widget build(BuildContext context) {
-    final timeStr = DateFormat('MMM d, HH:mm').format(log.connectedAt);
-    final color = log.isCrash ? Colors.redAccent : Colors.white70;
-    final icon = log.isCrash ? FontAwesomeIcons.circleExclamation : FontAwesomeIcons.circleCheck;
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1C1C1E),
-          borderRadius: BorderRadius.circular(10),
-          border: log.isCrash ? Border.all(color: Colors.redAccent.withOpacity(0.4)) : null,
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: FaIcon(icon, size: 13, color: color),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(log.causeLabel, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500)),
-                  const SizedBox(height: 2),
-                  Text('${log.isCrash ? 'crashed after' : 'session'} ${log.uptimeStr} · read at $timeStr',
-                      style: const TextStyle(color: Colors.grey, fontSize: 11)),
                 ],
               ),
             ),

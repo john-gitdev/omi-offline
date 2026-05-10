@@ -346,9 +346,6 @@ class SharedPreferencesUtil {
   bool get devLogsToFileEnabled => getBool('devLogsToFileEnabled');
   set devLogsToFileEnabled(bool value) => saveBool('devLogsToFileEnabled', value);
 
-  bool get devCrashLogsToFileEnabled => getBool('devCrashLogsToFileEnabled');
-  set devCrashLogsToFileEnabled(bool value) => saveBool('devCrashLogsToFileEnabled', value);
-
   //--------------------------- Setters & Getters -----------------------------//
 
   String getString(String key, {String defaultValue = ''}) => _preferences?.getString(key) ?? defaultValue;
