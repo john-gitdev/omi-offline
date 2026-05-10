@@ -13,7 +13,7 @@ import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
 import 'package:omi/utils/audio/foreground.dart';
-import 'package:omi/utils/device_crash_log_manager.dart';
+import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/debouncer.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
@@ -82,7 +82,6 @@ class DeviceProvider extends ChangeNotifier
   Future<void> clearCrashLogs() async {
     crashLogs.clear();
     await _saveCrashLogs();
-    await DeviceCrashLogManager.clear();
     notifyListeners();
   }
 
@@ -424,10 +423,17 @@ class DeviceProvider extends ChangeNotifier
     }
 
     try {
-      await ForegroundUtil.startForegroundTask(
-        title: 'Syncing recordings...',
-        text: 'Preparing to sync segments...',
-      );
+      if (!await FlutterForegroundTask.isRunningService) {
+        await ForegroundUtil.startForegroundTask(
+          title: 'Syncing recordings...',
+          text: 'Preparing to sync segments...',
+        );
+      } else {
+        await ForegroundUtil.updateNotification(
+          title: 'Syncing recordings...',
+          text: 'Preparing to sync segments...',
+        );
+      }
       await walSync.syncAll(progress: _BackgroundSyncProgress());
 
       await ForegroundUtil.updateNotification(
@@ -612,8 +618,20 @@ class DeviceProvider extends ChangeNotifier
     final isTrulyBackground = (state != null && state != AppLifecycleState.resumed);
 
     if (SharedPreferencesUtil().maximizeBattery && (isTrulyBackground || !_isAppInForeground)) {
-      Logger.debug('Maximizing battery: disconnecting device after sync completion because app is in background.');
-      ServiceManager.instance().device.disconnectDevice();
+      // Resiliency: Only disconnect if there's nothing left to sync.
+      // If the sync was interrupted by a crash or disconnect, we want to stay
+      // "available" for auto-reconnect to finish the job.
+      final missingCount = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
+      if (missingCount <= 0) {
+        Logger.debug(
+          'Maximizing battery: disconnecting device after sync completion because app is in background and no segments remain.',
+        );
+        ServiceManager.instance().device.disconnectDevice();
+      } else {
+        Logger.debug(
+          'Maximizing battery: keeping device connected after sync pause — $missingCount segments still remaining.',
+        );
+      }
     }
   }
 
@@ -667,7 +685,11 @@ class DeviceProvider extends ChangeNotifier
           crashLogs.insert(0, log);
           if (crashLogs.length > 50) crashLogs.removeLast();
           await _saveCrashLogs();
-          await DeviceCrashLogManager.logCrash(log);
+          await DebugLogManager.logEvent('device_crash', {
+            ...log.toJson(),
+            'cause_label': log.causeLabel,
+            'uptime_label': log.uptimeStr,
+          });
         }      }
     }
 

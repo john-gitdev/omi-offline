@@ -233,10 +233,14 @@ class DeviceService implements IDeviceService {
   Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false, bool requiresBond = true}) async {
     await _mutex.acquire();
     try {
-      Logger.debug("ensureConnection ${_connection?.device.id} ${_connection?.status} $force");
+      final currentId = _connection?.device.id;
+      final currentStatus = _connection?.status;
+      Logger.debug(
+        "[DeviceService] ensureConnection: request=$deviceId (current: $currentId, status: $currentStatus, force: $force)",
+      );
 
       // Connected to this device — return it
-      if (_connection?.device.id == deviceId && _connection?.status == DeviceConnectionState.connected) {
+      if (currentId == deviceId && currentStatus == DeviceConnectionState.connected) {
         return _connection;
       }
 

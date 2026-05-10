@@ -481,7 +481,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
     _persistProgress();
     WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask(title: 'Syncing recordings...', text: 'Preparing to sync segments...');
+    if (!await FlutterForegroundTask.isRunningService) {
+      await ForegroundUtil.startForegroundTask(title: 'Syncing recordings...', text: 'Preparing to sync segments...');
+    } else {
+      await ForegroundUtil.updateNotification(title: 'Syncing recordings...', text: 'Preparing to sync segments...');
+    }
 
     try {
       await syncs.rotateAndSync(progress: this);
@@ -566,7 +570,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
     _persistProgress();
     WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask(title: 'Syncing recordings...', text: 'Preparing to sync segments...');
+    if (!await FlutterForegroundTask.isRunningService) {
+      await ForegroundUtil.startForegroundTask(title: 'Syncing recordings...', text: 'Preparing to sync segments...');
+    } else {
+      await ForegroundUtil.updateNotification(title: 'Syncing recordings...', text: 'Preparing to sync segments...');
+    }
 
     try {
       final result = await syncs.syncAll(progress: this);
