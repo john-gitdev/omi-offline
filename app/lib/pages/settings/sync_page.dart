@@ -511,46 +511,71 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               ),
               if (SharedPreferencesUtil().devLogsToFileEnabled) ...[
                 const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: () async {
-                      final files = await DebugLogManager.listLogFiles();
-                      if (files.isEmpty) {
-                        setState(() => _statusMessage = 'No log files available to share');
-                        return;
-                      }
-                      // Share the most recent log file
-                      final xFile = XFile(files.first.path);
-                      await Share.shareXFiles([xFile], text: 'Omi Diagnostic Logs');
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.amber,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    child: const Text('Share Diagnostic Logs',
-                        style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-                  ),
+                FutureBuilder<List<Map<String, dynamic>>>(
+                  future: DebugLogManager.getRecentLogs(limit: 5),
+                  builder: (context, snapshot) {
+                    final logs = snapshot.data ?? [];
+                    if (logs.isEmpty) return const SizedBox.shrink();
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Row(
+                          children: [
+                            FaIcon(FontAwesomeIcons.listUl, size: 13, color: Colors.amber),
+                            SizedBox(width: 8),
+                            Text('Recent Diagnostics',
+                                style: TextStyle(color: Colors.amber, fontSize: 14, fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        ...logs.map((l) => _DiagnosticLogRow(log: l)),
+                        const SizedBox(height: 12),
+                      ],
+                    );
+                  },
                 ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton(
-                    onPressed: () async {
-                      await DebugLogManager.clear();
-                      setState(() => _statusMessage = 'Diagnostic logs cleared');
-                    },
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.amber, width: 1),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          final files = await DebugLogManager.listLogFiles();
+                          if (files.isEmpty) {
+                            setState(() => _statusMessage = 'No log files available to share');
+                            return;
+                          }
+                          final xFile = XFile(files.first.path);
+                          await Share.shareXFiles([xFile], text: 'Omi Diagnostic Logs');
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.amber,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        child: const Text('Share Logs',
+                            style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                      ),
                     ),
-                    child: const Text('Clear Diagnostic Logs',
-                        style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
-                  ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () async {
+                          await DebugLogManager.clear();
+                          setState(() => _statusMessage = 'Diagnostic logs cleared');
+                        },
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Colors.amber, width: 1),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        child: const Text('Clear Logs',
+                            style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ],
                 ),
               ],
-              const SizedBox(height: 12),
+              const SizedBox(height: 24),
               SwitchListTile(
                 title: const Text('Save Device Crash Logs to File',
                     style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
@@ -566,55 +591,75 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               ),
               if (SharedPreferencesUtil().devCrashLogsToFileEnabled) ...[
                 const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: () async {
-                      final files = await DeviceCrashLogManager.listLogFiles();
-                      if (files.isEmpty) {
-                        setState(() => _statusMessage = 'No crash log files available to share');
-                        return;
-                      }
-                      final xFile = XFile(files.first.path);
-                      await Share.shareXFiles([xFile], text: 'Omi Device Crash Logs');
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.amber,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    child: const Text('Share Device Crash Logs',
-                        style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-                  ),
+                Consumer<DeviceProvider>(
+                  builder: (context, deviceProvider, _) {
+                    final logs = deviceProvider.crashLogs;
+                    if (logs.isEmpty) return const SizedBox.shrink();
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const FaIcon(FontAwesomeIcons.triangleExclamation, size: 13, color: Colors.amber),
+                            const SizedBox(width: 8),
+                            const Text('Recent Reset Events',
+                                style: TextStyle(color: Colors.amber, fontSize: 14, fontWeight: FontWeight.w600)),
+                            const Spacer(),
+                            Text('${logs.length} entries', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        ...logs.take(5).map((log) => _CrashLogRow(log: log)),
+                        const SizedBox(height: 12),
+                      ],
+                    );
+                  },
                 ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton(
-                    onPressed: () async {
-                      await DeviceCrashLogManager.clear();
-                      Provider.of<DeviceProvider>(context, listen: false).clearCrashLogs();
-                      setState(() => _statusMessage = 'Device crash logs cleared');
-                    },
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.amber, width: 1),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          final files = await DeviceCrashLogManager.listLogFiles();
+                          if (files.isEmpty) {
+                            setState(() => _statusMessage = 'No crash log files available to share');
+                            return;
+                          }
+                          final xFile = XFile(files.first.path);
+                          await Share.shareXFiles([xFile], text: 'Omi Device Crash Logs');
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.amber,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        child: const Text('Share Logs',
+                            style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                      ),
                     ),
-                    child: const Text('Clear Device Crash Logs',
-                        style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
-                  ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () async {
+                          await DeviceCrashLogManager.clear();
+                          Provider.of<DeviceProvider>(context, listen: false).clearCrashLogs();
+                          setState(() => _statusMessage = 'Device crash logs cleared');
+                        },
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Colors.amber, width: 1),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        child: const Text('Clear Logs',
+                            style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ],
                 ),
               ],
               const SizedBox(height: 24),
-              Consumer<DeviceProvider>(
-                builder: (context, deviceProvider, _) {
-                  return _CrashLogSection(
-                    logs: deviceProvider.crashLogs,
-                    onClear: () => deviceProvider.clearCrashLogs(),
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
+              const Divider(color: Color(0xFF2C2C2E), height: 1),
+              const SizedBox(height: 24),
               if (_isProcessing) ...[
                 const Text('Processing recordings...', style: TextStyle(color: Colors.white70, fontSize: 14)),
                 const SizedBox(height: 16),
@@ -734,61 +779,57 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 }
 
-class _CrashLogSection extends StatelessWidget {
-  final List<DeviceCrashLog> logs;
-  final VoidCallback onClear;
+class _DiagnosticLogRow extends StatelessWidget {
+  final Map<String, dynamic> log;
 
-  const _CrashLogSection({required this.logs, required this.onClear});
+  const _DiagnosticLogRow({required this.log});
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const FaIcon(FontAwesomeIcons.triangleExclamation, size: 13, color: Colors.amber),
-            const SizedBox(width: 8),
-            const Text('Device Crash Log',
-                style: TextStyle(color: Colors.amber, fontSize: 14, fontWeight: FontWeight.w600)),
-            const Spacer(),
-            Text('${logs.length} entr${logs.length == 1 ? 'y' : 'ies'}',
-                style: const TextStyle(color: Colors.grey, fontSize: 12)),
-          ],
+    final level = (log['level'] as String?) ?? 'INFO';
+    final message = (log['message'] as String?) ?? '';
+    final type = (log['type'] as String?) ?? '';
+    final ts = (log['timestamp'] as String?) ?? (log['ts'] as String?) ?? '';
+
+    final color = level == 'ERROR' ? Colors.redAccent : Colors.white70;
+    final icon = level == 'ERROR' ? FontAwesomeIcons.circleXmark : (level == 'WARN' ? FontAwesomeIcons.circleExclamation : FontAwesomeIcons.circleInfo);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1C1C1E),
+          borderRadius: BorderRadius.circular(8),
         ),
-        const SizedBox(height: 8),
-        if (logs.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 8),
-            child: Text('No diagnostics yet — connect the device to read.',
-                style: TextStyle(color: Colors.grey, fontSize: 13)),
-          )
-        else
-          ...logs.map((log) => _CrashLogRow(log: log)),
-        if (logs.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          GestureDetector(
-            onTap: onClear,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1C1C1E),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: FaIcon(icon, size: 12, color: color),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  FaIcon(FontAwesomeIcons.trashCan, size: 12, color: Colors.grey),
-                  SizedBox(width: 8),
-                  Text('Clear Crash Log', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                  Text(
+                    message.isNotEmpty ? message : type,
+                    style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w500),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (ts.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(ts, style: const TextStyle(color: Colors.grey, fontSize: 10)),
+                  ],
                 ],
               ),
             ),
-          ),
-        ],
-        const Divider(color: Color(0xFF2C2C2E), height: 32),
-      ],
+          ],
+        ),
+      ),
     );
   }
 }
