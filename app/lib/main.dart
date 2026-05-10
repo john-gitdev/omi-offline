@@ -30,6 +30,7 @@ void main() async {
   await ServiceManager.init();
   await ServiceManager.instance().start();
   await RecordingsManager.cleanUpIncompleteExtraction();
+  await RecordingsManager.cleanupOrphanedTempFiles();
 
   runApp(const MyApp());
 }
