@@ -235,14 +235,15 @@ class DeviceService implements IDeviceService {
     try {
       final currentId = _connection?.device.id;
       final currentStatus = _connection?.status;
-      Logger.debug(
-        "[DeviceService] ensureConnection: request=$deviceId (current: $currentId, status: $currentStatus, force: $force)",
-      );
 
       // Connected to this device — return it
       if (currentId == deviceId && currentStatus == DeviceConnectionState.connected) {
         return _connection;
       }
+
+      Logger.debug(
+        "[DeviceService] ensureConnection: request=$deviceId (current: $currentId, status: $currentStatus, force: $force)",
+      );
 
       // Transport exists for this device but disconnected — native handles reconnection.
       // Don't dispose and recreate the transport; that would cancel native's auto-reconnect.

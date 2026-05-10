@@ -117,6 +117,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   bool _isDisposed = false;
   bool _pendingProcessingTransition = false;
   DateTime _lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastPollTime = DateTime.fromMillisecondsSinceEpoch(0);
 
   void _throttledUpdate({bool force = false}) {
     if (_isDisposed) return;
@@ -244,6 +245,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void _poll() {
     if (_isDisposed) return;
 
+    final state = WidgetsBinding.instance.lifecycleState;
+    final isBackground = state != null && state != AppLifecycleState.resumed;
+    final now = DateTime.now();
+
+    if (isBackground && now.difference(_lastPollTime).inSeconds < 10) {
+      return;
+    }
+    _lastPollTime = now;
+
     final syncs = ServiceManager.instance().wal.getSyncs();
     final serviceIsSyncing = syncs.isSyncing;
     final serviceIsProcessing = RecordingsManager.isProcessingAny;
@@ -258,7 +268,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
 
     if (!_isUserTriggered) {
-      if (serviceIsSyncing && _spState == SyncProcessState.idle) {
+      if (serviceIsSyncing && (_spState == SyncProcessState.idle || _spState == SyncProcessState.processing)) {
         _spState = SyncProcessState.syncing;
         _totalCount = syncs.estimatedTotalSegments;
         _syncedCount = 0;

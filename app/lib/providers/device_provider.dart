@@ -48,8 +48,9 @@ class DeviceProvider extends ChangeNotifier
   Timer? _reconnectDelayTimer;
   Timer? _disconnectNotificationTimer;
   final Debouncer _disconnectDebouncer = Debouncer(delay: const Duration(milliseconds: 500));
-  final Debouncer _connectDebouncer = Debouncer(delay: const Duration(milliseconds: 100));
+  final Debouncer _connectDebouncer = Debouncer(delay: const Duration(milliseconds: 1000));
   bool _isHandlingDisconnect = false;
+  int _consecutiveAccidentalDisconnects = 0;
 
   String? lastSyncError;
   DateTime? lastSyncErrorTime;
@@ -422,7 +423,7 @@ class DeviceProvider extends ChangeNotifier
     if (RecordingsManager.isProcessingAny) return;
 
     void onProcessingProgress() {
-      if (!_isAppInForeground) {
+      if (!_isAppInForeground && RecordingsManager.isProcessingAny) {
         final progress = RecordingsManager.processingProgress.value;
         ForegroundUtil.updateNotification(
           title: 'Processing recordings...',
@@ -593,8 +594,23 @@ class DeviceProvider extends ChangeNotifier
 
     _reconnectDelayTimer?.cancel();
     // Skip reconnect only when maximize-battery intentionally disconnected while in background.
-    if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground && isManual) return;
-    _reconnectDelayTimer = Timer(const Duration(seconds: 1), () {
+    if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground && isManual) {
+      _consecutiveAccidentalDisconnects = 0;
+      return;
+    }
+
+    if (!isManual) {
+      _consecutiveAccidentalDisconnects++;
+    } else {
+      _consecutiveAccidentalDisconnects = 0;
+    }
+
+    final delaySeconds = isManual ? 1 : (1 << (_consecutiveAccidentalDisconnects - 1)).clamp(1, 60);
+    Logger.debug(
+      'DeviceProvider: reconnecting in $delaySeconds seconds (consecutiveFailures: $_consecutiveAccidentalDisconnects)',
+    );
+
+    _reconnectDelayTimer = Timer(Duration(seconds: delaySeconds), () {
       if (!_disposed) periodicConnect('coming from onDisconnect');
     });
   }
@@ -709,6 +725,7 @@ class DeviceProvider extends ChangeNotifier
   }
 
   void _handleDeviceConnected(String deviceId) async {
+    _consecutiveAccidentalDisconnects = 0;
     try {
       var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
       if (connection == null) return;
