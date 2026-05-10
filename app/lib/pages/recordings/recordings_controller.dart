@@ -491,7 +491,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
     _persistProgress();
     WakelockPlus.enable();
-    if (!await FlutterForegroundTask.isRunningService) {
+    if (!await ForegroundUtil.isRunningService) {
       await ForegroundUtil.startForegroundTask(title: 'Syncing recordings...', text: 'Preparing to sync segments...');
     } else {
       await ForegroundUtil.updateNotification(title: 'Syncing recordings...', text: 'Preparing to sync segments...');
@@ -580,7 +580,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
     _persistProgress();
     WakelockPlus.enable();
-    if (!await FlutterForegroundTask.isRunningService) {
+    if (!await ForegroundUtil.isRunningService) {
       await ForegroundUtil.startForegroundTask(title: 'Syncing recordings...', text: 'Preparing to sync segments...');
     } else {
       await ForegroundUtil.updateNotification(title: 'Syncing recordings...', text: 'Preparing to sync segments...');

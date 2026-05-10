@@ -142,7 +142,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<void> connect({
-    void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged,
+    void Function(String deviceId, DeviceConnectionState state, {bool isManual})? onConnectionStateChanged,
     bool requiresBond = false,
   }) async {
     await super.connect(onConnectionStateChanged: onConnectionStateChanged, requiresBond: requiresBond);
@@ -260,11 +260,11 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<void> disconnect() async {
+  Future<void> disconnect({bool isManual = true}) async {
     await _chargingSubscription?.cancel();
     _chargingSubscription = null;
     await stop();
-    await super.disconnect();
+    await super.disconnect(isManual: isManual);
   }
 
   @override
