@@ -353,9 +353,10 @@ class VadAudioProcessor {
         // Marker packet (0xFFFFFFFE = button-tap marker, 20 bytes: 4-byte header + 16-byte payload).
         // Payload layout: [0..3] UTC epoch seconds (u32 LE), [4..7] uptime ms, [8..11] session id.
         if (frameLength == 0xFFFFFFFE) {
-          if (offset + 12 <= fileLength) {
+          if (offset + 16 <= fileLength) {
             final markerUtcSeconds = byteData.getUint32(offset + 4, Endian.little);
             final markerUptimeMs = byteData.getUint32(offset + 8, Endian.little);
+            final markerSessionId = byteData.getUint32(offset + 12, Endian.little);
             const kMinValidMarkerEpoch = 946684800;
 
             // 1. Primary: Use the derived wall time (locked to high-precision audio header)
@@ -364,6 +365,17 @@ class VadAudioProcessor {
             if (_isDerivedTimestamp && markerUtcSeconds > kMinValidMarkerEpoch) {
               markerFrameTime = DateTime.fromMillisecondsSinceEpoch(markerUtcSeconds * 1000, isUtc: true);
               Logger.debug('VadAudioProcessor: Using marker UTC fallback: $markerFrameTime');
+            }
+
+            // Save marker to markers.txt so getBatches() can find it.
+            // We use the same format as SDCardWalSync: Milliseconds, Uptime, SessionID.
+            try {
+              final markerFile = File('${segmentFile.parent.path}/markers.txt');
+              final markerMs = markerFrameTime.millisecondsSinceEpoch;
+              await markerFile.writeAsString('$markerMs,$markerUptimeMs,$markerSessionId\n', mode: FileMode.append);
+              Logger.debug('VadAudioProcessor: Saved marker to ${markerFile.path} at $markerFrameTime');
+            } catch (e) {
+              Logger.error('VadAudioProcessor: Failed to save marker: $e');
             }
 
             _forcedByMarker = true;
