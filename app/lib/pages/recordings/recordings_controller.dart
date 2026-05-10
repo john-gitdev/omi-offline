@@ -977,6 +977,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final uploadKey = conversation.uploadKey;
         if (uploadKey == null) continue;
         if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
+        if (_prefs.getAutoUploadRetries(uploadKey) >= 3) continue;
         if (_uploadingFiles.contains(uploadKey)) continue;
         if (conversation.duration == Duration.zero || conversation.fileSizeBytes == 0) continue;
 
@@ -987,11 +988,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         unawaited(
           HeyPocketService.uploadRecording(apiKey, conversation).then((_) async {
             await _prefs.markUploadedToHeypocket(uploadKey);
+            await _prefs.clearAutoUploadRetry(uploadKey);
             if (isPassthrough) await _convertToPassthrough(conversation);
           }).catchError((e) {
             if (e is HeyPocketException && e.statusCode == 401) {
               _prefs.heypocketEnabled = false;
               _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
+            } else {
+              unawaited(_prefs.incrementAutoUploadRetry(uploadKey));
             }
             Logger.error('HeyPocket auto-upload failed: $e');
           }).whenComplete(() {
@@ -1098,6 +1102,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
         final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
         if (_prefs.isOmiSynced(binPath)) continue;
+        if (_prefs.getAutoUploadRetries(binPath) >= 3) continue;
         if (_syncingBinFiles.contains(binPath)) continue;
         final binFile = File(binPath);
         if (!binFile.existsSync()) {
@@ -1113,15 +1118,19 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
             if (result != null && result.success) {
               Logger.debug('OmiAutoSync: marked synced $binPath');
               await _prefs.markOmiSynced(binPath);
+              await _prefs.clearAutoUploadRetry(binPath);
               if (isPassthrough) await _convertToPassthrough(conversation);
               unawaited(OmiApiClient.traceSyncResult(result));
             } else {
               Logger.error('OmiAutoSync: result success=false for $binPath: ${result?.status}');
+              unawaited(_prefs.incrementAutoUploadRetry(binPath));
             }
           }).catchError((e) {
             if (e is OmiSyncException && e.isAuthError) {
               _prefs.omiEnabled = false;
               _pendingSnackMessage = 'Omi sync: credentials invalid — update them in Integrations';
+            } else {
+              unawaited(_prefs.incrementAutoUploadRetry(binPath));
             }
             Logger.error('Omi sync failed for $binPath: $e');
           }).whenComplete(() {
@@ -1156,6 +1165,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) {
         if (force || !_prefs.isUploadedToHeypocket(uploadKey)) {
           uploads.add(HeyPocketService.uploadRecording(_prefs.heypocketApiKey, conversation).then((_) {
+            unawaited(_prefs.clearAutoUploadRetry(uploadKey));
             return _prefs.markUploadedToHeypocket(uploadKey);
           }).catchError((e) {
             Logger.error('HeyPocket manual upload failed: $e');
@@ -1179,6 +1189,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
           uploads.add(OmiApiClient.syncLocalFiles([binFile]).then((result) async {
             if (result != null && result.success) {
               Logger.debug('OmiUpload: success, marking synced');
+              await _prefs.clearAutoUploadRetry(binPath);
               await _prefs.markOmiSynced(binPath);
               unawaited(OmiApiClient.traceSyncResult(result));
             } else {
