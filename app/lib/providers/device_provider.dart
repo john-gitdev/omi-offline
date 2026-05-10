@@ -388,9 +388,18 @@ class DeviceProvider extends ChangeNotifier
 
       if (!isConnected) {
         if (!isConnecting) {
+          bool connectedThisTick = false;
           for (int attempt = 0; attempt < 3 && !isConnected; attempt++) {
             if (attempt > 0) await Future.delayed(const Duration(seconds: 10));
             await scanAndConnectToDevice();
+            if (isConnected) {
+              connectedThisTick = true;
+              break;
+            }
+          }
+          if (connectedThisTick) {
+            // Immediately trigger sync after background connection
+            _doBackgroundSync();
           }
         }
       } else {
