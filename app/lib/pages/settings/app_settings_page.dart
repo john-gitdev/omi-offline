@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:intl/intl.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:provider/provider.dart';
@@ -198,6 +199,29 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                     Text(
                       'Shorter intervals reduce the risk of data loss but increase battery drain on your Omi device and phone.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                    Consumer<DeviceProvider>(
+                      builder: (context, provider, _) {
+                        if (provider.nextSyncTime == null || _backgroundSyncIntervalMinutes <= 0) {
+                          return const SizedBox.shrink();
+                        }
+                        final time = DateFormat(SharedPreferencesUtil().use24HourTime ? 'HH:mm' : 'h:mm a')
+                            .format(provider.nextSyncTime!.toLocal());
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 12),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.timer_outlined, color: Colors.deepPurpleAccent, size: 14),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Next sync at $time',
+                                style: const TextStyle(
+                                    color: Colors.deepPurpleAccent, fontSize: 13, fontWeight: FontWeight.w500),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ),

@@ -43,6 +43,7 @@ class DeviceProvider extends ChangeNotifier
   final int _connectionCheckSeconds = 30; // Scan every 30s instead of 15s
 
   Timer? _backgroundSyncTimer;
+  DateTime? nextSyncTime;
 
   Timer? _reconnectDelayTimer;
   Timer? _disconnectNotificationTimer;
@@ -346,6 +347,19 @@ class DeviceProvider extends ChangeNotifier
 
   void updateConnectingStatus(bool value) {
     isConnecting = value;
+    if (!_isAppInForeground) {
+      if (isConnecting && !isConnected) {
+        ForegroundUtil.updateNotification(
+          title: 'Scanning for Omi device...',
+          text: 'Looking for nearby device...',
+        );
+      } else if (!isConnecting) {
+        ForegroundUtil.updateNotification(
+          title: 'Omi is active',
+          text: isConnected ? 'Connected to device' : 'Running in the background',
+        );
+      }
+    }
     notifyListeners();
   }
 
@@ -360,9 +374,19 @@ class DeviceProvider extends ChangeNotifier
   void _startBackgroundSyncTimer() {
     _backgroundSyncTimer?.cancel();
     final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
-    if (interval <= 0) return; // Manual only
+    if (interval <= 0) {
+      nextSyncTime = null;
+      notifyListeners();
+      return; // Manual only
+    }
+    nextSyncTime = DateTime.now().add(Duration(minutes: interval));
+    notifyListeners();
+
     _backgroundSyncTimer = Timer.periodic(Duration(minutes: interval), (_) async {
       if (_disposed) return;
+      nextSyncTime = DateTime.now().add(Duration(minutes: interval));
+      notifyListeners();
+
       if (!isConnected) {
         if (!isConnecting) {
           for (int attempt = 0; attempt < 3 && !isConnected; attempt++) {
@@ -388,20 +412,52 @@ class DeviceProvider extends ChangeNotifier
       }
     }
     if (RecordingsManager.isProcessingAny) return;
+
+    void onProcessingProgress() {
+      if (!_isAppInForeground) {
+        final progress = RecordingsManager.processingProgress.value;
+        ForegroundUtil.updateNotification(
+          title: 'Processing recordings...',
+          text: progress < 1.0 ? '${(progress * 100).toInt()}% complete...' : 'Finishing processing...',
+        );
+      }
+    }
+
     try {
-      await ForegroundUtil.startForegroundTask();
-      await walSync.syncAll();
+      await ForegroundUtil.startForegroundTask(
+        title: 'Syncing recordings...',
+        text: 'Preparing to sync segments...',
+      );
+      await walSync.syncAll(progress: _BackgroundSyncProgress());
+
+      await ForegroundUtil.updateNotification(
+        title: 'Processing recordings...',
+        text: 'Preparing to process segments...',
+      );
+      RecordingsManager.processingProgress.addListener(onProcessingProgress);
       await RecordingsManager.processAllCompletedSessions();
-      await walSync.syncAll();
+      RecordingsManager.processingProgress.removeListener(onProcessingProgress);
+
+      await ForegroundUtil.updateNotification(
+        title: 'Syncing recordings...',
+        text: 'Finalizing sync...',
+      );
+      await walSync.syncAll(progress: _BackgroundSyncProgress());
     } catch (e) {
       lastSyncError = e.toString();
       lastSyncErrorTime = DateTime.now();
       notifyListeners();
     } finally {
+      RecordingsManager.processingProgress.removeListener(onProcessingProgress);
       // Only release the foreground service (and wake lock) when the app is
       // visible. In background we keep it alive so the next timer tick fires.
       if (_isAppInForeground) {
         await ForegroundUtil.stopForegroundTask();
+      } else {
+        ForegroundUtil.updateNotification(
+          title: isConnected ? 'Omi is active' : 'Omi is active',
+          text: isConnected ? 'Connected to device' : 'Running in the background',
+        );
       }
     }
   }
@@ -692,4 +748,14 @@ class DeviceProvider extends ChangeNotifier
 
   @override
   void onStatusChanged(DeviceServiceStatus status) {}
+}
+
+class _BackgroundSyncProgress implements IWalSyncProgressListener {
+  @override
+  void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
+    ForegroundUtil.updateNotification(
+      title: 'Syncing recordings...',
+      text: '${(percentage * 100).toInt()}% complete...',
+    );
+  }
 }
