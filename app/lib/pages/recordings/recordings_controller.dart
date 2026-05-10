@@ -181,9 +181,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       );
     } else if (_spState == SyncProcessState.processing) {
       final mins = _minutesRemaining.ceil();
+      final text = mins > 0 ? '$mins min of audio to process...' : '<1 min of audio to process...';
       ForegroundUtil.updateNotification(
         title: 'Processing recordings',
-        text: '$mins min of audio to process...',
+        text: text,
       );
     }
   }

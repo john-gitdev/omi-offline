@@ -391,7 +391,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => Future.value(false));
   }
 
-  Future<void> _saveMarker(int sessionTimestamp, int utcTime, int uptime, int sessionId) async {
+  Future<void> _saveMarker(int sessionTimestamp, int markerMs, int uptime, int sessionId) async {
     try {
       final directory = await getApplicationDocumentsDirectory();
       String subFolder = (sessionTimestamp < 946684800)
@@ -401,8 +401,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       final folder = Directory(folderPath);
       if (!await folder.exists()) await folder.create(recursive: true);
       final markerFile = File('${folder.path}/markers.txt');
-      // Save CSV: UTC, Uptime, SessionID
-      await markerFile.writeAsString('$utcTime,$uptime,$sessionId\n', mode: FileMode.append);
+      // Save CSV: UTC Ms, Uptime, SessionID
+      await markerFile.writeAsString('$markerMs,$uptime,$sessionId\n', mode: FileMode.append);
     } catch (_) {}
   }
 
@@ -608,15 +608,41 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             // allocating thousands of short-lived ByteData objects during the linear scan.
             final batchBd = ByteData.sublistView(batch);
             int scanOff = 0;
+
+            int? currentUtcStartMs;
+            int? currentUptimeStartMs;
+
             while (scanOff + 4 <= batch.length) {
               int packageSize = batchBd.getUint32(scanOff, Endian.little);
 
+              if (packageSize == 0xFFFFFFFB) {
+                if (scanOff + 36 <= batch.length) {
+                  currentUtcStartMs = batchBd.getUint64(scanOff + 8, Endian.little);
+                  currentUptimeStartMs = batchBd.getUint64(scanOff + 16, Endian.little);
+                  scanOff += 36;
+                  continue;
+                } else {
+                  break;
+                }
+              }
+
               if (packageSize == 0xFFFFFFFE) {
                 if (scanOff + 20 <= batch.length) {
+                  int markerUtc = batchBd.getUint32(scanOff + 4, Endian.little);
+                  int markerUptime = batchBd.getUint32(scanOff + 8, Endian.little);
+                  int markerMs = markerUtc * 1000;
+
+                  // Resiliency: derive exactly from audio header to perfectly match the audio pipeline
+                  if (currentUtcStartMs != null &&
+                      currentUptimeStartMs != null) {
+                    final offsetMs = markerUptime - currentUptimeStartMs;
+                    markerMs = (currentUtcStartMs + offsetMs);
+                  }
+
                   await _saveMarker(
                     timerStart,
-                    batchBd.getUint32(scanOff + 4, Endian.little),
-                    batchBd.getUint32(scanOff + 8, Endian.little),
+                    markerMs,
+                    markerUptime,
                     batchBd.getUint32(scanOff + 12, Endian.little),
                   );
                   scanOff += 20;

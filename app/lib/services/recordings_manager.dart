@@ -146,15 +146,27 @@ class Conversation {
       }
     }
 
-    // Size-based duration estimate — only valid for WAV files.
-    // For M4A/OGG/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
-    final isWav = file.path.endsWith('.wav');
+    // Size-based duration estimate
+    // For WAV: 16kHz 16-bit mono = 32000 bytes/sec
+    // For M4A/OGG: We use ~32kbps (4000 bytes/sec)
+    final path = file.path.toLowerCase();
+    final isWav = path.endsWith('.wav');
+    final isM4a = path.endsWith('.m4a');
+    final isOgg = path.endsWith('.ogg');
+    
     int fileSize = 0;
     try {
       fileSize = file.lengthSync();
     } catch (_) {}
-    final pcmBytes = isWav && fileSize > 44 ? fileSize - 44 : 0;
-    final durationMs = (pcmBytes / 32000.0 * 1000).round();
+
+    int durationMs = 0;
+    if (isWav && fileSize > 44) {
+      durationMs = ((fileSize - 44) / 32000.0 * 1000).round();
+    } else if ((isM4a || isOgg) && fileSize > 0) {
+      // Rough estimate for compressed audio to allow marker resolution
+      durationMs = (fileSize / 4000.0 * 1000).round();
+    }
+
     final fallbackKey = file.path.split('/').last.split('.').first;
     return Conversation(
       file: file,
@@ -895,10 +907,18 @@ class RecordingsManager {
           });
         for (final entity in entities) {
           final fileName = entity.path.split('/').last;
-          final parts = fileName.split('_');
-          final millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
+          final nameNoExt = fileName.split('.').first;
+          final parts = nameNoExt.split('_');
+          
+          // Format: recording_<ts> or recording_<ts>_draft
+          int? millis;
+          if (parts.length >= 2) {
+            final tsStr = parts.contains('draft') ? parts[parts.length - 2] : parts.last;
+            millis = int.tryParse(tsStr);
+          }
+
           final dateStr =
-              (millis != null && millis > 0) ? _dateStringFromMillis(millis) : activeBatches.last.dateString;
+              (millis != null && millis > 946684800) ? _dateStringFromMillis(millis) : activeBatches.last.dateString;
           final liveDir = Directory('${directory.path}/recordings/$dateStr');
           await liveDir.create(recursive: true);
           final dest = '${liveDir.path}/$fileName';
@@ -908,15 +928,19 @@ class RecordingsManager {
           
           // If we are moving a draft, delete any existing finalized version.
           // If we are moving a finalized file, delete any existing draft version.
-          try {
-            if (fileName.contains('_draft')) {
-              await File(dest.replaceAll('_draft', '')).delete();
-              await File(dest.replaceAll(RegExp(r'_draft\.(m4a|wav|ogg)$'), '.meta')).delete();
-            } else {
-              await File(dest.replaceAllMapped(RegExp(r'\.(m4a|wav|ogg)$'), (m) => '_draft${m[0]}')).delete();
-              await File(dest.replaceAll(RegExp(r'\.(m4a|wav|ogg)$'), '_draft.meta')).delete();
-            }
-          } on FileSystemException catch (_) {}
+          // Only do this for audio files to avoid deleting the meta we just moved (since meta comes first).
+          final isAudio = fileName.endsWith('.m4a') || fileName.endsWith('.wav') || fileName.endsWith('.ogg');
+          if (isAudio) {
+            try {
+              if (fileName.contains('_draft')) {
+                await File(dest.replaceAll('_draft', '')).delete();
+                await File(dest.replaceAll(RegExp(r'_draft\.(m4a|wav|ogg)$'), '.meta')).delete();
+              } else {
+                await File(dest.replaceAllMapped(RegExp(r'\.(m4a|wav|ogg)$'), (m) => '_draft${m[0]}')).delete();
+                await File(dest.replaceAll(RegExp(r'\.(m4a|wav|ogg)$'), '_draft.meta')).delete();
+              }
+            } on FileSystemException catch (_) {}
+          }
 
           await entity.rename(dest);
           if (fileName.endsWith('.m4a')) {
@@ -1626,8 +1650,9 @@ class RecordingsManager {
 
       // Strict containment only: marker must fall within a recording that was actually
       // produced from the audio around that time.
+      // 5-second tolerance on the start boundary to catch markers pressed just as VAD wakes up.
       int matchIdx = recordings.indexWhere(
-        (r) => markerMs >= r.startMs && markerMs < r.endMs,
+        (r) => markerMs >= (r.startMs - 5000) && markerMs <= r.endMs,
       );
 
       if (matchIdx >= 0) {
@@ -1642,6 +1667,9 @@ class RecordingsManager {
         if (rec.startUptime != null && rec.startUptime! > 0 && markerMs < 946684800000) {
           markerOffsetMs = markerMs - (rec.startUptime! * 1000);
         }
+        
+        // Ensure offset is never negative (e.g. if marker happened within 5s tolerance before start)
+        if (markerOffsetMs < 0) markerOffsetMs = 0;
 
         final edlData = {
           'markerTimestampMs': markerMs,
@@ -1716,10 +1744,48 @@ class RecordingsManager {
 
             File? segmentFile;
             if (segmentFilename != null && segmentFilename.isNotEmpty) {
-              final f = File('${dateFolder.path}/$segmentFilename');
-              if (await f.exists()) segmentFile = f;
+              final localFile = File('${dateFolder.path}/$segmentFilename');
+              if (await localFile.exists()) {
+                segmentFile = localFile;
+              } else {
+                // Resiliency: if audio was misplaced (bug in moveTempFilesToLive), search other folders.
+                for (final otherFolder in dateFolders) {
+                  if (otherFolder.path == dateFolder.path) continue;
+                  final otherFile = File('${otherFolder.path}/$segmentFilename');
+                  if (await otherFile.exists()) {
+                    segmentFile = otherFile;
+                    Logger.debug('RecordingsManager: Found misplaced audio for marker in ${otherFolder.path}');
+                    break;
+                  }
+                }
+              }
             }
 
+            // If still pending, trigger a quick resolution attempt to rescue this marker.
+            // This handles cases where metadata was lost or audio was misplaced.
+            if (segmentFile == null) {
+              await _resolveMarkerConversations(dateFolder.path, [DateTime.fromMillisecondsSinceEpoch(markerMs)]);
+              // Re-read the file to see if it was resolved
+              try {
+                final updatedJson = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+                final newSegmentFilename = updatedJson['segmentFilename'] as String?;
+                if (newSegmentFilename != null && newSegmentFilename.isNotEmpty) {
+                  // Resolve successful!
+                  final f = File('${dateFolder.path}/$newSegmentFilename');
+                  if (await f.exists()) {
+                    return MarkerConversation(
+                      markerTime: DateTime.fromMillisecondsSinceEpoch(markerMs),
+                      segment: f,
+                      markerOffsetMs: updatedJson['markerOffsetMs'] as int? ?? 0,
+                      cropStartMs: updatedJson['cropStartMs'] as int? ?? 0,
+                      cropEndMs: updatedJson['cropEndMs'] as int? ?? 0,
+                      edlFile: edlFile,
+                      userSaved: updatedJson['userSaved'] as bool? ?? false,
+                    );
+                  }
+                }
+              } catch (_) {}
+            }
             return MarkerConversation(
               markerTime: DateTime.fromMillisecondsSinceEpoch(markerMs),
               segment: segmentFile,
