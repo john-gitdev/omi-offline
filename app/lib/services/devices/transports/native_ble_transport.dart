@@ -71,14 +71,18 @@ class NativeBleTransport extends DeviceTransport {
 
     try {
       _services = await _deviceReadyCompleter!.future.timeout(
-        const Duration(seconds: 60),
-        onTimeout: () => throw TimeoutException('Device ready timeout after 60s'),
+        const Duration(seconds: 30),
+        onTimeout: () => throw TimeoutException('Device ready timeout after 30s'),
       );
       _deviceReadyCompleter = null;
       _updateState(DeviceTransportState.connected);
     } catch (e) {
       Logger.debug('[NativeBleTransport] connect failed: $e');
+      final completer = _deviceReadyCompleter;
       _deviceReadyCompleter = null;
+      if (completer != null && !completer.isCompleted) {
+        completer.completeError(e);
+      }
       _updateState(DeviceTransportState.disconnected);
       await Future.delayed(const Duration(seconds: 2));
       rethrow;
@@ -269,20 +273,17 @@ class NativeBleTransport extends DeviceTransport {
 
   void _handleConnectionState(bool connected, String? error) {
     if (connected) {
-      _updateState(DeviceTransportState.connected);
+      // Physical BLE connection established.
+      // We don't update state to .connected yet; we wait for _handleDeviceReady
+      // to confirm services are discovered and the device is fully usable.
       return;
     }
 
-    if (_state == DeviceTransportState.connecting && error != null) {
-      if (error == 'unmanaged' || error == 'gatt_status_133' || error == 'gatt_status_-1') {
-        // 'unmanaged': belt-and-suspenders for the await race fix in dispose/disconnect.
-        // 'gatt_status_133': Android GATT_ERROR — transient, native layer retries automatically.
-        // 'gatt_status_-1': Internal timeout — transient, native layer retries automatically.
-        // Other gatt_status codes (8=auth, 19=remote termination, 22=not supported, …) are
-        // real failures and must propagate so the connection attempt is properly aborted.
-        Logger.debug('[NativeBleTransport] Ignoring transient error during connect: $error');
-        return;
-      }
+    // Ignore transient GATT status errors during connection phase to allow native retry to work.
+    final bool isConnecting = _deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted;
+    if (isConnecting && error != null && (error.contains('133') || error.contains('-1'))) {
+      Logger.debug('[NativeBleTransport] Ignoring transient GATT error during connect: $error');
+      return;
     }
 
     // Remember active subscriptions before closing streams

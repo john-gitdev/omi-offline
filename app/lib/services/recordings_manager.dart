@@ -1119,14 +1119,6 @@ class RecordingsManager {
 
         await Future.delayed(const Duration(milliseconds: 200));
         if (await tempDir.exists()) await tempDir.delete(recursive: true);
-
-        // Resolve marker conversations for each date that has markers.
-        // Must run after temp→live move so the m4a files are in place.
-        for (final batch in activeBatches) {
-          if (batch.markerTimestamps.isEmpty) continue;
-          final liveDir = '${directory.path}/recordings/${batch.dateString}';
-          await _resolveMarkerConversations(liveDir, batch.markerTimestamps);
-        }
       } catch (e) {
         _activeIsolateControlPort = null;
         Logger.error("RecordingsManager: Combined processing failed: $e");
@@ -1149,6 +1141,14 @@ class RecordingsManager {
       if (isM4a) isTranscoding.value = true;
       try {
         await _stitchDraftRecordings(finalizeAll: finalizeDrafts);
+
+        // Resolve marker conversations for each date that has markers.
+        // Must run AFTER stitch pass so markers are tied to finalized recordings.
+        final recordingsRoot = '${directory.path}/recordings';
+        for (final batch in activeBatches) {
+          if (batch.markerTimestamps.isEmpty) continue;
+          await _resolveMarkerConversations(recordingsRoot, batch.markerTimestamps);
+        }
       } finally {
         isTranscoding.value = false;
       }
