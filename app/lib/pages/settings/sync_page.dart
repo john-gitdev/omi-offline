@@ -357,7 +357,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
         'Delete Problematic EDLs',
-        'This will permanently delete marker EDL files that have no matching recording (pending or orphaned), and remove their entries from markers.txt so they are not re-created. This cannot be undone. Continue?',
+        'This will permanently delete marker EDL files that have no matching recording (pending or orphaned). This cannot be undone. Continue?',
         confirmText: 'Delete',
       ),
     );
@@ -377,12 +377,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           await mc.edlFile.delete();
           Logger.debug('DebugTools: Deleted ${mc.edlFile.path}');
         }
-      }
-
-      // Remove the corresponding marker timestamps from every markers.txt so the
-      // deleted EDLs don't get re-created on the next processing cycle.
-      if (problematic.isNotEmpty) {
-        await RecordingsManager.removeMarkersFromLogs(problematic.map((mc) => mc.markerTime.millisecondsSinceEpoch).toList());
       }
 
       RecordingsManager.notifyRecordingsChanged();
