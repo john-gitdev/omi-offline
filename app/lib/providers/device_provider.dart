@@ -494,7 +494,7 @@ class DeviceProvider extends ChangeNotifier
         await ForegroundUtil.startForegroundTask();
       }
     }
-    if (SharedPreferencesUtil().maximizeBattery) {
+    if (SharedPreferencesUtil().maximizeBattery && !isFirmwareUpdateInProgress) {
       final walSync = ServiceManager.instance().wal.getSyncs();
       if (!walSync.isSyncing) {
         Logger.debug('Maximizing battery: disconnecting device because app is paused.');
@@ -651,7 +651,7 @@ class DeviceProvider extends ChangeNotifier
     final state = WidgetsBinding.instance.lifecycleState;
     final isTrulyBackground = (state != null && state != AppLifecycleState.resumed);
 
-    if (SharedPreferencesUtil().maximizeBattery && (isTrulyBackground || !_isAppInForeground)) {
+    if (SharedPreferencesUtil().maximizeBattery && !isFirmwareUpdateInProgress && (isTrulyBackground || !_isAppInForeground)) {
       // Resiliency: Only disconnect if there's nothing left to sync.
       // If the sync was interrupted by a crash or disconnect, we want to stay
       // "available" for auto-reconnect to finish the job.
