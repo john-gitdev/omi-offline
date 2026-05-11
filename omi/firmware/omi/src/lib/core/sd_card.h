@@ -127,6 +127,16 @@ void sd_request_wipe(void);
 bool sd_is_boot_ready(void);
 
 /**
+ * @brief Check whether a TMP→UTC filename rename is currently in flight.
+ *
+ * Set when sd_notify_time_synced() is called; cleared by the SD worker once
+ * sd_update_filename_after_timesync() completes. The storage thread polls this
+ * before responding to CMD_LIST_FILES so it never returns uptime-stamped entries.
+ * Safe to call from any thread.
+ */
+bool sd_is_timesync_rename_pending(void);
+
+/**
  * @brief Get the number of audio frames dropped during SD boot init.
  *
  * During the SD boot phase (mount + lfs_fs_gc pre-warm + file open, typically
