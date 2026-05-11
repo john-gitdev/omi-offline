@@ -1147,12 +1147,31 @@ class RecordingsManager {
       try {
         await _stitchDraftRecordings(finalizeAll: finalizeDrafts);
 
-        // Resolve marker conversations for all batches that have markers.
-        // Must run AFTER stitch pass so markers are tied to finalized recordings.
+        // Resolve marker conversations using up-to-date timestamps from disk.
+        // Re-reads markers.txt after VAD processing to get accurate frame-derived timestamps
+        // rather than the approximate snapshot captured in getBatches() before processing ran.
         final recordingsRoot = '${directory.path}/recordings';
-        final batchesWithMarkers = batches.where((b) => b.markerTimestamps.isNotEmpty).toList();
-        for (final batch in batchesWithMarkers) {
-          await _resolveMarkerConversations(recordingsRoot, batch.markerTimestamps);
+        final rawSegmentsRoot = Directory('${directory.path}/raw_segments');
+        final freshMarkerMs = <int>{};
+        if (await rawSegmentsRoot.exists()) {
+          await for (final entity in rawSegmentsRoot.list()) {
+            if (entity is! Directory) continue;
+            final mf = File('${entity.path}/markers.txt');
+            if (!await mf.exists()) continue;
+            try {
+              for (final line in await mf.readAsLines()) {
+                final parts = line.split(',');
+                final ms = int.tryParse(parts[0].trim());
+                if (ms != null && ms > 946684800000) freshMarkerMs.add(ms);
+              }
+            } catch (_) {}
+          }
+        }
+        if (freshMarkerMs.isNotEmpty) {
+          await _resolveMarkerConversations(
+            recordingsRoot,
+            freshMarkerMs.map((ms) => DateTime.fromMillisecondsSinceEpoch(ms)).toList(),
+          );
         }
       } finally {
         isTranscoding.value = false;
@@ -2059,6 +2078,7 @@ class RecordingsManager {
       await mc.edlFile.delete();
       Logger.debug('RecordingsManager: Deleted marker conversation ${mc.edlFile.path}');
     }
+    await removeMarkersFromLogs([mc.markerTime.millisecondsSinceEpoch]);
   }
 
   /// Deletes processed recordings (.m4a/.wav/.meta/.bin) for a day.
