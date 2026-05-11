@@ -391,32 +391,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => Future.value(false));
   }
 
-  Future<void> _saveMarker(int sessionTimestamp, int markerMs, int uptime, int sessionId) async {
-    try {
-      final directory = await getApplicationDocumentsDirectory();
-      String subFolder = (sessionTimestamp < 946684800) ? 'session_$sessionId' : sessionTimestamp.toString();
-      final folderPath = '${directory.path}/raw_segments/$subFolder';
-      final folder = Directory(folderPath);
-      if (!await folder.exists()) await folder.create(recursive: true);
-      final markerFile = File('${folder.path}/markers.txt');
-
-      // Deduplication: only append if this timestamp doesn't already exist in the file.
-      if (await markerFile.exists()) {
-        final lines = await markerFile.readAsLines();
-        for (final line in lines) {
-          final parts = line.split(',');
-          if (parts.isNotEmpty) {
-            final existingMs = int.tryParse(parts[0].trim());
-            // Exact match for the storage file to prevent sync-retry pollution.
-            if (existingMs == markerMs) return;
-          }
-        }
-      }
-
-      // Save CSV: UTC Ms, Uptime, SessionID
-      await markerFile.writeAsString('$markerMs,$uptime,$sessionId\n', mode: FileMode.append);
-    } catch (_) {}
-  }
 
   Future<(File, int)> _flushToDisk(
     Wal wal,
@@ -614,67 +588,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             }
 
             final Uint8List batch = batchBuilder.takeBytes();
-
-            // 2. Scan for Markers (0xFE) without stripping/modifying any bytes (READ-ONLY)
-            // Optimization: Create a single ByteData view for the entire batch to avoid
-            // allocating thousands of short-lived ByteData objects during the linear scan.
-            final batchBd = ByteData.sublistView(batch);
-            int scanOff = 0;
-
-            int? currentUtcStartMs;
-            int? currentUptimeStartMs;
-
-            while (scanOff + 4 <= batch.length) {
-              int packageSize = batchBd.getUint32(scanOff, Endian.little);
-
-              if (packageSize == 0xFFFFFFFB) {
-                if (scanOff + 36 <= batch.length) {
-                  final utc = batchBd.getUint64(scanOff + 8, Endian.little);
-                  currentUtcStartMs = utc;
-                  currentUptimeStartMs = batchBd.getUint64(scanOff + 16, Endian.little);
-                  scanOff += 36;
-                  continue;
-                } else {
-                  break;
-                }
-              }
-
-              if (packageSize == 0xFFFFFFFE) {
-                if (scanOff + 20 <= batch.length) {
-                  int markerMs = batchBd.getUint64(scanOff + 4, Endian.little);
-                  int markerUptime = batchBd.getUint32(scanOff + 12, Endian.little);
-
-                  // Resiliency: derive exactly from audio header to perfectly match the audio pipeline.
-                  // Only use the header's UTC if it's a valid epoch (RTC was synced).
-                  if (currentUtcStartMs != null &&
-                      currentUtcStartMs! > 946684800000 &&
-                      currentUptimeStartMs != null) {
-                    final offsetMs = markerUptime - currentUptimeStartMs!;
-                    markerMs = (currentUtcStartMs! + offsetMs);
-                  }
-
-                  await _saveMarker(
-                    timerStart,
-                    markerMs,
-                    markerUptime,
-                    batchBd.getUint32(scanOff + 16, Endian.little),
-                  );
-                  scanOff += 20;
-                  continue;
-                } else {
-                  break;
-                }
-              }
-
-              if (packageSize == 0 || packageSize == 0xFFFFFFFF) {
-                scanOff += 4;
-              } else if (packageSize > 400) {
-                scanOff += 1;
-              } else {
-                int padded = (packageSize + 3) & ~3;
-                scanOff += (4 + padded);
-              }
-            }
 
             // ---- SAFE FLUSH ----
             await flushRawBuffer(batch);
