@@ -268,14 +268,6 @@ class VadAudioProcessor {
           sessionId = sessionIdInHeader;
           lastFrameWallTime = segmentStartTime;
           _isDerivedTimestamp = false;
-        } else if (utcStartMs > 946684800) {
-          // Robustness: Handle legacy or buggy firmware that might write seconds in this field.
-          Logger.warning('VadAudioProcessor: Received header with seconds instead of milliseconds: $utcStartMs');
-          segmentStartTime = DateTime.fromMillisecondsSinceEpoch(utcStartMs * 1000, isUtc: true);
-          startUptimeMs = uptimeStartMs.toInt();
-          sessionId = sessionIdInHeader;
-          lastFrameWallTime = segmentStartTime;
-          _isDerivedTimestamp = false;
         }
       }
 
@@ -371,19 +363,18 @@ class VadAudioProcessor {
         }
 
         // Marker packet (0xFFFFFFFE = button-tap marker, 20 bytes: 4-byte header + 16-byte payload).
-        // Payload layout: [0..3] UTC epoch seconds (u32 LE), [4..7] uptime ms, [8..11] session id.
+        // Payload layout: [0..7] UTC epoch ms (u64 LE), [8..11] uptime ms, [12..15] session id.
         if (frameLength == 0xFFFFFFFE) {
           if (offset + 16 <= fileLength) {
-            final markerUtcSeconds = byteData.getUint32(offset + 4, Endian.little);
-            final markerUptimeMs = byteData.getUint32(offset + 8, Endian.little);
-            final markerSessionId = byteData.getUint32(offset + 12, Endian.little);
-            const kMinValidMarkerEpoch = 946684800;
+            final markerUtcMs = byteData.getUint64(offset + 4, Endian.little);
+            final markerUptimeMs = byteData.getUint32(offset + 12, Endian.little);
+            final markerSessionId = byteData.getUint32(offset + 16, Endian.little);
 
             // 1. Primary: Use the derived wall time (locked to high-precision audio header)
             // 2. Fallback: If no header found yet or wall time is suspicious, use marker's UTC
             DateTime markerFrameTime = lastFrameWallTime;
-            if (_isDerivedTimestamp && markerUtcSeconds > kMinValidMarkerEpoch) {
-              markerFrameTime = DateTime.fromMillisecondsSinceEpoch(markerUtcSeconds * 1000, isUtc: true);
+            if (_isDerivedTimestamp && markerUtcMs > 946684800000) {
+              markerFrameTime = DateTime.fromMillisecondsSinceEpoch(markerUtcMs, isUtc: true);
               Logger.debug('VadAudioProcessor: Using marker UTC fallback: $markerFrameTime');
             }
 

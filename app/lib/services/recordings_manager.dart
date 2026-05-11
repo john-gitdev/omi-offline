@@ -70,8 +70,8 @@ class Conversation {
       // Find the first part that is a long numeric timestamp (e.g. seconds or millis)
       for (final p in parts) {
         final val = int.tryParse(p);
-        if (val != null && val > 946684800) {
-          millis = val.toString().length <= 10 ? val * 1000 : val;
+        if (val != null && val > 0) {
+          millis = val;
           break;
         }
       }
@@ -633,12 +633,7 @@ class RecordingsManager {
           final parts = fileName.split('_');
           var millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
           if (millis == null || millis <= 0) continue;
-          // Auto-detect seconds vs milliseconds
-          if (millis > 946684800 && millis < 946684800000) {
-            millis *= 1000;
-          }
-          final dateStr = _dateStringFromMillis(millis);
-          final liveDir = Directory('${directory.path}/recordings/$dateStr');
+          final dateStr = _dateStringFromMillis(millis);          final liveDir = Directory('${directory.path}/recordings/$dateStr');
           await liveDir.create(recursive: true);
           final dest = '${liveDir.path}/$fileName';
           try {
@@ -704,12 +699,6 @@ class RecordingsManager {
               final parts = line.split(',');
               var utc = int.tryParse(parts[0].trim());
               if (utc != null) {
-                // Robustness: Handle legacy markers.txt entries that used seconds.
-                // App-written markers are now always milliseconds.
-                if (utc > 946684800 && utc < 946684800000) {
-                  utc *= 1000;
-                }
-
                 // Deduplicate markers within a 2-second window to collapse redundant
                 // firmware packets and derived vs. raw timestamp doubles.
                 final date = DateTime.fromMillisecondsSinceEpoch(utc);
@@ -748,16 +737,11 @@ class RecordingsManager {
               final tsStr = name.split('_').first;
               final ts = int.tryParse(tsStr);
               if (ts != null && ts > 0) {
-                // Firmware (sd_card.c) names files with 32-bit UTC seconds.
                 // If timestamp is uptime (very small), use lastModified as fallback for date grouping.
-                // If it's 10 digits (~1.7B), it's seconds. If 13+ digits, it's milliseconds.
                 if (ts < 1000000000) {
                   date = await file.lastModified();
-                } else if (ts < 10000000000) {
-                  // Seconds (standard firmware behavior)
-                  date = DateTime.fromMillisecondsSinceEpoch(ts * 1000);
                 } else {
-                  // Milliseconds (robustness for variant implementations)
+                  // Assume milliseconds
                   date = DateTime.fromMillisecondsSinceEpoch(ts);
                 }
               } else {
@@ -950,8 +934,7 @@ class RecordingsManager {
             millis = int.tryParse(tsStr);
           }
 
-          final dateStr =
-              (millis != null && millis > 946684800) ? _dateStringFromMillis(millis) : activeBatches.last.dateString;
+          final dateStr = (millis != null && millis > 946684800000) ? _dateStringFromMillis(millis) : activeBatches.last.dateString;
           final liveDir = Directory('${directory.path}/recordings/$dateStr');
           await liveDir.create(recursive: true);
           final dest = '${liveDir.path}/$fileName';
@@ -1699,7 +1682,7 @@ class RecordingsManager {
 
         // Relative positioning for unknown sessions (markerMs is uptime, startUptime is uptime)
         if (rec.startUptime != null && rec.startUptime! > 0 && markerMs < 946684800000) {
-          markerOffsetMs = markerMs - (rec.startUptime! * 1000);
+          markerOffsetMs = markerMs - rec.startUptime!;
         }
         
         // Ensure offset is never negative (e.g. if marker happened within 5s tolerance before start)
@@ -1999,6 +1982,7 @@ class RecordingsManager {
       }
 
       // 2. Delete EDL files for all deleted conversations in this directory at once
+      final List<int> markersToRemove = [];
       try {
         final dir = Directory(dirPath);
         if (await dir.exists()) {
@@ -2008,6 +1992,8 @@ class RecordingsManager {
             try {
               final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
               if (filenames.contains(json['segmentFilename'])) {
+                final markerMs = json['markerTimestampMs'] as int?;
+                if (markerMs != null) markersToRemove.add(markerMs);
                 await entity.delete();
               }
             } catch (_) {}
@@ -2015,6 +2001,54 @@ class RecordingsManager {
         }
       } catch (e) {
         Logger.error('RecordingsManager: Failed to cleanup EDLs in $dirPath: $e');
+      }
+
+      if (markersToRemove.isNotEmpty) {
+        await removeMarkersFromLogs(markersToRemove);
+      }
+    }
+  }
+
+  /// Removes specific marker timestamps from all `markers.txt` files in `raw_segments/`.
+  /// [timestampsMs] should be in milliseconds. Normalizes entries in the file to
+  /// milliseconds before comparison to handle legacy second-based entries.
+  static Future<void> removeMarkersFromLogs(List<int> timestampsMs) async {
+    if (timestampsMs.isEmpty) return;
+
+    final normalizedToRemove = timestampsMs.toSet();
+    final appDir = await getApplicationDocumentsDirectory();
+    final rawSegmentsDir = Directory('${appDir.path}/raw_segments');
+    if (!await rawSegmentsDir.exists()) return;
+
+    final sessionFolders = (await rawSegmentsDir.list().toList()).whereType<Directory>().toList();
+    for (final folder in sessionFolders) {
+      final markerFile = File('${folder.path}/markers.txt');
+      if (!await markerFile.exists()) continue;
+
+      try {
+        final lines = await markerFile.readAsLines();
+        final filtered = lines.where((line) {
+          final parts = line.split(',');
+          if (parts.isEmpty) return true;
+          var utc = int.tryParse(parts[0].trim());
+          if (utc == null) return true;
+
+          // Check for exact match or within 2s window (matching deduplication logic)
+          return !normalizedToRemove.any((toRemove) => (utc! - toRemove).abs() < 2000);
+        }).toList();
+
+        if (filtered.length < lines.length) {
+          if (filtered.isEmpty) {
+            await markerFile.delete();
+          } else {
+            await markerFile.writeAsString('${filtered.join('\n')}\n');
+          }
+          Logger.debug(
+            'RecordingsManager: Removed ${lines.length - filtered.length} marker(s) from ${markerFile.path}',
+          );
+        }
+      } catch (e) {
+        Logger.error('RecordingsManager: Failed to clean markers.txt in ${folder.path}: $e');
       }
     }
   }
@@ -2260,9 +2294,8 @@ class RecordingsManager {
       }
 
       if (sourceFolder != null) {
-        final newBaseStartMs = (baseUptime * 1000) + rtcOffsetMs;
-        final newBaseStartSecs = newBaseStartMs ~/ 1000;
-        final targetFolder = Directory('${rawSegmentsDir.path}/$newBaseStartSecs');
+        final newBaseStartMs = baseUptime + rtcOffsetMs;
+        final targetFolder = Directory('${rawSegmentsDir.path}/$newBaseStartMs');
 
         if (await targetFolder.exists()) {
           // Merge contents if target already exists (unlikely but safe)
@@ -2285,7 +2318,7 @@ class RecordingsManager {
             final parts = line.split(',');
             if (parts.isNotEmpty) {
               final oldUtc = int.tryParse(parts[0]) ?? 0;
-              final newUtc = oldUtc + (rtcOffsetMs ~/ 1000);
+              final newUtc = oldUtc + rtcOffsetMs;
               parts[0] = newUtc.toString();
               newLines.add(parts.join(','));
             }
@@ -2300,8 +2333,8 @@ class RecordingsManager {
             final name = entity.path.split('/').last;
             final parts = name.split('_');
             final uptime = int.tryParse(parts[0]) ?? 0;
-            if (uptime < 946684800) {
-              final newUtc = uptime + (rtcOffsetMs ~/ 1000);
+            if (uptime < 946684800000) {
+              final newUtc = uptime + rtcOffsetMs;
               final sid = parts.length > 1 ? parts[1] : '0.bin';
               final newName = '${newUtc}_$sid';
               await entity.rename('${targetFolder.path}/$newName');

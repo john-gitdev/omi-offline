@@ -630,15 +630,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               if (packageSize == 0xFFFFFFFB) {
                 if (scanOff + 36 <= batch.length) {
                   final utc = batchBd.getUint64(scanOff + 8, Endian.little);
-                  if (utc > 946684800000) {
-                    currentUtcStartMs = utc;
-                  } else if (utc > 946684800) {
-                    // Robustness: Handle legacy or buggy firmware that might write seconds in this field.
-                    Logger.warning('SDCardWalSync: Received header with seconds instead of milliseconds: $utc');
-                    currentUtcStartMs = utc * 1000;
-                  } else {
-                    currentUtcStartMs = utc;
-                  }
+                  currentUtcStartMs = utc;
                   currentUptimeStartMs = batchBd.getUint64(scanOff + 16, Endian.little);
                   scanOff += 36;
                   continue;
@@ -649,13 +641,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
               if (packageSize == 0xFFFFFFFE) {
                 if (scanOff + 20 <= batch.length) {
-                  int markerUtc = batchBd.getUint32(scanOff + 4, Endian.little);
-                  int markerUptime = batchBd.getUint32(scanOff + 8, Endian.little);
-                  int markerMs = markerUtc * 1000;
+                  int markerMs = batchBd.getUint64(scanOff + 4, Endian.little);
+                  int markerUptime = batchBd.getUint32(scanOff + 12, Endian.little);
 
                   // Resiliency: derive exactly from audio header to perfectly match the audio pipeline
-                  if (currentUtcStartMs != null &&
-                      currentUptimeStartMs != null) {
+                  if (currentUtcStartMs != null && currentUptimeStartMs != null) {
                     final offsetMs = markerUptime - currentUptimeStartMs;
                     markerMs = (currentUtcStartMs + offsetMs);
                   }
@@ -664,7 +654,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                     timerStart,
                     markerMs,
                     markerUptime,
-                    batchBd.getUint32(scanOff + 12, Endian.little),
+                    batchBd.getUint32(scanOff + 16, Endian.little),
                   );
                   scanOff += 20;
                   continue;
