@@ -396,50 +396,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
-  Future<void> _deleteAllMarkers() async {
-    Logger.debug('DebugTools: Clear markers.txt tapped');
-    if (RecordingsManager.isProcessingAny) {
-      Logger.debug('DebugTools: Clear markers.txt blocked — processing running');
-      _showProcessingSnackbar();
-      return;
-    }
-    bool? confirm = await showDialog<bool>(
-      context: context,
-      builder: (c) => getDialog(
-        context,
-        () => Navigator.of(context).pop(false),
-        () => Navigator.of(context).pop(true),
-        'Clear markers.txt',
-        'This will permanently delete all markers.txt files across all session folders. This stops the app from re-creating EDL files for these markers during processing. Audio is not affected. Continue?',
-        confirmText: 'Clear',
-      ),
-    );
-    if (confirm != true) {
-      Logger.debug('DebugTools: Clear markers.txt cancelled by user');
-      return;
-    }
-    setState(() => _statusMessage = 'Clearing markers.txt files...');
-    try {
-      final appDir = await getApplicationDocumentsDirectory();
-      final rawSegmentsDir = Directory('${appDir.path}/raw_segments');
-      int count = 0;
-      if (await rawSegmentsDir.exists()) {
-        final sessionFolders = (await rawSegmentsDir.list().toList()).whereType<Directory>().toList();
-        for (final folder in sessionFolders) {
-          final markerFile = File('${folder.path}/markers.txt');
-          if (await markerFile.exists()) {
-            await markerFile.delete();
-            count++;
-          }
-        }
-      }
-      Logger.debug('DebugTools: Cleared $count markers.txt file(s)');
-      setState(() => _statusMessage = 'Cleared $count markers.txt file(s).');
-    } catch (e) {
-      Logger.error('DebugTools: _deleteAllMarkers error — $e');
-      setState(() => _statusMessage = 'Clear Error: $e');
-    }
-  }
 
   Future<void> _cancelSync() async {
     Logger.debug('DebugTools: Cancel Download tapped');
@@ -704,14 +660,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   icon: FontAwesomeIcons.fileCircleXmark,
                   color: Colors.redAccent,
                   onTap: _deleteProblematicEdls,
-                ),
-                const SizedBox(height: 12),
-                _DebugButton(
-                  label: 'Clear markers.txt',
-                  description: 'Permanently deletes all markers.txt files across all session folders.',
-                  icon: FontAwesomeIcons.eraser,
-                  color: Colors.redAccent,
-                  onTap: _deleteAllMarkers,
                 ),
               ],
             ],
