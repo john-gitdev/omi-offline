@@ -33,7 +33,7 @@ class OmiBleForegroundService : Service() {
         private const val MTU_REQUEST_DELAY_MS = 100L
         private const val MTU_SIZE = 512
         private const val STABILITY_TIMER_MS = 60_000L
-        private const val RECONNECT_DELAY_MS = 3_000L
+        private const val RECONNECT_DELAY_MS = 1_500L
         private const val CONNECTION_TIMEOUT_MS = 30_000L
         private const val COMPANION_RATE_LIMIT_MS = 15_000L
         private const val PREFS_NAME = "ble_config"
@@ -325,11 +325,18 @@ class OmiBleForegroundService : Service() {
 
             if (bleManager.connectedGatts.containsKey(addr)) bleManager.closeGatt(addr)
 
-            // autoConnect=false for initial manual connection (fast).
-            // autoConnect=true for background/retries (passive scan, more robust).
-            val autoConnect = source != "manageDevice"
+            // Use autoConnect=false for initial connection and first 3 retries (direct connection, faster).
+            // Switch to autoConnect=true for later retries (passive scan, more robust for background).
+            val autoConnect = when {
+                source == "manageDevice" -> false
+                managed.retryCount <= 3 -> false
+                else -> true
+            }
+            
+            // Use shorter timeout for direct connection attempts.
+            val timeoutMs = if (autoConnect) CONNECTION_TIMEOUT_MS else 15_000L
 
-            Log.i(TAG, "connectToDevice($source): $addr (autoConnect=$autoConnect)")
+            Log.i(TAG, "connectToDevice($source): $addr (autoConnect=$autoConnect, timeout=${timeoutMs}ms)")
             val gatt = try {
                 bleManager.connectGatt(addr, autoConnect = autoConnect)
             } catch (e: SecurityException) {
@@ -349,12 +356,12 @@ class OmiBleForegroundService : Service() {
 
             managed.connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
             val timeoutRunnable = Runnable {
-                Log.w(TAG, "Connection timeout for $addr after ${CONNECTION_TIMEOUT_MS}ms")
+                Log.w(TAG, "Connection timeout for $addr after ${timeoutMs}ms (source=$source)")
                 managed.connectionTimeoutRunnable = null
                 handleDisconnection(addr, managed.currentGattHash ?: 0, -1)
             }
             managed.connectionTimeoutRunnable = timeoutRunnable
-            handler.postDelayed(timeoutRunnable, CONNECTION_TIMEOUT_MS)
+            handler.postDelayed(timeoutRunnable, timeoutMs)
 
             updateNotification("Connecting to Omi...")
         }

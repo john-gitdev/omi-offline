@@ -44,6 +44,17 @@ final class OmiBleManager: NSObject {
         }
         pendingScan = nil
         let cbuuids: [CBUUID]? = serviceUuids.isEmpty ? nil : serviceUuids.map { CBUUID(string: $0) }
+        
+        // Report already connected peripherals that might not be advertising
+        let connected = centralManager.retrieveConnectedPeripherals(withServices: cbuuids ?? [CBUUID(string: "19B10000-E8F2-537E-4F6C-D104768A1214")])
+        for p in connected {
+            peripherals[p.identifier.uuidString] = p
+            p.delegate = self
+            let svcs = p.services?.map { fullUuid($0.uuid) } ?? []
+            let bleP = BlePeripheral(uuid: p.identifier.uuidString, name: p.name ?? "", rssi: -50, serviceUuids: svcs)
+            flutterApi?.onPeripheralDiscovered(peripheral: bleP) { _ in }
+        }
+
         isScanning = true
         centralManager.scanForPeripherals(withServices: cbuuids, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
         scanTimer?.invalidate()
