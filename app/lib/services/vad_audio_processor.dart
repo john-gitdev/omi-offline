@@ -97,6 +97,12 @@ class VadAudioProcessor {
   // Marker-forced recording state
   bool _forcedByMarker = false;
 
+  // Markers accumulated since the last _saveRecording call, keyed by their
+  // wall-clock timestamp and the recording offset at the time of the tap.
+  final List<({int markerMs, int offsetAtMarkerMs})> _pendingMarkers = [];
+  // EDL payload ready to be consumed by the isolate caller after each save.
+  final List<Map<String, dynamic>> _pendingEdlData = [];
+
   // Tracks segment files that have been fully processed. Used by consumeSafeToDeletePaths()
   // to determine which files are no longer referenced by any internal buffer.
   final Set<String> _processedFiles = {};
@@ -368,7 +374,6 @@ class VadAudioProcessor {
           if (offset + 20 <= fileLength) {
             final markerUtcMs = byteData.getUint64(offset + 4, Endian.little);
             final markerUptimeMs = byteData.getUint32(offset + 12, Endian.little);
-            final markerSessionId = byteData.getUint32(offset + 16, Endian.little);
 
             // 1. Primary: Use the derived wall time (locked to high-precision audio header)
             // 2. Fallback: If no header found yet or wall time is suspicious, use marker's UTC
@@ -378,15 +383,10 @@ class VadAudioProcessor {
               Logger.debug('VadAudioProcessor: Using marker UTC fallback: $markerFrameTime');
             }
 
-            // Save marker to markers.txt so getBatches() can find it.
-            // We use the same format as SDCardWalSync: Milliseconds, Uptime, SessionID.
-            try {
-              final markerFile = File('${segmentFile.parent.path}/markers.txt');
-              final markerMs = markerFrameTime.millisecondsSinceEpoch;
-              await markerFile.writeAsString('$markerMs,$markerUptimeMs,$markerSessionId\n', mode: FileMode.append);
-              Logger.debug('VadAudioProcessor: Saved marker to ${markerFile.path} at $markerFrameTime');
-            } catch (e) {
-              Logger.error('VadAudioProcessor: Failed to save marker: $e');
+            final markerMs = markerFrameTime.millisecondsSinceEpoch;
+            if (markerMs > 946684800000) {
+              _pendingMarkers.add((markerMs: markerMs, offsetAtMarkerMs: _currentChunkDurationMs));
+              Logger.debug('VadAudioProcessor: Queued marker at $markerFrameTime (offset ${_currentChunkDurationMs}ms)');
             }
 
             _forcedByMarker = true;
@@ -618,6 +618,16 @@ class VadAudioProcessor {
     _speechFrameCount = 0;
     _currentChunkDurationMs = 0;
     _recordingStartTime = null;
+    _pendingMarkers.clear();
+  }
+
+  /// Drains and returns any EDL associations produced since the last call.
+  /// Each entry: {filename, markerMs, offsetMs, durationMs}.
+  List<Map<String, dynamic>> consumePendingEdlData() {
+    if (_pendingEdlData.isEmpty) return const [];
+    final result = List<Map<String, dynamic>>.from(_pendingEdlData);
+    _pendingEdlData.clear();
+    return result;
   }
 
   @visibleForTesting
@@ -627,12 +637,27 @@ class VadAudioProcessor {
   Future<String?> _saveRecording(List<Object> refs, DateTime startTime,
       {bool? isDerivedTimestamp, bool isDraft = false}) async {
     final result = await _saveRecordingCore(refs, startTime, isDerivedTimestamp: isDerivedTimestamp, isDraft: isDraft);
-    if (result != null && _omiEnabled) {
-      try {
-        final dateFolderPath = File(result).parent.path;
-        await _saveBin(refs, dateFolderPath, startTime.millisecondsSinceEpoch);
-      } catch (e) {
-        Logger.error('VadAudioProcessor: _saveBin failed: $e');
+    if (result != null) {
+      if (_pendingMarkers.isNotEmpty) {
+        final filename = result.split('/').last;
+        final durationMs = _currentChunkDurationMs;
+        for (final m in _pendingMarkers) {
+          _pendingEdlData.add({
+            'filename': filename,
+            'markerMs': m.markerMs,
+            'offsetMs': m.offsetAtMarkerMs,
+            'durationMs': durationMs,
+          });
+        }
+        _pendingMarkers.clear();
+      }
+      if (_omiEnabled) {
+        try {
+          final dateFolderPath = File(result).parent.path;
+          await _saveBin(refs, dateFolderPath, startTime.millisecondsSinceEpoch);
+        } catch (e) {
+          Logger.error('VadAudioProcessor: _saveBin failed: $e');
+        }
       }
     }
     return result;
