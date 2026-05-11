@@ -704,7 +704,8 @@ class RecordingsManager {
               final parts = line.split(',');
               var utc = int.tryParse(parts[0].trim());
               if (utc != null) {
-                // Auto-detect seconds vs milliseconds
+                // Robustness: Handle legacy markers.txt entries that used seconds.
+                // App-written markers are now always milliseconds.
                 if (utc > 946684800 && utc < 946684800000) {
                   utc *= 1000;
                 }
@@ -712,6 +713,7 @@ class RecordingsManager {
                 // Deduplicate markers within a 2-second window to collapse redundant
                 // firmware packets and derived vs. raw timestamp doubles.
                 final date = DateTime.fromMillisecondsSinceEpoch(utc);
+
                 final dateKey = fmtDate(date);
                 final set = markersByDate.putIfAbsent(dateKey, () => {});
 
@@ -746,15 +748,16 @@ class RecordingsManager {
               final tsStr = name.split('_').first;
               final ts = int.tryParse(tsStr);
               if (ts != null && ts > 0) {
+                // Firmware (sd_card.c) names files with 32-bit UTC seconds.
                 // If timestamp is uptime (very small), use lastModified as fallback for date grouping.
-                // If it's 10 digits, it's seconds. If 13+ digits, it's milliseconds.
+                // If it's 10 digits (~1.7B), it's seconds. If 13+ digits, it's milliseconds.
                 if (ts < 1000000000) {
                   date = await file.lastModified();
                 } else if (ts < 10000000000) {
-                  // Seconds
+                  // Seconds (standard firmware behavior)
                   date = DateTime.fromMillisecondsSinceEpoch(ts * 1000);
                 } else {
-                  // Milliseconds
+                  // Milliseconds (robustness for variant implementations)
                   date = DateTime.fromMillisecondsSinceEpoch(ts);
                 }
               } else {

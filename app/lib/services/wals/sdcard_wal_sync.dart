@@ -629,12 +629,16 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
               if (packageSize == 0xFFFFFFFB) {
                 if (scanOff + 36 <= batch.length) {
-                  var utc = batchBd.getUint64(scanOff + 8, Endian.little);
-                  // Auto-detect seconds vs milliseconds
-                  if (utc > 946684800 && utc < 946684800000) {
-                    utc *= 1000;
+                  final utc = batchBd.getUint64(scanOff + 8, Endian.little);
+                  if (utc > 946684800000) {
+                    currentUtcStartMs = utc;
+                  } else if (utc > 946684800) {
+                    // Robustness: Handle legacy or buggy firmware that might write seconds in this field.
+                    Logger.warning('SDCardWalSync: Received header with seconds instead of milliseconds: $utc');
+                    currentUtcStartMs = utc * 1000;
+                  } else {
+                    currentUtcStartMs = utc;
                   }
-                  currentUtcStartMs = utc;
                   currentUptimeStartMs = batchBd.getUint64(scanOff + 16, Endian.little);
                   scanOff += 36;
                   continue;
