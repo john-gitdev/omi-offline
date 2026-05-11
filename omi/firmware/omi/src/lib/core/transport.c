@@ -1025,14 +1025,12 @@ bool write_marker_to_storage(void)
     }
 
     uint8_t temp_buffer[16];
-    uint32_t utc_time = get_utc_time();
+    uint64_t utc_time_ms = rtc_get_utc_time_ms();
     uint32_t uptime_ms = (uint32_t)k_uptime_get();
 
-    memcpy(temp_buffer, &utc_time, 4);
-    memcpy(temp_buffer + 4, &uptime_ms, 4);
-    memcpy(temp_buffer + 8, &device_session_id, 4);
-    // Padding for remaining 4 bytes
-    memset(temp_buffer + 12, 0, 4);
+    memcpy(temp_buffer, &utc_time_ms, 8);
+    memcpy(temp_buffer + 8, &uptime_ms, 4);
+    memcpy(temp_buffer + 12, &device_session_id, 4);
 
     LOG_INF("Writing marker to storage (DeviceSession: %u)", device_session_id);
     return write_custom_packet_to_storage(0xFFFFFFFE, temp_buffer, 16);
