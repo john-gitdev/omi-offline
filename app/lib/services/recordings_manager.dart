@@ -698,7 +698,7 @@ class RecordingsManager {
             for (var line in content) {
               final parts = line.split(',');
               var utc = int.tryParse(parts[0].trim());
-              if (utc != null) {
+              if (utc != null && utc > 946684800000) {
                 // Deduplicate markers within a 2-second window to collapse redundant
                 // firmware packets and derived vs. raw timestamp doubles.
                 final date = DateTime.fromMillisecondsSinceEpoch(utc);

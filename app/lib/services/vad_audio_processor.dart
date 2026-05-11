@@ -413,57 +413,65 @@ class VadAudioProcessor {
             final vadUtcSeconds = byteData.getUint32(offset + 4, Endian.little);
             final vadUptimeMs = byteData.getUint32(offset + 8, Endian.little);
             const kMinValidEpoch = 946684800;
+
+            DateTime newResumeTime;
             if (vadUtcSeconds > kMinValidEpoch) {
-              final newResumeTime = DateTime.fromMillisecondsSinceEpoch(vadUtcSeconds * 1000, isUtc: true);
-              final lastFrameEndTime = lastFrameWallTime.add(const Duration(milliseconds: frameDurationMs));
-              int gapMs = newResumeTime.difference(lastFrameEndTime).inMilliseconds;
-              if (gapMs < 0) gapMs = 0; // Prevent negative gaps from RTC sync jitter
-
-              // Calculate uptime gap to distinguish clock jumps from silence.
-              // Use modular arithmetic (masking to u32 range) to handle the ~49-day
-              // firmware uptime wraparound correctly.
-              int uptimeGapMs = 0;
-              if (_currentFrameUptimeMs != null) {
-                uptimeGapMs = (vadUptimeMs - (_currentFrameUptimeMs! + frameDurationMs)) & 0xFFFFFFFF;
-                if (uptimeGapMs > 0x7FFFFFFF) uptimeGapMs -= 0x100000000; // sign-extend
-              }
-              // If uptime Gap matches frame count (small gap) but UTC gap is large, it's a clock sync.
-              final bool isClockJump = uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000;
-
-              if (gapMs >= _silenceDurationToSplitMs && !isClockJump) {
-                // Gap exceeds threshold — flush current recording, start new conversation.
-                final speechMs = _speechFrameCount * frameDurationMs;
-                final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
-
-                if (_currentRefs.isNotEmpty) {
-                  final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
-                  if (filePath != null) savedFiles.add(filePath);
-                  _forcedByMarker = false;
-                } else if (_currentRefs.isNotEmpty) {
-                  Logger.debug(
-                    'VadAudioProcessor: Discarding ${tooShortSpeech ? "noise" : "short"} conversation before split.',
-                  );
-                }
-                _currentRefs = [];
-                _speechFrameCount = 0;
-                _currentChunkDurationMs = 0;
-                _recordingStartTime = newResumeTime;
-                Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
-              } else {
-                // Gap within threshold or clock jump — stitch, padding with silence so playback reflects real timing.
-                if (_currentRefs.isNotEmpty && gapMs > 0 && !isClockJump) {
-                  _currentRefs.add(Duration(milliseconds: gapMs));
-                  _currentChunkDurationMs += gapMs;
-                }
-                Logger.debug(
-                    'VadAudioProcessor: VAD resume — gap ${gapMs}ms ${isClockJump ? "(CLOCK JUMP)" : "< threshold"}, stitching.');
-              }
-
-              // Update anchors for subsequent frame calculations.
-              vadResumeTime = newResumeTime;
-              vadResumeFrameIndex = frameIndex;
-              _currentFrameUptimeMs = vadUptimeMs;
+              newResumeTime = DateTime.fromMillisecondsSinceEpoch(vadUtcSeconds * 1000, isUtc: true);
+            } else {
+              // Fallback: derive from uptime delta since last frame to maintain timeline continuity
+              final int uptimeDeltaMs =
+                  (_currentFrameUptimeMs != null) ? (vadUptimeMs - _currentFrameUptimeMs!) & 0xFFFFFFFF : 0;
+              newResumeTime = lastFrameWallTime.add(Duration(milliseconds: uptimeDeltaMs));
             }
+
+            final lastFrameEndTime = lastFrameWallTime.add(const Duration(milliseconds: frameDurationMs));
+            int gapMs = newResumeTime.difference(lastFrameEndTime).inMilliseconds;
+            if (gapMs < 0) gapMs = 0; // Prevent negative gaps from RTC sync jitter
+
+            // Calculate uptime gap to distinguish clock jumps from silence.
+            // Use modular arithmetic (masking to u32 range) to handle the ~49-day
+            // firmware uptime wraparound correctly.
+            int uptimeGapMs = 0;
+            if (_currentFrameUptimeMs != null) {
+              uptimeGapMs = (vadUptimeMs - (_currentFrameUptimeMs! + frameDurationMs)) & 0xFFFFFFFF;
+              if (uptimeGapMs > 0x7FFFFFFF) uptimeGapMs -= 0x100000000; // sign-extend
+            }
+            // If uptime Gap matches frame count (small gap) but UTC gap is large, it's a clock sync.
+            final bool isClockJump = uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000;
+
+            if (gapMs >= _silenceDurationToSplitMs && !isClockJump) {
+              // Gap exceeds threshold — flush current recording, start new conversation.
+              final speechMs = _speechFrameCount * frameDurationMs;
+              final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+
+              if (_currentRefs.isNotEmpty) {
+                final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
+                if (filePath != null) savedFiles.add(filePath);
+                _forcedByMarker = false;
+              } else if (_currentRefs.isNotEmpty) {
+                Logger.debug(
+                  'VadAudioProcessor: Discarding ${tooShortSpeech ? "noise" : "short"} conversation before split.',
+                );
+              }
+              _currentRefs = [];
+              _speechFrameCount = 0;
+              _currentChunkDurationMs = 0;
+              _recordingStartTime = newResumeTime;
+              Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
+            } else {
+              // Gap within threshold or clock jump — stitch, padding with silence so playback reflects real timing.
+              if (_currentRefs.isNotEmpty && gapMs > 0 && !isClockJump) {
+                _currentRefs.add(Duration(milliseconds: gapMs));
+                _currentChunkDurationMs += gapMs;
+              }
+              Logger.debug(
+                  'VadAudioProcessor: VAD resume — gap ${gapMs}ms ${isClockJump ? "(CLOCK JUMP)" : "< threshold"}, stitching.');
+            }
+
+            // Update anchors for subsequent frame calculations.
+            vadResumeTime = newResumeTime;
+            vadResumeFrameIndex = frameIndex;
+            _currentFrameUptimeMs = vadUptimeMs;
           }
           offset += 20;
           continue;
