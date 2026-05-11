@@ -445,13 +445,13 @@ class VadAudioProcessor {
               final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
               if (_currentRefs.isNotEmpty) {
-                final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
-                if (filePath != null) savedFiles.add(filePath);
+                if (tooShortSpeech) {
+                  Logger.debug('VadAudioProcessor: Discarding noise conversation before split.');
+                } else {
+                  final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
+                  if (filePath != null) savedFiles.add(filePath);
+                }
                 _forcedByMarker = false;
-              } else if (_currentRefs.isNotEmpty) {
-                Logger.debug(
-                  'VadAudioProcessor: Discarding ${tooShortSpeech ? "noise" : "short"} conversation before split.',
-                );
               }
               _currentRefs = [];
               _speechFrameCount = 0;
