@@ -111,22 +111,13 @@ class MarkerSubEntry extends StatelessWidget {
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    mc.isPending ? 'Processing…' : mc.timeRangeLabel,
-                    style: TextStyle(
-                      color: mc.isPending ? Colors.grey.shade600 : Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  Text(
-                    'marker at ${mc.markerTimeLabel}',
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
-                  ),
-                ],
+              child: Text(
+                mc.isPending ? 'Processing Marker…' : 'Marker at ${mc.markerTimeLabel}',
+                style: TextStyle(
+                  color: mc.isPending ? Colors.grey.shade600 : Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w400,
+                ),
               ),
             ),
             if (!mc.isPending && mc.userSaved) ...[
