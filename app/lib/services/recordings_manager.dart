@@ -1142,11 +1142,11 @@ class RecordingsManager {
       try {
         await _stitchDraftRecordings(finalizeAll: finalizeDrafts);
 
-        // Resolve marker conversations for each date that has markers.
+        // Resolve marker conversations for all batches that have markers.
         // Must run AFTER stitch pass so markers are tied to finalized recordings.
         final recordingsRoot = '${directory.path}/recordings';
-        for (final batch in activeBatches) {
-          if (batch.markerTimestamps.isEmpty) continue;
+        final batchesWithMarkers = batches.where((b) => b.markerTimestamps.isNotEmpty).toList();
+        for (final batch in batchesWithMarkers) {
           await _resolveMarkerConversations(recordingsRoot, batch.markerTimestamps);
         }
       } finally {
@@ -1586,14 +1586,18 @@ class RecordingsManager {
     return "${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}";
   }
 
-  /// Writes EDL sidecars for all markers in [markerTimestamps] into [liveRecordingsDirPath].
+  /// Writes EDL sidecars for all markers in [markerTimestamps] into the recordings root.
   /// Idempotent: skips EDLs that already exist with non-empty segments.
   /// Resolves previously-pending EDLs (empty segments) when the backing m4a is now available.
   static Future<void> _resolveMarkerConversations(
-    String liveRecordingsDirPath,
+    String anyRecordingsPath,
     List<DateTime> markerTimestamps,
   ) async {
-    final recordingsRootDir = Directory(liveRecordingsDirPath).parent;
+    Directory recordingsRootDir = Directory(anyRecordingsPath);
+    // If path ends in a date folder (YYYY-MM-DD), go up to the root recordings directory.
+    if (RegExp(r'\d{4}-\d{2}-\d{2}$').hasMatch(anyRecordingsPath)) {
+      recordingsRootDir = recordingsRootDir.parent;
+    }
     if (!await recordingsRootDir.exists() || markerTimestamps.isEmpty) return;
 
     // Build global sorted list of (file, startMs, endMs) from m4a/ogg + .meta pairs across ALL date folders.
@@ -1607,7 +1611,6 @@ class RecordingsManager {
             (!entity.path.endsWith('.m4a') && !entity.path.endsWith('.ogg') && !entity.path.endsWith('.wav'))) {
           continue;
         }
-
         final conv = Conversation.fromFile(entity);
         if (conv.duration.inMilliseconds <= 0) continue;
 
