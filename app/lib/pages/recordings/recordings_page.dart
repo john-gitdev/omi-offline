@@ -175,22 +175,32 @@ class _RecordingsPageState extends State<RecordingsPage> {
   Widget _buildFilterBubble(String label, RecordingFilterMode mode) {
     final selected = _filterMode == mode;
     return Expanded(
-      child: GestureDetector(
-        onTap: () => setState(() => _filterMode = mode),
-        child: Container(
-          height: 34,
-          decoration: BoxDecoration(
+      child: Semantics(
+        button: true,
+        label: 'Filter by $label',
+        child: Tooltip(
+          message: 'Show $label recordings',
+          child: Material(
             color: selected ? Colors.deepPurpleAccent : Colors.transparent,
-            borderRadius: BorderRadius.circular(17),
-            border: Border.all(color: selected ? Colors.deepPurpleAccent : Colors.grey.shade700),
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? Colors.white : Colors.grey.shade500,
-              fontSize: 13,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(17),
+              side: BorderSide(color: selected ? Colors.deepPurpleAccent : Colors.grey.shade700),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: () => setState(() => _filterMode = mode),
+              child: Container(
+                height: 34,
+                alignment: Alignment.center,
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: selected ? Colors.white : Colors.grey.shade500,
+                    fontSize: 13,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                  ),
+                ),
+              ),
             ),
           ),
         ),
