@@ -49,6 +49,21 @@ static uint32_t current_read_offset = 0;
 #define MAX_HEARTBEAT_FRAMES 100
 #define HEARTBEAT 50
 
+/* Retry storage_notify up to N times on -ENOMEM, yielding between attempts.
+ * Caps retries so a permanently-stuck BLE TX queue doesn't spin forever. */
+#define NOTIFY_RETRY_MAX 50
+#define STORAGE_NOTIFY(conn, buf, len)                                      \
+    do {                                                                    \
+        int _sn_err; int _sn_r = 0;                                        \
+        do {                                                                \
+            _sn_err = storage_notify((conn), (buf), (len));                 \
+            if (_sn_err == -ENOMEM) k_yield();                              \
+        } while (_sn_err == -ENOMEM && ++_sn_r < NOTIFY_RETRY_MAX);        \
+        if (_sn_err && _sn_err != -EAGAIN) {                               \
+            LOG_ERR("GATT notify error: %d (retries: %d)", _sn_err, _sn_r);\
+        }                                                                   \
+    } while (0)
+
 /* Control commands */
 #define CMD_ROTATE_FILE     0x13   // Close current recording file and open a new one
 
@@ -254,23 +269,10 @@ static int send_file_list_response(struct bt_conn *conn)
     int sync_file_count = sd_get_cached_file_count();
     if (sync_file_count == 0) {
         uint8_t zero_resp[5] = {PACKET_DATA, 0, 0, 0, 0};
-        int err;
-        do {
-            err = storage_notify(conn, zero_resp, 5);
-            if (err == -ENOMEM) k_yield();
-        } while (err == -ENOMEM);
-        if (err && err != -EAGAIN) {
-            LOG_ERR("GATT notify error: %d", err);
-        }
-        
+        STORAGE_NOTIFY(conn, zero_resp, 5);
+
         uint8_t eot = PACKET_EOT;
-        do {
-            err = storage_notify(conn, &eot, 1);
-            if (err == -ENOMEM) k_yield();
-        } while (err == -ENOMEM);
-        if (err && err != -EAGAIN) {
-            LOG_ERR("GATT notify error: %d", err);
-        }
+        STORAGE_NOTIFY(conn, &eot, 1);
         return 0;
     }
 
@@ -355,29 +357,14 @@ static int send_file_list_response(struct bt_conn *conn)
         }
 
         if (chunk_count > 0 || (files_processed == sync_file_count && total_included == 0)) {
-            int err;
-            do {
-                err = storage_notify(conn, storage_buffer, resp_len);
-                if (err == -ENOMEM) k_yield();
-            } while (err == -ENOMEM);
-            if (err && err != -EAGAIN) {
-                LOG_ERR("GATT notify error: %d", err);
-            }
+            STORAGE_NOTIFY(conn, storage_buffer, resp_len);
             k_msleep(15); /* Small gap for BLE stability */
-
         }
     }
 
     uint8_t eot = PACKET_EOT;
-    int err;
-    do {
-        err = storage_notify(conn, &eot, 1);
-        if (err == -ENOMEM) k_yield();
-    } while (err == -ENOMEM);
-    if (err && err != -EAGAIN) {
-        LOG_ERR("GATT notify error: %d", err);
-    }
-    
+    STORAGE_NOTIFY(conn, &eot, 1);
+
     return 0;
 }
 
@@ -605,16 +592,9 @@ static ssize_t storage_write_handler(struct bt_conn *conn,
     /* 0xFF means the storage thread will send its own response (list/delete) */
     if (result != 0xFF) {
         uint8_t ack[2] = {PACKET_ACK, result};
-        int err;
-        do {
-            err = storage_notify(conn, ack, sizeof(ack));
-            if (err == -ENOMEM) k_yield();
-        } while (err == -ENOMEM);
-        if (err && err != -EAGAIN) {
-            LOG_ERR("GATT notify error: %d", err);
-        }
+        STORAGE_NOTIFY(conn, ack, sizeof(ack));
     }
-    
+
     return len;
 }
 
@@ -665,16 +645,7 @@ static void write_to_gatt(struct bt_conn *conn)
             atomic_clear(&remaining_length);
             /* Notify app so it aborts immediately instead of waiting for timeout. */
             uint8_t err_ack[2] = {PACKET_ACK, FILE_NOT_FOUND};
-            int err;
-            do {
-                err = storage_notify(conn, err_ack, sizeof(err_ack));
-                if (err == -ENOMEM) {
-                    k_yield();
-                }
-            } while (err == -ENOMEM);
-            if (err && err != -EAGAIN) {
-                LOG_ERR("GATT notify error: %d", err);
-            }
+            STORAGE_NOTIFY(conn, err_ack, sizeof(err_ack));
             return;
         }
         uint32_t bytes_read = (uint32_t)r;
@@ -768,14 +739,7 @@ void storage_write(void)
              * proceed to the DELETE command (deletion-retry path). */
             if (atomic_get(&remaining_length) == 0 && current_sync_file_index >= 0 && conn != NULL) {
                 uint8_t eot[1] = {PACKET_EOT};
-                int err;
-                do {
-                    err = storage_notify(conn, eot, sizeof(eot));
-                    if (err == -ENOMEM) k_yield();
-                } while (err == -ENOMEM);
-                if (err && err != -EAGAIN) {
-                    LOG_ERR("GATT notify error: %d", err);
-                }
+                STORAGE_NOTIFY(conn, eot, sizeof(eot));
                 k_msleep(250);
             }
         }
@@ -795,14 +759,7 @@ void storage_write(void)
                 LOG_WRN("CMD_LIST_FILES: SD card still busy after 10s, aborting");
                 if (conn) {
                     uint8_t ack[2] = {PACKET_ACK, STORAGE_NOT_READY};
-                    int err;
-                    do {
-                        err = storage_notify(conn, ack, sizeof(ack));
-                        if (err == -ENOMEM) k_yield();
-                    } while (err == -ENOMEM);
-                    if (err && err != -EAGAIN) {
-                        LOG_ERR("GATT notify error: %d", err);
-                    }
+                    STORAGE_NOTIFY(conn, ack, sizeof(ack));
                 }
                 continue;
             }
@@ -872,14 +829,7 @@ void storage_write(void)
 
             if (conn) {
                 uint8_t ack[2] = {PACKET_ACK, result};
-                int err;
-                do {
-                    err = storage_notify(conn, ack, sizeof(ack));
-                    if (err == -ENOMEM) k_yield();
-                } while (err == -ENOMEM);
-                if (err && err != -EAGAIN) {
-                    LOG_ERR("GATT notify error: %d", err);
-                }
+                STORAGE_NOTIFY(conn, ack, sizeof(ack));
             }
             LOG_INF("Delete file[%d] (ts=%u) result: %d", idx, expected_ts, result);
         }
@@ -890,14 +840,7 @@ void storage_write(void)
             if (conn) {
                 uint8_t result = (ret >= 0) ? 0 : 1;
                 uint8_t ack[2] = {PACKET_ACK, result};
-                int err;
-                do {
-                    err = storage_notify(conn, ack, sizeof(ack));
-                    if (err == -ENOMEM) k_yield();
-                } while (err == -ENOMEM);
-                if (err && err != -EAGAIN) {
-                    LOG_ERR("GATT notify error: %d", err);
-                }
+                STORAGE_NOTIFY(conn, ack, sizeof(ack));
             }
             LOG_INF("CMD_CLEAR_STORAGE: SD card wiped, ret=%d", ret);
         }
@@ -912,14 +855,7 @@ void storage_write(void)
             if (conn) {
                 uint8_t result = (ret >= 0) ? 0 : 1;
                 uint8_t ack[2] = {PACKET_ACK, result};
-                int err;
-                do {
-                    err = storage_notify(conn, ack, sizeof(ack));
-                    if (err == -ENOMEM) k_yield();
-                } while (err == -ENOMEM);
-                if (err && err != -EAGAIN) {
-                    LOG_ERR("GATT notify error: %d", err);
-                }
+                STORAGE_NOTIFY(conn, ack, sizeof(ack));
                 LOG_INF("CMD_ROTATE_FILE: new file created, ret=%d", ret);
             }
         }
@@ -964,16 +900,7 @@ void storage_write(void)
                     uint8_t eot[1] = {PACKET_EOT};
                     struct bt_conn *eot_conn = get_current_connection();
                     if (eot_conn) {
-                        int err;
-                        do {
-                            err = storage_notify(eot_conn, eot, sizeof(eot));
-                            if (err == -ENOMEM) {
-                                k_yield();
-                            }
-                        } while (err == -ENOMEM);
-                        if (err && err != -EAGAIN) {
-                            LOG_ERR("GATT notify error: %d", err);
-                        }
+                        STORAGE_NOTIFY(eot_conn, eot, sizeof(eot));
                     }
                     put_current_connection(eot_conn);
                     k_msleep(250);

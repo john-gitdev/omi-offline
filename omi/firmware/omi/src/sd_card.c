@@ -1073,7 +1073,10 @@ static int _open_file_for_continuation(const char *filename, bool needs_rename)
         return -1;
     }
 
-    current_file_size = (uint32_t) lfs_file_size(&lfs_fs, &lfs_fil_data);
+    {
+        lfs_ssize_t _sz = lfs_file_size(&lfs_fs, &lfs_fil_data);
+        current_file_size = (_sz >= 0) ? (uint32_t)_sz : 0;
+    }
     bytes_since_sync = 0;
     write_batch_offset = 0;
     write_batch_counter = 0;
@@ -1229,7 +1232,10 @@ static int create_audio_file_with_timestamp(void)
         lfs_file_sync(&lfs_fs, &lfs_fil_data);
     }
 
-    current_file_size = (uint32_t) lfs_file_size(&lfs_fs, &lfs_fil_data);
+    {
+        lfs_ssize_t _sz = lfs_file_size(&lfs_fs, &lfs_fil_data);
+        current_file_size = (_sz >= 0) ? (uint32_t)_sz : 0;
+    }
     bytes_since_sync = 0;
     write_batch_offset = 0;
     write_batch_counter = 0;

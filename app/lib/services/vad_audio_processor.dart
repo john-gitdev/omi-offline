@@ -298,7 +298,7 @@ class VadAudioProcessor {
         final bool isClockJump = !sessionChanged &&
             (hasUptime ? (uptimeGapMs < 5000 && gapMs.abs() > 10000) : (gapMs.abs() > 10000));
 
-        final bool splitTriggered = sessionChanged && !imuGapMatches ||
+        final bool splitTriggered = (sessionChanged && !imuGapMatches) ||
             (gapMs > _silenceDurationToSplitMs && !isClockJump);
 
         if (_currentRefs.isNotEmpty && splitTriggered) {
@@ -365,7 +365,7 @@ class VadAudioProcessor {
         // Marker packet (0xFFFFFFFE = button-tap marker, 20 bytes: 4-byte header + 16-byte payload).
         // Payload layout: [0..7] UTC epoch ms (u64 LE), [8..11] uptime ms, [12..15] session id.
         if (frameLength == 0xFFFFFFFE) {
-          if (offset + 16 <= fileLength) {
+          if (offset + 20 <= fileLength) {
             final markerUtcMs = byteData.getUint64(offset + 4, Endian.little);
             final markerUptimeMs = byteData.getUint32(offset + 12, Endian.little);
             final markerSessionId = byteData.getUint32(offset + 16, Endian.little);
@@ -420,9 +420,12 @@ class VadAudioProcessor {
               if (gapMs < 0) gapMs = 0; // Prevent negative gaps from RTC sync jitter
 
               // Calculate uptime gap to distinguish clock jumps from silence.
+              // Use modular arithmetic (masking to u32 range) to handle the ~49-day
+              // firmware uptime wraparound correctly.
               int uptimeGapMs = 0;
               if (_currentFrameUptimeMs != null) {
-                uptimeGapMs = vadUptimeMs - (_currentFrameUptimeMs! + frameDurationMs);
+                uptimeGapMs = (vadUptimeMs - (_currentFrameUptimeMs! + frameDurationMs)) & 0xFFFFFFFF;
+                if (uptimeGapMs > 0x7FFFFFFF) uptimeGapMs -= 0x100000000; // sign-extend
               }
               // If uptime Gap matches frame count (small gap) but UTC gap is large, it's a clock sync.
               final bool isClockJump = uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000;
