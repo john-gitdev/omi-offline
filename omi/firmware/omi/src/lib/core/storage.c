@@ -764,6 +764,16 @@ void storage_write(void)
                 continue;
             }
 
+            /* Wait for any in-flight TMP→UTC rename to complete so the list
+             * never returns uptime-stamped entries to the app. */
+            int rename_wait = 20; /* 2 s max (20 × 100 ms) */
+            while (sd_is_timesync_rename_pending() && rename_wait-- > 0) {
+                k_msleep(100);
+            }
+            if (sd_is_timesync_rename_pending()) {
+                LOG_WRN("CMD_LIST_FILES: timesync rename still pending after 2s, listing anyway");
+            }
+
             if (conn) {
                 /* Refresh cache before building the response — the cache may be stale
                  * after a file rotation, time-sync rename, or deletion that called
