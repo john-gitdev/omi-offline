@@ -1110,8 +1110,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   void tryAutoSyncNext() {
-    // TODO: Disable this later
-    // if (_prefs.adjustmentMode) return;
+    if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) return;
     if (!_prefs.omiEnabled || _prefs.omiRefreshToken.isEmpty || !_prefs.omiAutoUpload) return;
     final minDuration = _prefs.filterMinDurationSeconds;
 

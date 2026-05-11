@@ -71,9 +71,9 @@ The platform layer (watchOS app, iOS AppDelegate, Pigeon-generated Swift/Dart co
 Uploads to external APIs (HeyPocket, Omi Sync) were temporarily enabled during Adjustment Mode for testing. These need to be disabled again so users do not accidentally upload debugging audio.
 
 **App tasks:**
-- [ ] Uncomment the `if (_prefs.adjustmentMode) return;` check in `tryAutoUploadNext()` in `app/lib/pages/recordings/recordings_controller.dart`.
-- [ ] Uncomment the `if (_prefs.adjustmentMode) return;` check in `tryAutoSyncNext()` in `app/lib/pages/recordings/recordings_controller.dart`.
-- [ ] Uncomment the `if (_prefs.adjustmentMode) throw Exception(...)` block in `uploadConversation()` in `app/lib/pages/recordings/recordings_controller.dart`.
-- [ ] Uncomment the `if (_prefs.adjustmentMode)` check in `_handleUploadTap` in `app/lib/pages/recordings/recordings_page.dart`.
-- [ ] Uncomment the `if (_prefs.adjustmentMode)` check in `_handleUpload` in `app/lib/pages/recordings/recording_player_page.dart`.
-- [ ] Uncomment the `if (adjustmentMode)` check in `UploadIconButton.build` in `app/lib/pages/recordings/batch_card.dart`.
+- [x] Uncomment the `if (_prefs.adjustmentMode) return;` check in `tryAutoUploadNext()` in `app/lib/pages/recordings/recordings_controller.dart`.
+- [x] Uncomment the `if (_prefs.adjustmentMode) return;` check in `tryAutoSyncNext()` in `app/lib/pages/recordings/recordings_controller.dart`.
+- [x] Uncomment the `if (_prefs.adjustmentMode) throw Exception(...)` block in `uploadConversation()` in `app/lib/pages/recordings/recordings_controller.dart`.
+- [x] Uncomment the `if (_prefs.adjustmentMode)` check in `_handleUploadTap` in `app/lib/pages/recordings/recordings_page.dart`.
+- [x] Uncomment the `if (_prefs.adjustmentMode)` check in `_handleUpload` in `app/lib/pages/recordings/recording_player_page.dart`.
+- [x] Uncomment the `if (adjustmentMode)` check in `UploadIconButton.build` in `app/lib/pages/recordings/batch_card.dart`.
