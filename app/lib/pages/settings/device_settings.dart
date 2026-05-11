@@ -5,10 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
+import 'package:omi/pages/dfuota/firmware_update.dart';
 import 'package:omi/utils/device.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
@@ -248,7 +250,23 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             icon: FontAwesomeIcons.download,
             title: 'Firmware',
             chipValue: device?.firmwareRevision ?? 'oo-1.0.9',
-            showChevron: false,
+            showChevron: true,
+            onTap: () async {
+              FilePickerResult? result = await FilePicker.platform.pickFiles(
+                type: FileType.custom,
+                allowedExtensions: ['zip'],
+              );
+              if (result != null && result.files.single.path != null) {
+                if (mounted) {
+                  Navigator.of(context).push(MaterialPageRoute(
+                    builder: (c) => FirmwareUpdate(
+                      device: device,
+                      localZipPath: result.files.single.path,
+                    ),
+                  ));
+                }
+              }
+            },
           ),
           if (provider.storageStats != null && provider.storageStats!.freeBytes > 0) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
