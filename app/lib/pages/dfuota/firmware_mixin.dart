@@ -37,7 +37,7 @@ class ManifestFile {
   factory ManifestFile.fromJson(Map<String, dynamic> json) {
     return ManifestFile(
       file: json['file'],
-      image: json['image'],
+      image: int.tryParse(json['image_index']?.toString() ?? '0') ?? 0,
     );
   }
 }
