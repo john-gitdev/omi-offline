@@ -151,6 +151,22 @@ class OmiBleManager private constructor(private val application: Application) {
         isScanning = true
         scanner.startScan(filters, settings, callback)
 
+        // Also report already connected devices that might not be advertising
+        try {
+            val systemConnectedDevices = bluetoothManager.getConnectedDevices(BluetoothProfile.GATT)
+            for (device in systemConnectedDevices) {
+                val peripheral = BlePeripheral(
+                    uuid = device.address.uppercase(),
+                    name = device.name ?: "",
+                    rssi = -50, // Dummy RSSI for connected device
+                    serviceUuids = emptyList()
+                )
+                mainHandler.post { flutterApi?.onPeripheralDiscovered(peripheral) {} }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to get system connected devices: ${e.message}")
+        }
+
         if (timeout > 0) {
             scanTimeoutRunnable = Runnable { stopScan() }
             mainHandler.postDelayed(scanTimeoutRunnable!!, timeout * 1000L)
@@ -181,7 +197,17 @@ class OmiBleManager private constructor(private val application: Application) {
             connectedGatts.remove(addr)
         }
 
-        val gatt = device.connectGatt(application, autoConnect, createGattCallback(), BluetoothDevice.TRANSPORT_LE)
+        // Check if device is already connected to the system by another app or previous session
+        val systemConnectedDevices = bluetoothManager.getConnectedDevices(BluetoothProfile.GATT)
+        val isSystemConnected = systemConnectedDevices.any { it.address.uppercase() == addr }
+        
+        // If already connected to system, autoConnect=false is much more likely to succeed quickly
+        val effectiveAutoConnect = if (isSystemConnected) false else autoConnect
+        if (isSystemConnected) {
+            Log.i(TAG, "Device $addr is already connected to system, using autoConnect=false")
+        }
+
+        val gatt = device.connectGatt(application, effectiveAutoConnect, createGattCallback(), BluetoothDevice.TRANSPORT_LE)
         if (gatt != null) connectedGatts[addr] = gatt
         return gatt
     }
@@ -201,6 +227,10 @@ class OmiBleManager private constructor(private val application: Application) {
         val addr = address.uppercase()
         val gatt = connectedGatts[addr] ?: return false
         return bluetoothManager.getConnectionState(gatt.device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
+    }
+
+    fun getConnectedDevices(): List<String> {
+        return bluetoothManager.getConnectedDevices(BluetoothProfile.GATT).map { it.address.uppercase() }
     }
 
     fun requestBond(address: String, completion: (Result<Boolean>) -> Unit) {
@@ -397,7 +427,6 @@ class OmiBleManager private constructor(private val application: Application) {
                 mainHandler.postDelayed(discoveryTimeout, DISCOVERY_TIMEOUT_MS)
 
                 enqueueCommand {
-                    try { gatt.javaClass.getMethod("refresh").invoke(gatt) } catch (_: Exception) {}
                     if (!gatt.discoverServices()) {
                         mainHandler.removeCallbacks(discoveryTimeout)
                         discoveryTimeouts.remove(address)
