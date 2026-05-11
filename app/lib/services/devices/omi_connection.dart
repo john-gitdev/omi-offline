@@ -91,9 +91,7 @@ class OmiDeviceConnection extends DeviceConnection {
         rethrow;
       }
     } catch (e) {
-      Logger.error(
-        'Failed to acquire SD lock for [$owner]. Current owner: $_lockOwner. Error: $e'
-      );
+      Logger.error('Failed to acquire SD lock for [$owner]. Current owner: $_lockOwner. Error: $e');
       rethrow;
     }
   }
@@ -420,7 +418,24 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<List<StorageFile>> performListFiles() async {
-    return await _performListFilesLocked();
+    var files = await _performListFilesLocked();
+    // TMP files have uptime-ms timestamps (< year-2000 epoch) because the firmware
+    // hasn't finished renaming them after RTC sync. Poll until rename completes.
+    if (files.any((f) => f.timestamp < 946684800)) {
+      const maxRetries = 5;
+      for (var i = 0; i < maxRetries; i++) {
+        Logger.debug(
+            'OmiDeviceConnection: TMP files detected (retry ${i + 1}/$maxRetries), waiting 300ms for firmware rename...');
+        await Future.delayed(const Duration(milliseconds: 300));
+        files = await _performListFilesLocked();
+        if (!files.any((f) => f.timestamp < 946684800)) break;
+      }
+      if (files.any((f) => f.timestamp < 946684800)) {
+        Logger.warning(
+            'OmiDeviceConnection: TMP files still present after $maxRetries retries — proceeding with uptime timestamps');
+      }
+    }
+    return files;
   }
 
   Future<List<StorageFile>> _performListFilesLocked() async {
@@ -470,13 +485,13 @@ class OmiDeviceConnection extends DeviceConnection {
         if (blePacket[0] == 0x02) {
           Logger.debug('OmiDeviceConnection: CMD_LIST_FILES EOT received');
           if (expectedTotalBytes == null || buffer.length < expectedTotalBytes!) {
-            // If we got EOT but haven't received all expected bytes (or any bytes), 
+            // If we got EOT but haven't received all expected bytes (or any bytes),
             // complete with what we have if it's a valid list.
             if (buffer.length >= 4) {
-               // We have at least the count, so we can try parsing.
-               _parseAndSuccess(buffer, success);
+              // We have at least the count, so we can try parsing.
+              _parseAndSuccess(buffer, success);
             } else {
-               success([]); // Empty list or malformed
+              success([]); // Empty list or malformed
             }
           }
           return;
@@ -664,7 +679,8 @@ class OmiDeviceConnection extends DeviceConnection {
     }
 
     for (int i = 0; i < files.length; i++) {
-      Logger.debug('OmiDeviceConnection: file[$i] index=${files[i].index} ts=${files[i].timestamp} size=${files[i].size} sid=${files[i].sessionId}');
+      Logger.debug(
+          'OmiDeviceConnection: file[$i] index=${files[i].index} ts=${files[i].timestamp} size=${files[i].size} sid=${files[i].sessionId}');
     }
     Logger.debug('OmiDeviceConnection: Successfully parsed ${files.length} files (count field said $count)');
     success(files);
