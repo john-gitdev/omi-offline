@@ -26,7 +26,7 @@ class DeviceProvider extends ChangeNotifier
   bool isConnected = false;
   bool _isAppInForeground = true;
   bool isDeviceStorageSupport = false;
-  bool _isIntentionallyDisconnecting = false;
+
   BtDevice? connectedDevice;
   BtDevice? pairedDevice;
   StreamSubscription<List<int>>? _bleBatteryLevelListener;
@@ -474,7 +474,7 @@ class DeviceProvider extends ChangeNotifier
         await ForegroundUtil.stopForegroundTask();
       } else {
         ForegroundUtil.updateNotification(
-          title: isConnected ? 'Omi is active' : 'Omi is active',
+          title: isConnected ? 'Omi connected' : 'Omi is active',
           text: isConnected ? 'Connected to device' : 'Running in the background',
         );
       }
@@ -491,7 +491,7 @@ class DeviceProvider extends ChangeNotifier
     final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     if (interval > 0 && SharedPreferencesUtil().btDevice.id.isNotEmpty) {
       if (!await ForegroundUtil.isRunningService) {
-        ForegroundUtil.startForegroundTask();
+        await ForegroundUtil.startForegroundTask();
       }
     }
     if (SharedPreferencesUtil().maximizeBattery) {
@@ -783,7 +783,7 @@ class DeviceProvider extends ChangeNotifier
 
   @override
   void onDeviceConnectionStateChanged(String deviceId, DeviceConnectionState state, {bool isManual = false}) {
-    if (isManual) _isIntentionallyDisconnecting = true;
+
     switch (state) {
       case DeviceConnectionState.connected:
         updateConnectingStatus(false);
