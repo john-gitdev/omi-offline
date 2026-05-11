@@ -281,6 +281,12 @@ static atomic_t deferred_timesync_rename_pending;
 static uint32_t deferred_timesync_utc;
 static atomic_t proactive_wipe_requested;
 
+/* Set when a TMP→UTC rename is in flight (between sd_notify_time_synced and the
+ * sd_worker completing sd_update_filename_after_timesync). The storage thread
+ * waits on this before responding to CMD_LIST_FILES so it never returns
+ * uptime-stamped entries to the app. */
+static atomic_t timesync_rename_pending = ATOMIC_INIT(0);
+
 static bool is_mounted = false;
 static bool sd_enabled = false;
 static atomic_t sd_write_paused = ATOMIC_INIT(0);
@@ -2116,17 +2122,17 @@ void sd_worker_thread(void)
         /* ---- Time synced ---- */
         case REQ_TIME_SYNCED:
             if (current_filename[0] != '\0' && current_file_needs_rename) {
-                /* 
+                /*
                  * Time sync received while recording to a temporary file.
                  * 1. Rotate to a new file (which will now use the correct UTC timestamp).
                  * 2. Retroactively rename all previously closed TMP_ segments.
                  */
                 int res = create_audio_file_with_timestamp();
-                if (res < 0) {
+                if (res >= 0) {
+                    sd_update_filename_after_timesync(req.u.time_synced.utc_time);
+                } else {
                     LOG_ERR("[SD_WORK] Time sync rotation failed: %d", res);
-                    break;
                 }
-                sd_update_filename_after_timesync(req.u.time_synced.utc_time);
             } else if (current_filename[0] == '\0') {
                 /* No file open yet, start a fresh one with UTC name. */
                 create_audio_file_with_timestamp();
@@ -2134,6 +2140,7 @@ void sd_worker_thread(void)
                 /* Already recording with UTC name; just catch up any old TMP segments. */
                 sd_update_filename_after_timesync(req.u.time_synced.utc_time);
             }
+            atomic_set(&timesync_rename_pending, 0);
             break;
 
         default:
@@ -2151,6 +2158,11 @@ void sd_worker_thread(void)
 /* ------------------------------------------------------------------ */
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
+
+bool sd_is_timesync_rename_pending(void)
+{
+    return atomic_get(&timesync_rename_pending) != 0;
+}
 
 bool sd_is_boot_ready(void)
 {
@@ -2276,6 +2288,8 @@ uint32_t sd_get_cached_free_bytes(void)
 
 void sd_notify_time_synced(uint32_t utc_time)
 {
+    /* Mark rename in-flight before queuing so CMD_LIST_FILES can't race past it. */
+    atomic_set(&timesync_rename_pending, 1);
     /* Store value before flag — atomic_set provides ordering. */
     pending_timesync_utc = utc_time;
     atomic_set(&pending_time_synced, 1);
