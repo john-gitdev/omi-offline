@@ -665,7 +665,7 @@ class RecordingsManager {
 
     Map<String, List<File>> rawSegmentsByDate = {};
     Map<String, List<Conversation>> processedByDate = {};
-    Map<String, List<DateTime>> markersByDate = {};
+    Map<String, Set<int>> markersByDate = {};
 
     // Process raw segments (now they are in DeviceSession folders)
     if (await rawSegmentsDir.exists()) {
@@ -702,7 +702,9 @@ class RecordingsManager {
               if (utc != null) {
                 // The sync service writes UTC in milliseconds.
                 final date = DateTime.fromMillisecondsSinceEpoch(utc);
-                markersByDate.putIfAbsent(fmtDate(date), () => []).add(date);
+                final dateKey = fmtDate(date);
+                markersByDate.putIfAbsent(dateKey, () => {});
+                markersByDate[dateKey]!.add(utc);
               }
             }
           } catch (e) {
@@ -817,7 +819,7 @@ class RecordingsManager {
           rawSegments: raw,
           draftRecordings: drafts,
           finalizedRecordings: finalized,
-          markerTimestamps: markersByDate[dateStr] ?? [],
+          markerTimestamps: (markersByDate[dateStr] ?? {}).map((ms) => DateTime.fromMillisecondsSinceEpoch(ms)).toList(),
         ),
       );
     }
@@ -1626,7 +1628,15 @@ class RecordingsManager {
     }
     recordings.sort((a, b) => a.startMs.compareTo(b.startMs));
 
-    for (final markerTime in markerTimestamps) {
+    final Set<int> seenMarkerMs = {};
+    final List<DateTime> uniqueMarkers = [];
+    for (final m in markerTimestamps) {
+      if (seenMarkerMs.add(m.millisecondsSinceEpoch)) {
+        uniqueMarkers.add(m);
+      }
+    }
+
+    for (final markerTime in uniqueMarkers) {
       final markerMs = markerTime.millisecondsSinceEpoch;
       // Primary location: the marker's own date folder (default for pending/orphan)
       final dateStr = fmtDate(markerTime);
@@ -1813,8 +1823,19 @@ class RecordingsManager {
 
     final result = resultsNested.expand((list) => list).whereType<MarkerConversation>().toList();
 
-    result.sort((a, b) => b.markerTime.compareTo(a.markerTime));
-    return result;
+    // Deduplicate by markerMs, preferring resolved (non-pending) markers.
+    final Map<int, MarkerConversation> uniqueMap = {};
+    for (final mc in result) {
+      final ms = mc.markerTime.millisecondsSinceEpoch;
+      final existing = uniqueMap[ms];
+      if (existing == null || (existing.isPending && !mc.isPending)) {
+        uniqueMap[ms] = mc;
+      }
+    }
+
+    final deduped = uniqueMap.values.toList();
+    deduped.sort((a, b) => b.markerTime.compareTo(a.markerTime));
+    return deduped;
   }
 
   /// Derives the date-folder name (YYYY-MM-DD) from epoch milliseconds.

@@ -235,5 +235,29 @@ void main() {
       expect(markers[0].markerOffsetMs, 0);
       expect(markers[0].segment?.path.endsWith('recording_$markerMs.wav'), true);
     });
+
+    test('getBatches deduplicates markers from multiple sessions', () async {
+      final rawSegmentsDir = Directory(p.join(tempDir.path, 'raw_segments'))..createSync();
+      
+      // Create two sessions with the same marker
+      final markerMs = 1713892490000;
+      final markerLine = '$markerMs,10000,1\n';
+      
+      final session1 = Directory(p.join(rawSegmentsDir.path, 'session1'))..createSync();
+      File(p.join(session1.path, 'markers.txt')).writeAsStringSync(markerLine);
+      
+      final session2 = Directory(p.join(rawSegmentsDir.path, 'session2'))..createSync();
+      File(p.join(session2.path, 'markers.txt')).writeAsStringSync(markerLine);
+
+      final manager = RecordingsManager();
+      final batches = await manager.getBatches();
+      
+      final dateStr = RecordingsManager.fmtDate(DateTime.fromMillisecondsSinceEpoch(markerMs));
+      final batch = batches.firstWhere((b) => b.dateString == dateStr);
+      
+      // Should only have 1 marker despite being in two sessions
+      expect(batch.markerTimestamps.length, 1);
+      expect(batch.markerTimestamps.first.millisecondsSinceEpoch, markerMs);
+    });
   });
 }
