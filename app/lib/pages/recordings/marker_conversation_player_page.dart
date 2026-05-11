@@ -273,7 +273,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
           backgroundColor: const Color(0xFF0D0D0D),
           elevation: 0,
           title: Text(
-            'marker at ${widget.markerConversation.markerTimeLabel}',
+            'Marker at ${widget.markerConversation.markerTimeLabel}',
             style: const TextStyle(color: Colors.white, fontSize: 18),
           ),
           actions: [
@@ -313,11 +313,10 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                 await RecordingsManager.deleteMarkerConversation(widget.markerConversation);
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Deleted marker at ${widget.markerConversation.markerTimeLabel}')),
+                    SnackBar(content: Text('Deleted Marker at ${widget.markerConversation.markerTimeLabel}')),
                   );
                   Navigator.of(context).pop();
-                }
-              }
+                }              }
               },
               ),
               IconButton(

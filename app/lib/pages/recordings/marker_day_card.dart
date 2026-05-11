@@ -39,7 +39,7 @@ class MarkerTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    'marker at ${mc.markerTimeLabel}',
+                    'Marker at ${mc.markerTimeLabel}',
                     style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
                   ),
                 ],
