@@ -138,7 +138,7 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<void> connect({void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged, bool requiresBond = false}) async {}
   @override
-  Future<void> disconnect() async {}
+  Future<void> disconnect({bool isManual = true}) async {}
   @override
   Future<int> retrieveBatteryLevel() async => 100;
   @override

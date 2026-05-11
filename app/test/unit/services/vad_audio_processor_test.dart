@@ -477,5 +477,76 @@ void main() {
       expect(processor.currentChunkDurationMs, 7000);
       processor.destroy();
     });
+
+    group('High-Precision Timestamp Pipeline', () {
+      test('RTC Sync Jitter: handles small negative gaps gracefully', () async {
+        final processor = VadAudioProcessor.fromSettings(
+          settings: _settings(minDurationMs: 0, discardShort: false),
+          outputDir: tempDir.path,
+        );
+
+        final startSeconds = 1713892490;
+        const startUptime = 10000;
+        
+        // 1. Process initial frames (10 frames = 200ms at 20ms/frame)
+        await processor.processSegmentFile(
+          _makeBinFile(tempDir, 10, name: 'file1.bin'),
+          DateTime.fromMillisecondsSinceEpoch(startSeconds * 1000, isUtc: true),
+          startUptimeMs: startUptime,
+        );
+
+        // 2. VAD Resume with "negative" gap due to RTC jitter
+        // lastFrameEndTime = 10:00:00.200
+        // newResumeTime = 10:00:00.195 (-5ms jitter)
+        final resumeSeconds = startSeconds; // Same second
+        const resumeUptime = startUptime + 200; 
+        
+        final binWithJitter = _makeBinFileWithVadResume(
+          tempDir,
+          0, // 0 frames before
+          5, // 5 frames after (100ms)
+          name: 'jitter.bin',
+          vadUtcSeconds: resumeSeconds,
+          vadUptimeMs: resumeUptime,
+        );
+
+        // This should not crash and should treat negative gap as 0
+        await processor.processSegmentFile(binWithJitter, DateTime.fromMillisecondsSinceEpoch(startSeconds * 1000, isUtc: true));
+        
+        // Duration: 200ms (file1) + 0ms (jitter) + 100ms (jitter.bin) = 300ms
+        expect(processor.currentChunkDurationMs, 300);
+        processor.destroy();
+      });
+
+      test('IMU Tick Rollover: handles 24-bit rollover correctly', () async {
+        final processor = VadAudioProcessor.fromSettings(
+          settings: _settings(minDurationMs: 0, discardShort: false),
+          outputDir: tempDir.path,
+        );
+
+        // Session 1 ends near max 24-bit (0xFFFFFF = 16777215)
+        final file1 = _makeBinFileWithHeader(
+          tempDir, 5, name: 'rollover1.bin',
+          utcStartMs: 1000000000000, uptimeStartMs: 10000,
+          imuTicks: 0xFFFF00, sessionId: 1,
+        );
+        await processor.processSegmentFile(file1, DateTime.fromMillisecondsSinceEpoch(1000000000000));
+
+        // Session 2 starts after rollover (e.g. at 0x000100)
+        // Delta = 0x000100 - 0xFFFF00 = 0x000200 (using & 0xFFFFFF)
+        // 0x000200 = 512 ticks = 512 * 6.4ms = 3276.8ms gap
+        final file2 = _makeBinFileWithHeader(
+          tempDir, 5, name: 'rollover2.bin',
+          utcStartMs: 1000000003376, uptimeStartMs: 5000,
+          imuTicks: 0x000100, sessionId: 2,
+        );
+        await processor.processSegmentFile(file2, DateTime.fromMillisecondsSinceEpoch(1000000003376));
+
+        // Stitching should occur because gap matches IMU delta
+        expect(processor.currentSessionId, 1); // Stayed in session 1 due to bridge
+        expect(processor.currentChunkDurationMs >= 3376 + 100, true);
+        processor.destroy();
+      });
+    });
   });
 }

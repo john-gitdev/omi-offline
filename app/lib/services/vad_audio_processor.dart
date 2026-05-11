@@ -91,6 +91,9 @@ class VadAudioProcessor {
 
   @visibleForTesting
   int get currentChunkDurationMs => _currentChunkDurationMs;
+
+  @visibleForTesting
+  int? get currentSessionId => _currentSessionId;
   // Marker-forced recording state
   bool _forcedByMarker = false;
 
@@ -294,8 +297,10 @@ class VadAudioProcessor {
         final bool isClockJump = !sessionChanged &&
             (hasUptime ? (uptimeGapMs < 5000 && gapMs.abs() > 10000) : (gapMs.abs() > 10000));
 
-        if (_currentRefs.isNotEmpty &&
-            (sessionChanged && !imuGapMatches || (gapMs > _silenceDurationToSplitMs && !isClockJump))) {
+        final bool splitTriggered = sessionChanged && !imuGapMatches ||
+            (gapMs > _silenceDurationToSplitMs && !isClockJump);
+
+        if (_currentRefs.isNotEmpty && splitTriggered) {
           Logger.debug(
             'VadAudioProcessor: Split triggered before ${segmentFile.path.split('/').last} — '
             'sessionChanged=$sessionChanged, gapMs=$gapMs (threshold=${_silenceDurationToSplitMs}ms), '
@@ -311,9 +316,15 @@ class VadAudioProcessor {
           Logger.debug('VadAudioProcessor: Max duration reached during inter-file gap — forcing cut.');
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
+        } else {
+          // STITCHING: Pad inter-file gaps with silence if it's not a clock jump 
+          // and either the gap is significant (>= 10s) OR it's an IMU bridge match.
+          if (_currentRefs.isNotEmpty && !isClockJump && (gapMs >= 10000 || imuGapMatches)) {
+            _currentRefs.add(Duration(milliseconds: gapMs));
+            _currentChunkDurationMs += gapMs;
+            Logger.debug('VadAudioProcessor: Padding inter-file gap of ${gapMs}ms');
+          }
         }
-        // Gaps between files (small gaps) are now handled strictly by the internal packets (0xFFFFFFFD) 
-        // to avoid double-counting.
       }
 
       if (_currentRefs.isEmpty) {
