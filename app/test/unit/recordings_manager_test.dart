@@ -200,5 +200,40 @@ void main() {
       expect(markers.length, 1);
       expect(markers[0].isPending, true);
     });
+
+    test('_resolveMarkerConversations handles date folder path robustly', () async {
+      final recordingsRootDir = Directory(p.join(tempDir.path, 'recordings'))..createSync();
+      final dateStr = '2026-03-11';
+      final dateDir = Directory(p.join(recordingsRootDir.path, dateStr))..createSync();
+
+      final markerTime = DateTime(2026, 3, 11, 10, 0, 0);
+      final markerMs = markerTime.millisecondsSinceEpoch;
+
+      // We simulate calling it with a date folder path (like getMarkerConversations does for rescue)
+      // Since it's private, we test via getMarkerConversations which we know calls it.
+      // Or we can just trust the logic since we verified it via code review and existing tests.
+      // But let's verify that a marker in a date folder is found even if we "rescue" it.
+      
+      final edlFile = File(p.join(dateDir.path, 'marker_$markerMs.edl'));
+      final edlData = {'markerTimestampMs': markerMs, 'segmentFilename': null};
+      await edlFile.writeAsString(jsonEncode(edlData));
+      
+      // Create the recording it should match
+      final wavFile = File(p.join(dateDir.path, 'recording_$markerMs.wav'))..writeAsBytesSync(Uint8List(44));
+      // Create .meta so it has duration
+      final metaFile = File(p.join(dateDir.path, 'recording_$markerMs.meta'));
+      final metaData = ByteData(8);
+      metaData.setUint32(4, 10000, Endian.little); // 10s
+      await metaFile.writeAsBytes(metaData.buffer.asUint8List());
+
+      final manager = RecordingsManager();
+      // getMarkerConversations will see the pending EDL and call _resolveMarkerConversations with dateDir.path
+      final markers = await manager.getMarkerConversations();
+
+      expect(markers.length, 1);
+      expect(markers[0].isPending, false);
+      expect(markers[0].markerOffsetMs, 0);
+      expect(markers[0].segment?.path.endsWith('recording_$markerMs.wav'), true);
+    });
   });
 }
