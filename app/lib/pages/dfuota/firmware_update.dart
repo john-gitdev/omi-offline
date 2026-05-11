@@ -12,8 +12,9 @@ import 'package:omi/widgets/dialog.dart';
 class FirmwareUpdate extends StatefulWidget {
   final BtDevice? device;
   final bool isRollback;
+  final String? localZipPath;
 
-  const FirmwareUpdate({super.key, this.device, this.isRollback = false});
+  const FirmwareUpdate({super.key, this.device, this.isRollback = false, this.localZipPath});
 
   @override
   State<FirmwareUpdate> createState() => _FirmwareUpdateState();
@@ -37,7 +38,21 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
         isLoading = true;
       });
 
-      if (widget.isRollback) {
+      if (widget.localZipPath != null) {
+        // Offline / Local file update flow
+        if (mounted) {
+          setState(() {
+            shouldUpdate = true;
+            updateMessage = 'Local firmware file ready to flash.';
+            latestFirmwareDetails = {
+              'version': 'Local File',
+              'is_legacy_secure_dfu': false, // Ensure we use MCUmgr (Zephyr SMP)
+            };
+            isLegacySecureDFU = false;
+            isLoading = false;
+          });
+        }
+      } else if (widget.isRollback) {
         await getStableVersion(deviceModelNumber: device.modelNumber);
         if (mounted) {
           setState(() {
@@ -394,8 +409,12 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
               final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
               deviceProvider.setFirmwareUpdateInProgress(true);
 
-              await downloadFirmware();
-              await startDfu(widget.device!);
+              if (widget.localZipPath != null) {
+                await startDfu(widget.device!, zipFilePath: widget.localZipPath);
+              } else {
+                await downloadFirmware();
+                await startDfu(widget.device!);
+              }
             },
             child: Container(
               width: double.infinity,
