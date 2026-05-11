@@ -256,10 +256,17 @@ class VadAudioProcessor {
 
       // FIRST PASS: Peek for metadata header at offset 0
       if (fileLength >= 36 && byteData.getUint32(0, Endian.little) == 0xFFFFFFFB) {
-        final utcStartMs = byteData.getUint64(8, Endian.little);
+        var utcStartMs = byteData.getUint64(8, Endian.little);
         final uptimeStartMs = byteData.getUint64(16, Endian.little);
         currentImuTicks = byteData.getUint32(24, Endian.little);
         final sessionIdInHeader = byteData.getUint32(28, Endian.little);
+
+        // Auto-detect seconds vs. milliseconds. 
+        // 946684800 is Jan 1 2000 in seconds. 
+        // 946684800000 is Jan 1 2000 in milliseconds.
+        if (utcStartMs > 946684800 && utcStartMs < 946684800000) {
+          utcStartMs *= 1000;
+        }
 
         if (utcStartMs > 946684800000) {
           segmentStartTime = DateTime.fromMillisecondsSinceEpoch(utcStartMs, isUtc: true);

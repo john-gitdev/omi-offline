@@ -631,8 +631,12 @@ class RecordingsManager {
               !fileName.endsWith('.ogg') &&
               !fileName.endsWith('.meta')) continue;
           final parts = fileName.split('_');
-          final millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
+          var millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
           if (millis == null || millis <= 0) continue;
+          // Auto-detect seconds vs milliseconds
+          if (millis > 946684800 && millis < 946684800000) {
+            millis *= 1000;
+          }
           final dateStr = _dateStringFromMillis(millis);
           final liveDir = Directory('${directory.path}/recordings/$dateStr');
           await liveDir.create(recursive: true);
@@ -698,14 +702,19 @@ class RecordingsManager {
             final content = await markerFile.readAsLines();
             for (var line in content) {
               final parts = line.split(',');
-              final utc = int.tryParse(parts[0].trim());
+              var utc = int.tryParse(parts[0].trim());
               if (utc != null) {
+                // Auto-detect seconds vs milliseconds
+                if (utc > 946684800 && utc < 946684800000) {
+                  utc *= 1000;
+                }
+
                 // Deduplicate markers within a 2-second window to collapse redundant
                 // firmware packets and derived vs. raw timestamp doubles.
                 final date = DateTime.fromMillisecondsSinceEpoch(utc);
                 final dateKey = fmtDate(date);
                 final set = markersByDate.putIfAbsent(dateKey, () => {});
-                
+
                 // Fuzzy check: is there a marker within 2s already?
                 bool isDuplicate = false;
                 for (final existingMs in set) {
@@ -717,6 +726,7 @@ class RecordingsManager {
                 if (!isDuplicate) set.add(utc);
               }
             }
+
           } catch (e) {
             Logger.error(
               "RecordingsManager: Failed to read markers for session $deviceSessionIdStr: $e",
@@ -736,11 +746,16 @@ class RecordingsManager {
               final tsStr = name.split('_').first;
               final ts = int.tryParse(tsStr);
               if (ts != null && ts > 0) {
-                // If timestamp is uptime (very small), use lastModified as fallback for date grouping
+                // If timestamp is uptime (very small), use lastModified as fallback for date grouping.
+                // If it's 10 digits, it's seconds. If 13+ digits, it's milliseconds.
                 if (ts < 1000000000) {
                   date = await file.lastModified();
-                } else {
+                } else if (ts < 10000000000) {
+                  // Seconds
                   date = DateTime.fromMillisecondsSinceEpoch(ts * 1000);
+                } else {
+                  // Milliseconds
+                  date = DateTime.fromMillisecondsSinceEpoch(ts);
                 }
               } else {
                 date = await file.lastModified();
@@ -1738,96 +1753,93 @@ class RecordingsManager {
     final entities = await recordingsDir.list().toList();
     final dateFolders = entities.whereType<Directory>().toList();
 
-    final resultsNested = await Future.wait(
-      dateFolders.map((dateFolder) async {
-        final edlFiles = await dateFolder
-            .list()
-            .where(
-              (e) => e is File && e.path.split('/').last.startsWith('marker_') && e.path.endsWith('.edl'),
-            )
-            .cast<File>()
-            .toList();
+    // Step 1: Rapidly scan all date folders for EDL files
+    final List<MarkerConversation> allConversations = [];
+    for (final dateFolder in dateFolders) {
+      final edlFiles = await dateFolder
+          .list()
+          .where((e) => e is File && e.path.split('/').last.startsWith('marker_') && e.path.endsWith('.edl'))
+          .cast<File>()
+          .toList();
 
-        final markerFutures = edlFiles.map((edlFile) async {
-          try {
-            final json = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
-            final markerMs = json['markerTimestampMs'] as int;
-            final segmentFilename = json['segmentFilename'] as String?;
-            final markerOffsetMs = json['markerOffsetMs'] as int? ?? 0;
-            final cropStartMs = json['cropStartMs'] as int? ?? 0;
-            final cropEndMs = json['cropEndMs'] as int? ?? 0;
-            final userSaved = json['userSaved'] as bool? ?? false;
+      for (final edlFile in edlFiles) {
+        try {
+          final json = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+          final markerMs = json['markerTimestampMs'] as int;
+          final segmentFilename = json['segmentFilename'] as String?;
 
-            File? segmentFile;
-            if (segmentFilename != null && segmentFilename.isNotEmpty) {
-              final localFile = File('${dateFolder.path}/$segmentFilename');
-              if (await localFile.exists()) {
-                segmentFile = localFile;
-              } else {
-                // Resiliency: if audio was misplaced (bug in moveTempFilesToLive), search other folders.
-                for (final otherFolder in dateFolders) {
-                  if (otherFolder.path == dateFolder.path) continue;
-                  final otherFile = File('${otherFolder.path}/$segmentFilename');
-                  if (await otherFile.exists()) {
-                    segmentFile = otherFile;
-                    Logger.debug('RecordingsManager: Found misplaced audio for marker in ${otherFolder.path}');
-                    break;
-                  }
+          File? segmentFile;
+          if (segmentFilename != null && segmentFilename.isNotEmpty) {
+            final localFile = File('${dateFolder.path}/$segmentFilename');
+            if (await localFile.exists()) {
+              segmentFile = localFile;
+            } else {
+              // Resiliency: if audio was misplaced (bug in moveTempFilesToLive), search other folders.
+              for (final otherFolder in dateFolders) {
+                if (otherFolder.path == dateFolder.path) continue;
+                final otherFile = File('${otherFolder.path}/$segmentFilename');
+                if (await otherFile.exists()) {
+                  segmentFile = otherFile;
+                  break;
                 }
               }
             }
-
-            // If still pending, trigger a quick resolution attempt to rescue this marker.
-            // This handles cases where metadata was lost or audio was misplaced.
-            if (segmentFile == null) {
-              await _resolveMarkerConversations(dateFolder.path, [DateTime.fromMillisecondsSinceEpoch(markerMs)]);
-              // Re-read the file to see if it was resolved
-              try {
-                final updatedJson = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
-                final newSegmentFilename = updatedJson['segmentFilename'] as String?;
-                if (newSegmentFilename != null && newSegmentFilename.isNotEmpty) {
-                  // Resolve successful!
-                  final f = File('${dateFolder.path}/$newSegmentFilename');
-                  if (await f.exists()) {
-                    return MarkerConversation(
-                      markerTime: DateTime.fromMillisecondsSinceEpoch(markerMs),
-                      segment: f,
-                      markerOffsetMs: updatedJson['markerOffsetMs'] as int? ?? 0,
-                      cropStartMs: updatedJson['cropStartMs'] as int? ?? 0,
-                      cropEndMs: updatedJson['cropEndMs'] as int? ?? 0,
-                      edlFile: edlFile,
-                      userSaved: updatedJson['userSaved'] as bool? ?? false,
-                    );
-                  }
-                }
-              } catch (_) {}
-            }
-            return MarkerConversation(
-              markerTime: DateTime.fromMillisecondsSinceEpoch(markerMs),
-              segment: segmentFile,
-              markerOffsetMs: markerOffsetMs,
-              cropStartMs: cropStartMs,
-              cropEndMs: cropEndMs,
-              edlFile: edlFile,
-              userSaved: userSaved,
-            );
-          } catch (e) {
-            Logger.error(
-              'RecordingsManager: Failed to parse EDL ${edlFile.path}: $e',
-            );
-            return null;
           }
-        });
 
-        return await Future.wait(markerFutures);
-      }),
-    );
+          allConversations.add(MarkerConversation(
+            markerTime: DateTime.fromMillisecondsSinceEpoch(markerMs),
+            segment: segmentFile,
+            markerOffsetMs: json['markerOffsetMs'] as int? ?? 0,
+            cropStartMs: json['cropStartMs'] as int? ?? 0,
+            cropEndMs: json['cropEndMs'] as int? ?? 0,
+            edlFile: edlFile,
+            userSaved: json['userSaved'] as bool? ?? false,
+          ));
+        } catch (e) {
+          Logger.error('RecordingsManager: Failed to parse EDL ${edlFile.path}: $e');
+        }
+      }
+    }
 
-    final result = resultsNested.expand((list) => list).whereType<MarkerConversation>().toList();
+    // Step 2: Batch resolve any pending markers to avoid O(N^2) directory scanning.
+    final pending = allConversations.where((mc) => mc.isPending).toList();
+    if (pending.isNotEmpty) {
+      await _resolveMarkerConversations(recordingsDir.path, pending.map((mc) => mc.markerTime).toList());
 
-    // Deduplicate by markerMs within 2s window, preferring resolved (non-pending) markers.
+      // Re-read the EDLs that were pending to update their status.
+      for (int i = 0; i < allConversations.length; i++) {
+        if (!allConversations[i].isPending) continue;
+        final mc = allConversations[i];
+        try {
+          // If the file was moved or deleted during resolution, we skip updating it in this pass.
+          if (!await mc.edlFile.exists()) continue;
+
+          final json = jsonDecode(await mc.edlFile.readAsString()) as Map<String, dynamic>;
+          final segmentFilename = json['segmentFilename'] as String?;
+          if (segmentFilename != null && segmentFilename.isNotEmpty) {
+            // Find the file. It might be in a different folder now!
+            final markerMs = json['markerTimestampMs'] as int;
+            final dateStr = fmtDate(DateTime.fromMillisecondsSinceEpoch(markerMs));
+            final newFile = File('${recordingsDir.path}/$dateStr/$segmentFilename');
+            if (await newFile.exists()) {
+              allConversations[i] = MarkerConversation(
+                markerTime: mc.markerTime,
+                segment: newFile,
+                markerOffsetMs: json['markerOffsetMs'] as int? ?? 0,
+                cropStartMs: json['cropStartMs'] as int? ?? 0,
+                cropEndMs: json['cropEndMs'] as int? ?? 0,
+                edlFile: mc.edlFile,
+                userSaved: json['userSaved'] as bool? ?? false,
+              );
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    // Step 3: Deduplicate by markerMs within 2s window.
     final List<MarkerConversation> deduped = [];
-    for (final mc in result) {
+    for (final mc in allConversations) {
       final ms = mc.markerTime.millisecondsSinceEpoch;
       int existingIdx = -1;
       for (int i = 0; i < deduped.length; i++) {
@@ -1839,9 +1851,16 @@ class RecordingsManager {
 
       if (existingIdx == -1) {
         deduped.add(mc);
-      } else if (deduped[existingIdx].isPending && !mc.isPending) {
-        // Replace pending with resolved
-        deduped[existingIdx] = mc;
+      } else {
+        final existing = deduped[existingIdx];
+        if (existing.isPending && !mc.isPending) {
+          // Replace pending with resolved
+          deduped[existingIdx] = mc;
+        } else if (existing.isPending && mc.isPending && existing.edlFile.path != mc.edlFile.path) {
+          // KEEP BOTH if they are distinct pending files, even if close in time.
+          // This allows the cleanup tool to find and delete all problematic files.
+          deduped.add(mc);
+        }
       }
     }
 
