@@ -644,10 +644,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                   int markerMs = batchBd.getUint64(scanOff + 4, Endian.little);
                   int markerUptime = batchBd.getUint32(scanOff + 12, Endian.little);
 
-                  // Resiliency: derive exactly from audio header to perfectly match the audio pipeline
-                  if (currentUtcStartMs != null && currentUptimeStartMs != null) {
-                    final offsetMs = markerUptime - currentUptimeStartMs;
-                    markerMs = (currentUtcStartMs + offsetMs);
+                  // Resiliency: derive exactly from audio header to perfectly match the audio pipeline.
+                  // Only use the header's UTC if it's a valid epoch (RTC was synced).
+                  if (currentUtcStartMs != null &&
+                      currentUtcStartMs! > 946684800000 &&
+                      currentUptimeStartMs != null) {
+                    final offsetMs = markerUptime - currentUptimeStartMs!;
+                    markerMs = (currentUtcStartMs! + offsetMs);
                   }
 
                   await _saveMarker(
