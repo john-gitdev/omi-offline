@@ -90,10 +90,12 @@ void main() {
   group('Conversation.fromFile tests', () {
     test('parses from real file with metadata correctly', () async {
       final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
-      final wavFile = File(p.join(recordingsDir.path, 'recording_1741687200000.wav'));
+      // Use a timestamp that is mid-day to avoid date flips in different timezones
+      // 1773223200000 = 2026-03-11 10:00:00 UTC
+      final markerMs = 1773223200000;
+      final wavFile = File(p.join(recordingsDir.path, 'recording_$markerMs.wav'));
 
-      // 1741687200000 = 2026-03-11 10:00:00 UTC
-      final startTime = DateTime.fromMillisecondsSinceEpoch(1741687200000);
+      final startTime = DateTime.fromMillisecondsSinceEpoch(markerMs);
 
       // Mock WAV file with 44 byte header + 3200 bytes of data (100ms at 32000Hz mono)
       final data = Uint8List(44 + 3200);
@@ -108,8 +110,9 @@ void main() {
 
     test('prefers metadata sidecar if present', () async {
       final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
-      final m4aFile = File(p.join(recordingsDir.path, 'recording_1741687200000.m4a'))..writeAsBytesSync([0]);
-      final metaFile = File(p.join(recordingsDir.path, 'recording_1741687200000.meta'));
+      final markerMs = 1773223200000;
+      final m4aFile = File(p.join(recordingsDir.path, 'recording_$markerMs.m4a'))..writeAsBytesSync([0]);
+      final metaFile = File(p.join(recordingsDir.path, 'recording_$markerMs.meta'));
 
       // .meta layout: bytes 0-3 totalSamples, 4-7 durationMs, 8-407 waveform,
       // 408-411 sessionId, 412-415 startUptime, 416 keyLen, 417+ key bytes.

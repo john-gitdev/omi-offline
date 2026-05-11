@@ -641,7 +641,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     final activeBatches = _batches.where((b) => b.rawSegments.isNotEmpty).toList();
     final hasDrafts = _batches.any((b) => b.draftRecordings.isNotEmpty);
-    if (activeBatches.isEmpty && !(_isForcePipeline && hasDrafts)) {
+    final hasMarkers = _batches.any((b) => b.markerTimestamps.isNotEmpty);
+
+    if (activeBatches.isEmpty && !(_isForcePipeline && hasDrafts) && !hasMarkers) {
       await _finishSuccess();
       return;
     }

@@ -700,11 +700,21 @@ class RecordingsManager {
               final parts = line.split(',');
               final utc = int.tryParse(parts[0].trim());
               if (utc != null) {
-                // The sync service writes UTC in milliseconds.
+                // Deduplicate markers within a 2-second window to collapse redundant
+                // firmware packets and derived vs. raw timestamp doubles.
                 final date = DateTime.fromMillisecondsSinceEpoch(utc);
                 final dateKey = fmtDate(date);
-                markersByDate.putIfAbsent(dateKey, () => {});
-                markersByDate[dateKey]!.add(utc);
+                final set = markersByDate.putIfAbsent(dateKey, () => {});
+                
+                // Fuzzy check: is there a marker within 2s already?
+                bool isDuplicate = false;
+                for (final existingMs in set) {
+                  if ((existingMs - utc).abs() <= 2000) {
+                    isDuplicate = true;
+                    break;
+                  }
+                }
+                if (!isDuplicate) set.add(utc);
               }
             }
           } catch (e) {
@@ -843,7 +853,9 @@ class RecordingsManager {
   }) async {
     final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
     final hasDrafts = batches.any((b) => b.draftRecordings.isNotEmpty);
-    if (activeBatches.isEmpty && !(finalizeDrafts && hasDrafts)) return;
+    final hasMarkers = batches.any((b) => b.markerTimestamps.isNotEmpty);
+
+    if (activeBatches.isEmpty && !(finalizeDrafts && hasDrafts) && !hasMarkers) return;
     if (_isProcessingAny) throw Exception("Another processing task is already in progress.");
 
     _isProcessingAny = true;
@@ -965,175 +977,165 @@ class RecordingsManager {
       // Combine segments from all batches, sorted chronologically by timestamp.
       final allSegments = activeBatches.expand((b) => b.rawSegments).toList();
 
-      if (allSegments.isEmpty) {
-        final isM4a = SharedPreferencesUtil().audioSaveFormat == 'm4a';
-        if (isM4a) isTranscoding.value = true;
-        try {
-          await _stitchDraftRecordings(finalizeAll: finalizeDrafts);
-        } finally {
-          isTranscoding.value = false;
-        }
-        onProgress(1.0, Duration.zero);
-        return;
-      }
-
-      allSegments.sort((a, b) {
-        final nameA = a.path.split('/').last;
-        final nameB = b.path.split('/').last;
-        return nameA.compareTo(nameB);
-      });
-
-      // Pre-compute segment timestamps and session IDs on the main isolate.
-      const kMinValidEpoch = 946684800;
-      final segmentStartTimesMs = <int>[];
-      final segmentStartUptimesMs = <int>[];
-      final segmentSessionIds = <int?>[];
-      final segmentDerivedFlags = <bool>[];
-      final segmentFileSizes = <int>[];
-      for (final file in allSegments) {
-        segmentFileSizes.add(file.lengthSync());
-        final stem = file.path.split('/').last.split('.').first;
-        final parts = stem.split('_');
-        final timerStart = int.tryParse(parts[0]);
-        final sessionId = parts.length > 1 ? int.tryParse(parts[1]) : null;
-
-        segmentSessionIds.add(sessionId);
-
-        if (timerStart != null && timerStart > kMinValidEpoch) {
-          segmentStartTimesMs.add(timerStart * 1000);
-          segmentStartUptimesMs.add(0); // Hardware syncs RTC -> uptime in filename is lost
-          segmentDerivedFlags.add(false);
-        } else {
-          segmentStartTimesMs.add(
-            file.lastModifiedSync().toUtc().millisecondsSinceEpoch,
-          );
-          segmentStartUptimesMs.add((timerStart ?? 0) * 1000);
-          segmentDerivedFlags.add(true);
-        }
-      }
-
-      // Pre-load the ONNX model on the main isolate (rootBundle requires main isolate).
-      // Skipped when VAD is disabled — isolate will run in AAD mode.
-      Uint8List? modelBytes;
-      if (SharedPreferencesUtil().vadEnabled) {
-        try {
-          final data = await rootBundle.load('assets/models/silero_vad.onnx');
-          modelBytes = data.buffer.asUint8List(
-            data.offsetInBytes,
-            data.lengthInBytes,
-          );
-        } catch (e) {
-          Logger.error(
-            'RecordingsManager: Failed to pre-load VAD model ($e) — AAD mode active.',
-          );
-        }
-      }
-
-      final Set<String> deletedSegmentFolders = {};
-
-      try {
-        final receivePort = ReceivePort();
-        final exitPort = ReceivePort();
-        bool isolateDone = false;
-
-        final startTime = DateTime.now();
-        int processedBytes = 0;
-
-        await Isolate.spawn(
-          _processingIsolateEntry,
-          _IsolateParams(
-            sendPort: receivePort.sendPort,
-            rootIsolateToken: RootIsolateToken.instance!,
-            modelBytes: modelBytes,
-            settings: ProcessingSettings.fromPrefs(),
-            tempProcessingPath: tempProcessingPath,
-            segmentPaths: allSegments.map((f) => f.path).toList(),
-            segmentFileSizes: segmentFileSizes,
-            segmentStartTimesMs: segmentStartTimesMs,
-            segmentStartUptimesMs: segmentStartUptimesMs,
-            segmentSessionIds: segmentSessionIds,
-            segmentDerivedFlags: segmentDerivedFlags,
-            backgroundMode: backgroundMode,
-          ),
-          onExit: exitPort.sendPort,
-        );
-
-        // If the isolate dies without sending 'done'/'error', close receivePort so we don't hang.
-        exitPort.listen((_) {
-          if (!isolateDone) receivePort.close();
-          exitPort.close();
+      if (allSegments.isNotEmpty) {
+        allSegments.sort((a, b) {
+          final nameA = a.path.split('/').last;
+          final nameB = b.path.split('/').last;
+          return nameA.compareTo(nameB);
         });
 
-        await for (final msg in receivePort) {
-          if (msg is! Map) continue;
-          switch (msg['type'] as String) {
-            case 'control_port':
-              _activeIsolateControlPort = msg['port'] as SendPort;
-              // Forward a pending cancel if the user already called cancelProcessing().
-              if (_cancelRequested) {
-                _activeIsolateControlPort?.send('cancel');
-              }
-            case 'move':
-              await moveTempFilesToLive();
-            case 'delete_segments':
-              if (!SharedPreferencesUtil().adjustmentMode) {
-                final paths = (msg['paths'] as List).cast<String>();
-                for (final path in paths) {
-                  final f = File(path);
-                  if (await f.exists()) {
-                    Logger.debug(
-                      'RecordingsManager: Deleting raw segment: $path',
-                    );
-                    await f.delete();
-                    deletedSegmentFolders.add(f.parent.path);
-                  }
-                }
-              }
-            case 'progress':
-              final segmentBytes = msg['processed_bytes'] as int;
-              processedBytes += segmentBytes;
-              final index = msg['index'] as int;
-              final totalSegments = msg['total'] as int;
+        // Pre-compute segment timestamps and session IDs on the main isolate.
+        const kMinValidEpoch = 946684800;
+        final segmentStartTimesMs = <int>[];
+        final segmentStartUptimesMs = <int>[];
+        final segmentSessionIds = <int?>[];
+        final segmentDerivedFlags = <bool>[];
+        final segmentFileSizes = <int>[];
+        for (final file in allSegments) {
+          segmentFileSizes.add(file.lengthSync());
+          final stem = file.path.split('/').last.split('.').first;
+          final parts = stem.split('_');
+          final timerStart = int.tryParse(parts[0]);
+          final sessionId = parts.length > 1 ? int.tryParse(parts[1]) : null;
 
-              final progressVal = rawTotalBytes > 0 ? processedBytes / rawTotalBytes : ((index + 1) / totalSegments);
-              final progress = (progressVal * 0.9).clamp(0.0, 0.9);
+          segmentSessionIds.add(sessionId);
 
-              Duration? eta;
-              if (progressVal >= 0.05 && processedBytes > 0) {
-                final elapsed = DateTime.now().difference(startTime);
-                final remainingBytes = rawTotalBytes - processedBytes;
-                final etaMs = (elapsed.inMilliseconds * remainingBytes) ~/ processedBytes;
-                eta = Duration(milliseconds: etaMs);
-              }
-              processingProgress.value = progressVal;
-              onProgress(progress, eta);
-            case 'done':
-              isolateDone = true;
-              receivePort.close();
-            case 'error':
-              isolateDone = true;
-              receivePort.close();
-              throw Exception(msg['message']);
+          if (timerStart != null && timerStart > kMinValidEpoch) {
+            segmentStartTimesMs.add(timerStart * 1000);
+            segmentStartUptimesMs.add(0); // Hardware syncs RTC -> uptime in filename is lost
+            segmentDerivedFlags.add(false);
+          } else {
+            segmentStartTimesMs.add(
+              file.lastModifiedSync().toUtc().millisecondsSinceEpoch,
+            );
+            segmentStartUptimesMs.add((timerStart ?? 0) * 1000);
+            segmentDerivedFlags.add(true);
           }
         }
 
-        _activeIsolateControlPort = null;
-
-        await Future.delayed(const Duration(milliseconds: 200));
-        if (await tempDir.exists()) await tempDir.delete(recursive: true);
-      } catch (e) {
-        _activeIsolateControlPort = null;
-        Logger.error("RecordingsManager: Combined processing failed: $e");
-        rethrow;
-      }
-
-      // Clean up any device-session folders that are now empty after progressive deletion.
-      for (final folderPath in deletedSegmentFolders) {
-        final folder = Directory(folderPath);
-        if (await folder.exists()) {
+        // Pre-load the ONNX model on the main isolate (rootBundle requires main isolate).
+        // Skipped when VAD is disabled — isolate will run in AAD mode.
+        Uint8List? modelBytes;
+        if (SharedPreferencesUtil().vadEnabled) {
           try {
-            if (await folder.list().isEmpty) await folder.delete();
-          } catch (_) {}
+            final data = await rootBundle.load('assets/models/silero_vad.onnx');
+            modelBytes = data.buffer.asUint8List(
+              data.offsetInBytes,
+              data.lengthInBytes,
+            );
+          } catch (e) {
+            Logger.error(
+              'RecordingsManager: Failed to pre-load VAD model ($e) — AAD mode active.',
+            );
+          }
+        }
+
+        final Set<String> deletedSegmentFolders = {};
+
+        try {
+          final receivePort = ReceivePort();
+          final exitPort = ReceivePort();
+          bool isolateDone = false;
+
+          final startTime = DateTime.now();
+          int processedBytes = 0;
+
+          await Isolate.spawn(
+            _processingIsolateEntry,
+            _IsolateParams(
+              sendPort: receivePort.sendPort,
+              rootIsolateToken: RootIsolateToken.instance!,
+              modelBytes: modelBytes,
+              settings: ProcessingSettings.fromPrefs(),
+              tempProcessingPath: tempProcessingPath,
+              segmentPaths: allSegments.map((f) => f.path).toList(),
+              segmentFileSizes: segmentFileSizes,
+              segmentStartTimesMs: segmentStartTimesMs,
+              segmentStartUptimesMs: segmentStartUptimesMs,
+              segmentSessionIds: segmentSessionIds,
+              segmentDerivedFlags: segmentDerivedFlags,
+              backgroundMode: backgroundMode,
+            ),
+            onExit: exitPort.sendPort,
+          );
+
+          // If the isolate dies without sending 'done'/'error', close receivePort so we don't hang.
+          exitPort.listen((_) {
+            if (!isolateDone) receivePort.close();
+            exitPort.close();
+          });
+
+          await for (final msg in receivePort) {
+            if (msg is! Map) continue;
+            switch (msg['type'] as String) {
+              case 'control_port':
+                _activeIsolateControlPort = msg['port'] as SendPort;
+                // Forward a pending cancel if the user already called cancelProcessing().
+                if (_cancelRequested) {
+                  _activeIsolateControlPort?.send('cancel');
+                }
+              case 'move':
+                await moveTempFilesToLive();
+              case 'delete_segments':
+                if (!SharedPreferencesUtil().adjustmentMode) {
+                  final paths = (msg['paths'] as List).cast<String>();
+                  for (final path in paths) {
+                    final f = File(path);
+                    if (await f.exists()) {
+                      Logger.debug(
+                        'RecordingsManager: Deleting raw segment: $path',
+                      );
+                      await f.delete();
+                      deletedSegmentFolders.add(f.parent.path);
+                    }
+                  }
+                }
+              case 'progress':
+                final segmentBytes = msg['processed_bytes'] as int;
+                processedBytes += segmentBytes;
+                final index = msg['index'] as int;
+                final totalSegments = msg['total'] as int;
+
+                final progressVal = rawTotalBytes > 0 ? processedBytes / rawTotalBytes : ((index + 1) / totalSegments);
+                final progress = (progressVal * 0.9).clamp(0.0, 0.9);
+
+                Duration? eta;
+                if (progressVal >= 0.05 && processedBytes > 0) {
+                  final elapsed = DateTime.now().difference(startTime);
+                  final remainingBytes = rawTotalBytes - processedBytes;
+                  final etaMs = (elapsed.inMilliseconds * remainingBytes) ~/ processedBytes;
+                  eta = Duration(milliseconds: etaMs);
+                }
+                processingProgress.value = progressVal;
+                onProgress(progress, eta);
+              case 'done':
+                isolateDone = true;
+                receivePort.close();
+              case 'error':
+                isolateDone = true;
+                receivePort.close();
+                throw Exception(msg['message']);
+            }
+          }
+
+          _activeIsolateControlPort = null;
+
+          await Future.delayed(const Duration(milliseconds: 200));
+          if (await tempDir.exists()) await tempDir.delete(recursive: true);
+        } catch (e) {
+          _activeIsolateControlPort = null;
+          Logger.error("RecordingsManager: Combined processing failed: $e");
+          rethrow;
+        }
+
+        // Clean up any device-session folders that are now empty after progressive deletion.
+        for (final folderPath in deletedSegmentFolders) {
+          final folder = Directory(folderPath);
+          if (await folder.exists()) {
+            try {
+              if (await folder.list().isEmpty) await folder.delete();
+            } catch (_) {}
+          }
         }
       }
 
@@ -1823,17 +1825,26 @@ class RecordingsManager {
 
     final result = resultsNested.expand((list) => list).whereType<MarkerConversation>().toList();
 
-    // Deduplicate by markerMs, preferring resolved (non-pending) markers.
-    final Map<int, MarkerConversation> uniqueMap = {};
+    // Deduplicate by markerMs within 2s window, preferring resolved (non-pending) markers.
+    final List<MarkerConversation> deduped = [];
     for (final mc in result) {
       final ms = mc.markerTime.millisecondsSinceEpoch;
-      final existing = uniqueMap[ms];
-      if (existing == null || (existing.isPending && !mc.isPending)) {
-        uniqueMap[ms] = mc;
+      int existingIdx = -1;
+      for (int i = 0; i < deduped.length; i++) {
+        if ((deduped[i].markerTime.millisecondsSinceEpoch - ms).abs() <= 2000) {
+          existingIdx = i;
+          break;
+        }
+      }
+
+      if (existingIdx == -1) {
+        deduped.add(mc);
+      } else if (deduped[existingIdx].isPending && !mc.isPending) {
+        // Replace pending with resolved
+        deduped[existingIdx] = mc;
       }
     }
 
-    final deduped = uniqueMap.values.toList();
     deduped.sort((a, b) => b.markerTime.compareTo(a.markerTime));
     return deduped;
   }
