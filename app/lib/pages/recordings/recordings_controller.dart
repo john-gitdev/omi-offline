@@ -980,8 +980,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   void tryAutoUploadNext() {
-    // TODO: Disable this later
-    // if (_prefs.adjustmentMode) return;
+    if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) return;
     if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty || !_prefs.heypocketAutoUpload) return;
     final apiKey = _prefs.heypocketApiKey;
     final keySetAt = _prefs.heypocketKeySetAt;
