@@ -53,7 +53,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
           });
         }
       } else if (widget.isRollback) {
-        await getStableVersion(deviceModelNumber: device.modelNumber);
+        await getStableVersion(deviceModelNumber: device.modelNumber ?? 'Unknown');
         if (mounted) {
           setState(() {
             shouldUpdate = latestFirmwareDetails.isNotEmpty && latestFirmwareDetails['version'] != null;
@@ -63,12 +63,12 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
         }
       } else {
         await getLatestVersion(
-          deviceModelNumber: device.modelNumber,
-          firmwareRevision: device.firmwareRevision,
-          hardwareRevision: device.hardwareRevision,
-          manufacturerName: device.manufacturerName,
+          deviceModelNumber: device.modelNumber ?? 'Unknown',
+          firmwareRevision: device.firmwareRevision ?? 'Unknown',
+          hardwareRevision: device.hardwareRevision ?? 'Unknown',
+          manufacturerName: device.manufacturerName ?? 'Unknown',
         );
-        var result = await shouldUpdateFirmware(currentFirmware: widget.device!.firmwareRevision);
+        var result = await shouldUpdateFirmware(currentFirmware: widget.device!.firmwareRevision ?? 'Unknown');
         if (mounted) {
           setState(() {
             shouldUpdate = result.$2;
@@ -323,7 +323,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
               _buildVersionItem(
                 icon: FontAwesomeIcons.microchip,
                 label: 'Current version',
-                version: widget.device!.firmwareRevision,
+                version: widget.device!.firmwareRevision ?? 'Unknown',
                 chipColor: shouldUpdate ? const Color(0xFF3D2A2A) : null,
               ),
               if (shouldUpdate && latestFirmwareDetails['version'] != null) ...[
