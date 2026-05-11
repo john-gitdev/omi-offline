@@ -254,22 +254,24 @@ class VadAudioProcessor {
       int segmentSpeechFrames = 0;
       double segmentMaxAmp = 0.0;
 
-      // FIRST PASS: Peek for metadata header at offset 0
+      // FIRST PASS: Peek for metadata header at offset 0.
+      // Firmware: RecordingHeader_v1_t in transport.h confirms utc_start_ms is uint64 milliseconds.
       if (fileLength >= 36 && byteData.getUint32(0, Endian.little) == 0xFFFFFFFB) {
-        var utcStartMs = byteData.getUint64(8, Endian.little);
+        final utcStartMs = byteData.getUint64(8, Endian.little);
         final uptimeStartMs = byteData.getUint64(16, Endian.little);
         currentImuTicks = byteData.getUint32(24, Endian.little);
         final sessionIdInHeader = byteData.getUint32(28, Endian.little);
 
-        // Auto-detect seconds vs. milliseconds. 
-        // 946684800 is Jan 1 2000 in seconds. 
-        // 946684800000 is Jan 1 2000 in milliseconds.
-        if (utcStartMs > 946684800 && utcStartMs < 946684800000) {
-          utcStartMs *= 1000;
-        }
-
         if (utcStartMs > 946684800000) {
           segmentStartTime = DateTime.fromMillisecondsSinceEpoch(utcStartMs, isUtc: true);
+          startUptimeMs = uptimeStartMs.toInt();
+          sessionId = sessionIdInHeader;
+          lastFrameWallTime = segmentStartTime;
+          _isDerivedTimestamp = false;
+        } else if (utcStartMs > 946684800) {
+          // Robustness: Handle legacy or buggy firmware that might write seconds in this field.
+          Logger.warning('VadAudioProcessor: Received header with seconds instead of milliseconds: $utcStartMs');
+          segmentStartTime = DateTime.fromMillisecondsSinceEpoch(utcStartMs * 1000, isUtc: true);
           startUptimeMs = uptimeStartMs.toInt();
           sessionId = sessionIdInHeader;
           lastFrameWallTime = segmentStartTime;
