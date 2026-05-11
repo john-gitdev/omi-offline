@@ -323,6 +323,7 @@ class DeviceProvider extends ChangeNotifier
   }
 
   Future scanAndConnectToDevice() async {
+    if (isFirmwareUpdateInProgress) return;
     updateConnectingStatus(true);
     try {
       if (isConnected) {
@@ -411,6 +412,7 @@ class DeviceProvider extends ChangeNotifier
   }
 
   Future<void> _doBackgroundSync() async {
+    if (isFirmwareUpdateInProgress) return;
     lastSyncError = null;
     final walSync = ServiceManager.instance().wal.getSyncs();
     if (walSync.isSyncing) {
@@ -540,8 +542,12 @@ class DeviceProvider extends ChangeNotifier
   }
 
   Future<void> prepareDFU() async {
-    // Stub for now. Usually involves stopping syncs and disconnecting to trigger DFU mode.
     Logger.debug('Preparing DFU...');
+    isFirmwareUpdateInProgress = true;
+    _reconnectionTimer?.cancel();
+    _reconnectDelayTimer?.cancel();
+    _backgroundSyncTimer?.cancel();
+    
     final walSync = ServiceManager.instance().wal.getSyncs();
     if (walSync.isSyncing) {
       walSync.cancelSync();
@@ -713,11 +719,13 @@ class DeviceProvider extends ChangeNotifier
           crashLogs.insert(0, log);
           if (crashLogs.length > 50) crashLogs.removeLast();
           await _saveCrashLogs();
-          await DebugLogManager.logEvent('device_crash', {
-            ...log.toJson(),
-            'cause_label': log.causeLabel,
-            'uptime_label': log.uptimeStr,
-          });
+          if (log.isCrash) {
+            await DebugLogManager.logEvent('device_crash', {
+              ...log.toJson(),
+              'cause_label': log.causeLabel,
+              'uptime_label': log.uptimeStr,
+            });
+          }
         }      }
     }
 
