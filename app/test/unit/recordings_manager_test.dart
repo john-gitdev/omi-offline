@@ -262,5 +262,33 @@ void main() {
       expect(batch.markerTimestamps.length, 1);
       expect(batch.markerTimestamps.first.millisecondsSinceEpoch, markerMs);
     });
+
+    test('deleteConversations removes markers from markers.txt', () async {
+      final recordingsRootDir = Directory(p.join(tempDir.path, 'recordings'))..createSync();
+      final dateDir = Directory(p.join(recordingsRootDir.path, '2026-03-11'))..createSync();
+      final rawDir = Directory(p.join(tempDir.path, 'raw_segments', 'session1'))..createSync(recursive: true);
+      
+      final markerMs = 1773223200000;
+      final wavFile = File(p.join(dateDir.path, 'recording_$markerMs.wav'))..writeAsBytesSync(Uint8List(44));
+      final edlFile = File(p.join(dateDir.path, 'marker_$markerMs.edl'));
+      final edlData = {
+        'markerTimestampMs': markerMs,
+        'segmentFilename': 'recording_$markerMs.wav',
+      };
+      edlFile.writeAsStringSync(jsonEncode(edlData));
+      
+      final markerFile = File(p.join(rawDir.path, 'markers.txt'));
+      markerFile.writeAsStringSync('$markerMs,12345,1\n');
+      
+      final conversation = await Conversation.fromFile(wavFile);
+      await RecordingsManager.deleteConversations([conversation]);
+      
+      // Verify audio and EDL are gone
+      expect(wavFile.existsSync(), false);
+      expect(edlFile.existsSync(), false);
+      
+      // Verify marker is removed from markers.txt (file should be deleted since it was the only marker)
+      expect(markerFile.existsSync(), false);
+    });
   });
 }
