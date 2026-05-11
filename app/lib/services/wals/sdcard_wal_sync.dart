@@ -394,13 +394,25 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<void> _saveMarker(int sessionTimestamp, int markerMs, int uptime, int sessionId) async {
     try {
       final directory = await getApplicationDocumentsDirectory();
-      String subFolder = (sessionTimestamp < 946684800)
-          ? 'session_$sessionId'
-          : sessionTimestamp.toString();
+      String subFolder = (sessionTimestamp < 946684800) ? 'session_$sessionId' : sessionTimestamp.toString();
       final folderPath = '${directory.path}/raw_segments/$subFolder';
       final folder = Directory(folderPath);
       if (!await folder.exists()) await folder.create(recursive: true);
       final markerFile = File('${folder.path}/markers.txt');
+
+      // Deduplication: only append if this timestamp doesn't already exist in the file.
+      if (await markerFile.exists()) {
+        final lines = await markerFile.readAsLines();
+        for (final line in lines) {
+          final parts = line.split(',');
+          if (parts.isNotEmpty) {
+            final existingMs = int.tryParse(parts[0].trim());
+            // Exact match for the storage file to prevent sync-retry pollution.
+            if (existingMs == markerMs) return;
+          }
+        }
+      }
+
       // Save CSV: UTC Ms, Uptime, SessionID
       await markerFile.writeAsString('$markerMs,$uptime,$sessionId\n', mode: FileMode.append);
     } catch (_) {}
@@ -617,7 +629,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
               if (packageSize == 0xFFFFFFFB) {
                 if (scanOff + 36 <= batch.length) {
-                  currentUtcStartMs = batchBd.getUint64(scanOff + 8, Endian.little);
+                  var utc = batchBd.getUint64(scanOff + 8, Endian.little);
+                  // Auto-detect seconds vs milliseconds
+                  if (utc > 946684800 && utc < 946684800000) {
+                    utc *= 1000;
+                  }
+                  currentUtcStartMs = utc;
                   currentUptimeStartMs = batchBd.getUint64(scanOff + 16, Endian.little);
                   scanOff += 36;
                   continue;
