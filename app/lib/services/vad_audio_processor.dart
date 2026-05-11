@@ -602,9 +602,7 @@ class VadAudioProcessor {
   }
 
   void _resetState() {
-    if (_currentRefs.isNotEmpty) {
-      _forcedByMarker = false;
-    }
+    _forcedByMarker = false;
     _currentRefs = [];
     _speechFrameCount = 0;
     _currentChunkDurationMs = 0;
