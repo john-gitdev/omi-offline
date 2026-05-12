@@ -12,11 +12,8 @@ String fmtHourMin(DateTime dt) {
   return '$hour12:${dt.minute.toString().padLeft(2, '0')} $period';
 }
 
-/// Rounds [dt] to the nearest minute (>=30s rounds up).
+/// Truncates [dt] to the minute boundary.
 DateTime roundToMinute(DateTime dt) {
-  if (dt.second >= 30) {
-    return DateTime(dt.year, dt.month, dt.day, dt.hour, dt.minute).add(const Duration(minutes: 1));
-  }
   return DateTime(dt.year, dt.month, dt.day, dt.hour, dt.minute);
 }
 
