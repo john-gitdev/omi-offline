@@ -1019,18 +1019,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       if (!rotated) throw Exception('Rotation failed');
       
       // Fetch files but ignore the threshold so we get everything that was just sealed.
-      final allWals = await _buildWalsFromFilesLocked(connection, dev.id, ignoreThreshold: true);
-      
-      // Filter out the newly opened file. The device just rotated, so the very last file 
-      // in the list is the active recording file that we should NOT sync yet.
-      // (Usually it will have 0 bytes or very few bytes).
-      final wals = allWals.where((w) {
-        // If it's the absolute newest file and it's tiny, it's the active one.
-        if (w == allWals.last && w.storageTotalBytes < 4096) {
-           return false; 
-        }
-        return true;
-      }).toList();
+      final wals = await _buildWalsFromFilesLocked(connection, dev.id, ignoreThreshold: true);
 
       if (_isCancelled) return null;
 
