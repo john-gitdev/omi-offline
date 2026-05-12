@@ -96,6 +96,9 @@ class VadAudioProcessor {
   int? get currentSessionId => _currentSessionId;
   // Marker-forced recording state
   bool _forcedByMarker = false;
+  // Wall-clock timestamp (ms) after which normal gap-splitting resumes.
+  // Set to markerTime + 50 s when a marker packet is processed.
+  int? _markerProtectedUntilMs;
 
   // Markers accumulated since the last _saveRecording call, keyed by their
   // wall-clock timestamp and the recording offset at the time of the tap.
@@ -122,6 +125,10 @@ class VadAudioProcessor {
   static const int channels = 1;
   static const int frameDurationMs = 20; // 20 ms per Opus frame
   static const int _vadWindowSamples = 512; // Silero VAD input size
+  // Mirrors CONFIG_OMI_VAD_HOLD_MS in firmware/omi/src/aad.c.
+  // The firmware continues emitting audio for this many ms after the last voice frame,
+  // so the gap the app observes is that much shorter than the user-perceived silence.
+  static const int _firmwareVadHoldMs = 10000;
 
   /// Creates a processor in the main isolate, reading settings from SharedPreferences.
   static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
@@ -304,13 +311,17 @@ class VadAudioProcessor {
         final bool isClockJump =
             !sessionChanged && (hasUptime ? (uptimeGapMs < 5000 && gapMs.abs() > 10000) : (gapMs.abs() > 10000));
 
-        final bool splitTriggered =
-            (sessionChanged && !imuGapMatches) || (gapMs > _silenceDurationToSplitMs && !isClockJump);
+        // Suppress splits while we're within 50 s of a marker tap.
+        final bool withinMarkerWindow = _markerProtectedUntilMs != null &&
+            segmentStartTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
+        final bool splitTriggered = !withinMarkerWindow &&
+            ((sessionChanged && !imuGapMatches) ||
+                (gapMs > max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump));
 
         if (_currentRefs.isNotEmpty && splitTriggered) {
           Logger.debug(
             'VadAudioProcessor: Split triggered before ${segmentFile.path.split('/').last} — '
-            'sessionChanged=$sessionChanged, gapMs=$gapMs (threshold=${_silenceDurationToSplitMs}ms), '
+            'sessionChanged=$sessionChanged, gapMs=$gapMs (threshold=${_silenceDurationToSplitMs - _firmwareVadHoldMs}ms effective), '
             'lastEnd=${_lastSegmentEndTime?.toUtc()} segmentStart=${segmentStartTime.toUtc()} — flushing.',
           );
           _h = Float32List(2 * 1 * 64);
@@ -391,6 +402,9 @@ class VadAudioProcessor {
             }
 
             _forcedByMarker = true;
+            if (markerMs > 946684800000) {
+              _markerProtectedUntilMs = markerMs + 50000;
+            }
             if (_currentRefs.isEmpty) {
               lastFrameWallTime = markerFrameTime;
               _recordingStartTime = markerFrameTime;
@@ -457,7 +471,9 @@ class VadAudioProcessor {
             // If uptime Gap matches frame count (small gap) but UTC gap is large, it's a clock sync.
             final bool isClockJump = uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000;
 
-            if (gapMs >= _silenceDurationToSplitMs && !isClockJump) {
+            final bool intraWithinMarkerWindow = _markerProtectedUntilMs != null &&
+                newResumeTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
+            if (gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump && !intraWithinMarkerWindow) {
               // Gap exceeds threshold — flush current recording, start new conversation.
               final speechMs = _speechFrameCount * frameDurationMs;
               final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
@@ -632,6 +648,7 @@ class VadAudioProcessor {
 
   void _resetState() {
     _forcedByMarker = false;
+    _markerProtectedUntilMs = null;
     _currentRefs = [];
     _speechFrameCount = 0;
     _currentChunkDurationMs = 0;
