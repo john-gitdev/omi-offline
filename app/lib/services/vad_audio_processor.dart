@@ -301,11 +301,11 @@ class VadAudioProcessor {
           }
         }
 
-        final bool isClockJump = !sessionChanged &&
-            (hasUptime ? (uptimeGapMs < 5000 && gapMs.abs() > 10000) : (gapMs.abs() > 10000));
+        final bool isClockJump =
+            !sessionChanged && (hasUptime ? (uptimeGapMs < 5000 && gapMs.abs() > 10000) : (gapMs.abs() > 10000));
 
-        final bool splitTriggered = (sessionChanged && !imuGapMatches) ||
-            (gapMs > _silenceDurationToSplitMs && !isClockJump);
+        final bool splitTriggered =
+            (sessionChanged && !imuGapMatches) || (gapMs > _silenceDurationToSplitMs && !isClockJump);
 
         if (_currentRefs.isNotEmpty && splitTriggered) {
           Logger.debug(
@@ -324,7 +324,7 @@ class VadAudioProcessor {
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
         } else {
-          // STITCHING: Pad inter-file gaps with silence if it's not a clock jump 
+          // STITCHING: Pad inter-file gaps with silence if it's not a clock jump
           // and either the gap is significant (>= 10s) OR it's an IMU bridge match.
           if (_currentRefs.isNotEmpty && !isClockJump && (gapMs >= 10000 || imuGapMatches)) {
             _currentRefs.add(Duration(milliseconds: gapMs));
@@ -386,7 +386,8 @@ class VadAudioProcessor {
             final markerMs = markerFrameTime.millisecondsSinceEpoch;
             if (markerMs > 946684800000) {
               _pendingMarkers.add((markerMs: markerMs, offsetAtMarkerMs: _currentChunkDurationMs));
-              Logger.debug('VadAudioProcessor: Queued marker at $markerFrameTime (offset ${_currentChunkDurationMs}ms)');
+              Logger.debug(
+                  'VadAudioProcessor: Queued marker at $markerFrameTime (offset ${_currentChunkDurationMs}ms)');
             }
 
             _forcedByMarker = true;
@@ -451,8 +452,8 @@ class VadAudioProcessor {
                   final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
                   if (filePath != null) savedFiles.add(filePath);
                 }
-                _forcedByMarker = false;
               }
+              _forcedByMarker = false;
               _currentRefs = [];
               _speechFrameCount = 0;
               _currentChunkDurationMs = 0;
@@ -760,7 +761,7 @@ class VadAudioProcessor {
     Future<void> flushBatch() async {
       if (batchFrameCount == 0) return;
       final chunk = batchBuffer.takeBytes();
-      
+
       // Split large chunks into smaller segments (e.g. 4KB) for the native encoder.
       // Silence gaps can produce massive buffers that exceed hardware MediaCodec capacity.
       const maxNativeChunkSize = 4096;
@@ -768,7 +769,7 @@ class VadAudioProcessor {
         final end = (i + maxNativeChunkSize > chunk.length) ? chunk.length : i + maxNativeChunkSize;
         await AacEncoder.encodeBuffer(sessionId!, chunk.sublist(i, end));
       }
-      
+
       hasEncodedAnyFrames = true;
       batchFrameCount = 0;
     }
