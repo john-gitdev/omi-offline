@@ -1625,6 +1625,7 @@ class RecordingsManager {
 
           File? segmentFile;
           if (segmentFilename != null && segmentFilename.isNotEmpty) {
+            if (segmentFilename.contains('_draft.')) continue;
             final localFile = File('${dateFolder.path}/$segmentFilename');
             if (await localFile.exists()) {
               segmentFile = localFile;
