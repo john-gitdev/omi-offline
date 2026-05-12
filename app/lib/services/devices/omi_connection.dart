@@ -418,24 +418,7 @@ class OmiDeviceConnection extends DeviceConnection {
 
   @override
   Future<List<StorageFile>> performListFiles() async {
-    var files = await _performListFilesLocked();
-    // TMP files have uptime-ms timestamps (< year-2000 epoch) because the firmware
-    // hasn't finished renaming them after RTC sync. Poll until rename completes.
-    if (files.any((f) => f.timestamp < 946684800)) {
-      const maxRetries = 5;
-      for (var i = 0; i < maxRetries; i++) {
-        Logger.debug(
-            'OmiDeviceConnection: TMP files detected (retry ${i + 1}/$maxRetries), waiting 300ms for firmware rename...');
-        await Future.delayed(const Duration(milliseconds: 300));
-        files = await _performListFilesLocked();
-        if (!files.any((f) => f.timestamp < 946684800)) break;
-      }
-      if (files.any((f) => f.timestamp < 946684800)) {
-        Logger.warning(
-            'OmiDeviceConnection: TMP files still present after $maxRetries retries — proceeding with uptime timestamps');
-      }
-    }
-    return files;
+    return await _performListFilesLocked();
   }
 
   Future<List<StorageFile>> _performListFilesLocked() async {
