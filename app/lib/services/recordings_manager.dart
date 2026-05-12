@@ -1222,6 +1222,8 @@ class RecordingsManager {
           if (currentIndex == -1 || currentIndex == allAudioFiles.length - 1) {
             // No next file in this folder.
             if (finalizeAll) {
+              // Don't force-finalize if the marker's 50-second protection window is still active.
+              if (await _isDraftInMarkerWindow(draftFile, entities)) continue;
               await _finalizeDraft(draftFile, isForceSynced: true);
               scanNeeded = true;
               break;
@@ -1292,6 +1294,25 @@ class RecordingsManager {
     // Format: recording_<ts> or recording_<ts>_draft
     final tsStr = parts.contains('draft') ? parts[parts.length - 2] : parts.last;
     return int.tryParse(tsStr) ?? 0;
+  }
+
+  /// Returns true if [draftFile] is referenced by a marker EDL whose 50-second
+  /// protection window has not yet expired, meaning we should hold off finalizing.
+  Future<bool> _isDraftInMarkerWindow(File draftFile, List<FileSystemEntity> entities) async {
+    final draftFilename = draftFile.path.split('/').last;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    for (final entity in entities) {
+      if (entity is! File || !entity.path.endsWith('.edl')) continue;
+      try {
+        final content = await entity.readAsString();
+        final json = jsonDecode(content) as Map<String, dynamic>;
+        if ((json['segmentFilename'] as String?) == draftFilename) {
+          final markerMs = json['markerTimestampMs'] as int? ?? 0;
+          if (markerMs > 0 && nowMs < markerMs + 50000) return true;
+        }
+      } catch (_) {}
+    }
+    return false;
   }
 
   Future<void> _finalizeDraft(File file, {bool isForceSynced = false}) async {
