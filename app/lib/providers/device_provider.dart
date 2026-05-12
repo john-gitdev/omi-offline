@@ -757,7 +757,11 @@ class DeviceProvider extends ChangeNotifier
 
     if (_pendingAppOpenSync) {
       _pendingAppOpenSync = false;
-      unawaited(_doBackgroundSync().then((_) => _startBackgroundSyncTimer()));
+      unawaited(Future.delayed(const Duration(seconds: 10), () {
+        if (!_disposed && isConnected) {
+          unawaited(_doBackgroundSync().then((_) => _startBackgroundSyncTimer()));
+        }
+      }));
     }
   }
 
