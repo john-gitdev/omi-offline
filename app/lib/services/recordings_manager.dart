@@ -335,11 +335,11 @@ class Conversation {
   }
 
   String get timeRangeLabel {
-    // Round start to nearest minute so near-boundary starts (e.g. 11:59:47) display cleanly.
-    final rounded = roundToMinute(startTime);
     // Show inclusive end: subtract 1s so a 30-min segment displays as HH:MM–HH:29, not HH:MM–HH:30.
-    final inclusiveEnd = rounded.add(duration).subtract(const Duration(seconds: 1));
-    return '${fmtHourMin(rounded)} – ${fmtHourMin(inclusiveEnd)}';
+    // We use the actual end time to determine the label, not a duration added to a truncated start.
+    final end = startTime.add(duration);
+    final inclusiveEnd = duration.inSeconds > 0 ? end.subtract(const Duration(seconds: 1)) : end;
+    return '${fmtHourMin(startTime)} – ${fmtHourMin(inclusiveEnd)}';
   }
 
   String get durationLabel {

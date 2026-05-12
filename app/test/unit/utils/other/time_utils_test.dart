@@ -40,20 +40,17 @@ void main() {
     });
 
     group('roundToMinute', () {
-      test('rounds down when seconds < 30', () {
+      test('truncates to the minute boundary', () {
         expect(roundToMinute(DateTime(2023, 1, 1, 10, 30, 29)), DateTime(2023, 1, 1, 10, 30));
         expect(roundToMinute(DateTime(2023, 1, 1, 10, 30, 0)), DateTime(2023, 1, 1, 10, 30));
+        expect(roundToMinute(DateTime(2023, 1, 1, 10, 30, 30)), DateTime(2023, 1, 1, 10, 30));
+        expect(roundToMinute(DateTime(2023, 1, 1, 10, 30, 59)), DateTime(2023, 1, 1, 10, 30));
       });
 
-      test('rounds up when seconds >= 30', () {
-        expect(roundToMinute(DateTime(2023, 1, 1, 10, 30, 30)), DateTime(2023, 1, 1, 10, 31));
-        expect(roundToMinute(DateTime(2023, 1, 1, 10, 30, 59)), DateTime(2023, 1, 1, 10, 31));
-      });
-
-      test('handles rounding up across hour and day boundaries', () {
-        expect(roundToMinute(DateTime(2023, 1, 1, 10, 59, 30)), DateTime(2023, 1, 1, 11, 0));
-        expect(roundToMinute(DateTime(2023, 1, 1, 23, 59, 30)), DateTime(2023, 1, 2, 0, 0));
-        expect(roundToMinute(DateTime(2023, 12, 31, 23, 59, 45)), DateTime(2024, 1, 1, 0, 0));
+      test('does not round up across hour and day boundaries', () {
+        expect(roundToMinute(DateTime(2023, 1, 1, 10, 59, 30)), DateTime(2023, 1, 1, 10, 59));
+        expect(roundToMinute(DateTime(2023, 1, 1, 23, 59, 30)), DateTime(2023, 1, 1, 23, 59));
+        expect(roundToMinute(DateTime(2023, 12, 31, 23, 59, 45)), DateTime(2023, 12, 31, 23, 59));
       });
     });
 
