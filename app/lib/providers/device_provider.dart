@@ -45,6 +45,7 @@ class DeviceProvider extends ChangeNotifier
 
   Timer? _backgroundSyncTimer;
   DateTime? nextSyncTime;
+  bool _pendingAppOpenSync = false;
 
   Timer? _reconnectDelayTimer;
   Timer? _disconnectNotificationTimer;
@@ -115,6 +116,9 @@ class DeviceProvider extends ChangeNotifier
     };
     if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
       Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true));
+      if (!SharedPreferencesUtil().maximizeBattery && _shouldSyncNow()) {
+        _pendingAppOpenSync = true;
+      }
     }
     _startBackgroundSyncTimer();
   }
@@ -462,6 +466,7 @@ class DeviceProvider extends ChangeNotifier
         text: 'Finalizing sync...',
       );
       await walSync.syncAll(progress: _BackgroundSyncProgress());
+      SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
     } catch (e) {
       lastSyncError = e.toString();
       lastSyncErrorTime = DateTime.now();
@@ -503,6 +508,12 @@ class DeviceProvider extends ChangeNotifier
     }
   }
 
+  bool _shouldSyncNow() {
+    final lastMs = SharedPreferencesUtil().lastSyncCompletedMs;
+    if (lastMs <= 0) return true;
+    return DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(lastMs)).inMinutes >= 10;
+  }
+
   void onAppResumed() {
     _isAppInForeground = true;
     // Release the overnight wake lock now that the user has the app open.
@@ -510,6 +521,18 @@ class DeviceProvider extends ChangeNotifier
     if (!walSync.isSyncing) {
       ForegroundUtil.stopForegroundTask();
     }
+
+    final prefs = SharedPreferencesUtil();
+    if (!prefs.maximizeBattery && prefs.btDevice.id.isNotEmpty && _shouldSyncNow()) {
+      if (isConnected) {
+        unawaited(_doBackgroundSync().then((_) => _startBackgroundSyncTimer()));
+      } else {
+        _pendingAppOpenSync = true;
+        periodicConnect('app resumed', boundDeviceOnly: true);
+      }
+      return;
+    }
+
     if (isConnected) {
       // Don't reset the timer if it's already ticking — preserves the overnight
       // schedule so briefly unlocking the screen doesn't restart the 30-min clock.
@@ -517,7 +540,7 @@ class DeviceProvider extends ChangeNotifier
         _startBackgroundSyncTimer();
       }
     } else {
-      if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
+      if (prefs.btDevice.id.isNotEmpty) {
         periodicConnect('app resumed', boundDeviceOnly: true);
       }
     }
@@ -731,6 +754,11 @@ class DeviceProvider extends ChangeNotifier
 
     notifyListeners();
     onDeviceConnected?.call(device);
+
+    if (_pendingAppOpenSync) {
+      _pendingAppOpenSync = false;
+      unawaited(_doBackgroundSync().then((_) => _startBackgroundSyncTimer()));
+    }
   }
 
   void _handleDeviceConnected(String deviceId) async {

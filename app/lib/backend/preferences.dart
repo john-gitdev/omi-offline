@@ -342,6 +342,10 @@ class SharedPreferencesUtil {
 
   set lastBatteryLevel(int value) => saveInt('lastBatteryLevel', value);
 
+  int get lastSyncCompletedMs => getInt('lastSyncCompletedMs', defaultValue: 0);
+
+  set lastSyncCompletedMs(int v) => saveInt('lastSyncCompletedMs', v);
+
   // Developer Diagnostics
   bool get devLogsToFileEnabled => getBool('devLogsToFileEnabled');
   set devLogsToFileEnabled(bool value) => saveBool('devLogsToFileEnabled', value);
