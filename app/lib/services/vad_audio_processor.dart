@@ -397,9 +397,26 @@ class VadAudioProcessor {
               _speechFrameCount = 0;
               _currentChunkDurationMs = 0;
               _currentFrameUptimeMs = markerUptimeMs;
+              _isDerivedTimestamp = false;
               Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — starting new recording.');
             } else {
-              Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — protecting active recording.');
+              // When the marker has a reliable UTC and our current timestamps are derived
+              // (e.g. the VAD-resume packet wrote a corrupt UTC), recalibrate using the
+              // marker as an anchor: start = markerTime - elapsed.
+              if (_isDerivedTimestamp && markerMs > 946684800000) {
+                final correctedStart = DateTime.fromMillisecondsSinceEpoch(
+                  markerMs - _currentChunkDurationMs,
+                  isUtc: true,
+                );
+                _recordingStartTime = correctedStart;
+                lastFrameWallTime = markerFrameTime;
+                _currentFrameUptimeMs = markerUptimeMs;
+                _isDerivedTimestamp = false;
+                Logger.debug(
+                    'VadAudioProcessor: Marker at $markerFrameTime — recalibrated start to $correctedStart (offset ${_currentChunkDurationMs}ms).');
+              } else {
+                Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — protecting active recording.');
+              }
             }
           }
           offset += 20;
