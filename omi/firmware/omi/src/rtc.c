@@ -29,10 +29,6 @@ static void rtc_persist_work_handler(struct k_work *work)
     epoch_s = pending_epoch_to_persist;
     k_mutex_unlock(&rtc_lock);
 
-#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-    sd_notify_time_synced((uint32_t)epoch_s);
-#endif
-
     int err = app_settings_save_rtc_epoch(epoch_s);
     if (err) {
         LOG_ERR("Failed to persist rtc_epoch (err %d)", err);
@@ -157,10 +153,16 @@ int rtc_set_utc_time(uint64_t utc_epoch_s)
     pending_epoch_to_persist = utc_epoch_s;
     k_mutex_unlock(&rtc_lock);
 
-    /*
-     * Defer persistence and SD rename to system workqueue so BLE GATT callback
-     * stack stays small and cannot overflow on filesystem/settings operations.
-     */
+    /* Notify the SD worker synchronously here — before the BLE write ack is sent
+     * back to the app — so the timesync_rename_pending flag is set before the app
+     * can issue CMD_LIST_FILES. sd_notify_time_synced() is lightweight (atomic sets
+     * + non-blocking msgq put) and safe to call from BLE callback context. */
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    sd_notify_time_synced((uint32_t)utc_epoch_s);
+#endif
+
+    /* Defer heavy flash/NVS persistence and IMU baseline to system workqueue
+     * so the BLE GATT callback stack stays small. */
     k_work_submit(&rtc_persist_work);
 
     return 0;
