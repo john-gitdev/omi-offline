@@ -9,18 +9,22 @@ import 'package:provider/provider.dart';
 class OfflineAudioSettingsPage extends StatefulWidget {
   final int Function(int minSeconds)? onCountShortRecordings;
   final Future<void> Function(int minSeconds)? onDeleteShortRecordings;
+  final bool flashManualMode;
 
   const OfflineAudioSettingsPage({
     super.key,
     this.onCountShortRecordings,
     this.onDeleteShortRecordings,
+    this.flashManualMode = false,
   });
 
   @override
   State<OfflineAudioSettingsPage> createState() => _OfflineAudioSettingsPageState();
 }
 
-class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
+class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> with SingleTickerProviderStateMixin {
+  late AnimationController _flashController;
+  late Animation<double> _flashAnimation;
   late bool _manualMode;
   late bool _vadEnabled;
 
@@ -53,6 +57,21 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   @override
   void initState() {
     super.initState();
+    _flashController = AnimationController(vsync: this, duration: const Duration(milliseconds: 1600));
+    _flashAnimation = TweenSequence<double>([
+      TweenSequenceItem(tween: Tween(begin: 0.0, end: 1.0).chain(CurveTween(curve: Curves.easeIn)), weight: 1),
+      TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.0).chain(CurveTween(curve: Curves.easeOut)), weight: 1),
+      TweenSequenceItem(tween: Tween(begin: 0.0, end: 1.0).chain(CurveTween(curve: Curves.easeIn)), weight: 1),
+      TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.0).chain(CurveTween(curve: Curves.easeOut)), weight: 1),
+    ]).animate(_flashController);
+    if (widget.flashManualMode) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Future.delayed(const Duration(milliseconds: 350), () {
+          if (mounted) _flashController.forward();
+        });
+      });
+    }
+
     _manualMode = SharedPreferencesUtil().manualMode;
     _vadEnabled = SharedPreferencesUtil().vadEnabled;
 
@@ -66,6 +85,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
   @override
   void dispose() {
+    _flashController.dispose();
     super.dispose();
   }
 
@@ -212,15 +232,26 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Manual Mode toggle — requires device connection to change
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: _manualMode ? const Color(0xFF2C1F4A) : const Color(0xFF1C1C1E),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: _manualMode ? Colors.deepPurpleAccent.withOpacity(0.4) : Colors.white.withOpacity(0.05),
-                      ),
-                    ),
+                  AnimatedBuilder(
+                    animation: _flashAnimation,
+                    builder: (context, child) {
+                      final t = _flashAnimation.value;
+                      final baseBorder = _manualMode
+                          ? Colors.deepPurpleAccent.withOpacity(0.4)
+                          : Colors.white.withOpacity(0.05);
+                      return Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: _manualMode ? const Color(0xFF2C1F4A) : const Color(0xFF1C1C1E),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Color.lerp(baseBorder, Colors.deepPurpleAccent, t)!),
+                          boxShadow: t > 0
+                              ? [BoxShadow(color: Colors.deepPurpleAccent.withOpacity(0.35 * t), blurRadius: 14 * t, spreadRadius: 1 * t)]
+                              : null,
+                        ),
+                        child: child,
+                      );
+                    },
                     child: SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       title: const Text('Manual Recording Mode',
