@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/providers/device_provider.dart';
+import 'package:provider/provider.dart';
 
 class OfflineAudioSettingsPage extends StatefulWidget {
   final int Function(int minSeconds)? onCountShortRecordings;
@@ -19,6 +21,7 @@ class OfflineAudioSettingsPage extends StatefulWidget {
 }
 
 class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
+  late bool _manualMode;
   late bool _vadEnabled;
 
   late double _vadSpeechThreshold;
@@ -35,9 +38,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     ('Strict', 0.65),
   ];
 
-  static double _snapToSensitivity(double v) => _kSpeechSensitivityOptions
-      .map((o) => o.$2)
-      .reduce((a, b) => (a - v).abs() < (b - v).abs() ? a : b);
+  static double _snapToSensitivity(double v) =>
+      _kSpeechSensitivityOptions.map((o) => o.$2).reduce((a, b) => (a - v).abs() < (b - v).abs() ? a : b);
 
   static String _formatShortDuration(int seconds) {
     if (seconds == 0) return 'Off';
@@ -51,6 +53,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
   @override
   void initState() {
     super.initState();
+    _manualMode = SharedPreferencesUtil().manualMode;
     _vadEnabled = SharedPreferencesUtil().vadEnabled;
 
     _vadSpeechThreshold = _snapToSensitivity(SharedPreferencesUtil().vadSpeechThreshold);
@@ -115,13 +118,17 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
 
   Future<void> _saveSettings() async {
     final prefs = SharedPreferencesUtil();
-    prefs.vadEnabled = _vadEnabled;
-
-    prefs.vadSpeechThreshold = _vadSpeechThreshold;
+    if (_manualMode != prefs.manualMode) {
+      await context.read<DeviceProvider>().setManualMode(_manualMode);
+    }
+    if (!_manualMode) {
+      prefs.vadEnabled = _vadEnabled;
+      prefs.vadSpeechThreshold = _vadSpeechThreshold;
+      prefs.vadMinSpeechSeconds = _vadMinSpeechSeconds;
+    }
     prefs.vadSplitSeconds = _vadSplitSeconds;
     prefs.vadMaxConversationMinutes = _vadMaxConversationMinutes;
     prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
-    prefs.vadMinSpeechSeconds = _vadMinSpeechSeconds;
     prefs.discardShortRecordings = _discardShortRecordings;
 
     if (mounted) setState(() => _isDirty = false);
@@ -203,26 +210,32 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // VAD toggle
+              // Manual Mode toggle
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
+                  color: _manualMode ? const Color(0xFF2C1F4A) : const Color(0xFF1C1C1E),
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.white.withOpacity(0.05)),
+                  border: Border.all(
+                    color: _manualMode ? Colors.deepPurpleAccent.withOpacity(0.4) : Colors.white.withOpacity(0.05),
+                  ),
                 ),
                 child: SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('Voice Activity Detection', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  title: const Text('Manual Recording Mode',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
                   subtitle: Text(
-                    _vadEnabled
-                        ? 'Silero VAD classifies each frame as speech or silence.'
-                        : 'AAD mode — splits by firmware timestamps only.',
+                    _manualMode
+                        ? 'Double-tap to start recording. Double-tap again to stop.'
+                        : 'Automatic VAD-based recording. Double-tap marks a timestamp.',
                     style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                   ),
-                  value: _vadEnabled,
+                  value: _manualMode,
                   onChanged: (value) {
-                    setState(() => _vadEnabled = value);
+                    setState(() {
+                      _manualMode = value;
+                      if (value) _vadEnabled = false;
+                    });
                     _markDirty();
                   },
                   activeColor: Colors.deepPurpleAccent,
@@ -230,8 +243,38 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
               ),
               const SizedBox(height: 16),
 
+              // VAD toggle (hidden in manual mode)
+              if (!_manualMode) ...[
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white.withOpacity(0.05)),
+                  ),
+                  child: SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Voice Activity Detection',
+                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                    subtitle: Text(
+                      _vadEnabled
+                          ? 'Silero VAD classifies each frame as speech or silence.'
+                          : 'AAD mode — splits by firmware timestamps only.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                    value: _vadEnabled,
+                    onChanged: (value) {
+                      setState(() => _vadEnabled = value);
+                      _markDirty();
+                    },
+                    activeColor: Colors.deepPurpleAccent,
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ], // end if (!_manualMode)
+
               // Speech Sensitivity (Silero only)
-              if (_vadEnabled) ...[
+              if (!_manualMode && _vadEnabled) ...[
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -254,7 +297,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                             dropdownColor: const Color(0xFF2C2C2E),
                             icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                             underline: const SizedBox(),
-                            style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                            style: const TextStyle(
+                                color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
                             items: _kSpeechSensitivityOptions.map((option) {
                               return DropdownMenuItem(
                                 value: option.$2,
@@ -279,7 +323,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   ),
                 ),
                 const SizedBox(height: 16),
-
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -302,7 +345,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                             dropdownColor: const Color(0xFF2C2C2E),
                             icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                             underline: const SizedBox(),
-                            style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                            style: const TextStyle(
+                                color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
                             items: [0, 3, 10, 30].map((sec) {
                               return DropdownMenuItem(
                                 value: sec,
@@ -354,7 +398,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                           dropdownColor: const Color(0xFF2C2C2E),
                           icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                           underline: const SizedBox(),
-                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          style: const TextStyle(
+                              color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
                           items: [30, 60, 120, 300].map((sec) {
                             return DropdownMenuItem(
                               value: sec,
@@ -461,7 +506,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                             dropdownColor: const Color(0xFF2C2C2E),
                             icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                             underline: const SizedBox(),
-                            style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                            style: const TextStyle(
+                                color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
                             items: const [
                               DropdownMenuItem(
                                 value: false,
@@ -503,7 +549,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                             child: Center(
                               child: Text(
                                 'Clean up existing short recordings',
-                                style: TextStyle(color: Colors.redAccent.shade100, fontSize: 14, fontWeight: FontWeight.w500),
+                                style: TextStyle(
+                                    color: Colors.redAccent.shade100, fontSize: 14, fontWeight: FontWeight.w500),
                               ),
                             ),
                           ),
@@ -538,7 +585,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                           dropdownColor: const Color(0xFF2C2C2E),
                           icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                           underline: const SizedBox(),
-                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          style: const TextStyle(
+                              color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
                           items: [30, 60, 120, 180].map((mins) {
                             return DropdownMenuItem(
                               value: mins,
