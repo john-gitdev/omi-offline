@@ -54,6 +54,9 @@ class DeviceProvider extends ChangeNotifier
   bool _isHandlingDisconnect = false;
   int _consecutiveAccidentalDisconnects = 0;
 
+  bool _manualRecording = false;
+  bool get manualRecording => _manualRecording;
+
   String? lastSyncError;
   DateTime? lastSyncErrorTime;
 
@@ -247,15 +250,54 @@ class DeviceProvider extends ChangeNotifier
     notifyListeners();
   }
 
+  Future<void> _setDeviceVadThreshold(int threshold) async {
+    final dev = connectedDevice;
+    if (dev == null) return;
+    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+    await connection?.setVadThreshold(threshold);
+  }
+
+  Future<void> setManualMode(bool enabled) async {
+    final prefs = SharedPreferencesUtil();
+    prefs.manualMode = enabled;
+    if (enabled) {
+      prefs.vadEnabled = false;
+      prefs.manualModeDeviceArmed = true;
+      _manualRecording = false;
+      await _setDeviceVadThreshold(32768);
+    } else {
+      _manualRecording = false;
+      await _setDeviceVadThreshold(250);
+      if (prefs.manualModeDeviceArmed) prefs.manualModeDeviceArmed = false;
+    }
+    notifyListeners();
+  }
+
   initiateBleButtonListener() async {
     if (connectedDevice == null) return;
     _bleButtonListener?.cancel();
     _bleButtonListener = await _getBleButtonListener(
       connectedDevice?.id ?? '',
-      onButtonReceived: (List<int> value) {
-        if (value.isEmpty) return;
-        int event = value[0];
-        Logger.debug('DeviceProvider: Button event $event');
+      onButtonReceived: (List<int> value) async {
+        try {
+          if (value.isEmpty) return;
+          int event = value[0];
+          Logger.debug('DeviceProvider: Button event $event');
+          if (event == 2 && SharedPreferencesUtil().manualMode) {
+            if (_manualRecording) {
+              _manualRecording = false;
+              await _setDeviceVadThreshold(32768);
+              Logger.debug('DeviceProvider: Manual mode — recording stopped.');
+            } else {
+              _manualRecording = true;
+              await _setDeviceVadThreshold(0);
+              Logger.debug('DeviceProvider: Manual mode — recording started.');
+            }
+            notifyListeners();
+          }
+        } catch (e) {
+          Logger.error('DeviceProvider: Button handler error: $e');
+        }
       },
     );
     notifyListeners();
@@ -570,7 +612,7 @@ class DeviceProvider extends ChangeNotifier
     _reconnectionTimer?.cancel();
     _reconnectDelayTimer?.cancel();
     _backgroundSyncTimer?.cancel();
-    
+
     final walSync = ServiceManager.instance().wal.getSyncs();
     if (walSync.isSyncing) {
       walSync.cancelSync();
@@ -613,6 +655,7 @@ class DeviceProvider extends ChangeNotifier
     await setConnectedDevice(null);
     setIsConnected(false);
     updateConnectingStatus(false);
+    if (_manualRecording) _manualRecording = false;
 
     final walSync = ServiceManager.instance().wal.getSyncs();
     walSync.cancelSync();
@@ -674,7 +717,9 @@ class DeviceProvider extends ChangeNotifier
     final state = WidgetsBinding.instance.lifecycleState;
     final isTrulyBackground = (state != null && state != AppLifecycleState.resumed);
 
-    if (SharedPreferencesUtil().maximizeBattery && !isFirmwareUpdateInProgress && (isTrulyBackground || !_isAppInForeground)) {
+    if (SharedPreferencesUtil().maximizeBattery &&
+        !isFirmwareUpdateInProgress &&
+        (isTrulyBackground || !_isAppInForeground)) {
       // Resiliency: Only disconnect if there's nothing left to sync.
       // If the sync was interrupted by a crash or disconnect, we want to stay
       // "available" for auto-reconnect to finish the job.
@@ -722,6 +767,14 @@ class DeviceProvider extends ChangeNotifier
     await updateChargingState();
     await initiateBleButtonListener();
 
+    final prefs = SharedPreferencesUtil();
+    if (prefs.manualMode) {
+      await _setDeviceVadThreshold(32768);
+    } else if (prefs.manualModeDeviceArmed) {
+      await _setDeviceVadThreshold(250);
+      prefs.manualModeDeviceArmed = false;
+    }
+
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
 
     await getDeviceInfo();
@@ -749,7 +802,8 @@ class DeviceProvider extends ChangeNotifier
               'uptime_label': log.uptimeStr,
             });
           }
-        }      }
+        }
+      }
     }
 
     notifyListeners();
@@ -815,7 +869,6 @@ class DeviceProvider extends ChangeNotifier
 
   @override
   void onDeviceConnectionStateChanged(String deviceId, DeviceConnectionState state, {bool isManual = false}) {
-
     switch (state) {
       case DeviceConnectionState.connected:
         updateConnectingStatus(false);
