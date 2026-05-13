@@ -823,8 +823,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               onTap: _showMicGainSheet,
             ),
           ],
-          // AAD Sensitivity
-          if (_isVadThresholdLoaded && _hasVadThresholdFeature == true) ...[
+          // AAD Sensitivity (hidden in manual mode — recording is tap-triggered, not voice-activated)
+          if (_isVadThresholdLoaded && _hasVadThresholdFeature == true && !SharedPreferencesUtil().manualMode) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.earListen,
