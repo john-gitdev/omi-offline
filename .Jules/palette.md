@@ -1,0 +1,3 @@
+## 2024-05-24 - Prevent Material assertions with dynamic borders
+**Learning:** In Flutter, providing `borderRadius` while simultaneously providing a `RoundedRectangleBorder` shape to a `Material` widget causes an `AssertionError: assert(borderRadius == null || shape == null)`. This happens often when dynamically applying borders (e.g. for selection states) but wanting a consistent corner radius.
+**Action:** When dynamically toggling borders on a `Material` widget while preserving rounded corners, avoid passing both properties. Instead, use `shape: RoundedRectangleBorder(borderRadius: ..., side: condition ? BorderSide.none : BorderSide(...))` to control the border while maintaining the radius safely.

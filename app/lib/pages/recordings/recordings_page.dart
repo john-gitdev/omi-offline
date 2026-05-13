@@ -140,7 +140,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
     _controller.cancelPipeline();
   }
 
-  Future<void> _deleteDayConversations(Batch batch, List<Conversation> toDelete) async {
+  Future<void> _deleteDayConversations(
+    Batch batch,
+    List<Conversation> toDelete,
+  ) async {
     if (toDelete.isEmpty) return;
     final messenger = ScaffoldMessenger.of(context);
     final description = _filterMode == RecordingFilterMode.all
@@ -175,22 +178,30 @@ class _RecordingsPageState extends State<RecordingsPage> {
   Widget _buildFilterBubble(String label, RecordingFilterMode mode) {
     final selected = _filterMode == mode;
     return Expanded(
-      child: GestureDetector(
-        onTap: () => setState(() => _filterMode = mode),
-        child: Container(
-          height: 34,
-          decoration: BoxDecoration(
-            color: selected ? Colors.deepPurpleAccent : Colors.transparent,
+      child: Semantics(
+        button: true,
+        label: 'Filter by $label recordings',
+        selected: selected,
+        child: Material(
+          color: selected ? Colors.deepPurpleAccent : Colors.transparent,
+          clipBehavior: Clip.antiAlias,
+          shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(17),
-            border: Border.all(color: selected ? Colors.deepPurpleAccent : Colors.grey.shade700),
+            side: selected ? BorderSide.none : BorderSide(color: Colors.grey.shade700),
           ),
-          alignment: Alignment.center,
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? Colors.white : Colors.grey.shade500,
-              fontSize: 13,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+          child: InkWell(
+            onTap: () => setState(() => _filterMode = mode),
+            child: Container(
+              height: 34,
+              alignment: Alignment.center,
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: selected ? Colors.white : Colors.grey.shade500,
+                  fontSize: 13,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                ),
+              ),
             ),
           ),
         ),
@@ -216,7 +227,11 @@ class _RecordingsPageState extends State<RecordingsPage> {
       await _controller.deleteConversation(conversation);
       if (mounted) {
         messenger.showSnackBar(
-          SnackBar(content: Text('Deleted conversation from ${conversation.timeRangeLabel}')),
+          SnackBar(
+            content: Text(
+              'Deleted conversation from ${conversation.timeRangeLabel}',
+            ),
+          ),
         );
       }
     } catch (e) {
@@ -352,11 +367,19 @@ class _RecordingsPageState extends State<RecordingsPage> {
       if (confirm != true) return;
     }
 
-    final failures = await _controller.uploadConversation(conversation, force: alreadyUploaded);
+    final failures = await _controller.uploadConversation(
+      conversation,
+      force: alreadyUploaded,
+    );
     if (!mounted) return;
     for (final failure in failures) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${failure.integration} upload failed: ${failure.error}',
+          ),
+        ),
+      );
     }
   }
 
@@ -611,7 +634,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
                       children: [
                         _buildFilterBubble('Main', RecordingFilterMode.visible),
                         const SizedBox(width: 8),
-                        _buildFilterBubble('Hidden', RecordingFilterMode.hidden),
+                        _buildFilterBubble(
+                          'Hidden',
+                          RecordingFilterMode.hidden,
+                        ),
                         const SizedBox(width: 8),
                         _buildFilterBubble('All', RecordingFilterMode.all),
                       ],
@@ -648,8 +674,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   onTap: () {
                     if (controller.spState == SyncProcessState.syncing ||
                         controller.spState == SyncProcessState.processing ||
-                        controller.spState == SyncProcessState.stopping)
-                      return;
+                        controller.spState == SyncProcessState.stopping) return;
                     showDialog(
                       context: context,
                       builder: (ctx) => AlertDialog(
@@ -754,16 +779,29 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                 ? switch (_filterMode) {
                                     RecordingFilterMode.visible => controller.batches
                                         .where(
-                                            (b) => b.finalizedRecordings.any((c) => c.duration.inSeconds >= minSeconds))
+                                          (b) => b.finalizedRecordings.any(
+                                            (c) => c.duration.inSeconds >= minSeconds,
+                                          ),
+                                        )
                                         .toList(),
                                     RecordingFilterMode.hidden => controller.batches
                                         .where(
-                                            (b) => b.finalizedRecordings.any((c) => c.duration.inSeconds < minSeconds))
+                                          (b) => b.finalizedRecordings.any(
+                                            (c) => c.duration.inSeconds < minSeconds,
+                                          ),
+                                        )
                                         .toList(),
-                                    RecordingFilterMode.all =>
-                                      controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList(),
+                                    RecordingFilterMode.all => controller.batches
+                                        .where(
+                                          (b) => b.finalizedRecordings.isNotEmpty,
+                                        )
+                                        .toList(),
                                   }
-                                : controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
+                                : controller.batches
+                                    .where(
+                                      (b) => b.finalizedRecordings.isNotEmpty,
+                                    )
+                                    .toList();
                             final unknownRecordings =
                                 visibleBatches.expand((b) => b.finalizedRecordings).where((c) => c.isUnknown).toList();
                             return RefreshIndicator(
