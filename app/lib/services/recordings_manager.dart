@@ -343,8 +343,9 @@ class Conversation {
   }
 
   String get durationLabel {
-    final mins = duration.inMinutes;
-    final secs = duration.inSeconds % 60;
+    final totalSecs = (duration.inMilliseconds / 1000).round();
+    final mins = totalSecs ~/ 60;
+    final secs = totalSecs % 60;
     return mins > 0 ? '${mins}m ${secs}s' : '${secs}s';
   }
 
