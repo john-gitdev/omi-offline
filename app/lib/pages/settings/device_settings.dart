@@ -628,18 +628,16 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             String getThresholdLabel(int value) {
               if (value <= 0) return 'Always On';
               if (value >= 32768) return 'Manual Only';
-              if (value <= 250) return 'Very High';
-              if (value <= 1000) return 'High';
-              if (value <= 3000) return 'Normal';
-              return 'Low';
+              if (value <= 250) return 'Default';
+              if (value <= 1000) return 'Less Sensitive';
+              return 'Very Low Sensitivity';
             }
 
             String getThresholdDescription(int value) {
               if (value <= 0) return 'Records everything, no silence skipping';
               if (value >= 32768) return 'Automatic recording disabled (Manual only)';
               if (value <= 250) return 'Catches whispers and quiet background noise';
-              if (value <= 1000) return 'Recommended for quiet indoor environments';
-              if (value <= 3000) return 'Standard sensitivity for most environments';
+              if (value <= 1000) return 'Filters out background noise in cafes or outdoors';
               return 'Catches only loud speech or nearby sounds';
             }
 
@@ -717,61 +715,30 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                         }),
                       ],
                     ),
-                    const SizedBox(height: 16),
-                    SliderTheme(
-                      data: SliderTheme.of(context).copyWith(
-                        trackHeight: 4,
-                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
-                      ),
-                      child: Slider(
-                        value: _vadThreshold.clamp(0.0, 32768.0),
-                        min: 0,
-                        max: 32768,
-                        onChanged: (double value) {
-                          setSheetState(() {});
-                          setState(() {
-                            _vadThreshold = value;
-                          });
-                          _vadThresholdDebounce?.cancel();
-                          _vadThresholdDebounce = Timer(const Duration(milliseconds: 300), () {
-                            _updateVadThreshold(value);
-                          });
-                        },
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('Always On (0)', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                        Text('Manual Only (32768)', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 32),
                     Row(
                       children: [
                         Expanded(
-                          child: _buildPresetButton('Quiet', 500, currentValue, () {
+                          child: _buildPresetButton('Always On', 0, currentValue, () {
                             setSheetState(() {});
-                            setState(() => _vadThreshold = 500.0);
-                            _updateVadThreshold(500.0);
+                            setState(() => _vadThreshold = 0.0);
+                            _updateVadThreshold(0.0);
                           }),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: _buildPresetButton('Normal', 1500, currentValue, () {
+                          child: _buildPresetButton('Default', 250, currentValue, () {
                             setSheetState(() {});
-                            setState(() => _vadThreshold = 1500.0);
-                            _updateVadThreshold(1500.0);
+                            setState(() => _vadThreshold = 250.0);
+                            _updateVadThreshold(250.0);
                           }),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: _buildPresetButton('Loud', 5000, currentValue, () {
+                          child: _buildPresetButton('Less Sensitive', 1000, currentValue, () {
                             setSheetState(() {});
-                            setState(() => _vadThreshold = 5000.0);
-                            _updateVadThreshold(5000.0);
+                            setState(() => _vadThreshold = 1000.0);
+                            _updateVadThreshold(1000.0);
                           }),
                         ),
                       ],
