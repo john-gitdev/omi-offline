@@ -764,11 +764,6 @@ class DeviceProvider extends ChangeNotifier
     await updateChargingState();
     await initiateBleButtonListener();
 
-    if (SharedPreferencesUtil().manualMode && _manualRecording) {
-      // Device reconnected mid-recording: restore threshold=0 so recording continues.
-      await _setDeviceVadThreshold(0);
-    }
-
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
 
     await getDeviceInfo();
