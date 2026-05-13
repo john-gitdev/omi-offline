@@ -627,7 +627,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           builder: (context, setSheetState) {
             String getThresholdLabel(int value) {
               if (value <= 0) return 'Always On';
-              if (value >= 32768) return 'Manual Only';
+              if (value >= 32768) return 'Marker Only';
               if (value <= 250) return 'Default';
               if (value <= 1000) return 'Less Sensitive';
               return 'Very Low Sensitivity';
@@ -635,7 +635,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
             String getThresholdDescription(int value) {
               if (value <= 0) return 'Records everything, no silence skipping';
-              if (value >= 32768) return 'Automatic recording disabled (Manual only)';
+              if (value >= 32768) return 'Automatic recording disabled (double tap to record)';
               if (value <= 250) return 'Catches whispers and quiet background noise';
               if (value <= 1000) return 'Filters out background noise in cafes or outdoors';
               return 'Catches only loud speech or nearby sounds';
@@ -716,30 +716,46 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                       ],
                     ),
                     const SizedBox(height: 32),
-                    Row(
+                    Column(
                       children: [
-                        Expanded(
-                          child: _buildPresetButton('Always On', 0, currentValue, () {
-                            setSheetState(() {});
-                            setState(() => _vadThreshold = 0.0);
-                            _updateVadThreshold(0.0);
-                          }),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildPresetButton('Always On', 0, currentValue, () {
+                                setSheetState(() {});
+                                setState(() => _vadThreshold = 0.0);
+                                _updateVadThreshold(0.0);
+                              }),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _buildPresetButton('Default', 250, currentValue, () {
+                                setSheetState(() {});
+                                setState(() => _vadThreshold = 250.0);
+                                _updateVadThreshold(250.0);
+                              }),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: _buildPresetButton('Default', 250, currentValue, () {
-                            setSheetState(() {});
-                            setState(() => _vadThreshold = 250.0);
-                            _updateVadThreshold(250.0);
-                          }),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: _buildPresetButton('Less Sensitive', 1000, currentValue, () {
-                            setSheetState(() {});
-                            setState(() => _vadThreshold = 1000.0);
-                            _updateVadThreshold(1000.0);
-                          }),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildPresetButton('Less Sensitive', 1000, currentValue, () {
+                                setSheetState(() {});
+                                setState(() => _vadThreshold = 1000.0);
+                                _updateVadThreshold(1000.0);
+                              }),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _buildPresetButton('Marker Only', 32768, currentValue, () {
+                                setSheetState(() {});
+                                setState(() => _vadThreshold = 32768.0);
+                                _updateVadThreshold(32768.0);
+                              }),
+                            ),
+                          ],
                         ),
                       ],
                     ),
