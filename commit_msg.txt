@@ -1,5 +1,0 @@
-fix: resolve issues from metadata refactor
-
-- Firmware: Fixed LittleFS directory iteration corruption in sd_card.c by safely closing the directory iterator before renaming files during time-sync updates.
-- App: Fixed unsafe .meta path generation in recordings_manager.dart by using regex with end-of-string bounds to replace extensions safely.
-- Firmware: Restored correct formatting and line breaks in imu.c lsm6dsl_timestamp_read.
