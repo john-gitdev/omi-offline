@@ -312,8 +312,8 @@ class VadAudioProcessor {
             !sessionChanged && (hasUptime ? (uptimeGapMs < 5000 && gapMs.abs() > 10000) : (gapMs.abs() > 10000));
 
         // Suppress splits while we're within 50 s of a marker tap.
-        final bool withinMarkerWindow = _markerProtectedUntilMs != null &&
-            segmentStartTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
+        final bool withinMarkerWindow =
+            _markerProtectedUntilMs != null && segmentStartTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
         final bool splitTriggered = !withinMarkerWindow &&
             ((sessionChanged && !imuGapMatches) ||
                 (gapMs > max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump));
@@ -471,9 +471,11 @@ class VadAudioProcessor {
             // If uptime Gap matches frame count (small gap) but UTC gap is large, it's a clock sync.
             final bool isClockJump = uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000;
 
-            final bool intraWithinMarkerWindow = _markerProtectedUntilMs != null &&
-                newResumeTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
-            if (gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump && !intraWithinMarkerWindow) {
+            final bool intraWithinMarkerWindow =
+                _markerProtectedUntilMs != null && newResumeTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
+            if (gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) &&
+                !isClockJump &&
+                !intraWithinMarkerWindow) {
               // Gap exceeds threshold — flush current recording, start new conversation.
               final speechMs = _speechFrameCount * frameDurationMs;
               final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
@@ -806,7 +808,8 @@ class VadAudioProcessor {
       const maxNativeChunkSize = 4096;
       for (int i = 0; i < chunk.length; i += maxNativeChunkSize) {
         final end = (i + maxNativeChunkSize > chunk.length) ? chunk.length : i + maxNativeChunkSize;
-        await AacEncoder.encodeBuffer(sessionId!, chunk.sublist(i, end));
+        // ⚡ Bolt: Use sublistView instead of sublist to prevent deep copying memory in the audio encoding loop
+        await AacEncoder.encodeBuffer(sessionId!, Uint8List.sublistView(chunk, i, end));
       }
 
       hasEncodedAnyFrames = true;

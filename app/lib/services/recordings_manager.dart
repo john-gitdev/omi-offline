@@ -112,8 +112,11 @@ class Conversation {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
               try {
+                // ⚡ Bolt: Use positional arguments in fromCharCodes to prevent .sublist() deep copying memory
                 uploadKey = String.fromCharCodes(
-                  metaBytes.sublist(417, 417 + keyLen),
+                  metaBytes,
+                  417,
+                  417 + keyLen,
                 );
               } catch (_) {
                 uploadKey = null;
@@ -153,7 +156,7 @@ class Conversation {
     final isWav = path.endsWith('.wav');
     final isM4a = path.endsWith('.m4a');
     final isOgg = path.endsWith('.ogg');
-    
+
     int fileSize = 0;
     try {
       fileSize = file.lengthSync();
@@ -201,7 +204,8 @@ class Conversation {
         final keyLen = metaBytes[416];
         if (417 + keyLen <= metaBytes.length) {
           try {
-            uploadKey = String.fromCharCodes(metaBytes.sublist(417, 417 + keyLen));
+            // ⚡ Bolt: Use positional arguments in fromCharCodes to prevent .sublist() deep copying memory
+            uploadKey = String.fromCharCodes(metaBytes, 417, 417 + keyLen);
           } catch (_) {}
           final flagOffset = 417 + keyLen;
           if (metaBytes.length > flagOffset) {
@@ -282,8 +286,11 @@ class Conversation {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
               try {
+                // ⚡ Bolt: Use positional arguments in fromCharCodes to prevent .sublist() deep copying memory
                 uploadKey = String.fromCharCodes(
-                  metaBytes.sublist(417, 417 + keyLen),
+                  metaBytes,
+                  417,
+                  417 + keyLen,
                 );
               } catch (_) {
                 uploadKey = null;
@@ -643,7 +650,8 @@ class RecordingsManager {
           final parts = fileName.split('_');
           var millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
           if (millis == null || millis <= 0) continue;
-          final dateStr = _dateStringFromMillis(millis);          final liveDir = Directory('${directory.path}/recordings/$dateStr');
+          final dateStr = _dateStringFromMillis(millis);
+          final liveDir = Directory('${directory.path}/recordings/$dateStr');
           await liveDir.create(recursive: true);
           final dest = '${liveDir.path}/$fileName';
           try {
@@ -898,7 +906,7 @@ class RecordingsManager {
           final fileName = entity.path.split('/').last;
           final nameNoExt = fileName.split('.').first;
           final parts = nameNoExt.split('_');
-          
+
           // Format: recording_<ts> or recording_<ts>_draft
           int? millis;
           if (parts.length >= 2) {
@@ -906,14 +914,15 @@ class RecordingsManager {
             millis = int.tryParse(tsStr);
           }
 
-          final dateStr = (millis != null && millis > 946684800000) ? _dateStringFromMillis(millis) : activeBatches.last.dateString;
+          final dateStr =
+              (millis != null && millis > 946684800000) ? _dateStringFromMillis(millis) : activeBatches.last.dateString;
           final liveDir = Directory('${directory.path}/recordings/$dateStr');
           await liveDir.create(recursive: true);
           final dest = '${liveDir.path}/$fileName';
           try {
             await File(dest).delete();
           } on FileSystemException catch (_) {}
-          
+
           // If we are moving a draft, delete any existing finalized version.
           // If we are moving a finalized file, delete any existing draft version.
           // Only do this for audio files to avoid deleting the meta we just moved (since meta comes first).
@@ -1225,7 +1234,8 @@ class RecordingsManager {
               // Don't force-finalize if the marker's 50-second protection window is still active.
               // This ensures that subsequent syncs can still stitch more audio to this draft.
               if (await _isDraftInMarkerWindow(draftFile, entities)) {
-                Logger.debug('RecordingsManager: Holding off finalization of ${draftFile.path} — marker window active.');
+                Logger.debug(
+                    'RecordingsManager: Holding off finalization of ${draftFile.path} — marker window active.');
                 continue;
               }
               await _finalizeDraft(draftFile, isForceSynced: true);
@@ -1378,10 +1388,11 @@ class RecordingsManager {
         // 2. Update uploadKey extension if transcoded
         if (transcoded) {
           final keyLen = outBytes[416];
-          final key = String.fromCharCodes(outBytes.sublist(417, 417 + keyLen));
+          // ⚡ Bolt: Use positional arguments in fromCharCodes to prevent .sublist() deep copying memory
+          final key = String.fromCharCodes(outBytes, 417, 417 + keyLen);
           final newKey = key.replaceAll('.$currentExt', '.m4a');
           final newKeyBytes = Uint8List.fromList(newKey.codeUnits);
-          
+
           final builder = BytesBuilder();
           builder.add(outBytes.sublist(0, 416));
           builder.addByte(newKeyBytes.length);
@@ -1441,20 +1452,24 @@ class RecordingsManager {
 
       final data = ByteData.sublistView(bytes);
       final sampleRate = data.getUint32(24, Endian.little);
-      final pcmBytes = bytes.sublist(44);
+      // ⚡ Bolt: Use sublistView instead of sublist to prevent deep copying memory
+      final pcmBytes = Uint8List.sublistView(bytes, 44);
 
       sessionId = await AacEncoder.startEncoder(sampleRate, m4aPath);
       const chunkSize = 4096;
       for (int i = 0; i < pcmBytes.length; i += chunkSize) {
         final end = (i + chunkSize > pcmBytes.length) ? pcmBytes.length : i + chunkSize;
-        await AacEncoder.encodeBuffer(sessionId, pcmBytes.sublist(i, end));
+        // ⚡ Bolt: Use sublistView instead of sublist to prevent deep copying memory in the audio encoding loop
+        await AacEncoder.encodeBuffer(sessionId, Uint8List.sublistView(pcmBytes, i, end));
       }
       await AacEncoder.finishEncoder(sessionId);
       return true;
     } catch (e) {
       Logger.error('RecordingsManager: Transcoding failed: $e');
       if (sessionId != null) {
-        try { await AacEncoder.finishEncoder(sessionId); } catch (_) {}
+        try {
+          await AacEncoder.finishEncoder(sessionId);
+        } catch (_) {}
       }
       return false;
     }
@@ -1520,9 +1535,10 @@ class RecordingsManager {
     final silenceBytes = Uint8List(silenceSamples * channels * 2);
 
     final combinedPcm = BytesBuilder();
-    combinedPcm.add(draftBytes.sublist(44));
+    // ⚡ Bolt: Use sublistView instead of sublist to prevent deep copying memory
+    combinedPcm.add(Uint8List.sublistView(draftBytes, 44));
     combinedPcm.add(silenceBytes);
-    combinedPcm.add(nextBytes.sublist(44));
+    combinedPcm.add(Uint8List.sublistView(nextBytes, 44));
 
     final totalPcmBytes = combinedPcm.length;
     final header = _generateWavHeader(totalPcmBytes, sampleRate, channels);
@@ -1936,7 +1952,6 @@ class RecordingsManager {
         if (await recordingsDir.list().isEmpty) await recordingsDir.delete();
       } catch (_) {}
     }
-
   }
 
   /// Deletes processed recordings for [batch] so the day can be reprocessed
