@@ -287,7 +287,7 @@ class DeviceProvider extends ChangeNotifier
               Logger.debug('DeviceProvider: Manual mode — recording stopped.');
             } else {
               _manualRecording = true;
-              await _setDeviceVadThreshold(0);
+              await _setDeviceVadThreshold(65535);
               Logger.debug('DeviceProvider: Manual mode — recording started.');
             }
             notifyListeners();
