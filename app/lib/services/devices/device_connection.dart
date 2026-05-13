@@ -160,6 +160,15 @@ abstract class DeviceConnection {
     return null;
   }
 
+  Future<void> setVadThreshold(int threshold) async {
+    if (await isConnected()) await performSetVadThreshold(threshold);
+  }
+
+  Future<int?> getVadThreshold() async {
+    if (await isConnected()) return performGetVadThreshold();
+    return null;
+  }
+
   Future<StreamSubscription<List<int>>?> getBleBatteryLevelListener({
     void Function(int)? onBatteryLevelChange,
     void Function(bool)? onChargingStateChange,
@@ -215,6 +224,8 @@ abstract class DeviceConnection {
   Future<int?> performGetLedDimRatio();
   Future<void> performSetMicGain(int gain);
   Future<int?> performGetMicGain();
+  Future<void> performSetVadThreshold(int threshold);
+  Future<int?> performGetVadThreshold();
   Future<bool> performSyncDeviceTime();
   Future<bool> performStopStorageSync();
   Future<bool> performRotateFile();

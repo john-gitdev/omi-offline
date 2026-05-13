@@ -46,7 +46,7 @@ class OmiFeatures {
   static const int offlineStorage = 1 << 6;
   static const int ledDimming = 1 << 7;
   static const int micGain = 1 << 8;
-  static const int wifi = 1 << 9;
+  static const int vadThreshold = 1 << 9;
 }
 
 abstract class IDeviceServiceSubscription {

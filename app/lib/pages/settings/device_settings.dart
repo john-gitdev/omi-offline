@@ -31,8 +31,13 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   bool _isMicGainLoaded = false;
   bool? _hasMicGainFeature;
 
+  double _vadThreshold = 250.0;
+  bool _isVadThresholdLoaded = false;
+  bool? _hasVadThresholdFeature;
+
   Timer? _debounce;
   Timer? _micGainDebounce;
+  Timer? _vadThresholdDebounce;
 
   @override
   void initState() {
@@ -52,6 +57,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   void dispose() {
     _debounce?.cancel();
     _micGainDebounce?.cancel();
+    _vadThresholdDebounce?.cancel();
     super.dispose();
   }
 
@@ -71,11 +77,13 @@ class _DeviceSettingsState extends State<DeviceSettings> {
         }
         final hasDimming = OmiFeatures.hasFeature(features, OmiFeatures.ledDimming);
         final hasMicGain = OmiFeatures.hasFeature(features, OmiFeatures.micGain);
+        final hasVadThreshold = OmiFeatures.hasFeature(features, OmiFeatures.vadThreshold);
 
         if (!mounted) return;
         setState(() {
           _hasDimmingFeature = hasDimming;
           _hasMicGainFeature = hasMicGain;
+          _hasVadThresholdFeature = hasVadThreshold;
         });
 
         if (!hasDimming) {
@@ -113,6 +121,24 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             });
           }
         }
+
+        if (!hasVadThreshold) {
+          setState(() {
+            _isVadThresholdLoaded = true;
+          });
+        } else {
+          var threshold = await connection.getVadThreshold();
+          if (threshold != null && mounted) {
+            setState(() {
+              _vadThreshold = threshold.toDouble();
+              _isVadThresholdLoaded = true;
+            });
+          } else if (mounted) {
+            setState(() {
+              _isVadThresholdLoaded = true; // Loaded, but no value, use default
+            });
+          }
+        }
       }
     }
   }
@@ -132,6 +158,15 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
       var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
       await connection?.setMicGain(value.toInt());
+    }
+  }
+
+  void _updateVadThreshold(double value) async {
+    final deviceProvider = context.read<DeviceProvider>();
+    final pairedDevice = deviceProvider.pairedDevice;
+    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
+      var connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+      await connection?.setVadThreshold(value.toInt());
     }
   }
 
@@ -582,6 +617,200 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     return level >= 0 && level < labels.length ? labels[level] : '';
   }
 
+  void _showVadThresholdSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1C1C1E),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            String getThresholdLabel(int value) {
+              if (value <= 0) return 'Always On';
+              if (value >= 32768) return 'Manual Only';
+              if (value <= 250) return 'Very High';
+              if (value <= 1000) return 'High';
+              if (value <= 3000) return 'Normal';
+              return 'Low';
+            }
+
+            String getThresholdDescription(int value) {
+              if (value <= 0) return 'Records everything, no silence skipping';
+              if (value >= 32768) return 'Automatic recording disabled (Manual only)';
+              if (value <= 250) return 'Catches whispers and quiet background noise';
+              if (value <= 1000) return 'Recommended for quiet indoor environments';
+              if (value <= 3000) return 'Standard sensitivity for most environments';
+              return 'Catches only loud speech or nearby sounds';
+            }
+
+            final currentValue = _vadThreshold.round();
+
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'AAD Sensitivity',
+                          style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Colors.white, size: 20),
+                          onPressed: () => Navigator.pop(context),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Adjust how easily the device wakes up and starts recording based on sound.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 14),
+                    ),
+                    const SizedBox(height: 24),
+                    Center(
+                      child: Column(
+                        children: [
+                          Text(
+                            getThresholdLabel(currentValue),
+                            style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Value: $currentValue',
+                            style: TextStyle(color: Colors.grey.shade400, fontSize: 14, fontWeight: FontWeight.w500),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            getThresholdDescription(currentValue),
+                            style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _buildFineTuneButton('-', () {
+                          setSheetState(() {
+                            _vadThreshold = (_vadThreshold - 50).clamp(0.0, 32768.0);
+                          });
+                          _updateVadThreshold(_vadThreshold);
+                        }),
+                        const SizedBox(width: 12),
+                        _buildFineTuneButton('Default', () {
+                          setSheetState(() {
+                            _vadThreshold = 250.0;
+                          });
+                          _updateVadThreshold(250.0);
+                        }, isText: true),
+                        const SizedBox(width: 12),
+                        _buildFineTuneButton('+', () {
+                          setSheetState(() {
+                            _vadThreshold = (_vadThreshold + 50).clamp(0.0, 32768.0);
+                          });
+                          _updateVadThreshold(_vadThreshold);
+                        }),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        trackHeight: 4,
+                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
+                      ),
+                      child: Slider(
+                        value: _vadThreshold.clamp(0.0, 32768.0),
+                        min: 0,
+                        max: 32768,
+                        onChanged: (double value) {
+                          setSheetState(() {});
+                          setState(() {
+                            _vadThreshold = value;
+                          });
+                          _vadThresholdDebounce?.cancel();
+                          _vadThresholdDebounce = Timer(const Duration(milliseconds: 300), () {
+                            _updateVadThreshold(value);
+                          });
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('Always On (0)', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                        Text('Manual Only (32768)', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildPresetButton('Quiet', 500, currentValue, () {
+                            setSheetState(() {});
+                            setState(() => _vadThreshold = 500.0);
+                            _updateVadThreshold(500.0);
+                          }),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _buildPresetButton('Normal', 1500, currentValue, () {
+                            setSheetState(() {});
+                            setState(() => _vadThreshold = 1500.0);
+                            _updateVadThreshold(1500.0);
+                          }),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _buildPresetButton('Loud', 5000, currentValue, () {
+                            setSheetState(() {});
+                            setState(() => _vadThreshold = 5000.0);
+                            _updateVadThreshold(5000.0);
+                          }),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildFineTuneButton(String label, VoidCallback onTap, {bool isText = false}) {
+    return Material(
+      color: const Color(0xFF2A2A2E),
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          width: isText ? 80 : 50,
+          height: 40,
+          alignment: Alignment.center,
+          child: Text(
+            label,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: isText ? 14 : 20,
+              fontWeight: isText ? FontWeight.w500 : FontWeight.bold,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildCustomizationSection() {
     return Material(
       color: const Color(0xFF1C1C1E),
@@ -606,6 +835,16 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               title: 'Mic Gain',
               chipValue: _getMicGainLabel(_micGain.round()),
               onTap: _showMicGainSheet,
+            ),
+          ],
+          // AAD Sensitivity
+          if (_isVadThresholdLoaded && _hasVadThresholdFeature == true) ...[
+            const Divider(height: 1, color: Color(0xFF3C3C43)),
+            _buildProfileStyleItem(
+              icon: FontAwesomeIcons.earListen,
+              title: 'AAD Sensitivity',
+              chipValue: _vadThreshold.round() <= 0 ? 'Always On' : _vadThreshold.round().toString(),
+              onTap: _showVadThresholdSheet,
             ),
           ],
         ],

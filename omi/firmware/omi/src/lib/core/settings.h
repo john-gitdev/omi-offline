@@ -44,6 +44,21 @@ int app_settings_save_mic_gain(uint8_t new_gain);
 uint8_t app_settings_get_mic_gain(void);
 
 /**
+ * @brief Save the AAD threshold setting.
+ *
+ * @param new_threshold The new threshold value.
+ * @return 0 on success, negative error code otherwise.
+ */
+int app_settings_save_vad_threshold(uint16_t new_threshold);
+
+/**
+ * @brief Get the current AAD threshold.
+ *
+ * @return The current threshold value.
+ */
+uint16_t app_settings_get_vad_threshold(void);
+
+/**
  * @brief Save the RTC timestamp setting.
  *
  * @param ts The new RTC timestamp.
