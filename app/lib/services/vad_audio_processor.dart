@@ -394,9 +394,11 @@ class VadAudioProcessor {
             // 1. Primary: Use the derived wall time (locked to high-precision audio header)
             // 2. Fallback: If no header found yet or wall time is suspicious, use marker's UTC
             DateTime markerFrameTime = lastFrameWallTime;
-            if (_isDerivedTimestamp && markerUtcMs > 946684800000) {
+            // Always prefer the marker's own hardware RTC timestamp if it's valid.
+            // lastFrameWallTime can be extremely stale if the device was asleep (e.g. gap > 60s).
+            if (markerUtcMs > 946684800000) {
               markerFrameTime = DateTime.fromMillisecondsSinceEpoch(markerUtcMs, isUtc: true);
-              Logger.debug('VadAudioProcessor: Using marker UTC fallback: $markerFrameTime');
+              Logger.debug('VadAudioProcessor: Using marker UTC: $markerFrameTime');
             }
 
             final markerMs = markerFrameTime.millisecondsSinceEpoch;
@@ -477,11 +479,7 @@ class VadAudioProcessor {
             // If uptime Gap matches frame count (small gap) but UTC gap is large, it's a clock sync.
             final bool isClockJump = uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000;
 
-            final bool intraWithinMarkerWindow =
-                _markerProtectedUntilMs != null && newResumeTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
-            if (gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) &&
-                !isClockJump &&
-                !intraWithinMarkerWindow) {
+            if (gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump) {
               // Gap exceeds threshold — flush current recording, start new conversation.
               final speechMs = _speechFrameCount * frameDurationMs;
               final bool withinMarkerProtection = _markerProtectedUntilMs != null &&
@@ -497,7 +495,10 @@ class VadAudioProcessor {
                   if (filePath != null) savedFiles.add(filePath);
                 }
               }
-              _forcedByMarker = false;
+
+              final bool newConversationProtected =
+                  _markerProtectedUntilMs != null && newResumeTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
+              _forcedByMarker = newConversationProtected;
               _currentRefs = [];
               _speechFrameCount = 0;
               _currentChunkDurationMs = 0;
