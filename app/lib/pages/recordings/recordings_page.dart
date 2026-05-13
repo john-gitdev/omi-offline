@@ -18,6 +18,7 @@ import 'package:omi/pages/recordings/batch_card.dart';
 import 'package:omi/pages/recordings/recording_player_page.dart';
 import 'package:omi/pages/recordings/marker_day_card.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
+import 'package:omi/pages/settings/offline_audio_settings_page.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:omi/widgets/battery_status_indicator.dart';
 
@@ -506,7 +507,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
               backgroundColor: const Color(0xFF0D0D0D),
               elevation: 0,
               centerTitle: false,
-              leadingWidth: 120,
+              leadingWidth: 72,
               leading: !deviceProvider.isConnected
                   ? Container(
                       alignment: Alignment.centerLeft,
@@ -551,6 +552,50 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         ),
                       ),
                     ),
+              title: GestureDetector(
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => OfflineAudioSettingsPage(
+                      flashManualMode: true,
+                      onCountShortRecordings: _controller.countShortRecordings,
+                      onDeleteShortRecordings: _controller.deleteShortRecordings,
+                    ),
+                  ),
+                ),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: _prefs.manualMode
+                        ? Colors.deepPurpleAccent.withOpacity(0.15)
+                        : const Color(0xFF2A2A2E),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: _prefs.manualMode
+                          ? Colors.deepPurpleAccent.withOpacity(0.6)
+                          : Colors.grey.shade700,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FaIcon(
+                        _prefs.manualMode ? FontAwesomeIcons.hand : FontAwesomeIcons.wandMagicSparkles,
+                        size: 11,
+                        color: _prefs.manualMode ? Colors.deepPurpleAccent : Colors.grey.shade400,
+                      ),
+                      const SizedBox(width: 5),
+                      Text(
+                        _prefs.manualMode ? 'Manual' : 'Automatic',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: _prefs.manualMode ? Colors.deepPurpleAccent : Colors.grey.shade400,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
               actions: [
                 if (controller.markerConversations.isNotEmpty)
                   IconButton(
