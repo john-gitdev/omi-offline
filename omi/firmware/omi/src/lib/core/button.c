@@ -138,7 +138,6 @@ void check_button_level(struct k_work *work_item)
                 // Timeout — it was a double tap.
                 if (!is_muted) {
                     LOG_INF("Double tap (Marker) detected");
-                    play_haptic_milli(300);
                     marker_flash_count = 2; // Trigger 1s white flash (2 cycles of 500ms)
                     #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
                     write_marker_to_storage();
