@@ -137,14 +137,33 @@ void check_button_level(struct k_work *work_item)
             if (idle_duration_ms > TRIPLE_TAP_WINDOW) {
                 // Timeout — it was a double tap.
                 if (!is_muted) {
-                    LOG_INF("Double tap (Marker) detected");
-                    marker_flash_count = 2; // Trigger 1s white flash (2 cycles of 500ms)
-                    #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-                    write_marker_to_storage();
-                    #endif
                     #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                    aad_force_wake();
+                    /* 65535 (UINT16_MAX) is the manual-recording sentinel —
+                     * the app writes it on start, 32768 on stop.  Any other
+                     * threshold means automatic mode; treat as a normal marker. */
+                    bool manual_stop = (aad_get_threshold() == 65535);
+                    #else
+                    bool manual_stop = false;
                     #endif
+                    if (manual_stop) {
+                        /* Threshold==0 means the app put us in manual recording
+                         * mode — this tap is a stop, not a marker. Skip the
+                         * marker write and cancel the 50s force-wake hold so
+                         * recording ends promptly. */
+                        LOG_INF("Double tap — manual stop");
+                        #ifdef CONFIG_OMI_ENABLE_T5838_AAD
+                        aad_cancel_force_wake();
+                        #endif
+                    } else {
+                        LOG_INF("Double tap (Marker) detected");
+                        marker_flash_count = 2;
+                        #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+                        write_marker_to_storage();
+                        #endif
+                        #ifdef CONFIG_OMI_ENABLE_T5838_AAD
+                        aad_force_wake();
+                        #endif
+                    }
                 } else {
                     LOG_INF("Double tap ignored (muted)");
                 }
