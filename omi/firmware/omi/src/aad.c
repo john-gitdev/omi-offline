@@ -263,7 +263,12 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
 
     uint32_t avg = avg_abs_amplitude(buffer, sample_count);
     int64_t now = k_uptime_get();
-    bool has_voice = avg >= vad_threshold
+    /* 65535 (UINT16_MAX) is reserved as the manual-recording sentinel written
+     * by the app on a manual-mode start tap.  Treat it as always-voice so the
+     * device records continuously until the stop tap arrives.  Do not clamp or
+     * remap this value — button.c relies on reading it back to detect stop. */
+    bool has_voice = vad_threshold == 65535
+                  || avg >= vad_threshold
                   || now < force_wake_until_ms;
 
     if (has_voice) {
@@ -418,6 +423,17 @@ void aad_set_threshold(uint16_t threshold)
 {
     vad_threshold = threshold;
     LOG_INF("AAD: threshold updated to %u", vad_threshold);
+}
+
+uint16_t aad_get_threshold(void)
+{
+    return vad_threshold;
+}
+
+void aad_cancel_force_wake(void)
+{
+    force_wake_until_ms = 0;
+    LOG_INF("AAD: force wake cancelled (manual stop)");
 }
 
 bool aad_is_sleeping(void)
