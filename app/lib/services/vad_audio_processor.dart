@@ -482,10 +482,7 @@ class VadAudioProcessor {
             if (gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump) {
               // Gap exceeds threshold — flush current recording, start new conversation.
               final speechMs = _speechFrameCount * frameDurationMs;
-              final bool withinMarkerProtection = _markerProtectedUntilMs != null &&
-                  _recordingStartTime!.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
-              final bool tooShortSpeech =
-                  _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker && !withinMarkerProtection;
+              final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
               if (_currentRefs.isNotEmpty) {
                 if (tooShortSpeech) {
@@ -581,10 +578,7 @@ class VadAudioProcessor {
         if (_currentChunkDurationMs >= _maxChunkMs) {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
           final speechMs = _speechFrameCount * frameDurationMs;
-          final bool withinMarkerProtection = _markerProtectedUntilMs != null &&
-              _recordingStartTime!.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
-          final bool tooShortSpeech =
-              _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker && !withinMarkerProtection;
+          final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
           if (!tooShortSpeech) {
             final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
@@ -593,7 +587,11 @@ class VadAudioProcessor {
             Logger.debug('VadAudioProcessor: Discarding noise conversation during max-duration cut.');
           }
           final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
-          _forcedByMarker = false;
+
+          final bool newConversationProtected =
+              _markerProtectedUntilMs != null && cutTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
+          _forcedByMarker = newConversationProtected;
+
           _currentRefs = [];
           _speechFrameCount = 0;
           _currentChunkDurationMs = 0;
@@ -623,14 +621,10 @@ class VadAudioProcessor {
 
   Future<String?> flushRemaining({bool isDraft = false}) async {
     final speechMs = _speechFrameCount * frameDurationMs;
-    final bool withinMarkerProtection = _markerProtectedUntilMs != null &&
-        _recordingStartTime != null &&
-        _recordingStartTime!.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
-    final bool tooShortSpeech =
-        _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker && !withinMarkerProtection;
+    final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
     if (_currentRefs.isEmpty ||
-        (_discardShort && _currentChunkDurationMs < _minDurationMs && !_forcedByMarker && !withinMarkerProtection) ||
+        (_discardShort && _currentChunkDurationMs < _minDurationMs && !_forcedByMarker) ||
         tooShortSpeech) {
       discardGuardFiredOnLastFlush = _currentRefs.isNotEmpty;
       if (_currentRefs.isNotEmpty) {
