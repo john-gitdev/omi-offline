@@ -258,19 +258,15 @@ class DeviceProvider extends ChangeNotifier
   }
 
   Future<void> setManualMode(bool enabled) async {
+    if (connectedDevice == null) return;
     final prefs = SharedPreferencesUtil();
     prefs.manualMode = enabled;
+    _manualRecording = false;
     if (enabled) {
       prefs.vadEnabled = false;
-      prefs.manualModeDeviceArmed = true;
-      _manualRecording = false;
       await _setDeviceVadThreshold(32768);
     } else {
-      _manualRecording = false;
       await _setDeviceVadThreshold(250);
-      // Only clear the armed flag if we're actually connected and the write went through.
-      // If disconnected, _finishDeviceSetup will handle it on next connect.
-      if (prefs.manualModeDeviceArmed && connectedDevice != null) prefs.manualModeDeviceArmed = false;
     }
     notifyListeners();
   }
@@ -768,16 +764,9 @@ class DeviceProvider extends ChangeNotifier
     await updateChargingState();
     await initiateBleButtonListener();
 
-    final prefs = SharedPreferencesUtil();
-    if (prefs.manualMode) {
-      // Re-assert the current threshold on every connect — the app may have changed
-      // state (mode enabled, or mid-recording toggle) while the device was offline.
-      await _setDeviceVadThreshold(_manualRecording ? 0 : 32768);
-    } else if (prefs.manualModeDeviceArmed) {
-      // Manual mode was disabled while the device was offline; device still has
-      // threshold=32768 in flash. Restore default now that we're connected.
-      await _setDeviceVadThreshold(250);
-      prefs.manualModeDeviceArmed = false;
+    if (SharedPreferencesUtil().manualMode && _manualRecording) {
+      // Device reconnected mid-recording: restore threshold=0 so recording continues.
+      await _setDeviceVadThreshold(0);
     }
 
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
