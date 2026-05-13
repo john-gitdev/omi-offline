@@ -121,11 +121,9 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
     if (_manualMode != prefs.manualMode) {
       await context.read<DeviceProvider>().setManualMode(_manualMode);
     }
-    if (!_manualMode) {
-      prefs.vadEnabled = _vadEnabled;
-      prefs.vadSpeechThreshold = _vadSpeechThreshold;
-      prefs.vadMinSpeechSeconds = _vadMinSpeechSeconds;
-    }
+    prefs.vadEnabled = _vadEnabled;
+    prefs.vadSpeechThreshold = _vadSpeechThreshold;
+    prefs.vadMinSpeechSeconds = _vadMinSpeechSeconds;
     prefs.vadSplitSeconds = _vadSplitSeconds;
     prefs.vadMaxConversationMinutes = _vadMaxConversationMinutes;
     prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
@@ -231,17 +229,14 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                         !isConnected
                             ? 'Connect device to change mode.'
                             : _manualMode
-                                ? 'Double-tap to start recording. Double-tap again to stop.'
+                                ? 'Double-tap to start recording. Double-tap again to stop. Turn off Voice Activity Detection below for unfiltered capture.'
                                 : 'Automatic VAD-based recording. Double-tap marks a timestamp.',
                         style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                       ),
                       value: _manualMode,
                       onChanged: isConnected
                           ? (value) {
-                              setState(() {
-                                _manualMode = value;
-                                if (value) _vadEnabled = false;
-                              });
+                              setState(() => _manualMode = value);
                               _markDirty();
                             }
                           : null,
@@ -250,38 +245,36 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> {
                   ),
                   const SizedBox(height: 16),
 
-                  // VAD toggle (hidden in manual mode)
-                  if (!_manualMode) ...[
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1C1C1E),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.white.withOpacity(0.05)),
-                      ),
-                      child: SwitchListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('Voice Activity Detection',
-                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                        subtitle: Text(
-                          _vadEnabled
-                              ? 'Silero VAD classifies each frame as speech or silence.'
-                              : 'AAD mode — splits by firmware timestamps only.',
-                          style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                        ),
-                        value: _vadEnabled,
-                        onChanged: (value) {
-                          setState(() => _vadEnabled = value);
-                          _markDirty();
-                        },
-                        activeColor: Colors.deepPurpleAccent,
-                      ),
+                  // VAD toggle
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1C1C1E),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white.withOpacity(0.05)),
                     ),
-                    const SizedBox(height: 16),
-                  ], // end if (!_manualMode)
+                    child: SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Voice Activity Detection',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                      subtitle: Text(
+                        _vadEnabled
+                            ? 'Silero VAD classifies each frame as speech or silence.'
+                            : 'AAD mode — splits by firmware timestamps only.',
+                        style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                      ),
+                      value: _vadEnabled,
+                      onChanged: (value) {
+                        setState(() => _vadEnabled = value);
+                        _markDirty();
+                      },
+                      activeColor: Colors.deepPurpleAccent,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
 
                   // Speech Sensitivity (Silero only)
-                  if (!_manualMode && _vadEnabled) ...[
+                  if (_vadEnabled) ...[
                     Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
