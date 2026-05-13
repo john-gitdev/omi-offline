@@ -1530,6 +1530,14 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
                 if (sep) {
                     session_id = (uint32_t)strtoul(sep + 1, NULL, 16);
                 }
+
+                // Only rename files that belong to the current session. Files from
+                // previous sessions have an uptime that is not relative to the
+                // current rtc_offset and would result in incorrect timestamps.
+                if (session_id != device_session_id) {
+                    continue;
+                }
+
                 uint32_t correct_ts = (original_uptime_ms / 1000U) + rtc_offset;
 
                 snprintf(new_fn, MAX_FILENAME_LEN, "%08X_%08X.txt", correct_ts, session_id);
