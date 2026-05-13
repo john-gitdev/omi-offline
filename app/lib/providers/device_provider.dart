@@ -263,7 +263,6 @@ class DeviceProvider extends ChangeNotifier
     prefs.manualMode = enabled;
     _manualRecording = false;
     if (enabled) {
-      prefs.vadEnabled = false;
       await _setDeviceVadThreshold(32768);
     } else {
       await _setDeviceVadThreshold(250);
