@@ -77,3 +77,44 @@ Uploads to external APIs (HeyPocket, Omi Sync) were temporarily enabled during A
 - [x] Uncomment the `if (_prefs.adjustmentMode)` check in `_handleUploadTap` in `app/lib/pages/recordings/recordings_page.dart`.
 - [x] Uncomment the `if (_prefs.adjustmentMode)` check in `_handleUpload` in `app/lib/pages/recordings/recording_player_page.dart`.
 - [x] Uncomment the `if (adjustmentMode)` check in `UploadIconButton.build` in `app/lib/pages/recordings/batch_card.dart`.
+
+## AAD Threshold Refactor & Noise Profiling
+
+Refactor the hardware-acoustic Wake-on-Voice (AAD) system to be user-adjustable and self-tuning.
+
+### Phase 1: Manual Adjustability [Complete]
+Successfully implemented manual threshold control from the app.
+- **Firmware:** Added `vad_threshold` to settings NVS, dynamic `aad_set_threshold()` API, and BLE Characteristic `0x19B10013`.
+- **App:** Added AAD Sensitivity slider (0–32768) in Device Settings with presets and "Always On" (0) / "Manual Only" (32768) support.
+
+### Phase 2: Learning & Auto-Tune [In Progress]
+Implement a hybrid statistical/distribution profiling system to allow the device to "Auto-Tune" to its environment.
+
+**Architectural Separation:**
+1. **Runtime Autotune Engine (Welford's Algorithm):** 
+   - Lightweight, production-safe running stats (Mean, Variance/StdDev).
+   - Used for "Auto-Tune" button calculation: `Threshold = Mean + 3*StdDev`.
+2. **Developer Diagnostics (Logarithmic Histogram):**
+   - 8-bucket distribution visualization for debugging and environmental insight.
+   - Buckets: 0-31, 32-63, 64-127, 128-255, 256-511, 512-1023, 1024-2047, 2048+.
+
+**Firmware Tasks:**
+- [ ] Implement `vad_profile_t` in `aad.c` using Welford's Online Algorithm.
+- [ ] Add 8-bucket logarithmic histogram tracking in `aad.c`.
+- [ ] Add BLE Characteristic `0x19B10062` (Read Profile Data: N, Mean, M2, Buckets, Peak, Recording Frames).
+- [ ] Add BLE Characteristic `0x19B10063` (Write: Reset Stats).
+- [ ] Add periodic persistence for Mean/M2 in `settings.c`.
+
+**App Tasks:**
+- [ ] Add **Developer: Noise Diagnostics** dashboard in Device Settings.
+- [ ] Implement Bar Chart visualization for logarithmic histogram.
+- [ ] Implement **Threshold Overlay** (white line) on top of histogram.
+- [ ] Implement **Safe Zone Overlay** (green shaded area for `Mean +/- 3*StdDev`).
+- [ ] Implement **Auto-Tune** button: calculates and writes new threshold based on profile.
+- [ ] Add "Learning Progress" indicator (Total Frames / Duration).
+
+**Relevant Files:**
+- `omi/firmware/omi/src/aad.c` - VAD logic and statistical engine.
+- `omi/firmware/omi/src/lib/core/transport.c` - BLE characteristic handlers.
+- `app/lib/pages/settings/device_settings.dart` - UI Dashboard and Auto-Tune logic.
+- `app/lib/services/devices/omi_connection.dart` - BLE communication.

@@ -9,10 +9,12 @@ LOG_MODULE_REGISTER(app_settings, CONFIG_LOG_DEFAULT_LEVEL);
 // Default values if not found in flash
 #define DEFAULT_DIM_LIGHT_RATIO 50
 #define DEFAULT_MIC_GAIN 6
+#define DEFAULT_VAD_THRESHOLD 250
 
 // In-memory cache for the settings
 static uint8_t dim_light_ratio = DEFAULT_DIM_LIGHT_RATIO;
 static uint8_t mic_gain = DEFAULT_MIC_GAIN;
+static uint16_t vad_threshold = DEFAULT_VAD_THRESHOLD;
 static struct rtc_time rtc_timestamp = {0};
 static uint64_t rtc_epoch = 0;
 static char last_fw_version[32] = {0};
@@ -69,6 +71,18 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         rc = read_cb(cb_arg, &mic_gain, sizeof(mic_gain));
         if (rc >= 0) {
             LOG_INF("Loaded mic_gain: %u", mic_gain);
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "vad_threshold", &next) && !next) {
+        if (len != sizeof(vad_threshold)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &vad_threshold, sizeof(vad_threshold));
+        if (rc >= 0) {
+            LOG_INF("Loaded vad_threshold: %u", vad_threshold);
             return 0;
         }
         return rc;
@@ -249,8 +263,8 @@ int app_settings_init(void)
         LOG_ERR("Failed to load app settings (err %d)", err);
     }
 
-    LOG_INF("Settings initialized. dim_ratio=%u mic_gain=%u rtc_epoch=%llu lsm6_base_epoch=%llu lsm6_base_ts=0x%08x",
-		dim_light_ratio, mic_gain, rtc_epoch, lsm6dsl_time_base.epoch_s, lsm6dsl_time_base.ts);
+    LOG_INF("Settings initialized. dim_ratio=%u mic_gain=%u vad_threshold=%u rtc_epoch=%llu lsm6_base_epoch=%llu lsm6_base_ts=0x%08x",
+		dim_light_ratio, mic_gain, vad_threshold, rtc_epoch, lsm6dsl_time_base.epoch_s, lsm6dsl_time_base.ts);
     return (err == -ENOENT) ? 0 : err;
 }
 
@@ -286,6 +300,23 @@ int app_settings_save_mic_gain(uint8_t new_gain)
 uint8_t app_settings_get_mic_gain(void)
 {
     return mic_gain;
+}
+
+int app_settings_save_vad_threshold(uint16_t new_threshold)
+{
+    vad_threshold = new_threshold;
+    int err = settings_save_one("omi/vad_threshold", &vad_threshold, sizeof(vad_threshold));
+    if (err) {
+        LOG_ERR("Failed to save vad_threshold (err %d)", err);
+    } else {
+        LOG_INF("Saved vad_threshold: %u", vad_threshold);
+    }
+    return err;
+}
+
+uint16_t app_settings_get_vad_threshold(void)
+{
+    return vad_threshold;
 }
 
 int app_settings_get_fw_version(char *buf, size_t len)

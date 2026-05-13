@@ -1222,12 +1222,7 @@ class RecordingsManager {
           if (currentIndex == -1 || currentIndex == allAudioFiles.length - 1) {
             // No next file in this folder.
             if (finalizeAll) {
-              // Don't force-finalize if the marker's 50-second protection window is still active.
-              // This ensures that subsequent syncs can still stitch more audio to this draft.
-              if (await _isDraftInMarkerWindow(draftFile, entities)) {
-                Logger.debug('RecordingsManager: Holding off finalization of ${draftFile.path} — marker window active.');
-                continue;
-              }
+              // Manual user trigger (Force Process) always finalizes immediately.
               await _finalizeDraft(draftFile, isForceSynced: true);
               scanNeeded = true;
               break;

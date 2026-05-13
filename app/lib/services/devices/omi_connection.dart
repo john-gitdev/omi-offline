@@ -42,6 +42,7 @@ class OmiDeviceConnection extends DeviceConnection {
   static const String settingsServiceUuid = '19b10010-e8f2-537e-4f6c-d104768a1214';
   static const String settingsDimRatioCharacteristicUuid = '19b10011-e8f2-537e-4f6c-d104768a1214';
   static const String settingsMicGainCharacteristicUuid = '19b10012-e8f2-537e-4f6c-d104768a1214';
+  static const String settingsVadThresholdCharacteristicUuid = '19b10013-e8f2-537e-4f6c-d104768a1214';
 
   // 8-byte diagnostics: [uint32 reset_cause LE] [uint32 uptime_seconds LE]
   static const String diagnosticsServiceUuid = '19b10060-e8f2-537e-4f6c-d104768a1214';
@@ -381,6 +382,26 @@ class OmiDeviceConnection extends DeviceConnection {
     try {
       final data = await transport.readCharacteristic(settingsServiceUuid, settingsMicGainCharacteristicUuid);
       if (data.isNotEmpty) return data[0];
+    } catch (_) {}
+    return null;
+  }
+
+  @override
+  Future<void> performSetVadThreshold(int threshold) async {
+    try {
+      // 16-bit threshold LE
+      final data = [threshold & 0xFF, (threshold >> 8) & 0xFF];
+      await transport.writeCharacteristic(settingsServiceUuid, settingsVadThresholdCharacteristicUuid, data);
+    } catch (_) {}
+  }
+
+  @override
+  Future<int?> performGetVadThreshold() async {
+    try {
+      final data = await transport.readCharacteristic(settingsServiceUuid, settingsVadThresholdCharacteristicUuid);
+      if (data.length >= 2) {
+        return data[0] + (data[1] << 8);
+      }
     } catch (_) {}
     return null;
   }

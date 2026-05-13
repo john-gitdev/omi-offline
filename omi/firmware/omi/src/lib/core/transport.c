@@ -89,6 +89,17 @@ static ssize_t settings_mic_gain_read_handler(struct bt_conn *conn,
                                               void *buf,
                                               uint16_t len,
                                               uint16_t offset);
+static ssize_t settings_vad_threshold_write_handler(struct bt_conn *conn,
+                                                    const struct bt_gatt_attr *attr,
+                                                    const void *buf,
+                                                    uint16_t len,
+                                                    uint16_t offset,
+                                                    uint8_t flags);
+static ssize_t settings_vad_threshold_read_handler(struct bt_conn *conn,
+                                                   const struct bt_gatt_attr *attr,
+                                                   void *buf,
+                                                   uint16_t len,
+                                                   uint16_t offset);
 static ssize_t
 features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf, uint16_t len, uint16_t offset);
 
@@ -108,6 +119,8 @@ static struct bt_uuid_128 settings_dim_ratio_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10011, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 settings_mic_gain_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10012, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+static struct bt_uuid_128 settings_vad_threshold_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10013, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 
 static struct bt_gatt_attr settings_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&settings_service_uuid),
@@ -122,6 +135,12 @@ static struct bt_gatt_attr settings_service_attr[] = {
                            BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
                            settings_mic_gain_read_handler,
                            settings_mic_gain_write_handler,
+                           NULL),
+    BT_GATT_CHARACTERISTIC(&settings_vad_threshold_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                           settings_vad_threshold_read_handler,
+                           settings_vad_threshold_write_handler,
                            NULL),
 };
 
@@ -453,6 +472,44 @@ static ssize_t settings_mic_gain_read_handler(struct bt_conn *conn,
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &current_gain, sizeof(current_gain));
 }
 
+static ssize_t settings_vad_threshold_write_handler(struct bt_conn *conn,
+                                                    const struct bt_gatt_attr *attr,
+                                                    const void *buf,
+                                                    uint16_t len,
+                                                    uint16_t offset,
+                                                    uint8_t flags)
+{
+    if (len != 2) {
+        LOG_WRN("Invalid length for VAD threshold write: %u", len);
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    uint16_t new_threshold;
+    memcpy(&new_threshold, buf, 2);
+
+    LOG_INF("Received new VAD threshold: %u", new_threshold);
+    int err = app_settings_save_vad_threshold(new_threshold);
+    if (err) {
+        LOG_ERR("Failed to save VAD threshold setting: %d", err);
+    }
+
+    // Apply the threshold immediately
+    aad_set_threshold(new_threshold);
+
+    return len;
+}
+
+static ssize_t settings_vad_threshold_read_handler(struct bt_conn *conn,
+                                                   const struct bt_gatt_attr *attr,
+                                                   void *buf,
+                                                   uint16_t len,
+                                                   uint16_t offset)
+{
+    uint16_t current_threshold = app_settings_get_vad_threshold();
+    LOG_INF("Reading VAD threshold: %u", current_threshold);
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &current_threshold, sizeof(current_threshold));
+}
+
 static ssize_t
 features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf, uint16_t len, uint16_t offset)
 {
@@ -483,6 +540,8 @@ features_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr, voi
     features |= OMI_FEATURE_LED_DIMMING;
     // Mic gain control is always enabled.
     features |= OMI_FEATURE_MIC_GAIN;
+    // VAD threshold control is always enabled.
+    features |= OMI_FEATURE_VAD_THRESHOLD;
 
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &features, sizeof(features));
 }

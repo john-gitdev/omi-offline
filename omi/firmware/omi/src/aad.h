@@ -50,4 +50,11 @@ bool aad_is_sleeping(void);
  */
 void aad_force_wake(void);
 
+/**
+ * @brief Set the acoustic VAD threshold.
+ *
+ * @param threshold New threshold value (0-65535).
+ */
+void aad_set_threshold(uint16_t threshold);
+
 #endif /* AAD_H */

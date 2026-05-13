@@ -243,7 +243,12 @@ class VadAudioProcessor {
   Future<List<String>> processSegmentFile(File segmentFile, DateTime segmentStartTime,
       {int startUptimeMs = 0, bool isDerivedTimestamp = false, int? sessionId}) async {
     final savedFiles = <String>[];
-    _isDerivedTimestamp = isDerivedTimestamp;
+
+    // Only set _isDerivedTimestamp from the caller if it hasn't already been anchored
+    // by a marker recalibration in this conversation.
+    if (_recordingStartTime == null || _isDerivedTimestamp) {
+      _isDerivedTimestamp = isDerivedTimestamp;
+    }
 
     // VAD-resume anchor: set when a 0xFFFFFFFD packet is encountered.
     // Recalibrates frame timestamps after a firmware-side silence gap.
@@ -427,9 +432,9 @@ class VadAudioProcessor {
                 _currentFrameUptimeMs = markerUptimeMs;
                 _isDerivedTimestamp = false;
                 Logger.debug(
-                    'VadAudioProcessor: Marker at $markerFrameTime — recalibrated start to $correctedStart (offset ${_currentChunkDurationMs}ms).');
+                    'VadAudioProcessor: Marker at ${markerFrameTime.toLocal()} — recalibrated start to ${correctedStart.toLocal()} (offset ${_currentChunkDurationMs}ms).');
               } else {
-                Logger.debug('VadAudioProcessor: Marker at $markerFrameTime — protecting active recording.');
+                Logger.debug('VadAudioProcessor: Marker at ${markerFrameTime.toLocal()} — protecting active recording.');
               }
             }
           }

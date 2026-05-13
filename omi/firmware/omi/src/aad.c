@@ -25,6 +25,7 @@
 #include "lib/core/config.h"
 #include "lib/core/sd_card.h"
 #include "lib/core/transport.h"
+#include "lib/core/settings.h"
 #include "rtc.h"
 #include "imu.h"
 
@@ -50,6 +51,8 @@ static atomic_t wake_consumed = ATOMIC_INIT(0);
 static atomic_t sd_pause_pending = ATOMIC_INIT(0); /* 1=pause, 2=resume */
 static atomic_t adv_slow_req = ATOMIC_INIT(0);
 static atomic_t adv_fast_req = ATOMIC_INIT(0);
+
+static uint16_t vad_threshold = 250;
 
 
 /* ---- Force-wake (button press) ---- */
@@ -260,7 +263,7 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
 
     uint32_t avg = avg_abs_amplitude(buffer, sample_count);
     int64_t now = k_uptime_get();
-    bool has_voice = avg >= CONFIG_OMI_VAD_ABS_THRESHOLD
+    bool has_voice = avg >= vad_threshold
                   || now < force_wake_until_ms;
 
     if (has_voice) {
@@ -315,7 +318,7 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
         LOG_INF("VAD: %s (avg=%u thr=%u deb=%u hold=%d)",
                 vad_is_recording ? "REC" : "SLEEP",
                 avg,
-                CONFIG_OMI_VAD_ABS_THRESHOLD,
+                vad_threshold,
                 CONFIG_OMI_VAD_DEBOUNCE_FRAMES,
                 CONFIG_OMI_VAD_HOLD_MS);
         vad_next_status_ms = now + VAD_STATUS_LOG_INTERVAL_MS;
@@ -389,6 +392,8 @@ int aad_start(void)
         return ret;
     }
 
+    vad_threshold = app_settings_get_vad_threshold();
+
     aad_tid = k_thread_create(&aad_thread_data,
                               aad_stack,
                               K_THREAD_STACK_SIZEOF(aad_stack),
@@ -403,10 +408,16 @@ int aad_start(void)
 
     LOG_INF("AAD: started (WAKE=P1.%d, thr=%d deb=%d hold=%d)",
             pin_wake.pin,
-            CONFIG_OMI_VAD_ABS_THRESHOLD,
+            vad_threshold,
             CONFIG_OMI_VAD_DEBOUNCE_FRAMES,
             CONFIG_OMI_VAD_HOLD_MS);
     return 0;
+}
+
+void aad_set_threshold(uint16_t threshold)
+{
+    vad_threshold = threshold;
+    LOG_INF("AAD: threshold updated to %u", vad_threshold);
 }
 
 bool aad_is_sleeping(void)
