@@ -539,6 +539,11 @@ class VadAudioProcessor {
           }
         }
 
+        // Align with firmware: force speech status if within marker protection window
+        if (_markerProtectedUntilMs != null && lastFrameWallTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!) {
+          isSpeech = true;
+        }
+
         final frameRef = FrameRef(segmentFile: segmentFile, byteOffset: offset, frameLength: frameLength);
         if (isSpeech) {
           _speechFrameCount++;
