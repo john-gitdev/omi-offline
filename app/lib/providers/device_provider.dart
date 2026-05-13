@@ -655,7 +655,6 @@ class DeviceProvider extends ChangeNotifier
     await setConnectedDevice(null);
     setIsConnected(false);
     updateConnectingStatus(false);
-    if (_manualRecording) _manualRecording = false;
 
     final walSync = ServiceManager.instance().wal.getSyncs();
     walSync.cancelSync();
@@ -768,9 +767,9 @@ class DeviceProvider extends ChangeNotifier
     await initiateBleButtonListener();
 
     final prefs = SharedPreferencesUtil();
-    if (prefs.manualMode) {
-      await _setDeviceVadThreshold(32768);
-    } else if (prefs.manualModeDeviceArmed) {
+    if (!prefs.manualMode && prefs.manualModeDeviceArmed) {
+      // User disabled manual mode while the device was offline. The device still
+      // has threshold=32768 in its flash, so restore the default now.
       await _setDeviceVadThreshold(250);
       prefs.manualModeDeviceArmed = false;
     }
