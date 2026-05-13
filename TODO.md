@@ -118,3 +118,10 @@ Implement a hybrid statistical/distribution profiling system to allow the device
 - `omi/firmware/omi/src/lib/core/transport.c` - BLE characteristic handlers.
 - `app/lib/pages/settings/device_settings.dart` - UI Dashboard and Auto-Tune logic.
 - `app/lib/services/devices/omi_connection.dart` - BLE communication.
+
+## Auto-Tune Mic Gain
+- [ ] Incorporate automatic tuning of Mic Gain based on hardware amplitude detection.
+  - **Concept:** Use the peak amplitude tracking from the Noise Profiler to dynamically adjust the hardware microphone gain.
+  - **Anti-Clipping:** If the peak amplitude consistently hits the ceiling (e.g., > 30,000), automatically step down the `mic_gain` to prevent distorted, blown-out audio.
+  - **Auto-Boost:** If the peak amplitude of recorded speech is consistently very low, incrementally step up the `mic_gain` to improve signal-to-noise ratio.
+  - **Implementation Idea:** The firmware could run a slow PID loop or hysteresis check on the `peak` value over a multi-minute window, adjusting the gain setting directly and notifying the app of the change.
