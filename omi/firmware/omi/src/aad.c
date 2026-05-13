@@ -244,12 +244,18 @@ static void aad_thread_fn(void *p1, void *p2, void *p3)
 
 bool aad_process_audio(int16_t *buffer, size_t sample_count)
 {
-    /* WAKE pin event -> reset VAD debounce */
+    /* WAKE pin event -> reset VAD debounce.
+     * Force-wake (button press) sets force_wake_until_ms; hardware acoustic
+     * WAKE does not.  Don't stop an active recording on a button press — only
+     * the hardware T5838 WAKE (silence → acoustic activity) needs a full reset. */
     if (atomic_cas(&wake_consumed, 1, 0)) {
+        int64_t now_wake = k_uptime_get();
         vad_voice_streak = 0;
-        vad_last_voice_ms = k_uptime_get();
-        vad_is_recording = false;
-        LOG_INF("AAD: WAKE, VAD reset");
+        vad_last_voice_ms = now_wake;
+        if (now_wake >= force_wake_until_ms) {
+            vad_is_recording = false;
+        }
+        LOG_INF("AAD: WAKE, VAD reset (force=%s)", now_wake < force_wake_until_ms ? "y" : "n");
     }
 
     uint32_t avg = avg_abs_amplitude(buffer, sample_count);
