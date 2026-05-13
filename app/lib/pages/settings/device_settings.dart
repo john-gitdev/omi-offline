@@ -694,23 +694,26 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         _buildFineTuneButton('-', () {
-                          setSheetState(() {
+                          setState(() {
                             _vadThreshold = (_vadThreshold - 50).clamp(0.0, 32768.0);
                           });
+                          setSheetState(() {});
                           _updateVadThreshold(_vadThreshold);
                         }),
                         const SizedBox(width: 12),
                         _buildFineTuneButton('Default', () {
-                          setSheetState(() {
+                          setState(() {
                             _vadThreshold = 250.0;
                           });
+                          setSheetState(() {});
                           _updateVadThreshold(250.0);
                         }, isText: true),
                         const SizedBox(width: 12),
                         _buildFineTuneButton('+', () {
-                          setSheetState(() {
+                          setState(() {
                             _vadThreshold = (_vadThreshold + 50).clamp(0.0, 32768.0);
                           });
+                          setSheetState(() {});
                           _updateVadThreshold(_vadThreshold);
                         }),
                       ],
