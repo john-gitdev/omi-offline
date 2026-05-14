@@ -151,15 +151,29 @@ void set_led_state()
     // Base Color Determination (Priority: Mute > Low Bat > Connect > Active)
     bool r = false, g = false, b = false;
 
-    if (is_muted) {
+    #ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    uint16_t thr = aad_get_threshold();
+    bool in_manual = (thr == 32769 || thr == 65535);
+    #else
+    bool in_manual = false;
+    uint16_t thr = 0;
+    #endif
+
+    if (in_manual) {
+        if (thr == 65535) {
+            r = true; g = true; // Yellow — manual recording active
+        }
+        // standby: all off
+    } else if (is_muted) {
         r = true; // Solid Red
     } else if (battery_ready && battery_percentage < 10) {
         r = true; b = true; // Purple
     } else if (is_connected) {
         b = true; // Solid Blue
-    } else {
-        r = true; g = true; // Solid Yellow
+    } else if (aad_is_recording()) {
+        r = true; g = true; // Yellow — auto recording active
     }
+    // auto idle disconnected: all off
 
     // Final state based on charging
     if (is_charging) {
