@@ -103,8 +103,6 @@ static void boot_warming_sequence(void)
     LOG_INF("[BOOT] SD ready after %lld ms — starting mic", k_uptime_get() - wait_start_ms);
 }
 
-static int64_t boot_finished_ms = 0;
-
 static void boot_ready_fade(void)
 {
     const int steps = 100; // 100 steps * 10 ms = 1000 ms fade
@@ -113,7 +111,7 @@ static void boot_ready_fade(void)
     /* SD + mic are ready — solid white for 1s, then fade down to off. */
     uint8_t start = app_settings_get_dim_ratio();
     LOG_INF("[BOOT] Solid white for 1s, then fading to off (from dim_ratio=%u)", start);
-    
+
     set_led_pwm(LED_RED, start);
     set_led_pwm(LED_GREEN, start);
     set_led_pwm(LED_BLUE, start);
@@ -128,8 +126,7 @@ static void boot_ready_fade(void)
         k_msleep(delay_ms);
     }
     led_off();
-    boot_finished_ms = k_uptime_get();
-    LOG_INF("[BOOT] Ready — total boot time %lld ms", boot_finished_ms);
+    LOG_INF("[BOOT] Ready — total boot time %lld ms", k_uptime_get());
 }
 
 void set_led_state()
@@ -178,7 +175,7 @@ void set_led_state()
         r = true; // Solid Red
     } else if (battery_ready && battery_percentage < 10) {
         r = true; b = true; // Purple
-    } else if (is_connected && (k_uptime_get() - boot_finished_ms > 1000)) {
+    } else if (is_connected) {
         b = true; // Solid Blue
     } else if (aad_is_recording()) {
         r = true; g = true; // Yellow — auto recording active
