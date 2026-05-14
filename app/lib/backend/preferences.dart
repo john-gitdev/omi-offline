@@ -52,6 +52,9 @@ class SharedPreferencesUtil {
   bool get manualMode => getBool('manualMode', defaultValue: false);
   set manualMode(bool v) => saveBool('manualMode', v);
 
+  int get autoVadThreshold => getInt('autoVadThreshold', defaultValue: 250);
+  set autoVadThreshold(int v) => saveInt('autoVadThreshold', v);
+
   // When true, Silero VAD classifies each audio frame as speech or silence.
   // When false, all audio is treated as speech (AAD mode — splits by firmware timestamps only).
   bool get vadEnabled => getBool('vadEnabled', defaultValue: true);
@@ -86,6 +89,38 @@ class SharedPreferencesUtil {
   // Maximum continuous conversation length (minutes) before forcing a cut.
   int get vadMaxConversationMinutes => getInt('vadMaxConversationMinutes', defaultValue: 60);
   set vadMaxConversationMinutes(int v) => saveInt('vadMaxConversationMinutes', v);
+
+  // Per-mode recording settings snapshots. Default to the active pref so existing
+  // users see their current settings the first time they open each mode.
+  bool get autoModeVadEnabled => getBool('auto_vadEnabled', defaultValue: true);
+  set autoModeVadEnabled(bool v) => saveBool('auto_vadEnabled', v);
+  double get autoModeVadSpeechThreshold => getDouble('auto_vadSpeechThreshold', defaultValue: 0.5);
+  set autoModeVadSpeechThreshold(double v) => saveDouble('auto_vadSpeechThreshold', v);
+  int get autoModeVadMinSpeechSeconds => getInt('auto_vadMinSpeechSeconds', defaultValue: 3);
+  set autoModeVadMinSpeechSeconds(int v) => saveInt('auto_vadMinSpeechSeconds', v);
+  int get autoModeVadSplitSeconds => getInt('auto_vadSplitSeconds', defaultValue: 120);
+  set autoModeVadSplitSeconds(int v) => saveInt('auto_vadSplitSeconds', v);
+  int get autoModeFilterMinDurationSeconds => getInt('auto_filterMinDurationSeconds', defaultValue: 600);
+  set autoModeFilterMinDurationSeconds(int v) => saveInt('auto_filterMinDurationSeconds', v);
+  bool get autoModeDiscardShortRecordings => getBool('auto_discardShortRecordings', defaultValue: false);
+  set autoModeDiscardShortRecordings(bool v) => saveBool('auto_discardShortRecordings', v);
+  int get autoModeVadMaxConversationMinutes => getInt('auto_vadMaxConversationMinutes', defaultValue: 0);
+  set autoModeVadMaxConversationMinutes(int v) => saveInt('auto_vadMaxConversationMinutes', v);
+
+  bool get manualModeVadEnabled => getBool('manual_vadEnabled', defaultValue: false);
+  set manualModeVadEnabled(bool v) => saveBool('manual_vadEnabled', v);
+  double get manualModeVadSpeechThreshold => getDouble('manual_vadSpeechThreshold', defaultValue: vadSpeechThreshold);
+  set manualModeVadSpeechThreshold(double v) => saveDouble('manual_vadSpeechThreshold', v);
+  int get manualModeVadMinSpeechSeconds => getInt('manual_vadMinSpeechSeconds', defaultValue: vadMinSpeechSeconds);
+  set manualModeVadMinSpeechSeconds(int v) => saveInt('manual_vadMinSpeechSeconds', v);
+  int get manualModeVadSplitSeconds => getInt('manual_vadSplitSeconds', defaultValue: 3);
+  set manualModeVadSplitSeconds(int v) => saveInt('manual_vadSplitSeconds', v);
+  int get manualModeFilterMinDurationSeconds => getInt('manual_filterMinDurationSeconds', defaultValue: 0);
+  set manualModeFilterMinDurationSeconds(int v) => saveInt('manual_filterMinDurationSeconds', v);
+  bool get manualModeDiscardShortRecordings => getBool('manual_discardShortRecordings', defaultValue: false);
+  set manualModeDiscardShortRecordings(bool v) => saveBool('manual_discardShortRecordings', v);
+  int get manualModeVadMaxConversationMinutes => getInt('manual_vadMaxConversationMinutes', defaultValue: 0);
+  set manualModeVadMaxConversationMinutes(int v) => saveInt('manual_vadMaxConversationMinutes', v);
 
   // The format to save processed audio files. Options: 'm4a', 'ogg', 'wav'.
   String get audioSaveFormat {
