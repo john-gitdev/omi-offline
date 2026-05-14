@@ -771,6 +771,20 @@ class DeviceProvider extends ChangeNotifier
     await updateChargingState();
     await initiateBleButtonListener();
 
+    if (SharedPreferencesUtil().manualMode) {
+      final conn = await ServiceManager.instance().device.ensureConnection(device.id);
+      final thr = await conn?.getVadThreshold();
+      if (thr == 65535) {
+        _manualRecording = true;
+      } else if (thr == 32769) {
+        _manualRecording = false;
+      } else {
+        // Device is at auto-mode default — hasn't been put into manual mode yet.
+        _manualRecording = false;
+        await _setDeviceVadThreshold(32769);
+      }
+    }
+
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
 
     await getDeviceInfo();
