@@ -60,4 +60,7 @@ void aad_set_threshold(uint16_t threshold);
 /** @brief Return the current VAD threshold. */
 uint16_t aad_get_threshold(void);
 
+/** @brief Return true if VAD is actively recording. */
+bool aad_is_recording(void);
+
 #endif /* AAD_H */
