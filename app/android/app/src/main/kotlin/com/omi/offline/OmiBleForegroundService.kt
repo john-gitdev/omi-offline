@@ -255,6 +255,9 @@ class OmiBleForegroundService : Service() {
         if (!isBluetoothEnabled) {
             managedDevices[addr] = ManagedDevice(address = addr, requiresBond = bond)
             updateNotification("Bluetooth is off")
+            bleManager.mainHandler.post {
+                bleManager.flutterApi?.onPeripheralDisconnected(addr, "bluetooth_off") {}
+            }
             return
         }
 
@@ -498,6 +501,9 @@ class OmiBleForegroundService : Service() {
                 BluetoothAdapter.STATE_TURNING_OFF -> {
                     Log.i(TAG, "Bluetooth turning off, cleaning up GATT")
                     isBluetoothEnabled = false
+                    bleManager.mainHandler.post {
+                        bleManager.flutterApi?.onBluetoothStateChanged("off") {}
+                    }
                     for ((addr, managed) in managedDevices) {
                         managed.pendingReconnect?.let { handler.removeCallbacks(it) }
                         managed.pendingReconnect = null
@@ -527,6 +533,9 @@ class OmiBleForegroundService : Service() {
                 BluetoothAdapter.STATE_ON -> {
                     Log.i(TAG, "Bluetooth on, reconnecting in 2s")
                     isBluetoothEnabled = true
+                    bleManager.mainHandler.post {
+                        bleManager.flutterApi?.onBluetoothStateChanged("on") {}
+                    }
                     updateNotification("Reconnecting...")
                     handler.postDelayed({
                         for ((addr, _) in managedDevices) {
@@ -543,6 +552,10 @@ class OmiBleForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+
+        val bluetoothAdapter = (application.getSystemService(Application.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+        isBluetoothEnabled = bluetoothAdapter?.isEnabled ?: false
+
         // Transition guard: old builds used START_STICKY, so Android may re-deliver
         // a pending intent after process death before MainActivity initializes OmiBleManager.
         if (!OmiBleManager.isInitialized) OmiBleManager.initialize(application)
@@ -552,7 +565,7 @@ class OmiBleForegroundService : Service() {
         // Android 14+ requires providing the service type.
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
             startForeground(
-                NOTIFICATION_ID, 
+                NOTIFICATION_ID,
                 buildNotification("Connecting to Omi..."),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             )
@@ -572,8 +585,13 @@ class OmiBleForegroundService : Service() {
         )
         bleManager.connectionListener = connectionListener
         Log.d(TAG, "Service created and promoted to foreground")
-    }
 
+        if (!isBluetoothEnabled) {
+            bleManager.mainHandler.post {
+                bleManager.flutterApi?.onBluetoothStateChanged("off") {}
+            }
+        }
+    }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val address = intent?.getStringExtra("device_address")
 

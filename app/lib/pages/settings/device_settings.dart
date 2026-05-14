@@ -902,7 +902,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
     );
   }
 
-  Widget _buildDisconnectedOverlay() {
+  Widget _buildDisconnectedOverlay(bool isBluetoothEnabled) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(32),
@@ -914,16 +914,20 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             width: 64,
             height: 64,
             decoration: BoxDecoration(color: const Color(0xFF2A2A2E), borderRadius: BorderRadius.circular(16)),
-            child: Center(child: FaIcon(FontAwesomeIcons.linkSlash, color: Colors.grey.shade500, size: 24)),
+            child: Center(
+                child: FaIcon(!isBluetoothEnabled ? FontAwesomeIcons.bluetooth : FontAwesomeIcons.linkSlash,
+                    color: Colors.grey.shade500, size: 24)),
           ),
           const SizedBox(height: 20),
           Text(
-            'Device Not Connected',
+            !isBluetoothEnabled ? 'Bluetooth is Off' : 'Device Not Connected',
             style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           Text(
-            'Connect your Omi device to access\ndevice settings and customization',
+            !isBluetoothEnabled
+                ? 'Please turn on Bluetooth to connect\nyour Omi device'
+                : 'Connect your Omi device to access\ndevice settings and customization',
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.grey.shade500, fontSize: 14, height: 1.4),
           ),
@@ -1007,7 +1011,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               children: [
                 _buildDeviceHeader(provider.pairedDevice, provider.isConnected),
                 if (!provider.isConnected) ...[
-                  _buildDisconnectedOverlay(),
+                  _buildDisconnectedOverlay(provider.isBluetoothEnabled),
                   const SizedBox(height: 32),
                 ],
                 if (provider.isConnected) ...[

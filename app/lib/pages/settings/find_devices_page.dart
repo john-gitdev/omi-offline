@@ -84,8 +84,6 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
   }
 
   Future<void> _connectToDevice(BtDevice device) async {
-    final deviceProvider = context.read<DeviceProvider>();
-
     // Show connecting indicator
     showDialog(
       context: context,
@@ -122,6 +120,8 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isBluetoothEnabled = context.watch<DeviceProvider>().isBluetoothEnabled;
+
     return Scaffold(
       backgroundColor: const Color(0xFF0D0D0D),
       appBar: AppBar(
@@ -139,7 +139,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                 ),
               ),
             )
-          else
+          else if (isBluetoothEnabled)
             IconButton(
               icon: const Icon(Icons.refresh, color: Colors.white),
               onPressed: _startScan,
@@ -147,7 +147,26 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
             ),
         ],
       ),
-      body: _discoveredDevices.isEmpty && !_isScanning
+      body: !isBluetoothEnabled
+          ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  FaIcon(FontAwesomeIcons.bluetooth, size: 60, color: Colors.grey.shade700),
+                  const SizedBox(height: 24),
+                  const Text(
+                    'Bluetooth is Off',
+                    style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Please enable Bluetooth to scan for devices',
+                    style: TextStyle(color: Colors.grey, fontSize: 16),
+                  ),
+                ],
+              ),
+            )
+          : _discoveredDevices.isEmpty && !_isScanning
           ? Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,

@@ -529,9 +529,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
                               child: IconButton(
                                 padding: EdgeInsets.zero,
                                 constraints: const BoxConstraints(),
-                                icon: const FaIcon(
+                                icon: FaIcon(
                                   FontAwesomeIcons.bluetooth,
-                                  color: Colors.grey,
+                                  color: deviceProvider.isBluetoothEnabled ? Colors.grey : Colors.red,
                                   size: 20,
                                 ),
                                 tooltip: 'Find devices',

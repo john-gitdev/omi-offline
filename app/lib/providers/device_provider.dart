@@ -24,6 +24,7 @@ class DeviceProvider extends ChangeNotifier
   bool _disposed = false;
   bool isConnecting = false;
   bool isConnected = false;
+  bool isBluetoothEnabled = true;
   bool _isAppInForeground = true;
   bool isDeviceStorageSupport = false;
 
@@ -108,10 +109,14 @@ class DeviceProvider extends ChangeNotifier
     BleBridge.instance.bluetoothStateChangedCallback = (state) {
       Logger.debug('Bluetooth state changed: $state');
       if (state == 'on') {
+        isBluetoothEnabled = true;
+        notifyListeners();
         if (!isConnected && SharedPreferencesUtil().btDevice.id.isNotEmpty && !isConnecting) {
           scanAndConnectToDevice();
         }
       } else if (state == 'off') {
+        isBluetoothEnabled = false;
+        notifyListeners();
         if (isConnected || isConnecting) {
           onDeviceDisconnected();
         }
@@ -330,6 +335,7 @@ class DeviceProvider extends ChangeNotifier
   Future periodicConnect(String printer, {bool boundDeviceOnly = false}) async {
     _reconnectionTimer?.cancel();
     scan(t) async {
+      if (!isBluetoothEnabled) return;
       final reconnectAt = _reconnectAt;
       if (reconnectAt != null && reconnectAt.isAfter(DateTime.now())) return;
       if (boundDeviceOnly && SharedPreferencesUtil().btDevice.id.isEmpty) {
@@ -349,6 +355,7 @@ class DeviceProvider extends ChangeNotifier
   }
 
   Future<BtDevice?> _scanConnectDevice() async {
+    if (!isBluetoothEnabled) return null;
     var device = await _getConnectedDevice();
     if (device != null) return device;
     final pairedDeviceId = SharedPreferencesUtil().btDevice.id;
@@ -366,6 +373,7 @@ class DeviceProvider extends ChangeNotifier
   }
 
   Future scanAndConnectToDevice() async {
+    if (!isBluetoothEnabled) return;
     if (isFirmwareUpdateInProgress) return;
     updateConnectingStatus(true);
     try {
