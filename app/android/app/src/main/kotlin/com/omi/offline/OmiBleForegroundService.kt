@@ -5,6 +5,7 @@ import android.app.*
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothManager
 import android.content.*
 import android.os.Handler
 import android.os.IBinder
