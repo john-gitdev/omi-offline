@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart' as archive;
 import 'package:flutter/widgets.dart';
 
 import 'package:flutter_archive/flutter_archive.dart';
@@ -250,6 +251,20 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
         });
       },
     );
+  }
+
+  Future<String?> extractVersionFromZipPath(String zipPath) async {
+    try {
+      final bytes = await File(zipPath).readAsBytes();
+      final zip = archive.ZipDecoder().decodeBytes(bytes);
+      for (final file in zip.files) {
+        if (!file.isFile || file.name != 'version.txt') continue;
+        return utf8.decode(file.content).trim();
+      }
+    } catch (e) {
+      Logger.debug('Failed to read version.txt from zip: $e');
+    }
+    return null;
   }
 
   Future getLatestVersion({
