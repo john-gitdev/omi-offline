@@ -330,7 +330,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
                 const Divider(height: 1, color: Color(0xFF3C3C43)),
                 _buildVersionItem(
                   icon: FontAwesomeIcons.cloudArrowDown,
-                  label: 'Latest version',
+                  label: 'Update to',
                   version: '${latestFirmwareDetails['version']}',
                   chipColor: const Color(0xFF1A3D2E),
                 ),
