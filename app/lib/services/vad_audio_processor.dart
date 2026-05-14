@@ -49,7 +49,7 @@ class ProcessingSettings {
       minDurationMs: p.filterMinDurationSeconds * 1000,
       minSpeechMs: p.vadMinSpeechSeconds * 1000,
       discardShort: p.discardShortRecordings,
-      maxChunkMs: p.vadMaxConversationMinutes * 60 * 1000,
+      maxChunkMs: p.vadMaxConversationMinutes == 0 ? 0x7FFFFFFFFFFFFFFF : p.vadMaxConversationMinutes * 60 * 1000,
       deviceId: p.btDevice.id,
       audioSaveFormat: p.audioSaveFormat,
       omiEnabled: p.omiEnabled,
