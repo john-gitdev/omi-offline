@@ -49,13 +49,18 @@ class NativeBleTransport extends DeviceTransport {
   Future<void> connect({bool requiresBond = false}) async {
     if (_state == DeviceTransportState.connected) return;
     if (_state == DeviceTransportState.connecting && _deviceReadyCompleter != null) {
-      await _deviceReadyCompleter!.future;
+      try {
+        await _deviceReadyCompleter!.future;
+      } catch (_) {}
       return;
     }
 
     _updateState(DeviceTransportState.connecting);
 
     _deviceReadyCompleter = Completer<List<BleService>>();
+    // Add a catchError to the future to prevent unhandled exceptions if the completer
+    // is failed before someone is actively awaiting it (or if multiple people await it).
+    _deviceReadyCompleter!.future.catchError((_) => <BleService>[]);
 
     try {
       await _hostApi.manageDevice(_peripheralUuid, requiresBond);
@@ -63,8 +68,13 @@ class NativeBleTransport extends DeviceTransport {
       Logger.debug('[NativeBleTransport] manageDevice failed: $e');
       final completer = _deviceReadyCompleter;
       _deviceReadyCompleter = null;
-      completer?.completeError(e);
+      if (completer != null && !completer.isCompleted) {
+        completer.completeError(e);
+      }
       _updateState(DeviceTransportState.disconnected);
+      if (e.toString().contains('bluetooth_off')) {
+        rethrow;
+      }
       await Future.delayed(const Duration(seconds: 2));
       rethrow;
     }
@@ -84,6 +94,9 @@ class NativeBleTransport extends DeviceTransport {
         completer.completeError(e);
       }
       _updateState(DeviceTransportState.disconnected);
+      if (e.toString().contains('bluetooth_off')) {
+        rethrow;
+      }
       await Future.delayed(const Duration(seconds: 2));
       rethrow;
     }
