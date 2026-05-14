@@ -138,22 +138,25 @@ void check_button_level(struct k_work *work_item)
                 // Timeout — it was a double tap.
                 if (!is_muted) {
                     #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                    /* 65535 (UINT16_MAX) is the manual-recording sentinel —
-                     * the app writes it on start, 32768 on stop.  Any other
-                     * threshold means automatic mode; treat as a normal marker. */
-                    bool manual_stop = (aad_get_threshold() == 65535);
+                    uint16_t thr = aad_get_threshold();
+                    bool in_manual = (thr == 32769 || thr == 65535);
                     #else
-                    bool manual_stop = false;
+                    bool in_manual = false;
+                    uint16_t thr = 0;
                     #endif
-                    if (manual_stop) {
-                        /* Threshold==0 means the app put us in manual recording
-                         * mode — this tap is a stop, not a marker. Skip the
-                         * marker write and cancel the 50s force-wake hold so
-                         * recording ends promptly. */
-                        LOG_INF("Double tap — manual stop");
-                        #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                        aad_cancel_force_wake();
-                        #endif
+                    if (in_manual) {
+                        marker_flash_count = 2;
+                        if (thr == 32769) {
+                            LOG_INF("Double tap — manual mode, start recording");
+                            #ifdef CONFIG_OMI_ENABLE_T5838_AAD
+                            aad_set_threshold(65535);
+                            #endif
+                        } else {
+                            LOG_INF("Double tap — manual mode, stop recording");
+                            #ifdef CONFIG_OMI_ENABLE_T5838_AAD
+                            aad_set_threshold(32769);
+                            #endif
+                        }
                     } else {
                         LOG_INF("Double tap (Marker) detected");
                         marker_flash_count = 2;
