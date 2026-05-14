@@ -552,50 +552,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         ),
                       ),
                     ),
-              title: GestureDetector(
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => OfflineAudioSettingsPage(
-                      flashManualMode: true,
-                      onCountShortRecordings: _controller.countShortRecordings,
-                      onDeleteShortRecordings: _controller.deleteShortRecordings,
-                    ),
-                  ),
-                ),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: _prefs.manualMode
-                        ? Colors.deepPurpleAccent.withOpacity(0.15)
-                        : const Color(0xFF2A2A2E),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: _prefs.manualMode
-                          ? Colors.deepPurpleAccent.withOpacity(0.6)
-                          : Colors.grey.shade700,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      FaIcon(
-                        _prefs.manualMode ? FontAwesomeIcons.hand : FontAwesomeIcons.wandMagicSparkles,
-                        size: 11,
-                        color: _prefs.manualMode ? Colors.deepPurpleAccent : Colors.grey.shade400,
-                      ),
-                      const SizedBox(width: 5),
-                      Text(
-                        _prefs.manualMode ? 'Manual' : 'Automatic',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: _prefs.manualMode ? Colors.deepPurpleAccent : Colors.grey.shade400,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
               actions: [
                 if (controller.markerConversations.isNotEmpty)
                   IconButton(
@@ -638,15 +594,65 @@ class _RecordingsPageState extends State<RecordingsPage> {
             body: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(24, 8, 24, 16),
-                  child: Text(
-                    'Conversations',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                    ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 8, 16, 16),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      const Text(
+                        'Conversations',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const Spacer(),
+                      GestureDetector(
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => OfflineAudioSettingsPage(
+                              flashManualMode: true,
+                              onCountShortRecordings: _controller.countShortRecordings,
+                              onDeleteShortRecordings: _controller.deleteShortRecordings,
+                            ),
+                          ),
+                        ),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: _prefs.manualMode
+                                ? Colors.deepPurpleAccent.withOpacity(0.15)
+                                : const Color(0xFF2A2A2E),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: _prefs.manualMode
+                                  ? Colors.deepPurpleAccent.withOpacity(0.6)
+                                  : Colors.grey.shade700,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              FaIcon(
+                                _prefs.manualMode ? FontAwesomeIcons.hand : FontAwesomeIcons.wandMagicSparkles,
+                                size: 11,
+                                color: _prefs.manualMode ? Colors.deepPurpleAccent : Colors.grey.shade400,
+                              ),
+                              const SizedBox(width: 5),
+                              Text(
+                                _prefs.manualMode ? 'Manual' : 'Automatic',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: _prefs.manualMode ? Colors.deepPurpleAccent : Colors.grey.shade400,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 if (!_showMarkersOnly && _prefs.filterMinDurationSeconds > 0 && !_prefs.discardShortRecordings)

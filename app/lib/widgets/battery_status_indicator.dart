@@ -105,7 +105,7 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
                   widget.batteryLevel >= 0 ? '${widget.batteryLevel}%' : '--',
                   style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 15,
+                    fontSize: 13,
                     fontWeight: FontWeight.w600,
                     height: 1.1, // Tighten line height to prevent vertical overflow
                   ),
