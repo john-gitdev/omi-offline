@@ -289,6 +289,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             chipValue: device?.firmwareRevision ?? 'oo-1.0.9',
             showChevron: true,
             onTap: () async {
+              provider.setOnFirmwareUpdatePage(true);
               FilePickerResult? result = await FilePicker.platform.pickFiles(
                 type: FileType.custom,
                 allowedExtensions: ['zip'],
@@ -302,6 +303,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                     ),
                   ));
                 }
+              } else {
+                provider.setOnFirmwareUpdatePage(false);
               }
             },
           ),
