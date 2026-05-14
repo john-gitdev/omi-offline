@@ -114,28 +114,34 @@ If the workspace already exists and is properly configured, you can skip to step
 
 ## Building the Firmware
 
-### 1. Prepare Configuration Files
+### 1. Build Command
 
-The project uses `omi.conf` but Zephyr expects `prj.conf`:
+Two equivalent options — both produce the same output:
+
+**Option A: CMake preset (recommended, run from `omi/firmware/omi/`)**
 
 ```bash
-cd ../omi
-cp omi.conf prj.conf
+nrfutil toolchain-manager launch --ncs-version v2.9.0 --shell
+
+# In the SDK environment:
+cmake --preset OMI
+cmake --build build/omi
 ```
 
-### 2. Build Command
+The `CMakePresets.json` in `omi/firmware/omi/` already sets the board (`omi/nrf5340/cpuapp`), conf file (`omi.conf`), and build directory (`build/omi`). No extra flags needed.
 
-From the West workspace directory (`v2.9.0`):
+**Option B: west build (run from `omi/firmware/v2.9.0/`)**
 
 ```bash
-# Launch nRF Connect SDK environment and build
 nrfutil toolchain-manager launch --ncs-version v2.9.0 --shell
 
 # In the SDK environment:
 west build -b omi/nrf5340/cpuapp ../omi --sysbuild -- -DBOARD_ROOT=/path/to/omi/firmware
 ```
 
-### 3. Build Process Overview
+> **Note:** Do not copy `omi.conf` to `prj.conf`. The build system is already configured to use `omi.conf` directly.
+
+### 2. Build Process Overview
 
 The build system will:
 1. **Configure MCUboot**: Set up the secure bootloader
@@ -143,9 +149,9 @@ The build system will:
 3. **Build Network Bootloader**: Compile the network core bootloader (`b0n`)
 4. **Build Application**: Compile the main OMI application
 5. **Sign Firmware**: Cryptographically sign all components
-6. **Generate OTA Package**: Create `dfu_application.zip`
+6. **Generate OTA Package**: Create `dfu_application.zip`, automatically stamped with `version.txt`
 
-### 4. Build Output
+### 3. Build Output
 
 Upon successful completion, you'll see:
 ```
@@ -176,8 +182,18 @@ The build generates several important files in the `build/` directory:
 
 ### 1. Prepare the OTA Package
 
-1. Locate `dfu_application.zip` in the `build/` directory
-2. Transfer this file to your mobile device (email, cloud storage, etc.)
+The build automatically stamps `version.txt` into `dfu_application.zip` via `sysbuild/CMakeLists.txt`. The Omi app reads this to display the version when you load a local zip.
+
+To produce a named release zip:
+
+```bash
+cd omi/firmware/omi
+./package_firmware.sh
+# Reads version from CONFIG_BT_DIS_FW_REV_STR in omi.conf
+# Output: build/omi/dfu_application_release.zip
+```
+
+Transfer `dfu_application_release.zip` (or `dfu_application.zip`) to your mobile device (email, cloud storage, etc.).
 
 ### 2. Install nRF Connect for Mobile
 
@@ -235,8 +251,8 @@ west build -b omi/nrf5340/cpuapp ../omi --sysbuild -- -DBOARD_ROOT=/full/path/to
 #### Configuration Issues
 ```bash
 # Error: No prj.conf file found
-cd ../omi
-cp omi.conf prj.conf
+# This should not happen — CMakePresets.json sets CONF_FILE=omi.conf.
+# If building outside the preset, pass -DCONF_FILE=/path/to/omi/firmware/omi/omi.conf
 ```
 
 #### Workspace Issues
@@ -290,10 +306,10 @@ Network Core (nRF5340 CPUNET):
 ```
 
 ### Security Features
-- **RSA-2048 Signing**: All firmware images are cryptographically signed
+- **RSA-2048 Signing**: All firmware images are cryptographically signed (`bootloader/mcuboot/root-rsa-2048.pem`)
 - **Secure Boot**: MCUboot verifies signatures before execution
 - **Rollback Protection**: Prevents downgrade to vulnerable versions
-- **Encrypted Communication**: MCUmgr uses encrypted BLE transport
+- **BLE SMP**: `CONFIG_BT_SMP=y` is enabled; bonding/encryption behaviour is controlled at the app layer
 
 ### Build Configuration Highlights
 ```
@@ -305,11 +321,11 @@ CONFIG_BOOTLOADER_MCUBOOT=y               # Use MCUboot
 ```
 
 ### Firmware Features
-- **Audio Codec**: OPUS 1.2.1 for efficient audio compression
-- **Bluetooth**: BLE 5.0 with extended advertising and 2M PHY
-- **Power Management**: Advanced power states and battery monitoring
-- **File System**: EXT2 support for SD card storage
-- **Sensors**: LSM6DSL accelerometer/gyroscope support
+- **Audio Codec**: OPUS for efficient audio compression (16 kHz mono, VBR, complexity 5, 20 ms frames)
+- **Bluetooth**: BLE 5.0 with 2M PHY, MTU 498, auto connection parameter negotiation
+- **Power Management**: Interrupt-driven button (no polling), 60 s battery ADC when connected, 5 min when disconnected, per-operation SPI power gating
+- **File System**: LittleFS on SD card — copy-on-write metadata, power-loss safe (EXT2 is not used)
+- **IMU driver**: LSM6DSL present in the build but `CONFIG_OMI_ENABLE_ACCELEROMETER=n` — not active
 
 ## Success Indicators
 
@@ -335,6 +351,7 @@ CONFIG_BOOTLOADER_MCUBOOT=y               # Use MCUboot
 
 ---
 
-**Last Updated**: August 2024  
+**Last Updated**: May 2026  
 **SDK Version**: nRF Connect SDK 2.9.0  
-**Target Hardware**: OMI nRF5340 Device
+**Target Hardware**: OMI nRF5340 Device  
+**Firmware Version**: oo-1.7.6

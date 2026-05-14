@@ -204,8 +204,10 @@ omi-offline/
 
 ## Development
 
+### App
+
 ```bash
-# App setup
+# Setup
 cd app && bash setup.sh ios     # or android
 
 # Run
@@ -219,7 +221,28 @@ dart format --line-length 120 <files>
 clang-format -i <files>         # firmware C/C++
 ```
 
-Firmware build and OTA flash instructions: [`omi/firmware/BUILD_AND_OTA_FLASH.md`](omi/firmware/BUILD_AND_OTA_FLASH.md)
+### Firmware
+
+Requires nRF Connect SDK 2.9.0 via `nrfutil toolchain-manager`. Full setup in [`omi/firmware/BUILD_AND_OTA_FLASH.md`](omi/firmware/BUILD_AND_OTA_FLASH.md).
+
+```bash
+# Launch the SDK environment
+nrfutil toolchain-manager launch --ncs-version v2.9.0 --shell
+
+# Build using the preset (from omi/firmware/omi/)
+cmake --preset OMI
+cmake --build build/omi
+
+# Or via west (from omi/firmware/v2.9.0/)
+west build -b omi/nrf5340/cpuapp ../omi --sysbuild -- -DBOARD_ROOT=/path/to/omi/firmware
+
+# Package for OTA: stamps version.txt into the zip so the app shows the version
+# (sysbuild does this automatically; use the script to re-stamp an existing zip)
+cd omi/firmware/omi && ./package_firmware.sh
+# Output: build/omi/dfu_application_release.zip
+```
+
+Flash via **nRF Connect for Mobile**: connect to the device, go to DFU tab, select `dfu_application_release.zip`.
 
 ---
 
