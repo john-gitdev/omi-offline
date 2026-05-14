@@ -235,41 +235,20 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                   color: const Color(0xFF1C1C1E),
                   borderRadius: BorderRadius.circular(16),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Time Format',
-                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                        ),
-                        DropdownButton<bool>(
-                          value: _use24HourTime,
-                          dropdownColor: const Color(0xFF2C2C2E),
-                          icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                          underline: const SizedBox(),
-                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
-                          items: const [
-                            DropdownMenuItem(value: false, child: Text('AM/PM')),
-                            DropdownMenuItem(value: true, child: Text('24-Hour')),
-                          ],
-                          onChanged: (value) {
-                            if (value != null) {
-                              setState(() => _use24HourTime = value);
-                              _markDirty();
-                            }
-                          },
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Display recording times in 24-hour format or 12-hour AM/PM.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    ),
-                  ],
+                child: SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('24-Hour Time',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  subtitle: Text(
+                    _use24HourTime ? 'Times shown in 24-hour format.' : 'Times shown in AM/PM format.',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                  ),
+                  value: _use24HourTime,
+                  onChanged: (value) {
+                    setState(() => _use24HourTime = value);
+                    _markDirty();
+                  },
+                  activeColor: Colors.deepPurpleAccent,
                 ),
               ),
               const SizedBox(height: 16),
