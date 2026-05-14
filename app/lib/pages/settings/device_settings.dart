@@ -31,7 +31,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   bool _isMicGainLoaded = false;
   bool? _hasMicGainFeature;
 
-  double _vadThreshold = 250.0;
+  late double _vadThreshold;
   bool _isVadThresholdLoaded = false;
   bool? _hasVadThresholdFeature;
 
@@ -41,6 +41,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
 
   @override
   void initState() {
+    _vadThreshold = SharedPreferencesUtil().autoVadThreshold.toDouble();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final provider = context.read<DeviceProvider>();
       await provider.getDeviceInfo();
@@ -162,6 +163,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   }
 
   void _updateVadThreshold(double value) async {
+    SharedPreferencesUtil().autoVadThreshold = value.toInt();
     final deviceProvider = context.read<DeviceProvider>();
     final pairedDevice = deviceProvider.pairedDevice;
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
