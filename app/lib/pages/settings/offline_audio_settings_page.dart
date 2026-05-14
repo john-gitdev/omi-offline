@@ -73,20 +73,45 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     }
 
     _manualMode = SharedPreferencesUtil().manualMode;
-    _vadEnabled = SharedPreferencesUtil().vadEnabled;
-
-    _vadSpeechThreshold = _snapToSensitivity(SharedPreferencesUtil().vadSpeechThreshold);
-    _vadSplitSeconds = SharedPreferencesUtil().vadSplitSeconds;
-    _vadMaxConversationMinutes = SharedPreferencesUtil().vadMaxConversationMinutes;
-    _filterMinDurationSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
-    _vadMinSpeechSeconds = SharedPreferencesUtil().vadMinSpeechSeconds;
-    _discardShortRecordings = SharedPreferencesUtil().discardShortRecordings;
+    _loadModeFields(_manualMode);
   }
 
   @override
   void dispose() {
     _flashController.dispose();
     super.dispose();
+  }
+
+  void _loadModeFields(bool manual) {
+    final p = SharedPreferencesUtil();
+    _vadEnabled = manual ? p.manualModeVadEnabled : p.autoModeVadEnabled;
+    _vadSpeechThreshold = _snapToSensitivity(manual ? p.manualModeVadSpeechThreshold : p.autoModeVadSpeechThreshold);
+    _vadMinSpeechSeconds = manual ? p.manualModeVadMinSpeechSeconds : p.autoModeVadMinSpeechSeconds;
+    _vadSplitSeconds = manual ? p.manualModeVadSplitSeconds : p.autoModeVadSplitSeconds;
+    _filterMinDurationSeconds = manual ? p.manualModeFilterMinDurationSeconds : p.autoModeFilterMinDurationSeconds;
+    _discardShortRecordings = manual ? p.manualModeDiscardShortRecordings : p.autoModeDiscardShortRecordings;
+    _vadMaxConversationMinutes = manual ? p.manualModeVadMaxConversationMinutes : p.autoModeVadMaxConversationMinutes;
+  }
+
+  void _saveModeSnapshot(bool manual) {
+    final p = SharedPreferencesUtil();
+    if (manual) {
+      p.manualModeVadEnabled = _vadEnabled;
+      p.manualModeVadSpeechThreshold = _vadSpeechThreshold;
+      p.manualModeVadMinSpeechSeconds = _vadMinSpeechSeconds;
+      p.manualModeVadSplitSeconds = _vadSplitSeconds;
+      p.manualModeFilterMinDurationSeconds = _filterMinDurationSeconds;
+      p.manualModeDiscardShortRecordings = _discardShortRecordings;
+      p.manualModeVadMaxConversationMinutes = _vadMaxConversationMinutes;
+    } else {
+      p.autoModeVadEnabled = _vadEnabled;
+      p.autoModeVadSpeechThreshold = _vadSpeechThreshold;
+      p.autoModeVadMinSpeechSeconds = _vadMinSpeechSeconds;
+      p.autoModeVadSplitSeconds = _vadSplitSeconds;
+      p.autoModeFilterMinDurationSeconds = _filterMinDurationSeconds;
+      p.autoModeDiscardShortRecordings = _discardShortRecordings;
+      p.autoModeVadMaxConversationMinutes = _vadMaxConversationMinutes;
+    }
   }
 
   void _markDirty() {
@@ -148,6 +173,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     prefs.vadMaxConversationMinutes = _vadMaxConversationMinutes;
     prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
     prefs.discardShortRecordings = _discardShortRecordings;
+    _saveModeSnapshot(_manualMode);
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -267,7 +293,11 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                       value: _manualMode,
                       onChanged: isConnected
                           ? (value) {
-                              setState(() => _manualMode = value);
+                              _saveModeSnapshot(_manualMode);
+                              setState(() {
+                                _manualMode = value;
+                                _loadModeFields(value);
+                              });
                               _markDirty();
                             }
                           : null,
@@ -276,7 +306,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                   ),
                   const SizedBox(height: 16),
 
-                  // VAD toggle
+                  // VAD toggle + Speech Sensitivity (auto mode only)
+                  if (!_manualMode) ...[
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
@@ -405,9 +436,10 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                     ),
                     const SizedBox(height: 16),
                   ],
+                  ], // end !_manualMode
 
-                  // Silence to End Conversation
-                  Container(
+                  // Silence to End Conversation (hidden in manual mode — always 3 s)
+                  if (!_manualMode) Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: const Color(0xFF1C1C1E),
@@ -454,10 +486,10 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                       ],
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  if (!_manualMode) const SizedBox(height: 16),
 
-                  // Short Recordings
-                  Container(
+                  // Short Recordings (hidden in manual mode — always off)
+                  if (!_manualMode) Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: const Color(0xFF1C1C1E),
@@ -511,9 +543,9 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                       ],
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  if (!_manualMode) const SizedBox(height: 16),
 
-                  if (_filterMinDurationSeconds > 0) ...[
+                  if (!_manualMode && _filterMinDurationSeconds > 0) ...[
                     // Action for Short Recordings
                     Container(
                       padding: const EdgeInsets.all(16),
@@ -618,10 +650,10 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                               underline: const SizedBox(),
                               style: const TextStyle(
                                   color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
-                              items: [30, 60, 120, 180].map((mins) {
+                              items: [0, 30, 60, 120, 180].map((mins) {
                                 return DropdownMenuItem(
                                   value: mins,
-                                  child: Text(mins >= 60 ? '${mins ~/ 60}h' : '${mins}m'),
+                                  child: Text(mins == 0 ? 'No Limit' : mins >= 60 ? '${mins ~/ 60}h' : '${mins}m'),
                                 );
                               }).toList(),
                               onChanged: (value) {
@@ -635,7 +667,9 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'Forces a cut if a conversation reaches this duration, even without silence.',
+                          _vadMaxConversationMinutes == 0
+                              ? 'Recordings grow until silence ends them — no time cap.'
+                              : 'Forces a cut if a conversation reaches this duration, even without silence.',
                           style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                         ),
                       ],
