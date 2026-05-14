@@ -42,7 +42,7 @@ class DeviceProvider extends ChangeNotifier
 
   Timer? _reconnectionTimer;
   DateTime? _reconnectAt;
-  final int _connectionCheckSeconds = 30; // Scan every 30s instead of 15s
+  final int _connectionCheckSeconds = 15; // Scan every 15s instead of 30s
 
   Timer? _backgroundSyncTimer;
   DateTime? nextSyncTime;
@@ -361,13 +361,16 @@ class DeviceProvider extends ChangeNotifier
     final pairedDeviceId = SharedPreferencesUtil().btDevice.id;
     if (pairedDeviceId.isNotEmpty) {
       try {
-        await ServiceManager.instance().device.ensureConnection(pairedDeviceId, force: true);
-        await Future.delayed(const Duration(seconds: 2));
+        await ServiceManager.instance()
+            .device
+            .ensureConnection(pairedDeviceId, force: true)
+            .timeout(const Duration(seconds: 10));
+        await Future.delayed(const Duration(seconds: 1));
         device = await _getConnectedDevice();
         if (device != null) return device;
       } catch (_) {}
     }
-    await ServiceManager.instance().device.discover(desirableDeviceId: pairedDeviceId);
+    await ServiceManager.instance().device.discover(desirableDeviceId: pairedDeviceId, timeout: 10);
     await Future.delayed(const Duration(seconds: 2));
     return connectedDevice;
   }
