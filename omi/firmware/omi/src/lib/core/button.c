@@ -113,15 +113,22 @@ void check_button_level(struct k_work *work_item)
             // Still pressed. Check if held long enough for mute toggle.
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
             if (duration_ms >= HOLD_TIME) {
-                // Double tap + hold -> mute toggle
-                is_muted = !is_muted;
-                LOG_INF("Mute toggled: %s", is_muted ? "ON" : "OFF");
-                if (is_muted) {
-                    mic_pause();
-                } else {
-                    mic_resume();
+                #ifdef CONFIG_OMI_ENABLE_T5838_AAD
+                uint16_t thr2 = aad_get_threshold();
+                bool in_manual2 = (thr2 == 32769 || thr2 == 65535);
+                #else
+                bool in_manual2 = false;
+                #endif
+                if (!in_manual2) {
+                    is_muted = !is_muted;
+                    LOG_INF("Mute toggled: %s", is_muted ? "ON" : "OFF");
+                    if (is_muted) {
+                        mic_pause();
+                    } else {
+                        mic_resume();
+                    }
+                    play_haptic_milli(500);
                 }
-                play_haptic_milli(500);
                 fsm_state = STATE_WAIT_FOR_RELEASE;
             }
         }
