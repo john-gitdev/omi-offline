@@ -85,8 +85,8 @@ static void mic_handler(int16_t *buffer)
 
 static void boot_led_sequence(void)
 {
-    led_start_blinking();
-    LOG_INF("[BOOT] LEDs blinking white — waiting for SD + mic");
+    led_start_breathing();
+    LOG_INF("[BOOT] LEDs breathing white — waiting for SD + mic");
 }
 
 static void boot_warming_sequence(void)
@@ -94,7 +94,7 @@ static void boot_warming_sequence(void)
     const int delay_ms = 10;
     int64_t wait_start_ms = k_uptime_get();
 
-    /* Spin while LEDs are blinking until sd_worker finishes mount + lfs_fs_gc + file open.
+    /* Spin while LEDs are breathing until sd_worker finishes mount + lfs_fs_gc + file open.
      * With little data this completes in <5 s; with 200 MB it can take ~50 s. */
     while (!sd_is_boot_ready()) {
         watchdog_feed();
@@ -366,7 +366,7 @@ int main(void)
     }
 #endif
 
-    led_stop_blinking();
+    led_stop_breathing();
 
     boot_ready_fade();
 

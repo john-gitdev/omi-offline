@@ -97,44 +97,54 @@ void led_off(void)
     pwm_set_pulse_dt(&led_blue,  0);
 }
 
-static struct k_thread blinking_thread_data;
-static k_tid_t blinking_thread_id;
-static K_THREAD_STACK_DEFINE(blinking_thread_stack, 512);
-static volatile bool is_blinking = false;
+static struct k_thread breathing_thread_data;
+static k_tid_t breathing_thread_id;
+static K_THREAD_STACK_DEFINE(breathing_thread_stack, 512);
+static volatile bool is_breathing = false;
 
-static void blinking_thread(void *p1, void *p2, void *p3)
+static void breathing_thread(void *p1, void *p2, void *p3)
 {
-    bool is_on = true;
-    while (is_blinking) {
-        uint8_t ratio = app_settings_get_dim_ratio();
-        uint8_t current_level = is_on ? ratio : 0;
+    int level = 100;
+    int step = -2;
+    bool first_cycle = true;
+    while (is_breathing) {
+        uint8_t ratio = first_cycle ? 100 : app_settings_get_dim_ratio();
+        uint8_t current_level = (level * ratio) / 100;
 
         set_led_pwm(LED_RED, current_level);
         set_led_pwm(LED_GREEN, current_level);
         set_led_pwm(LED_BLUE, current_level);
 
-        is_on = !is_on;
-        k_msleep(500);
+        level += step;
+        if (level <= 0) {
+            level = 0;
+            step = -step;
+            first_cycle = false;
+        } else if (level >= 100) {
+            level = 100;
+            step = -step;
+        }
+        k_msleep(30);
     }
     led_off();
 }
 
-void led_start_blinking(void)
+void led_start_breathing(void)
 {
-    if (is_blinking) return;
-    is_blinking = true;
-    blinking_thread_id = k_thread_create(&blinking_thread_data, blinking_thread_stack,
-                                          K_THREAD_STACK_SIZEOF(blinking_thread_stack),
-                                          blinking_thread, NULL, NULL, NULL,
+    if (is_breathing) return;
+    is_breathing = true;
+    breathing_thread_id = k_thread_create(&breathing_thread_data, breathing_thread_stack,
+                                          K_THREAD_STACK_SIZEOF(breathing_thread_stack),
+                                          breathing_thread, NULL, NULL, NULL,
                                           K_LOWEST_APPLICATION_THREAD_PRIO, 0, K_NO_WAIT);
 }
 
-void led_stop_blinking(void)
+void led_stop_breathing(void)
 {
-    if (!is_blinking) return;
-    is_blinking = false;
-    if (blinking_thread_id) {
-        k_thread_join(blinking_thread_id, K_FOREVER);
-        blinking_thread_id = NULL;
+    if (!is_breathing) return;
+    is_breathing = false;
+    if (breathing_thread_id) {
+        k_thread_join(breathing_thread_id, K_FOREVER);
+        breathing_thread_id = NULL;
     }
 }
