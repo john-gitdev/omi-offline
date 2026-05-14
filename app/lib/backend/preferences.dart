@@ -223,6 +223,13 @@ class SharedPreferencesUtil {
     }
   }
 
+  // Firebase user UID and email — stored in plain SharedPreferences (non-sensitive identifiers).
+  String get omiAuthUid => getString('omiAuthUid');
+  set omiAuthUid(String v) => saveString('omiAuthUid', v);
+
+  String get omiAuthEmail => getString('omiAuthEmail');
+  set omiAuthEmail(String v) => saveString('omiAuthEmail', v);
+
   bool get omiHasSpeechProfile => getBool('omiHasSpeechProfile', defaultValue: false);
   set omiHasSpeechProfile(bool v) => saveBool('omiHasSpeechProfile', v);
 
