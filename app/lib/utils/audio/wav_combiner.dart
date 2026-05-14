@@ -73,12 +73,13 @@ class WavCombiner {
       throw Exception('Invalid WAV file: too small');
     }
 
-    final riffHeader = String.fromCharCodes(bytes.sublist(0, 4));
+    // ⚡ Bolt: Pass data and offsets natively to prevent deep copy allocation of sublist
+    final riffHeader = String.fromCharCodes(bytes, 0, 4);
     if (riffHeader != 'RIFF') {
       throw Exception('Invalid WAV file: missing RIFF header');
     }
 
-    final waveHeader = String.fromCharCodes(bytes.sublist(8, 12));
+    final waveHeader = String.fromCharCodes(bytes, 8, 12);
     if (waveHeader != 'WAVE') {
       throw Exception('Invalid WAV file: missing WAVE header');
     }

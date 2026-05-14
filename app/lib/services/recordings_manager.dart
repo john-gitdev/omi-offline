@@ -112,9 +112,8 @@ class Conversation {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
               try {
-                uploadKey = String.fromCharCodes(
-                  metaBytes.sublist(417, 417 + keyLen),
-                );
+                // ⚡ Bolt: Pass data and offsets natively to prevent deep copy allocation of sublist
+                uploadKey = String.fromCharCodes(metaBytes, 417, 417 + keyLen);
               } catch (_) {
                 uploadKey = null;
               }
@@ -201,7 +200,8 @@ class Conversation {
         final keyLen = metaBytes[416];
         if (417 + keyLen <= metaBytes.length) {
           try {
-            uploadKey = String.fromCharCodes(metaBytes.sublist(417, 417 + keyLen));
+            // ⚡ Bolt: Pass data and offsets natively to prevent deep copy allocation of sublist
+            uploadKey = String.fromCharCodes(metaBytes, 417, 417 + keyLen);
           } catch (_) {}
           final flagOffset = 417 + keyLen;
           if (metaBytes.length > flagOffset) {
@@ -282,9 +282,8 @@ class Conversation {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
               try {
-                uploadKey = String.fromCharCodes(
-                  metaBytes.sublist(417, 417 + keyLen),
-                );
+                // ⚡ Bolt: Pass data and offsets natively to prevent deep copy allocation of sublist
+                uploadKey = String.fromCharCodes(metaBytes, 417, 417 + keyLen);
               } catch (_) {
                 uploadKey = null;
               }
@@ -1374,7 +1373,8 @@ class RecordingsManager {
         // 2. Update uploadKey extension if transcoded
         if (transcoded) {
           final keyLen = outBytes[416];
-          final key = String.fromCharCodes(outBytes.sublist(417, 417 + keyLen));
+          // ⚡ Bolt: Pass data and offsets natively to prevent deep copy allocation of sublist
+          final key = String.fromCharCodes(outBytes, 417, 417 + keyLen);
           final newKey = key.replaceAll('.$currentExt', '.m4a');
           final newKeyBytes = Uint8List.fromList(newKey.codeUnits);
           

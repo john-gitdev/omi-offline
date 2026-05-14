@@ -130,13 +130,14 @@ class WaveformUtils {
       return null;
     }
 
-    final riffHeader = String.fromCharCodes(wavData.sublist(0, 4));
+    // ⚡ Bolt: Pass data and offsets natively to prevent deep copy allocation of sublist
+    final riffHeader = String.fromCharCodes(wavData, 0, 4);
     if (riffHeader != 'RIFF') {
       Logger.debug('Invalid RIFF header: $riffHeader');
       return null;
     }
 
-    final waveFormat = String.fromCharCodes(wavData.sublist(8, 12));
+    final waveFormat = String.fromCharCodes(wavData, 8, 12);
     if (waveFormat != 'WAVE') {
       Logger.debug('Invalid WAVE format: $waveFormat');
       return null;
@@ -149,7 +150,7 @@ class WaveformUtils {
     int bitsPerSample = 0;
 
     while (offset < wavData.length - 8) {
-      final chunkId = String.fromCharCodes(wavData.sublist(offset, offset + 4));
+      final chunkId = String.fromCharCodes(wavData, offset, offset + 4);
       final chunkSize = ByteData.sublistView(wavData, offset + 4, offset + 8).getUint32(0, Endian.little);
 
       if (chunkId == 'fmt ') {
@@ -178,7 +179,7 @@ class WaveformUtils {
     // Find data chunk
     offset = 12;
     while (offset < wavData.length - 8) {
-      final chunkId = String.fromCharCodes(wavData.sublist(offset, offset + 4));
+      final chunkId = String.fromCharCodes(wavData, offset, offset + 4);
       final chunkSize = ByteData.sublistView(wavData, offset + 4, offset + 8).getUint32(0, Endian.little);
 
       if (chunkId == 'data') {
