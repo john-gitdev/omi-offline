@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/providers/device_provider.dart';
+import 'package:omi/services/recordings_manager.dart';
 import 'package:provider/provider.dart';
 
 class OfflineAudioSettingsPage extends StatefulWidget {
@@ -52,6 +53,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     return '${seconds ~/ 3600}h';
   }
 
+  late bool _adjustmentMode;
+
   bool _isDirty = false;
 
   @override
@@ -74,6 +77,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
 
     _manualMode = SharedPreferencesUtil().manualMode;
     _loadModeFields(_manualMode);
+    _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
   }
 
   @override
@@ -174,6 +178,11 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
     prefs.discardShortRecordings = _discardShortRecordings;
     _saveModeSnapshot(_manualMode);
+
+    final prevAdjustmentMode = prefs.adjustmentMode;
+    prefs.adjustmentMode = _adjustmentMode;
+    if (_adjustmentMode) prefs.adjustmentModeWasEnabled = true;
+    if (prevAdjustmentMode != _adjustmentMode) RecordingsManager.notifyRecordingsChanged();
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -675,6 +684,59 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                       ],
                     ),
                   ),
+
+                  // Adjustment Mode (auto mode only)
+                  if (!_manualMode) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1C1C1E),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.white.withOpacity(0.05)),
+                      ),
+                      child: SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Adjustment Mode',
+                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                        subtitle: Text(
+                          'Raw audio files are kept on disk after processing. Use this when tweaking VAD settings — each day shows a Reprocess button to regenerate recordings from scratch.',
+                          style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                        ),
+                        value: _adjustmentMode,
+                        onChanged: (value) async {
+                          if (value) {
+                            final confirm = await showDialog<bool>(
+                              context: context,
+                              builder: (c) => AlertDialog(
+                                backgroundColor: const Color(0xFF1C1C1E),
+                                title: const Text('Enable Adjustment Mode?', style: TextStyle(color: Colors.white)),
+                                content: Text(
+                                  'Raw audio is kept on disk so you can reprocess days with different settings.\n\n'
+                                  '${SharedPreferencesUtil().allowUploadDuringAdjustment ? 'Integrations remain active because you enabled "Allow Upload During Adjustment" in Debug Tools.' : 'Uploads to HeyPocket and other integrations are paused while adjustment mode is on — recordings may still change before you\'re done. They resume automatically once you turn it off.'}',
+                                  style: const TextStyle(color: Colors.white70, fontSize: 14),
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.of(c).pop(false),
+                                    child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                                  ),
+                                  TextButton(
+                                    onPressed: () => Navigator.of(c).pop(true),
+                                    child: const Text('Enable', style: TextStyle(color: Colors.deepPurpleAccent)),
+                                  ),
+                                ],
+                              ),
+                            );
+                            if (confirm != true) return;
+                          }
+                          setState(() => _adjustmentMode = value);
+                          _markDirty();
+                        },
+                        activeColor: Colors.deepPurpleAccent,
+                      ),
+                    ),
+                  ],
                 ],
               );
             },
