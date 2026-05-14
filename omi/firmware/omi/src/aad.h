@@ -60,7 +60,4 @@ void aad_set_threshold(uint16_t threshold);
 /** @brief Return the current VAD threshold. */
 uint16_t aad_get_threshold(void);
 
-/** @brief Cancel an in-progress force-wake (e.g. manual mode stop tap). */
-void aad_cancel_force_wake(void);
-
 #endif /* AAD_H */
