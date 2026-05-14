@@ -106,19 +106,20 @@ static void boot_warming_sequence(void)
 static void boot_ready_fade(void)
 {
     const int steps = 30;
-    const int delay_ms = 10;
+    const int delay_ms = 15;
 
-    /* SD + mic are ready — fade R+G (yellow) up to dim_ratio so set_led_state()
-     * takes over at the same level with no visible brightness jump. */
-    uint8_t target = app_settings_get_dim_ratio();
-    LOG_INF("[BOOT] Fading to yellow (dim_ratio=%u)", target);
-    for (int i = 0; i <= steps; i++) {
+    /* SD + mic are ready — fade white down to off. */
+    uint8_t start = app_settings_get_dim_ratio();
+    LOG_INF("[BOOT] Fading to off (from dim_ratio=%u)", start);
+    for (int i = steps; i >= 0; i--) {
         float t = (float) i / steps;
-        uint8_t level = (uint8_t) (t * target);
+        uint8_t level = (uint8_t) (t * start);
         set_led_pwm(LED_RED, level);
         set_led_pwm(LED_GREEN, level);
+        set_led_pwm(LED_BLUE, level);
         k_msleep(delay_ms);
     }
+    led_off();
     LOG_INF("[BOOT] Ready — total boot time %lld ms", k_uptime_get());
 }
 
