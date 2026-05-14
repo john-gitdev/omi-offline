@@ -166,21 +166,21 @@ void set_led_state()
     uint16_t thr = 0;
     #endif
 
-    if (in_manual) {
-        if (thr == 65535) {
-            r = true; g = true; // Yellow — manual recording active
-        }
-        // standby: all off
-    } else if (is_muted) {
+    if (is_muted) {
         r = true; // Solid Red
     } else if (battery_ready && battery_percentage < 10) {
         r = true; b = true; // Purple
     } else if (is_connected) {
-        b = true; // Solid Blue
+        b = true; // Solid Blue — connected always wins over mode state
+    } else if (in_manual) {
+        if (thr == 65535) {
+            r = true; g = true; // Yellow — manual recording active (disconnected)
+        }
+        // manual standby disconnected: all off
     } else if (aad_is_recording()) {
-        r = true; g = true; // Yellow — auto recording active
+        r = true; g = true; // Yellow — auto recording active (disconnected)
     }
-    // auto idle disconnected: all off
+    // idle disconnected: all off
 
     // Final state based on charging
     if (is_charging) {
