@@ -40,12 +40,13 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
 
       if (widget.localZipPath != null) {
         // Offline / Local file update flow
+        final zipVersion = await extractVersionFromZipPath(widget.localZipPath!);
         if (mounted) {
           setState(() {
             shouldUpdate = true;
             updateMessage = 'Local firmware file ready to flash.';
             latestFirmwareDetails = {
-              'version': 'Local File',
+              'version': zipVersion ?? 'Local File',
               'is_legacy_secure_dfu': false, // Ensure we use MCUmgr (Zephyr SMP)
             };
             isLegacySecureDFU = false;
