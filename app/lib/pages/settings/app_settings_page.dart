@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:omi/backend/preferences.dart';
-import 'package:omi/services/recordings_manager.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
 
@@ -20,7 +19,6 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
   late bool _maximizeBattery;
   late int _backgroundSyncIntervalMinutes;
   late bool _use24HourTime;
-  late bool _adjustmentMode;
   late String _audioSaveFormat;
   late int _keepRecordingsDays;
 
@@ -32,7 +30,6 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     _maximizeBattery = SharedPreferencesUtil().maximizeBattery;
     _backgroundSyncIntervalMinutes = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
-    _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
     _audioSaveFormat = SharedPreferencesUtil().audioSaveFormat;
     _keepRecordingsDays = SharedPreferencesUtil().keepRecordingsDays;
   }
@@ -49,13 +46,8 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
       Provider.of<DeviceProvider>(context, listen: false).restartBackgroundSyncTimer();
     }
     prefs.use24HourTime = _use24HourTime;
-    final prevAdjustmentMode = prefs.adjustmentMode;
-    prefs.adjustmentMode = _adjustmentMode;
-    if (_adjustmentMode) prefs.adjustmentModeWasEnabled = true;
     prefs.audioSaveFormat = _audioSaveFormat;
     prefs.keepRecordingsDays = _keepRecordingsDays;
-
-    if (prevAdjustmentMode != _adjustmentMode) RecordingsManager.notifyRecordingsChanged();
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -373,68 +365,6 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                           : _keepRecordingsDays == 0
                               ? 'Audio is sent to your integrations and deleted locally after a successful upload.'
                               : 'Audio recordings older than $_keepRecordingsDays days will be automatically deleted from your device.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // Adjustment Mode
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Adjustment Mode',
-                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                        ),
-                        Switch(
-                          value: _adjustmentMode,
-                          activeThumbColor: Colors.deepPurpleAccent,
-                          onChanged: (value) async {
-                            if (value) {
-                              final confirm = await showDialog<bool>(
-                                context: context,
-                                builder: (c) => AlertDialog(
-                                  backgroundColor: const Color(0xFF1C1C1E),
-                                  title: const Text('Enable Adjustment Mode?', style: TextStyle(color: Colors.white)),
-                                  content: Text(
-                                    'Raw audio is kept on disk so you can reprocess days with different settings.\n\n'
-                                    '${SharedPreferencesUtil().allowUploadDuringAdjustment ? 'Integrations remain active because you enabled "Allow Upload During Adjustment" in Debug Tools.' : 'Uploads to HeyPocket and other integrations are paused while adjustment mode is on — recordings may still change before you\'re done. They resume automatically once you turn it off.'}',
-                                    style: const TextStyle(color: Colors.white70, fontSize: 14),
-                                  ),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () => Navigator.of(c).pop(false),
-                                      child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-                                    ),
-                                    TextButton(
-                                      onPressed: () => Navigator.of(c).pop(true),
-                                      child: const Text('Enable', style: TextStyle(color: Colors.deepPurpleAccent)),
-                                    ),
-                                  ],
-                                ),
-                              );
-                              if (confirm != true) return;
-                            }
-                            setState(() => _adjustmentMode = value);
-                            _markDirty();
-                          },
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Raw audio files are kept on disk after processing. Use this when tweaking VAD settings — each day shows a Reprocess button to regenerate recordings from scratch.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],
