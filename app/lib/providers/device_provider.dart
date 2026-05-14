@@ -268,9 +268,9 @@ class DeviceProvider extends ChangeNotifier
     prefs.manualMode = enabled;
     _manualRecording = false;
     if (enabled) {
-      await _setDeviceVadThreshold(32768);
+      await _setDeviceVadThreshold(32769);
     } else {
-      await _setDeviceVadThreshold(250);
+      await _setDeviceVadThreshold(prefs.autoVadThreshold);
     }
     notifyListeners();
   }
@@ -288,7 +288,7 @@ class DeviceProvider extends ChangeNotifier
           if (event == 2 && SharedPreferencesUtil().manualMode) {
             if (_manualRecording) {
               _manualRecording = false;
-              await _setDeviceVadThreshold(32768);
+              await _setDeviceVadThreshold(32769);
               Logger.debug('DeviceProvider: Manual mode — recording stopped.');
             } else {
               _manualRecording = true;
