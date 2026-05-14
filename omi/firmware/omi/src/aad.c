@@ -428,6 +428,11 @@ uint16_t aad_get_threshold(void)
     return vad_threshold;
 }
 
+bool aad_is_recording(void)
+{
+    return vad_is_recording;
+}
+
 bool aad_is_sleeping(void)
 {
     if (is_muted) {
