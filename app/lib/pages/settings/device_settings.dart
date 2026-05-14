@@ -625,144 +625,107 @@ class _DeviceSettingsState extends State<DeviceSettings> {
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (context, setSheetState) {
-            String getThresholdLabel(int value) {
-              if (value <= 0) return 'Always On';
-              if (value >= 32768) return 'Marker Only';
-              if (value <= 250) return 'Default';
-              if (value <= 1000) return 'Less Sensitive';
-              return 'Very Low Sensitivity';
+            final currentValue = _vadThreshold.round().clamp(0, 1000);
+            final String label = currentValue == 0 ? 'Always On' : '$currentValue';
+
+            void setValue(int raw) {
+              setSheetState(() {});
+              setState(() => _vadThreshold = raw.toDouble());
+              _updateVadThreshold(raw.toDouble());
             }
 
-            String getThresholdDescription(int value) {
-              if (value <= 0) return 'Records everything, no silence skipping';
-              if (value >= 32768) return 'Automatic recording disabled (double tap to record)';
-              if (value <= 250) return 'Catches whispers and quiet background noise';
-              if (value <= 1000) return 'Filters out background noise in cafes or outdoors';
-              return 'Catches only loud speech or nearby sounds';
-            }
-
-            final currentValue = _vadThreshold.round();
-
-            return Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-              child: SingleChildScrollView(
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(color: const Color(0xFF3C3C43), borderRadius: BorderRadius.circular(2)),
+                    ),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         const Text(
                           'AAD Sensitivity',
-                          style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+                          style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
                         ),
-                        IconButton(
-                          icon: const Icon(Icons.close, color: Colors.white, size: 20),
-                          onPressed: () => Navigator.pop(context),
+                        Text(
+                          label,
+                          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
                         ),
                       ],
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Adjust how easily the device wakes up and starts recording based on sound.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 14),
+                      currentValue == 0
+                          ? 'Records everything, no silence skipping'
+                          : 'Adjust how easily the device wakes up and starts recording.',
+                      style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
                     ),
                     const SizedBox(height: 24),
-                    Center(
-                      child: Column(
-                        children: [
-                          Text(
-                            getThresholdLabel(currentValue),
-                            style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Value: $currentValue',
-                            style: TextStyle(color: Colors.grey.shade400, fontSize: 14, fontWeight: FontWeight.w500),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            getThresholdDescription(currentValue),
-                            style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
-                          ),
-                        ],
+                    SliderTheme(
+                      data: SliderThemeData(
+                        activeTrackColor: Colors.white,
+                        inactiveTrackColor: Colors.grey.shade800,
+                        thumbColor: Colors.white,
+                        overlayColor: Colors.white.withOpacity(0.1),
+                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 12, elevation: 2),
+                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 24),
+                        trackHeight: 6,
+                      ),
+                      child: Slider(
+                        value: currentValue.toDouble(),
+                        min: 0,
+                        max: 1000,
+                        divisions: 20,
+                        onChanged: (double value) {
+                          setSheetState(() {});
+                          setState(() => _vadThreshold = value);
+                          _vadThresholdDebounce?.cancel();
+                          _vadThresholdDebounce = Timer(const Duration(milliseconds: 300), () {
+                            _updateVadThreshold(_vadThreshold);
+                          });
+                        },
+                        onChangeEnd: (double value) {
+                          _vadThresholdDebounce?.cancel();
+                          _updateVadThreshold(_vadThreshold);
+                        },
                       ),
                     ),
-                    const SizedBox(height: 32),
+                    const SizedBox(height: 8),
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        _buildFineTuneButton('-', () {
-                          setState(() {
-                            _vadThreshold = (_vadThreshold - 50).clamp(0.0, 32768.0);
-                          });
-                          setSheetState(() {});
-                          _updateVadThreshold(_vadThreshold);
-                        }),
-                        const SizedBox(width: 12),
-                        _buildFineTuneButton('Default', () {
-                          setState(() {
-                            _vadThreshold = 250.0;
-                          });
-                          setSheetState(() {});
-                          _updateVadThreshold(250.0);
-                        }, isText: true),
-                        const SizedBox(width: 12),
-                        _buildFineTuneButton('+', () {
-                          setState(() {
-                            _vadThreshold = (_vadThreshold + 50).clamp(0.0, 32768.0);
-                          });
-                          setSheetState(() {});
-                          _updateVadThreshold(_vadThreshold);
-                        }),
+                        Text('Always On', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                        Text('Max', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
                       ],
                     ),
-                    const SizedBox(height: 32),
-                    Column(
+                    const SizedBox(height: 20),
+                    Row(
                       children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: _buildPresetButton('Always On', 0, currentValue, () {
-                                setSheetState(() {});
-                                setState(() => _vadThreshold = 0.0);
-                                _updateVadThreshold(0.0);
-                              }),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: _buildPresetButton('Default', 250, currentValue, () {
-                                setSheetState(() {});
-                                setState(() => _vadThreshold = 250.0);
-                                _updateVadThreshold(250.0);
-                              }),
-                            ),
-                          ],
+                        Expanded(
+                          child: _buildPresetButton('-', -1, currentValue, () {
+                            if (currentValue > 0) setValue((currentValue - 50).clamp(0, 1000));
+                          }),
                         ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: _buildPresetButton('Less Sensitive', 1000, currentValue, () {
-                                setSheetState(() {});
-                                setState(() => _vadThreshold = 1000.0);
-                                _updateVadThreshold(1000.0);
-                              }),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: _buildPresetButton('Marker Only', 32768, currentValue, () {
-                                setSheetState(() {});
-                                setState(() => _vadThreshold = 32768.0);
-                                _updateVadThreshold(32768.0);
-                              }),
-                            ),
-                          ],
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: 2,
+                          child: _buildPresetButton('Default (250)', 250, currentValue, () => setValue(250)),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _buildPresetButton('+', -1, currentValue, () {
+                            if (currentValue < 1000) setValue((currentValue + 50).clamp(0, 1000));
+                          }),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 16),
                   ],
                 ),
               ),
@@ -770,30 +733,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
           },
         );
       },
-    );
-  }
-
-  Widget _buildFineTuneButton(String label, VoidCallback onTap, {bool isText = false}) {
-    return Material(
-      color: const Color(0xFF2A2A2E),
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          width: isText ? 80 : 50,
-          height: 40,
-          alignment: Alignment.center,
-          child: Text(
-            label,
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: isText ? 14 : 20,
-              fontWeight: isText ? FontWeight.w500 : FontWeight.bold,
-            ),
-          ),
-        ),
-      ),
     );
   }
 
@@ -829,7 +768,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.earListen,
               title: 'AAD Sensitivity',
-              chipValue: _vadThreshold.round() <= 0 ? 'Always On' : _vadThreshold.round().toString(),
+              chipValue: _vadThreshold <= 0 ? 'Always On' : '${_vadThreshold.round()}',
               onTap: _showVadThresholdSheet,
             ),
           ],
