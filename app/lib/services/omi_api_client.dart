@@ -50,6 +50,8 @@ class OmiApiClient {
     await prefs.setOmiIdToken('');
     prefs.omiTokenExpiry = 0;
     await prefs.setOmiRefreshToken('');
+    prefs.omiAuthUid = '';
+    prefs.omiAuthEmail = '';
     Logger.debug('OmiApiClient: Signed out, cleared tokens');
   }
 
@@ -60,7 +62,7 @@ class OmiApiClient {
     final expiry = prefs.omiTokenExpiry;
     final now = DateTime.now().millisecondsSinceEpoch;
     final remainingMs = expiry - now;
-    if (remainingMs > 60 * 1000) {
+    if (remainingMs > 5 * 60 * 1000) {
       Logger.debug('OmiApiClient: Token still valid, expires in ${(remainingMs / 1000).round()}s');
       return;
     }
