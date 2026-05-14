@@ -26,13 +26,13 @@ void set_led_pwm(led_color_t color, uint8_t level);
 void led_off(void);
 
 /**
- * @brief Start breathing white pattern
+ * @brief Start blinking white pattern
  */
-void led_start_breathing(void);
+void led_start_blinking(void);
 
 /**
- * @brief Stop breathing pattern and turn LEDs off
+ * @brief Stop blinking pattern and turn LEDs off
  */
-void led_stop_breathing(void);
+void led_stop_blinking(void);
 
 #endif

@@ -85,8 +85,8 @@ static void mic_handler(int16_t *buffer)
 
 static void boot_led_sequence(void)
 {
-    led_start_breathing();
-    LOG_INF("[BOOT] LEDs breathing white — waiting for SD + mic");
+    led_start_blinking();
+    LOG_INF("[BOOT] LEDs blinking white — waiting for SD + mic");
 }
 
 static void boot_warming_sequence(void)
@@ -94,7 +94,7 @@ static void boot_warming_sequence(void)
     const int delay_ms = 10;
     int64_t wait_start_ms = k_uptime_get();
 
-    /* Spin while LEDs are breathing until sd_worker finishes mount + lfs_fs_gc + file open.
+    /* Spin while LEDs are blinking until sd_worker finishes mount + lfs_fs_gc + file open.
      * With little data this completes in <5 s; with 200 MB it can take ~50 s. */
     while (!sd_is_boot_ready()) {
         watchdog_feed();
@@ -105,12 +105,18 @@ static void boot_warming_sequence(void)
 
 static void boot_ready_fade(void)
 {
-    const int steps = 30;
-    const int delay_ms = 15;
+    const int steps = 50; // 50 steps * 10 ms = 500 ms fade
+    const int delay_ms = 10;
 
-    /* SD + mic are ready — fade white down to off. */
+    /* SD + mic are ready — solid white for .5 seconds, then fade down to off. */
     uint8_t start = app_settings_get_dim_ratio();
-    LOG_INF("[BOOT] Fading to off (from dim_ratio=%u)", start);
+    LOG_INF("[BOOT] Solid white for 500ms, then fading to off (from dim_ratio=%u)", start);
+    
+    set_led_pwm(LED_RED, start);
+    set_led_pwm(LED_GREEN, start);
+    set_led_pwm(LED_BLUE, start);
+    k_msleep(500);
+
     for (int i = steps; i >= 0; i--) {
         float t = (float) i / steps;
         uint8_t level = (uint8_t) (t * start);
@@ -360,7 +366,7 @@ int main(void)
     }
 #endif
 
-    led_stop_breathing();
+    led_stop_blinking();
 
     boot_ready_fade();
 
