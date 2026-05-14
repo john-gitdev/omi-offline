@@ -14,7 +14,7 @@
 #
 # For Android Developers:
 # - Android Studio (Iguana | 2024.3)
-# - Android SDK Platform (API 35)
+# - Android SDK Platform (API 36)
 # - JDK (v21)
 # - Gradle (v8.10)
 # - NDK (28.2.13676358)
@@ -56,8 +56,9 @@ API_BASE_URL=https://api.omiapi.com/
 #################
 function setup_app_env() {
   echo "📝 Creating .dev.env..."
-  echo API_BASE_URL=$API_BASE_URL > .dev.env
-  echo USE_AUTH_CUSTOM_TOKEN=true >> .dev.env
+  echo "API_BASE_URL=$API_BASE_URL" > .dev.env
+  echo "USE_WEB_AUTH=true" >> .dev.env
+  echo "USE_AUTH_CUSTOM_TOKEN=true" >> .dev.env
 }
 
 # #######################
@@ -101,6 +102,7 @@ case "${1}" in
       && run_build_android
     ;;
   *)
-    error "Unexpected platform '${1}'"
+    echo "Error: unexpected platform '${1}'. Use 'ios' or 'android'." >&2
+    exit 1
     ;;
 esac
