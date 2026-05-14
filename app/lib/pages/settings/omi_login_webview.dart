@@ -1,8 +1,11 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:webview_flutter/webview_flutter.dart';
+
+enum _FlowMode { preflight, omiBacked, fallback }
 
 class OmiLoginWebView extends StatefulWidget {
   const OmiLoginWebView({super.key});
@@ -15,8 +18,22 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
   late final WebViewController _controller;
   bool _isLoading = true;
   bool _credentialsCaptured = false;
-  String? _sessionId;
+  String? _errorMessage;
+
   String? _apiKey;
+  _FlowMode _flowMode = _FlowMode.preflight;
+  String? _state; // CSRF state for the Omi-backed flow
+
+  // Fallback-only state
+  String? _sessionId;
+
+  static const _firebaseInitUrl = 'https://based-hardware.firebaseapp.com/__/firebase/init.json';
+  static const _omiAuthorizeUrl = 'https://api.omi.me/v1/auth/authorize';
+  static const _omiTokenUrl = 'https://api.omi.me/v1/auth/token';
+  static const _omiRedirectUri = 'omi://auth/callback';
+  static const _firebaseSignInIdpUrl = 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp';
+  static const _firebaseSignInCustomUrl = 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken';
+  static const _firebaseCreateAuthUriUrl = 'https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri';
 
   @override
   void initState() {
@@ -31,61 +48,258 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
           '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36')
       ..setNavigationDelegate(
         NavigationDelegate(
-          onPageStarted: (url) {
-            debugPrint('OmiLoginWebView: onPageStarted: $url');
-            setState(() => _isLoading = true);
-          },
-          onPageFinished: (url) {
-            debugPrint('OmiLoginWebView: onPageFinished: $url');
-            setState(() => _isLoading = false);
-          },
-          onNavigationRequest: (NavigationRequest request) {
-            final uri = Uri.tryParse(request.url);
-            debugPrint('OmiLoginWebView: onNavigationRequest to ${request.url}');
-            
-            if (uri != null &&
-                uri.host == 'based-hardware.firebaseapp.com' &&
-                uri.path.startsWith('/__/auth/handler')) {
-              
-              // 1. Detect the OAuth callback to exchange the code for tokens.
-              if (uri.queryParameters.containsKey('code')) {
-                debugPrint('OmiLoginWebView: Detected OAuth code callback. Exchanging tokens...');
-                _exchangeCodeForTokens(request.url);
-                return NavigationDecision.prevent;
-              }
-
-              // 2. Detect the initial popup trigger to extract the API key dynamically.
-              if (uri.queryParameters['authType'] == 'signInViaPopup') {
-                final apiKey = uri.queryParameters['apiKey'];
-                debugPrint('OmiLoginWebView: Detected popup trigger. Extracted apiKey: $apiKey');
-                if (apiKey != null) {
-                  _startDirectAuthFlow(apiKey, uri);
-                  return NavigationDecision.prevent;
-                }
-              }
-            }
-            return NavigationDecision.navigate;
-          },
-          onWebResourceError: (WebResourceError error) {
-            debugPrint('OmiLoginWebView: WebResourceError: ${error.description} (code: ${error.errorCode}, type: ${error.errorType})');
-          },
+          onPageStarted: (_) => setState(() => _isLoading = true),
+          onPageFinished: (_) => setState(() => _isLoading = false),
+          onNavigationRequest: _onNavigationRequest,
+          onWebResourceError: (e) => debugPrint('OmiLoginWebView: WebResourceError: ${e.description}'),
         ),
-      )
-      ..loadRequest(Uri.parse('https://app.omi.me'));
+      );
+    _startPreflight();
   }
+
+  NavigationDecision _onNavigationRequest(NavigationRequest request) {
+    final uri = Uri.tryParse(request.url);
+    debugPrint('OmiLoginWebView: navigate → ${request.url}');
+    if (uri == null) return NavigationDecision.navigate;
+
+    // Omi-backed flow: intercept omi://auth/callback
+    if (_flowMode == _FlowMode.omiBacked &&
+        uri.scheme == 'omi' &&
+        uri.host == 'auth' &&
+        uri.path == '/callback') {
+      _handleOmiCallback(uri.queryParameters['code'], uri.queryParameters['state']);
+      return NavigationDecision.prevent;
+    }
+
+    // Fallback flow: existing Firebase popup interception
+    if (_flowMode == _FlowMode.fallback &&
+        uri.host == 'based-hardware.firebaseapp.com' &&
+        uri.path.startsWith('/__/auth/handler')) {
+      if (uri.queryParameters.containsKey('code')) {
+        _exchangeCodeForTokensFallback(request.url);
+        return NavigationDecision.prevent;
+      }
+      if (uri.queryParameters['authType'] == 'signInViaPopup') {
+        final key = uri.queryParameters['apiKey'];
+        if (key != null) {
+          _startDirectAuthFlow(key, uri);
+          return NavigationDecision.prevent;
+        }
+      }
+    }
+
+    return NavigationDecision.navigate;
+  }
+
+  // ─── Omi-backed flow ──────────────────────────────────────────────────────
+
+  Future<void> _startPreflight() async {
+    try {
+      final res = await http
+          .get(Uri.parse(_firebaseInitUrl))
+          .timeout(const Duration(seconds: 8));
+      if (res.statusCode == 200) {
+        final json = jsonDecode(res.body) as Map<String, dynamic>;
+        final key = json['apiKey'] as String?;
+        if (key != null && key.isNotEmpty) {
+          _apiKey = key;
+          debugPrint('OmiLoginWebView: [preflight] API key obtained, starting Omi-backed flow');
+          await _startOmiBackedFlow();
+          return;
+        }
+      }
+      debugPrint('OmiLoginWebView: [preflight] init.json failed (${res.statusCode}), falling back');
+    } catch (e) {
+      debugPrint('OmiLoginWebView: [preflight] error: $e, falling back');
+    }
+    _activateFallback();
+  }
+
+  Future<void> _startOmiBackedFlow() async {
+    _state = _generateState();
+    _flowMode = _FlowMode.omiBacked;
+    final url = '$_omiAuthorizeUrl'
+        '?provider=google'
+        '&redirect_uri=${Uri.encodeComponent(_omiRedirectUri)}'
+        '&state=${Uri.encodeComponent(_state!)}';
+    debugPrint('OmiLoginWebView: [new] loading authorize URL');
+    _controller.loadRequest(Uri.parse(url));
+  }
+
+  Future<void> _handleOmiCallback(String? code, String? returnedState) async {
+    if (_credentialsCaptured) return;
+
+    if (returnedState != _state) {
+      debugPrint('OmiLoginWebView: [new] state mismatch — aborting');
+      _setError('Something went wrong during sign-in. Please try again.');
+      return;
+    }
+    if (code == null || code.isEmpty) {
+      debugPrint('OmiLoginWebView: [new] callback missing code');
+      _setError('Sign-in was cancelled or didn\'t complete. Please try again.');
+      return;
+    }
+
+    if (mounted) setState(() => _isLoading = true);
+
+    try {
+      final tokenRes = await http
+          .post(
+            Uri.parse(_omiTokenUrl),
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: {
+              'grant_type': 'authorization_code',
+              'code': code,
+              'redirect_uri': _omiRedirectUri,
+              'use_custom_token': 'true',
+            },
+          )
+          .timeout(const Duration(seconds: 15));
+
+      debugPrint('OmiLoginWebView: [new] v1/auth/token → ${tokenRes.statusCode}');
+      if (tokenRes.statusCode < 200 || tokenRes.statusCode >= 300) {
+        _setError('Sign-in didn\'t complete. Please try again.');
+        return;
+      }
+
+      final tokenJson = jsonDecode(tokenRes.body) as Map<String, dynamic>;
+      final session = await _signInWithFirebase(tokenJson);
+      if (session == null) {
+        _setError('Couldn\'t finish signing you in. Please try again.');
+        return;
+      }
+
+      _credentialsCaptured = true;
+      debugPrint('OmiLoginWebView: [new] auth complete');
+      if (mounted) Navigator.of(context).pop(session);
+    } catch (e) {
+      debugPrint('OmiLoginWebView: [new] error: $e');
+      _setError('No internet connection. Check your connection and try again.');
+    }
+  }
+
+  Future<Map<String, String>?> _signInWithFirebase(Map<String, dynamic> tokenJson) async {
+    final result = await _signInWithProviderCredential(tokenJson);
+    if (result != null) return result;
+    final customToken = tokenJson['custom_token'] as String?;
+    if (customToken != null && customToken.isNotEmpty) {
+      return _signInWithCustomToken(customToken);
+    }
+    return null;
+  }
+
+  Future<Map<String, String>?> _signInWithProviderCredential(Map<String, dynamic> tokenJson) async {
+    final idToken = tokenJson['id_token'] as String?;
+    if (idToken == null || idToken.isEmpty) return null;
+
+    final provider = tokenJson['provider'] as String? ?? 'google';
+    final providerId = tokenJson['provider_id'] as String? ?? (provider == 'apple' ? 'apple.com' : 'google.com');
+    final accessToken = tokenJson['access_token'] as String? ?? '';
+
+    final postBody = StringBuffer('id_token=${Uri.encodeComponent(idToken)}&providerId=${Uri.encodeComponent(providerId)}');
+    if (accessToken.isNotEmpty) postBody.write('&access_token=${Uri.encodeComponent(accessToken)}');
+
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$_firebaseSignInIdpUrl?key=$_apiKey'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'postBody': postBody.toString(),
+              'requestUri': 'http://localhost',
+              'returnIdpCredential': true,
+              'returnSecureToken': true,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+      debugPrint('OmiLoginWebView: [new] signInWithIdp → ${res.statusCode}');
+      if (res.statusCode == 200) return _extractSession(res.body);
+    } catch (e) {
+      debugPrint('OmiLoginWebView: [new] signInWithIdp error: $e');
+    }
+    return null;
+  }
+
+  Future<Map<String, String>?> _signInWithCustomToken(String customToken) async {
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$_firebaseSignInCustomUrl?key=$_apiKey'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'token': customToken, 'returnSecureToken': true}),
+          )
+          .timeout(const Duration(seconds: 15));
+      debugPrint('OmiLoginWebView: [new] signInWithCustomToken → ${res.statusCode}');
+      if (res.statusCode == 200) return _extractSession(res.body);
+    } catch (e) {
+      debugPrint('OmiLoginWebView: [new] signInWithCustomToken error: $e');
+    }
+    return null;
+  }
+
+  Map<String, String>? _extractSession(String body) {
+    try {
+      final json = jsonDecode(body) as Map<String, dynamic>;
+      final refreshToken = json['refreshToken'] as String?;
+      if (refreshToken == null || refreshToken.isEmpty) return null;
+      return {
+        'refreshToken': refreshToken,
+        'apiKey': _apiKey!,
+        'uid': (json['localId'] as String?) ?? '',
+        'email': (json['email'] as String?) ?? '',
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _generateState() {
+    final rand = Random.secure();
+    return List.generate(32, (_) => rand.nextInt(256)).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  }
+
+  void _setError(String message) {
+    if (!mounted || _credentialsCaptured) return;
+    setState(() {
+      _isLoading = false;
+      _errorMessage = message;
+    });
+  }
+
+  void _retry() {
+    if (!mounted) return;
+    setState(() {
+      _errorMessage = null;
+      _isLoading = true;
+      _flowMode = _FlowMode.preflight;
+      _state = null;
+      _sessionId = null;
+      _apiKey = null;
+    });
+    _startPreflight();
+  }
+
+  // Only called from preflight — never after the user has started signing in.
+  void _activateFallback() {
+    if (!mounted || _credentialsCaptured) return;
+    debugPrint('OmiLoginWebView: activating fallback');
+    _flowMode = _FlowMode.fallback;
+    _sessionId = null;
+    _apiKey = null;
+    _controller.loadRequest(Uri.parse('https://app.omi.me'));
+    if (mounted) setState(() => _isLoading = true);
+  }
+
+  // ─── Fallback flow (existing) ──────────────────────────────────────────────
 
   Future<void> _startDirectAuthFlow(String apiKey, Uri popupUri) async {
     _apiKey = apiKey;
     final continueUri = '${popupUri.scheme}://${popupUri.host}${popupUri.path}';
-    debugPrint('OmiLoginWebView: Starting direct auth flow with continueUri: $continueUri');
     if (mounted) setState(() => _isLoading = true);
 
     try {
-      debugPrint('OmiLoginWebView: Calling createAuthUri...');
-      final response = await http.post(
-        Uri.parse(
-          'https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri?key=$apiKey',
-        ),
+      final res = await http.post(
+        Uri.parse('$_firebaseCreateAuthUriUrl?key=$apiKey'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'continueUri': continueUri,
@@ -94,40 +308,30 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
           'customParameter': {'prompt': 'select_account'},
         }),
       );
-
-      debugPrint('OmiLoginWebView: createAuthUri response: ${response.statusCode}');
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
         _sessionId = data['sessionId'] as String?;
         final authUri = data['authUri'] as String?;
-        debugPrint('OmiLoginWebView: Obtained sessionId: ${_sessionId != null}, authUri: ${authUri != null}');
         if (_sessionId != null && authUri != null) {
-          debugPrint('OmiLoginWebView: Loading authUri: $authUri');
           _controller.loadRequest(Uri.parse(authUri));
           return;
         }
       }
-      debugPrint('OmiLoginWebView: createAuthUri failed: ${response.statusCode} ${response.body}');
+      debugPrint('OmiLoginWebView: [fallback] createAuthUri failed: ${res.statusCode}');
     } catch (e) {
-      debugPrint('OmiLoginWebView: createAuthUri error: $e');
+      debugPrint('OmiLoginWebView: [fallback] createAuthUri error: $e');
     }
 
     if (mounted) setState(() => _isLoading = false);
   }
 
-  Future<void> _exchangeCodeForTokens(String callbackUrl) async {
-    if (_credentialsCaptured || _apiKey == null || _sessionId == null) {
-      debugPrint('OmiLoginWebView: Cannot exchange tokens. Captured: $_credentialsCaptured, ApiKey: ${_apiKey != null}, SessionId: ${_sessionId != null}');
-      return;
-    }
+  Future<void> _exchangeCodeForTokensFallback(String callbackUrl) async {
+    if (_credentialsCaptured || _apiKey == null || _sessionId == null) return;
     if (mounted) setState(() => _isLoading = true);
 
     try {
-      debugPrint('OmiLoginWebView: Calling signInWithIdp...');
-      final response = await http.post(
-        Uri.parse(
-          'https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=$_apiKey',
-        ),
+      final res = await http.post(
+        Uri.parse('$_firebaseSignInIdpUrl?key=$_apiKey'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'requestUri': callbackUrl,
@@ -136,25 +340,24 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
           'returnIdpCredential': true,
         }),
       );
-
-      debugPrint('OmiLoginWebView: signInWithIdp response: ${response.statusCode}');
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
+      debugPrint('OmiLoginWebView: [fallback] signInWithIdp → ${res.statusCode}');
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
         final refreshToken = data['refreshToken'] as String?;
-        debugPrint('OmiLoginWebView: Token exchange success: ${refreshToken != null}');
         if (refreshToken != null && mounted && !_credentialsCaptured) {
           _credentialsCaptured = true;
-          debugPrint('OmiLoginWebView: Popping with success result.');
           Navigator.of(context).pop(<String, String>{
             'refreshToken': refreshToken,
             'apiKey': _apiKey!,
+            'uid': (data['localId'] as String?) ?? '',
+            'email': (data['email'] as String?) ?? '',
           });
           return;
         }
       }
-      debugPrint('OmiLoginWebView: signInWithIdp failed: ${response.statusCode} ${response.body}');
+      debugPrint('OmiLoginWebView: [fallback] signInWithIdp failed: ${res.statusCode}');
     } catch (e) {
-      debugPrint('OmiLoginWebView: Token exchange error: $e');
+      debugPrint('OmiLoginWebView: [fallback] token exchange error: $e');
     }
 
     if (mounted) setState(() => _isLoading = false);
@@ -185,6 +388,58 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
             const Center(
               child: CircularProgressIndicator(color: Colors.deepPurpleAccent),
             ),
+          if (_errorMessage != null)
+            _ErrorOverlay(
+              message: _errorMessage!,
+              onRetry: _retry,
+              onDismiss: () => Navigator.of(context).pop(),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ErrorOverlay extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+  final VoidCallback onDismiss;
+
+  const _ErrorOverlay({required this.message, required this.onRetry, required this.onDismiss});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF0D0D0D),
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
+          const SizedBox(height: 16),
+          Text(
+            message,
+            style: const TextStyle(color: Colors.white70, fontSize: 15),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: onRetry,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurpleAccent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              child: const Text('Try Again', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextButton(
+            onPressed: onDismiss,
+            child: Text('Go Back', style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
+          ),
         ],
       ),
     );
