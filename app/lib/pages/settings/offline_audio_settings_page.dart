@@ -623,7 +623,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                       ),
                     ),
                   ],
-                  const SizedBox(height: 16),
+                  if (!_manualMode) const SizedBox(height: 16),
 
                   // Maximum Conversation Length
                   Container(
