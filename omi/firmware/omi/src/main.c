@@ -105,17 +105,17 @@ static void boot_warming_sequence(void)
 
 static void boot_ready_fade(void)
 {
-    const int steps = 50; // 50 steps * 10 ms = 500 ms fade
+    const int steps = 100; // 100 steps * 10 ms = 1000 ms fade
     const int delay_ms = 10;
 
-    /* SD + mic are ready — solid white for .5 seconds, then fade down to off. */
+    /* SD + mic are ready — solid white for 1s, then fade down to off. */
     uint8_t start = app_settings_get_dim_ratio();
-    LOG_INF("[BOOT] Solid white for 500ms, then fading to off (from dim_ratio=%u)", start);
+    LOG_INF("[BOOT] Solid white for 1s, then fading to off (from dim_ratio=%u)", start);
     
     set_led_pwm(LED_RED, start);
     set_led_pwm(LED_GREEN, start);
     set_led_pwm(LED_BLUE, start);
-    k_msleep(500);
+    k_msleep(1000);
 
     for (int i = steps; i >= 0; i--) {
         float t = (float) i / steps;
