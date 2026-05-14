@@ -178,7 +178,7 @@ void set_led_state()
         r = true; // Solid Red
     } else if (battery_ready && battery_percentage < 10) {
         r = true; b = true; // Purple
-    } else if (is_connected && (k_uptime_get() - boot_finished_ms > 3000)) {
+    } else if (is_connected && (k_uptime_get() - boot_finished_ms > 1000)) {
         b = true; // Solid Blue
     } else if (aad_is_recording()) {
         r = true; g = true; // Yellow — auto recording active
