@@ -47,6 +47,7 @@ class DeviceProvider extends ChangeNotifier
   Timer? _backgroundSyncTimer;
   DateTime? nextSyncTime;
   bool _pendingAppOpenSync = false;
+  bool _pendingBackgroundSync = false;
 
   Timer? _reconnectDelayTimer;
   Timer? _disconnectNotificationTimer;
@@ -455,8 +456,10 @@ class DeviceProvider extends ChangeNotifier
             }
           }
           if (connectedThisTick) {
-            // Immediately trigger sync after background connection
-            _doBackgroundSync();
+            // Defer sync until _finishDeviceSetup has called walSync.setDevice —
+            // calling _doBackgroundSync here races with that setup and syncAll
+            // returns null (device==null) if setup hasn't finished yet.
+            _pendingBackgroundSync = true;
           }
         }
       } else {
@@ -532,6 +535,27 @@ class DeviceProvider extends ChangeNotifier
           title: isConnected ? 'Omi connected' : 'Omi is active',
           text: isConnected ? 'Connected to device' : 'Running in the background',
         );
+      }
+
+      // Disconnect after the full sync+process cycle (both syncAll calls) so
+      // that new firmware files created during processing are also captured
+      // before we drop the connection.
+      if (!_isAppInForeground &&
+          SharedPreferencesUtil().maximizeBattery &&
+          !isFirmwareUpdateInProgress &&
+          !_isOnFirmwareUpdatePage &&
+          isConnected) {
+        final missingCount = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
+        if (missingCount <= 0) {
+          Logger.debug(
+            'Maximizing battery: disconnecting device after background sync — no segments remaining.',
+          );
+          ServiceManager.instance().device.disconnectDevice(isManual: true);
+        } else {
+          Logger.debug(
+            'Maximizing battery: keeping connection — $missingCount segments still remaining after sync.',
+          );
+        }
       }
     }
   }
@@ -719,31 +743,8 @@ class DeviceProvider extends ChangeNotifier
   }
 
   @override
-  void onSyncFinished() {
-    // Double check that we are actually in the background before disconnecting.
-    final state = WidgetsBinding.instance.lifecycleState;
-    final isTrulyBackground = (state != null && state != AppLifecycleState.resumed);
+  void onSyncFinished() {}
 
-    if (SharedPreferencesUtil().maximizeBattery &&
-        !isFirmwareUpdateInProgress &&
-        !_isOnFirmwareUpdatePage &&
-        (isTrulyBackground || !_isAppInForeground)) {
-      // Resiliency: Only disconnect if there's nothing left to sync.
-      // If the sync was interrupted by a crash or disconnect, we want to stay
-      // "available" for auto-reconnect to finish the job.
-      final missingCount = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
-      if (missingCount <= 0) {
-        Logger.debug(
-          'Maximizing battery: disconnecting device after sync completion because app is in background and no segments remain.',
-        );
-        ServiceManager.instance().device.disconnectDevice(isManual: true);
-      } else {
-        Logger.debug(
-          'Maximizing battery: keeping device connected after sync pause — $missingCount segments still remaining.',
-        );
-      }
-    }
-  }
 
   @override
   void onDeviceRecordingFailed() {}
@@ -790,6 +791,13 @@ class DeviceProvider extends ChangeNotifier
     }
 
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
+
+    // Timer connected in background and deferred the sync until now so that
+    // walSync._device is set before syncAll is called.
+    if (_pendingBackgroundSync) {
+      _pendingBackgroundSync = false;
+      unawaited(_doBackgroundSync());
+    }
 
     await getDeviceInfo();
     SharedPreferencesUtil().deviceName = device.name;
