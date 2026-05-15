@@ -129,10 +129,7 @@ class OmiApiClient {
     }
     Logger.debug('OmiApiClient: Uploading ${binFiles.length} file(s): $fileSizes');
 
-    final headers = {
-      'Authorization': 'Bearer $token',
-      'X-App-Platform': 'omi-offline',
-    };
+    final headers = {'Authorization': 'Bearer $token'};
 
     var res = await _doUpload(_syncUrlV2, binFiles, fileSizes, headers);
     var usedUrl = _syncUrlV2;
