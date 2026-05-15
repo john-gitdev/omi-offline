@@ -297,6 +297,19 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               setState(() {});
             },
             onDelete: _omiState != _ConnectionState.connected ? _deleteOmi : null,
+            trailingWidget: _omiState == _ConnectionState.connected
+                ? Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade800,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      _prefs.omiConnectedViaFallback ? 'Web App' : 'Direct',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 11),
+                    ),
+                  )
+                : null,
             fields: [
               if (_omiState != _ConnectionState.connected) ...[
                 SizedBox(
@@ -373,22 +386,6 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                     child: const Text('Log out', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
                   ),
                 ),
-                const SizedBox(height: 4),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Use v1 endpoint', style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
-                    Switch(
-                      value: _prefs.omiForceV1,
-                      onChanged: (v) {
-                        _prefs.omiForceV1 = v;
-                        setState(() {});
-                      },
-                      activeThumbColor: Colors.deepPurpleAccent,
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                  ],
-                ),
                 Center(
                   child: TextButton(
                     onPressed: () => setState(() => _showOmiManual = !_showOmiManual),
@@ -458,6 +455,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     required ValueChanged<bool> onAutoUploadChanged,
     required List<Widget> fields,
     VoidCallback? onDelete,
+    Widget? trailingWidget,
   }) {
     final isChecking = state == _ConnectionState.checking;
     final isConnected = state == _ConnectionState.connected;
@@ -479,15 +477,17 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               ),
               const SizedBox(width: 8),
               _buildIndicator(state),
-              if (onDelete != null) ...[
+              if (trailingWidget != null || onDelete != null) ...[
                 const Spacer(),
-                IconButton(
-                  onPressed: onDelete,
-                  icon: const Icon(Icons.delete_outline, color: Colors.grey, size: 20),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  visualDensity: VisualDensity.compact,
-                ),
+                if (trailingWidget != null) trailingWidget,
+                if (onDelete != null)
+                  IconButton(
+                    onPressed: onDelete,
+                    icon: const Icon(Icons.delete_outline, color: Colors.grey, size: 20),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    visualDensity: VisualDensity.compact,
+                  ),
               ],
             ],
           ),
