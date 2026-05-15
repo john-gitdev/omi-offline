@@ -167,9 +167,9 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     }
   }
 
-  Future<void> _openOmiLogin() async {
+  Future<void> _openOmiLogin({bool fallback = false}) async {
     final result = await Navigator.of(context).push<Map<String, String>>(
-      MaterialPageRoute(builder: (_) => const OmiLoginWebView()),
+      MaterialPageRoute(builder: (_) => OmiLoginWebView(startFallback: fallback)),
     );
 
     if (result != null) {
@@ -312,7 +312,23 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                         style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: _omiState == _ConnectionState.checking
+                        ? null
+                        : () => _openOmiLogin(fallback: true),
+                    style: OutlinedButton.styleFrom(
+                      side: BorderSide(color: Colors.grey.shade600),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: Text('Log in via app.omi.me',
+                        style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(height: 4),
                 Center(
                   child: TextButton(
                     onPressed: () => setState(() => _showOmiManual = !_showOmiManual),
@@ -358,6 +374,21 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                   ),
                 ),
                 const SizedBox(height: 4),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Use v1 endpoint', style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
+                    Switch(
+                      value: _prefs.omiForceV1,
+                      onChanged: (v) {
+                        _prefs.omiForceV1 = v;
+                        setState(() {});
+                      },
+                      activeThumbColor: Colors.deepPurpleAccent,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ],
+                ),
                 Center(
                   child: TextButton(
                     onPressed: () => setState(() => _showOmiManual = !_showOmiManual),
