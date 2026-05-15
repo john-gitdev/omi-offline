@@ -187,7 +187,6 @@ void check_button_level(struct k_work *work_item)
             // Released — triple tap -> toggle LED.
             is_led_enabled = !is_led_enabled;
             LOG_INF("Triple tap: LED toggled %s", is_led_enabled ? "ON" : "OFF");
-            play_haptic_milli(150);
             fsm_state = STATE_IDLE;
         } else {
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
