@@ -8,7 +8,9 @@ import 'package:webview_flutter/webview_flutter.dart';
 enum _FlowMode { omiBacked, fallback }
 
 class OmiLoginWebView extends StatefulWidget {
-  const OmiLoginWebView({super.key});
+  const OmiLoginWebView({super.key, this.startFallback = false});
+
+  final bool startFallback;
 
   @override
   State<OmiLoginWebView> createState() => _OmiLoginWebViewState();
@@ -57,7 +59,11 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
           onWebResourceError: (e) => debugPrint('OmiLoginWebView: WebResourceError: ${e.description}'),
         ),
       );
-    _startOmiBackedFlow();
+    if (widget.startFallback) {
+      _activateFallback();
+    } else {
+      _startOmiBackedFlow();
+    }
   }
 
   NavigationDecision _onNavigationRequest(NavigationRequest request) {

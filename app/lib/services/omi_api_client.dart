@@ -141,12 +141,12 @@ class OmiApiClient {
       'X-App-Platform': 'omi-offline',
     };
 
-    // Attempt v2 first
-    var res = await _doUpload(_syncUrlV2, binFiles, fileSizes, headers);
-    var usedUrl = _syncUrlV2;
-    
-    // Fallback to v1 if v2 returns 404 or 405
-    if (res.statusCode == 404 || res.statusCode == 405) {
+    final forceV1 = SharedPreferencesUtil().omiForceV1;
+    var res = await _doUpload(forceV1 ? _syncUrlV1 : _syncUrlV2, binFiles, fileSizes, headers);
+    var usedUrl = forceV1 ? _syncUrlV1 : _syncUrlV2;
+
+    // Auto-fallback to v1 when v2 is unavailable (only in auto mode).
+    if (!forceV1 && (res.statusCode == 404 || res.statusCode == 405)) {
       Logger.debug('OmiApiClient: v2 endpoint not found (HTTP ${res.statusCode}), falling back to v1');
       res = await _doUpload(_syncUrlV1, binFiles, fileSizes, headers);
       usedUrl = _syncUrlV1;

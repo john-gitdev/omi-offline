@@ -234,6 +234,10 @@ class SharedPreferencesUtil {
   bool get omiConnectedViaFallback => getBool('omiConnectedViaFallback', defaultValue: false);
   set omiConnectedViaFallback(bool v) => saveBool('omiConnectedViaFallback', v);
 
+  // Force v1 sync endpoint (synchronous, no job polling). Default: false (use v2).
+  bool get omiForceV1 => getBool('omiForceV1', defaultValue: false);
+  set omiForceV1(bool v) => saveBool('omiForceV1', v);
+
   bool get omiHasSpeechProfile => getBool('omiHasSpeechProfile', defaultValue: false);
   set omiHasSpeechProfile(bool v) => saveBool('omiHasSpeechProfile', v);
 
