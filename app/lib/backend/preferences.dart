@@ -131,7 +131,7 @@ class SharedPreferencesUtil {
       saveString('audioSaveFormat', format);
       return format;
     }
-    return getString('audioSaveFormat', defaultValue: 'm4a');
+    return getString('audioSaveFormat', defaultValue: 'wav');
   }
 
   set audioSaveFormat(String value) => saveString('audioSaveFormat', value);
