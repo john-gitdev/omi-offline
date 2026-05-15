@@ -153,7 +153,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
 
       _credentialsCaptured = true;
       debugPrint('OmiLoginWebView: [new] auth complete');
-      if (mounted) Navigator.of(context).pop({...session, 'flow': 'omi_backed'});
+      if (mounted) Navigator.of(context).pop(session);
     } catch (e) {
       debugPrint('OmiLoginWebView: [new] error: $e');
       _setError('No internet connection. Check your connection and try again.');
@@ -229,8 +229,6 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
         'apiKey': _apiKey!,
         'uid': (json['localId'] as String?) ?? '',
         'email': (json['email'] as String?) ?? '',
-        'idToken': (json['idToken'] as String?) ?? '',
-        'expiresIn': json['expiresIn']?.toString() ?? '3600',
       };
     } catch (_) {
       return null;
@@ -336,9 +334,6 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
             'apiKey': _apiKey!,
             'uid': (data['localId'] as String?) ?? '',
             'email': (data['email'] as String?) ?? '',
-            'idToken': (data['idToken'] as String?) ?? '',
-            'expiresIn': data['expiresIn']?.toString() ?? '3600',
-            'flow': 'fallback',
           });
           return;
         }

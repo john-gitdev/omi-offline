@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -40,7 +39,6 @@ class OmiApiClient {
   static const _syncUrlV1 = 'https://api.omi.me/v1/sync-local-files';
   static const _speechProfileUrl = 'https://api.omi.me/v3/speech-profile';
   static const _conversationUrl = 'https://api.omi.me/v1/dev/user/conversations';
-  static const _recentConversationsUrl = 'https://api.omi.me/v1/conversations';
 
   static bool get isSignedIn {
     final prefs = SharedPreferencesUtil();
@@ -111,9 +109,6 @@ class OmiApiClient {
     if (newRefreshToken != null && newRefreshToken.isNotEmpty && newRefreshToken != refreshToken) {
       await prefs.setOmiRefreshToken(newRefreshToken);
     }
-
-    final uid = body['user_id'] as String?;
-    if (uid != null && uid.isNotEmpty) prefs.omiAuthUid = uid;
 
     Logger.debug('OmiApiClient: Token refreshed, expires in ${expiresIn}s');
   }
@@ -215,13 +210,9 @@ class OmiApiClient {
       try {
         res = await http
             .get(Uri.parse('$baseUrl/$jobId'), headers: {'Authorization': 'Bearer $token'})
-            .timeout(const Duration(seconds: 30));
+            .timeout(const Duration(seconds: 15));
       } on SocketException {
         throw const OmiSyncException('No network connection');
-      } on TimeoutException {
-        Logger.debug('OmiApiClient: Job $jobId poll request timed out, retrying...');
-        await Future.delayed(Duration(milliseconds: delayMs));
-        continue;
       }
 
       Logger.debug('OmiApiClient: Job $jobId poll ${res.statusCode}: ${res.body}');
@@ -279,58 +270,29 @@ class OmiApiClient {
 
   /// Verifies a conversation was actually created on the server and checks its metadata.
   static Future<void> traceSyncResult(OmiSyncResult result) async {
-    if (!result.success) return;
+    if (!result.success || result.allConversationIds.isEmpty) return;
 
     try {
       await refreshTokenIfNeeded();
       final token = await SharedPreferencesUtil().omiIdToken;
       final headers = {'Authorization': 'Bearer $token'};
 
-      final ids = result.allConversationIds;
-      if (ids.isNotEmpty) {
-        for (final id in ids.take(6)) {
-          final res = await http.get(
-            Uri.parse('$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true'),
-            headers: headers,
-          ).timeout(const Duration(seconds: 15));
+      for (final id in result.allConversationIds.take(3)) {
+        final res = await http.get(
+          Uri.parse('$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true'),
+          headers: headers,
+        ).timeout(const Duration(seconds: 15));
 
-          if (res.statusCode == 200) {
-            final json = jsonDecode(res.body) as Map<String, dynamic>;
-            final segments = (json['transcript_segments'] as List?)?.length ?? 0;
-            final title = (json['structured'] as Map?)?['title'] ?? 'No Title';
-            final source = json['source'] as String? ?? '';
-            final discarded = json['discarded'] == true;
-            Logger.debug('OmiApiClient: Trace $id: "$title" source=$source segments=$segments discarded=$discarded');
-          } else {
-            Logger.error('OmiApiClient: Trace failed for $id (HTTP ${res.statusCode})');
-          }
+        if (res.statusCode == 200) {
+          final json = jsonDecode(res.body) as Map<String, dynamic>;
+          final segments = (json['transcript_segments'] as List?)?.length ?? 0;
+          final title = (json['structured'] as Map?)?['title'] ?? 'No Title';
+          final discarded = json['discarded'] == true;
+          Logger.debug('OmiApiClient: Trace result for $id: "$title", segments: $segments, discarded: $discarded');
+        } else {
+          Logger.error('OmiApiClient: Trace failed for $id (HTTP ${res.statusCode})');
         }
-        return;
       }
-
-      // No IDs returned — check recent conversations as a fallback signal.
-      final recent = await http.get(
-        Uri.parse('$_recentConversationsUrl?include_discarded=true&limit=10&offset=0'),
-        headers: headers,
-      ).timeout(const Duration(seconds: 15));
-
-      List<dynamic> memories = [];
-      try {
-        final parsed = jsonDecode(recent.body);
-        if (parsed is List) {
-          memories = parsed;
-        } else if (parsed is Map) {
-          memories = (parsed['memories'] as List?) ?? [];
-        }
-      } catch (_) {}
-
-      final first = memories.isNotEmpty ? memories.first as Map<String, dynamic>? : null;
-      final firstId = first?['id'] as String? ?? '';
-      final firstDiscarded = first?['discarded'] == true;
-      Logger.debug(
-        'OmiApiClient: Trace (no ids) recent=${recent.statusCode} count=${memories.length} '
-        'first=${firstId.isEmpty ? "none" : firstId.substring(0, firstId.length.clamp(0, 8))} discarded=$firstDiscarded',
-      );
     } catch (e) {
       Logger.error('OmiApiClient: Trace error: $e');
     }
