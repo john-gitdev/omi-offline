@@ -181,8 +181,6 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
       if (valid && mounted) {
         await _prefs.setOmiRefreshToken(rt);
         await _prefs.setOmiFirebaseApiKey(ak);
-        _prefs.omiAuthUid = result['uid'] ?? '';
-        _prefs.omiAuthEmail = result['email'] ?? '';
         _omiRefreshTokenController.text = rt;
         _omiFirebaseApiKeyController.text = ak;
         setState(() => _omiState = _ConnectionState.connected);
