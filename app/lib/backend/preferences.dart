@@ -35,11 +35,25 @@ class SharedPreferencesUtil {
   bool get adjustmentMode => getBool('adjustmentMode', defaultValue: false);
   set adjustmentMode(bool value) => saveBool('adjustmentMode', value);
 
+  // When true, uploads to integrations are permitted even when adjustmentMode is ON.
+  // This is a debug setting; normally uploads are paused during adjustment.
+  bool get allowUploadDuringAdjustment => getBool('allowUploadDuringAdjustment', defaultValue: false);
+  set allowUploadDuringAdjustment(bool value) => saveBool('allowUploadDuringAdjustment', value);
+
   // Set to true the first time adjustment mode is turned ON; cleared only after
   // the cleanup banner's "Process & Delete" completes. Used to suppress the
   // cleanup banner when adjustment mode has never been enabled.
   bool get adjustmentModeWasEnabled => getBool('adjustmentModeWasEnabled', defaultValue: false);
   set adjustmentModeWasEnabled(bool value) => saveBool('adjustmentModeWasEnabled', value);
+
+  // Manual recording mode: recording is started/stopped by device double-tap.
+  // When true, Silero VAD is off and the device AAD threshold is toggled between 0 and 32768.
+  // Can only be toggled while the device is connected so the BLE write always lands.
+  bool get manualMode => getBool('manualMode', defaultValue: false);
+  set manualMode(bool v) => saveBool('manualMode', v);
+
+  int get autoVadThreshold => getInt('autoVadThreshold', defaultValue: 250);
+  set autoVadThreshold(int v) => saveInt('autoVadThreshold', v);
 
   // When true, Silero VAD classifies each audio frame as speech or silence.
   // When false, all audio is treated as speech (AAD mode — splits by firmware timestamps only).
@@ -61,6 +75,11 @@ class SharedPreferencesUtil {
   int get filterMinDurationSeconds => getInt('filterMinDurationSeconds', defaultValue: 0);
   set filterMinDurationSeconds(int v) => saveInt('filterMinDurationSeconds', v);
 
+  // Minimum detected speech duration (seconds) required to save a recording.
+  // Options: 0 (off), 3, 10, 30.
+  int get vadMinSpeechSeconds => getInt('vadMinSpeechSeconds', defaultValue: 3);
+  set vadMinSpeechSeconds(int v) => saveInt('vadMinSpeechSeconds', v);
+
   // When true, recordings shorter than filterMinDurationSeconds are permanently
   // discarded during processing. When false, they are saved but hidden from the
   // list and skipped by integrations.
@@ -70,6 +89,38 @@ class SharedPreferencesUtil {
   // Maximum continuous conversation length (minutes) before forcing a cut.
   int get vadMaxConversationMinutes => getInt('vadMaxConversationMinutes', defaultValue: 60);
   set vadMaxConversationMinutes(int v) => saveInt('vadMaxConversationMinutes', v);
+
+  // Per-mode recording settings snapshots. Default to the active pref so existing
+  // users see their current settings the first time they open each mode.
+  bool get autoModeVadEnabled => getBool('auto_vadEnabled', defaultValue: true);
+  set autoModeVadEnabled(bool v) => saveBool('auto_vadEnabled', v);
+  double get autoModeVadSpeechThreshold => getDouble('auto_vadSpeechThreshold', defaultValue: 0.5);
+  set autoModeVadSpeechThreshold(double v) => saveDouble('auto_vadSpeechThreshold', v);
+  int get autoModeVadMinSpeechSeconds => getInt('auto_vadMinSpeechSeconds', defaultValue: 3);
+  set autoModeVadMinSpeechSeconds(int v) => saveInt('auto_vadMinSpeechSeconds', v);
+  int get autoModeVadSplitSeconds => getInt('auto_vadSplitSeconds', defaultValue: 120);
+  set autoModeVadSplitSeconds(int v) => saveInt('auto_vadSplitSeconds', v);
+  int get autoModeFilterMinDurationSeconds => getInt('auto_filterMinDurationSeconds', defaultValue: 600);
+  set autoModeFilterMinDurationSeconds(int v) => saveInt('auto_filterMinDurationSeconds', v);
+  bool get autoModeDiscardShortRecordings => getBool('auto_discardShortRecordings', defaultValue: false);
+  set autoModeDiscardShortRecordings(bool v) => saveBool('auto_discardShortRecordings', v);
+  int get autoModeVadMaxConversationMinutes => getInt('auto_vadMaxConversationMinutes', defaultValue: 0);
+  set autoModeVadMaxConversationMinutes(int v) => saveInt('auto_vadMaxConversationMinutes', v);
+
+  bool get manualModeVadEnabled => getBool('manual_vadEnabled', defaultValue: false);
+  set manualModeVadEnabled(bool v) => saveBool('manual_vadEnabled', v);
+  double get manualModeVadSpeechThreshold => getDouble('manual_vadSpeechThreshold', defaultValue: vadSpeechThreshold);
+  set manualModeVadSpeechThreshold(double v) => saveDouble('manual_vadSpeechThreshold', v);
+  int get manualModeVadMinSpeechSeconds => getInt('manual_vadMinSpeechSeconds', defaultValue: vadMinSpeechSeconds);
+  set manualModeVadMinSpeechSeconds(int v) => saveInt('manual_vadMinSpeechSeconds', v);
+  int get manualModeVadSplitSeconds => getInt('manual_vadSplitSeconds', defaultValue: 3);
+  set manualModeVadSplitSeconds(int v) => saveInt('manual_vadSplitSeconds', v);
+  int get manualModeFilterMinDurationSeconds => getInt('manual_filterMinDurationSeconds', defaultValue: 0);
+  set manualModeFilterMinDurationSeconds(int v) => saveInt('manual_filterMinDurationSeconds', v);
+  bool get manualModeDiscardShortRecordings => getBool('manual_discardShortRecordings', defaultValue: false);
+  set manualModeDiscardShortRecordings(bool v) => saveBool('manual_discardShortRecordings', v);
+  int get manualModeVadMaxConversationMinutes => getInt('manual_vadMaxConversationMinutes', defaultValue: 0);
+  set manualModeVadMaxConversationMinutes(int v) => saveInt('manual_vadMaxConversationMinutes', v);
 
   // The format to save processed audio files. Options: 'm4a', 'ogg', 'wav'.
   String get audioSaveFormat {
@@ -103,11 +154,19 @@ class SharedPreferencesUtil {
 
   set extractionInProgress(bool value) => saveBool('extractionInProgress', value);
 
+  // How long to keep recordings locally before they are auto-deleted.
+  // -1: Never (Always keep)
+  //  0: Immediately (Passthrough Mode)
+  //  3: 3 days
+  //  7: 7 days
+  int get keepRecordingsDays => getInt('keepRecordingsDays', defaultValue: -1);
+  set keepRecordingsDays(int v) => saveInt('keepRecordingsDays', v);
+
   // When enabled, recordings are uploaded to integrations immediately and the
   // local audio file is deleted after a successful upload. Only the metadata
   // sidecar (.meta) is kept so the conversation still appears in the list.
-  bool get passthroughMode => getBool('passthroughMode', defaultValue: false);
-  set passthroughMode(bool v) => saveBool('passthroughMode', v);
+  bool get passthroughMode => keepRecordingsDays == 0;
+  set passthroughMode(bool v) => keepRecordingsDays = v ? 0 : -1;
 
   //--------------------------- Omi Server Sync --------------------------//
 
@@ -116,12 +175,13 @@ class SharedPreferencesUtil {
   set omiEnabled(bool v) => saveBool('omiSyncEnabled', v);
 
   // Whether recordings are automatically uploaded after processing. Requires omiEnabled.
-  bool get omiAutoUpload => getBool('omiAutoUpload', defaultValue: true);
+  bool get omiAutoUpload => getBool('omiAutoUpload', defaultValue: false);
   set omiAutoUpload(bool v) => saveBool('omiAutoUpload', v);
 
   // Short-lived JWT — refreshed automatically; stored in regular prefs.
-  String get omiIdToken => getString('omiIdToken', defaultValue: '');
-  set omiIdToken(String v) => saveString('omiIdToken', v);
+  // omiIdToken is stored in secure storage as it is a sensitive credential.
+  Future<String> get omiIdToken async => await _secureStorage.read(key: 'omiIdToken') ?? '';
+  Future<void> setOmiIdToken(String v) async => await _secureStorage.write(key: 'omiIdToken', value: v);
 
   // Unix ms when the current ID token expires.
   int get omiTokenExpiry => getInt('omiTokenExpiry', defaultValue: 0);
@@ -163,6 +223,12 @@ class SharedPreferencesUtil {
     }
   }
 
+  bool get omiHasSpeechProfile => getBool('omiHasSpeechProfile', defaultValue: false);
+  set omiHasSpeechProfile(bool v) => saveBool('omiHasSpeechProfile', v);
+
+  int get omiSpeechProfileCheckedAtMs => getInt('omiSpeechProfileCheckedAtMs', defaultValue: 0);
+  set omiSpeechProfileCheckedAtMs(int v) => saveInt('omiSpeechProfileCheckedAtMs', v);
+
   //--------------------------- HeyPocket Integration ---------------------//
 
   String get heypocketApiKey => _heypocketApiKey;
@@ -175,7 +241,7 @@ class SharedPreferencesUtil {
   set heypocketEnabled(bool v) => saveBool('heypocketEnabled', v);
 
   // Whether recordings are automatically uploaded after processing. Requires heypocketEnabled.
-  bool get heypocketAutoUpload => getBool('heypocketAutoUpload', defaultValue: true);
+  bool get heypocketAutoUpload => getBool('heypocketAutoUpload', defaultValue: false);
   set heypocketAutoUpload(bool v) => saveBool('heypocketAutoUpload', v);
 
   List<String> get heypocketUploadedFiles => getStringList('heypocketUploadedFiles');
@@ -225,6 +291,17 @@ class SharedPreferencesUtil {
       _heypocketUploadGuard = null;
       completer.complete();
     }
+  }
+
+  int getAutoUploadRetries(String key) => getInt('autoUploadRetry_$key', defaultValue: 0);
+
+  Future<void> incrementAutoUploadRetry(String key) async {
+    final current = getAutoUploadRetries(key);
+    await saveInt('autoUploadRetry_$key', current + 1);
+  }
+
+  Future<void> clearAutoUploadRetry(String key) async {
+    await remove('autoUploadRetry_$key');
   }
 
   static Future<void> init() async {
@@ -306,9 +383,12 @@ class SharedPreferencesUtil {
 
   set lastBatteryLevel(int value) => saveInt('lastBatteryLevel', value);
 
+  int get lastSyncCompletedMs => getInt('lastSyncCompletedMs', defaultValue: 0);
+
+  set lastSyncCompletedMs(int v) => saveInt('lastSyncCompletedMs', v);
+
   // Developer Diagnostics
   bool get devLogsToFileEnabled => getBool('devLogsToFileEnabled');
-
   set devLogsToFileEnabled(bool value) => saveBool('devLogsToFileEnabled', value);
 
   //--------------------------- Setters & Getters -----------------------------//
