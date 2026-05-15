@@ -779,7 +779,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
                 wal.walOffset = offset;
                 // Persist offset every ~1 MB so a crash or disconnect preserves
                 // progress and the next session resumes rather than re-downloading.
-                if ((offset - initialOffset) % (1024 * 1024) < 512) {
+                if ((offset - initialOffset) >= (1024 * 1024) && (offset - initialOffset) % (1024 * 1024) < 512) {
                   WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
                 }
                 final double withinWal = (wal.storageTotalBytes > initialOffset)
