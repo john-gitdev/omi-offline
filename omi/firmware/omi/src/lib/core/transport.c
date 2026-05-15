@@ -765,6 +765,13 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
     }
     k_mutex_unlock(&conn_mutex);
     current_mtu = 0;
+
+    /* Restart advertising so the device is rediscoverable after any disconnect.
+     * Without this, slow-adv mode (BT_LE_ADV_OPT_ONE_TIME) leaves the device
+     * invisible after a connect/disconnect cycle — Zephyr does not auto-restart
+     * advertising when ONE_TIME is set. Start with fast params; AAD will switch
+     * back to slow once VAD returns to sleep. */
+    bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
 }
 
 static bool _le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
