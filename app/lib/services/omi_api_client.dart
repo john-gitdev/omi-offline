@@ -156,6 +156,7 @@ class OmiApiClient {
     }
 
     return _parseSyncResult(res.statusCode, responseBody);
+  }
 
   static Future<http.Response> _doUpload(
     String url,
