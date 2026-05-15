@@ -317,13 +317,17 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           size: 20,
                         ),
                         onTap: () async {
+                          final controller = Provider.of<RecordingsController>(context, listen: false);
                           await Navigator.of(context).push(
                             MaterialPageRoute(
-                              builder: (context) => const IntegrationsPage(),
+                              builder: (context) => IntegrationsPage(
+                                onOmiDisabled: controller.cancelPendingOmiUploads,
+                                onHeyPocketDisabled: controller.cancelPendingHeyPocketUploads,
+                              ),
                             ),
                           );
                           if (context.mounted) {
-                            Provider.of<RecordingsController>(context, listen: false).reloadBatchesSilently();
+                            controller.reloadBatchesSilently();
                           }
                         },
                       ),

@@ -1110,6 +1110,17 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
   }
 
+  void cancelPendingOmiUploads() {
+    final count = _syncingBinFiles.length;
+    _syncingBinFiles.clear();
+    Logger.debug('RecordingsController: Omi Cloud disabled — cleared $count in-progress sync(s)');
+  }
+
+  void cancelPendingHeyPocketUploads() {
+    final count = _autoUploadActive;
+    Logger.debug('RecordingsController: HeyPocket disabled — $count auto-upload(s) will drain and stop');
+  }
+
   void tryAutoSyncNext() {
     if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) return;
     if (!_prefs.omiEnabled || _prefs.omiRefreshToken.isEmpty || !_prefs.omiAutoUpload) return;
