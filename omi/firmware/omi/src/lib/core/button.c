@@ -192,7 +192,6 @@ void check_button_level(struct k_work *work_item)
             if (duration_ms >= TRIPLE_HOLD_TIME) {
                 // Triple tap + hold -> power off.
                 LOG_INF("Power off triggered via triple-tap-hold");
-                play_haptic_milli(1000);
                 turnoff_all();
                 fsm_state = STATE_IDLE;
             }
