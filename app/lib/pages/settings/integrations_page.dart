@@ -167,9 +167,9 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     }
   }
 
-  Future<void> _openOmiLogin() async {
+  Future<void> _openOmiLogin({bool fallback = false}) async {
     final result = await Navigator.of(context).push<Map<String, String>>(
-      MaterialPageRoute(builder: (_) => const OmiLoginWebView()),
+      MaterialPageRoute(builder: (_) => OmiLoginWebView(startFallback: fallback)),
     );
 
     if (result != null) {
@@ -181,6 +181,15 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
       if (valid && mounted) {
         await _prefs.setOmiRefreshToken(rt);
         await _prefs.setOmiFirebaseApiKey(ak);
+        _prefs.omiAuthUid = result['uid'] ?? '';
+        _prefs.omiAuthEmail = result['email'] ?? '';
+        _prefs.omiConnectedViaFallback = result['flow'] == 'fallback';
+        final idToken = result['idToken'] ?? '';
+        if (idToken.isNotEmpty) {
+          await _prefs.setOmiIdToken(idToken);
+          final expiresIn = int.tryParse(result['expiresIn'] ?? '') ?? 3600;
+          _prefs.omiTokenExpiry = DateTime.now().millisecondsSinceEpoch + expiresIn * 1000;
+        }
         _omiRefreshTokenController.text = rt;
         _omiFirebaseApiKeyController.text = ak;
         setState(() => _omiState = _ConnectionState.connected);
@@ -192,6 +201,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
 
   Future<void> _deleteOmi() async {
     await OmiApiClient.signOut();
+    _prefs.omiConnectedViaFallback = false;
     if (!mounted) return;
     _omiRefreshTokenController.clear();
     _omiFirebaseApiKeyController.clear();
@@ -286,7 +296,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               _prefs.omiAutoUpload = v;
               setState(() {});
             },
-            onDelete: _deleteOmi,
+            onDelete: _omiState != _ConnectionState.connected ? _deleteOmi : null,
             fields: [
               if (_omiState != _ConnectionState.connected) ...[
                 SizedBox(
@@ -302,7 +312,23 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                         style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: _omiState == _ConnectionState.checking
+                        ? null
+                        : () => _openOmiLogin(fallback: true),
+                    style: OutlinedButton.styleFrom(
+                      side: BorderSide(color: Colors.grey.shade600),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: Text('Log in via app.omi.me',
+                        style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(height: 4),
                 Center(
                   child: TextButton(
                     onPressed: () => setState(() => _showOmiManual = !_showOmiManual),
@@ -313,7 +339,67 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                   ),
                 ),
               ],
-              if (_showOmiManual || _omiState == _ConnectionState.connected) ...[
+              if (_omiState == _ConnectionState.connected) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2C2C2E),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.account_circle_outlined, color: Colors.grey, size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _prefs.omiAuthEmail.isNotEmpty ? _prefs.omiAuthEmail : 'Omi Account',
+                          style: const TextStyle(color: Colors.white70, fontSize: 13),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: _deleteOmi,
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.redAccent),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('Log out', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Use v1 endpoint', style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
+                    Switch(
+                      value: _prefs.omiForceV1,
+                      onChanged: (v) {
+                        _prefs.omiForceV1 = v;
+                        setState(() {});
+                      },
+                      activeThumbColor: Colors.deepPurpleAccent,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ],
+                ),
+                Center(
+                  child: TextButton(
+                    onPressed: () => setState(() => _showOmiManual = !_showOmiManual),
+                    child: Text(
+                      _showOmiManual ? 'Hide credentials' : 'Enter manually',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
+                    ),
+                  ),
+                ),
+              ],
+              if (_showOmiManual || _prefs.omiConnectedViaFallback) ...[
                 _buildField(
                   controller: _omiRefreshTokenController,
                   hint: 'Refresh Token',
