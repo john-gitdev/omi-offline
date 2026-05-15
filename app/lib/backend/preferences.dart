@@ -223,6 +223,21 @@ class SharedPreferencesUtil {
     }
   }
 
+  // Firebase user UID and email — stored in plain SharedPreferences (non-sensitive identifiers).
+  String get omiAuthUid => getString('omiAuthUid');
+  set omiAuthUid(String v) => saveString('omiAuthUid', v);
+
+  String get omiAuthEmail => getString('omiAuthEmail');
+  set omiAuthEmail(String v) => saveString('omiAuthEmail', v);
+
+  // Whether the last login used the fallback WebView flow (shows raw token fields).
+  bool get omiConnectedViaFallback => getBool('omiConnectedViaFallback', defaultValue: false);
+  set omiConnectedViaFallback(bool v) => saveBool('omiConnectedViaFallback', v);
+
+  // Force v1 sync endpoint (synchronous, no job polling). Default: false (use v2).
+  bool get omiForceV1 => getBool('omiForceV1', defaultValue: false);
+  set omiForceV1(bool v) => saveBool('omiForceV1', v);
+
   bool get omiHasSpeechProfile => getBool('omiHasSpeechProfile', defaultValue: false);
   set omiHasSpeechProfile(bool v) => saveBool('omiHasSpeechProfile', v);
 
