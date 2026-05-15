@@ -127,7 +127,6 @@ void check_button_level(struct k_work *work_item)
                     } else {
                         mic_resume();
                     }
-                    play_haptic_milli(500);
                 }
                 fsm_state = STATE_WAIT_FOR_RELEASE;
             }
