@@ -230,10 +230,6 @@ class SharedPreferencesUtil {
   String get omiAuthEmail => getString('omiAuthEmail');
   set omiAuthEmail(String v) => saveString('omiAuthEmail', v);
 
-  // Whether the last login used the fallback WebView flow (shows raw token fields).
-  bool get omiConnectedViaFallback => getBool('omiConnectedViaFallback', defaultValue: false);
-  set omiConnectedViaFallback(bool v) => saveBool('omiConnectedViaFallback', v);
-
   bool get omiHasSpeechProfile => getBool('omiHasSpeechProfile', defaultValue: false);
   set omiHasSpeechProfile(bool v) => saveBool('omiHasSpeechProfile', v);
 
