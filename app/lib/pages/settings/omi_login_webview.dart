@@ -35,7 +35,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
 
   static const _omiAuthorizeUrl = 'https://api.omi.me/v1/auth/authorize';
   static const _omiTokenUrl = 'https://api.omi.me/v1/auth/token';
-  static const _omiRedirectUri = 'omi://auth/callback';
+  static const _omiRedirectUri = 'omi-ambient-companion://auth/callback';
   static const _firebaseSignInIdpUrl = 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp';
   static const _firebaseSignInCustomUrl = 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken';
   static const _firebaseCreateAuthUriUrl = 'https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri';
@@ -73,7 +73,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
 
     // Omi-backed flow: intercept omi://auth/callback
     if (_flowMode == _FlowMode.omiBacked &&
-        uri.scheme == 'omi' &&
+        uri.scheme == 'omi-ambient-companion' &&
         uri.host == 'auth' &&
         uri.path == '/callback') {
       _handleOmiCallback(uri.queryParameters['code'], uri.queryParameters['state']);
