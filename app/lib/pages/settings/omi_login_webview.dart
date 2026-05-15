@@ -5,7 +5,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:webview_flutter/webview_flutter.dart';
 
-enum _FlowMode { preflight, omiBacked, fallback }
+enum _FlowMode { omiBacked, fallback }
 
 class OmiLoginWebView extends StatefulWidget {
   const OmiLoginWebView({super.key});
@@ -20,14 +20,17 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
   bool _credentialsCaptured = false;
   String? _errorMessage;
 
+  // Fallback flow picks up the key from the intercepted WebView URL;
+  // the Omi-backed flow uses this fixed key for api.omi.me's Firebase project.
+  static const _omiBackedFirebaseApiKey = 'AIzaSyA88gHcmiAxjN_aE23tHRWXOgFfapyO6dk';
+
   String? _apiKey;
-  _FlowMode _flowMode = _FlowMode.preflight;
+  _FlowMode _flowMode = _FlowMode.omiBacked;
   String? _state; // CSRF state for the Omi-backed flow
 
   // Fallback-only state
   String? _sessionId;
 
-  static const _firebaseInitUrl = 'https://based-hardware.firebaseapp.com/__/firebase/init.json';
   static const _omiAuthorizeUrl = 'https://api.omi.me/v1/auth/authorize';
   static const _omiTokenUrl = 'https://api.omi.me/v1/auth/token';
   static const _omiRedirectUri = 'omi://auth/callback';
@@ -54,7 +57,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
           onWebResourceError: (e) => debugPrint('OmiLoginWebView: WebResourceError: ${e.description}'),
         ),
       );
-    _startPreflight();
+    _startOmiBackedFlow();
   }
 
   NavigationDecision _onNavigationRequest(NavigationRequest request) {
@@ -93,29 +96,8 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
 
   // ─── Omi-backed flow ──────────────────────────────────────────────────────
 
-  Future<void> _startPreflight() async {
-    try {
-      final res = await http
-          .get(Uri.parse(_firebaseInitUrl))
-          .timeout(const Duration(seconds: 8));
-      if (res.statusCode == 200) {
-        final json = jsonDecode(res.body) as Map<String, dynamic>;
-        final key = json['apiKey'] as String?;
-        if (key != null && key.isNotEmpty) {
-          _apiKey = key;
-          debugPrint('OmiLoginWebView: [preflight] API key obtained, starting Omi-backed flow');
-          await _startOmiBackedFlow();
-          return;
-        }
-      }
-      debugPrint('OmiLoginWebView: [preflight] init.json failed (${res.statusCode}), falling back');
-    } catch (e) {
-      debugPrint('OmiLoginWebView: [preflight] error: $e, falling back');
-    }
-    _activateFallback();
-  }
-
   Future<void> _startOmiBackedFlow() async {
+    _apiKey = _omiBackedFirebaseApiKey;
     _state = _generateState();
     _flowMode = _FlowMode.omiBacked;
     final url = '$_omiAuthorizeUrl'
@@ -271,23 +253,24 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
     setState(() {
       _errorMessage = null;
       _isLoading = true;
-      _flowMode = _FlowMode.preflight;
       _state = null;
       _sessionId = null;
       _apiKey = null;
     });
-    _startPreflight();
+    _startOmiBackedFlow();
   }
 
-  // Only called from preflight — never after the user has started signing in.
   void _activateFallback() {
     if (!mounted || _credentialsCaptured) return;
-    debugPrint('OmiLoginWebView: activating fallback');
-    _flowMode = _FlowMode.fallback;
-    _sessionId = null;
-    _apiKey = null;
+    setState(() {
+      _errorMessage = null;
+      _isLoading = true;
+      _flowMode = _FlowMode.fallback;
+      _state = null;
+      _sessionId = null;
+      _apiKey = null;
+    });
     _controller.loadRequest(Uri.parse('https://app.omi.me'));
-    if (mounted) setState(() => _isLoading = true);
   }
 
   // ─── Fallback flow (existing) ──────────────────────────────────────────────
@@ -391,6 +374,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
           if (_errorMessage != null)
             _ErrorOverlay(
               message: _errorMessage!,
+              onFallback: _flowMode == _FlowMode.omiBacked ? _activateFallback : null,
               onRetry: _retry,
               onDismiss: () => Navigator.of(context).pop(),
             ),
@@ -402,10 +386,11 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
 
 class _ErrorOverlay extends StatelessWidget {
   final String message;
+  final VoidCallback? onFallback;
   final VoidCallback onRetry;
   final VoidCallback onDismiss;
 
-  const _ErrorOverlay({required this.message, required this.onRetry, required this.onDismiss});
+  const _ErrorOverlay({required this.message, this.onFallback, required this.onRetry, required this.onDismiss});
 
   @override
   Widget build(BuildContext context) {
@@ -423,16 +408,31 @@ class _ErrorOverlay extends StatelessWidget {
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 24),
+          if (onFallback != null) ...[
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: onFallback,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurpleAccent,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                child: const Text('Try Another Method', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
               onPressed: onRetry,
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.deepPurpleAccent,
+                backgroundColor: onFallback != null ? Colors.grey.shade800 : Colors.deepPurpleAccent,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
-              child: const Text('Try Again', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              child: const Text('Retry Login', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             ),
           ),
           const SizedBox(height: 12),
