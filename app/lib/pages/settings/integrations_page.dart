@@ -199,8 +199,12 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
         }
         _prefs.omiEnabled = true;
         unawaited(_prefs.clearAllAutoUploadRetries());
+        _omiRefreshTokenController.removeListener(_onOmiChanged);
+        _omiFirebaseApiKeyController.removeListener(_onOmiChanged);
         _omiRefreshTokenController.text = rt;
         _omiFirebaseApiKeyController.text = ak;
+        _omiRefreshTokenController.addListener(_onOmiChanged);
+        _omiFirebaseApiKeyController.addListener(_onOmiChanged);
         setState(() => _omiState = _ConnectionState.connected);
       } else if (mounted) {
         setState(() => _omiState = _ConnectionState.error);
