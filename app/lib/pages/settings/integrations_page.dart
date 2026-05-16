@@ -410,7 +410,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                   ),
                 ),
               ],
-              if (_showOmiManual || _prefs.omiConnectedViaFallback) ...[
+              if (_showOmiManual) ...[
                 _buildField(
                   controller: _omiRefreshTokenController,
                   hint: 'Refresh Token',
