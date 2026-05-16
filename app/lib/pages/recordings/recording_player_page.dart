@@ -231,15 +231,22 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
     final color = switch (status) {
       UploadStatus.all => Colors.green,
       UploadStatus.partial => Colors.amber,
+      UploadStatus.failed => Colors.orange,
       UploadStatus.none => Colors.redAccent,
     };
     final tooltip = switch (status) {
       UploadStatus.all => 'Re-upload to integrations',
       UploadStatus.partial => 'Some integrations pending — tap to retry',
+      UploadStatus.failed => 'Upload failed — tap to retry',
       UploadStatus.none => 'Upload to integrations',
     };
+    final icon = switch (status) {
+      UploadStatus.all => Icons.cloud_done,
+      UploadStatus.failed => Icons.error_outline,
+      _ => Icons.cloud_upload,
+    };
     return IconButton(
-      icon: Icon(status == UploadStatus.all ? Icons.cloud_done : Icons.cloud_upload, color: color, size: 22),
+      icon: Icon(icon, color: color, size: 22),
       tooltip: tooltip,
       onPressed: _handleUpload,
     );
