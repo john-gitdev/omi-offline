@@ -23,14 +23,18 @@ class BatteryStatusIndicator extends StatefulWidget {
   State<BatteryStatusIndicator> createState() => _BatteryStatusIndicatorState();
 }
 
-class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with SingleTickerProviderStateMixin {
+class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _blinkController;
 
   @override
   void initState() {
     super.initState();
     // 1 000 ms matches firmware k_msleep(500) toggle → 500 ms on / 500 ms off
-    _blinkController = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000));
+    _blinkController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    );
     if (widget.isCharging) _blinkController.repeat();
   }
 
@@ -62,10 +66,10 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
   }
 
   Widget _dot() => Container(
-        width: 12,
-        height: 12,
-        decoration: BoxDecoration(color: _dotColor, shape: BoxShape.circle),
-      );
+    width: 12,
+    height: 12,
+    decoration: BoxDecoration(color: _dotColor, shape: BoxShape.circle),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -80,37 +84,42 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
       excludeSemantics: true,
       child: Tooltip(
         message: 'Device settings',
-        child: GestureDetector(
-          onTap: widget.onTap,
-          child: Container(
-            // Use a container with specific alignment instead of padding to avoid overflow
-            alignment: Alignment.centerLeft,
-            padding: const EdgeInsets.only(left: 16.0),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (widget.isCharging)
-                  AnimatedBuilder(
-                    animation: _blinkController,
-                    builder: (context, child) => Opacity(
-                      opacity: _blinkController.value < 0.5 ? 1.0 : 0.0,
-                      child: child,
+        child: Material(
+          color: Colors.transparent,
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: widget.onTap,
+            child: Container(
+              // Use a container with specific alignment instead of padding to avoid overflow
+              alignment: Alignment.centerLeft,
+              padding: const EdgeInsets.only(left: 16.0),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (widget.isCharging)
+                    AnimatedBuilder(
+                      animation: _blinkController,
+                      builder: (context, child) => Opacity(
+                        opacity: _blinkController.value < 0.5 ? 1.0 : 0.0,
+                        child: child,
+                      ),
+                      child: _dot(),
+                    )
+                  else
+                    _dot(),
+                  const SizedBox(width: 6),
+                  Text(
+                    widget.batteryLevel >= 0 ? '${widget.batteryLevel}%' : '--',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      height:
+                          1.1, // Tighten line height to prevent vertical overflow
                     ),
-                    child: _dot(),
-                  )
-                else
-                  _dot(),
-                const SizedBox(width: 6),
-                Text(
-                  widget.batteryLevel >= 0 ? '${widget.batteryLevel}%' : '--',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    height: 1.1, // Tighten line height to prevent vertical overflow
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),

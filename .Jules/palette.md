@@ -1,0 +1,3 @@
+## 2024-05-16 - Add InkWell ripples over custom GestureDetector widgets
+**Learning:** In Flutter, custom utility widgets in the AppBar (like battery indicators) that use `GestureDetector` directly inside a `Tooltip` lack tap ripples. Wrapping the action area in `Material(color: Colors.transparent, clipBehavior: Clip.antiAlias)` and using `InkWell` instead of `GestureDetector` provides native material visual touch responses while preserving background styling.
+**Action:** Use `Material` and `InkWell` instead of `GestureDetector` for any custom clickable components that need native tap feedback.
