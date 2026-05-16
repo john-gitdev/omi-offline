@@ -23,21 +23,22 @@ This document defines the official terminology for all audio-related data struct
 ## 2. Standardized Variable Names
 
 ### Raw Data & Metadata
-- `segmentIndex`: The zero-based position of a **Segment** within its **DeviceSession**.
-- `deviceSessionId`: The unique identifier for a hardware session (the UNIX UTC timestamp of the session's first file, provided by the firmware).
-- `walOffset`: The current monotonic byte position in the **WAL**. Always bytes — never a segment index.
+- `timerStart`: The Unix UTC timestamp (seconds) the firmware assigns when it opens a new `.bin` file. Used as the WAL key and as the segment filename prefix.
+- `sessionId` (WAL layer) / `deviceSessionId` (conceptual): The unique identifier for a hardware **DeviceSession** (a random 32-bit value generated at firmware boot). In code the bare `sessionId` is what most call sites use (e.g. `wal.sessionId`); `deviceSessionId` is the preferred term in new code and documentation.
+- `walOffset`: The current monotonic byte position in the **WAL**. Always bytes — never a segment index. (Persisted as `storageOffset` in JSON for legacy reasons.)
+- `segmentIndex`: Used only on the Apple Watch / pigeon bridge (`flutter_communicator.g.dart`, `watch_interface.dart`); it does **not** appear in the SD-card sync path. Segments on disk are keyed by `timerStart`, not by an index.
 
 ### Capture (Live State)
-- `isCapturing`: Boolean state indicating if a device stream is active.
+- `isCapturing`: A private getter on `VadAudioProcessor` (in `vad_audio_processor.dart`) — true while speech frames are being accumulated into an in-progress recording. There is no top-level/UI `isCapturing` flag.
 - `startCapture()` / `stopCapture()`: Aspirational API for initiating/ending the device stream (not yet implemented).
-- `captureStartTime`: UTC timestamp of the first received **Frame** in a sequence.
+- `captureStartTime`: Aspirational. The closest real value is the private `_recordingStartTime` inside `VadAudioProcessor`.
 
-### VAD & Processing Settings
-- `vadSnrMarginDb`: The threshold (dB) to distinguish speech from noise floor.
-- `vadSplitSeconds`: Silence duration required to split into a new **Recording**.
-- `vadGapSeconds`: Max allowed time gap between **Segments** before forcing a split.
-- `vadMinSpeechSeconds`: Minimum speech duration required for a valid **Recording**.
-- `vadPreSpeechSeconds`: Duration of silence preserved before speech start.
+### VAD & Processing Settings (in `app/lib/backend/preferences.dart`)
+- `vadSplitSeconds` (default 120): Silence duration required to split into a new **Recording**.
+- `vadMinSpeechSeconds` (default 3): Minimum speech duration required for a valid **Recording**.
+- `vadMaxConversationMinutes` (default 60): Hard cap on a single **Recording**.
+- `autoMode*` / `manualMode*` variants: Per-mode overrides for the three settings above (e.g. `autoModeVadSplitSeconds`, `manualModeVadMinSpeechSeconds`).
+- **Note:** There is no `vadGapSeconds`, `vadSnrMarginDb`, or `vadPreSpeechSeconds` setting. The gap threshold between consecutive files is derived as `vadSplitSeconds - _firmwareVadHoldMs` (10 s); the SNR margin lives inside `OfflineAudioProcessor` and is not a user preference.
 
 ### Markers
 - `markerTimestamps`: List of event timestamps (Stars) associated with a **DeviceSession** or **Batch**.
@@ -52,19 +53,21 @@ This document defines the official terminology for all audio-related data struct
 ## 3. Directory Structure Mapping
 
 - `/raw_segments/`: Physical storage for raw audio data.
-  - `/{deviceSessionId}/`: Numeric folder grouping **Segments** by hardware session (e.g. `raw_segments/3842091705/`).
-    - `{deviceSessionId}_{segmentIndex}.bin`: **Segment** file when both session ID and segment index are known (SD card sync path).
-    - `segment_{timestamp}.bin`: **Segment** file named by WAL timestamp when only a timestamp anchor is available.
-    - `markers.txt`: Plaintext list of UTC event timestamps for the session.
+  - `/{timerStart}/`: Numeric folder grouping **Segments** that share a `timerStart` (Unix UTC seconds), e.g. `raw_segments/1713892490/`. This is the normal "synced timestamps" layout.
+  - `/session_{hexSessionId}/`: Fallback folder used when `timerStart` predates the epoch validity check (`< 946684800`) — i.e. pre-time-sync data. The UI groups these under "Unorganized".
+    - `{timerStart}_{sessionId}.bin`: **Segment** file. Written by `_flushToDisk()` in `sdcard_wal_sync.dart`. `sessionId` is the firmware's 32-bit DeviceSession ID (or `0` if unknown).
+    - **Markers are not written here.** Marker events (`0xFFFFFFFE` packets inside the `.bin` stream) are decoded in-line by `VadAudioProcessor` and persisted as `.edl` sidecars next to the finalized recording.
 - `/recordings/`: Physical storage for finalized audio artifacts.
-  - `/{yyyy-mm-dd}/`: Organized by the UTC date of **captureStartTime**.
-    - `recording_{id}.m4a`: The final **Recording** artifact.
+  - `/{yyyy-mm-dd}/`: Organized by the UTC date of the recording's start time.
+    - `recording_{startMs}.m4a` / `.wav`: The final **Recording** artifact (millisecond UTC timestamp).
+    - `recording_{startMs}.meta`: Optional metadata sidecar.
+    - `marker_{markerMs}.edl`: **Marker** sidecar — JSON with `markerTimestampMs` and `segmentFilename` fields. Created during processing; "pending" markers (no matching recording yet) are detected via `getMarkerConversations()`.
 
 ---
 
 ## 4. State Definitions
 
-### SyncProcessState (UI state machine, `recordings_page.dart`)
+### SyncProcessState (UI state machine, `app/lib/pages/recordings/recordings_types.dart`)
 The actual enum values in use:
 - **idle**: No sync or processing is running.
 - **syncing**: The **WAL** is catching up; **Segments** are being pulled from device storage.
@@ -87,7 +90,7 @@ The actual enum values in use:
 - A **Memory** maps 1:1 to a **Recording**.
 - **WAL** ordering is the authoritative source for ingestion sequence and must be monotonic.
 - **WAL** offset (`walOffset`) is always a byte count — never a segment index.
-- **Segment** ordering within a **DeviceSession** is strictly increasing by `segmentIndex`.
+- **Segment** ordering within a **DeviceSession** is strictly increasing by `timerStart` (segments are keyed by timestamp on the SD-card sync path, not by an index).
 - **Frame** order within a **Segment** is strictly preserved.
 - **Marker** timestamps must be strictly ordered within a **DeviceSession**.
 - **Marker** timestamps must fall within the temporal bounds of their associated **DeviceSession**.
@@ -99,7 +102,7 @@ The actual enum values in use:
 
 - **Segment** is the only valid term for `.bin` files. "bin" is forbidden in code and comments when referring to audio data files.
 - **Recording** refers only to finalized audio artifacts, never live state.
-- **DeviceSession** must be prefixed explicitly in all internal variable names (e.g., `deviceSessionId`). The bare term `session` is forbidden in code and comments when referring to a DeviceSession.
+- **DeviceSession** is the preferred conceptual term and `deviceSessionId` is preferred in new code. The WAL layer currently uses bare `sessionId` (e.g. `wal.sessionId`); that is the existing convention and is acceptable in WAL-layer code. Outside that layer, use `deviceSessionId`.
 - **DeviceSession** is an internal concept and must never be exposed to the UI or user-facing logs.
 - "chunk" is forbidden when referring to a **Segment** or **Frame** (audio data units). It is permitted in low-level disk I/O, WAV file format parsing (RIFF/fmt/data chunks), and platform channel streaming contexts.
 
@@ -107,14 +110,16 @@ The actual enum values in use:
 
 ## 7. Firmware Name Mapping
 
-The firmware (C / Zephyr RTOS on nRF52840) uses C snake_case conventions. Firmware naming is now fully aligned with application nomenclature. These renames do not affect the binary protocol — byte offsets define the wire format.
+The firmware (C / Zephyr RTOS on nRF5340) uses C snake_case conventions. Firmware naming is now fully aligned with application nomenclature. These renames do not affect the binary protocol — byte offsets define the wire format.
 
 | Firmware (C) | File | App (Dart) | Notes |
 | :--- | :--- | :--- | :--- |
-| File timestamp | `CMD_LIST_FILES` | `deviceSessionId` | The UNIX UTC timestamp provided by the firmware when listing files. |
-| `write_marker_to_storage()` | `transport.c`, `transport.h` | `Marker` | Writes a `0xFE` packet-type frame. The packet-type byte is a protocol constant. |
+| File timestamp | `CMD_LIST_FILES` | `timerStart` (and folder name) | The UNIX UTC timestamp (seconds) the firmware reports for each file. |
+| `device_session_id` (u32) | `transport.c`, `main.c` | `wal.sessionId` / `deviceSessionId` | 32-bit random ID generated at boot in `main()`. |
+| `write_marker_to_storage()` | `transport.c`, `transport.h` | `Marker` | Writes a custom-packet frame with the 32-bit length prefix value `0xFFFFFFFE` (not a single `0xFE` byte) and a 16-byte payload: `utc_time_ms` (u64), `uptime_ms` (u32), `device_session_id` (u32). |
+| `write_custom_packet_to_storage(0xFFFFFFFD, …)` | `aad.c` | AAD VAD start | Written by hardware AAD when a VAD event opens a recording; 16-byte payload similar to the marker. |
 | `marker_flash_count` (volatile u8) | `button.c`, `button.h`, `main.c` | *(no app equivalent)* | Drives the transient white LED flash on double-tap (Marker event). |
-| `0xFD` frame type / EOT marker | `storage.c` | end-of-transfer signal | Signals end of file list to the app; consumed by `SDCardWalSyncImpl`, not stored. |
+| `PACKET_EOT` = `0x02` (single byte) | `storage.c` | end-of-transfer signal | Sent over the storage data-stream characteristic to signal end of file (or end of file list); consumed by `SDCardWalSyncImpl`, not stored. |
 
 ---
 
@@ -122,6 +127,6 @@ The firmware (C / Zephyr RTOS on nRF52840) uses C snake_case conventions. Firmwa
 
 - All new code must adhere to this nomenclature.
 - PRs introducing conflicting terminology must be rejected or refactored.
-- Legacy terms (`bin` for audio files, `session` for DeviceSession, `star` for Marker) must not be reintroduced.
+- Legacy terms (`bin` for audio files, `star` for Marker) must not be reintroduced. Bare `sessionId` is retained inside the WAL layer for historical reasons; new code outside that layer should use `deviceSessionId`.
 - `chunk` is permitted only in low-level I/O, WAV format parsing, and platform channel streaming; it must not be used to refer to Segments or Frames.
 - `packet` is permitted only when referring to BLE transport layer packets or other low-level network data chunks, but must not be used for generic audio data units.
