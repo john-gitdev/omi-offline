@@ -10,10 +10,7 @@ import 'package:omi/services/omi_api_client.dart';
 enum _ConnectionState { idle, checking, connected, error }
 
 class IntegrationsPage extends StatefulWidget {
-  const IntegrationsPage({super.key, this.onOmiDisabled, this.onHeyPocketDisabled});
-
-  final VoidCallback? onOmiDisabled;
-  final VoidCallback? onHeyPocketDisabled;
+  const IntegrationsPage({super.key});
 
   @override
   State<IntegrationsPage> createState() => _IntegrationsPageState();
@@ -29,7 +26,6 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
   Timer? _heypocketDebounce;
 
   // Omi Server Sync
-  final _omiFirebaseTokenController = TextEditingController();
   final _omiRefreshTokenController = TextEditingController();
   final _omiFirebaseApiKeyController = TextEditingController();
   bool _omiObscured = true;
@@ -56,11 +52,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     if (_prefs.omiRefreshToken.isNotEmpty && _prefs.omiFirebaseApiKey.isNotEmpty) {
       _omiState = _ConnectionState.connected;
       _recheckOmiLaunch();
-    } else if (_prefs.omiTokenExpiry > 0) {
-      _omiState = _ConnectionState.connected;
     }
-    _loadOmiIdToken();
-    _omiFirebaseTokenController.addListener(_onOmiFirebaseTokenChanged);
     _omiRefreshTokenController.addListener(_onOmiChanged);
     _omiFirebaseApiKeyController.addListener(_onOmiChanged);
   }
@@ -88,13 +80,6 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     }
   }
 
-  Future<void> _loadOmiIdToken() async {
-    final token = await _prefs.omiIdToken;
-    if (mounted && token.isNotEmpty) {
-      _omiFirebaseTokenController.text = token;
-    }
-  }
-
   @override
   void dispose() {
     _heypocketDebounce?.cancel();
@@ -102,10 +87,8 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     _heypocketController.dispose();
 
     _omiDebounce?.cancel();
-    _omiFirebaseTokenController.removeListener(_onOmiFirebaseTokenChanged);
     _omiRefreshTokenController.removeListener(_onOmiChanged);
     _omiFirebaseApiKeyController.removeListener(_onOmiChanged);
-    _omiFirebaseTokenController.dispose();
     _omiRefreshTokenController.dispose();
     _omiFirebaseApiKeyController.dispose();
 
@@ -135,7 +118,6 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
       if (result) {
         _prefs.heypocketKeySetAt = DateTime.now().millisecondsSinceEpoch;
         await _prefs.setHeypocketApiKey(key);
-        _prefs.heypocketEnabled = true;
         setState(() => _heypocketState = _ConnectionState.connected);
       } else {
         _prefs.heypocketEnabled = false;
@@ -149,26 +131,6 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
   }
 
   // Omi logic
-  void _onOmiFirebaseTokenChanged() {
-    final token = _omiFirebaseTokenController.text.trim();
-    if (token.isEmpty) {
-      _prefs.setOmiIdToken('');
-      if (_prefs.omiRefreshToken.isEmpty) {
-        _prefs.omiTokenExpiry = 0;
-        _prefs.omiEnabled = false;
-        setState(() => _omiState = _ConnectionState.idle);
-      }
-      return;
-    }
-    _prefs.setOmiIdToken(token);
-    if (_prefs.omiTokenExpiry == 0) {
-      _prefs.omiTokenExpiry = DateTime.now().millisecondsSinceEpoch + 3600 * 1000;
-    }
-    if (_omiState != _ConnectionState.connected) {
-      setState(() => _omiState = _ConnectionState.connected);
-    }
-  }
-
   void _onOmiChanged() {
     final rt = _omiRefreshTokenController.text.trim();
     final ak = _omiFirebaseApiKeyController.text.trim();
@@ -205,9 +167,9 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     }
   }
 
-  Future<void> _openOmiLogin() async {
+  Future<void> _openOmiLogin({bool fallback = false}) async {
     final result = await Navigator.of(context).push<Map<String, String>>(
-      MaterialPageRoute(builder: (_) => const OmiLoginWebView()),
+      MaterialPageRoute(builder: (_) => OmiLoginWebView(startFallback: fallback)),
     );
 
     if (result != null) {
@@ -221,13 +183,13 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
         await _prefs.setOmiFirebaseApiKey(ak);
         _prefs.omiAuthUid = result['uid'] ?? '';
         _prefs.omiAuthEmail = result['email'] ?? '';
+        _prefs.omiConnectedViaFallback = result['flow'] == 'fallback';
         final idToken = result['idToken'] ?? '';
         if (idToken.isNotEmpty) {
           await _prefs.setOmiIdToken(idToken);
           final expiresIn = int.tryParse(result['expiresIn'] ?? '') ?? 3600;
           _prefs.omiTokenExpiry = DateTime.now().millisecondsSinceEpoch + expiresIn * 1000;
         }
-        _prefs.omiEnabled = true;
         _omiRefreshTokenController.text = rt;
         _omiFirebaseApiKeyController.text = ak;
         setState(() => _omiState = _ConnectionState.connected);
@@ -239,8 +201,8 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
 
   Future<void> _deleteOmi() async {
     await OmiApiClient.signOut();
+    _prefs.omiConnectedViaFallback = false;
     if (!mounted) return;
-    _omiFirebaseTokenController.clear();
     _omiRefreshTokenController.clear();
     _omiFirebaseApiKeyController.clear();
     setState(() {
@@ -327,7 +289,6 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             enabled: _prefs.omiEnabled,
             onEnabledChanged: (v) {
               _prefs.omiEnabled = v;
-              if (!v) widget.onOmiDisabled?.call();
               setState(() {});
             },
             autoUpload: _prefs.omiAutoUpload,
@@ -335,7 +296,20 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               _prefs.omiAutoUpload = v;
               setState(() {});
             },
-            onDelete: _deleteOmi,
+            onDelete: _omiState != _ConnectionState.connected ? _deleteOmi : null,
+            trailingWidget: _omiState == _ConnectionState.connected
+                ? Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade800,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      _prefs.omiConnectedViaFallback ? 'Web App' : 'Direct',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 11),
+                    ),
+                  )
+                : null,
             fields: [
               if (_omiState != _ConnectionState.connected) ...[
                 SizedBox(
@@ -349,6 +323,22 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                     ),
                     child: const Text('Log in with Omi',
                         style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: _omiState == _ConnectionState.checking
+                        ? null
+                        : () => _openOmiLogin(fallback: true),
+                    style: OutlinedButton.styleFrom(
+                      side: BorderSide(color: Colors.grey.shade600),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: Text('Log in via app.omi.me',
+                        style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.bold)),
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -406,31 +396,17 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                   ),
                 ),
               ],
-              if (_showOmiManual) ...[
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Text(
-                    'Get credentials from app.omi.me → F12 DevTools → Network tab (Authorization: Bearer …) and Application → IndexedDB → firebaseLocalStorage (refreshToken, key=AIza…).',
-                    style: TextStyle(color: Colors.grey.shade500, fontSize: 11),
-                  ),
-                ),
-                _buildField(
-                  controller: _omiFirebaseTokenController,
-                  hint: 'Firebase Token (eyJ… — expires ~1h)',
-                  obscured: _omiObscured,
-                  onToggleObscure: () => setState(() => _omiObscured = !_omiObscured),
-                ),
-                const SizedBox(height: 12),
+              if (_showOmiManual || _prefs.omiConnectedViaFallback) ...[
                 _buildField(
                   controller: _omiRefreshTokenController,
-                  hint: 'Refresh Token (AMf… — for auto-renewal)',
+                  hint: 'Refresh Token',
                   obscured: _omiObscured,
                   onToggleObscure: () => setState(() => _omiObscured = !_omiObscured),
                 ),
                 const SizedBox(height: 12),
                 _buildField(
                   controller: _omiFirebaseApiKeyController,
-                  hint: 'Firebase API Key (AIza…)',
+                  hint: 'Firebase API Key',
                   obscured: _omiObscured,
                   onToggleObscure: () => setState(() => _omiObscured = !_omiObscured),
                 ),
@@ -447,7 +423,6 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             enabled: _prefs.heypocketEnabled,
             onEnabledChanged: (v) {
               _prefs.heypocketEnabled = v;
-              if (!v) widget.onHeyPocketDisabled?.call();
               setState(() {});
             },
             autoUpload: _prefs.heypocketAutoUpload,
@@ -480,6 +455,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     required ValueChanged<bool> onAutoUploadChanged,
     required List<Widget> fields,
     VoidCallback? onDelete,
+    Widget? trailingWidget,
   }) {
     final isChecking = state == _ConnectionState.checking;
     final isConnected = state == _ConnectionState.connected;
@@ -501,15 +477,17 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               ),
               const SizedBox(width: 8),
               _buildIndicator(state),
-              if (onDelete != null) ...[
+              if (trailingWidget != null || onDelete != null) ...[
                 const Spacer(),
-                IconButton(
-                  onPressed: onDelete,
-                  icon: const Icon(Icons.delete_outline, color: Colors.grey, size: 20),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  visualDensity: VisualDensity.compact,
-                ),
+                if (trailingWidget != null) trailingWidget,
+                if (onDelete != null)
+                  IconButton(
+                    onPressed: onDelete,
+                    icon: const Icon(Icons.delete_outline, color: Colors.grey, size: 20),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    visualDensity: VisualDensity.compact,
+                  ),
               ],
             ],
           ),
