@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/logger.dart';
+import 'package:opus_dart/opus_dart.dart';
 
 class OmiSyncResult {
   final bool success;
@@ -25,7 +28,8 @@ class OmiSyncResult {
     this.error,
   });
 
-  List<String> get allConversationIds => {...newConversationIds, ...updatedConversationIds}.toList();
+  List<String> get allConversationIds =>
+      {...newConversationIds, ...updatedConversationIds}.toList();
 
   @override
   String toString() =>
@@ -41,7 +45,7 @@ class OmiApiClient {
 
   static bool get isSignedIn {
     final prefs = SharedPreferencesUtil();
-    return prefs.omiRefreshToken.isNotEmpty || prefs.omiTokenExpiry > 0;
+    return prefs.omiRefreshToken.isNotEmpty;
   }
 
   static Future<void> signOut() async {
@@ -63,21 +67,13 @@ class OmiApiClient {
       Logger.debug('OmiApiClient: Token still valid, expires in ${(remainingMs / 1000).round()}s');
       return;
     }
-    Logger.debug(
-        'OmiApiClient: Token expired or expiring soon (${(remainingMs / 1000).round()}s remaining), refreshing...');
+    Logger.debug('OmiApiClient: Token expired or expiring soon (${(remainingMs / 1000).round()}s remaining), refreshing...');
 
     final refreshToken = prefs.omiRefreshToken;
     final apiKey = prefs.omiFirebaseApiKey;
     if (refreshToken.isEmpty || apiKey.isEmpty) {
-      // No refresh credentials — fall through to existing ID token (WearOS fallback).
-      // Seed expiry to 1h from now on first use so the token isn't treated as perpetually valid.
-      if (expiry == 0) {
-        prefs.omiTokenExpiry = now + 3600 * 1000;
-        Logger.debug('OmiApiClient: No refresh credentials; seeding token expiry to 1h for manual token');
-      } else {
-        Logger.debug('OmiApiClient: No refresh credentials; using existing ID token');
-      }
-      return;
+      Logger.error('OmiApiClient: refreshToken empty=${refreshToken.isEmpty}, apiKey empty=${apiKey.isEmpty}');
+      throw const OmiSyncException('Omi credentials not configured');
     }
 
     final http.Response res;
@@ -129,12 +125,20 @@ class OmiApiClient {
     final token = await SharedPreferencesUtil().omiIdToken;
     if (token.isEmpty) throw const OmiSyncException('No Omi ID token available');
 
+    final isFallback = SharedPreferencesUtil().omiConnectedViaFallback;
+
+    if (!isFallback) {
+      // OAuth path: decode OpusFS320 → PCM16 length-prefixed bytes.
+      return await _syncOAuthPcm16(binFiles, token);
+    }
+
+    // Web-fallback path: upload raw .bin files with no platform header.
     final fileSizes = <String, int>{};
     for (final f in binFiles) {
       final size = await f.length();
       fileSizes[f.uri.pathSegments.last] = size;
     }
-    Logger.debug('OmiApiClient: Uploading ${binFiles.length} file(s): $fileSizes');
+    Logger.debug('OmiApiClient: Uploading ${binFiles.length} file(s) [fallback]: $fileSizes');
 
     final headers = {'Authorization': 'Bearer $token'};
 
@@ -159,10 +163,133 @@ class OmiApiClient {
       final json = jsonDecode(responseBody) as Map<String, dynamic>;
       final jobId = json['job_id'] as String?;
       final pollAfterMs = (json['poll_after_ms'] as int?) ?? 3000;
-      if (jobId != null) return await _pollJob(usedUrl, jobId, pollAfterMs);
+      final extraHeaders = headers.containsKey('X-App-Platform') ? {'X-App-Platform': headers['X-App-Platform']!} : <String, String>{};
+      if (jobId != null) return await _pollJob(usedUrl, jobId, pollAfterMs, extraHeaders);
     }
 
     return _parseSyncResult(res.statusCode, responseBody);
+  }
+
+  static Future<OmiSyncResult?> _syncOAuthPcm16(List<File> binFiles, String token) async {
+    Logger.debug('\n=================== ID TOKEN FOR TEST SCRIPT ===================\n$token\n================================================================');
+    
+    final namedBytes = <(String, Uint8List)>[];
+    for (final f in binFiles) {
+      final (bytes, filename) = await _convertBinToPcm16(f);
+      if (bytes.isEmpty) {
+        Logger.error('OmiApiClient: PCM16 conversion produced empty output for ${f.path}');
+        continue;
+      }
+      namedBytes.add((filename, bytes));
+      Logger.debug('OmiApiClient: Converted ${f.uri.pathSegments.last} → $filename (${bytes.length} bytes)');
+    }
+    if (namedBytes.isEmpty) throw const OmiSyncException('PCM16 conversion failed for all files');
+
+    final headers = {
+      'Authorization': 'Bearer $token',
+      'X-App-Platform': 'android-ambient-companion',
+    };
+
+    Logger.debug('OmiApiClient: Uploading ${namedBytes.length} PCM16 file(s) [oauth]');
+    var res = await _doUploadBytes(_syncUrlV2, namedBytes, headers);
+    var usedUrl = _syncUrlV2;
+
+    if (res.statusCode == 404 || res.statusCode == 405) {
+      Logger.debug('OmiApiClient: v2 not found (${res.statusCode}), falling back to v1 [oauth]');
+      res = await _doUploadBytes(_syncUrlV1, namedBytes, headers);
+      usedUrl = _syncUrlV1;
+    }
+
+    final responseBody = res.body;
+    Logger.debug('OmiApiClient: Upload response ${res.statusCode}: $responseBody');
+
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      final isAuth = res.statusCode == 401 || res.statusCode == 403;
+      throw OmiSyncException('Sync upload failed (${res.statusCode})', isAuthError: isAuth);
+    }
+
+    if (res.statusCode == 202) {
+      final json = jsonDecode(responseBody) as Map<String, dynamic>;
+      final jobId = json['job_id'] as String?;
+      final pollAfterMs = (json['poll_after_ms'] as int?) ?? 3000;
+      final extraHeaders = headers.containsKey('X-App-Platform') ? {'X-App-Platform': headers['X-App-Platform']!} : <String, String>{};
+      if (jobId != null) return await _pollJob(usedUrl, jobId, pollAfterMs, extraHeaders);
+    }
+
+    return _parseSyncResult(res.statusCode, responseBody);
+  }
+
+  static String _pcm16Filename(File binFile) {
+    // Extract millisecond timestamp from "recording_fs320_<ms>.bin" and convert to seconds.
+    final name = binFile.uri.pathSegments.last;
+    final msStr = name.replaceFirst('recording_fs320_', '').replaceFirst('.bin', '');
+    final msTs = int.tryParse(msStr) ?? 0;
+    var tsSeconds = msTs ~/ 1000;
+
+    // Mirror AmbientSyncFilenames.safeBackendTimestampSeconds:
+    // clamp to >= 2024-01-01 and <= now - 30s.
+    const minValidSeconds = 1704067200; // 2024-01-01T00:00:00Z
+    final latestSafe = (DateTime.now().millisecondsSinceEpoch ~/ 1000) - 30;
+    final safeFloor = latestSafe > minValidSeconds ? latestSafe : minValidSeconds;
+    if (tsSeconds < minValidSeconds) tsSeconds = safeFloor;
+    if (tsSeconds > latestSafe) tsSeconds = latestSafe;
+
+    // fs960 = 960 samples/chunk (3 × OpusFS320 frames grouped), matching ambient companion format.
+    return 'audio_phone_pcm16_16000_1_fs960_$tsSeconds.bin';
+  }
+
+  /// Decodes an OpusFS320 .bin file to length-prefixed PCM16 bytes for OAuth upload.
+  /// Returns (pcm16Bytes, newFilename).
+  static Future<(Uint8List, String)> _convertBinToPcm16(File binFile) async {
+    final bytes = await binFile.readAsBytes();
+    final byteData = ByteData.sublistView(bytes);
+    final output = BytesBuilder();
+    final decoder = SimpleOpusDecoder(sampleRate: 16000, channels: 1);
+
+    // Collect all decoded PCM16 frames, then group into 960-sample chunks (3 × 320)
+    // to match the ambient companion's fs960 format the server expects.
+    final decodedFrames = <Uint8List>[];
+    try {
+      int offset = 0;
+      while (offset + 4 <= bytes.length) {
+        final frameLength = byteData.getUint32(offset, Endian.little);
+
+        if (frameLength == 0 || frameLength == 0xFFFFFFFF) { offset += 4; continue; }
+        if (frameLength == 0xFFFFFFFB) { offset += 36; continue; }
+        if (frameLength == 0xFFFFFFFE) { offset += 20; continue; }
+        if (frameLength == 0xFFFFFFFD) { offset += 16; continue; }
+        if (frameLength > 0xFFFF00) { offset += 4; continue; }
+
+        if (offset + 4 + frameLength > bytes.length) break;
+
+        final opusBytes = Uint8List.sublistView(bytes, offset + 4, offset + 4 + frameLength);
+        offset += 4 + frameLength;
+
+        try {
+          final pcm = decoder.decode(input: opusBytes);
+          decodedFrames.add(pcm.buffer.asUint8List(pcm.offsetInBytes, pcm.lengthInBytes));
+        } catch (_) {}
+      }
+    } finally {
+      decoder.destroy();
+    }
+
+    // Group frames into ~3200 byte chunks (5 frames * 640 bytes).
+    // This closely matches the hardware buffer chunk size produced by the Android native AudioRecord.
+    for (var i = 0; i < decodedFrames.length; i += 5) {
+      final chunk = BytesBuilder();
+      for (var j = i; j < i + 5 && j < decodedFrames.length; j++) {
+        chunk.add(decodedFrames[j]);
+      }
+      final chunkBytes = chunk.toBytes();
+      final lenBytes = Uint8List(4);
+      ByteData.sublistView(lenBytes).setUint32(0, chunkBytes.length, Endian.little);
+      output.add(lenBytes);
+      output.add(chunkBytes);
+    }
+
+    final filename = _pcm16Filename(binFile);
+    return (output.toBytes(), filename);
   }
 
   static Future<http.Response> _doUpload(
@@ -171,25 +298,14 @@ class OmiApiClient {
     Map<String, int> fileSizes,
     Map<String, String> headers,
   ) async {
-    final request = http.MultipartRequest('POST', Uri.parse(url))..headers.addAll(headers);
+    final request = http.MultipartRequest('POST', Uri.parse(url))
+      ..headers.addAll(headers);
     for (final f in binFiles) {
-      final diskName = f.uri.pathSegments.last;
-      // Server expects seconds-based timestamp: recording_fs320_<epoch_s>.bin
-      // On-disk names use milliseconds; divide to match Kotlin reference impl.
-      final uploadName = diskName.replaceFirstMapped(
-        RegExp(r'recording_fs320_(\d+)\.bin'),
-        (m) {
-          final ms = int.tryParse(m.group(1)!);
-          if (ms != null && ms > 1e12) return 'recording_fs320_${ms ~/ 1000}.bin';
-          return m.group(0)!;
-        },
-      );
-      Logger.debug('OmiApiClient: upload filename: $uploadName (disk: $diskName)');
       request.files.add(http.MultipartFile(
         'files',
         f.openRead(),
-        fileSizes[diskName]!,
-        filename: uploadName,
+        fileSizes[f.uri.pathSegments.last]!,
+        filename: f.uri.pathSegments.last,
         contentType: MediaType('application', 'octet-stream'),
       ));
     }
@@ -202,7 +318,40 @@ class OmiApiClient {
     }
   }
 
-  static Future<OmiSyncResult> _pollJob(String baseUrl, String jobId, int initialDelayMs) async {
+  static Future<http.Response> _doUploadBytes(
+    String url,
+    List<(String filename, Uint8List bytes)> files,
+    Map<String, String> headers,
+  ) async {
+    // Some strict backends fail to parse Dart's standard multipart boundaries.
+    // We construct the multipart body manually to exactly match the working Kotlin client.
+    final (filename, bytes) = files.first;
+    final boundary = 'omiAmbient${DateTime.now().millisecondsSinceEpoch}';
+    
+    final bodyBuilder = BytesBuilder();
+    bodyBuilder.add(utf8.encode('--$boundary\r\n'));
+    bodyBuilder.add(utf8.encode('Content-Disposition: form-data; name="files"; filename="$filename"\r\n'));
+    bodyBuilder.add(utf8.encode('Content-Type: application/octet-stream\r\n\r\n'));
+    bodyBuilder.add(bytes);
+    bodyBuilder.add(utf8.encode('\r\n--$boundary--\r\n'));
+    
+    final requestHeaders = Map<String, String>.from(headers);
+    requestHeaders['Content-Type'] = 'multipart/form-data; boundary=$boundary';
+    requestHeaders['Content-Length'] = bodyBuilder.length.toString();
+
+    try {
+      final res = await http.post(
+        Uri.parse(url),
+        headers: requestHeaders,
+        body: bodyBuilder.toBytes(),
+      ).timeout(const Duration(seconds: 120));
+      return res;
+    } on SocketException {
+      throw const OmiSyncException('No network connection');
+    }
+  }
+
+  static Future<OmiSyncResult> _pollJob(String baseUrl, String jobId, int initialDelayMs, [Map<String, String>? extraHeaders]) async {
     await Future.delayed(Duration(milliseconds: initialDelayMs));
 
     const maxAttempts = 80;
@@ -210,12 +359,17 @@ class OmiApiClient {
     for (var i = 0; i < maxAttempts; i++) {
       await refreshTokenIfNeeded();
       final token = await SharedPreferencesUtil().omiIdToken;
-
+      
       final headers = {'Authorization': 'Bearer $token'};
+      if (extraHeaders != null) {
+        headers.addAll(extraHeaders);
+      }
 
       final http.Response res;
       try {
-        res = await http.get(Uri.parse('$baseUrl/$jobId'), headers: headers).timeout(const Duration(seconds: 15));
+        res = await http
+            .get(Uri.parse('$baseUrl/$jobId'), headers: headers)
+            .timeout(const Duration(seconds: 15));
       } on SocketException {
         throw const OmiSyncException('No network connection');
       }
@@ -283,12 +437,10 @@ class OmiApiClient {
       final headers = {'Authorization': 'Bearer $token'};
 
       for (final id in result.allConversationIds.take(3)) {
-        final res = await http
-            .get(
-              Uri.parse('$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true'),
-              headers: headers,
-            )
-            .timeout(const Duration(seconds: 15));
+        final res = await http.get(
+          Uri.parse('$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true'),
+          headers: headers,
+        ).timeout(const Duration(seconds: 15));
 
         if (res.statusCode == 200) {
           final json = jsonDecode(res.body) as Map<String, dynamic>;
@@ -324,11 +476,11 @@ class OmiApiClient {
 
       final body = jsonDecode(res.body) as Map<String, dynamic>;
       final hasProfile = body['has_profile'] == true;
-
+      
       final prefs = SharedPreferencesUtil();
       prefs.omiHasSpeechProfile = hasProfile;
       prefs.omiSpeechProfileCheckedAtMs = DateTime.now().millisecondsSinceEpoch;
-
+      
       Logger.debug('OmiApiClient: Speech profile checked: $hasProfile');
       return hasProfile;
     } catch (e) {
