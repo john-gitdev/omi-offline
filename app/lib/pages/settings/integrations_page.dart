@@ -10,7 +10,10 @@ import 'package:omi/services/omi_api_client.dart';
 enum _ConnectionState { idle, checking, connected, error }
 
 class IntegrationsPage extends StatefulWidget {
-  const IntegrationsPage({super.key});
+  const IntegrationsPage({super.key, this.onOmiDisabled, this.onHeyPocketDisabled});
+
+  final VoidCallback? onOmiDisabled;
+  final VoidCallback? onHeyPocketDisabled;
 
   @override
   State<IntegrationsPage> createState() => _IntegrationsPageState();
@@ -118,6 +121,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
       if (result) {
         _prefs.heypocketKeySetAt = DateTime.now().millisecondsSinceEpoch;
         await _prefs.setHeypocketApiKey(key);
+        _prefs.heypocketEnabled = true;
         setState(() => _heypocketState = _ConnectionState.connected);
       } else {
         _prefs.heypocketEnabled = false;
@@ -190,6 +194,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
           final expiresIn = int.tryParse(result['expiresIn'] ?? '') ?? 3600;
           _prefs.omiTokenExpiry = DateTime.now().millisecondsSinceEpoch + expiresIn * 1000;
         }
+        _prefs.omiEnabled = true;
         _omiRefreshTokenController.text = rt;
         _omiFirebaseApiKeyController.text = ak;
         setState(() => _omiState = _ConnectionState.connected);
@@ -289,6 +294,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             enabled: _prefs.omiEnabled,
             onEnabledChanged: (v) {
               _prefs.omiEnabled = v;
+              if (!v) widget.onOmiDisabled?.call();
               setState(() {});
             },
             autoUpload: _prefs.omiAutoUpload,
@@ -423,6 +429,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             enabled: _prefs.heypocketEnabled,
             onEnabledChanged: (v) {
               _prefs.heypocketEnabled = v;
+              if (!v) widget.onHeyPocketDisabled?.call();
               setState(() {});
             },
             autoUpload: _prefs.heypocketAutoUpload,
