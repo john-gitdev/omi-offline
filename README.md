@@ -207,18 +207,17 @@ omi-offline/
 ### App
 
 ```bash
-# Setup
+# Setup (also runs the app at the end)
 cd app && bash setup.sh ios     # or android
 
-# Run
-cd app && flutter run
+# Run (dev flavor)
+cd app && flutter run --flavor dev
 
 # Test
 cd app && bash test.sh
 
-# Format (pre-commit hook runs this automatically)
+# Format
 dart format --line-length 120 <files>
-clang-format -i <files>         # firmware C/C++
 ```
 
 ### Firmware
