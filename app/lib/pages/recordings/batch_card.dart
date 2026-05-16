@@ -77,6 +77,15 @@ class UploadIconButton extends StatelessWidget {
         onPressed: onTap,
       );
     }
+    if (uploadStatus == UploadStatus.failed) {
+      return IconButton(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        constraints: const BoxConstraints(),
+        icon: const Icon(Icons.error_outline, color: Colors.orange, size: 18),
+        tooltip: 'Upload failed — tap to retry',
+        onPressed: onTap,
+      );
+    }
     return IconButton(
       padding: const EdgeInsets.symmetric(horizontal: 6),
       constraints: const BoxConstraints(),
