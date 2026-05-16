@@ -301,11 +301,18 @@ class OmiApiClient {
     final request = http.MultipartRequest('POST', Uri.parse(url))
       ..headers.addAll(headers);
     for (final f in binFiles) {
+      final diskName = f.uri.pathSegments.last;
+      // Server expects epoch seconds in filename; on-disk names use milliseconds.
+      final uploadName = diskName.replaceFirstMapped(RegExp(r'recording_fs320_(\d+)\.bin'), (m) {
+        final ms = int.tryParse(m.group(1)!);
+        if (ms != null && ms > 1e12) return 'recording_fs320_${ms ~/ 1000}.bin';
+        return m.group(0)!;
+      });
       request.files.add(http.MultipartFile(
         'files',
         f.openRead(),
-        fileSizes[f.uri.pathSegments.last]!,
-        filename: f.uri.pathSegments.last,
+        fileSizes[diskName]!,
+        filename: uploadName,
         contentType: MediaType('application', 'octet-stream'),
       ));
     }
