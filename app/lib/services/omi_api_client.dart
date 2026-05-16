@@ -25,8 +25,7 @@ class OmiSyncResult {
     this.error,
   });
 
-  List<String> get allConversationIds =>
-      {...newConversationIds, ...updatedConversationIds}.toList();
+  List<String> get allConversationIds => {...newConversationIds, ...updatedConversationIds}.toList();
 
   @override
   String toString() =>
@@ -64,7 +63,8 @@ class OmiApiClient {
       Logger.debug('OmiApiClient: Token still valid, expires in ${(remainingMs / 1000).round()}s');
       return;
     }
-    Logger.debug('OmiApiClient: Token expired or expiring soon (${(remainingMs / 1000).round()}s remaining), refreshing...');
+    Logger.debug(
+        'OmiApiClient: Token expired or expiring soon (${(remainingMs / 1000).round()}s remaining), refreshing...');
 
     final refreshToken = prefs.omiRefreshToken;
     final apiKey = prefs.omiFirebaseApiKey;
@@ -164,14 +164,24 @@ class OmiApiClient {
     Map<String, int> fileSizes,
     Map<String, String> headers,
   ) async {
-    final request = http.MultipartRequest('POST', Uri.parse(url))
-      ..headers.addAll(headers);
+    final request = http.MultipartRequest('POST', Uri.parse(url))..headers.addAll(headers);
     for (final f in binFiles) {
+      final diskName = f.uri.pathSegments.last;
+      // Server expects seconds-based timestamp: recording_fs320_<epoch_s>.bin
+      // On-disk names use milliseconds; divide to match Kotlin reference impl.
+      final uploadName = diskName.replaceFirstMapped(
+        RegExp(r'recording_fs320_(\d+)\.bin'),
+        (m) {
+          final ms = int.tryParse(m.group(1)!);
+          if (ms != null && ms > 1e12) return 'recording_fs320_${ms ~/ 1000}.bin';
+          return m.group(0)!;
+        },
+      );
       request.files.add(http.MultipartFile(
         'files',
         f.openRead(),
-        fileSizes[f.uri.pathSegments.last]!,
-        filename: f.uri.pathSegments.last,
+        fileSizes[diskName]!,
+        filename: uploadName,
         contentType: MediaType('application', 'octet-stream'),
       ));
     }
@@ -192,14 +202,12 @@ class OmiApiClient {
     for (var i = 0; i < maxAttempts; i++) {
       await refreshTokenIfNeeded();
       final token = await SharedPreferencesUtil().omiIdToken;
-      
+
       final headers = {'Authorization': 'Bearer $token'};
 
       final http.Response res;
       try {
-        res = await http
-            .get(Uri.parse('$baseUrl/$jobId'), headers: headers)
-            .timeout(const Duration(seconds: 15));
+        res = await http.get(Uri.parse('$baseUrl/$jobId'), headers: headers).timeout(const Duration(seconds: 15));
       } on SocketException {
         throw const OmiSyncException('No network connection');
       }
@@ -267,10 +275,12 @@ class OmiApiClient {
       final headers = {'Authorization': 'Bearer $token'};
 
       for (final id in result.allConversationIds.take(3)) {
-        final res = await http.get(
-          Uri.parse('$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true'),
-          headers: headers,
-        ).timeout(const Duration(seconds: 15));
+        final res = await http
+            .get(
+              Uri.parse('$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true'),
+              headers: headers,
+            )
+            .timeout(const Duration(seconds: 15));
 
         if (res.statusCode == 200) {
           final json = jsonDecode(res.body) as Map<String, dynamic>;
@@ -306,11 +316,11 @@ class OmiApiClient {
 
       final body = jsonDecode(res.body) as Map<String, dynamic>;
       final hasProfile = body['has_profile'] == true;
-      
+
       final prefs = SharedPreferencesUtil();
       prefs.omiHasSpeechProfile = hasProfile;
       prefs.omiSpeechProfileCheckedAtMs = DateTime.now().millisecondsSinceEpoch;
-      
+
       Logger.debug('OmiApiClient: Speech profile checked: $hasProfile');
       return hasProfile;
     } catch (e) {
