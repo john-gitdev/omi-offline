@@ -15,7 +15,7 @@ import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:omi/utils/audio/foreground.dart';
 
-enum UploadStatus { none, partial, all }
+enum UploadStatus { none, partial, all, failed }
 
 class UploadFailure {
   final String integration;
@@ -1133,6 +1133,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
         final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
         if (_prefs.isOmiSynced(binPath)) continue;
+        if (_prefs.getAutoUploadRetries(binPath) >= 3) continue;
         if (_syncingBinFiles.contains(binPath)) continue;
         final binFile = File(binPath);
         if (!binFile.existsSync()) {
@@ -1263,8 +1264,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final doneCnt = (hpDone ? 1 : 0) + (omiDone ? 1 : 0);
     final enabledCnt = (hpEnabled ? 1 : 0) + (omiEnabled ? 1 : 0);
 
-    if (doneCnt == 0) return UploadStatus.none;
     if (doneCnt == enabledCnt) return UploadStatus.all;
+
+    final hpFailed = hpEnabled && !hpDone && _prefs.getAutoUploadRetries(c.uploadKey!) >= 3;
+    final omiFailed = omiEnabled && !omiDone && _prefs.getAutoUploadRetries(binPath) >= 3;
+    if (hpFailed || omiFailed) return UploadStatus.failed;
+
+    if (doneCnt == 0) return UploadStatus.none;
     return UploadStatus.partial;
   }
 
