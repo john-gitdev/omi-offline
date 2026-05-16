@@ -315,6 +315,13 @@ class SharedPreferencesUtil {
     await remove('autoUploadRetry_$key');
   }
 
+  Future<void> clearAllAutoUploadRetries() async {
+    final keys = (_preferences?.getKeys() ?? {}).where((k) => k.startsWith('autoUploadRetry_')).toList();
+    for (final key in keys) {
+      await _preferences?.remove(key);
+    }
+  }
+
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _preferences = prefs;
