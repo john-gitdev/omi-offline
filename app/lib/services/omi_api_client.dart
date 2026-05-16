@@ -41,7 +41,7 @@ class OmiApiClient {
 
   static bool get isSignedIn {
     final prefs = SharedPreferencesUtil();
-    return prefs.omiRefreshToken.isNotEmpty;
+    return prefs.omiRefreshToken.isNotEmpty || prefs.omiTokenExpiry > 0;
   }
 
   static Future<void> signOut() async {
@@ -69,8 +69,15 @@ class OmiApiClient {
     final refreshToken = prefs.omiRefreshToken;
     final apiKey = prefs.omiFirebaseApiKey;
     if (refreshToken.isEmpty || apiKey.isEmpty) {
-      Logger.error('OmiApiClient: refreshToken empty=${refreshToken.isEmpty}, apiKey empty=${apiKey.isEmpty}');
-      throw const OmiSyncException('Omi credentials not configured');
+      // No refresh credentials — fall through to existing ID token (WearOS fallback).
+      // Seed expiry to 1h from now on first use so the token isn't treated as perpetually valid.
+      if (expiry == 0) {
+        prefs.omiTokenExpiry = now + 3600 * 1000;
+        Logger.debug('OmiApiClient: No refresh credentials; seeding token expiry to 1h for manual token');
+      } else {
+        Logger.debug('OmiApiClient: No refresh credentials; using existing ID token');
+      }
+      return;
     }
 
     final http.Response res;
@@ -177,6 +184,7 @@ class OmiApiClient {
           return m.group(0)!;
         },
       );
+      Logger.debug('OmiApiClient: upload filename: $uploadName (disk: $diskName)');
       request.files.add(http.MultipartFile(
         'files',
         f.openRead(),

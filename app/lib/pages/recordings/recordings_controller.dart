@@ -1133,7 +1133,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
         final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
         if (_prefs.isOmiSynced(binPath)) continue;
-        if (_prefs.getAutoUploadRetries(binPath) >= 3) continue;
         if (_syncingBinFiles.contains(binPath)) continue;
         final binFile = File(binPath);
         if (!binFile.existsSync()) {

@@ -29,6 +29,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
   Timer? _heypocketDebounce;
 
   // Omi Server Sync
+  final _omiFirebaseTokenController = TextEditingController();
   final _omiRefreshTokenController = TextEditingController();
   final _omiFirebaseApiKeyController = TextEditingController();
   bool _omiObscured = true;
@@ -55,7 +56,11 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     if (_prefs.omiRefreshToken.isNotEmpty && _prefs.omiFirebaseApiKey.isNotEmpty) {
       _omiState = _ConnectionState.connected;
       _recheckOmiLaunch();
+    } else if (_prefs.omiTokenExpiry > 0) {
+      _omiState = _ConnectionState.connected;
     }
+    _loadOmiIdToken();
+    _omiFirebaseTokenController.addListener(_onOmiFirebaseTokenChanged);
     _omiRefreshTokenController.addListener(_onOmiChanged);
     _omiFirebaseApiKeyController.addListener(_onOmiChanged);
   }
@@ -83,6 +88,13 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     }
   }
 
+  Future<void> _loadOmiIdToken() async {
+    final token = await _prefs.omiIdToken;
+    if (mounted && token.isNotEmpty) {
+      _omiFirebaseTokenController.text = token;
+    }
+  }
+
   @override
   void dispose() {
     _heypocketDebounce?.cancel();
@@ -90,8 +102,10 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     _heypocketController.dispose();
 
     _omiDebounce?.cancel();
+    _omiFirebaseTokenController.removeListener(_onOmiFirebaseTokenChanged);
     _omiRefreshTokenController.removeListener(_onOmiChanged);
     _omiFirebaseApiKeyController.removeListener(_onOmiChanged);
+    _omiFirebaseTokenController.dispose();
     _omiRefreshTokenController.dispose();
     _omiFirebaseApiKeyController.dispose();
 
@@ -135,6 +149,26 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
   }
 
   // Omi logic
+  void _onOmiFirebaseTokenChanged() {
+    final token = _omiFirebaseTokenController.text.trim();
+    if (token.isEmpty) {
+      _prefs.setOmiIdToken('');
+      if (_prefs.omiRefreshToken.isEmpty) {
+        _prefs.omiTokenExpiry = 0;
+        _prefs.omiEnabled = false;
+        setState(() => _omiState = _ConnectionState.idle);
+      }
+      return;
+    }
+    _prefs.setOmiIdToken(token);
+    if (_prefs.omiTokenExpiry == 0) {
+      _prefs.omiTokenExpiry = DateTime.now().millisecondsSinceEpoch + 3600 * 1000;
+    }
+    if (_omiState != _ConnectionState.connected) {
+      setState(() => _omiState = _ConnectionState.connected);
+    }
+  }
+
   void _onOmiChanged() {
     final rt = _omiRefreshTokenController.text.trim();
     final ak = _omiFirebaseApiKeyController.text.trim();
@@ -206,6 +240,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
   Future<void> _deleteOmi() async {
     await OmiApiClient.signOut();
     if (!mounted) return;
+    _omiFirebaseTokenController.clear();
     _omiRefreshTokenController.clear();
     _omiFirebaseApiKeyController.clear();
     setState(() {
@@ -372,16 +407,30 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                 ),
               ],
               if (_showOmiManual) ...[
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Text(
+                    'Get credentials from app.omi.me → F12 DevTools → Network tab (Authorization: Bearer …) and Application → IndexedDB → firebaseLocalStorage (refreshToken, key=AIza…).',
+                    style: TextStyle(color: Colors.grey.shade500, fontSize: 11),
+                  ),
+                ),
+                _buildField(
+                  controller: _omiFirebaseTokenController,
+                  hint: 'Firebase Token (eyJ… — expires ~1h)',
+                  obscured: _omiObscured,
+                  onToggleObscure: () => setState(() => _omiObscured = !_omiObscured),
+                ),
+                const SizedBox(height: 12),
                 _buildField(
                   controller: _omiRefreshTokenController,
-                  hint: 'Refresh Token',
+                  hint: 'Refresh Token (AMf… — for auto-renewal)',
                   obscured: _omiObscured,
                   onToggleObscure: () => setState(() => _omiObscured = !_omiObscured),
                 ),
                 const SizedBox(height: 12),
                 _buildField(
                   controller: _omiFirebaseApiKeyController,
-                  hint: 'Firebase API Key',
+                  hint: 'Firebase API Key (AIza…)',
                   obscured: _omiObscured,
                   onToggleObscure: () => setState(() => _omiObscured = !_omiObscured),
                 ),
