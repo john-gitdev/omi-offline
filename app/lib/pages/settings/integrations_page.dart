@@ -158,8 +158,10 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
       final result = await OmiApiClient.testConnection(refreshToken: rt, apiKey: ak);
       if (_omiRefreshTokenController.text.trim() != rt || _omiFirebaseApiKeyController.text.trim() != ak) return;
       if (result) {
+        final isNew = _prefs.omiRefreshToken != rt;
         await _prefs.setOmiRefreshToken(rt);
         await _prefs.setOmiFirebaseApiKey(ak);
+        if (isNew) _prefs.omiEnabled = true;
         setState(() => _omiState = _ConnectionState.connected);
       } else {
         _prefs.omiEnabled = false;
