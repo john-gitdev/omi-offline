@@ -53,7 +53,7 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
 
 - **Native BLE bridge.** Pigeon-generated code calls the platform's native iOS/Android Bluetooth stack directly, bypassing Dart BLE library limitations.
 - **Connection serialization.** `DeviceService.ensureConnection()` uses a `Mutex` so N concurrent callers (battery, storage, WAL sync) share one attempt.
-- **WAL sync (`SDCardWalSyncImpl`).** Saves segments to `raw_segments/<deviceSessionId>/<deviceSessionId>_<segmentIndex>.bin`.
+- **WAL sync (`SDCardWalSyncImpl`).** Saves segments to `raw_segments/<timerStart>/<timerStart>_<sessionId>.bin`, where `timerStart` is the firmware-assigned UTC epoch seconds and `sessionId` is the 32-bit DeviceSession ID (or `0` if unknown). Pre-time-sync files land in a `raw_segments/session_<sessionId>/` fallback folder shown in the UI under "Unorganized".
 - **VAD processor (`OfflineAudioProcessor`).** Runs in a fresh isolate. Stateless across runs — uncut segments stay on disk and are re-processed next cycle. Never flushes mid-run in background mode.
 - **Recordings manager.** Parses finalized `.m4a` files from `recordings/` for UI binding. Marker EDL sidecars live alongside their recordings.
 
@@ -90,8 +90,10 @@ Priority order (highest wins):
 | 4 | Stealth mode | Off |
 | 5 | Muted | Solid Red |
 | 6 | Low battery (< 10%) | Solid Purple |
-| 7 | BLE connected | Solid Blue |
-| 8 | Recording / default | Solid Yellow |
+| 7 | BLE connected | Solid Blue (wins over recording) |
+| 8 | Manual recording active (AAD threshold = 65535) | Solid Yellow |
+| 9 | AAD auto-recording (`aad_is_recording()`) | Solid Yellow |
+| 10 | Idle / disconnected | Off |
 
 **Charging overlay** (applied on top of base state):
 - Fully charged (>= 98%): Solid Green
@@ -196,7 +198,7 @@ omi-offline/
 │       └── omi/src/        # Zephyr C source (main.c, sd_card.c, aad.c, transport.c)
 ├── NOMENCLATURE.md         # Canonical project glossary
 ├── NOTES.md                # Engineering notes and findings
-├── TODO.md                 # Backlog
+├── IDEAS.md                # Backlog / future ideas
 └── CLAUDE.md               # AI assistant instructions
 ```
 
@@ -276,4 +278,4 @@ Reverted to the full OAuth + PCM16 upload path (preserved from commit `21880ab`)
 
 ## Upstream
 
-This is a fork of [BasedHardware/omi](https://github.com/BasedHardware/omi). See [`UPSTREAM.md`](UPSTREAM.md) for divergence notes.
+This is a fork of [BasedHardware/omi](https://github.com/BasedHardware/omi). The fork has diverged substantially — the entire cloud sync, OAuth, transcription, and memory backend has been removed in favour of the offline pipeline described above. Only the Opus codec, BLE characteristic UUIDs, and the nRF5340 board files remain compatible.
