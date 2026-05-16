@@ -207,10 +207,10 @@ omi-offline/
 ### App
 
 ```bash
-# Setup (also runs the app at the end)
+# First-time setup (installs deps, runs pod install on iOS, then launches the app)
 cd app && bash setup.sh ios     # or android
 
-# Run (dev flavor)
+# Subsequent runs (workspace already exists)
 cd app && flutter run --flavor dev
 
 # Test
