@@ -112,6 +112,7 @@ class OmiApiClient {
     }
 
     Logger.debug('OmiApiClient: Token refreshed, expires in ${expiresIn}s');
+    unawaited(prefs.clearAllAutoUploadRetries());
   }
 
   /// Uploads [binFiles] to /v2/sync-local-files. Throws [OmiSyncException] on failure.
