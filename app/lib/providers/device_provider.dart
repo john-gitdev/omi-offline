@@ -608,6 +608,12 @@ class DeviceProvider extends ChangeNotifier
     }
 
     if (isConnected) {
+      // Drain pending segments if the background sync left the connection
+      // alive because missingCount > 0. Without this the user resumes onto a
+      // live connection that just sits idle until the next 30-min tick.
+      if (prefs.maximizeBattery && !walSync.isSyncing && walSync.estimatedTotalSegments > 0) {
+        unawaited(_doBackgroundSync());
+      }
       // Don't reset the timer if it's already ticking — preserves the overnight
       // schedule so briefly unlocking the screen doesn't restart the 30-min clock.
       if (!(_backgroundSyncTimer?.isActive ?? false)) {
