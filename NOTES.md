@@ -7,11 +7,11 @@ Running log of investigated bugs, deferred decisions, and findings that don't fi
 ## Firmware: LED Behavior
 
 ### Boot Sequence
-1. **LEDs breathing white** — starts immediately on `led_start()` before anything else
+1. **LEDs breathing white** — `boot_led_sequence()` starts `led_start_breathing()` right after `led_start()` (which just asserts PWM ready, doesn't drive any LED itself)
 2. **Haptic buzz** (100ms) — fires during breathing while settings + SD init run
-3. **Breathing continues** — waiting for SD worker to finish mount + `lfs_fs_gc` + file open (< 5 s with little data, up to ~50 s with 200 MB)
-4. **Mic starts** — once SD is ready (`sd_is_boot_ready()`)
-5. **Breathing stops, fade to yellow** — R+G fade from 0 → `dim_ratio` over 300 ms; `set_led_state()` takes over
+3. **Breathing continues** — `boot_warming_sequence()` spin-waits for the SD worker to finish mount + `lfs_fs_gc` + file open (< 5 s with little data, up to ~50 s with 200 MB)
+4. **Mic starts** — `mic_start()` runs once SD is ready
+5. **Breathing stops, solid white → fade to off** — `boot_ready_fade()` holds solid white (R+G+B at `dim_ratio`) for 1 s, then fades all three channels down to 0 over ~1000 ms (100 × 10 ms steps). Main loop's `set_led_state()` (500 ms cadence) then takes over.
 
 ### LED State Machine (`set_led_state()`, runs every 500ms)
 
@@ -25,8 +25,10 @@ Priority order (highest first):
 | 4 | Stealth mode (`!is_led_enabled`) | Off |
 | 5 | Muted | Solid Red |
 | 6 | Low battery (< 10%) | Solid Purple (R+B) |
-| 7 | BLE connected | Solid Blue |
-| 8 | Default / recording | Solid Yellow (R+G) |
+| 7 | BLE connected | Solid Blue (wins over recording state) |
+| 8 | Manual recording active (AAD threshold == 65535) | Solid Yellow (R+G) |
+| 9 | AAD auto-recording (`aad_is_recording()`) | Solid Yellow (R+G) |
+| 10 | Idle / disconnected / standby | Off |
 
 ### Charging Override
 Applied on top of the base state above:
@@ -38,10 +40,10 @@ Applied on top of the base state above:
 | Action | Effect | Haptic |
 |--------|--------|--------|
 | Single tap | No action | None |
-| Double tap | White flash ~1s (marker recorded) — ignored if muted | 300ms |
-| Double tap + hold (1s on second press) | Toggle Mute — LED goes Red when muted, mic paused | 500ms |
-| Triple tap | Toggle Stealth Mode (LED on/off) | 150ms |
-| Triple tap + hold (3s on third press) | Power off | 1000ms |
+| Double tap | White flash ~1s (marker recorded via `write_marker_to_storage()`) — ignored if muted. In manual AAD mode: toggles manual recording start/stop instead. | None |
+| Double tap + hold (1s on second press) | Toggle Mute — LED goes Red when muted, mic paused. Suppressed in manual AAD mode. | None |
+| Triple tap | Toggle Stealth Mode (`is_led_enabled`) | None |
+| Triple tap + hold (3s on third press) | Power off (`turnoff_all()`) | 100ms |
 
 ### Hardware Error LEDs
 **Removed in production.** All `error_*()` functions in `feedback.c` log to UART/RTT only. No visual LED feedback on errors.
@@ -116,7 +118,7 @@ This section reviews the functionality of the Debug Tools present in `app/lib/pa
 **Conclusion:** Matches description. `syncAll` correctly checks for pending segments and syncs them.
 
 ### 2. Force Sync Omi
-**Description:** "Syncs all pending segments immediately, ignoring the minimum buffer threshold."
+**Description:** "Seals the current recording on the device and syncs everything, including the current session."
 **Implementation:**
 - Shows a confirmation dialog warning that it will close the current recording segment.
 - Calls `ServiceManager.instance().wal.getSyncs().rotateAndSync()`.
@@ -151,7 +153,7 @@ This section reviews the functionality of the Debug Tools present in `app/lib/pa
 **Conclusion:** Matches description. The `raw_segments` folder contains all the downloaded `.bin` files and markers.
 
 ### 6. Delete Phone Conversations
-**Description:** "Permanently deletes finalized recordings and conversations, including any open conversation in progress."
+**Description:** "Permanently deletes finalized recordings and conversations." (Confirmation dialog also warns that any open conversation in progress is included.)
 **Implementation:**
 - Blocked if processing is active.
 - Shows a confirmation dialog.
