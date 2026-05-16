@@ -2,7 +2,7 @@
 
 A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
 
-**Current versions:** App `0.10.10` · Firmware `oo-1.7.6`
+**Current versions:** App `0.11.0` · Firmware `oo-1.7.8`
 
 ---
 
@@ -226,19 +226,18 @@ clang-format -i <files>         # firmware C/C++
 Requires nRF Connect SDK 2.9.0 via `nrfutil toolchain-manager`. Full setup in [`omi/firmware/BUILD_AND_OTA_FLASH.md`](omi/firmware/BUILD_AND_OTA_FLASH.md).
 
 ```bash
-# Launch the SDK environment
+# Launch the SDK environment (run from omi/firmware/omi/)
 nrfutil toolchain-manager launch --ncs-version v2.9.0 --shell
 
-# Build using the preset (from omi/firmware/omi/)
+# Build using the CMake preset
 cmake --preset OMI
 cmake --build build/omi
+# CMakePresets.json sets board (omi/nrf5340/cpuapp), conf file (omi.conf),
+# and build dir (build/omi) — no extra flags needed.
 
-# Or via west (from omi/firmware/v2.9.0/)
-west build -b omi/nrf5340/cpuapp ../omi --sysbuild -- -DBOARD_ROOT=/path/to/omi/firmware
-
-# Package for OTA: stamps version.txt into the zip so the app shows the version
-# (sysbuild does this automatically; use the script to re-stamp an existing zip)
-cd omi/firmware/omi && ./package_firmware.sh
+# Package for OTA: reads version from omi.conf, stamps version.txt into the zip
+# so the app can display the firmware version string.
+./package_firmware.sh
 # Output: build/omi/dfu_application_release.zip
 ```
 
@@ -259,6 +258,20 @@ See [`NOMENCLATURE.md`](NOMENCLATURE.md) for the full glossary. Key terms:
 | WAL | Byte-offset sync state tracking download progress per segment |
 | Recording | Finalized `.m4a` audio file on disk |
 | Conversation | Recording + timestamps, the local UI entity |
+
+---
+
+## Recent Changes
+
+### Omi Cloud integration rewrite (0.11.0)
+
+Reverted to the full OAuth + PCM16 upload path (preserved from commit `21880ab`), then carried forward the following fixes on top:
+
+- **Upload filename fix.** On-disk recording names use millisecond timestamps; the Omi server expects epoch seconds. Filenames are now converted at upload time (`recording_fs320_<ms>.bin` → `recording_fs320_<s>.bin`).
+- **Auto-enable on first login.** Toggling the Enabled switch on happens automatically when credentials first validate (webview login or manual token entry). Re-opening the settings page or the periodic token refresh does not override a manual disable.
+- **Cancel pending uploads on disable.** Toggling Omi or HeyPocket off clears the in-flight upload queue; any upload already in-flight drains naturally, then stops.
+- **Failed upload state.** After 3 consecutive failures the upload icon changes to an orange `!` circle. Auto-sync stops retrying. Tapping the icon manually retries regardless of retry count, and clears the counter on success.
+- **Automatic retry reset.** Retry counters for all integrations are cleared automatically when: a new Omi OAuth token is successfully refreshed, the user re-logs into Omi, or a new HeyPocket API key validates. Transient outages recover without user intervention.
 
 ---
 
