@@ -1110,17 +1110,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
   }
 
-  void cancelPendingOmiUploads() {
-    final count = _syncingBinFiles.length;
-    _syncingBinFiles.clear();
-    Logger.debug('RecordingsController: Omi Cloud disabled — cleared $count in-progress sync(s)');
-  }
-
-  void cancelPendingHeyPocketUploads() {
-    final count = _autoUploadActive;
-    Logger.debug('RecordingsController: HeyPocket disabled — $count auto-upload(s) will drain and stop');
-  }
-
   void tryAutoSyncNext() {
     if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) return;
     if (!_prefs.omiEnabled || _prefs.omiRefreshToken.isEmpty || !_prefs.omiAutoUpload) return;
@@ -1133,6 +1122,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
         final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
         if (_prefs.isOmiSynced(binPath)) continue;
+        if (_prefs.getAutoUploadRetries(binPath) >= 3) continue;
         if (_syncingBinFiles.contains(binPath)) continue;
         final binFile = File(binPath);
         if (!binFile.existsSync()) {
