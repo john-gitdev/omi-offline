@@ -122,6 +122,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
         _prefs.heypocketKeySetAt = DateTime.now().millisecondsSinceEpoch;
         await _prefs.setHeypocketApiKey(key);
         _prefs.heypocketEnabled = true;
+        unawaited(_prefs.clearAllAutoUploadRetries());
         setState(() => _heypocketState = _ConnectionState.connected);
       } else {
         _prefs.heypocketEnabled = false;
@@ -197,6 +198,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
           _prefs.omiTokenExpiry = DateTime.now().millisecondsSinceEpoch + expiresIn * 1000;
         }
         _prefs.omiEnabled = true;
+        unawaited(_prefs.clearAllAutoUploadRetries());
         _omiRefreshTokenController.text = rt;
         _omiFirebaseApiKeyController.text = ak;
         setState(() => _omiState = _ConnectionState.connected);
