@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -24,6 +25,8 @@ class MarkerConversationPlayerPage extends StatefulWidget {
 
 class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerPage> {
   final AudioPlayer _player = AudioPlayer();
+  StreamSubscription<Duration>? _positionSub;
+  StreamSubscription<PlayerState>? _playerStateSub;
 
   late File _segment;
   late Duration _markerOffset;
@@ -95,12 +98,12 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
     _totalDuration = Duration(milliseconds: _readSegmentDurationMs(_segment));
     if (mounted) setState(() => _loadingAudio = false);
 
-    _player.positionStream.listen((pos) {
+    _positionSub = _player.positionStream.listen((pos) {
       if (mounted) setState(() => _position = pos);
       // Soft stop at _cropEnd
       if (pos >= _cropEnd && _isPlaying) _player.pause();
     });
-    _player.playerStateStream.listen((state) {
+    _playerStateSub = _player.playerStateStream.listen((state) {
       if (mounted) {
         setState(() {
           _isPlaying = state.playing && state.processingState != ProcessingState.completed;
@@ -248,6 +251,8 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
 
   @override
   void dispose() {
+    _positionSub?.cancel();
+    _playerStateSub?.cancel();
     _player.dispose();
     super.dispose();
   }
