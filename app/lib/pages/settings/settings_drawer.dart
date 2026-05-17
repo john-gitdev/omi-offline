@@ -153,16 +153,31 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
           ),
         ),
         const SizedBox(width: 4),
-        GestureDetector(
-          onTap: () async {
-            await Clipboard.setData(ClipboardData(text: displayText));
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Copied to clipboard')),
-              );
-            }
-          },
-          child: const Icon(Icons.copy, size: 12, color: Color(0xFF8E8E93)),
+        Semantics(
+          button: true,
+          label: 'Copy version info',
+          child: Tooltip(
+            message: 'Copy version info',
+            child: Material(
+              color: Colors.transparent,
+              clipBehavior: Clip.antiAlias,
+              shape: const CircleBorder(),
+              child: InkWell(
+                onTap: () async {
+                  await Clipboard.setData(ClipboardData(text: displayText));
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Copied to clipboard')),
+                    );
+                  }
+                },
+                child: const Padding(
+                  padding: EdgeInsets.all(4.0),
+                  child: Icon(Icons.copy, size: 12, color: Color(0xFF8E8E93)),
+                ),
+              ),
+            ),
+          ),
         ),
       ],
     );
@@ -208,14 +223,28 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                 ),
                 Positioned(
                   right: 0,
-                  child: GestureDetector(
-                    onTap: () => Navigator.pop(context),
-                    child: const Text(
-                      'Done',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w400,
+                  child: Semantics(
+                    button: true,
+                    label: 'Close settings',
+                    child: Material(
+                      color: Colors.transparent,
+                      clipBehavior: Clip.antiAlias,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8.0),
+                      ),
+                      child: InkWell(
+                        onTap: () => Navigator.pop(context),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                          child: Text(
+                            'Done',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 17,
+                              fontWeight: FontWeight.w400,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
                   ),

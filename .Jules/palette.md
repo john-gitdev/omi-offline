@@ -1,0 +1,3 @@
+## 2024-05-24 - Flutter GestureDetector replacements
+**Learning:** Found multiple instances where Flutter's GestureDetector is used in `app/lib/pages/settings/settings_drawer.dart` and `app/lib/widgets/battery_status_indicator.dart` without sufficient visual feedback (ripple effect) or semantic accessibility labels (e.g. for copying the version info or clicking 'Done' on the drawer).
+**Action:** Replace these raw `GestureDetector`s with `InkWell` + `Material` widgets for visual ripple effect, and wrap them in `Semantics` and `Tooltip` to provide screen-reader labels and hover text for better accessibility.
