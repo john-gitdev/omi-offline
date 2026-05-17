@@ -78,7 +78,12 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<void> acquireStorageLock([String owner = 'unknown']) async {
     try {
-      await _storageMutex.acquire().timeout(const Duration(seconds: 10));
+      // tryAcquire cleans up its waiter on timeout; `.acquire().timeout()` did
+      // not, which left the mutex held by a phantom owner.
+      final acquired = await _storageMutex.tryAcquire(timeout: const Duration(seconds: 10));
+      if (!acquired) {
+        throw TimeoutException('Storage lock not acquired within 10s');
+      }
       _lockOwner = owner;
 
       try {
@@ -88,7 +93,7 @@ class OmiDeviceConnection extends DeviceConnection {
         await _waitForStorageReady();
       } catch (e) {
         _lockOwner = null;
-        _storageMutex.release(); // CRITICAL: prevent deadlock
+        _storageMutex.release();
         rethrow;
       }
     } catch (e) {
