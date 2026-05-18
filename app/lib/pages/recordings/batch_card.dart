@@ -295,7 +295,7 @@ class GhostRow extends StatelessWidget {
 Future<void> showDiscardSheet(
   BuildContext context,
   DiscardRecord d, {
-  required Future<void> Function(DiscardRecord) onRecover,
+  required Future<void> Function(DiscardRecord, RecoveryMode) onRecover,
   required Future<void> Function(DiscardRecord) onDeleteNow,
 }) async {
   String two(int n) => n.toString().padLeft(2, '0');
@@ -335,11 +335,28 @@ Future<void> showDiscardSheet(
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
+              icon: const FaIcon(FontAwesomeIcons.waveSquare, size: 14),
+              label: const Text('Recover with lower threshold'),
+              onPressed: () async {
+                Navigator.of(sheetCtx).pop();
+                await onRecover(d, RecoveryMode.lowerThreshold);
+              },
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2C2C2E),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
               icon: const FaIcon(FontAwesomeIcons.rotateLeft, size: 14),
               label: const Text('Recover without VAD'),
               onPressed: () async {
                 Navigator.of(sheetCtx).pop();
-                await onRecover(d);
+                await onRecover(d, RecoveryMode.bypassVad);
               },
             ),
           ),
@@ -382,7 +399,7 @@ class BatchCard extends StatelessWidget {
   final VoidCallback onReprocessDay;
   final void Function(Conversation) onDeleteConversation;
   final void Function(MarkerConversation) onDeleteMarkerConversation;
-  final Future<void> Function(DiscardRecord) onRecoverDiscard;
+  final Future<void> Function(DiscardRecord, RecoveryMode) onRecoverDiscard;
   final Future<void> Function(DiscardRecord) onDeleteDiscard;
 
   const BatchCard({
