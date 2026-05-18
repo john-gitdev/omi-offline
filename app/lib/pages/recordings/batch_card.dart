@@ -253,7 +253,7 @@ class GhostRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final timeRange = '${_hourMin(discard.startTime)}–${_hourMin(discard.endTime)}';
     final dur = _durationLabel(discard.duration);
-    final label = discard.isNoise ? 'discarded: noise' : 'discarded: too short';
+    final subLabel = discard.isNoise ? 'silenced by VAD' : 'too short';
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(8),
@@ -261,8 +261,6 @@ class GhostRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
         child: Row(
           children: [
-            FaIcon(FontAwesomeIcons.ghost, color: Colors.grey.shade700, size: 14),
-            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -270,21 +268,20 @@ class GhostRow extends StatelessWidget {
                   Text(
                     timeRange,
                     style: TextStyle(
-                      color: Colors.grey.shade500,
+                      color: Colors.grey.shade600,
                       fontSize: 15,
-                      fontStyle: FontStyle.italic,
                       fontWeight: FontWeight.w400,
                     ),
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    '$label  ·  $dur',
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                    '$subLabel  ·  $dur',
+                    style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
                   ),
                 ],
               ),
             ),
-            FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade700, size: 14),
+            FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade800, size: 12),
           ],
         ),
       ),
