@@ -83,6 +83,16 @@ class VadAudioProcessor {
   // VAD state counters
   int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
 
+  // Max Silero voice_prob observed during the current conversation. Surfaced in
+  // discard records so the recovery UI can explain why VAD rejected the audio.
+  // AAD mode (no Silero session) leaves this at 0.
+  double _currentMaxVoiceProb = 0.0;
+
+  // Discard records produced since the last consumePendingDiscards call.
+  // Each entry: {startMs, endMs, reason, maxVoiceProb, relativeBins: [<sessionId>/<file>.bin, ...]}.
+  // Drained by the isolate entry and forwarded to the main isolate for persistence.
+  final List<Map<String, dynamic>> _pendingDiscards = [];
+
   /// True after a [flushRemaining] call where the short-recording discard guard
   /// fired (refs were non-empty but below the duration threshold). False if the
   /// guard did not fire (either no refs, or proceeded to save). Test-only.
@@ -212,6 +222,7 @@ class VadAudioProcessor {
       final prob = (outputs[0]!.value as List<List<double>>)[0][0];
       _h = _flattenF32(outputs[1]!.value);
       _c = _flattenF32(outputs[2]!.value);
+      if (prob > _currentMaxVoiceProb) _currentMaxVoiceProb = prob;
       return prob > _speechThreshold;
     } catch (e) {
       Logger.error('VadAudioProcessor: Silero inference failed ($e) — disabling model, AAD mode active');
@@ -486,6 +497,8 @@ class VadAudioProcessor {
 
               if (_currentRefs.isNotEmpty) {
                 if (tooShortSpeech) {
+                  final rec = _buildDiscardRecord('noise_pre_split');
+                  if (rec != null) _pendingDiscards.add(rec);
                   Logger.debug('VadAudioProcessor: Discarding noise conversation before split.');
                 } else {
                   final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
@@ -584,6 +597,8 @@ class VadAudioProcessor {
             final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
             if (filePath != null) savedFiles.add(filePath);
           } else {
+            final rec = _buildDiscardRecord('noise_max_duration');
+            if (rec != null) _pendingDiscards.add(rec);
             Logger.debug('VadAudioProcessor: Discarding noise conversation during max-duration cut.');
           }
           final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
@@ -631,6 +646,8 @@ class VadAudioProcessor {
         final reason = tooShortSpeech
             ? "${speechMs}ms speech < ${_minSpeechMs}ms minimum"
             : "${_currentChunkDurationMs}ms < ${_minDurationMs}ms minimum";
+        final rec = _buildDiscardRecord(tooShortSpeech ? 'flush_noise' : 'flush_too_short_duration');
+        if (rec != null) _pendingDiscards.add(rec);
         Logger.debug('VadAudioProcessor: flushRemaining discarding ${_currentRefs.length} frames ($reason)');
       }
       _resetState();
@@ -670,8 +687,38 @@ class VadAudioProcessor {
     _currentRefs = [];
     _speechFrameCount = 0;
     _currentChunkDurationMs = 0;
+    _currentMaxVoiceProb = 0.0;
     _recordingStartTime = null;
     _pendingMarkers.clear();
+  }
+
+  /// Builds a discard record from the current conversation state. Caller is
+  /// responsible for adding to [_pendingDiscards] and resetting state afterwards.
+  Map<String, dynamic>? _buildDiscardRecord(String reason) {
+    if (_currentRefs.isEmpty || _recordingStartTime == null) return null;
+    final relativeBins = <String>{};
+    for (final item in _currentRefs) {
+      if (item is! FrameRef) continue;
+      // Path layout: <docs>/raw_segments/<sessionId>/<file>.bin → store relative tail.
+      final segments = item.segmentFile.path.split('/raw_segments/');
+      relativeBins.add(segments.length == 2 ? segments.last : item.segmentFile.path);
+    }
+    if (relativeBins.isEmpty) return null;
+    return {
+      'startMs': _recordingStartTime!.millisecondsSinceEpoch,
+      'endMs': _recordingStartTime!.millisecondsSinceEpoch + _currentChunkDurationMs,
+      'reason': reason,
+      'maxVoiceProb': _currentMaxVoiceProb,
+      'relativeBins': relativeBins.toList(),
+    };
+  }
+
+  /// Drains and returns any discard records produced since the last call.
+  List<Map<String, dynamic>> consumePendingDiscards() {
+    if (_pendingDiscards.isEmpty) return const [];
+    final result = List<Map<String, dynamic>>.from(_pendingDiscards);
+    _pendingDiscards.clear();
+    return result;
   }
 
   /// Drains and returns any EDL associations produced since the last call.
