@@ -1951,6 +1951,16 @@ class RecordingsManager {
     final recordingsDir = Directory(
       '${directory.path}/recordings/${batch.dateString}',
     );
+
+    // Drop any discard records for this day and their protected bins so the
+    // ghosts disappear immediately rather than surviving until the next sweep.
+    // The full directory delete below would handle discards.jsonl in the
+    // !onlyReprocessable path, but the raw_segments bins live elsewhere and
+    // need explicit cleanup either way.
+    for (final d in batch.discards) {
+      await removeDiscardRecord(d, deleteBins: true);
+    }
+
     if (!await recordingsDir.exists()) return;
 
     final availableSessionIds = batch.rawSegments
