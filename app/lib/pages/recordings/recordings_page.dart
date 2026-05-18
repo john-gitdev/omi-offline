@@ -927,6 +927,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           ),
                                           onDeleteConversation: _deleteConversation,
                                           onDeleteMarkerConversation: _deleteMarkerConversation,
+                                          onRecoverDiscard: controller.recoverDiscard,
+                                          onDeleteDiscard: controller.deleteDiscard,
                                         );
                                       },
                                     ),
