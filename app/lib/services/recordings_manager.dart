@@ -378,6 +378,21 @@ class Batch {
   });
 }
 
+/// How a user-initiated recovery should re-run the VAD pipeline over the
+/// bins of a [DiscardRecord].
+enum RecoveryMode {
+  /// Bypass VAD entirely — produces one m4a per discard with no splitting.
+  /// Always succeeds in extracting audio; may include long stretches of
+  /// silence at the start/end since there's no voice gating.
+  bypassVad,
+
+  /// Run VAD with a halved speech threshold and normal split semantics but
+  /// with min-duration/min-speech guards relaxed so the recording can't be
+  /// re-discarded. Produces naturally-split m4a files anchored to actual
+  /// voice activity.
+  lowerThreshold,
+}
+
 /// One stretch of audio that VAD silently dropped, surfaced in the recordings
 /// list as a greyed-out "ghost" row so the user can see what was lost and try
 /// to recover it. Source of truth is `recordings/<date>/discards.jsonl`.
