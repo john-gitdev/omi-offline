@@ -531,6 +531,13 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
         params.sendPort.send({'type': 'marker_edl', 'items': edlData});
       }
 
+      // Emit discard records before delete_segments so the main isolate can
+      // register protected bin paths before considering them for deletion.
+      final discards = processor.consumePendingDiscards();
+      if (discards.isNotEmpty) {
+        params.sendPort.send({'type': 'discard_records', 'items': discards});
+      }
+
       // Ask the main isolate to move any completed recordings out of temp.
       params.sendPort.send({'type': 'move'});
 
@@ -559,6 +566,11 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     final flushEdlData = processor.consumePendingEdlData();
     if (flushEdlData.isNotEmpty) {
       params.sendPort.send({'type': 'marker_edl', 'items': flushEdlData});
+    }
+
+    final flushDiscards = processor.consumePendingDiscards();
+    if (flushDiscards.isNotEmpty) {
+      params.sendPort.send({'type': 'discard_records', 'items': flushDiscards});
     }
 
     params.sendPort.send({'type': 'move'});
@@ -1040,6 +1052,10 @@ class RecordingsManager {
           });
 
           final List<Map<String, dynamic>> pendingEdls = [];
+          // Absolute bin paths that have been claimed by an in-flight discard
+          // record this run. The delete_segments handler must skip these so the
+          // recovery sweep (or AM) gets a chance to keep them around.
+          final Set<String> discardProtectedPaths = {};
 
           await for (final msg in receivePort) {
             if (msg is! Map) continue;
@@ -1052,12 +1068,26 @@ class RecordingsManager {
                 }
               case 'marker_edl':
                 pendingEdls.addAll((msg['items'] as List).cast<Map<String, dynamic>>());
+              case 'discard_records':
+                final items = (msg['items'] as List).cast<Map<String, dynamic>>();
+                for (final rec in items) {
+                  await _persistDiscardRecord(directory.path, rec);
+                  for (final rel in (rec['relativeBins'] as List).cast<String>()) {
+                    discardProtectedPaths.add('${directory.path}/raw_segments/$rel');
+                  }
+                }
               case 'move':
                 await moveTempFilesToLive();
               case 'delete_segments':
                 if (!SharedPreferencesUtil().adjustmentMode) {
                   final paths = (msg['paths'] as List).cast<String>();
                   for (final path in paths) {
+                    if (discardProtectedPaths.contains(path)) {
+                      Logger.debug(
+                        'RecordingsManager: Preserving raw segment for recovery: $path',
+                      );
+                      continue;
+                    }
                     final f = File(path);
                     if (await f.exists()) {
                       Logger.debug(
@@ -2096,16 +2126,167 @@ class RecordingsManager {
     notifyRecordingsChanged();
   }
 
-  /// Deletes all raw .bin segment files and their parent device-session folders.
-  /// Called after adjustment mode is turned off and any pending processing is done.
+  /// How long to retain raw bins for a noise/short discard before the recovery
+  /// sweep reclaims them. Adjustment Mode pauses the sweep entirely.
+  static const Duration discardRetentionWindow = Duration(hours: 48);
+
+  /// Appends one JSONL record to `recordings/<date>/discards.jsonl`. The date
+  /// folder is derived from the record's startMs in local time.
+  static Future<void> _persistDiscardRecord(String docsPath, Map<String, dynamic> rec) async {
+    final dateStr = _dateStringFromMillis(rec['startMs'] as int);
+    final dir = Directory('$docsPath/recordings/$dateStr');
+    await dir.create(recursive: true);
+    final file = File('${dir.path}/discards.jsonl');
+    await file.writeAsString('${jsonEncode(rec)}\n', mode: FileMode.append, flush: true);
+  }
+
+  /// Walks all `recordings/<date>/discards.jsonl` files and returns parsed
+  /// records grouped by their containing file. Malformed lines are skipped.
+  static Future<List<({File jsonl, List<Map<String, dynamic>> records})>> _readAllDiscardRecords() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final recordingsDir = Directory('${directory.path}/recordings');
+    if (!await recordingsDir.exists()) return const [];
+    final out = <({File jsonl, List<Map<String, dynamic>> records})>[];
+    await for (final dayDir in recordingsDir.list()) {
+      if (dayDir is! Directory) continue;
+      final jsonl = File('${dayDir.path}/discards.jsonl');
+      if (!await jsonl.exists()) continue;
+      final records = <Map<String, dynamic>>[];
+      for (final line in (await jsonl.readAsString()).split('\n')) {
+        if (line.isEmpty) continue;
+        try {
+          records.add(jsonDecode(line) as Map<String, dynamic>);
+        } catch (e) {
+          Logger.error('RecordingsManager: Skipping malformed discard line in ${jsonl.path}: $e');
+        }
+      }
+      out.add((jsonl: jsonl, records: records));
+    }
+    return out;
+  }
+
+  /// Returns absolute bin paths that are still protected by an in-window
+  /// discard record. Used by AM-off cleanup to skip these files.
+  static Future<Set<String>> activeDiscardProtectedPaths() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final cutoffMs = DateTime.now().subtract(discardRetentionWindow).millisecondsSinceEpoch;
+    final protected = <String>{};
+    for (final group in await _readAllDiscardRecords()) {
+      for (final rec in group.records) {
+        if ((rec['endMs'] as int) < cutoffMs) continue;
+        for (final rel in (rec['relativeBins'] as List).cast<String>()) {
+          protected.add('${directory.path}/raw_segments/$rel');
+        }
+      }
+    }
+    return protected;
+  }
+
+  /// Reclaims expired discard records and their referenced bins. No-op when
+  /// Adjustment Mode is on (which keeps all bins indefinitely) or when a
+  /// processing run is already in flight (to avoid racing the per-segment
+  /// delete handler). Bins still claimed by any in-window record across any
+  /// day's jsonl are preserved.
+  static Future<void> runRecoverySweep() async {
+    if (SharedPreferencesUtil().adjustmentMode) return;
+    if (_isProcessingAny) return;
+    final directory = await getApplicationDocumentsDirectory();
+    final cutoffMs = DateTime.now().subtract(discardRetentionWindow).millisecondsSinceEpoch;
+
+    final groups = await _readAllDiscardRecords();
+
+    // First pass: collect every bin still protected by an in-window record,
+    // across all day-jsonl files. An expired record's bin must not be deleted
+    // if another active record (possibly in a different day file) references it.
+    final globallyProtected = <String>{};
+    for (final group in groups) {
+      for (final rec in group.records) {
+        if ((rec['endMs'] as int) < cutoffMs) continue;
+        for (final rel in (rec['relativeBins'] as List).cast<String>()) {
+          globallyProtected.add('${directory.path}/raw_segments/$rel');
+        }
+      }
+    }
+
+    for (final group in groups) {
+      final activeRecords = <Map<String, dynamic>>[];
+      final candidateDeletes = <String>{};
+      for (final rec in group.records) {
+        if ((rec['endMs'] as int) < cutoffMs) {
+          for (final rel in (rec['relativeBins'] as List).cast<String>()) {
+            candidateDeletes.add('${directory.path}/raw_segments/$rel');
+          }
+        } else {
+          activeRecords.add(rec);
+        }
+      }
+      candidateDeletes.removeAll(globallyProtected);
+      for (final path in candidateDeletes) {
+        final f = File(path);
+        if (!await f.exists()) continue;
+        try {
+          await f.delete();
+          Logger.debug('RecordingsManager: RecoverySweep deleted expired bin $path');
+        } catch (e) {
+          Logger.error('RecordingsManager: RecoverySweep failed to delete $path: $e');
+        }
+      }
+      if (activeRecords.isEmpty) {
+        try {
+          await group.jsonl.delete();
+        } catch (_) {}
+      } else if (activeRecords.length != group.records.length) {
+        await group.jsonl.writeAsString('${activeRecords.map(jsonEncode).join('\n')}\n', flush: true);
+      }
+    }
+
+    // Drop any now-empty raw_segments/<session>/ folders.
+    final rawDir = Directory('${directory.path}/raw_segments');
+    if (await rawDir.exists()) {
+      await for (final entity in rawDir.list()) {
+        if (entity is! Directory) continue;
+        try {
+          if (await entity.list().isEmpty) await entity.delete();
+        } catch (_) {}
+      }
+    }
+  }
+
+  /// Deletes raw .bin segment files and parent device-session folders, except
+  /// bins still protected by an in-window discard record. Called after
+  /// adjustment mode is turned off and any pending processing is done.
   static Future<void> deleteAllRawSegments() async {
     final directory = await getApplicationDocumentsDirectory();
     final rawSegmentsDir = Directory('${directory.path}/raw_segments');
-    if (await rawSegmentsDir.exists()) {
+    if (!await rawSegmentsDir.exists()) return;
+
+    final protected = await activeDiscardProtectedPaths();
+    if (protected.isEmpty) {
       await rawSegmentsDir.delete(recursive: true);
-      Logger.debug(
-        'RecordingsManager: Deleted all raw segments after adjustment mode exit',
-      );
+      Logger.debug('RecordingsManager: Deleted all raw segments after adjustment mode exit');
+      return;
     }
+
+    int kept = 0;
+    int deleted = 0;
+    await for (final entity in rawSegmentsDir.list(recursive: true)) {
+      if (entity is! File || !entity.path.endsWith('.bin')) continue;
+      if (protected.contains(entity.path)) {
+        kept++;
+        continue;
+      }
+      try {
+        await entity.delete();
+        deleted++;
+      } catch (_) {}
+    }
+    await for (final entity in rawSegmentsDir.list()) {
+      if (entity is! Directory) continue;
+      try {
+        if (await entity.list().isEmpty) await entity.delete();
+      } catch (_) {}
+    }
+    Logger.debug(
+        'RecordingsManager: AM-exit cleanup — deleted $deleted bins, preserved $kept for recovery (48h window)');
   }
 }
