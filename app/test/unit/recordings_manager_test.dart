@@ -407,4 +407,139 @@ void main() {
       expect(jsonl.existsSync(), true, reason: 'AM-on must leave jsonl intact');
     });
   });
+
+  group('removeDiscardRecord + getDiscardsForDate', () {
+    String _dateOf(int millis) {
+      final dt = DateTime.fromMillisecondsSinceEpoch(millis);
+      return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+    }
+
+    Future<File> writeBin(String relativeBin) async {
+      final path = p.join(tempDir.path, 'raw_segments', relativeBin);
+      final f = File(path);
+      await f.parent.create(recursive: true);
+      await f.writeAsBytes([0, 1, 2, 3]);
+      return f;
+    }
+
+    Future<File> writeJsonl(String dateStr, List<Map<String, dynamic>> records) async {
+      final dir = Directory(p.join(tempDir.path, 'recordings', dateStr));
+      await dir.create(recursive: true);
+      final file = File(p.join(dir.path, 'discards.jsonl'));
+      await file.writeAsString('${records.map(jsonEncode).join('\n')}\n');
+      return file;
+    }
+
+    test('round-trips via getDiscardsForDate', () async {
+      final startMs = DateTime.now().subtract(const Duration(hours: 2)).millisecondsSinceEpoch;
+      final dateStr = _dateOf(startMs);
+      await writeJsonl(dateStr, [
+        {
+          'startMs': startMs,
+          'endMs': startMs + 30000,
+          'reason': 'flush_noise',
+          'maxVoiceProb': 0.073,
+          'relativeBins': ['session_x/a.bin', 'session_x/b.bin'],
+        }
+      ]);
+
+      final loaded = await RecordingsManager.getDiscardsForDate(dateStr);
+
+      expect(loaded.length, 1);
+      expect(loaded.first.startTime.millisecondsSinceEpoch, startMs);
+      expect(loaded.first.reason, 'flush_noise');
+      expect(loaded.first.maxVoiceProb, closeTo(0.073, 0.0001));
+      expect(loaded.first.relativeBins, ['session_x/a.bin', 'session_x/b.bin']);
+      expect(loaded.first.isNoise, true);
+    });
+
+    test('missing jsonl returns empty list', () async {
+      final loaded = await RecordingsManager.getDiscardsForDate('2026-01-01');
+      expect(loaded, isEmpty);
+    });
+
+    test('removeDiscardRecord deletes bins when deleteBins=true', () async {
+      final startMs = DateTime.now().subtract(const Duration(hours: 2)).millisecondsSinceEpoch;
+      final dateStr = _dateOf(startMs);
+      final bin = await writeBin('session_y/keep.bin');
+      await writeJsonl(dateStr, [
+        {
+          'startMs': startMs,
+          'endMs': startMs + 1000,
+          'reason': 'flush_noise',
+          'maxVoiceProb': 0.0,
+          'relativeBins': ['session_y/keep.bin'],
+        }
+      ]);
+      final loaded = (await RecordingsManager.getDiscardsForDate(dateStr)).single;
+
+      await RecordingsManager.removeDiscardRecord(loaded, deleteBins: true);
+
+      expect(bin.existsSync(), false);
+      expect(File(p.join(tempDir.path, 'recordings', dateStr, 'discards.jsonl')).existsSync(), false);
+    });
+
+    test('removeDiscardRecord preserves bins when deleteBins=false', () async {
+      final startMs = DateTime.now().subtract(const Duration(hours: 2)).millisecondsSinceEpoch;
+      final dateStr = _dateOf(startMs);
+      final bin = await writeBin('session_z/hold.bin');
+      await writeJsonl(dateStr, [
+        {
+          'startMs': startMs,
+          'endMs': startMs + 1000,
+          'reason': 'flush_noise',
+          'maxVoiceProb': 0.0,
+          'relativeBins': ['session_z/hold.bin'],
+        }
+      ]);
+      final loaded = (await RecordingsManager.getDiscardsForDate(dateStr)).single;
+
+      await RecordingsManager.removeDiscardRecord(loaded, deleteBins: false);
+
+      expect(bin.existsSync(), true, reason: 'deleteBins=false must leave the bin alone');
+    });
+
+    test('removeDiscardRecord keeps sibling records in same jsonl', () async {
+      final startA = DateTime.now().subtract(const Duration(hours: 3)).millisecondsSinceEpoch;
+      final startB = DateTime.now().subtract(const Duration(hours: 2)).millisecondsSinceEpoch;
+      final dateStr = _dateOf(startA);
+      await writeJsonl(dateStr, [
+        {
+          'startMs': startA,
+          'endMs': startA + 1000,
+          'reason': 'flush_noise',
+          'maxVoiceProb': 0.01,
+          'relativeBins': ['session_q/a.bin'],
+        },
+        {
+          'startMs': startB,
+          'endMs': startB + 1000,
+          'reason': 'noise_pre_split',
+          'maxVoiceProb': 0.04,
+          'relativeBins': ['session_q/b.bin'],
+        },
+      ]);
+      final all = await RecordingsManager.getDiscardsForDate(dateStr);
+      expect(all.length, 2);
+
+      await RecordingsManager.removeDiscardRecord(all.first, deleteBins: false);
+
+      final remaining = await RecordingsManager.getDiscardsForDate(dateStr);
+      expect(remaining.length, 1);
+      expect(remaining.first.startTime.millisecondsSinceEpoch, startB);
+    });
+
+    test('removeDiscardRecord on missing jsonl is no-op', () async {
+      final ghost = DiscardRecord(
+        startTime: DateTime.now(),
+        endTime: DateTime.now().add(const Duration(minutes: 1)),
+        reason: 'flush_noise',
+        maxVoiceProb: 0.0,
+        relativeBins: const ['session_missing/x.bin'],
+        sourceJsonl: File(p.join(tempDir.path, 'recordings', '2099-01-01', 'discards.jsonl')),
+      );
+      // Should not throw.
+      await RecordingsManager.removeDiscardRecord(ghost, deleteBins: true);
+    });
+  });
 }
