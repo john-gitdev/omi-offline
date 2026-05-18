@@ -692,15 +692,14 @@ class VadAudioProcessor {
     _pendingMarkers.clear();
   }
 
-  /// Don't surface ghost rows for discards shorter than this — they're noise
-  /// floor (accidental activations, background blips), not missed conversations.
-  static const int _minDiscardTrackingMs = 60000;
-
   /// Builds a discard record from the current conversation state. Caller is
   /// responsible for adding to [_pendingDiscards] and resetting state afterwards.
+  /// Skipped for chunks shorter than the user's filter-minimum-duration setting:
+  /// if a real recording wouldn't be worth surfacing at that length, a ghost
+  /// row for the same length is just noise.
   Map<String, dynamic>? _buildDiscardRecord(String reason) {
     if (_currentRefs.isEmpty || _recordingStartTime == null) return null;
-    if (_currentChunkDurationMs < _minDiscardTrackingMs) return null;
+    if (_minDurationMs > 0 && _currentChunkDurationMs < _minDurationMs) return null;
     final relativeBins = <String>{};
     for (final item in _currentRefs) {
       if (item is! FrameRef) continue;
