@@ -983,10 +983,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await _finishSuccess();
   }
 
-  /// Re-runs processing on the bins referenced by [d] with VAD bypassed so
-  /// every frame is kept. On success, the discard record is removed and the
-  /// produced m4a appears as a normal recording in the day card.
-  Future<void> recoverDiscard(DiscardRecord d) async {
+  /// Re-runs processing on the bins referenced by [d] with the chosen
+  /// [mode]. On success the discard record is removed and the produced
+  /// m4a(s) appear as normal recordings in the day card.
+  Future<void> recoverDiscard(DiscardRecord d, RecoveryMode mode) async {
     if (_spState != SyncProcessState.idle) return;
     if (RecordingsManager.isProcessingAny) return;
     final directory = await getApplicationDocumentsDirectory();
@@ -1012,18 +1012,42 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       finalizedRecordings: const [],
     );
 
-    final override = ProcessingSettings(
-      vadEnabled: false,
-      speechThreshold: 0.0,
-      silenceDurationToSplitMs: 0x7FFFFFFF,
-      minDurationMs: 0,
-      minSpeechMs: 0,
-      discardShort: false,
-      maxChunkMs: 0x7FFFFFFFFFFFFFFF,
-      deviceId: _prefs.btDevice.id,
-      audioSaveFormat: _prefs.audioSaveFormat,
-      omiEnabled: false,
-    );
+    final ProcessingSettings override;
+    switch (mode) {
+      case RecoveryMode.bypassVad:
+        override = ProcessingSettings(
+          vadEnabled: false,
+          speechThreshold: 0.0,
+          silenceDurationToSplitMs: 0x7FFFFFFF,
+          minDurationMs: 0,
+          minSpeechMs: 0,
+          discardShort: false,
+          maxChunkMs: 0x7FFFFFFFFFFFFFFF,
+          deviceId: _prefs.btDevice.id,
+          audioSaveFormat: _prefs.audioSaveFormat,
+          omiEnabled: false,
+        );
+      case RecoveryMode.lowerThreshold:
+        // Halve the configured speech threshold (floor 0.1) so VAD becomes
+        // permissive. Keep normal split timing so recovered audio is naturally
+        // segmented. Disable all min/discard guards so the result can't be
+        // re-discarded into another ghost.
+        final halved = (_prefs.vadSpeechThreshold * 0.5).clamp(0.1, 1.0);
+        override = ProcessingSettings(
+          vadEnabled: true,
+          speechThreshold: halved,
+          silenceDurationToSplitMs: _prefs.vadSplitSeconds * 1000,
+          minDurationMs: 0,
+          minSpeechMs: 0,
+          discardShort: false,
+          maxChunkMs: _prefs.vadMaxConversationMinutes == 0
+              ? 0x7FFFFFFFFFFFFFFF
+              : _prefs.vadMaxConversationMinutes * 60 * 1000,
+          deviceId: _prefs.btDevice.id,
+          audioSaveFormat: _prefs.audioSaveFormat,
+          omiEnabled: false,
+        );
+    }
 
     _lastActiveStage = 'processing';
     _transitionTo(SyncProcessState.processing);
