@@ -225,6 +225,147 @@ class ConversationTile extends StatelessWidget {
   }
 }
 
+class _Row {
+  final Conversation? recording;
+  final DiscardRecord? discard;
+  _Row.recording(this.recording) : discard = null;
+  _Row.ghost(this.discard) : recording = null;
+  DateTime get startTime => recording?.startTime ?? discard!.startTime;
+}
+
+class GhostRow extends StatelessWidget {
+  final DiscardRecord discard;
+  final VoidCallback onTap;
+
+  const GhostRow({super.key, required this.discard, required this.onTap});
+
+  static String _hourMin(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  static String _durationLabel(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes % 60;
+    if (h > 0) return '${h}h ${m}m';
+    return '${m}m';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final timeRange = '${_hourMin(discard.startTime)}–${_hourMin(discard.endTime)}';
+    final dur = _durationLabel(discard.duration);
+    final label = discard.isNoise ? 'discarded: noise' : 'discarded: too short';
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+        child: Row(
+          children: [
+            FaIcon(FontAwesomeIcons.ghost, color: Colors.grey.shade700, size: 14),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    timeRange,
+                    style: TextStyle(
+                      color: Colors.grey.shade500,
+                      fontSize: 15,
+                      fontStyle: FontStyle.italic,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '$label  ·  $dur',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade700, size: 14),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> showDiscardSheet(
+  BuildContext context,
+  DiscardRecord d, {
+  required Future<void> Function(DiscardRecord) onRecover,
+  required Future<void> Function(DiscardRecord) onDeleteNow,
+}) async {
+  String two(int n) => n.toString().padLeft(2, '0');
+  String fmtTime(DateTime t) => '${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
+  String fmtAbs(DateTime t) =>
+      '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
+  await showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: const Color(0xFF1C1C1E),
+    showDragHandle: true,
+    builder: (sheetCtx) => Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${fmtTime(d.startTime)} – ${fmtTime(d.endTime)}  ·  ${d.duration.inMinutes} min',
+            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Reason: ${d.reason}  (voice_prob max ${d.maxVoiceProb.toStringAsFixed(3)})',
+            style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Raw audio retained until ${fmtAbs(d.expiresAt.toLocal())}',
+            style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurpleAccent,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              icon: const FaIcon(FontAwesomeIcons.rotateLeft, size: 14),
+              label: const Text('Recover without VAD'),
+              onPressed: () async {
+                Navigator.of(sheetCtx).pop();
+                await onRecover(d);
+              },
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.red.shade300,
+                side: BorderSide(color: Colors.red.shade700.withValues(alpha: 0.5)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              icon: const FaIcon(FontAwesomeIcons.trashCan, size: 13),
+              label: const Text('Delete now'),
+              onPressed: () async {
+                Navigator.of(sheetCtx).pop();
+                await onDeleteNow(d);
+              },
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 class BatchCard extends StatelessWidget {
   final Batch batch;
   final Map<String, List<MarkerConversation>> markerMap;
@@ -241,6 +382,8 @@ class BatchCard extends StatelessWidget {
   final VoidCallback onReprocessDay;
   final void Function(Conversation) onDeleteConversation;
   final void Function(MarkerConversation) onDeleteMarkerConversation;
+  final Future<void> Function(DiscardRecord) onRecoverDiscard;
+  final Future<void> Function(DiscardRecord) onDeleteDiscard;
 
   const BatchCard({
     super.key,
@@ -259,6 +402,8 @@ class BatchCard extends StatelessWidget {
     required this.onReprocessDay,
     required this.onDeleteConversation,
     required this.onDeleteMarkerConversation,
+    required this.onRecoverDiscard,
+    required this.onDeleteDiscard,
   });
 
   @override
@@ -273,7 +418,14 @@ class BatchCard extends StatelessWidget {
             RecordingFilterMode.all => conversations,
           }
         : conversations;
-    if (filtered.isEmpty) return const SizedBox.shrink();
+    final discards = [...batch.discards];
+    if (filtered.isEmpty && discards.isEmpty) return const SizedBox.shrink();
+
+    // Time-sorted (newest first) merge of recordings and ghosts.
+    final items = <_Row>[
+      for (final c in filtered) _Row.recording(c),
+      for (final d in discards) _Row.ghost(d),
+    ]..sort((a, b) => b.startTime.compareTo(a.startTime));
 
     return Card(
       color: const Color(0xFF1C1C1E),
@@ -289,7 +441,21 @@ class BatchCard extends StatelessWidget {
               style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
-            ...filtered.map((c) {
+            ...items.map((r) {
+              if (r.discard != null) {
+                final d = r.discard!;
+                return GhostRow(
+                  key: ValueKey('ghost_${d.id}'),
+                  discard: d,
+                  onTap: () => showDiscardSheet(
+                    context,
+                    d,
+                    onRecover: onRecoverDiscard,
+                    onDeleteNow: onDeleteDiscard,
+                  ),
+                );
+              }
+              final c = r.recording!;
               final fileKey = c.file.path.split('/').last;
               final markers = markerMap[fileKey] ?? [];
               final uploadKey = c.uploadKey;
