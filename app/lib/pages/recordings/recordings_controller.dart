@@ -3,8 +3,10 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/services/vad_audio_processor.dart';
 import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/omi_api_client.dart';
 import 'package:omi/services/services.dart';
@@ -980,6 +982,78 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await reloadBatchesSilently();
     await _finishSuccess();
   }
+
+  /// Re-runs processing on the bins referenced by [d] with VAD bypassed so
+  /// every frame is kept. On success, the discard record is removed and the
+  /// produced m4a appears as a normal recording in the day card.
+  Future<void> recoverDiscard(DiscardRecord d) async {
+    if (_spState != SyncProcessState.idle) return;
+    if (RecordingsManager.isProcessingAny) return;
+    final directory = await getApplicationDocumentsDirectory();
+    final bins = <File>[];
+    for (final rel in d.relativeBins) {
+      final f = File('${directory.path}/raw_segments/$rel');
+      if (await f.exists()) bins.add(f);
+    }
+    if (bins.isEmpty) {
+      // Bins were already swept or deleted — drop the orphan record and reload.
+      await RecordingsManager.removeDiscardRecord(d, deleteBins: false);
+      await _loadBatches();
+      return;
+    }
+    bins.sort((a, b) => a.path.split('/').last.compareTo(b.path.split('/').last));
+
+    final dateStr = _dateString(d.startTime);
+    final syntheticBatch = Batch(
+      dateString: dateStr,
+      date: DateTime(d.startTime.year, d.startTime.month, d.startTime.day),
+      rawSegments: bins,
+      draftRecordings: const [],
+      finalizedRecordings: const [],
+    );
+
+    final override = ProcessingSettings(
+      vadEnabled: false,
+      speechThreshold: 0.0,
+      silenceDurationToSplitMs: 0x7FFFFFFF,
+      minDurationMs: 0,
+      minSpeechMs: 0,
+      discardShort: false,
+      maxChunkMs: 0x7FFFFFFFFFFFFFFF,
+      deviceId: _prefs.btDevice.id,
+      audioSaveFormat: _prefs.audioSaveFormat,
+      omiEnabled: false,
+    );
+
+    _lastActiveStage = 'processing';
+    _transitionTo(SyncProcessState.processing);
+    try {
+      await _manager.processAll(
+        [syntheticBatch],
+        (_, __) {},
+        backgroundMode: false,
+        settingsOverride: override,
+      );
+    } catch (e) {
+      _transitionToError('processing', e.toString());
+      return;
+    }
+    // Bins are deleted by processAll's safe-to-delete pass; remove the stale
+    // jsonl entry so the ghost disappears.
+    await RecordingsManager.removeDiscardRecord(d, deleteBins: false);
+    await _loadBatches();
+    await _finishSuccess();
+  }
+
+  /// Drops [d] and its bins immediately. Used when the user decides the
+  /// audio isn't worth recovering.
+  Future<void> deleteDiscard(DiscardRecord d) async {
+    await RecordingsManager.removeDiscardRecord(d, deleteBins: true);
+    await _loadBatches();
+  }
+
+  String _dateString(DateTime t) =>
+      '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
 
   void tryAutoUploadNext() {
     if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) return;
