@@ -2,6 +2,7 @@ import "dart:convert";
 import "dart:typed_data";
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
@@ -289,6 +290,121 @@ void main() {
       
       // Verify marker is removed from markers.txt (file should be deleted since it was the only marker)
       expect(markerFile.existsSync(), false);
+    });
+  });
+
+  group('runRecoverySweep', () {
+    String _dateOf(int millis) {
+      final dt = DateTime.fromMillisecondsSinceEpoch(millis);
+      return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+    }
+
+    Future<void> writeDiscard({
+      required String dateStr,
+      required int startMs,
+      required int endMs,
+      required List<String> relativeBins,
+      String reason = 'flush_noise',
+      double maxVoiceProb = 0.05,
+    }) async {
+      final dir = Directory(p.join(tempDir.path, 'recordings', dateStr));
+      await dir.create(recursive: true);
+      final file = File(p.join(dir.path, 'discards.jsonl'));
+      final rec = {
+        'startMs': startMs,
+        'endMs': endMs,
+        'reason': reason,
+        'maxVoiceProb': maxVoiceProb,
+        'relativeBins': relativeBins,
+      };
+      await file.writeAsString('${jsonEncode(rec)}\n', mode: FileMode.append);
+    }
+
+    Future<File> writeBin(String relativeBin) async {
+      final path = p.join(tempDir.path, 'raw_segments', relativeBin);
+      final f = File(path);
+      await f.parent.create(recursive: true);
+      await f.writeAsBytes([0, 1, 2, 3]);
+      return f;
+    }
+
+    test('expired record drops its bins and the jsonl', () async {
+      final expiredStart = DateTime.now().subtract(const Duration(hours: 49)).millisecondsSinceEpoch;
+      final bin = await writeBin('session_a/old.bin');
+      final dateStr = _dateOf(expiredStart);
+      await writeDiscard(
+        dateStr: dateStr,
+        startMs: expiredStart,
+        endMs: expiredStart + 60000,
+        relativeBins: ['session_a/old.bin'],
+      );
+      final jsonl = File(p.join(tempDir.path, 'recordings', dateStr, 'discards.jsonl'));
+
+      await RecordingsManager.runRecoverySweep();
+
+      expect(bin.existsSync(), false, reason: 'expired bin should be deleted');
+      expect(jsonl.existsSync(), false, reason: 'empty jsonl should be removed');
+    });
+
+    test('in-window record preserves its bins', () async {
+      final freshStart = DateTime.now().subtract(const Duration(hours: 1)).millisecondsSinceEpoch;
+      final bin = await writeBin('session_b/fresh.bin');
+      final dateStr = _dateOf(freshStart);
+      await writeDiscard(
+        dateStr: dateStr,
+        startMs: freshStart,
+        endMs: freshStart + 60000,
+        relativeBins: ['session_b/fresh.bin'],
+      );
+      final jsonl = File(p.join(tempDir.path, 'recordings', dateStr, 'discards.jsonl'));
+
+      await RecordingsManager.runRecoverySweep();
+
+      expect(bin.existsSync(), true, reason: 'in-window bin must be retained');
+      expect(jsonl.existsSync(), true, reason: 'jsonl with active records must remain');
+    });
+
+    test('bin shared between expired and in-window records is retained', () async {
+      final expiredStart = DateTime.now().subtract(const Duration(hours: 50)).millisecondsSinceEpoch;
+      final freshStart = DateTime.now().subtract(const Duration(hours: 1)).millisecondsSinceEpoch;
+      final sharedBin = await writeBin('session_c/shared.bin');
+      await writeDiscard(
+        dateStr: _dateOf(expiredStart),
+        startMs: expiredStart,
+        endMs: expiredStart + 60000,
+        relativeBins: ['session_c/shared.bin'],
+      );
+      await writeDiscard(
+        dateStr: _dateOf(freshStart),
+        startMs: freshStart,
+        endMs: freshStart + 60000,
+        relativeBins: ['session_c/shared.bin'],
+      );
+
+      await RecordingsManager.runRecoverySweep();
+
+      expect(sharedBin.existsSync(), true,
+          reason: 'bin referenced by any in-window record must survive across day files');
+    });
+
+    test('skips entirely while Adjustment Mode is on', () async {
+      SharedPreferences.setMockInitialValues({'adjustmentMode': true});
+      await SharedPreferencesUtil.init();
+      final expiredStart = DateTime.now().subtract(const Duration(hours: 100)).millisecondsSinceEpoch;
+      final bin = await writeBin('session_d/very_old.bin');
+      final dateStr = _dateOf(expiredStart);
+      await writeDiscard(
+        dateStr: dateStr,
+        startMs: expiredStart,
+        endMs: expiredStart + 60000,
+        relativeBins: ['session_d/very_old.bin'],
+      );
+      final jsonl = File(p.join(tempDir.path, 'recordings', dateStr, 'discards.jsonl'));
+
+      await RecordingsManager.runRecoverySweep();
+
+      expect(bin.existsSync(), true, reason: 'AM-on must prevent any deletion');
+      expect(jsonl.existsSync(), true, reason: 'AM-on must leave jsonl intact');
     });
   });
 }
