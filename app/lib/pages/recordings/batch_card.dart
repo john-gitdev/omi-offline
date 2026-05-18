@@ -415,7 +415,18 @@ class BatchCard extends StatelessWidget {
             RecordingFilterMode.all => conversations,
           }
         : conversations;
-    final discards = [...batch.discards];
+    // Apply the same filter to ghost rows so short discards land in the
+    // hidden tab alongside short recordings instead of cluttering the
+    // visible tab. With no minimum set, all discards show in all tabs.
+    final discards = minFilterSeconds > 0
+        ? switch (filterMode) {
+            RecordingFilterMode.visible =>
+              batch.discards.where((d) => d.duration.inSeconds >= minFilterSeconds).toList(),
+            RecordingFilterMode.hidden =>
+              batch.discards.where((d) => d.duration.inSeconds < minFilterSeconds).toList(),
+            RecordingFilterMode.all => [...batch.discards],
+          }
+        : [...batch.discards];
     if (filtered.isEmpty && discards.isEmpty) return const SizedBox.shrink();
 
     // Time-sorted (newest first) merge of recordings and ghosts.
