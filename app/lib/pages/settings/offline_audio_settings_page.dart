@@ -183,6 +183,11 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     prefs.adjustmentMode = _adjustmentMode;
     if (_adjustmentMode) prefs.adjustmentModeWasEnabled = true;
     if (prevAdjustmentMode != _adjustmentMode) RecordingsManager.notifyRecordingsChanged();
+    // On AM ON→OFF transition, immediately reap any discard records that have
+    // already aged out so the user doesn't carry stale bins forward.
+    if (prevAdjustmentMode && !_adjustmentMode) {
+      unawaited(RecordingsManager.runRecoverySweep());
+    }
 
     if (mounted) setState(() => _isDirty = false);
   }
