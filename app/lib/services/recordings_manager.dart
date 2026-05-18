@@ -365,6 +365,7 @@ class Batch {
   final List<Conversation> draftRecordings;
   final List<Conversation> finalizedRecordings;
   final List<DateTime> markerTimestamps;
+  final List<DiscardRecord> discards;
 
   Batch({
     required this.dateString,
@@ -373,7 +374,36 @@ class Batch {
     required this.draftRecordings,
     required this.finalizedRecordings,
     this.markerTimestamps = const [],
+    this.discards = const [],
   });
+}
+
+/// One stretch of audio that VAD silently dropped, surfaced in the recordings
+/// list as a greyed-out "ghost" row so the user can see what was lost and try
+/// to recover it. Source of truth is `recordings/<date>/discards.jsonl`.
+class DiscardRecord {
+  final DateTime startTime;
+  final DateTime endTime;
+  final String reason;
+  final double maxVoiceProb;
+  final List<String> relativeBins;
+  final File sourceJsonl;
+
+  const DiscardRecord({
+    required this.startTime,
+    required this.endTime,
+    required this.reason,
+    required this.maxVoiceProb,
+    required this.relativeBins,
+    required this.sourceJsonl,
+  });
+
+  Duration get duration => endTime.difference(startTime);
+  DateTime get expiresAt => endTime.add(RecordingsManager.discardRetentionWindow);
+  bool get isNoise => reason.contains('noise');
+
+  /// Stable identity for UI keys/comparisons: source file + startMs + bins hash.
+  String get id => '${sourceJsonl.path}:${startTime.millisecondsSinceEpoch}:${relativeBins.join(",")}';
 }
 
 /// A marker conversation: a device button tap and the segment(s) it was tagged to.
@@ -782,10 +812,24 @@ class RecordingsManager {
       }
     }
 
+    // Discover dates with discard records — a day where ALL audio was rejected
+    // produces no recording or raw bin, but still has a discards.jsonl we want
+    // to render.
+    final discardsByDate = <String, List<DiscardRecord>>{};
+    if (await recordingsDir.exists()) {
+      await for (final entity in recordingsDir.list()) {
+        if (entity is! Directory) continue;
+        final dateStr = entity.path.split('/').last;
+        final loaded = await getDiscardsForDate(dateStr);
+        if (loaded.isNotEmpty) discardsByDate[dateStr] = loaded;
+      }
+    }
+
     // Merge keys
     final allDates = {
       ...rawSegmentsByDate.keys,
       ...processedByDate.keys,
+      ...discardsByDate.keys,
     }.toList();
     List<Batch> batches = [];
 
@@ -818,6 +862,7 @@ class RecordingsManager {
           draftRecordings: drafts,
           finalizedRecordings: finalized,
           markerTimestamps: const [],
+          discards: discardsByDate[dateStr] ?? const [],
         ),
       );
     }
@@ -838,6 +883,7 @@ class RecordingsManager {
     bool backgroundMode = false,
     bool finalizeDrafts = false,
     VoidCallback? onRecordingFinalized,
+    ProcessingSettings? settingsOverride,
   }) async {
     final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
     final hasDrafts = batches.any((b) => b.draftRecordings.isNotEmpty);
@@ -1002,7 +1048,8 @@ class RecordingsManager {
         // Pre-load the ONNX model on the main isolate (rootBundle requires main isolate).
         // Skipped when VAD is disabled — isolate will run in AAD mode.
         Uint8List? modelBytes;
-        if (SharedPreferencesUtil().vadEnabled) {
+        final effectiveVadEnabled = settingsOverride?.vadEnabled ?? SharedPreferencesUtil().vadEnabled;
+        if (effectiveVadEnabled) {
           try {
             final data = await rootBundle.load('assets/models/silero_vad.onnx');
             modelBytes = data.buffer.asUint8List(
@@ -1032,7 +1079,7 @@ class RecordingsManager {
               sendPort: receivePort.sendPort,
               rootIsolateToken: RootIsolateToken.instance!,
               modelBytes: modelBytes,
-              settings: ProcessingSettings.fromPrefs(),
+              settings: settingsOverride ?? ProcessingSettings.fromPrefs(),
               tempProcessingPath: tempProcessingPath,
               segmentPaths: allSegments.map((f) => f.path).toList(),
               segmentFileSizes: segmentFileSizes,
@@ -2163,6 +2210,82 @@ class RecordingsManager {
       out.add((jsonl: jsonl, records: records));
     }
     return out;
+  }
+
+  /// Parses `recordings/<dateString>/discards.jsonl` into [DiscardRecord]s.
+  /// Returns an empty list if the file does not exist. Malformed lines are
+  /// skipped with a warning.
+  static Future<List<DiscardRecord>> getDiscardsForDate(String dateString) async {
+    final directory = await getApplicationDocumentsDirectory();
+    final jsonl = File('${directory.path}/recordings/$dateString/discards.jsonl');
+    if (!await jsonl.exists()) return const [];
+    final out = <DiscardRecord>[];
+    for (final line in (await jsonl.readAsString()).split('\n')) {
+      if (line.isEmpty) continue;
+      try {
+        final m = jsonDecode(line) as Map<String, dynamic>;
+        out.add(DiscardRecord(
+          startTime: DateTime.fromMillisecondsSinceEpoch(m['startMs'] as int),
+          endTime: DateTime.fromMillisecondsSinceEpoch(m['endMs'] as int),
+          reason: m['reason'] as String,
+          maxVoiceProb: (m['maxVoiceProb'] as num).toDouble(),
+          relativeBins: (m['relativeBins'] as List).cast<String>(),
+          sourceJsonl: jsonl,
+        ));
+      } catch (e) {
+        Logger.error('RecordingsManager: skipping malformed discard line in ${jsonl.path}: $e');
+      }
+    }
+    out.sort((a, b) => a.startTime.compareTo(b.startTime));
+    return out;
+  }
+
+  /// Deletes a discard record (and optionally its referenced bins) atomically.
+  /// Rewrites the source jsonl with all other records preserved. If the jsonl
+  /// becomes empty it is removed.
+  static Future<void> removeDiscardRecord(DiscardRecord d, {required bool deleteBins}) async {
+    final directory = await getApplicationDocumentsDirectory();
+    if (deleteBins) {
+      for (final rel in d.relativeBins) {
+        final binFile = File('${directory.path}/raw_segments/$rel');
+        if (await binFile.exists()) {
+          try {
+            await binFile.delete();
+          } catch (e) {
+            Logger.error('RecordingsManager: removeDiscardRecord delete bin failed: $e');
+          }
+          final folder = binFile.parent;
+          if (await folder.exists()) {
+            try {
+              if (await folder.list().isEmpty) await folder.delete();
+            } catch (_) {}
+          }
+        }
+      }
+    }
+    if (!await d.sourceJsonl.exists()) return;
+    final keep = <String>[];
+    final targetMs = d.startTime.millisecondsSinceEpoch;
+    final targetEndMs = d.endTime.millisecondsSinceEpoch;
+    for (final line in (await d.sourceJsonl.readAsString()).split('\n')) {
+      if (line.isEmpty) continue;
+      try {
+        final m = jsonDecode(line) as Map<String, dynamic>;
+        if (m['startMs'] == targetMs && m['endMs'] == targetEndMs) continue;
+      } catch (_) {
+        // Keep malformed lines so we don't quietly destroy data we couldn't parse.
+        keep.add(line);
+        continue;
+      }
+      keep.add(line);
+    }
+    if (keep.isEmpty) {
+      try {
+        await d.sourceJsonl.delete();
+      } catch (_) {}
+    } else {
+      await d.sourceJsonl.writeAsString('${keep.join('\n')}\n', flush: true);
+    }
   }
 
   /// Returns absolute bin paths that are still protected by an in-window
