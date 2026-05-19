@@ -176,22 +176,31 @@ class _RecordingsPageState extends State<RecordingsPage> {
   Widget _buildFilterBubble(String label, RecordingFilterMode mode) {
     final selected = _filterMode == mode;
     return Expanded(
-      child: GestureDetector(
-        onTap: () => setState(() => _filterMode = mode),
-        child: Container(
-          height: 34,
-          decoration: BoxDecoration(
-            color: selected ? Colors.deepPurpleAccent : Colors.transparent,
+      child: Semantics(
+        button: true,
+        label: 'Filter by $label',
+        child: Material(
+          color: selected ? Colors.deepPurpleAccent : Colors.transparent,
+          clipBehavior: Clip.antiAlias,
+          shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(17),
-            border: Border.all(color: selected ? Colors.deepPurpleAccent : Colors.grey.shade700),
+            side: BorderSide(
+              color: selected ? Colors.deepPurpleAccent : Colors.grey.shade700,
+            ),
           ),
-          alignment: Alignment.center,
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? Colors.white : Colors.grey.shade500,
-              fontSize: 13,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+          child: InkWell(
+            onTap: () => setState(() => _filterMode = mode),
+            child: Container(
+              height: 34,
+              alignment: Alignment.center,
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: selected ? Colors.white : Colors.grey.shade500,
+                  fontSize: 13,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                ),
+              ),
             ),
           ),
         ),
@@ -621,14 +630,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                           decoration: BoxDecoration(
-                            color: _prefs.manualMode
-                                ? Colors.deepPurpleAccent.withOpacity(0.15)
-                                : const Color(0xFF2A2A2E),
+                            color:
+                                _prefs.manualMode ? Colors.deepPurpleAccent.withOpacity(0.15) : const Color(0xFF2A2A2E),
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
-                              color: _prefs.manualMode
-                                  ? Colors.deepPurpleAccent.withOpacity(0.6)
-                                  : Colors.grey.shade700,
+                              color:
+                                  _prefs.manualMode ? Colors.deepPurpleAccent.withOpacity(0.6) : Colors.grey.shade700,
                             ),
                           ),
                           child: Row(
@@ -699,8 +706,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   onTap: () {
                     if (controller.spState == SyncProcessState.syncing ||
                         controller.spState == SyncProcessState.processing ||
-                        controller.spState == SyncProcessState.stopping)
-                      return;
+                        controller.spState == SyncProcessState.stopping) return;
                     showDialog(
                       context: context,
                       builder: (ctx) => AlertDialog(
