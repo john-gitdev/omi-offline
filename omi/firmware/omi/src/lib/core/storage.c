@@ -23,6 +23,13 @@
 
 LOG_MODULE_REGISTER(storage, CONFIG_LOG_DEFAULT_LEVEL);
 
+/* CMD_READ_FILE / CMD_DELETE_FILE carry the file index in a single byte, so the
+ * cache must never hold more files than fit in a uint8_t.  Today MAX_AUDIO_FILES
+ * is 150, well under the limit; this guard fails the build loudly if a future
+ * change raises it past 255 (which would silently truncate the index — the
+ * timestamp fallback mitigates but should not be relied on as the only defense). */
+BUILD_ASSERT(MAX_AUDIO_FILES <= 255, "file index is a uint8_t in the BLE storage protocol");
+
 /* Current file being read for transfer */
 static char current_read_filename[MAX_FILENAME_LEN] = {0};
 static uint32_t current_read_offset = 0;
@@ -64,17 +71,28 @@ static uint32_t current_read_offset = 0;
         }                                                                   \
     } while (0)
 
-/* Control commands */
-#define CMD_ROTATE_FILE     0x13   // Close current recording file and open a new one
-
-/* Multi-file sync state */
+/* Multi-file sync state.  Pending-request flags are atomic_t because they are
+ * set on the BLE callback thread and consumed on the storage thread.  Companion
+ * data fields (delete_file_*, read_request_*) are plain memory written BEFORE
+ * the atomic flag is set; atomic_set provides the memory-barrier publication. */
 static int current_sync_file_index = -1;
-static uint8_t list_files_requested = 0;  /* Deferred to storage thread */
-static int16_t delete_file_index = -1;     /* -1 = no delete, >=0 = file index to delete */
-static bool    delete_file_has_ts = false; /* true when app supplied a timestamp to verify */
-static uint32_t delete_file_expected_ts = 0; /* timestamp the app believes is at delete_file_index */
-static uint8_t rotate_file_requested = 0; /* Deferred to storage thread */
-static uint8_t clear_storage_requested = 0; /* Deferred to storage thread */
+static atomic_t list_files_requested = ATOMIC_INIT(0);
+static atomic_t rotate_file_requested = ATOMIC_INIT(0);
+static atomic_t clear_storage_requested = ATOMIC_INIT(0);
+
+static atomic_t delete_request_pending = ATOMIC_INIT(0);
+static int16_t  delete_file_index = -1;
+static bool     delete_file_has_ts = false;
+static uint32_t delete_file_expected_ts = 0;
+
+/* CMD_READ_FILE is deferred to the storage thread so setup_file_transfer
+ * (which writes current_read_filename/offset/file_index) cannot race against
+ * write_to_gatt, which reads the same fields while sending. */
+static atomic_t read_request_pending = ATOMIC_INIT(0);
+static uint8_t  read_request_file_index = 0;
+static uint32_t read_request_offset = 0;
+static bool     read_request_has_ts = false;
+static uint32_t read_request_expected_ts = 0;
 
 static void storage_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value);
 static ssize_t storage_write_handler(struct bt_conn *conn,
@@ -483,7 +501,7 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
 
     if (command == CMD_LIST_FILES) {
         storage_start_sync_session();
-        list_files_requested = 1;  /* Defer to storage thread */
+        atomic_set(&list_files_requested, 1);
         return 0xFF;  /* Storage thread will send its own response */
     }
 
@@ -516,12 +534,15 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
                         | (uint32_t)((uint8_t *) buf)[9] << 24;
         }
 
-        if (setup_file_transfer(file_index, request_offset, has_ts, expected_ts) < 0) {
-            return FILE_NOT_FOUND;
-        }
-
-        transport_started = 1;
-        return 0;
+        /* Stage params, then publish via atomic flag.  Running setup_file_transfer
+         * on the storage thread means it cannot race write_to_gatt's reads of
+         * current_read_filename/offset/file_index. */
+        read_request_file_index = file_index;
+        read_request_offset = request_offset;
+        read_request_has_ts = has_ts;
+        read_request_expected_ts = expected_ts;
+        atomic_set(&read_request_pending, 1);
+        return 0xFF;  /* Storage thread will ACK after setup completes */
     }
 
     if (command == CMD_DELETE_FILE) {
@@ -532,34 +553,34 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
         /* Extended form: [0x12][index][ts:4LE] — app supplies the timestamp it
          * received in CMD_LIST_FILES so the storage thread can verify the index
          * still points to the same file after a cache refresh. */
-        delete_file_has_ts = (len >= 6);
-        if (delete_file_has_ts) {
+        bool has_ts = (len >= 6);
+        uint32_t expected_ts = 0;
+        if (has_ts) {
             const uint8_t *b = (const uint8_t *) buf;
-            delete_file_expected_ts = (uint32_t)b[2]
-                                    | (uint32_t)b[3] << 8
-                                    | (uint32_t)b[4] << 16
-                                    | (uint32_t)b[5] << 24;
+            expected_ts = (uint32_t)b[2]
+                        | (uint32_t)b[3] << 8
+                        | (uint32_t)b[4] << 16
+                        | (uint32_t)b[5] << 24;
         }
 
-        delete_file_index = file_index;  /* Defer to storage thread */
+        /* Stage params, then publish via atomic flag. */
+        delete_file_index = file_index;
+        delete_file_has_ts = has_ts;
+        delete_file_expected_ts = expected_ts;
+        atomic_set(&delete_request_pending, 1);
         return 0xFF;
     }
-if (command == CMD_ROTATE_FILE) {
-    /* Defer to storage thread so create_new_audio_file() runs on the SD worker context. */
-    rotate_file_requested = 1;
-    return 0xFF;  /* ACK sent by storage thread after rotation completes */
-}
+
+    if (command == CMD_ROTATE_FILE) {
+        /* Defer to storage thread so create_new_audio_file() runs on the SD worker context. */
+        atomic_set(&rotate_file_requested, 1);
+        return 0xFF;  /* ACK sent by storage thread after rotation completes */
+    }
 
     if (command == CMD_CLEAR_STORAGE) {
         /* CMD_CLEAR_STORAGE (0x14) - defer wipe to storage thread to prevent GATT 133 */
-        clear_storage_requested = 1;
+        atomic_set(&clear_storage_requested, 1);
         return 0xFF;
-    }
-
-    /* Control commands */
-    if (command == CMD_STOP_SYNC) {
-        storage_stop_transfer();
-        return 0;
     }
 
     if (command == HEARTBEAT) {
@@ -723,6 +744,25 @@ void storage_write(void)
     while (1) {
         struct bt_conn *conn = get_current_connection();
 
+        /* CMD_READ_FILE: deferred setup_file_transfer runs here on the storage
+         * thread, so it cannot race write_to_gatt's reads of the same state. */
+        if (atomic_cas(&read_request_pending, 1, 0)) {
+            uint8_t  file_index   = read_request_file_index;
+            uint32_t request_off  = read_request_offset;
+            bool     has_ts       = read_request_has_ts;
+            uint32_t expected_ts  = read_request_expected_ts;
+
+            int res = setup_file_transfer(file_index, request_off, has_ts, expected_ts);
+            uint8_t result = (res < 0) ? FILE_NOT_FOUND : 0;
+            if (conn) {
+                uint8_t ack[2] = {PACKET_ACK, result};
+                STORAGE_NOTIFY(conn, ack, sizeof(ack));
+            }
+            if (res >= 0) {
+                transport_started = 1;
+            }
+        }
+
         if (transport_started) {
 
             LOG_INF("transport started in side : %d", transport_started);
@@ -743,8 +783,7 @@ void storage_write(void)
                 k_msleep(250);
             }
         }
-        if (list_files_requested) {
-            list_files_requested = 0;
+        if (atomic_cas(&list_files_requested, 1, 0)) {
 
 
             /* Handshake: Wait for SD card boot init to finish (mount + pre-warm).
@@ -786,7 +825,7 @@ void storage_write(void)
                 send_file_list_response(conn);
             }
         }
-        if (delete_file_index >= 0) {
+        if (atomic_cas(&delete_request_pending, 1, 0)) {
 
             int16_t idx = delete_file_index;
             bool has_ts = delete_file_has_ts;
@@ -843,9 +882,8 @@ void storage_write(void)
             }
             LOG_INF("Delete file[%d] (ts=%u) result: %d", idx, expected_ts, result);
         }
-        if (clear_storage_requested) {
+        if (atomic_cas(&clear_storage_requested, 1, 0)) {
 
-            clear_storage_requested = 0;
             int ret = clear_audio_directory();
             if (conn) {
                 uint8_t result = (ret >= 0) ? 0 : 1;
@@ -854,9 +892,8 @@ void storage_write(void)
             }
             LOG_INF("CMD_CLEAR_STORAGE: SD card wiped, ret=%d", ret);
         }
-        if (rotate_file_requested) {
+        if (atomic_cas(&rotate_file_requested, 1, 0)) {
 
-            rotate_file_requested = 0;
             /* create_new_audio_file() closes the current file and opens a new one.
              * It blocks until the SD worker has completed the rotation, so the ACK
              * is only sent after the old file is fully sealed and the new one is open.
@@ -922,7 +959,9 @@ void storage_write(void)
 
         /* Sleep when there is genuinely no work pending */
         if (atomic_get(&remaining_length) == 0 && !atomic_get(&stop_started) &&
-            !list_files_requested && delete_file_index < 0) {
+            !atomic_get(&list_files_requested) && !atomic_get(&delete_request_pending) &&
+            !atomic_get(&rotate_file_requested) && !atomic_get(&clear_storage_requested) &&
+            !atomic_get(&read_request_pending)) {
             struct bt_conn *idle_conn = get_current_connection();
             uint32_t idle_sleep_ms = idle_conn
                 ? STORAGE_IDLE_POLL_MS_CONNECTED
