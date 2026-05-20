@@ -586,6 +586,10 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
         'index': i,
         'total': params.segmentPaths.length,
       });
+
+      if (params.backgroundMode) {
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
     }
 
     // Always flush the remaining audio at the end of a run.

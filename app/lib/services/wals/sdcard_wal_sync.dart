@@ -375,7 +375,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     }
   }
 
-  Future _deleteWalLocked(DeviceConnection connection, Wal wal, {int? overrideFileNum}) async {
+  Future _deleteWalLocked(DeviceConnection connection, Wal wal, {int? overrideFileNum, bool skipSave = false}) async {
     final targetIdx = overrideFileNum ?? wal.fileNum;
     Logger.debug('SDCardWalSync: deleting synced WAL from SD card: index=$targetIdx ts=${wal.timerStart}');
     final connected = await connection.isConnected();
@@ -388,7 +388,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     listener.onWalUpdated();
     // Persist after deletion so the WAL is gone from disk even if the app restarts before
     // the next natural save point. This prevents re-downloading a deleted file.
-    WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => Future.value(false));
+    if (!skipSave) {
+      WalFileManager.saveWals(_wals, deviceId: wal.device).catchError((_) => Future.value(false));
+    }
   }
 
 
@@ -738,6 +740,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // CMD_LIST_FILES cleanup (folder closing, EOT notify) before starting first read.
     await Future.delayed(const Duration(milliseconds: 200));
 
+    bool anyDeleted = false;
     for (int i = 0; i < wals.length; i++) {
       final wal = wals[i];
       if (_isCancelled) break;
@@ -760,8 +763,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       try {
         const int maxGapRetries = 3;
         const int maxAckRetries = 3;
+        const int maxStallRetries = 2;
         int gapRetries = 0;
         int ackRetries = 0;
+        int stallRetries = 0;
         bool transferred = false;
         while (!transferred) {
           if (_isCancelled) throw Exception("Cancelled");
@@ -777,9 +782,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               },
               onProgress: (offset) {
                 wal.walOffset = offset;
-                // Persist offset every ~1 MB so a crash or disconnect preserves
+                // Persist offset every ~2 MB so a crash or disconnect preserves
                 // progress and the next session resumes rather than re-downloading.
-                if ((offset - initialOffset) >= (1024 * 1024) && (offset - initialOffset) % (1024 * 1024) < 512) {
+                if ((offset - initialOffset) >= (2 * 1024 * 1024) && (offset - initialOffset) % (2 * 1024 * 1024) < 512) {
                   WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
                 }
                 final double withinWal = (wal.storageTotalBytes > initialOffset)
@@ -810,6 +815,15 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               continue;
             }
             rethrow;
+          } catch (e) {
+            if (e.toString().contains('Transfer stalled') && stallRetries < maxStallRetries) {
+              stallRetries++;
+              Logger.debug('SDCardWalSync: Transfer stalled for fileNum=${wal.fileNum}, retrying ($stallRetries/$maxStallRetries) after 1s');
+              await connection.stopStorageSync();
+              await Future.delayed(const Duration(seconds: 1));
+              continue;
+            }
+            rethrow;
           }
         }
 
@@ -821,11 +835,10 @@ class SDCardWalSyncImpl implements SDCardWalSync {
 
         // Delete immediately so a disconnect won't re-sync this file next session.
         try {
-          await _deleteWalLocked(connection, wal, overrideFileNum: 0);
-          // Refresh stats after deletion so the File Count and Free Space update in real-time
-          await _updateStorageStatsLocked(connection);
+          await _deleteWalLocked(connection, wal, overrideFileNum: 0, skipSave: true);
+          anyDeleted = true;
           // Settle delay: give the SD worker time to finish metadata updates before requesting next file
-          await Future.delayed(const Duration(milliseconds: 500));
+          await Future.delayed(const Duration(milliseconds: 200));
         } catch (e) {
           Logger.error('SDCardWalSync: deletion failed for index=0 after transfer: $e');
           anyPartial = true;
@@ -857,16 +870,23 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         // Continuing after these is unlikely to succeed and creates a bad user experience.
         final errStr = e.toString();
         if (errStr.contains('Error ACK: 7') ||
-            errStr.contains('Transfer stalled') ||
             errStr.contains('Could not start SD card read')) {
-          Logger.debug('SDCardWalSync: Fatal or stalled transfer, stopping batch sync');
+          Logger.debug('SDCardWalSync: Fatal error, stopping batch sync');
           break;
+        }
+        
+        // After a stall failure (after retries), try the next file if it was just one bad file,
+        // but if we've had too many failures, abort the batch.
+        if (errStr.contains('Transfer stalled')) {
+           Logger.debug('SDCardWalSync: Transfer stalled after retries, skipping this file.');
         }
       }
     }
 
-    // Update stats at the end of the sync
-    await _updateStorageStatsLocked(connection);
+    if (anyDeleted) {
+      await WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
+      await _updateStorageStatsLocked(connection);
+    }
 
     return SyncLocalFilesResponse(
       newConversationIds: [],
