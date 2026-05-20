@@ -203,3 +203,43 @@ The firmware leverages priority queues to intelligently gate SD card power witho
 
 3. **`omi/firmware/omi/src/lib/core/sd_card.h`**:
    - Defines the API for interacting with the SD worker, including the `sd_req_type_t` enumeration (e.g., `REQ_GET_FILE_STATS`).
+
+---
+
+## Firmware: Parked / Unused Subsystems
+
+Some source files exist in the tree as reference code but are **not part of the build**. They are not listed in `omi/firmware/omi/CMakeLists.txt`, so the compiler never sees them — zero flash, zero RAM, zero CPU impact. Leaving them parked (rather than deleting) keeps them available for future use.
+
+### `src/lib/core/accel.c` — IMU BLE broadcast (parked)
+
+Defines a BLE service (UUIDs `32403790-…` / `32403791-…`) that would notify accelerometer + gyroscope XYZ over BLE once per second.
+
+**Status:** not in `CMakeLists.txt`; `CONFIG_OMI_ENABLE_ACCELEROMETER=n` in `omi.conf`; the `#ifdef CONFIG_OMI_ENABLE_ACCELEROMETER` blocks in `transport.c` (lines ~521, ~1289) and `button.c` (line ~334) compile to nothing. No consumer: the Flutter app never subscribes to the accel UUID — it only has a placeholder capability-bit constant (`accelerometer = 1 << 1` in `services/devices.dart` and `bt_device.dart`).
+
+**Do NOT confuse with `src/imu.c`**, which IS built and IS load-bearing. `imu.c` uses the same physical LSM6DS3TR-C chip but only its **24-bit hardware timestamp counter** (via raw I²C register reads, not the sensor API). That counter keeps ticking through `system_off` deep sleep; on boot the firmware reads the delta to recover wall-clock time across reboots/crashes, and stamps `imu_ticks` into each recording header (`sd_card.c:1232`). The Flutter app's "IMU Bridge" (`app/lib/services/vad_audio_processor.dart:319`, `tickDelta * 6.4` ms) uses it to stitch recording segments correctly across a reboot. Removing accel.c does not affect this.
+
+**To enable accel BLE broadcast later:**
+1. Add `src/lib/core/accel.c` to `core_sources` in `CMakeLists.txt`, gated by `if(CONFIG_OMI_ENABLE_ACCELEROMETER) ... endif()` (mirror the `storage.c` pattern at lines 33-35).
+2. Set `CONFIG_OMI_ENABLE_ACCELEROMETER=y` in `omi.conf`.
+3. Add Flutter code to subscribe to UUID `32403791-…` and consume the 24 bytes/sec it produces.
+
+A 3-axis accelerometer alone would cover typical wearable uses (wake-on-motion, worn/not-worn detection, step counting, tap gestures, fall detection, orientation); the gyroscope adds power draw and is only needed for precise rotation tracking.
+
+Bug fixes already applied to `accel.c` (defensive, since the file doesn't currently compile): normalized `accel_start()` to standard `0`=success/negative=error return convention, and seeded the self-rescheduling `accel_work` timer in `register_accel_service()` (previously it was never started).
+
+### Other parked files
+`src/lib/core/nfc.c` and `src/lib/core/speaker.c` are likewise present but not in `CMakeLists.txt` (speaker is conditionally referenced via `CONFIG_OMI_ENABLE_SPEAKER` blocks but the source isn't added to the build).
+
+---
+
+## Firmware: IMU Time-Bridge Wrap Limit (~29.8 h)
+
+**File:** `src/imu.c` (`lsm6dsl_time_boot_adjust_rtc`)
+
+The cross-reboot clock recovery ("IMU Bridge") uses the LSM6DS3TR-C's 24-bit hardware timestamp counter at 6.4 ms/tick. That counter rolls over every 2^24 × 6.4 ms ≈ **29.8 hours**.
+
+`delta_ticks = (ts_now - base_ts) & 0x00FFFFFFu` corrects a **single** rollover. It **cannot** detect multiple rollovers — the CPU is fully off during `system_off`, so nothing counts wraps. If the device is powered off longer than ~29.8 h and then powered on, the recovered wall-clock undercounts the gap by N × 29.8 h.
+
+**Practical impact:** narrow. The IMU bridge only needs to span short crash/watchdog/reboot gaps (seconds). Any longer gap is corrected by the next BLE time-sync when the phone reconnects. The only residual symptom is recordings created in the window between a >29.8 h power-on and the next phone connection getting an early (wrong) UTC timestamp — and because they're already UTC-named, the time-sync rename pass (which only touches `TMP_` files) won't fix them retroactively.
+
+**No software fix is possible:** the computed delta is always in [0, 29.8 h], so a magnitude guard would be dead code; there's no second time source to corroborate against. Documented rather than "fixed."
