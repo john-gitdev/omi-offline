@@ -107,6 +107,7 @@ class DeviceProvider extends ChangeNotifier
     _loadCrashLogs();
     ServiceManager.instance().device.subscribe(this, this);
     ServiceManager.instance().wal.subscribe(this, this);
+    FlutterForegroundTask.addTaskDataCallback(_onForegroundTaskData);
     BleBridge.instance.bluetoothStateChangedCallback = (state) {
       Logger.debug('Bluetooth state changed: $state');
       if (state == 'on') {
@@ -130,6 +131,37 @@ class DeviceProvider extends ChangeNotifier
       }
     }
     _startBackgroundSyncTimer();
+  }
+
+  void _onForegroundTaskData(Object data) {
+    if (data == 'heartbeat') {
+      Logger.debug('DeviceProvider: Heartbeat received from foreground task');
+      if (!_isAppInForeground) {
+        // Use heartbeat to trigger reconnection if disconnected
+        if (!isConnected && !isConnecting && SharedPreferencesUtil().btDevice.id.isNotEmpty) {
+          Logger.debug('DeviceProvider: Heartbeat triggering reconnection scan');
+          scanAndConnectToDevice();
+        }
+
+        // Use heartbeat to trigger sync if due
+        final next = nextSyncTime;
+        if (next != null && DateTime.now().isAfter(next)) {
+          Logger.debug('DeviceProvider: Heartbeat triggering background sync');
+          if (isConnected) {
+            _doBackgroundSync();
+          } else {
+            _pendingBackgroundSync = true;
+            scanAndConnectToDevice();
+          }
+          // Reset next sync time
+          final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
+          if (interval > 0) {
+            nextSyncTime = DateTime.now().add(Duration(minutes: interval));
+            notifyListeners();
+          }
+        }
+      }
+    }
   }
 
   @override
@@ -493,6 +525,7 @@ class DeviceProvider extends ChangeNotifier
     }
 
     try {
+      WakelockPlus.enable();
       if (!await ForegroundUtil.isRunningService) {
         await ForegroundUtil.startForegroundTask(
           title: 'Syncing recordings...',
@@ -525,6 +558,7 @@ class DeviceProvider extends ChangeNotifier
       lastSyncErrorTime = DateTime.now();
       notifyListeners();
     } finally {
+      WakelockPlus.disable();
       RecordingsManager.processingProgress.removeListener(onProcessingProgress);
       // Only release the foreground service (and wake lock) when the app is
       // visible. In background we keep it alive so the next timer tick fires.

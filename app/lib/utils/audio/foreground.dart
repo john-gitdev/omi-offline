@@ -23,6 +23,7 @@ class _ForegroundFirstTaskHandler extends TaskHandler {
   @override
   void onRepeatEvent(DateTime timestamp) async {
     Logger.debug("Foreground repeat event triggered");
+    FlutterForegroundTask.sendDataToMain('heartbeat');
   }
 
   @override
