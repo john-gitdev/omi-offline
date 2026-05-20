@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
@@ -17,6 +18,7 @@ import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/debouncer.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 class DeviceProvider extends ChangeNotifier
     with WidgetsBindingObserver
@@ -48,6 +50,10 @@ class DeviceProvider extends ChangeNotifier
   DateTime? nextSyncTime;
   bool _pendingAppOpenSync = false;
   bool _pendingBackgroundSync = false;
+  // Guards against overlapping _doBackgroundSync runs. The wakelock is a global
+  // boolean (not ref-counted), so two interleaved runs would let the first to
+  // finish disable it while the second is still syncing in the background.
+  bool _backgroundSyncActive = false;
 
   Timer? _reconnectDelayTimer;
   Timer? _disconnectNotificationTimer;
@@ -502,95 +508,104 @@ class DeviceProvider extends ChangeNotifier
 
   Future<void> _doBackgroundSync() async {
     if (isFirmwareUpdateInProgress) return;
-    lastSyncError = null;
-    final walSync = ServiceManager.instance().wal.getSyncs();
-    if (walSync.isSyncing) {
-      final cf = walSync.cancelFuture;
-      if (cf != null) {
-        await cf;
-      } else {
-        return;
-      }
-    }
-    if (RecordingsManager.isProcessingAny) return;
-
-    void onProcessingProgress() {
-      if (!_isAppInForeground && RecordingsManager.isProcessingAny) {
-        final progress = RecordingsManager.processingProgress.value;
-        ForegroundUtil.updateNotification(
-          title: 'Processing recordings...',
-          text: progress < 1.0 ? '${(progress * 100).toInt()}% complete...' : 'Finishing processing...',
-        );
-      }
-    }
-
+    // Re-entrancy guard: set before any await so a second caller (e.g. the Dart
+    // timer firing alongside the foreground heartbeat) bails out before touching
+    // the shared wakelock. Cleared in the outer finally.
+    if (_backgroundSyncActive) return;
+    _backgroundSyncActive = true;
     try {
-      WakelockPlus.enable();
-      if (!await ForegroundUtil.isRunningService) {
-        await ForegroundUtil.startForegroundTask(
-          title: 'Syncing recordings...',
-          text: 'Preparing to sync segments...',
-        );
-      } else {
-        await ForegroundUtil.updateNotification(
-          title: 'Syncing recordings...',
-          text: 'Preparing to sync segments...',
-        );
-      }
-      await walSync.syncAll(progress: _BackgroundSyncProgress());
-
-      await ForegroundUtil.updateNotification(
-        title: 'Processing recordings...',
-        text: 'Preparing to process segments...',
-      );
-      RecordingsManager.processingProgress.addListener(onProcessingProgress);
-      await RecordingsManager.processAllCompletedSessions();
-      RecordingsManager.processingProgress.removeListener(onProcessingProgress);
-
-      await ForegroundUtil.updateNotification(
-        title: 'Syncing recordings...',
-        text: 'Finalizing sync...',
-      );
-      await walSync.syncAll(progress: _BackgroundSyncProgress());
-      SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
-    } catch (e) {
-      lastSyncError = e.toString();
-      lastSyncErrorTime = DateTime.now();
-      notifyListeners();
-    } finally {
-      WakelockPlus.disable();
-      RecordingsManager.processingProgress.removeListener(onProcessingProgress);
-      // Only release the foreground service (and wake lock) when the app is
-      // visible. In background we keep it alive so the next timer tick fires.
-      if (_isAppInForeground) {
-        await ForegroundUtil.stopForegroundTask();
-      } else {
-        ForegroundUtil.updateNotification(
-          title: isConnected ? 'Omi connected' : 'Omi is active',
-          text: isConnected ? 'Connected to device' : 'Running in the background',
-        );
-      }
-
-      // Disconnect after the full sync+process cycle (both syncAll calls) so
-      // that new firmware files created during processing are also captured
-      // before we drop the connection.
-      if (!_isAppInForeground &&
-          SharedPreferencesUtil().maximizeBattery &&
-          !isFirmwareUpdateInProgress &&
-          !_isOnFirmwareUpdatePage &&
-          isConnected) {
-        final missingCount = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
-        if (missingCount <= 0) {
-          Logger.debug(
-            'Maximizing battery: disconnecting device after background sync — no segments remaining.',
-          );
-          ServiceManager.instance().device.disconnectDevice(isManual: true);
+      lastSyncError = null;
+      final walSync = ServiceManager.instance().wal.getSyncs();
+      if (walSync.isSyncing) {
+        final cf = walSync.cancelFuture;
+        if (cf != null) {
+          await cf;
         } else {
-          Logger.debug(
-            'Maximizing battery: keeping connection — $missingCount segments still remaining after sync.',
+          return;
+        }
+      }
+      if (RecordingsManager.isProcessingAny) return;
+
+      void onProcessingProgress() {
+        if (!_isAppInForeground && RecordingsManager.isProcessingAny) {
+          final progress = RecordingsManager.processingProgress.value;
+          ForegroundUtil.updateNotification(
+            title: 'Processing recordings...',
+            text: progress < 1.0 ? '${(progress * 100).toInt()}% complete...' : 'Finishing processing...',
           );
         }
       }
+
+      try {
+        WakelockPlus.enable();
+        if (!await ForegroundUtil.isRunningService) {
+          await ForegroundUtil.startForegroundTask(
+            title: 'Syncing recordings...',
+            text: 'Preparing to sync segments...',
+          );
+        } else {
+          await ForegroundUtil.updateNotification(
+            title: 'Syncing recordings...',
+            text: 'Preparing to sync segments...',
+          );
+        }
+        await walSync.syncAll(progress: _BackgroundSyncProgress());
+
+        await ForegroundUtil.updateNotification(
+          title: 'Processing recordings...',
+          text: 'Preparing to process segments...',
+        );
+        RecordingsManager.processingProgress.addListener(onProcessingProgress);
+        await RecordingsManager.processAllCompletedSessions();
+        RecordingsManager.processingProgress.removeListener(onProcessingProgress);
+
+        await ForegroundUtil.updateNotification(
+          title: 'Syncing recordings...',
+          text: 'Finalizing sync...',
+        );
+        await walSync.syncAll(progress: _BackgroundSyncProgress());
+        SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
+      } catch (e) {
+        lastSyncError = e.toString();
+        lastSyncErrorTime = DateTime.now();
+        notifyListeners();
+      } finally {
+        WakelockPlus.disable();
+        RecordingsManager.processingProgress.removeListener(onProcessingProgress);
+        // Only release the foreground service (and wake lock) when the app is
+        // visible. In background we keep it alive so the next timer tick fires.
+        if (_isAppInForeground) {
+          await ForegroundUtil.stopForegroundTask();
+        } else {
+          ForegroundUtil.updateNotification(
+            title: isConnected ? 'Omi connected' : 'Omi is active',
+            text: isConnected ? 'Connected to device' : 'Running in the background',
+          );
+        }
+
+        // Disconnect after the full sync+process cycle (both syncAll calls) so
+        // that new firmware files created during processing are also captured
+        // before we drop the connection.
+        if (!_isAppInForeground &&
+            SharedPreferencesUtil().maximizeBattery &&
+            !isFirmwareUpdateInProgress &&
+            !_isOnFirmwareUpdatePage &&
+            isConnected) {
+          final missingCount = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
+          if (missingCount <= 0) {
+            Logger.debug(
+              'Maximizing battery: disconnecting device after background sync — no segments remaining.',
+            );
+            ServiceManager.instance().device.disconnectDevice(isManual: true);
+          } else {
+            Logger.debug(
+              'Maximizing battery: keeping connection — $missingCount segments still remaining after sync.',
+            );
+          }
+        }
+      }
+    } finally {
+      _backgroundSyncActive = false;
     }
   }
 
@@ -784,7 +799,6 @@ class DeviceProvider extends ChangeNotifier
 
   @override
   void onSyncFinished() {}
-
 
   @override
   void onDeviceRecordingFailed() {}
