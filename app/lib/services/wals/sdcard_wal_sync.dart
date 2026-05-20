@@ -883,10 +883,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       }
     }
 
+    // Persist the trimmed WAL list only when something was actually deleted,
+    // but always refresh storage stats so File Count / Free Space stay current
+    // even on transfer-only or all-failed cycles.
     if (anyDeleted) {
       await WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
-      await _updateStorageStatsLocked(connection);
     }
+    await _updateStorageStatsLocked(connection);
 
     return SyncLocalFilesResponse(
       newConversationIds: [],
