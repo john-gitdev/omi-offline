@@ -12,7 +12,9 @@
 
 LOG_MODULE_REGISTER(battery, CONFIG_LOG_DEFAULT_LEVEL);
 
-#define BATTERY_STATES_COUNT 16
+/* Must equal the number of rows in battery_discharge_states /
+ * battery_charging_states below.  Keep them in sync if rows are added. */
+#define BATTERY_STATES_COUNT 12
 
 #define ADC_TOTAL_SAMPLES 50
 // +1 for the calibration sample
