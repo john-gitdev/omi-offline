@@ -271,8 +271,13 @@ int lsm6dsl_time_boot_adjust_rtc(void)
 	}
 	LOG_INF("boot adjust: ts_now=0x%06x", ts_now & 0x00FFFFFFu);
 
-	/* Unsigned subtraction handles wraparound modulo 2^32. */
-	/* Timestamp is 24-bit, so compute delta modulo 2^24 to handle wrap. */
+	/* The IMU timestamp is a 24-bit counter at 6.4 ms/tick, so it rolls over
+	 * every 2^24 * 6.4 ms ~= 29.8 h.  The mask below corrects a SINGLE rollover.
+	 * Multiple rollovers (device powered off > ~29.8 h) cannot be detected — the
+	 * CPU is off during system_off, so nothing counts wraps — and the recovered
+	 * time will undercount by N * 29.8 h.  This is acceptable because the IMU
+	 * bridge only needs to span short crash/reboot gaps; any longer gap is
+	 * corrected by the next BLE time-sync once the phone reconnects. */
 	uint32_t delta_ticks = (ts_now - base_ts) & 0x00FFFFFFu;
 	uint64_t delta_us = (uint64_t)delta_ticks * LSM6DS_TIMESTAMP_TICK_US_6P4MS;
 	uint64_t delta_ms = delta_us / 1000ULL;
