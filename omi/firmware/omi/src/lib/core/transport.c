@@ -647,7 +647,9 @@ static void battery_detail_ccc_changed(const struct bt_gatt_attr *attr, uint16_t
     }
     if (battery_ready) {
         uint8_t is_charging_byte = (uint8_t)is_charging;
-        bt_gatt_notify(NULL, attr - 1, &is_charging_byte, 1);
+        /* Notify on the characteristic value attribute (index 2), matching the
+         * periodic-notify path above; avoids fragile attr-relative arithmetic. */
+        bt_gatt_notify(NULL, &battery_detail_service_attr[2], &is_charging_byte, 1);
     }
     /* Also kick a fresh ADC read soon so the cached value is confirmed/updated. */
     k_work_reschedule(&battery_work, K_MSEC(20));
@@ -703,15 +705,21 @@ static void update_conn_params(struct bt_conn *conn);
 
 static void _transport_connected(struct bt_conn *conn, uint8_t err)
 {
+    /* HCI connection failure: conn is borrowed and being torn down by the stack.
+     * Do not ref/store/unref it — peripheral-role connected callbacks just observe. */
+    if (err) {
+        LOG_ERR("Connection failed (err 0x%02x)", err);
+        return;
+    }
+
     struct bt_conn_info info = {0};
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     storage_is_on = true;
 #endif
 
-    err = bt_conn_get_info(conn, &info);
-    if (err) {
-        LOG_ERR("Failed to get connection info (err %d)", err);
-        bt_conn_unref(conn);
+    int info_err = bt_conn_get_info(conn, &info);
+    if (info_err) {
+        LOG_ERR("Failed to get connection info (err %d)", info_err);
         return;
     }
 
@@ -830,24 +838,6 @@ static struct bt_conn_cb _callback_references = {
 };
 
 // --- Update Request Functions ---
-
-/*
-static void update_phy(struct bt_conn *conn)
-{
-    int err;
-    // Prefer 2M PHY for higher throughput
-    const struct bt_conn_le_phy_param preferred_phy = {
-        .options = BT_CONN_LE_PHY_OPT_NONE,
-        .pref_rx_phy = BT_GAP_LE_PHY_2M,
-        .pref_tx_phy = BT_GAP_LE_PHY_2M,
-    };
-    LOG_INF("Requesting PHY update...");
-    err = bt_conn_le_phy_update(conn, &preferred_phy);
-    if (err) {
-        LOG_ERR("bt_conn_le_phy_update() failed (err %d)", err);
-    }
-}
-*/
 
 static void update_data_length(struct bt_conn *conn)
 {
@@ -1148,11 +1138,18 @@ int transport_off()
         LOG_WRN("Pusher thread did not terminate in time (err %d)", ret);
     }
 
-    // First disconnect any active connections
-    if (current_connection != NULL) {
-        bt_conn_disconnect(current_connection, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
-        bt_conn_unref(current_connection);
-        current_connection = NULL;
+    /* Snapshot+null under the mutex so a concurrent _transport_disconnected
+     * sees NULL and skips its unref. We then disconnect+unref our snapshot,
+     * which still holds the ref taken in _transport_connected. */
+    struct bt_conn *conn_to_release = NULL;
+    k_mutex_lock(&conn_mutex, K_FOREVER);
+    conn_to_release = current_connection;
+    current_connection = NULL;
+    k_mutex_unlock(&conn_mutex);
+
+    if (conn_to_release != NULL) {
+        bt_conn_disconnect(conn_to_release, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        bt_conn_unref(conn_to_release);
     }
 
     // Stop advertising
@@ -1275,8 +1272,8 @@ int transport_start()
     //  Enable accelerometer
 #ifdef CONFIG_OMI_ENABLE_ACCELEROMETER
     err = accel_start();
-    if (!err) {
-        LOG_INF("Accelerometer failed to activate\n");
+    if (err) {
+        LOG_ERR("Accelerometer failed to activate (err %d)", err);
     } else {
         LOG_INF("Accelerometer initialized");
         register_accel_service(current_connection);
@@ -1316,7 +1313,7 @@ int transport_start()
 #endif
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
     // Register storage service for offline audio
-    memset(storage_temp_data, 0, OPUS_PADDED_LENGTH * 4);
+    memset(storage_temp_data, 0, sizeof(storage_temp_data));
     bt_gatt_service_register(&storage_service);
 #endif
     // Diagnostics registered last so existing storage handles stay stable across firmware updates
