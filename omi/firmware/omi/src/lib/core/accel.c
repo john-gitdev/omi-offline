@@ -57,8 +57,6 @@ K_WORK_DELAYABLE_DEFINE(accel_work, broadcast_accel);
 
 void broadcast_accel(struct k_work *work_item)
 {
-    struct bt_conn *current_connection = NULL; // This will need to be passed in
-
     sensor_sample_fetch_chan(lsm6dsl_dev, SENSOR_CHAN_ACCEL_XYZ);
     sensor_channel_get(lsm6dsl_dev, SENSOR_CHAN_ACCEL_X, &mega_sensor.a_x);
     sensor_channel_get(lsm6dsl_dev, SENSOR_CHAN_ACCEL_Y, &mega_sensor.a_y);
@@ -69,10 +67,10 @@ void broadcast_accel(struct k_work *work_item)
     sensor_channel_get(lsm6dsl_dev, SENSOR_CHAN_GYRO_Y, &mega_sensor.g_y);
     sensor_channel_get(lsm6dsl_dev, SENSOR_CHAN_GYRO_Z, &mega_sensor.g_z);
 
-    // Only time mega sensor is changed is through here (hopefully), so no chance of race condition
-    int err = bt_gatt_notify(current_connection, &accel_service.attrs[1], &mega_sensor, sizeof(mega_sensor));
-    if (err) {
-        LOG_ERR("Error updating Accelerometer data");
+    /* NULL conn = notify all currently subscribed connections. */
+    int err = bt_gatt_notify(NULL, &accel_service.attrs[1], &mega_sensor, sizeof(mega_sensor));
+    if (err && err != -ENOTCONN) {
+        LOG_ERR("Error updating Accelerometer data: %d", err);
     }
     k_work_reschedule(&accel_work, K_MSEC(ACCEL_REFRESH_INTERVAL));
 }
@@ -100,47 +98,47 @@ int accel_start(void)
     k_msleep(50);
     if (lsm6dsl_dev == NULL) {
         LOG_ERR("Could not get LSM6DSL device");
-        return 0;
+        return -ENODEV;
     }
     if (!device_is_ready(lsm6dsl_dev)) {
         LOG_ERR("LSM6DSL: not ready");
-        return 0;
+        return -ENODEV;
     }
     odr_attr.val1 = 10;
     odr_attr.val2 = 0;
 
-    if (gpio_is_ready_dt(&accel_gpio_pin)) {
-        LOG_PRINTK("Speaker Pin ready\n");
-    } else {
-        LOG_PRINTK("Error setting up speaker Pin\n");
-        return -1;
+    if (!gpio_is_ready_dt(&accel_gpio_pin)) {
+        LOG_PRINTK("Error setting up accel Pin\n");
+        return -ENODEV;
     }
     if (gpio_pin_configure_dt(&accel_gpio_pin, GPIO_OUTPUT_INACTIVE) < 0) {
-        LOG_PRINTK("Error setting up Haptic Pin\n");
-        return -1;
+        LOG_PRINTK("Error configuring accel Pin\n");
+        return -EIO;
     }
     gpio_pin_set_dt(&accel_gpio_pin, 1);
     if (sensor_attr_set(lsm6dsl_dev, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr_attr) < 0) {
         LOG_ERR("Cannot set sampling frequency for Accelerometer.");
-        return 0;
+        return -EIO;
     }
     if (sensor_attr_set(lsm6dsl_dev, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr_attr) < 0) {
         LOG_ERR("Cannot set sampling frequency for gyro.");
-        return 0;
+        return -EIO;
     }
     if (sensor_sample_fetch(lsm6dsl_dev) < 0) {
         LOG_ERR("Sensor sample update error");
-        return 0;
+        return -EIO;
     }
 
     LOG_INF("Accelerometer is ready for use \n");
 
-    return 1;
+    return 0;
 }
 
 void register_accel_service(struct bt_conn *conn)
 {
     bt_gatt_service_register(&accel_service);
+    /* Seed the periodic broadcast — broadcast_accel re-schedules itself. */
+    k_work_schedule(&accel_work, K_MSEC(ACCEL_REFRESH_INTERVAL));
 }
 
 void accel_off(void)
