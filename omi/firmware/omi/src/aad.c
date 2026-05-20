@@ -57,6 +57,13 @@ static uint16_t vad_threshold = 250;
 
 /* ---- Force-wake (button press) ---- */
 #define FORCE_WAKE_HOLD_MS 50000
+/* These two are written on one thread and read on another (force_wake_until_ms:
+ * button-work thread -> mic thread; last_hw_wake_ms: aad thread -> main loop).
+ * A 64-bit read is two 32-bit loads on this core, so a torn read is possible in
+ * principle. It is benign here because both hold k_uptime_get() millisecond
+ * values whose high 32 bits stay 0 until ~49.7 days of continuous uptime — far
+ * beyond this wearable's per-charge runtime — so the high word never changes
+ * mid-write and any torn read reassembles to the correct value. */
 static int64_t force_wake_until_ms = 0;
 static int64_t last_hw_wake_ms = -100000; // Initialize to long ago
 
