@@ -32,7 +32,9 @@ volatile uint8_t marker_flash_count = 0;
 static const struct device *const buttons = DEVICE_DT_GET(DT_ALIAS(buttons));
 static const struct gpio_dt_spec usr_btn = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(usr_btn), gpios, {0});
 
-static bool was_pressed = false;
+/* Written from the GPIO ISR, read from the button_work handler — must be
+ * volatile so the handler always re-reads the latest edge state. */
+static volatile bool was_pressed = false;
 
 // Polling interval for state machine
 #define BUTTON_CHECK_INTERVAL 40 // 0.04 seconds, 25 Hz
@@ -40,8 +42,6 @@ static bool was_pressed = false;
 void check_button_level(struct k_work *work_item);
 
 K_WORK_DELAYABLE_DEFINE(button_work, check_button_level);
-
-static FSM_STATE_T current_button_state = IDLE;
 
 // State machine definitions
 typedef enum {
@@ -54,7 +54,9 @@ typedef enum {
     STATE_WAIT_FOR_RELEASE
 } button_fsm_state_t;
 
-static button_fsm_state_t fsm_state = STATE_IDLE;
+/* Read from the GPIO ISR (to decide whether to (re)start button_work) as well
+ * as the handler, so mark volatile to avoid a stale cached read in the ISR. */
+static volatile button_fsm_state_t fsm_state = STATE_IDLE;
 static uint32_t state_timer = 0;
 
 #define HOLD_TIME 1000             // 1s hold threshold (single/double tap)
@@ -293,11 +295,6 @@ void register_button_service()
     bt_gatt_service_register(&button_service);
 }
 
-FSM_STATE_T get_current_button_state()
-{
-    return current_button_state;
-}
-
 void turnoff_all()
 {
     int rc;
@@ -381,9 +378,4 @@ void turnoff_all()
 
     // Power off the system using sys_poweroff
     sys_poweroff();
-}
-
-void force_button_state(FSM_STATE_T state)
-{
-    current_button_state = state;
 }
