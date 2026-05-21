@@ -40,7 +40,8 @@ class OmiApiClient {
   static const _syncUrlV2 = 'https://api.omi.me/v2/sync-local-files';
   static const _syncUrlV1 = 'https://api.omi.me/v1/sync-local-files';
   static const _speechProfileUrl = 'https://api.omi.me/v3/speech-profile';
-  static const _conversationUrl = 'https://api.omi.me/v1/dev/user/conversations';
+  static const _conversationUrl =
+      'https://api.omi.me/v1/dev/user/conversations';
 
   static bool get isSignedIn {
     final prefs = SharedPreferencesUtil();
@@ -63,15 +64,21 @@ class OmiApiClient {
     final now = DateTime.now().millisecondsSinceEpoch;
     final remainingMs = expiry - now;
     if (remainingMs > 60 * 1000) {
-      Logger.debug('OmiApiClient: Token still valid, expires in ${(remainingMs / 1000).round()}s');
+      Logger.debug(
+        'OmiApiClient: Token still valid, expires in ${(remainingMs / 1000).round()}s',
+      );
       return;
     }
-    Logger.debug('OmiApiClient: Token expired or expiring soon (${(remainingMs / 1000).round()}s remaining), refreshing...');
+    Logger.debug(
+      'OmiApiClient: Token expired or expiring soon (${(remainingMs / 1000).round()}s remaining), refreshing...',
+    );
 
     final refreshToken = prefs.omiRefreshToken;
     final apiKey = prefs.omiFirebaseApiKey;
     if (refreshToken.isEmpty || apiKey.isEmpty) {
-      Logger.error('OmiApiClient: refreshToken empty=${refreshToken.isEmpty}, apiKey empty=${apiKey.isEmpty}');
+      Logger.error(
+        'OmiApiClient: refreshToken empty=${refreshToken.isEmpty}, apiKey empty=${apiKey.isEmpty}',
+      );
       throw const OmiSyncException('Omi credentials not configured');
     }
 
@@ -81,7 +88,8 @@ class OmiApiClient {
           .post(
             Uri.parse('$_tokenUrl?key=${Uri.encodeComponent(apiKey)}'),
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'grant_type=refresh_token&refresh_token=${Uri.encodeComponent(refreshToken)}',
+            body:
+                'grant_type=refresh_token&refresh_token=${Uri.encodeComponent(refreshToken)}',
           )
           .timeout(const Duration(seconds: 10));
     } on SocketException {
@@ -89,15 +97,23 @@ class OmiApiClient {
     }
 
     if (res.statusCode != 200) {
-      Logger.error('OmiApiClient: Token refresh HTTP ${res.statusCode}: ${res.body}');
-      throw OmiSyncException('Token refresh failed (${res.statusCode})', isAuthError: true);
+      Logger.error(
+        'OmiApiClient: Token refresh HTTP ${res.statusCode}: ${res.body}',
+      );
+      throw OmiSyncException(
+        'Token refresh failed (${res.statusCode})',
+        isAuthError: true,
+      );
     }
 
     final body = jsonDecode(res.body) as Map<String, dynamic>;
     final idToken = body['id_token'] as String?;
-    final expiresIn = int.tryParse(body['expires_in']?.toString() ?? '') ?? 3600;
+    final expiresIn =
+        int.tryParse(body['expires_in']?.toString() ?? '') ?? 3600;
     if (idToken == null || idToken.isEmpty) {
-      Logger.error('OmiApiClient: Token refresh response missing id_token. Keys: ${body.keys.toList()}');
+      Logger.error(
+        'OmiApiClient: Token refresh response missing id_token. Keys: ${body.keys.toList()}',
+      );
       throw const OmiSyncException('Token refresh returned no id_token');
     }
 
@@ -106,7 +122,9 @@ class OmiApiClient {
 
     // Google can rotate the refresh token on each exchange — persist the new one.
     final newRefreshToken = body['refresh_token'] as String?;
-    if (newRefreshToken != null && newRefreshToken.isNotEmpty && newRefreshToken != refreshToken) {
+    if (newRefreshToken != null &&
+        newRefreshToken.isNotEmpty &&
+        newRefreshToken != refreshToken) {
       await prefs.setOmiRefreshToken(newRefreshToken);
     }
 
@@ -125,7 +143,8 @@ class OmiApiClient {
 
     await refreshTokenIfNeeded();
     final token = await SharedPreferencesUtil().omiIdToken;
-    if (token.isEmpty) throw const OmiSyncException('No Omi ID token available');
+    if (token.isEmpty)
+      throw const OmiSyncException('No Omi ID token available');
 
     final mac = _deviceMacForFilename();
 
@@ -138,9 +157,12 @@ class OmiApiClient {
       }
       final filename = _opusFilename(f, mac);
       namedBytes.add((filename, bytes));
-      Logger.debug('OmiApiClient: Prepared ${f.uri.pathSegments.last} → $filename (${bytes.length} bytes)');
+      Logger.debug(
+        'OmiApiClient: Prepared ${f.uri.pathSegments.last} → $filename (${bytes.length} bytes)',
+      );
     }
-    if (namedBytes.isEmpty) throw const OmiSyncException('No upload payload available');
+    if (namedBytes.isEmpty)
+      throw const OmiSyncException('No upload payload available');
 
     final headers = {'Authorization': 'Bearer $token'};
 
@@ -148,17 +170,24 @@ class OmiApiClient {
     var usedUrl = _syncUrlV2;
 
     if (res.statusCode == 404 || res.statusCode == 405) {
-      Logger.debug('OmiApiClient: v2 not found (${res.statusCode}), falling back to v1');
+      Logger.debug(
+        'OmiApiClient: v2 not found (${res.statusCode}), falling back to v1',
+      );
       res = await _doUploadBytes(_syncUrlV1, namedBytes, headers);
       usedUrl = _syncUrlV1;
     }
 
     final responseBody = res.body;
-    Logger.debug('OmiApiClient: Upload response ${res.statusCode}: $responseBody');
+    Logger.debug(
+      'OmiApiClient: Upload response ${res.statusCode}: $responseBody',
+    );
 
     if (res.statusCode < 200 || res.statusCode >= 300) {
       final isAuth = res.statusCode == 401 || res.statusCode == 403;
-      throw OmiSyncException('Sync upload failed (${res.statusCode})', isAuthError: isAuth);
+      throw OmiSyncException(
+        'Sync upload failed (${res.statusCode})',
+        isAuthError: isAuth,
+      );
     }
 
     if (res.statusCode == 202) {
@@ -181,14 +210,18 @@ class OmiApiClient {
   static String _opusFilename(File binFile, String mac) {
     // Extract millisecond timestamp from "recording_fs320_<ms>.bin" and convert to seconds.
     final name = binFile.uri.pathSegments.last;
-    final tsStr = name.replaceFirst('recording_fs320_', '').replaceFirst('.bin', '');
+    final tsStr = name
+        .replaceFirst('recording_fs320_', '')
+        .replaceFirst('.bin', '');
     final parsed = int.tryParse(tsStr) ?? 0;
     var tsSeconds = parsed > 1000000000000 ? parsed ~/ 1000 : parsed;
 
     // Server requires >= 2024-01-01 and <= now - 30s.
     const minValidSeconds = 1704067200;
     final latestSafe = (DateTime.now().millisecondsSinceEpoch ~/ 1000) - 30;
-    final safeFloor = latestSafe > minValidSeconds ? latestSafe : minValidSeconds;
+    final safeFloor = latestSafe > minValidSeconds
+        ? latestSafe
+        : minValidSeconds;
     if (tsSeconds < minValidSeconds) tsSeconds = safeFloor;
     if (tsSeconds > latestSafe) tsSeconds = latestSafe;
 
@@ -206,19 +239,37 @@ class OmiApiClient {
     while (offset + 4 <= bytes.length) {
       final frameLength = byteData.getUint32(offset, Endian.little);
 
-      if (frameLength == 0 || frameLength == 0xFFFFFFFF) { offset += 4; continue; }
-      if (frameLength == 0xFFFFFFFB) { offset += 36; continue; }
-      if (frameLength == 0xFFFFFFFE) { offset += 20; continue; }
-      if (frameLength == 0xFFFFFFFD) { offset += 16; continue; }
-      if (frameLength > 0xFFFF00) { offset += 4; continue; }
+      if (frameLength == 0 || frameLength == 0xFFFFFFFF) {
+        offset += 4;
+        continue;
+      }
+      if (frameLength == 0xFFFFFFFB) {
+        offset += 36;
+        continue;
+      }
+      if (frameLength == 0xFFFFFFFE) {
+        offset += 20;
+        continue;
+      }
+      if (frameLength == 0xFFFFFFFD) {
+        offset += 16;
+        continue;
+      }
+      if (frameLength > 0xFFFF00) {
+        offset += 4;
+        continue;
+      }
 
       if (offset + 4 + frameLength > bytes.length) break;
 
-      output.add(Uint8List.sublistView(bytes, offset, offset + 4 + frameLength));
+      output.add(
+        Uint8List.sublistView(bytes, offset, offset + 4 + frameLength),
+      );
       offset += 4 + frameLength;
     }
 
-    return output.toBytes();
+    // ⚡ Bolt: Use takeBytes() instead of toBytes() to prevent copying memory
+    return output.takeBytes();
   }
 
   static Future<http.Response> _doUploadBytes(
@@ -226,25 +277,34 @@ class OmiApiClient {
     List<(String filename, Uint8List bytes)> files,
     Map<String, String> headers,
   ) async {
-    final request = http.MultipartRequest('POST', Uri.parse(url))..headers.addAll(headers);
+    final request = http.MultipartRequest('POST', Uri.parse(url))
+      ..headers.addAll(headers);
     for (final (filename, bytes) in files) {
-      request.files.add(http.MultipartFile.fromBytes(
-        'files',
-        bytes,
-        filename: filename,
-        contentType: MediaType('application', 'octet-stream'),
-      ));
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'files',
+          bytes,
+          filename: filename,
+          contentType: MediaType('application', 'octet-stream'),
+        ),
+      );
     }
 
     try {
-      final streamed = await request.send().timeout(const Duration(seconds: 120));
+      final streamed = await request.send().timeout(
+        const Duration(seconds: 120),
+      );
       return http.Response.fromStream(streamed);
     } on SocketException {
       throw const OmiSyncException('No network connection');
     }
   }
 
-  static Future<OmiSyncResult> _pollJob(String baseUrl, String jobId, int initialDelayMs) async {
+  static Future<OmiSyncResult> _pollJob(
+    String baseUrl,
+    String jobId,
+    int initialDelayMs,
+  ) async {
     await Future.delayed(Duration(milliseconds: initialDelayMs));
 
     const maxAttempts = 80;
@@ -264,10 +324,15 @@ class OmiApiClient {
         throw const OmiSyncException('No network connection');
       }
 
-      Logger.debug('OmiApiClient: Job $jobId poll ${res.statusCode}: ${res.body}');
+      Logger.debug(
+        'OmiApiClient: Job $jobId poll ${res.statusCode}: ${res.body}',
+      );
 
       if (res.statusCode == 401 || res.statusCode == 403) {
-        throw OmiSyncException('Job poll auth error (${res.statusCode})', isAuthError: true);
+        throw OmiSyncException(
+          'Job poll auth error (${res.statusCode})',
+          isAuthError: true,
+        );
       }
 
       if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -277,8 +342,13 @@ class OmiApiClient {
           return _parseSyncResult(res.statusCode, res.body);
         }
         if (status == 'failed') {
-          final err = bodyJson['error'] ?? bodyJson['message'] ?? 'unknown error';
-          return OmiSyncResult(success: false, status: 'failed', error: err.toString());
+          final err =
+              bodyJson['error'] ?? bodyJson['message'] ?? 'unknown error';
+          return OmiSyncResult(
+            success: false,
+            status: 'failed',
+            error: err.toString(),
+          );
         }
         delayMs = (bodyJson['poll_after_ms'] as int?) ?? delayMs;
       }
@@ -293,7 +363,8 @@ class OmiApiClient {
     try {
       final json = jsonDecode(body) as Map<String, dynamic>;
       final status = json['status']?.toString() ?? 'completed';
-      final success = httpStatus >= 200 && httpStatus < 300 && status != 'failed';
+      final success =
+          httpStatus >= 200 && httpStatus < 300 && status != 'failed';
 
       List<String> parseIds(dynamic val) {
         if (val is List) return val.map((e) => e.toString()).toList();
@@ -327,19 +398,27 @@ class OmiApiClient {
       final headers = {'Authorization': 'Bearer $token'};
 
       for (final id in result.allConversationIds.take(3)) {
-        final res = await http.get(
-          Uri.parse('$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true'),
-          headers: headers,
-        ).timeout(const Duration(seconds: 15));
+        final res = await http
+            .get(
+              Uri.parse(
+                '$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true',
+              ),
+              headers: headers,
+            )
+            .timeout(const Duration(seconds: 15));
 
         if (res.statusCode == 200) {
           final json = jsonDecode(res.body) as Map<String, dynamic>;
           final segments = (json['transcript_segments'] as List?)?.length ?? 0;
           final title = (json['structured'] as Map?)?['title'] ?? 'No Title';
           final discarded = json['discarded'] == true;
-          Logger.debug('OmiApiClient: Trace result for $id: "$title", segments: $segments, discarded: $discarded');
+          Logger.debug(
+            'OmiApiClient: Trace result for $id: "$title", segments: $segments, discarded: $discarded',
+          );
         } else {
-          Logger.error('OmiApiClient: Trace failed for $id (HTTP ${res.statusCode})');
+          Logger.error(
+            'OmiApiClient: Trace failed for $id (HTTP ${res.statusCode})',
+          );
         }
       }
     } catch (e) {
@@ -354,23 +433,27 @@ class OmiApiClient {
     try {
       await refreshTokenIfNeeded();
       final token = await SharedPreferencesUtil().omiIdToken;
-      final res = await http.get(
-        Uri.parse(_speechProfileUrl),
-        headers: {'Authorization': 'Bearer $token'},
-      ).timeout(const Duration(seconds: 15));
+      final res = await http
+          .get(
+            Uri.parse(_speechProfileUrl),
+            headers: {'Authorization': 'Bearer $token'},
+          )
+          .timeout(const Duration(seconds: 15));
 
       if (res.statusCode != 200) {
-        Logger.error('OmiApiClient: Speech profile check HTTP ${res.statusCode}: ${res.body}');
+        Logger.error(
+          'OmiApiClient: Speech profile check HTTP ${res.statusCode}: ${res.body}',
+        );
         return null;
       }
 
       final body = jsonDecode(res.body) as Map<String, dynamic>;
       final hasProfile = body['has_profile'] == true;
-      
+
       final prefs = SharedPreferencesUtil();
       prefs.omiHasSpeechProfile = hasProfile;
       prefs.omiSpeechProfileCheckedAtMs = DateTime.now().millisecondsSinceEpoch;
-      
+
       Logger.debug('OmiApiClient: Speech profile checked: $hasProfile');
       return hasProfile;
     } catch (e) {
@@ -392,7 +475,8 @@ class OmiApiClient {
           .post(
             Uri.parse('$_tokenUrl?key=${Uri.encodeComponent(apiKey)}'),
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'grant_type=refresh_token&refresh_token=${Uri.encodeComponent(refreshToken)}',
+            body:
+                'grant_type=refresh_token&refresh_token=${Uri.encodeComponent(refreshToken)}',
           )
           .timeout(const Duration(seconds: 10));
       return res.statusCode == 200;

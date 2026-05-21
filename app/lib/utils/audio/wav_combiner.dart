@@ -18,7 +18,10 @@ class WavMetadata {
 }
 
 class WavCombiner {
-  static Future<File> combineWavFiles(List<File> wavFiles, String outputPath) async {
+  static Future<File> combineWavFiles(
+    List<File> wavFiles,
+    String outputPath,
+  ) async {
     if (wavFiles.isEmpty) {
       throw Exception('No WAV files to combine');
     }
@@ -41,7 +44,10 @@ class WavCombiner {
     }
 
     final firstMetadata = metadataList.first;
-    final combinedDataSize = metadataList.fold<int>(0, (sum, metadata) => sum + metadata.dataSize);
+    final combinedDataSize = metadataList.fold<int>(
+      0,
+      (sum, metadata) => sum + metadata.dataSize,
+    );
 
     final outputFile = File(outputPath);
     final sink = outputFile.openWrite();
@@ -73,12 +79,14 @@ class WavCombiner {
       throw Exception('Invalid WAV file: too small');
     }
 
-    final riffHeader = String.fromCharCodes(bytes.sublist(0, 4));
+    // ⚡ Bolt: Use positional arguments for fromCharCodes to prevent copying memory
+    final riffHeader = String.fromCharCodes(bytes, 0, 4);
     if (riffHeader != 'RIFF') {
       throw Exception('Invalid WAV file: missing RIFF header');
     }
 
-    final waveHeader = String.fromCharCodes(bytes.sublist(8, 12));
+    // ⚡ Bolt: Use positional arguments for fromCharCodes to prevent copying memory
+    final waveHeader = String.fromCharCodes(bytes, 8, 12);
     if (waveHeader != 'WAVE') {
       throw Exception('Invalid WAV file: missing WAVE header');
     }
@@ -96,7 +104,9 @@ class WavCombiner {
     );
   }
 
-  static Future<bool> validateCompatibility(List<WavMetadata> metadataList) async {
+  static Future<bool> validateCompatibility(
+    List<WavMetadata> metadataList,
+  ) async {
     if (metadataList.isEmpty) return false;
     if (metadataList.length == 1) return true;
 
@@ -104,15 +114,21 @@ class WavCombiner {
 
     for (final metadata in metadataList.skip(1)) {
       if (metadata.sampleRate != first.sampleRate) {
-        Logger.debug('Incompatible sample rates: ${metadata.sampleRate} vs ${first.sampleRate}');
+        Logger.debug(
+          'Incompatible sample rates: ${metadata.sampleRate} vs ${first.sampleRate}',
+        );
         return false;
       }
       if (metadata.channels != first.channels) {
-        Logger.debug('Incompatible channels: ${metadata.channels} vs ${first.channels}');
+        Logger.debug(
+          'Incompatible channels: ${metadata.channels} vs ${first.channels}',
+        );
         return false;
       }
       if (metadata.bitsPerSample != first.bitsPerSample) {
-        Logger.debug('Incompatible bits per sample: ${metadata.bitsPerSample} vs ${first.bitsPerSample}');
+        Logger.debug(
+          'Incompatible bits per sample: ${metadata.bitsPerSample} vs ${first.bitsPerSample}',
+        );
         return false;
       }
     }
@@ -178,6 +194,9 @@ class WavCombiner {
   }
 
   static int _readUint32(Uint8List bytes, int offset) {
-    return bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24);
+    return bytes[offset] |
+        (bytes[offset + 1] << 8) |
+        (bytes[offset + 2] << 16) |
+        (bytes[offset + 3] << 24);
   }
 }
