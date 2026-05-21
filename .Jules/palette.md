@@ -1,3 +1,0 @@
-## 2024-05-24 - Filter Bubbles Visual Feedback and Accessibility
-**Learning:** Reusable filter bubble components in Flutter often use `GestureDetector` with custom `Container`s. This removes visual touch feedback (ripples) and semantic accessibility labels.
-**Action:** Replace `GestureDetector` with an `InkWell` wrapped in a `Material` widget (to render the ripple) and a `Tooltip` + `Semantics` widget for screen readers. When replacing a container that had borders and rounded corners, use `shape: RoundedRectangleBorder(...)` on the `Material` widget rather than standard `borderRadius` if borders are dynamic, and set `clipBehavior: Clip.antiAlias` to constrain the ripple inside the rounded bounds.
