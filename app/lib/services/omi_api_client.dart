@@ -218,7 +218,7 @@ class OmiApiClient {
       offset += 4 + frameLength;
     }
 
-    return output.toBytes();
+    return output.takeBytes();
   }
 
   static Future<http.Response> _doUploadBytes(
