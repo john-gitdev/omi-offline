@@ -1,0 +1,3 @@
+## 2024-05-20 - String.fromCharCodes with sublist vs positional arguments
+**Learning:** In Dart, calling `data.sublist(start, end)` creates an expensive deep copy of the array. When used inside `String.fromCharCodes(data.sublist(start, end))` or in tight loops, this causes unnecessary memory allocations and degraded performance. Additionally, instantiating `ByteData.sublistView(data)` inside a loop creates a new object per iteration.
+**Action:** Always pass the data directly and use native positional arguments `String.fromCharCodes(data, start, end)` to read without copying memory. For `ByteData`, hoist a single `ByteData.sublistView(data)` outside the loop and read values directly using offset-based methods.
