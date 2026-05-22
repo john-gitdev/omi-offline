@@ -295,40 +295,42 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
               icon: const FaIcon(FontAwesomeIcons.trashCan, color: Colors.redAccent, size: 20),
               tooltip: 'Delete marker',
               onPressed: () async {
-              bool? confirm = await showDialog<bool>(
-                context: context,
-                builder: (c) => AlertDialog(
-                  backgroundColor: Colors.grey.shade900,
-                  title: const Text('Delete Marker', style: TextStyle(color: Colors.white)),
-                  content: const Text('This will permanently delete this marker conversation.', style: TextStyle(color: Colors.white70)),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(c).pop(false),
-                      child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.of(c).pop(true),
-                      child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
-                    ),
-                  ],
-                ),
-              );
-              if (confirm == true) {
-                await _player.stop();
-                await RecordingsManager.deleteMarkerConversation(widget.markerConversation);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Deleted Marker at ${widget.markerConversation.markerTimeLabel}')),
-                  );
-                  Navigator.of(context).pop();
-                }              }
+                bool? confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (c) => AlertDialog(
+                    backgroundColor: Colors.grey.shade900,
+                    title: const Text('Delete Marker', style: TextStyle(color: Colors.white)),
+                    content: const Text('This will permanently delete this marker conversation.',
+                        style: TextStyle(color: Colors.white70)),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.of(c).pop(false),
+                        child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.of(c).pop(true),
+                        child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirm == true) {
+                  await _player.stop();
+                  await RecordingsManager.deleteMarkerConversation(widget.markerConversation);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Deleted Marker at ${widget.markerConversation.markerTimeLabel}')),
+                    );
+                    Navigator.of(context).pop();
+                  }
+                }
               },
-              ),
-              IconButton(
-                icon: const FaIcon(FontAwesomeIcons.shareFromSquare, size: 20, color: Colors.white),
-                onPressed: _exportConversation,
-                tooltip: 'Export',
-              ),
+            ),
+            IconButton(
+              icon: const FaIcon(FontAwesomeIcons.shareFromSquare, size: 20, color: Colors.white),
+              onPressed: _exportConversation,
+              tooltip: 'Export',
+            ),
             IconButton(
               icon: FaIcon(
                 _isCropMode
@@ -362,7 +364,8 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                       child: SizedBox(
                         height: 100,
                         child: _loadingWaveform
-                            ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
+                            ? const Center(
+                                child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
                             : LayoutBuilder(
                                 builder: (ctx, constraints) {
                                   final width = constraints.maxWidth;
@@ -478,7 +481,11 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        _SeekBtn(icon: FontAwesomeIcons.rotateLeft, seconds: 30, isForward: false, onTap: () => _seekRelative(-30)),
+                        _SeekBtn(
+                            icon: FontAwesomeIcons.rotateLeft,
+                            seconds: 30,
+                            isForward: false,
+                            onTap: () => _seekRelative(-30)),
                         const SizedBox(width: 40),
                         Semantics(
                           button: true,
@@ -507,7 +514,11 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                           ),
                         ),
                         const SizedBox(width: 40),
-                        _SeekBtn(icon: FontAwesomeIcons.rotateRight, seconds: 30, isForward: true, onTap: () => _seekRelative(30)),
+                        _SeekBtn(
+                            icon: FontAwesomeIcons.rotateRight,
+                            seconds: 30,
+                            isForward: true,
+                            onTap: () => _seekRelative(30)),
                       ],
                     ),
                     const SizedBox(height: 24),
@@ -517,25 +528,38 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [1.0, 1.5, 2.0].map((s) {
                         final selected = _speed == s;
-                        return GestureDetector(
-                          onTap: () => _setSpeed(s),
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 6),
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: selected ? Colors.deepPurpleAccent : const Color(0xFF2C2C2E),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Text(
-                              s == 1.0
-                                  ? '1×'
-                                  : s == 1.5
-                                      ? '1.5×'
-                                      : '2×',
-                              style: TextStyle(
-                                color: selected ? Colors.white : Colors.grey.shade400,
-                                fontSize: 13,
-                                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                        final labelText = s == 1.0
+                            ? '1×'
+                            : s == 1.5
+                                ? '1.5×'
+                                : '2×';
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          child: Semantics(
+                            button: true,
+                            label: 'Playback speed $labelText',
+                            child: Tooltip(
+                              message: 'Set playback speed to $labelText',
+                              child: Material(
+                                color: selected ? Colors.deepPurpleAccent : const Color(0xFF2C2C2E),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                clipBehavior: Clip.antiAlias,
+                                child: InkWell(
+                                  onTap: () => _setSpeed(s),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                    child: Text(
+                                      labelText,
+                                      style: TextStyle(
+                                        color: selected ? Colors.white : Colors.grey.shade400,
+                                        fontSize: 13,
+                                        fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                                      ),
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
@@ -543,7 +567,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                       }).toList(),
                     ),
                     const SizedBox(height: 32),
-
                   ],
                 ),
               ),
@@ -659,7 +682,6 @@ class _MarkerWaveformPainter extends CustomPainter {
       old.isCropMode != isCropMode;
 }
 
-
 // ── Seek button ───────────────────────────────────────────────────────────────
 
 class _SeekBtn extends StatelessWidget {
@@ -691,7 +713,8 @@ class _SeekBtn extends StatelessWidget {
                 children: [
                   FaIcon(icon, color: Colors.grey.shade300, size: 32),
                   const SizedBox(height: 5),
-                  Text('${seconds}s', style: TextStyle(color: Colors.grey.shade400, fontSize: 11, fontWeight: FontWeight.w500)),
+                  Text('${seconds}s',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 11, fontWeight: FontWeight.w500)),
                 ],
               ),
             ),
