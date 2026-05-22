@@ -148,16 +148,20 @@ class WaveformUtils {
     int channels = 0;
     int bitsPerSample = 0;
 
+    // One view over the whole buffer; read fields by absolute offset instead of
+    // allocating a fresh ByteData view per chunk header.
+    final wavBd = ByteData.sublistView(wavData);
+
     while (offset < wavData.length - 8) {
       final chunkId = String.fromCharCodes(wavData, offset, offset + 4);
-      final chunkSize = ByteData.sublistView(wavData, offset + 4, offset + 8).getUint32(0, Endian.little);
+      final chunkSize = wavBd.getUint32(offset + 4, Endian.little);
 
       if (chunkId == 'fmt ') {
         fmtChunkSize = chunkSize;
-        final audioFormat = ByteData.sublistView(wavData, offset + 8, offset + 10).getUint16(0, Endian.little);
-        channels = ByteData.sublistView(wavData, offset + 10, offset + 12).getUint16(0, Endian.little);
-        sampleRate = ByteData.sublistView(wavData, offset + 12, offset + 16).getUint32(0, Endian.little);
-        bitsPerSample = ByteData.sublistView(wavData, offset + 22, offset + 24).getUint16(0, Endian.little);
+        final audioFormat = wavBd.getUint16(offset + 8, Endian.little);
+        channels = wavBd.getUint16(offset + 10, Endian.little);
+        sampleRate = wavBd.getUint32(offset + 12, Endian.little);
+        bitsPerSample = wavBd.getUint16(offset + 22, Endian.little);
 
         if (audioFormat != 1) {
           Logger.debug('Unsupported audio format: $audioFormat (only PCM supported)');
@@ -179,7 +183,7 @@ class WaveformUtils {
     offset = 12;
     while (offset < wavData.length - 8) {
       final chunkId = String.fromCharCodes(wavData, offset, offset + 4);
-      final chunkSize = ByteData.sublistView(wavData, offset + 4, offset + 8).getUint32(0, Endian.little);
+      final chunkSize = wavBd.getUint32(offset + 4, Endian.little);
 
       if (chunkId == 'data') {
         return WavInfo(
