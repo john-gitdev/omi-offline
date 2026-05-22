@@ -105,29 +105,6 @@ File indices are **cache positions** (0-based sequential) that shift after each 
 
 Audio codec IDs: 1=pcm8, 20=opus (80 B/frame, 50 fps), 21=opusFS320 (40 B/frame, 50 fps).
 
-## App (Flutter)
-
-### Verifying UI Changes (agent-flutter)
-
-After editing Flutter UI code, **verify the change programmatically** — do not just hot restart and hope.
-
-Marionette is already integrated in debug builds (`marionette_flutter: ^0.3.0`). Install agent-flutter once: `npm install -g agent-flutter-cli`.
-
-```bash
-kill -SIGUSR2 $(pgrep -f "flutter run" | head -1)   # hot restart
-AGENT_FLUTTER_LOG=/tmp/flutter-run.log agent-flutter connect
-agent-flutter snapshot -i              # list interactive widgets
-agent-flutter press @e3                # tap by ref (re-snapshot first — refs go stale)
-agent-flutter press 540 1200           # tap by coordinates (ADB fallback)
-agent-flutter find type button press   # more stable than @ref
-agent-flutter fill @e5 "hello"
-agent-flutter screenshot /tmp/after.png
-```
-
-- `AGENT_FLUTTER_LOG` must point to the flutter run stdout log (not logcat).
-- Use `Key('descriptive_name')` on new interactive widgets so agents can use `find key`.
-- See `app/e2e/SKILL.md` for screen map and known flows.
-
 ## Formatting
 
 The pre-commit hook handles formatting automatically. To run manually:

@@ -36,7 +36,7 @@ agent-flutter snapshot -i --json    # see what's on screen
 - KVM access required: user must be in `kvm` group (`sg kvm -c "..."` if not in current session)
 - App package: `com.omi.offline.dev` (dev flavor)
 - **System language must be English** — non-English IME breaks `fill` commands
-- Marionette already integrated: `marionette_flutter: ^0.3.0` in pubspec.yaml
+- **Marionette is NOT wired up** — `marionette_flutter` is in pubspec.yaml but is not initialized in `lib/main.dart`, so `agent-flutter connect` fails with "No isolate with Marionette extensions found". The commands below require adding that init first.
 
 ### Commands
 
