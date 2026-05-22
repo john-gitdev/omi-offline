@@ -67,8 +67,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     try {
       final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
       if (!deviceProvider.isConnected) {
+        if (!mounted) return;
         setState(() => _statusMessage = 'Connecting to device...');
         await deviceProvider.scanAndConnectToDevice();
+        if (!mounted) return;
         setState(() => _statusMessage = 'Syncing segments...');
       }
 
@@ -77,6 +79,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       deviceProvider.restartBackgroundSyncTimer();
       Logger.debug(
           'DebugTools: syncAll complete — result=${result == null ? 'null (nothing to sync)' : 'SyncLocalFilesResponse'}');
+      if (!mounted) return;
       setState(() {
         if (result == null) {
           _statusMessage = 'All synced! No new segments found.';
@@ -87,6 +90,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       });
     } catch (e) {
       Logger.error('DebugTools: syncAll error — $e');
+      if (!mounted) return;
       setState(() {
         _statusMessage = 'Sync Error: $e';
         _isSyncing = false;
@@ -126,8 +130,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     try {
       final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
       if (!deviceProvider.isConnected) {
+        if (!mounted) return;
         setState(() => _statusMessage = 'Connecting to device...');
         await deviceProvider.scanAndConnectToDevice();
+        if (!mounted) return;
         setState(() => _statusMessage = 'Rotating segment and syncing...');
       }
 
@@ -135,12 +141,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       await ServiceManager.instance().wal.getSyncs().rotateAndSync(progress: this);
       deviceProvider.restartBackgroundSyncTimer();
       Logger.debug('DebugTools: Force sync complete');
+      if (!mounted) return;
       setState(() {
         _statusMessage = 'Force Sync Complete.';
         _isSyncing = false;
       });
     } catch (e) {
       Logger.error('DebugTools: Force sync error — $e');
+      if (!mounted) return;
       setState(() {
         _statusMessage = 'Force Sync Error: $e';
         _isSyncing = false;
@@ -196,12 +204,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       // Notify UI listeners (like RecordingsPage) to refresh
       RecordingsManager.notifyRecordingsChanged();
 
+      if (!mounted) return;
       setState(() {
         _statusMessage = 'Delete Complete. Device storage cleared.';
         _isSyncing = false;
       });
     } catch (e) {
       Logger.error('DebugTools: deleteAllPendingWals error — $e');
+      if (!mounted) return;
       setState(() {
         _statusMessage = 'Delete Error: $e';
         _isSyncing = false;
@@ -257,12 +267,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       // Notify UI listeners (like RecordingsPage) to refresh
       RecordingsManager.notifyRecordingsChanged();
 
+      if (!mounted) return;
       setState(() {
         _statusMessage = 'Delete Complete. Phone segments cleared.';
         _isSyncing = false;
       });
     } catch (e) {
       Logger.error('DebugTools: _deleteAllSegments error — $e');
+      if (!mounted) return;
       setState(() {
         _statusMessage = 'Delete Error: $e';
         _isSyncing = false;
@@ -330,12 +342,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       // Notify UI listeners (like RecordingsPage) to refresh
       RecordingsManager.notifyRecordingsChanged();
 
+      if (!mounted) return;
       setState(() {
         _statusMessage = 'Delete Complete. Phone conversations cleared.';
         _isSyncing = false;
       });
     } catch (e) {
       Logger.error('DebugTools: _deleteAllConversations error — $e');
+      if (!mounted) return;
       setState(() {
         _statusMessage = 'Delete Error: $e';
         _isSyncing = false;
@@ -380,12 +394,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       }
 
       RecordingsManager.notifyRecordingsChanged();
+      if (!mounted) return;
       setState(() {
         _statusMessage =
             problematic.isEmpty ? 'No problematic EDLs found.' : 'Deleted ${problematic.length} problematic EDL(s).';
       });
     } catch (e) {
       Logger.error('DebugTools: _deleteProblematicEdls error — $e');
+      if (!mounted) return;
       setState(() => _statusMessage = 'Delete Error: $e');
     }
   }
