@@ -161,7 +161,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       debugPrint('OmiLoginWebView: [new] auth complete');
       if (mounted) Navigator.of(context).pop({...session, 'flow': 'omi_backed'});
     } catch (e) {
-      debugPrint('OmiLoginWebView: [new] error: $e');
+      debugPrint('OmiLoginWebView: [new] error');
       _setError('No internet connection. Check your connection and try again.');
     }
   }
@@ -203,7 +203,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       debugPrint('OmiLoginWebView: [new] signInWithIdp → ${res.statusCode}');
       if (res.statusCode == 200) return _extractSession(res.body);
     } catch (e) {
-      debugPrint('OmiLoginWebView: [new] signInWithIdp error: $e');
+      debugPrint('OmiLoginWebView: [new] signInWithIdp error');
     }
     return null;
   }
@@ -220,7 +220,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       debugPrint('OmiLoginWebView: [new] signInWithCustomToken → ${res.statusCode}');
       if (res.statusCode == 200) return _extractSession(res.body);
     } catch (e) {
-      debugPrint('OmiLoginWebView: [new] signInWithCustomToken error: $e');
+      debugPrint('OmiLoginWebView: [new] signInWithCustomToken error');
     }
     return null;
   }
@@ -310,7 +310,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       }
       debugPrint('OmiLoginWebView: [fallback] createAuthUri failed: ${res.statusCode}');
     } catch (e) {
-      debugPrint('OmiLoginWebView: [fallback] createAuthUri error: $e');
+      debugPrint('OmiLoginWebView: [fallback] createAuthUri error');
     }
 
     if (mounted) setState(() => _isLoading = false);
@@ -351,7 +351,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       }
       debugPrint('OmiLoginWebView: [fallback] signInWithIdp failed: ${res.statusCode}');
     } catch (e) {
-      debugPrint('OmiLoginWebView: [fallback] token exchange error: $e');
+      debugPrint('OmiLoginWebView: [fallback] token exchange error');
     }
 
     if (mounted) setState(() => _isLoading = false);
