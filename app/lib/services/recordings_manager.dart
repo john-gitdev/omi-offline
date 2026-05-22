@@ -1927,15 +1927,16 @@ class RecordingsManager {
         final dir = Directory(dirPath);
         if (await dir.exists()) {
           final dirEntities = await dir.list().toList();
-          for (final entity in dirEntities) {
-            if (entity is! File || !entity.path.endsWith('.edl')) continue;
+          // ⚡ Bolt: Process EDL files concurrently with Future.wait to avoid N+1 sequential awaits
+          await Future.wait(dirEntities.map((entity) async {
+            if (entity is! File || !entity.path.endsWith('.edl')) return;
             try {
               final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
               if (filenames.contains(json['segmentFilename'])) {
                 await entity.delete();
               }
             } catch (_) {}
-          }
+          }));
         }
       } catch (e) {
         Logger.error('RecordingsManager: Failed to cleanup EDLs in $dirPath: $e');
