@@ -634,7 +634,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 const SizedBox(height: 12),
                 _DebugButton(
                   label: 'Delete Phone Segments',
-                  description: 'Permanently deletes raw segment files stored on this phone.',
+                  description:
+                      'Permanently deletes raw, undecoded segment files downloaded to this phone. Decoded recordings and drafts are kept.',
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllSegments,
@@ -642,7 +643,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 const SizedBox(height: 12),
                 _DebugButton(
                   label: 'Delete Phone Conversations',
-                  description: 'Permanently deletes finalized recordings and conversations.',
+                  description:
+                      'Permanently deletes decoded recordings on this phone — finalized conversations and in-progress drafts.',
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllConversations,
