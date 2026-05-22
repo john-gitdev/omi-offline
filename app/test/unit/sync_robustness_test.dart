@@ -203,6 +203,14 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<int?> performGetMicGain() => throw UnimplementedError();
   @override
+  Future<void> setVadThreshold(int threshold) => throw UnimplementedError();
+  @override
+  Future<int?> getVadThreshold() => throw UnimplementedError();
+  @override
+  Future<void> performSetVadThreshold(int threshold) => throw UnimplementedError();
+  @override
+  Future<int?> performGetVadThreshold() => throw UnimplementedError();
+  @override
   Future<bool> performSyncDeviceTime() => throw UnimplementedError();
   @override
   Future<bool> performStopStorageSync() => throw UnimplementedError();
@@ -368,7 +376,7 @@ void main() {
       expect(response!.isPartial, isTrue);
     }, timeout: const Timeout(Duration(seconds: 60)));
 
-    test('syncAll aborts batch on stall (timeout)', () async {
+    test('syncAll retries then skips file on stall, batch continues', () async {
       globalCurrentFileNum = -1;
       globalWriteCount = 0;
       mockConn.files = [
@@ -383,13 +391,19 @@ void main() {
       await pump(10);
       expect(globalWriteCount, equals(1));
 
-      await Future.delayed(const Duration(milliseconds: 1200));
+      // No data ever arrives, so every read stalls. The sync should retry within
+      // each file, then skip it and move on rather than aborting the whole batch.
+      await Future.delayed(const Duration(seconds: 8));
       await pump(20);
 
       final response = await stallFuture;
       expect(response!.isPartial, isTrue);
-      expect(globalWriteCount, equals(1));
-    });
+      // Retries occurred (old behavior aborted immediately after the first write).
+      expect(globalWriteCount, greaterThan(1));
+      // One stalling file yields 1 initial read + maxStallRetries (2) retries = 3 writes.
+      // Exceeding that proves the batch advanced to the second file rather than aborting.
+      expect(globalWriteCount, greaterThan(3));
+    }, timeout: const Timeout(Duration(seconds: 30)));
   });
 
   group('Conversation Metadata Robustness', () {
