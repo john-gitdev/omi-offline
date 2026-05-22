@@ -166,6 +166,14 @@ class MockDeviceConnection extends DeviceConnection {
   Future<void> performSetMicGain(int gain) async {}
 
   @override
+  Future<int?> performGetVadThreshold() async {
+    return null;
+  }
+
+  @override
+  Future<void> performSetVadThreshold(int threshold) async {}
+
+  @override
   Future<bool> performStopStorageSync() async {
     return false;
   }
