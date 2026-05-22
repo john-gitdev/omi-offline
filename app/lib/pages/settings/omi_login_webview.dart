@@ -49,8 +49,9 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       // Google blocks OAuth in embedded WebViews (detects "wv" in default UA).
       // Override with a standard Chrome Mobile UA so sign-in is allowed.
       ..setUserAgent(
-          'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 '
-          '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36')
+        'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+      )
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) => setState(() => _isLoading = true),
@@ -131,18 +132,16 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
     if (mounted) setState(() => _isLoading = true);
 
     try {
-      final tokenRes = await http
-          .post(
-            Uri.parse(_omiTokenUrl),
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: {
-              'grant_type': 'authorization_code',
-              'code': code,
-              'redirect_uri': _omiRedirectUri,
-              'use_custom_token': 'true',
-            },
-          )
-          .timeout(const Duration(seconds: 15));
+      final tokenRes = await http.post(
+        Uri.parse(_omiTokenUrl),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'grant_type': 'authorization_code',
+          'code': code,
+          'redirect_uri': _omiRedirectUri,
+          'use_custom_token': 'true',
+        },
+      ).timeout(const Duration(seconds: 15));
 
       debugPrint('OmiLoginWebView: [new] v1/auth/token → ${tokenRes.statusCode}');
       if (tokenRes.statusCode < 200 || tokenRes.statusCode >= 300) {
@@ -161,7 +160,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       debugPrint('OmiLoginWebView: [new] auth complete');
       if (mounted) Navigator.of(context).pop({...session, 'flow': 'omi_backed'});
     } catch (e) {
-      debugPrint('OmiLoginWebView: [new] error: $e');
+      debugPrint('OmiLoginWebView: [new] error occurred');
       _setError('No internet connection. Check your connection and try again.');
     }
   }
@@ -184,7 +183,9 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
     final providerId = tokenJson['provider_id'] as String? ?? (provider == 'apple' ? 'apple.com' : 'google.com');
     final accessToken = tokenJson['access_token'] as String? ?? '';
 
-    final postBody = StringBuffer('id_token=${Uri.encodeComponent(idToken)}&providerId=${Uri.encodeComponent(providerId)}');
+    final postBody = StringBuffer(
+      'id_token=${Uri.encodeComponent(idToken)}&providerId=${Uri.encodeComponent(providerId)}',
+    );
     if (accessToken.isNotEmpty) postBody.write('&access_token=${Uri.encodeComponent(accessToken)}');
 
     try {
@@ -203,7 +204,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       debugPrint('OmiLoginWebView: [new] signInWithIdp → ${res.statusCode}');
       if (res.statusCode == 200) return _extractSession(res.body);
     } catch (e) {
-      debugPrint('OmiLoginWebView: [new] signInWithIdp error: $e');
+      debugPrint('OmiLoginWebView: [new] signInWithIdp error occurred');
     }
     return null;
   }
@@ -220,7 +221,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       debugPrint('OmiLoginWebView: [new] signInWithCustomToken → ${res.statusCode}');
       if (res.statusCode == 200) return _extractSession(res.body);
     } catch (e) {
-      debugPrint('OmiLoginWebView: [new] signInWithCustomToken error: $e');
+      debugPrint('OmiLoginWebView: [new] signInWithCustomToken error occurred');
     }
     return null;
   }
@@ -310,7 +311,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       }
       debugPrint('OmiLoginWebView: [fallback] createAuthUri failed: ${res.statusCode}');
     } catch (e) {
-      debugPrint('OmiLoginWebView: [fallback] createAuthUri error: $e');
+      debugPrint('OmiLoginWebView: [fallback] createAuthUri error occurred');
     }
 
     if (mounted) setState(() => _isLoading = false);
@@ -351,7 +352,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       }
       debugPrint('OmiLoginWebView: [fallback] signInWithIdp failed: ${res.statusCode}');
     } catch (e) {
-      debugPrint('OmiLoginWebView: [fallback] token exchange error: $e');
+      debugPrint('OmiLoginWebView: [fallback] token exchange error occurred');
     }
 
     if (mounted) setState(() => _isLoading = false);
@@ -378,10 +379,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       body: Stack(
         children: [
           WebViewWidget(controller: _controller),
-          if (_isLoading)
-            const Center(
-              child: CircularProgressIndicator(color: Colors.deepPurpleAccent),
-            ),
+          if (_isLoading) const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent)),
           if (_errorMessage != null)
             _ErrorOverlay(
               message: _errorMessage!,
@@ -429,7 +427,10 @@ class _ErrorOverlay extends StatelessWidget {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
-                child: const Text('Try Another Method', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                child: const Text(
+                  'Try Another Method',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                ),
               ),
             ),
             const SizedBox(height: 12),
@@ -443,7 +444,10 @@ class _ErrorOverlay extends StatelessWidget {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
-              child: const Text('Retry Login', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              child: const Text(
+                'Retry Login',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
             ),
           ),
           const SizedBox(height: 12),
