@@ -1,7 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:omi/utils/environment_detector.dart';
-import 'dart:io';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -26,13 +27,14 @@ void main() {
     });
 
     test('falls back to Platform.isIOS when platformIsIOSForTesting is null', () async {
+      // Stub the channel to true so the result mirrors Platform.isIOS exactly:
+      // non-iOS hosts short-circuit to false, iOS hosts reach the (stubbed) channel.
+      // This proves the null fallback resolves to Platform.isIOS on every platform.
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel, (MethodCall methodCall) async => methodCall.method == 'isTestFlight' ? true : null);
       EnvironmentDetector.platformIsIOSForTesting = null;
       final result = await EnvironmentDetector.isTestFlight();
-      // On desktop/CI where this runs, Platform.isIOS is likely false.
-      // We just need to hit the line that checks Platform.isIOS.
-      if (!Platform.isIOS) {
-        expect(result, false);
-      }
+      expect(result, Platform.isIOS);
     });
 
     test('handles PlatformException and returns false', () async {
