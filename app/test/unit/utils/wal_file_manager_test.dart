@@ -181,5 +181,118 @@ void main() {
       expect(file.existsSync(), isFalse);
       expect(backupFile.existsSync(), isFalse);
     });
+
+    test('saveWals merges WALs from different devices when deviceId is provided', () async {
+      final wal1 = Wal(
+        codec: BleAudioCodec.opus,
+        channel: 1,
+        device: 'device_1',
+        fileNum: 1,
+        walOffset: 100,
+        storageTotalBytes: 1000,
+        timerStart: 1234567890,
+        storage: WalStorage.sdcard,
+      );
+
+      final wal2 = Wal(
+        codec: BleAudioCodec.pcm16,
+        channel: 2,
+        device: 'device_2',
+        fileNum: 2,
+        walOffset: 0,
+        storageTotalBytes: 500,
+        timerStart: 1234567891,
+        storage: WalStorage.local,
+      );
+
+      // Save wal1 without deviceId
+      await WalFileManager.saveWals([wal1]);
+
+      // Save wal2 with deviceId='device_2'
+      await WalFileManager.saveWals([wal2], deviceId: 'device_2');
+
+      final wals = await WalFileManager.loadWals();
+      expect(wals.length, 2);
+
+      // Should have both device_1 and device_2 WALs
+      expect(wals.any((w) => w.device == 'device_1'), isTrue);
+      expect(wals.any((w) => w.device == 'device_2'), isTrue);
+    });
+
+    test('saveWals overwrites previous WALs for the same deviceId', () async {
+      final wal1 = Wal(
+        codec: BleAudioCodec.opus,
+        channel: 1,
+        device: 'device_1',
+        fileNum: 1,
+        walOffset: 100,
+        storageTotalBytes: 1000,
+        timerStart: 1234567890,
+        storage: WalStorage.sdcard,
+      );
+
+      final wal1Updated = Wal(
+        codec: BleAudioCodec.opus,
+        channel: 1,
+        device: 'device_1',
+        fileNum: 1,
+        walOffset: 500, // Updated offset
+        storageTotalBytes: 1000,
+        timerStart: 1234567890,
+        storage: WalStorage.sdcard,
+      );
+
+      final wal2 = Wal(
+        codec: BleAudioCodec.pcm16,
+        channel: 2,
+        device: 'device_2',
+        fileNum: 2,
+        walOffset: 0,
+        storageTotalBytes: 500,
+        timerStart: 1234567891,
+        storage: WalStorage.local,
+      );
+
+      // Save initial wals
+      await WalFileManager.saveWals([wal1, wal2]);
+
+      // Save updated wal1 with deviceId='device_1'
+      await WalFileManager.saveWals([wal1Updated], deviceId: 'device_1');
+
+      final wals = await WalFileManager.loadWals();
+      expect(wals.length, 2);
+
+      final device1Wals = wals.where((w) => w.device == 'device_1').toList();
+      expect(device1Wals.length, 1);
+      expect(device1Wals.first.walOffset, 500); // Verify it's the updated one
+
+      expect(wals.any((w) => w.device == 'device_2'), isTrue); // device_2 should still be there
+    });
+
+    test('saveWals handles exceptions during merge gracefully', () async {
+      // First, write invalid JSON to the file to cause an exception in loadWals
+      final file = File('${tempDir.path}/wals.json');
+      await file.writeAsString('{ invalid_json ]');
+
+      final wal1 = Wal(
+        codec: BleAudioCodec.opus,
+        channel: 1,
+        device: 'device_1',
+        fileNum: 1,
+        walOffset: 100,
+        storageTotalBytes: 1000,
+        timerStart: 1234567890,
+        storage: WalStorage.sdcard,
+      );
+
+      // Save wal1 with deviceId='device_1'.
+      // The internal loadWals() will fail, but it should be caught and wal1 should still be saved.
+      final success = await WalFileManager.saveWals([wal1], deviceId: 'device_1');
+      expect(success, isTrue);
+
+      final wals = await WalFileManager.loadWals();
+      expect(wals.length, 1);
+      expect(wals.first.device, 'device_1');
+    });
   });
 }
