@@ -866,7 +866,9 @@ class VadAudioProcessor {
       const maxNativeChunkSize = 4096;
       for (int i = 0; i < chunk.length; i += maxNativeChunkSize) {
         final end = (i + maxNativeChunkSize > chunk.length) ? chunk.length : i + maxNativeChunkSize;
-        await AacEncoder.encodeBuffer(sessionId!, chunk.sublist(i, end));
+        // View, not copy: encodeBuffer marshals the bytes synchronously over the MethodChannel,
+        // and `chunk` (from takeBytes()) is never mutated, so a shared-buffer view is safe here.
+        await AacEncoder.encodeBuffer(sessionId!, Uint8List.sublistView(chunk, i, end));
       }
 
       hasEncodedAnyFrames = true;
