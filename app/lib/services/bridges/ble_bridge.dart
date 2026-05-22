@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:omi/gen/pigeon_communicator.g.dart';
@@ -18,6 +19,14 @@ typedef DeviceReadyCallback = void Function(List<BleService> services);
 /// Singleton bridge that implements BleFlutterApi (Pigeon) and dispatches
 /// native BLE events to registered listeners (NativeBleTransport instances).
 class BleBridge implements BleFlutterApi {
+  final _deviceFoundController = StreamController<BlePeripheral>.broadcast();
+  final _deviceConnectedController = StreamController<String>.broadcast();
+  final _deviceDisconnectedController = StreamController<String>.broadcast();
+
+  Stream<BlePeripheral> get onDeviceFound => _deviceFoundController.stream;
+  Stream<String> get onDeviceConnected => _deviceConnectedController.stream;
+  Stream<String> get onDeviceDisconnected => _deviceDisconnectedController.stream;
+
   static final BleBridge instance = BleBridge._();
 
   BleBridge._();
@@ -60,17 +69,20 @@ class BleBridge implements BleFlutterApi {
 
   @override
   void onPeripheralDiscovered(BlePeripheral peripheral) {
+    _deviceFoundController.add(peripheral);
     peripheralDiscoveredCallback?.call(peripheral);
   }
 
   @override
   void onPeripheralConnected(String peripheralUuid) {
+    _deviceConnectedController.add(peripheralUuid);
     final key = peripheralUuid.toUpperCase();
     _connectionCallbacks[key]?.call(true, null);
   }
 
   @override
   void onPeripheralDisconnected(String peripheralUuid, String? error) {
+    _deviceDisconnectedController.add(peripheralUuid);
     final key = peripheralUuid.toUpperCase();
     _connectionCallbacks[key]?.call(false, error);
   }
