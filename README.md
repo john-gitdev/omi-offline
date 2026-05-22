@@ -2,7 +2,7 @@
 
 A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
 
-**Current versions:** App `0.11.0` · Firmware `oo-1.7.8`
+**Current versions:** App `0.11.2` · Firmware `oo-1.7.9`
 
 ---
 
@@ -20,6 +20,7 @@ The nRF5340 wearable captures audio continuously via PDM microphones, encodes it
 - **Two recording modes.** Automatic (VAD-driven, hands-free) and Manual (explicit double-tap start/stop on the hardware button).
 - **Markers.** A double-tap while recording drops a timestamped bookmark. The app builds an EDL sidecar for each marked clip.
 - **Adjustment Mode.** Re-run VAD on already-downloaded segments without touching the device — tweak sensitivity and reprocess offline.
+- **Discard recovery (ghost rows).** Audio that VAD dropped (silenced as noise, or too short) is surfaced as a greyed-out "ghost" row in the recordings list. Source bins are protected for a 48 h window so you can recover a clip with a lower threshold or delete it.
 - **AAD (All-As-Detected).** Disable Silero entirely and treat all audio as speech, splitting only on firmware timestamps.
 - **Maximize Battery.** Disconnects BLE after each sync cycle so the wearable's 150 mAh cell lasts longer.
 - **Integrations.** Optional upload to HeyPocket or Omi after processing.
@@ -151,7 +152,7 @@ File indices are cache positions (0-based, rebuilt after every LIST and every de
 | Silence to split | `vadSplitSeconds` | 120 s | Silence duration triggering a new recording |
 | Min length | `filterMinDurationSeconds` | 0 s | Recordings shorter than this are discarded |
 | Max length | `vadMaxConversationMinutes` | 60 min | Hard cap; forces a split even without silence |
-| Auto VAD threshold | `autoVadThreshold` | per-mode | Persisted separately for auto vs manual mode |
+| AAD threshold | `autoVadThreshold` | 250 | Firmware audio-activity gate; mode-specific overrides persisted separately |
 
 ### App Settings
 
@@ -195,7 +196,7 @@ omi-offline/
 │   └── test/
 ├── omi/
 │   └── firmware/
-│       └── omi/src/        # Zephyr C source (main.c, sd_card.c, aad.c, transport.c)
+│       └── omi/src/        # Zephyr C source (main.c, sd_card.c, aad.c, mic.c, led.c, battery.c, …)
 ├── NOMENCLATURE.md         # Canonical project glossary
 ├── NOTES.md                # Engineering notes and findings
 ├── IDEAS.md                # Backlog / future ideas
@@ -263,6 +264,16 @@ See [`NOMENCLATURE.md`](NOMENCLATURE.md) for the full glossary. Key terms:
 ---
 
 ## Recent Changes
+
+### Discard recovery & ghost rows (0.11.1 – 0.11.2)
+
+- **Ghost rows.** Stretches of audio that VAD dropped are recorded to `recordings/<date>/discards.jsonl` and shown as greyed-out rows in the recordings list, labelled "silenced by VAD" (noise) or "too short". Ghosts route through visible/hidden tabs by duration, with the threshold tied to `filterMinDurationSeconds`.
+- **Two-button recovery sheet.** Tapping a ghost opens a sheet with **Recover** (re-process the source bins, bypassing VAD) and **Delete**. Source bins are protected from cleanup for a 48 h window so recovery stays possible.
+- **Cascading deletes.** `deleteDay` reaps discard records and their protected bins alongside finalized recordings.
+
+### Background sync hardening (firmware oo-1.7.9)
+
+- Robust background sync/processing: guard against overlapping background syncs, always refresh storage stats at end of sync, defer `CMD_READ_FILE` to the storage thread, and correct BLE connection refcounting on connect-fail/shutdown.
 
 ### Omi Cloud integration rewrite (0.11.0)
 
