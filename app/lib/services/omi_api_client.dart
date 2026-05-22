@@ -27,8 +27,7 @@ class OmiSyncResult {
     this.error,
   });
 
-  List<String> get allConversationIds =>
-      {...newConversationIds, ...updatedConversationIds}.toList();
+  List<String> get allConversationIds => {...newConversationIds, ...updatedConversationIds}.toList();
 
   @override
   String toString() =>
@@ -66,7 +65,9 @@ class OmiApiClient {
       Logger.debug('OmiApiClient: Token still valid, expires in ${(remainingMs / 1000).round()}s');
       return;
     }
-    Logger.debug('OmiApiClient: Token expired or expiring soon (${(remainingMs / 1000).round()}s remaining), refreshing...');
+    Logger.debug(
+      'OmiApiClient: Token expired or expiring soon (${(remainingMs / 1000).round()}s remaining), refreshing...',
+    );
 
     final refreshToken = prefs.omiRefreshToken;
     final apiKey = prefs.omiFirebaseApiKey;
@@ -97,7 +98,7 @@ class OmiApiClient {
     final idToken = body['id_token'] as String?;
     final expiresIn = int.tryParse(body['expires_in']?.toString() ?? '') ?? 3600;
     if (idToken == null || idToken.isEmpty) {
-      Logger.error('OmiApiClient: Token refresh response missing id_token. Keys: ${body.keys.toList()}');
+      Logger.error('OmiApiClient: Token refresh response missing id_token.');
       throw const OmiSyncException('Token refresh returned no id_token');
     }
 
@@ -206,11 +207,26 @@ class OmiApiClient {
     while (offset + 4 <= bytes.length) {
       final frameLength = byteData.getUint32(offset, Endian.little);
 
-      if (frameLength == 0 || frameLength == 0xFFFFFFFF) { offset += 4; continue; }
-      if (frameLength == 0xFFFFFFFB) { offset += 36; continue; }
-      if (frameLength == 0xFFFFFFFE) { offset += 20; continue; }
-      if (frameLength == 0xFFFFFFFD) { offset += 16; continue; }
-      if (frameLength > 0xFFFF00) { offset += 4; continue; }
+      if (frameLength == 0 || frameLength == 0xFFFFFFFF) {
+        offset += 4;
+        continue;
+      }
+      if (frameLength == 0xFFFFFFFB) {
+        offset += 36;
+        continue;
+      }
+      if (frameLength == 0xFFFFFFFE) {
+        offset += 20;
+        continue;
+      }
+      if (frameLength == 0xFFFFFFFD) {
+        offset += 16;
+        continue;
+      }
+      if (frameLength > 0xFFFF00) {
+        offset += 4;
+        continue;
+      }
 
       if (offset + 4 + frameLength > bytes.length) break;
 
@@ -228,12 +244,14 @@ class OmiApiClient {
   ) async {
     final request = http.MultipartRequest('POST', Uri.parse(url))..headers.addAll(headers);
     for (final (filename, bytes) in files) {
-      request.files.add(http.MultipartFile.fromBytes(
-        'files',
-        bytes,
-        filename: filename,
-        contentType: MediaType('application', 'octet-stream'),
-      ));
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'files',
+          bytes,
+          filename: filename,
+          contentType: MediaType('application', 'octet-stream'),
+        ),
+      );
     }
 
     try {
@@ -257,9 +275,7 @@ class OmiApiClient {
 
       final http.Response res;
       try {
-        res = await http
-            .get(Uri.parse('$baseUrl/$jobId'), headers: headers)
-            .timeout(const Duration(seconds: 15));
+        res = await http.get(Uri.parse('$baseUrl/$jobId'), headers: headers).timeout(const Duration(seconds: 15));
       } on SocketException {
         throw const OmiSyncException('No network connection');
       }
@@ -309,11 +325,7 @@ class OmiApiClient {
         failedSegments: json['failed_segments'] as int? ?? 0,
       );
     } catch (e) {
-      return OmiSyncResult(
-        success: httpStatus >= 200 && httpStatus < 300,
-        status: 'parse_error',
-        error: e.toString(),
-      );
+      return OmiSyncResult(success: httpStatus >= 200 && httpStatus < 300, status: 'parse_error', error: e.toString());
     }
   }
 
@@ -327,10 +339,9 @@ class OmiApiClient {
       final headers = {'Authorization': 'Bearer $token'};
 
       for (final id in result.allConversationIds.take(3)) {
-        final res = await http.get(
-          Uri.parse('$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true'),
-          headers: headers,
-        ).timeout(const Duration(seconds: 15));
+        final res = await http
+            .get(Uri.parse('$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true'), headers: headers)
+            .timeout(const Duration(seconds: 15));
 
         if (res.statusCode == 200) {
           final json = jsonDecode(res.body) as Map<String, dynamic>;
@@ -354,10 +365,8 @@ class OmiApiClient {
     try {
       await refreshTokenIfNeeded();
       final token = await SharedPreferencesUtil().omiIdToken;
-      final res = await http.get(
-        Uri.parse(_speechProfileUrl),
-        headers: {'Authorization': 'Bearer $token'},
-      ).timeout(const Duration(seconds: 15));
+      final res = await http.get(Uri.parse(_speechProfileUrl),
+          headers: {'Authorization': 'Bearer $token'}).timeout(const Duration(seconds: 15));
 
       if (res.statusCode != 200) {
         Logger.error('OmiApiClient: Speech profile check HTTP ${res.statusCode}: ${res.body}');
@@ -366,11 +375,11 @@ class OmiApiClient {
 
       final body = jsonDecode(res.body) as Map<String, dynamic>;
       final hasProfile = body['has_profile'] == true;
-      
+
       final prefs = SharedPreferencesUtil();
       prefs.omiHasSpeechProfile = hasProfile;
       prefs.omiSpeechProfileCheckedAtMs = DateTime.now().millisecondsSinceEpoch;
-      
+
       Logger.debug('OmiApiClient: Speech profile checked: $hasProfile');
       return hasProfile;
     } catch (e) {
@@ -382,10 +391,7 @@ class OmiApiClient {
   /// Verifies credentials by attempting a token refresh with the supplied values.
   /// Does not read from or write to saved preferences, so callers can test
   /// unsaved credentials without overwriting the working ones.
-  static Future<bool> testConnection({
-    required String refreshToken,
-    required String apiKey,
-  }) async {
+  static Future<bool> testConnection({required String refreshToken, required String apiKey}) async {
     if (refreshToken.isEmpty || apiKey.isEmpty) return false;
     try {
       final res = await http
