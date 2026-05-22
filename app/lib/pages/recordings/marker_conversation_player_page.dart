@@ -555,7 +555,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                                       style: TextStyle(
                                         color: selected ? Colors.white : Colors.grey.shade400,
                                         fontSize: 13,
-                                        fontWeight: FontWeight.w600,
+                                        fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
                                       ),
                                     ),
                                   ),
