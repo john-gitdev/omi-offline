@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:omi/utils/environment_detector.dart';
+import 'dart:io';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -22,6 +23,16 @@ void main() {
       EnvironmentDetector.platformIsIOSForTesting = false;
       final result = await EnvironmentDetector.isTestFlight();
       expect(result, false);
+    });
+
+    test('falls back to Platform.isIOS when platformIsIOSForTesting is null', () async {
+      EnvironmentDetector.platformIsIOSForTesting = null;
+      final result = await EnvironmentDetector.isTestFlight();
+      // On desktop/CI where this runs, Platform.isIOS is likely false.
+      // We just need to hit the line that checks Platform.isIOS.
+      if (!Platform.isIOS) {
+        expect(result, false);
+      }
     });
 
     test('handles PlatformException and returns false', () async {
