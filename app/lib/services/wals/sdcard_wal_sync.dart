@@ -866,8 +866,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
           break;
         }
 
-        // Fatal errors (ACK 7), timeouts (stalls), or command failures should stop the batch.
-        // Continuing after these is unlikely to succeed and creates a bad user experience.
+        // Fatal errors (ACK 7, "could not start SD card read") stop the batch — continuing
+        // after these is unlikely to succeed. Stalls are recoverable per-file: they're retried
+        // above and, if still failing, the file is skipped while the batch continues.
         final errStr = e.toString();
         if (errStr.contains('Error ACK: 7') ||
             errStr.contains('Could not start SD card read')) {
