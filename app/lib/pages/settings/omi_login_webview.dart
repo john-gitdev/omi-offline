@@ -194,7 +194,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'postBody': postBody.toString(),
-              'requestUri': 'http://localhost',
+              'requestUri': 'https://localhost',
               'returnIdpCredential': true,
               'returnSecureToken': true,
             }),
