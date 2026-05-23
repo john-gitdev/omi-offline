@@ -959,7 +959,7 @@ class VadAudioProcessor {
         return null;
       }
 
-      await AacEncoder.finishEncoder(sessionId!);
+      await AacEncoder.finishEncoder(sessionId);
     } on Exception catch (e) {
       Logger.error('VadAudioProcessor: AAC encoding failed, falling back to WAV: $e');
       final corruptFile = File('${dateFolder.path}/${prefix}_$timestamp$suffix.m4a');
