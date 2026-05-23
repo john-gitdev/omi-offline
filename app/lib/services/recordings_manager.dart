@@ -6,7 +6,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:onnxruntime/onnxruntime.dart';
+import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:opus_flutter/opus_flutter.dart' as opus_flutter;
 import 'package:path_provider/path_provider.dart';
@@ -441,7 +441,6 @@ class MarkerConversation {
 class _IsolateParams {
   final SendPort sendPort;
   final RootIsolateToken rootIsolateToken;
-  final Uint8List? modelBytes; // Silero VAD ONNX model, pre-loaded on main isolate
   final ProcessingSettings settings;
   final String tempProcessingPath;
   final List<String> segmentPaths;
@@ -455,7 +454,6 @@ class _IsolateParams {
   const _IsolateParams({
     required this.sendPort,
     required this.rootIsolateToken,
-    required this.modelBytes,
     required this.settings,
     required this.tempProcessingPath,
     required this.segmentPaths,
@@ -470,10 +468,11 @@ class _IsolateParams {
 
 /// Background isolate entry point for VAD + Opus decode + AAC encode.
 /// Runs entirely off the Android main/platform thread, eliminating the
-/// ForegroundServiceDidNotStartInTimeException caused by onnxruntime FFI
-/// blocking the platform thread during inference.
+/// ForegroundServiceDidNotStartInTimeException caused by ONNX inference
+/// blocking the platform thread.
 Future<void> _processingIsolateEntry(_IsolateParams params) async {
-  // Allow platform channel calls (AacEncoder MethodChannel, opus_flutter.load()) from this isolate.
+  // Allow platform channel calls (AacEncoder MethodChannel, opus_flutter.load(),
+  // flutter_onnxruntime asset loader) from this isolate.
   BackgroundIsolateBinaryMessenger.ensureInitialized(params.rootIsolateToken);
 
   // Send back a control port so the main isolate can forward cancel requests.
@@ -494,20 +493,14 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     }
   }
 
-  // Initialise ONNX Runtime (FFI — safe in any isolate).
-  try {
-    OrtEnv.instance.init();
-  } catch (e) {
-    // Non-fatal: AAD mode, all audio treated as speech.
-  }
-
   OrtSession? session;
-  if (params.modelBytes != null) {
+  if (params.settings.vadEnabled) {
     try {
-      final opts = OrtSessionOptions();
-      session = OrtSession.fromBuffer(params.modelBytes!, opts);
+      session = await OnnxRuntime().createSessionFromAsset('assets/models/silero_vad.onnx');
+      Logger.debug(
+          'RecordingsManager isolate: Silero session — inputs=${session.inputNames} outputs=${session.outputNames}');
     } catch (e) {
-      // Amplitude fallback active.
+      Logger.error('RecordingsManager isolate: Silero session load failed ($e) — AAD mode active.');
     }
   }
 
@@ -1047,24 +1040,6 @@ class RecordingsManager {
           }
         }
 
-        // Pre-load the ONNX model on the main isolate (rootBundle requires main isolate).
-        // Skipped when VAD is disabled — isolate will run in AAD mode.
-        Uint8List? modelBytes;
-        final effectiveVadEnabled = settingsOverride?.vadEnabled ?? SharedPreferencesUtil().vadEnabled;
-        if (effectiveVadEnabled) {
-          try {
-            final data = await rootBundle.load('assets/models/silero_vad.onnx');
-            modelBytes = data.buffer.asUint8List(
-              data.offsetInBytes,
-              data.lengthInBytes,
-            );
-          } catch (e) {
-            Logger.error(
-              'RecordingsManager: Failed to pre-load VAD model ($e) — AAD mode active.',
-            );
-          }
-        }
-
         final Set<String> deletedSegmentFolders = {};
 
         try {
@@ -1080,7 +1055,6 @@ class RecordingsManager {
             _IsolateParams(
               sendPort: receivePort.sendPort,
               rootIsolateToken: RootIsolateToken.instance!,
-              modelBytes: modelBytes,
               settings: settingsOverride ?? ProcessingSettings.fromPrefs(),
               tempProcessingPath: tempProcessingPath,
               segmentPaths: allSegments.map((f) => f.path).toList(),
