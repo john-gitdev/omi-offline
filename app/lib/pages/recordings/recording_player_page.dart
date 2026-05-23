@@ -331,127 +331,133 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            // Metadata
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(widget.conversation.durationLabel, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
-                const SizedBox(width: 16),
-                Container(width: 1, height: 14, color: Colors.grey.shade700),
-                const SizedBox(width: 16),
-                Text(widget.conversation.sizeLabel, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
-              ],
-            ),
-            const SizedBox(height: 48),
+      body: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              // Metadata
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(widget.conversation.durationLabel, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
+                  const SizedBox(width: 16),
+                  Container(width: 1, height: 14, color: Colors.grey.shade700),
+                  const SizedBox(width: 16),
+                  Text(widget.conversation.sizeLabel, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
+                ],
+              ),
+              const SizedBox(height: 48),
 
-            // Waveform
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 40),
-              child: SizedBox(
-                height: 120,
-                child: _loadingWaveform
-                    ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
-                    : _waveform.isEmpty
-                        ? Center(
-                            child: Text('Waveform unavailable',
-                                style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
-                          )
-                        : LayoutBuilder(
-                            builder: (ctx, constraints) => GestureDetector(
-                              onTapDown: (d) {
-                                final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
-                                _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
-                              },
-                              onHorizontalDragUpdate: (d) {
-                                final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
-                                _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
-                              },
-                              child: CustomPaint(
-                                painter: _WaveformPainter(amplitudes: _waveform, progress: progressRatio),
-                                size: Size(constraints.maxWidth, 120),
+              // Waveform
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 40),
+                child: SizedBox(
+                  height: 120,
+                  child: _loadingWaveform
+                      ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
+                      : _waveform.isEmpty
+                          ? Center(
+                              child: Text('Waveform unavailable',
+                                  style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                            )
+                          : LayoutBuilder(
+                              builder: (ctx, constraints) => GestureDetector(
+                                onTapDown: (d) {
+                                  final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
+                                  _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
+                                },
+                                onHorizontalDragUpdate: (d) {
+                                  final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
+                                  _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
+                                },
+                                child: CustomPaint(
+                                  painter: _WaveformPainter(amplitudes: _waveform, progress: progressRatio),
+                                  size: Size(constraints.maxWidth, 120),
+                                ),
                               ),
                             ),
-                          ),
+                ),
               ),
-            ),
 
-            const SizedBox(height: 16),
+              const SizedBox(height: 16),
 
-            // Time labels
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(_fmt(_position), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                Text(_fmt(_total), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-              ],
-            ),
-            const SizedBox(height: 4),
-
-            // Progress slider
-            SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                trackHeight: 3,
-                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                activeTrackColor: Colors.deepPurpleAccent,
-                inactiveTrackColor: Colors.grey.shade800,
-                thumbColor: Colors.deepPurpleAccent,
-                overlayColor: Colors.deepPurpleAccent.withValues(alpha: 0.2),
+              // Time labels
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(_fmt(_position), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                  Text(_fmt(_total), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                ],
               ),
-              child: Slider(
-                value: progressRatio,
-                onChanged: (v) {
-                  _player.seek(Duration(milliseconds: (v * _total.inMilliseconds).round()));
-                },
+              const SizedBox(height: 4),
+
+              // Progress slider
+              SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                  trackHeight: 3,
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                  activeTrackColor: Colors.deepPurpleAccent,
+                  inactiveTrackColor: Colors.grey.shade800,
+                  thumbColor: Colors.deepPurpleAccent,
+                  overlayColor: Colors.deepPurpleAccent.withValues(alpha: 0.2),
+                ),
+                child: Slider(
+                  value: progressRatio,
+                  onChanged: (v) {
+                    _player.seek(Duration(milliseconds: (v * _total.inMilliseconds).round()));
+                  },
+                ),
               ),
-            ),
 
-            const SizedBox(height: 32),
+              const SizedBox(height: 32),
 
-            // Transport controls
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _SeekButton(
-                    icon: FontAwesomeIcons.rotateLeft, seconds: 30, isForward: false, onTap: () => _seekRelative(-30)),
-                const SizedBox(width: 40),
-                Semantics(
-                  button: true,
-                  label: _isPlaying ? 'Pause' : 'Play',
-                  child: Tooltip(
-                    message: _isPlaying ? 'Pause' : 'Play',
-                    child: Material(
-                      color: Colors.deepPurpleAccent,
-                      shape: const CircleBorder(),
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: _togglePlay,
-                        child: SizedBox(
-                          width: 72,
-                          height: 72,
-                          child: Center(
-                            child: FaIcon(
-                              _isPlaying ? FontAwesomeIcons.pause : FontAwesomeIcons.play,
-                              color: Colors.white,
-                              size: 26,
+              // Transport controls
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _SeekButton(
+                      icon: FontAwesomeIcons.rotateLeft,
+                      seconds: 30,
+                      isForward: false,
+                      onTap: () => _seekRelative(-30)),
+                  const SizedBox(width: 40),
+                  Semantics(
+                    button: true,
+                    label: _isPlaying ? 'Pause' : 'Play',
+                    child: Tooltip(
+                      message: _isPlaying ? 'Pause' : 'Play',
+                      child: Material(
+                        color: Colors.deepPurpleAccent,
+                        shape: const CircleBorder(),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: _togglePlay,
+                          child: SizedBox(
+                            width: 72,
+                            height: 72,
+                            child: Center(
+                              child: FaIcon(
+                                _isPlaying ? FontAwesomeIcons.pause : FontAwesomeIcons.play,
+                                color: Colors.white,
+                                size: 26,
+                              ),
                             ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 40),
-                _SeekButton(
-                    icon: FontAwesomeIcons.rotateRight, seconds: 30, isForward: true, onTap: () => _seekRelative(30)),
-              ],
-            ),
-          ],
+                  const SizedBox(width: 40),
+                  _SeekButton(
+                      icon: FontAwesomeIcons.rotateRight, seconds: 30, isForward: true, onTap: () => _seekRelative(30)),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
