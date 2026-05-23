@@ -14,7 +14,6 @@ import java.util.UUID
 import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
-    private val CHANNEL = "com.omi.offline/notifyOnKill"
     private val AAC_CHANNEL = "com.omi.offline/aacEncoder"
 
     private val encoderSessions = mutableMapOf<String, AacEncoderSession>()
@@ -30,9 +29,6 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         OmiBleManager.isFlutterAlive = true
 
-        // Register WiFi Network Plugin
-        WifiNetworkPlugin.registerWith(flutterEngine, this)
-
         // Register Native BLE Pigeon APIs
         OmiBleManager.initialize(application)
         val flutterApi = BleFlutterApi(flutterEngine.dartExecutor.binaryMessenger)
@@ -40,20 +36,6 @@ class MainActivity : FlutterActivity() {
             initCompanionManager(this@MainActivity)
         }
         BleHostApi.setUp(flutterEngine.dartExecutor.binaryMessenger, bleHostApiImpl)
-
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
-            if (call.method == "setNotificationOnKillService") {
-                val title = call.argument<String>("title")
-                val description = call.argument<String>("description")
-                val serviceIntent = Intent(this, NotificationOnKillService::class.java)
-                serviceIntent.putExtra("title", title)
-                serviceIntent.putExtra("description", description)
-                startService(serviceIntent)
-                result.success(true)
-            } else {
-                result.notImplemented()
-            }
-        }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, AAC_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
