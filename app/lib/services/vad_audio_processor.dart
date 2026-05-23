@@ -3,8 +3,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
-import 'package:onnxruntime/onnxruntime.dart';
+import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
@@ -146,15 +145,8 @@ class VadAudioProcessor {
     OrtSession? session;
     if (settings.vadEnabled) {
       try {
-        OrtEnv.instance.init();
-      } catch (e) {
-        Logger.error("VadAudioProcessor: Failed to init OrtEnv: $e");
-      }
-      try {
-        final data = await rootBundle.load('assets/models/silero_vad.onnx');
-        final sessionOptions = OrtSessionOptions();
-        session =
-            OrtSession.fromBuffer(data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes), sessionOptions);
+        session = await OnnxRuntime().createSessionFromAsset('assets/models/silero_vad.onnx');
+        Logger.debug('VadAudioProcessor: Silero session — inputs=${session.inputNames} outputs=${session.outputNames}');
       } catch (e) {
         Logger.error('VadAudioProcessor: Failed to load Silero VAD model, AAD mode active: $e');
       }
@@ -194,61 +186,54 @@ class VadAudioProcessor {
 
   void destroy() {
     _decoder?.destroy();
-    _session?.release();
+    final s = _session;
+    _session = null;
+    // ignore: unawaited_futures, discarded_futures
+    s?.close();
   }
 
   bool get isCapturing => (_currentRefs.isNotEmpty && _speechFrameCount > 0) || _forcedByMarker;
 
-  bool _runVad(List<double> samples512) {
-    if (_session == null) {
+  Future<bool> _runVad(List<double> samples512) async {
+    final session = _session;
+    if (session == null) {
       // Hardware AAD mode — all audio treated as speech; splitting driven by firmware timestamps only.
       return true;
     }
-    final input = Float32List.fromList(samples512);
-    final sr = Int64List.fromList([sampleRate]);
-
-    final inputs = {
-      'input': OrtValueTensor.createTensorWithDataList(input, [1, _vadWindowSamples]),
-      'sr': OrtValueTensor.createTensorWithDataList(sr, [1]),
-      'h': OrtValueTensor.createTensorWithDataList(_h, [2, 1, 64]),
-      'c': OrtValueTensor.createTensorWithDataList(_c, [2, 1, 64]),
+    final inputs = <String, OrtValue>{
+      'input': await OrtValue.fromList(Float32List.fromList(samples512), [1, _vadWindowSamples]),
+      'sr': await OrtValue.fromList(Int64List.fromList([sampleRate]), [1]),
+      'h': await OrtValue.fromList(_h, [2, 1, 64]),
+      'c': await OrtValue.fromList(_c, [2, 1, 64]),
     };
 
-    OrtRunOptions? runOptions;
-    List<OrtValue?>? outputs;
+    Map<String, OrtValue>? outputs;
     try {
-      runOptions = OrtRunOptions();
-      outputs = _session!.run(runOptions, inputs);
-      final prob = (outputs[0]!.value as List<List<double>>)[0][0];
-      _h = _flattenF32(outputs[1]!.value);
-      _c = _flattenF32(outputs[2]!.value);
+      outputs = await session.run(inputs);
+      // Silero v3.0 ONNX outputs: 'output' (prob), 'hn', 'cn'.
+      final prob = ((await outputs['output']!.asFlattenedList()).cast<double>())[0];
+      _h = Float32List.fromList((await outputs['hn']!.asFlattenedList()).cast<double>());
+      _c = Float32List.fromList((await outputs['cn']!.asFlattenedList()).cast<double>());
       if (prob > _currentMaxVoiceProb) _currentMaxVoiceProb = prob;
       return prob > _speechThreshold;
     } catch (e) {
       Logger.error('VadAudioProcessor: Silero inference failed ($e) — disabling model, AAD mode active');
       _session = null;
+      // ignore: unawaited_futures, discarded_futures
+      session.close();
       return true;
     } finally {
       for (final t in inputs.values) {
-        t.release();
+        // ignore: unawaited_futures, discarded_futures
+        t.dispose();
       }
-      outputs?.forEach((o) => o?.release());
-      runOptions?.release();
+      if (outputs != null) {
+        for (final o in outputs.values) {
+          // ignore: unawaited_futures, discarded_futures
+          o.dispose();
+        }
+      }
     }
-  }
-
-  Float32List _flattenF32(dynamic nested) {
-    final flat = <double>[];
-    void recurse(dynamic v) {
-      if (v is List) {
-        for (final e in v) recurse(e);
-      } else if (v is double)
-        flat.add(v);
-      else if (v is num) flat.add(v.toDouble());
-    }
-
-    recurse(nested);
-    return Float32List.fromList(flat);
   }
 
   Future<List<String>> processSegmentFile(File segmentFile, DateTime segmentStartTime,
@@ -557,7 +542,7 @@ class VadAudioProcessor {
           while (_pcmWindow.length >= 512) {
             final window = _pcmWindow.sublist(0, 512);
             _pcmWindow.removeRange(0, 512);
-            if (_runVad(window)) isSpeech = true;
+            if (await _runVad(window)) isSpeech = true;
           }
         }
 
