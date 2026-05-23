@@ -5,7 +5,6 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/recordings_manager.dart';
-import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/pages/settings/settings_drawer.dart';
 import 'package:omi/pages/settings/find_devices_page.dart';
