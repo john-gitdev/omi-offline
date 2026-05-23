@@ -7,7 +7,6 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
-import 'package:omi/services/devices/omi_connection.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:flutter/services.dart';
