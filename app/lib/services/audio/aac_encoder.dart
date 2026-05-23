@@ -1,6 +1,5 @@
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
-import 'package:omi/utils/logger.dart';
 
 /// Dart wrapper for the native AAC encoder platform channel.
 ///
