@@ -317,9 +317,8 @@ class SharedPreferencesUtil {
 
   Future<void> clearAllAutoUploadRetries() async {
     final keys = (_preferences?.getKeys() ?? {}).where((k) => k.startsWith('autoUploadRetry_')).toList();
-    for (final key in keys) {
-      await _preferences?.remove(key);
-    }
+    // ⚡ Bolt: Use Future.wait to remove items concurrently to prevent N+1 sequential await.
+    await Future.wait(keys.map((key) => _preferences?.remove(key) ?? Future.value(false)));
   }
 
   static Future<void> init() async {
