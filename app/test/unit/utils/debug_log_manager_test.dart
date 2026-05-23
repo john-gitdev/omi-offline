@@ -167,5 +167,17 @@ void main() {
       expect(fileNames.contains('omi_debug_20230102.log'), isTrue);
       expect(fileNames.contains('other_file.txt'), isFalse);
     });
+
+    test('getRecentLogs safely skips malformed JSON', () async {
+      final file = await DebugLogManager.getLogFile();
+      await file!.writeAsString('{"level":"INFO","message":"valid log"}\n', mode: FileMode.append);
+      await file.writeAsString('this is not valid json\n', mode: FileMode.append);
+      await file.writeAsString('{"level":"WARN","message":"another valid log"}\n', mode: FileMode.append);
+
+      final logs = await DebugLogManager.getRecentLogs();
+      expect(logs.length, 2);
+      expect(logs[0]['message'], 'another valid log');
+      expect(logs[1]['message'], 'valid log');
+    });
   });
 }
