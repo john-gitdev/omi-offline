@@ -7,7 +7,6 @@ import 'package:omi/services/wals.dart';
 import 'package:omi/utils/wal_file_manager.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
-import 'package:path/path.dart' as p;
 
 class MockPathProvider extends Fake with MockPlatformInterfaceMixin implements PathProviderPlatform {
   String? tempPath;
