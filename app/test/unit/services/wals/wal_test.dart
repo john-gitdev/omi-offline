@@ -102,6 +102,35 @@ void main() {
       expect(walNoSession.getFileName(), '1234567890_0.bin');
     });
 
+    test('getFilePath returns filePath', () {
+      final wal = Wal(
+        codec: BleAudioCodec.opus,
+        channel: 1,
+        device: 'device_id',
+        fileNum: 1,
+        walOffset: 0,
+        storageTotalBytes: 100,
+        timerStart: 1234567890,
+        storage: WalStorage.local,
+        filePath: '/tmp/test.bin',
+      );
+      expect(wal.getFilePath(), '/tmp/test.bin');
+    });
+
+    test('getFrameSize returns codec frame size', () {
+      final walOpus = Wal(
+        codec: BleAudioCodec.opus,
+        channel: 1,
+        device: 'device_id',
+        fileNum: 1,
+        walOffset: 0,
+        storageTotalBytes: 100,
+        timerStart: 1234567890,
+        storage: WalStorage.local,
+      );
+      expect(walOpus.getFrameSize(), BleAudioCodec.opus.getFrameSize());
+    });
+
     test('toJson serializes correctly', () {
       final wal = Wal(
         codec: BleAudioCodec.opus,
@@ -178,6 +207,25 @@ void main() {
       expect(wal.sampleRate, 16000);
       expect(wal.deviceModel, 'model_x');
       expect(wal.estimatedSegments, 5);
+    });
+
+    test('fromJson handles invalid storage and status with orElse defaults', () {
+      final json = {
+        'codec': 'opus',
+        'channel': 2,
+        'device': 'device_123',
+        'fileNum': 10,
+        'storageOffset': 512,
+        'storageTotalBytes': 1024,
+        'timerStart': 12345,
+        'storage': 'invalid_storage',
+        'status': 'invalid_status',
+      };
+
+      final wal = Wal.fromJson(json);
+
+      expect(wal.storage, WalStorage.local);
+      expect(wal.status, WalStatus.miss);
     });
 
     test('fromJson handles missing fields with defaults', () {
