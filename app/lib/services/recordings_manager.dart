@@ -1904,21 +1904,22 @@ class RecordingsManager {
           await SharedPreferencesUtil().removeUploadedFromHeypocket({key});
         }
         final file = c.file;
-        if (await file.exists()) {
+        // Drop the exists() probe and let delete() fail-soft — one syscall per file instead of two.
+        try {
           await file.delete();
-        }
+        } on FileSystemException catch (_) {}
         final metaPath = '${file.path.substring(0, file.path.lastIndexOf('.'))}.meta';
         final metaFile = File(metaPath);
-        if (await metaFile.exists()) {
+        try {
           await metaFile.delete();
-        }
+        } on FileSystemException catch (_) {}
         try {
           final ts = file.path.split('/').last.split('_').last.split('.').first;
           final binPath = '${file.parent.path}/recording_fs320_$ts.bin';
           final binFile = File(binPath);
-          if (await binFile.exists()) {
+          try {
             await binFile.delete();
-          }
+          } on FileSystemException catch (_) {}
         } catch (_) {}
       }
 
