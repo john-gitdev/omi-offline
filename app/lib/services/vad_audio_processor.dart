@@ -955,7 +955,9 @@ class VadAudioProcessor {
       if (!hasEncodedAnyFrames) {
         Logger.debug('VadAudioProcessor: No frames encoded — discarding empty segment.');
         final emptyFile = File(m4aPath);
-        if (await emptyFile.exists()) await emptyFile.delete();
+        try {
+          await emptyFile.delete();
+        } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
         return null;
       }
 
@@ -964,7 +966,9 @@ class VadAudioProcessor {
       Logger.error('VadAudioProcessor: AAC encoding failed, falling back to WAV: $e');
       final corruptFile = File('${dateFolder.path}/${prefix}_$timestamp$suffix.m4a');
       try {
-        if (await corruptFile.exists()) await corruptFile.delete();
+        try {
+          await corruptFile.delete();
+        } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
       } catch (_) {}
       return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
     }
@@ -1357,7 +1361,9 @@ class VadAudioProcessor {
       return wavPath;
     } catch (e) {
       Logger.error('VadAudioProcessor: _saveWav failed: $e');
-      if (await rawFile.exists()) await rawFile.delete();
+      try {
+        await rawFile.delete();
+      } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
       return null;
     }
   }

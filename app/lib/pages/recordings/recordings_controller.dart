@@ -670,7 +670,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _persistProgress();
 
     WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask(title: 'Processing recordings...', text: 'Preparing to process segments...');
+    await ForegroundUtil.startForegroundTask(
+        title: 'Processing recordings...', text: 'Preparing to process segments...');
     try {
       await _manager.processAll(
         _batches,
@@ -852,10 +853,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (days <= 0) return false;
 
     final cutoff = DateTime.now().subtract(Duration(days: days));
-    final toDelete = _batches
-        .expand((b) => b.finalizedRecordings)
-        .where((c) => c.startTime.isBefore(cutoff))
-        .toList();
+    final toDelete = _batches.expand((b) => b.finalizedRecordings).where((c) => c.startTime.isBefore(cutoff)).toList();
 
     if (toDelete.isNotEmpty) {
       Logger.debug('Retention: deleting ${toDelete.length} recordings older than $days days');
@@ -890,7 +888,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       notifyListeners();
 
       WakelockPlus.enable();
-      await ForegroundUtil.startForegroundTask(title: 'Cleaning up recordings...', text: 'Processing segments before deletion...');
+      await ForegroundUtil.startForegroundTask(
+          title: 'Cleaning up recordings...', text: 'Processing segments before deletion...');
       try {
         await _manager.processAll(unprocessed, (_, __) {}, backgroundMode: false);
       } catch (e) {
@@ -1160,7 +1159,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
 
       // Delete the processed audio file.
-      if (await conversation.file.exists()) await conversation.file.delete();
+      try {
+        await conversation.file.delete();
+      } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
 
       // Delete any EDL (marker) files whose segmentFilename points to this recording.
       // Markers are meaningless without playable audio; leaving them causes the
@@ -1357,7 +1358,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       });
 
   double _computeAccumulatedMinutes(List<Batch> batches) {
-    final finalizedSessionIds = batches.expand((b) => b.finalizedRecordings).map((c) => c.sessionId).whereType<int>().toSet();
+    final finalizedSessionIds =
+        batches.expand((b) => b.finalizedRecordings).map((c) => c.sessionId).whereType<int>().toSet();
 
     final Map<int, int> sessionRawBytes = {};
     int unknownRawBytes = 0;

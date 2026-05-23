@@ -927,7 +927,9 @@ class RecordingsManager {
 
       final tempProcessingPath = '${directory.path}/processing_temp/combined';
       final tempDir = Directory(tempProcessingPath);
-      if (await tempDir.exists()) await tempDir.delete(recursive: true);
+      try {
+        await tempDir.delete(recursive: true);
+      } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
       await tempDir.create(recursive: true);
 
       // Moves any completed recordings from tempDir to their live recordings/<date>/ folder
@@ -1207,7 +1209,9 @@ class RecordingsManager {
           }
 
           await Future.delayed(const Duration(milliseconds: 200));
-          if (await tempDir.exists()) await tempDir.delete(recursive: true);
+          try {
+            await tempDir.delete(recursive: true);
+          } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
         } catch (e) {
           _activeIsolateControlPort = null;
           Logger.error("RecordingsManager: Combined processing failed: $e");
@@ -1410,7 +1414,9 @@ class RecordingsManager {
       if (currentExt == 'wav' && targetExt == 'm4a') {
         // Transcode from WAV to M4A
         finalAudioPath = path.replaceAll('_draft.wav', '.m4a');
-        if (await File(finalAudioPath).exists()) await File(finalAudioPath).delete();
+        try {
+          await File(finalAudioPath).delete();
+        } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
 
         final success = await _transcodeWavToM4a(file, finalAudioPath);
         if (success) {
@@ -1418,12 +1424,16 @@ class RecordingsManager {
           transcoded = true;
         } else {
           finalAudioPath = path.replaceAll('_draft.', '.');
-          if (await File(finalAudioPath).exists()) await File(finalAudioPath).delete();
+          try {
+            await File(finalAudioPath).delete();
+          } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
           await file.rename(finalAudioPath);
         }
       } else {
         finalAudioPath = path.replaceAll('_draft.', '.');
-        if (await File(finalAudioPath).exists()) await File(finalAudioPath).delete();
+        try {
+          await File(finalAudioPath).delete();
+        } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
         await file.rename(finalAudioPath);
       }
 
@@ -1467,7 +1477,9 @@ class RecordingsManager {
           outBytes = builder.takeBytes();
         }
 
-        if (await File(newMetaPath).exists()) await File(newMetaPath).delete();
+        try {
+          await File(newMetaPath).delete();
+        } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
         await File(newMetaPath).writeAsBytes(outBytes);
         await File(metaPath).delete();
       }
@@ -1582,7 +1594,9 @@ class RecordingsManager {
     // Delete next
     await nextFile.delete();
     final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.ogg$'), '.meta'));
-    if (await nextMeta.exists()) await nextMeta.delete();
+    try {
+      await nextMeta.delete();
+    } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
 
     return true;
   }
@@ -1620,7 +1634,9 @@ class RecordingsManager {
     // Delete next
     await nextFile.delete();
     final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.wav$'), '.meta'));
-    if (await nextMeta.exists()) await nextMeta.delete();
+    try {
+      await nextMeta.delete();
+    } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
 
     return true;
   }
@@ -1997,15 +2013,21 @@ class RecordingsManager {
       for (final conv in allToProcess) {
         if (conv.sessionId != null && availableSessionIds.contains(conv.sessionId)) {
           final audioFilename = conv.file.path.split('/').last;
-          if (await conv.file.exists()) await conv.file.delete();
+          try {
+            await conv.file.delete();
+          } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
           final metaFile = File('${conv.file.path.substring(0, conv.file.path.lastIndexOf('.'))}.meta');
-          if (await metaFile.exists()) await metaFile.delete();
+          try {
+            await metaFile.delete();
+          } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
 
           // Also delete any raw .bin files that might have been moved into the
           // recordings folder (some pipelines do this for portability).
           final ts = conv.file.path.split('/').last.split('_').last.split('.').first;
           final recordingsBin = File('${conv.file.parent.path}/recording_fs320_$ts.bin');
-          if (await recordingsBin.exists()) await recordingsBin.delete();
+          try {
+            await recordingsBin.delete();
+          } on FileSystemException catch (_) {} // ⚡ Bolt: Use try-catch to prevent exists() overhead
 
           // Delete EDL files referencing this recording so the re-resolver can
           // recreate them after reprocessing. Without this, stale EDL files with
