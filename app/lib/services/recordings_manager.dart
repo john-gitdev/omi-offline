@@ -2228,18 +2228,20 @@ class RecordingsManager {
     final jsonl = File('${directory.path}/recordings/$dateString/discards.jsonl');
     if (!await jsonl.exists()) return const [];
     final out = <DiscardRecord>[];
+    final seen = <String>{};
     for (final line in (await jsonl.readAsString()).split('\n')) {
       if (line.isEmpty) continue;
       try {
         final m = jsonDecode(line) as Map<String, dynamic>;
-        out.add(DiscardRecord(
+        final rec = DiscardRecord(
           startTime: DateTime.fromMillisecondsSinceEpoch(m['startMs'] as int),
           endTime: DateTime.fromMillisecondsSinceEpoch(m['endMs'] as int),
           reason: m['reason'] as String,
           maxVoiceProb: (m['maxVoiceProb'] as num).toDouble(),
           relativeBins: (m['relativeBins'] as List).cast<String>(),
           sourceJsonl: jsonl,
-        ));
+        );
+        if (seen.add(rec.id)) out.add(rec);
       } catch (e) {
         Logger.error('RecordingsManager: skipping malformed discard line in ${jsonl.path}: $e');
       }
