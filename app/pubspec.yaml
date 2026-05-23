@@ -18,7 +18,7 @@ dependencies:
   # UI
   flutter_native_splash: ^2.4.0
   shimmer: ^3.0.0
-  onnxruntime: ^1.4.0
+  flutter_onnxruntime: ^1.7.1
 
   # Logging
   talker_flutter: 5.0.0
