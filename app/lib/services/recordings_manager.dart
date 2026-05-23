@@ -1375,25 +1375,6 @@ class RecordingsManager {
     return int.tryParse(tsStr) ?? 0;
   }
 
-  /// Returns true if [draftFile] is referenced by a marker EDL whose 50-second
-  /// protection window has not yet expired, meaning we should hold off finalizing.
-  Future<bool> _isDraftInMarkerWindow(File draftFile, List<FileSystemEntity> entities) async {
-    final draftFilename = draftFile.path.split('/').last;
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    for (final entity in entities) {
-      if (entity is! File || !entity.path.endsWith('.edl')) continue;
-      try {
-        final content = await entity.readAsString();
-        final json = jsonDecode(content) as Map<String, dynamic>;
-        if ((json['segmentFilename'] as String?) == draftFilename) {
-          final markerMs = json['markerTimestampMs'] as int? ?? 0;
-          if (markerMs > 0 && nowMs < markerMs + 50000) return true;
-        }
-      } catch (_) {}
-    }
-    return false;
-  }
-
   Future<void> _finalizeDraft(File file, {bool isForceSynced = false}) async {
     final path = file.path;
     if (!path.contains('_draft.')) return;
