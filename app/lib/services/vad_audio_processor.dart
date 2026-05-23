@@ -315,7 +315,7 @@ class VadAudioProcessor {
         // IMU Bridge: Check if the gap can be explained by IMU ticks even if session changed.
         bool imuGapMatches = false;
         if (sessionChanged && _lastImuTicks != null && currentImuTicks != null) {
-          final int tickDelta = (currentImuTicks! - _lastImuTicks!) & 0x00FFFFFF;
+          final int tickDelta = (currentImuTicks - _lastImuTicks!) & 0x00FFFFFF;
           final int imuGapMs = (tickDelta * 6.4).toInt();
           final gapDiff = (gapMs - imuGapMs).abs();
           if (gapDiff < 5000) {
@@ -622,7 +622,7 @@ class VadAudioProcessor {
       if (currentImuTicks != null) {
         final int segmentDurationMs = totalFrameCount * frameDurationMs;
         final int ticksPassed = (segmentDurationMs / 6.4).toInt();
-        _lastImuTicks = (currentImuTicks! + ticksPassed) & 0x00FFFFFF;
+        _lastImuTicks = (currentImuTicks + ticksPassed) & 0x00FFFFFF;
       }
       Logger.debug('VadAudioProcessor: ${segmentFile.path.split('/').last} — '
           '$totalFrameCount frames, $segmentSpeechFrames speech frames, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}');
@@ -1043,7 +1043,6 @@ class VadAudioProcessor {
     final opusSilenceFrame = Uint8List.fromList([0x48]);
 
     int granulePos = 0;
-    int lastFlushedGranulePos = 0;
     int pageSeqNum = 2;
     String? currentFilePath;
     Uint8List? currentFileBytes;
@@ -1068,7 +1067,6 @@ class VadAudioProcessor {
             pagePackets.add(opusSilenceFrame);
 
             if (pagePackets.length >= 40) {
-              lastFlushedGranulePos = granulePos;
               sink.add(_createOggPage(granulePos, pageSeqNum++, serial, pagePackets.toList()));
               pagePackets.clear();
             }
@@ -1124,7 +1122,6 @@ class VadAudioProcessor {
 
         if (pagePackets.length >= 40) {
           // 40 frames per page (~800ms)
-          lastFlushedGranulePos = granulePos;
           sink.add(_createOggPage(granulePos, pageSeqNum++, serial, pagePackets.toList()));
           pagePackets.clear();
         }
