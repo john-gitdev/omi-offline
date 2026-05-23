@@ -299,6 +299,21 @@ class OpusFramesToWavTranscoder implements IAudioTranscoder {
 }
 
 class AudioTranscoderFactory {
+  static IAudioTranscoder getTranscoder(BleAudioCodec inputCodec, BleAudioCodec outputCodec) {
+    if (inputCodec == BleAudioCodec.opus && outputCodec == BleAudioCodec.pcm16) {
+      return OpusToRawPcmTranscoder();
+    }
+    if (inputCodec == BleAudioCodec.opus && outputCodec == BleAudioCodec.opus) {
+      return PassThroughTranscoder();
+    }
+    if (inputCodec == BleAudioCodec.opus && outputCodec == BleAudioCodec.opusFS320) {
+      return PassThroughTranscoder();
+    }
+
+    // Default fallback
+    return PassThroughTranscoder();
+  }
+
   static IAudioTranscoder createToWav({
     required BleAudioCodec sourceCodec,
     required int sampleRate,
