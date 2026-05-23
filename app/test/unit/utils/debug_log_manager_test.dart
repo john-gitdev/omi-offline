@@ -37,9 +37,8 @@ void main() {
 
     SharedPreferences.setMockInitialValues({'devLogsToFileEnabled': true});
 
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
-            (MethodCall methodCall) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'), (MethodCall methodCall) async {
       return null;
     });
 
@@ -166,6 +165,17 @@ void main() {
       expect(fileNames.contains('omi_debug_20230101.log'), isTrue);
       expect(fileNames.contains('omi_debug_20230102.log'), isTrue);
       expect(fileNames.contains('other_file.txt'), isFalse);
+    });
+
+    test('listLogFiles safely skips malformed JSON string', () async {
+      final file = await DebugLogManager.getLogFile();
+      await file!.writeAsString('{"malformed": json\n', mode: FileMode.append);
+
+      final logs = await DebugLogManager.getRecentLogs();
+      expect(logs, isEmpty);
+
+      final files = await DebugLogManager.listLogFiles();
+      expect(files, isNotEmpty);
     });
 
     test('getRecentLogs safely skips malformed JSON', () async {
