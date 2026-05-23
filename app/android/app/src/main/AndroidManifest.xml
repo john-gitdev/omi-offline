@@ -30,35 +30,20 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
 
-    <!--    INSTABUG PERMISSIONS    -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.READ_CONTACTS" />
-    <!-- Refer https://developer.android.com/about/versions/14/changes/fgs-types-required#connected-device -->
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
 
     <!-- In the permission part of your manifest, these permission are needed if you target Android 14 phones -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-
-   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-
-   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-   <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.FOREGROUND_BLUETOOTH_SCAN" />
-    <uses-permission android:name="android.permission.FOREGROUND_CHANGE_NETWORK_STATE" />
-
-    <uses-permission android:name="android.permission.READ_CALENDAR" />
-    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
 
     <!-- Add android:stopWithTask option only when necessary. -->
     <application
@@ -73,16 +58,6 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice"
             android:stopWithTask="true" />
-         <service
-            android:name="id.flutter.flutter_background_service.BackgroundService"
-            android:foregroundServiceType="microphone"
-            tools:node="merge" />
-
-        <service
-            android:name=".NotificationOnKillService"
-            android:enabled="true"
-            android:exported="false"/>
-
         <!-- Native BLE Services -->
         <service
             android:name=".OmiBleForegroundService"
@@ -126,52 +101,6 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Deep linking -->
-            <meta-data
-                android:name="flutter_deeplinking_enabled"
-                android:value="false" />
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:host="h.omi.me"
-                    android:scheme="https"
-                    android:pathPattern="/apps/.*" />
-            </intent-filter>
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:host="try.omi.me"
-                    android:scheme="https"
-                    android:pathPattern="/apps/.*" />
-            </intent-filter>
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:host="h.omi.me"
-                    android:scheme="https"
-                    android:path="/unlimited" />
-            </intent-filter>
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:host="h.omi.me"
-                    android:scheme="https"
-                    android:pathPattern="/tasks/.*" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="omi" />
-            </intent-filter>
         </activity>
 
         <!-- Don't delete the meta-data below.
@@ -180,7 +109,5 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <meta-data android:name="com.posthog.posthog.AUTO_INIT" android:value="false" />
-        
     </application>
 </manifest>
