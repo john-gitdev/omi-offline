@@ -24,7 +24,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
 
   // Fallback flow picks up the key from the intercepted WebView URL;
   // the Omi-backed flow uses this fixed key for api.omi.me's Firebase project.
-  static const _omiBackedFirebaseApiKey = 'AIzaSyA88gHcmiAxjN_aE23tHRWXOgFfapyO6dk';
+  static const _omiBackedFirebaseApiKey = String.fromEnvironment('OMI_FIREBASE_API_KEY', defaultValue: '');
 
   String? _apiKey;
   _FlowMode _flowMode = _FlowMode.omiBacked;
