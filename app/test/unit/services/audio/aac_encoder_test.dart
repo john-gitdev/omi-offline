@@ -71,5 +71,56 @@ void main() {
         'sessionId': 'test-session-id',
       });
     });
+
+    test('startEncoder throws PlatformException on native error', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        (MethodCall methodCall) async {
+          if (methodCall.method == 'startEncoder') {
+            throw PlatformException(code: 'ERROR', message: 'Native error');
+          }
+          return null;
+        },
+      );
+
+      expect(
+        () => AacEncoder.startEncoder(16000, '/path', bitrate: 64000),
+        throwsA(isA<PlatformException>()),
+      );
+    });
+
+    test('encodeBuffer throws PlatformException on native error', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        (MethodCall methodCall) async {
+          if (methodCall.method == 'encodeBuffer') {
+            throw PlatformException(code: 'ERROR', message: 'Native error');
+          }
+          return null;
+        },
+      );
+
+      expect(
+        () => AacEncoder.encodeBuffer('test-session-id', Uint8List.fromList([1, 2, 3, 4])),
+        throwsA(isA<PlatformException>()),
+      );
+    });
+
+    test('finishEncoder throws PlatformException on native error', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        (MethodCall methodCall) async {
+          if (methodCall.method == 'finishEncoder') {
+            throw PlatformException(code: 'ERROR', message: 'Native error');
+          }
+          return null;
+        },
+      );
+
+      expect(
+        () => AacEncoder.finishEncoder('test-session-id'),
+        throwsA(isA<PlatformException>()),
+      );
+    });
   });
 }
