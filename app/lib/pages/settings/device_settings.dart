@@ -252,7 +252,6 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   }
 
   Widget _buildDeviceInfoSection(BtDevice? device, DeviceProvider provider) {
-    final deviceName = device?.name ?? 'Omi';
     final deviceId = device?.id ?? 'Unknown';
 
     String truncateId(String id) {
