@@ -7,7 +7,6 @@ import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/discovery/device_discoverer.dart';
 import 'package:omi/services/devices/discovery/native_bluetooth_discoverer.dart';
-import 'package:omi/services/devices/errors.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/mutex.dart';
