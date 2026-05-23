@@ -246,7 +246,8 @@ class GhostRow extends StatelessWidget {
     final h = d.inHours;
     final m = d.inMinutes % 60;
     if (h > 0) return '${h}h ${m}m';
-    return '${m}m';
+    if (d.inMinutes > 0) return '${m}m';
+    return '${d.inSeconds}s';
   }
 
   @override
