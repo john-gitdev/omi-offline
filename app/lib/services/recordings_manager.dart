@@ -1975,9 +1975,11 @@ class RecordingsManager {
       final dirEntities = await recordingsDir.list().toList();
       final edlFiles = dirEntities.whereType<File>().where((f) => f.path.endsWith('.edl')).toList();
       int deletedCount = 0;
+      final filenamesToDelete = <String>{};
       for (final conv in allToProcess) {
         if (conv.sessionId != null && availableSessionIds.contains(conv.sessionId)) {
           final audioFilename = conv.file.path.split('/').last;
+          filenamesToDelete.add(audioFilename);
           if (await conv.file.exists()) await conv.file.delete();
           final metaFile = File('${conv.file.path.substring(0, conv.file.path.lastIndexOf('.'))}.meta');
           if (await metaFile.exists()) await metaFile.delete();
@@ -1988,19 +1990,24 @@ class RecordingsManager {
           final recordingsBin = File('${conv.file.parent.path}/recording_fs320_$ts.bin');
           if (await recordingsBin.exists()) await recordingsBin.delete();
 
-          // Delete EDL files referencing this recording so the re-resolver can
-          // recreate them after reprocessing. Without this, stale EDL files with
-          // a non-empty segmentFilename cause the re-resolver to skip the marker
-          // as already-resolved, leaving it permanently broken.
-          for (final edl in edlFiles) {
-            try {
-              final json = jsonDecode(await edl.readAsString()) as Map<String, dynamic>;
-              if (json['segmentFilename'] == audioFilename) await edl.delete();
-            } catch (_) {}
-          }
-
           deletedCount++;
         }
+      }
+
+      // Delete EDL files referencing any deleted recording so the re-resolver
+      // can recreate them after reprocessing. Without this, stale EDLs with a
+      // non-empty segmentFilename cause the re-resolver to skip the marker as
+      // already-resolved, leaving it permanently broken. One concurrent pass
+      // over EDLs with O(1) Set lookups replaces the old N*M sequential scan.
+      if (filenamesToDelete.isNotEmpty && edlFiles.isNotEmpty) {
+        await Future.wait(edlFiles.map((edl) async {
+          try {
+            final json = jsonDecode(await edl.readAsString()) as Map<String, dynamic>;
+            if (filenamesToDelete.contains(json['segmentFilename'])) {
+              await edl.delete();
+            }
+          } catch (_) {}
+        }));
       }
       Logger.debug(
         'RecordingsManager: Surgical delete for ${batch.dateString} — removed $deletedCount reprocessable recordings',
