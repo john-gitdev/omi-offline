@@ -270,21 +270,27 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
           ),
         ),
         const SizedBox(height: 24),
-        // Done button
-        GestureDetector(
-          onTap: () {
-            final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
-            deviceProvider.resetFirmwareUpdateState();
-            routeToPage(context, const RecordingsPage(), replace: true);
-          },
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 16),
+        // Done button — Material+InkWell so the tap shows a ripple inside the rounded corners.
+        Material(
+          color: Colors.transparent,
+          child: Ink(
             decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)),
-            child: const Center(
-              child: Text(
-                'Done',
-                style: TextStyle(color: Colors.black, fontSize: 17, fontWeight: FontWeight.w600),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () {
+                final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
+                deviceProvider.resetFirmwareUpdateState();
+                routeToPage(context, const RecordingsPage(), replace: true);
+              },
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: const Center(
+                  child: Text(
+                    'Done',
+                    style: TextStyle(color: Colors.black, fontSize: 17, fontWeight: FontWeight.w600),
+                  ),
+                ),
               ),
             ),
           ),
