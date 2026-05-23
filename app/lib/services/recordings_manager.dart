@@ -1923,20 +1923,21 @@ class RecordingsManager {
         } catch (_) {}
       }
 
-      // 2. Delete EDL files for all deleted conversations in this directory at once
+      // 2. Delete EDL files for all deleted conversations in this directory at once.
+      // Reads + deletes run concurrently — each EDL is an independent JSON sidecar.
       try {
         final dir = Directory(dirPath);
         if (await dir.exists()) {
           final dirEntities = await dir.list().toList();
-          for (final entity in dirEntities) {
-            if (entity is! File || !entity.path.endsWith('.edl')) continue;
+          await Future.wait(dirEntities.map((entity) async {
+            if (entity is! File || !entity.path.endsWith('.edl')) return;
             try {
               final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
               if (filenames.contains(json['segmentFilename'])) {
                 await entity.delete();
               }
             } catch (_) {}
-          }
+          }));
         }
       } catch (e) {
         Logger.error('RecordingsManager: Failed to cleanup EDLs in $dirPath: $e');
