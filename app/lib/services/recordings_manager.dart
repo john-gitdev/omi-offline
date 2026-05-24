@@ -1058,7 +1058,7 @@ class RecordingsManager {
         if (effectiveVadEnabled) {
           try {
             final dir = await getApplicationSupportDirectory();
-            final cached = File('${dir.path}/silero_vad.onnx');
+            final cached = File('${dir.path}/silero_vad_v6.onnx');
             if (!await cached.exists()) {
               final data = await rootBundle.load('assets/models/silero_vad.onnx');
               await cached.writeAsBytes(data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes), flush: true);
