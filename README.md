@@ -2,7 +2,7 @@
 
 A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
 
-**Current versions:** App `0.11.2` · Firmware `oo-1.7.9`
+**Current versions:** App `0.13.0` · Firmware `oo-1.7.9`
 
 ---
 
@@ -16,7 +16,7 @@ The nRF5340 wearable captures audio continuously via PDM microphones, encodes it
 
 - **100% offline.** No cloud API, no internet check. Data never leaves the device unless you explicitly upload it.
 - **Resumable BLE sync (WAL).** Per-file byte-offset bookmarks survive disconnects. Sync resumes exactly where it stopped.
-- **Silero VAD on-device.** The ONNX runtime runs the Silero v4 neural net locally on the phone to strip silence and segment speech.
+- **Silero VAD on-device.** ONNX Runtime executes Silero VAD v6.2.1 locally on the phone to strip silence and segment speech. Runs in a background isolate so platform threads stay unblocked.
 - **Two recording modes.** Automatic (VAD-driven, hands-free) and Manual (explicit double-tap start/stop on the hardware button).
 - **Markers.** A double-tap while recording drops a timestamped bookmark. The app builds an EDL sidecar for each marked clip.
 - **Adjustment Mode.** Re-run VAD on already-downloaded segments without touching the device — tweak sensitivity and reprocess offline.
@@ -264,6 +264,32 @@ See [`NOMENCLATURE.md`](NOMENCLATURE.md) for the full glossary. Key terms:
 ---
 
 ## Recent Changes
+
+### Silero VAD v6 upgrade (0.13.0)
+
+- Bumped the bundled `silero_vad.onnx` from v3 to v6.2.1 (~16% fewer errors on noisy real-life data per Silero's release notes).
+- v6 collapses the separate LSTM `h` / `c` states into one 256-float recurrent `state` tensor, requires a 64-sample context window prepended to each 512-sample input, and a true 0-D scalar `sr`. The processor handles all of this internally.
+- Same `vadSpeechThreshold` default (0.5) but v6 is more conservative — fewer false positives. Lower the threshold to 0.3–0.4 if quiet speech is missed.
+
+### Android 16 / 16 KB page support (0.13.0)
+
+- Swapped `onnxruntime: ^1.4.0` for `flutter_onnxruntime: ^1.7.1`, which bundles ORT 1.22.0 with 16 KB page-aligned `.so` files. Required for Android 16 devices booted with 16 KB pages and for Play Store submissions targeting SDK 36+ (enforced since Nov 2025).
+- `targetSdkVersion` 35 → 36, iOS minimum 15 → 16 (`Podfile`, `Runner.xcodeproj`).
+- ONNX inference is now async at the API layer — no longer FFI-blocks the platform thread, reducing the chance of `ForegroundServiceDidNotStartInTimeException` during cold session creation.
+- The VAD model is pre-copied from `rootBundle` to `getApplicationSupportDirectory()` on the main isolate, then loaded in the processing isolate via `OnnxRuntime().createSession(path)` (the `createSessionFromAsset` API isn't usable from a background isolate).
+
+### Edge-to-edge UI (0.12.0)
+
+- Removed the edge-to-edge opt-out from default and night styles across all SDK 31+ resource folders.
+- Wrapped the marker and recording player bodies in `SafeArea` so content respects system bars.
+- Enabled `OnBackInvokedCallback` in the manifest (Android 14+ predictive back gesture).
+
+### Perf, fixes & cleanup (0.12.0)
+
+- `deleteDay`: replaced a serial EDL-deletion loop with O(M) concurrent deletion.
+- Recordings list: dedup discards by id in `getDiscardsForDate`; show seconds for sub-minute ghost durations.
+- Removed 46 unused dependencies and a SF Pro font block from `pubspec.yaml`.
+- Deleted dead Android handlers (`WifiNetworkPlugin`, `NotificationOnKillService`), unused manifest entries, dead image / font / gif assets, and a sweep of unused imports across services, tests, and Flutter pages.
 
 ### Discard recovery & ghost rows (0.11.1 – 0.11.2)
 
