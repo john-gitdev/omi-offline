@@ -1071,14 +1071,25 @@ bool write_to_storage(void)
 
 uint32_t device_session_id = 0;
 
+/* Atomic lazy-init of device_session_id. Race-safe against parallel calls
+ * from the audio path and the button-tap marker path during boot (B18). */
+static uint32_t ensure_device_session_id(void)
+{
+    uint32_t sid = device_session_id;
+    if (sid != 0) return sid;
+    do {
+        sid = sys_rand32_get();
+    } while (sid == 0);
+    /* If another thread already published an ID, keep theirs. */
+    if (!atomic_cas((atomic_t *)&device_session_id, 0, sid)) {
+        sid = device_session_id;
+    }
+    return sid;
+}
+
 bool write_marker_to_storage(void)
 {
-    if (device_session_id == 0) {
-        // Should not really happen as we should be recording, but safety first
-        do {
-            device_session_id = sys_rand32_get();
-        } while (device_session_id == 0);
-    }
+    uint32_t sid = ensure_device_session_id();
 
     uint8_t temp_buffer[16];
     uint64_t utc_time_ms = rtc_get_utc_time_ms();
@@ -1086,10 +1097,25 @@ bool write_marker_to_storage(void)
 
     memcpy(temp_buffer, &utc_time_ms, 8);
     memcpy(temp_buffer + 8, &uptime_ms, 4);
-    memcpy(temp_buffer + 12, &device_session_id, 4);
+    memcpy(temp_buffer + 12, &sid, 4);
 
-    LOG_INF("Writing marker to storage (DeviceSession: %u)", device_session_id);
-    return write_custom_packet_to_storage(0xFFFFFFFE, temp_buffer, 16);
+    LOG_INF("Writing marker to storage (DeviceSession: %u)", sid);
+    bool ok = write_custom_packet_to_storage(0xFFFFFFFE, temp_buffer, 16);
+
+    /* Force-drain any partial block in storage_temp_data so the marker is
+     * durable to SD even when no audio is flowing (e.g. mic muted) (B2).
+     * Without this, a 20-byte marker can sit in RAM until the 440-byte
+     * block fills — and never reach the card if the device powers off
+     * before the next audio frame. */
+    k_mutex_lock(&storage_temp_mutex, K_FOREVER);
+    if (buffer_offset > 0) {
+        memset(storage_temp_data + buffer_offset, 0, MAX_WRITE_SIZE - buffer_offset);
+        write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        buffer_offset = 0;
+    }
+    k_mutex_unlock(&storage_temp_mutex);
+
+    return ok;
 }
 #endif
 
