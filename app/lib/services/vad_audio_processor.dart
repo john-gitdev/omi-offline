@@ -59,8 +59,11 @@ class ProcessingSettings {
 class VadAudioProcessor {
   // Silero VAD session + LSTM state (reset on gap detection)
   OrtSession? _session;
-  Float32List _h = Float32List(2 * 1 * 64); // LSTM hidden state
-  Float32List _c = Float32List(2 * 1 * 64); // LSTM cell state
+  Float32List _state = Float32List(2 * 1 * 128); // Silero v5+ recurrent state
+  // Silero v5+ requires the last 64 samples of the prior window prepended
+  // to each 512-sample input so the model has temporal continuity. Reset
+  // alongside _state on any state-reset path.
+  Float32List _vadContext = Float32List(_vadContextSamples);
   final List<double> _pcmWindow = []; // accumulates samples toward 512-window
 
   // Opus decoder
@@ -134,6 +137,7 @@ class VadAudioProcessor {
   static const int channels = 1;
   static const int frameDurationMs = 20; // 20 ms per Opus frame
   static const int _vadWindowSamples = 512; // Silero VAD input size
+  static const int _vadContextSamples = 64; // Silero v5+ context-buffer size at 16 kHz
   // Mirrors CONFIG_OMI_VAD_HOLD_MS in firmware/omi/src/aad.c.
   // The firmware continues emitting audio for this many ms after the last voice frame,
   // so the gap the app observes is that much shorter than the user-perceived silence.
@@ -200,20 +204,28 @@ class VadAudioProcessor {
       // Hardware AAD mode — all audio treated as speech; splitting driven by firmware timestamps only.
       return true;
     }
+    // v5+ requires context + window concatenated: [_vadContext (64) | samples (512)] → [1, 576].
+    final windowed = Float32List(_vadContextSamples + _vadWindowSamples);
+    windowed.setRange(0, _vadContextSamples, _vadContext);
+    for (int i = 0; i < _vadWindowSamples; i++) {
+      windowed[_vadContextSamples + i] = samples512[i];
+    }
+
     final inputs = <String, OrtValue>{
-      'input': await OrtValue.fromList(Float32List.fromList(samples512), [1, _vadWindowSamples]),
-      'sr': await OrtValue.fromList(Int64List.fromList([sampleRate]), [1]),
-      'h': await OrtValue.fromList(_h, [2, 1, 64]),
-      'c': await OrtValue.fromList(_c, [2, 1, 64]),
+      'input': await OrtValue.fromList(windowed, [1, _vadContextSamples + _vadWindowSamples]),
+      'state': await OrtValue.fromList(_state, [2, 1, 128]),
+      'sr': await OrtValue.fromList(Int64List.fromList([sampleRate]), []),
     };
 
     Map<String, OrtValue>? outputs;
     try {
       outputs = await session.run(inputs);
-      // Silero v3.0 ONNX outputs: 'output' (prob), 'hn', 'cn'.
+      // Silero v5+ ONNX outputs: 'output' (prob), 'stateN' (recurrent state).
       final prob = ((await outputs['output']!.asFlattenedList()).cast<double>())[0];
-      _h = Float32List.fromList((await outputs['hn']!.asFlattenedList()).cast<double>());
-      _c = Float32List.fromList((await outputs['cn']!.asFlattenedList()).cast<double>());
+      _state = Float32List.fromList((await outputs['stateN']!.asFlattenedList()).cast<double>());
+      // Save the trailing 64 samples for the next call's context window.
+      _vadContext = Float32List(_vadContextSamples);
+      _vadContext.setRange(0, _vadContextSamples, samples512, _vadWindowSamples - _vadContextSamples);
       if (prob > _currentMaxVoiceProb) _currentMaxVoiceProb = prob;
       return prob > _speechThreshold;
     } catch (e) {
@@ -325,8 +337,8 @@ class VadAudioProcessor {
             'sessionChanged=$sessionChanged, gapMs=$gapMs (threshold=${_silenceDurationToSplitMs - _firmwareVadHoldMs}ms effective), '
             'lastEnd=${_lastSegmentEndTime?.toUtc()} segmentStart=${segmentStartTime.toUtc()} — flushing.',
           );
-          _h = Float32List(2 * 1 * 64);
-          _c = Float32List(2 * 1 * 64);
+          _state = Float32List(2 * 1 * 128);
+          _vadContext = Float32List(_vadContextSamples);
           _pcmWindow.clear();
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
