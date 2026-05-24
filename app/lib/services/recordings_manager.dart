@@ -1102,7 +1102,6 @@ class RecordingsManager {
             exitPort.close();
           });
 
-          final List<Map<String, dynamic>> pendingEdls = [];
           // Absolute bin paths that have been claimed by an in-flight discard
           // record this run. The delete_segments handler must skip these so the
           // recovery sweep (or AM) gets a chance to keep them around.
@@ -1118,7 +1117,12 @@ class RecordingsManager {
                   _activeIsolateControlPort?.send('cancel');
                 }
               case 'marker_edl':
-                pendingEdls.addAll((msg['items'] as List).cast<Map<String, dynamic>>());
+                // Persist EDLs eagerly so a mid-run isolate death does not
+                // strand markers in memory only (B3).
+                final items = (msg['items'] as List).cast<Map<String, dynamic>>();
+                for (final edl in items) {
+                  await _writeMarkerEdl(directory.path, edl);
+                }
               case 'discard_records':
                 final items = (msg['items'] as List).cast<Map<String, dynamic>>();
                 for (final rec in items) {
@@ -1178,35 +1182,6 @@ class RecordingsManager {
           }
 
           _activeIsolateControlPort = null;
-
-          // Write EDL sidecar files for any markers emitted during processing.
-          for (final edl in pendingEdls) {
-            final filename = edl['filename'] as String;
-            final markerMs = edl['markerMs'] as int;
-            final offsetMs = edl['offsetMs'] as int;
-            final durationMs = edl['durationMs'] as int;
-            final nameNoExt = filename.contains('.') ? filename.substring(0, filename.lastIndexOf('.')) : filename;
-            final parts = nameNoExt.split('_');
-            final tsStr = parts.contains('draft') ? parts[parts.length - 2] : parts.last;
-            final millis = int.tryParse(tsStr);
-            final dateStr = (millis != null && millis > 946684800000)
-                ? _dateStringFromMillis(millis)
-                : _dateStringFromMillis(markerMs);
-            final liveDir = Directory('${directory.path}/recordings/$dateStr');
-            await liveDir.create(recursive: true);
-            final edlFile = File('${liveDir.path}/marker_$markerMs.edl');
-            if (!await edlFile.exists()) {
-              await edlFile.writeAsString(jsonEncode({
-                'markerTimestampMs': markerMs,
-                'segmentFilename': filename,
-                'markerOffsetMs': offsetMs,
-                'cropStartMs': 0,
-                'cropEndMs': durationMs,
-                'userSaved': false,
-              }));
-              Logger.debug('RecordingsManager: Wrote EDL marker_$markerMs.edl → $filename at ${offsetMs}ms');
-            }
-          }
 
           await Future.delayed(const Duration(milliseconds: 200));
           if (await tempDir.exists()) await tempDir.delete(recursive: true);
@@ -1555,12 +1530,26 @@ class RecordingsManager {
     // The .meta sidecar duration remains wall-clock accurate (including the gap).
     final nextBytes = await nextFile.readAsBytes();
 
+    // Capture the draft's wall-clock duration *before* mutating either file so
+    // we can re-anchor next-file markers to the combined timeline (B13).
+    final int draftDurationMs = await _readMetaDurationMs(draftFile) ?? 0;
+
     final sink = await draftFile.open(mode: FileMode.append);
     await sink.writeFrom(nextBytes);
     await sink.close();
 
     // Update Meta
     await _mergeMeta(draftFile, nextFile, gapMs);
+
+    // Re-anchor EDLs pointing at the soon-to-be-deleted next file to the draft
+    // file, adding the draft's duration + gap to each markerOffsetMs (B6 + B13).
+    await _reanchorMarkerEdls(
+      fromFilename: nextFile.path.split('/').last,
+      toFilename: draftFile.path.split('/').last,
+      offsetShiftMs: draftDurationMs + gapMs,
+      newDurationMs: await _readMetaDurationMs(draftFile),
+      folder: draftFile.parent,
+    );
 
     // Delete next
     await nextFile.delete();
@@ -1576,6 +1565,8 @@ class RecordingsManager {
     final nextBytes = await nextFile.readAsBytes();
 
     if (draftBytes.length < 44 || nextBytes.length < 44) return false;
+
+    final int draftDurationMs = await _readMetaDurationMs(draftFile) ?? 0;
 
     const sampleRate = 16000;
     const channels = 1;
@@ -1600,12 +1591,71 @@ class RecordingsManager {
     // Update Meta
     await _mergeMeta(draftFile, nextFile, gapMs);
 
+    await _reanchorMarkerEdls(
+      fromFilename: nextFile.path.split('/').last,
+      toFilename: draftFile.path.split('/').last,
+      offsetShiftMs: draftDurationMs + gapMs,
+      newDurationMs: await _readMetaDurationMs(draftFile),
+      folder: draftFile.parent,
+    );
+
     // Delete next
     await nextFile.delete();
     final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.wav$'), '.meta'));
     if (await nextMeta.exists()) await nextMeta.delete();
 
     return true;
+  }
+
+  /// Reads the `.meta` sidecar's 4-byte LE duration (offset 4). Returns null
+  /// if the sidecar is missing or too short.
+  Future<int?> _readMetaDurationMs(File audioFile) async {
+    try {
+      final base = audioFile.path.substring(0, audioFile.path.lastIndexOf('.'));
+      final metaBytes = await File('$base.meta').readAsBytes();
+      if (metaBytes.length < 8) return null;
+      return ByteData.sublistView(metaBytes).getUint32(4, Endian.little);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Re-points any EDL in [folder] whose `segmentFilename == fromFilename`
+  /// to [toFilename], shifting `markerOffsetMs` and `cropStart/End` by
+  /// [offsetShiftMs] (the draft's wall-clock duration + inter-file gap).
+  /// Also bumps `cropEndMs` to the combined file's duration when supplied.
+  Future<void> _reanchorMarkerEdls({
+    required String fromFilename,
+    required String toFilename,
+    required int offsetShiftMs,
+    int? newDurationMs,
+    required Directory folder,
+  }) async {
+    if (!await folder.exists()) return;
+    final entities = await folder.list().toList();
+    for (final entity in entities) {
+      if (entity is! File || !entity.path.endsWith('.edl')) continue;
+      try {
+        final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
+        if (json['segmentFilename'] != fromFilename) continue;
+        json['segmentFilename'] = toFilename;
+        json['markerOffsetMs'] = (json['markerOffsetMs'] as int? ?? 0) + offsetShiftMs;
+        final shiftedStart = (json['cropStartMs'] as int? ?? 0) + offsetShiftMs;
+        json['cropStartMs'] = shiftedStart;
+        final shiftedEnd = (json['cropEndMs'] as int? ?? 0) + offsetShiftMs;
+        json['cropEndMs'] = shiftedEnd;
+        if (newDurationMs != null && newDurationMs > 0) {
+          // Clamp shifted bounds to the new file's playable length.
+          if ((json['cropEndMs'] as int) > newDurationMs) json['cropEndMs'] = newDurationMs;
+          if ((json['cropStartMs'] as int) > newDurationMs) json['cropStartMs'] = newDurationMs;
+        }
+        await entity.writeAsString(jsonEncode(json));
+        Logger.debug(
+            'RecordingsManager: Re-anchored EDL ${entity.path.split('/').last}: $fromFilename → $toFilename (+${offsetShiftMs}ms)');
+      } catch (e) {
+        Logger.error('RecordingsManager: Failed to re-anchor EDL ${entity.path}: $e');
+      }
+    }
   }
 
   Uint8List _generateWavHeader(int pcmBytes, int sampleRate, int channels) {
@@ -1687,6 +1737,69 @@ class RecordingsManager {
     return "${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}";
   }
 
+  /// Persists one marker EDL sidecar. Called eagerly per `marker_edl`
+  /// isolate message so an isolate crash mid-run still leaves the marker
+  /// on disk.
+  ///
+  /// EDL filenames are unique per marker timestamp: if a file with the
+  /// same name already exists and points at a *different* segment, a
+  /// `_<n>` suffix is appended so neither write overwrites the other.
+  Future<void> _writeMarkerEdl(String docsPath, Map<String, dynamic> edl) async {
+    final filename = (edl['filename'] as String?) ?? '';
+    final markerMs = edl['markerMs'] as int;
+    final offsetMs = edl['offsetMs'] as int;
+    final durationMs = edl['durationMs'] as int;
+
+    int? millis;
+    if (filename.isNotEmpty) {
+      final nameNoExt = filename.contains('.') ? filename.substring(0, filename.lastIndexOf('.')) : filename;
+      final parts = nameNoExt.split('_');
+      final tsStr = parts.contains('draft') ? parts[parts.length - 2] : parts.last;
+      millis = int.tryParse(tsStr);
+    }
+    final dateStr =
+        (millis != null && millis > 946684800000) ? _dateStringFromMillis(millis) : _dateStringFromMillis(markerMs);
+    final liveDir = Directory('$docsPath/recordings/$dateStr');
+    await liveDir.create(recursive: true);
+
+    final payload = {
+      'markerTimestampMs': markerMs,
+      'segmentFilename': filename,
+      'markerOffsetMs': offsetMs,
+      'cropStartMs': 0,
+      'cropEndMs': durationMs,
+      'userSaved': false,
+    };
+
+    // Resolve filename collisions: same markerMs but different segmentFilename
+    // (e.g., two distinct double-taps inside the same firmware ms — rare but
+    // not impossible after the audio frame fix). Append `_<n>` until unique.
+    File edlFile = File('${liveDir.path}/marker_$markerMs.edl');
+    if (await edlFile.exists()) {
+      try {
+        final existing = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+        if (existing['segmentFilename'] == filename) {
+          // Same marker, same segment — already persisted, leave existing in place
+          // (preserves any user crop edits).
+          return;
+        }
+      } catch (_) {}
+      // Different segment → write under a suffixed name.
+      int suffix = 1;
+      while (true) {
+        final candidate = File('${liveDir.path}/marker_${markerMs}_$suffix.edl');
+        if (!await candidate.exists()) {
+          edlFile = candidate;
+          break;
+        }
+        suffix++;
+      }
+    }
+    await edlFile.writeAsString(jsonEncode(payload));
+    Logger.debug(
+        'RecordingsManager: Wrote EDL ${edlFile.path.split('/').last} → ${filename.isEmpty ? "(orphan)" : filename} at ${offsetMs}ms');
+  }
+
   /// Scans all `recordings/<date>/` folders for `marker_*.edl` files and
   /// returns a list of [MarkerConversation] sorted by markerTime descending.
   /// Pending conversations (no backing m4a yet) are included with [isPending] = true.
@@ -1697,6 +1810,20 @@ class RecordingsManager {
 
     final entities = await recordingsDir.list().toList();
     final dateFolders = entities.whereType<Directory>().toList();
+
+    // Build a one-shot filename → File index across all date folders so that
+    // missing-segment recovery is O(1) per marker instead of O(folders) (B14).
+    final Map<String, File> filenameIndex = {};
+    for (final folder in dateFolders) {
+      try {
+        await for (final entity in folder.list()) {
+          if (entity is! File) continue;
+          final name = entity.path.split('/').last;
+          // First write wins — date folder placement is deterministic.
+          filenameIndex.putIfAbsent(name, () => entity);
+        }
+      } catch (_) {}
+    }
 
     // Step 1: Rapidly scan all date folders for EDL files
     final List<MarkerConversation> allConversations = [];
@@ -1715,19 +1842,20 @@ class RecordingsManager {
 
           File? segmentFile;
           if (segmentFilename != null && segmentFilename.isNotEmpty) {
-            if (segmentFilename.contains('_draft.')) continue;
-            final localFile = File('${dateFolder.path}/$segmentFilename');
-            if (await localFile.exists()) {
-              segmentFile = localFile;
-            } else {
-              // Resiliency: if audio was misplaced (bug in moveTempFilesToLive), search other folders.
-              for (final otherFolder in dateFolders) {
-                if (otherFolder.path == dateFolder.path) continue;
-                final otherFile = File('${otherFolder.path}/$segmentFilename');
-                if (await otherFile.exists()) {
-                  segmentFile = otherFile;
-                  break;
-                }
+            // Resolve the segment from the index — also covers draft files so
+            // markers in not-yet-finalized drafts show up as playable instead
+            // of stuck "Processing…" (B4).
+            segmentFile = filenameIndex[segmentFilename];
+            if (segmentFile == null) {
+              // Fall back: maybe the draft was finalized to a non-draft name.
+              if (segmentFilename.contains('_draft.')) {
+                final finalizedName = segmentFilename.replaceAll('_draft.', '.');
+                segmentFile = filenameIndex[finalizedName];
+              } else {
+                // Or vice-versa: file is still a draft on disk.
+                final draftName = segmentFilename.replaceAllMapped(
+                    RegExp(r'\.(m4a|wav|ogg)$'), (m) => '_draft${m[0]}');
+                segmentFile = filenameIndex[draftName];
               }
             }
           }
@@ -1764,34 +1892,33 @@ class RecordingsManager {
       }
     }
 
-    // Step 2: Deduplicate by markerMs within 2s window.
-    final List<MarkerConversation> deduped = [];
+    // Step 2: Deduplicate by exact markerMs match only. A 2-second window was
+    // previously used to collapse re-runs, but it also silently merged two
+    // intentional consecutive taps (B10). EDL filename collisions for the
+    // same markerMs are now disambiguated at write time (see _writeMarkerEdl).
+    final Map<int, MarkerConversation> dedupedByKey = {};
     for (final mc in allConversations) {
-      final ms = mc.markerTime.millisecondsSinceEpoch;
-      int existingIdx = -1;
-      for (int i = 0; i < deduped.length; i++) {
-        if ((deduped[i].markerTime.millisecondsSinceEpoch - ms).abs() <= 2000) {
-          existingIdx = i;
-          break;
-        }
+      final key = mc.markerTime.millisecondsSinceEpoch;
+      final existing = dedupedByKey[key];
+      if (existing == null) {
+        dedupedByKey[key] = mc;
+        continue;
       }
-
-      if (existingIdx == -1) {
-        deduped.add(mc);
-      } else {
-        final existing = deduped[existingIdx];
-        if (existing.isPending && !mc.isPending) {
-          // Replace pending with resolved
-          deduped[existingIdx] = mc;
-        } else if (existing.isPending && mc.isPending && existing.edlFile.path != mc.edlFile.path) {
-          // KEEP BOTH if they are distinct pending files, even if close in time.
-          // This allows the cleanup tool to find and delete all problematic files.
-          deduped.add(mc);
+      // Prefer the resolved entry over a pending one. If both have segments
+      // (distinct EDL files), keep them as separate entries by mutating the key.
+      if (existing.isPending && !mc.isPending) {
+        dedupedByKey[key] = mc;
+      } else if (!existing.isPending && !mc.isPending && existing.edlFile.path != mc.edlFile.path) {
+        // Two real markers landed on the same ms with distinct EDLs — surface both.
+        int alt = key * 1000 + 1;
+        while (dedupedByKey.containsKey(alt)) {
+          alt++;
         }
+        dedupedByKey[alt] = mc;
       }
     }
 
-    deduped.sort((a, b) => b.markerTime.compareTo(a.markerTime));
+    final deduped = dedupedByKey.values.toList()..sort((a, b) => b.markerTime.compareTo(a.markerTime));
     return deduped;
   }
 
