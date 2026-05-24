@@ -737,7 +737,18 @@ class VadAudioProcessor {
     if (result != null) {
       if (_pendingMarkers.isNotEmpty) {
         final filename = result.split('/').last;
-        final durationMs = _currentChunkDurationMs;
+        // EDL cropEnd must be playable: cap wall-clock progress at the file's
+        // actual encoded duration. If decode failures dropped frames silently,
+        // _currentChunkDurationMs can exceed what's on disk.
+        var durationMs = _currentChunkDurationMs;
+        try {
+          final base = result.contains('.') ? result.substring(0, result.lastIndexOf('.')) : result;
+          final metaBytes = await File('$base.meta').readAsBytes();
+          if (metaBytes.length >= 8) {
+            final encodedMs = ByteData.sublistView(metaBytes).getUint32(4, Endian.little);
+            if (encodedMs > 0 && encodedMs < durationMs) durationMs = encodedMs;
+          }
+        } catch (_) {}
         for (final m in _pendingMarkers) {
           _pendingEdlData.add({
             'filename': filename,
@@ -872,6 +883,11 @@ class VadAudioProcessor {
       batchFrameCount = 0;
     }
 
+    int totalFrameRefs = 0;
+    int skippedReadFail = 0;
+    int skippedDecodeNull = 0;
+    int skippedDecodeEmpty = 0;
+
     try {
       String? currentFilePath;
       Uint8List? currentFileBytes;
@@ -901,6 +917,7 @@ class VadAudioProcessor {
         }
 
         final ref = item as FrameRef;
+        totalFrameRefs++;
         if (i % 50 == 0) await Future.delayed(Duration.zero);
 
         if (ref.segmentFile.path != currentFilePath) {
@@ -909,7 +926,10 @@ class VadAudioProcessor {
           await Future.delayed(Duration.zero);
         }
 
-        if (currentFileBytes == null) continue;
+        if (currentFileBytes == null) {
+          skippedReadFail++;
+          continue;
+        }
 
         final frameDataOffset = ref.byteOffset + 4;
         final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
@@ -919,7 +939,14 @@ class VadAudioProcessor {
           pcmData = _decoder?.decode(input: opusBytes);
         } catch (_) {}
 
-        if (pcmData == null) continue;
+        if (pcmData == null) {
+          skippedDecodeNull++;
+          continue;
+        }
+        if (pcmData.isEmpty) {
+          skippedDecodeEmpty++;
+          continue;
+        }
 
         for (int s = 0; s < pcmData.length; s++) {
           final amplitude = pcmData[s].abs() / 32768.0;
@@ -968,6 +995,15 @@ class VadAudioProcessor {
 
     await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
         prefix: prefix, extension: 'm4a', suffix: suffix);
+
+    final totalSkipped = skippedReadFail + skippedDecodeNull + skippedDecodeEmpty;
+    if (totalFrameRefs > 0 && totalSkipped * 20 > totalFrameRefs) {
+      Logger.error(
+          'VadAudioProcessor: $m4aPath dropped $totalSkipped/$totalFrameRefs frames '
+          '(${(100 * totalSkipped / totalFrameRefs).toStringAsFixed(1)}%): '
+          'readFail=$skippedReadFail decodeNull=$skippedDecodeNull decodeEmpty=$skippedDecodeEmpty — '
+          'wallClock=${_currentChunkDurationMs}ms encoded=${(totalSamples * 1000) ~/ sampleRate}ms');
+    }
 
     Logger.debug(
         'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
@@ -1267,6 +1303,11 @@ class VadAudioProcessor {
     int currentWindowSamples = 0;
     int totalSamples = 0;
 
+    int totalFrameRefs = 0;
+    int skippedReadFail = 0;
+    int skippedDecodeNull = 0;
+    int skippedDecodeEmpty = 0;
+
     try {
       String? currentFilePath;
       Uint8List? currentFileBytes;
@@ -1290,6 +1331,7 @@ class VadAudioProcessor {
         }
 
         final ref = item as FrameRef;
+        totalFrameRefs++;
         if (i % 50 == 0) await Future.delayed(Duration.zero);
 
         if (ref.segmentFile.path != currentFilePath) {
@@ -1298,7 +1340,10 @@ class VadAudioProcessor {
           await Future.delayed(Duration.zero);
         }
 
-        if (currentFileBytes == null) continue;
+        if (currentFileBytes == null) {
+          skippedReadFail++;
+          continue;
+        }
 
         final frameDataOffset = ref.byteOffset + 4;
         final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
@@ -1308,7 +1353,14 @@ class VadAudioProcessor {
           pcmData = _decoder?.decode(input: opusBytes);
         } catch (_) {}
 
-        if (pcmData == null) continue;
+        if (pcmData == null) {
+          skippedDecodeNull++;
+          continue;
+        }
+        if (pcmData.isEmpty) {
+          skippedDecodeEmpty++;
+          continue;
+        }
 
         for (int s = 0; s < pcmData.length; s++) {
           final amplitude = pcmData[s].abs() / 32768.0;
@@ -1345,6 +1397,16 @@ class VadAudioProcessor {
           prefix: prefix, extension: 'wav', suffix: suffix);
 
       await wavFile.rename(wavPath);
+
+      final totalSkipped = skippedReadFail + skippedDecodeNull + skippedDecodeEmpty;
+      if (totalFrameRefs > 0 && totalSkipped * 20 > totalFrameRefs) {
+        Logger.error(
+            'VadAudioProcessor: $wavPath dropped $totalSkipped/$totalFrameRefs frames '
+            '(${(100 * totalSkipped / totalFrameRefs).toStringAsFixed(1)}%): '
+            'readFail=$skippedReadFail decodeNull=$skippedDecodeNull decodeEmpty=$skippedDecodeEmpty — '
+            'wallClock=${_currentChunkDurationMs}ms encoded=${(totalSamples * 1000) ~/ sampleRate}ms');
+      }
+
       Logger.debug(
           'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
           'starting at $_recordingStartTime to $wavPath');
