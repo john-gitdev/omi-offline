@@ -1881,11 +1881,11 @@ class RecordingsManager {
       final filenames = convsInDir.map((c) => c.file.path.split('/').last).toSet();
 
       // 1. Delete audio, meta, bin files
+      final keysToRemove = convsInDir.map((c) => c.uploadKey).whereType<String>().toSet();
+      if (keysToRemove.isNotEmpty) {
+        await SharedPreferencesUtil().removeUploadedFromHeypocket(keysToRemove);
+      }
       for (final c in convsInDir) {
-        final key = c.uploadKey;
-        if (key != null) {
-          await SharedPreferencesUtil().removeUploadedFromHeypocket({key});
-        }
         final file = c.file;
         // Drop the exists() probe and let delete() fail-soft — one syscall per file instead of two.
         try {
