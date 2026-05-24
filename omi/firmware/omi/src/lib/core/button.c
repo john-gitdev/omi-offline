@@ -165,6 +165,13 @@ void check_button_level(struct k_work *work_item)
                             aad_set_threshold(32769);
                             #endif
                         }
+                        /* Bookmark the moment regardless of mode (B17). The
+                         * tap is meaningful UX even when it also toggles
+                         * record state — losing the marker here makes
+                         * "tag this moment" inconsistent across modes. */
+                        #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+                        write_marker_to_storage();
+                        #endif
                     } else {
                         LOG_INF("Double tap (Marker) detected");
                         marker_flash_count = 2;
