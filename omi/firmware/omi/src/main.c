@@ -249,11 +249,16 @@ int main(void)
     int ret;
     printk("Starting omi ...\n");
 
-    /* Initialize unique session ID for this boot session */
+    /* Initialize unique session ID for this boot session. Race-safe vs.
+     * the button-tap marker path which may also lazy-init on boot (B18). */
     if (device_session_id == 0) {
+        uint32_t sid;
         do {
-            device_session_id = sys_rand32_get();
-        } while (device_session_id == 0);
+            sid = sys_rand32_get();
+        } while (sid == 0);
+        if (!atomic_cas((atomic_t *)&device_session_id, 0, sid)) {
+            /* Another path beat us to it; keep theirs. */
+        }
     }
 
     ret = led_start();
