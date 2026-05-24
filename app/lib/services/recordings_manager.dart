@@ -1732,12 +1732,29 @@ class RecordingsManager {
             }
           }
 
+          // Clamp cropEnd to the segment's actual encoded duration. Pre-0.12.0
+          // EDLs stored wall-clock chunk duration which can exceed the playable
+          // file length when frames were silently dropped during decode.
+          int cropEndMs = json['cropEndMs'] as int? ?? 0;
+          if (segmentFile != null) {
+            try {
+              final base = segmentFile.path.substring(0, segmentFile.path.lastIndexOf('.'));
+              final metaBytes = await File('$base.meta').readAsBytes();
+              if (metaBytes.length >= 8) {
+                final encodedMs = ByteData.sublistView(metaBytes).getUint32(4, Endian.little);
+                if (encodedMs > 0 && (cropEndMs == 0 || cropEndMs > encodedMs)) {
+                  cropEndMs = encodedMs;
+                }
+              }
+            } catch (_) {}
+          }
+
           allConversations.add(MarkerConversation(
             markerTime: DateTime.fromMillisecondsSinceEpoch(markerMs),
             segment: segmentFile,
             markerOffsetMs: json['markerOffsetMs'] as int? ?? 0,
             cropStartMs: json['cropStartMs'] as int? ?? 0,
-            cropEndMs: json['cropEndMs'] as int? ?? 0,
+            cropEndMs: cropEndMs,
             edlFile: edlFile,
             userSaved: json['userSaved'] as bool? ?? false,
           ));
