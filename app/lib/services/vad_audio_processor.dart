@@ -516,6 +516,9 @@ class VadAudioProcessor {
                 if (tooShortSpeech) {
                   final rec = _buildDiscardRecord('noise_pre_split');
                   if (rec != null) _pendingDiscards.add(rec);
+                  // Surface any queued tap as an orphan instead of leaking it
+                  // into the next conversation with a stale offset.
+                  _emitOrphanMarkers();
                   Logger.debug('VadAudioProcessor: Discarding noise conversation before split.');
                 } else {
                   final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
@@ -616,6 +619,7 @@ class VadAudioProcessor {
           } else {
             final rec = _buildDiscardRecord('noise_max_duration');
             if (rec != null) _pendingDiscards.add(rec);
+            _emitOrphanMarkers();
             Logger.debug('VadAudioProcessor: Discarding noise conversation during max-duration cut.');
           }
           final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
