@@ -28,7 +28,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   StreamSubscription<Duration>? _positionSub;
   StreamSubscription<PlayerState>? _playerStateSub;
 
-  late File _segment;
+  File? _segment;
   late Duration _markerOffset;
   late Duration _cropStart;
   late Duration _cropEnd;
@@ -52,23 +52,33 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   @override
   void initState() {
     super.initState();
-    _segment = widget.markerConversation.segment!;
+    // Pending markers can legitimately reach this page (e.g. deep links or
+    // future entry points); guard against a null segment and fall back to a
+    // read-only "no audio yet" state instead of crashing (B11).
+    _segment = widget.markerConversation.segment;
     _markerOffset = Duration(milliseconds: widget.markerConversation.markerOffsetMs);
     _cropStart = Duration(milliseconds: widget.markerConversation.cropStartMs);
     _cropEnd = Duration(milliseconds: widget.markerConversation.cropEndMs);
     _userSaved = widget.markerConversation.userSaved;
+    if (_segment == null) {
+      _loadingAudio = false;
+      _loadingWaveform = false;
+      return;
+    }
     _init();
   }
 
   Future<void> _init() async {
-    await Future.wait([_loadWaveform(), _setupAudio()]);
+    final seg = _segment;
+    if (seg == null) return;
+    await Future.wait([_loadWaveform(seg), _setupAudio(seg)]);
     await _player.seek(_markerOffset);
   }
 
   // ── Waveform ───────────────────────────────────────────────────────────────
 
-  Future<void> _loadWaveform() async {
-    final bars = _readMetaWaveform(_segment);
+  Future<void> _loadWaveform(File seg) async {
+    final bars = _readMetaWaveform(seg);
     if (mounted)
       setState(() {
         _waveform = bars;
@@ -92,10 +102,10 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
 
   // ── Audio setup ────────────────────────────────────────────────────────────
 
-  Future<void> _setupAudio() async {
-    await _player.setAudioSource(AudioSource.file(_segment.path), initialPosition: _cropStart);
+  Future<void> _setupAudio(File seg) async {
+    await _player.setAudioSource(AudioSource.file(seg.path), initialPosition: _cropStart);
 
-    _totalDuration = Duration(milliseconds: _readSegmentDurationMs(_segment));
+    _totalDuration = Duration(milliseconds: _readSegmentDurationMs(seg));
     if (mounted) setState(() => _loadingAudio = false);
 
     _positionSub = _player.positionStream.listen((pos) {
@@ -126,9 +136,11 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   }
 
   Future<void> _saveEdl() async {
+    final seg = _segment;
+    if (seg == null) return;
     final edlData = {
       'markerTimestampMs': widget.markerConversation.markerTime.millisecondsSinceEpoch,
-      'segmentFilename': _segment.path.split('/').last,
+      'segmentFilename': seg.path.split('/').last,
       'markerOffsetMs': _markerOffset.inMilliseconds,
       'cropStartMs': _cropStart.inMilliseconds,
       'cropEndMs': _cropEnd.inMilliseconds,
@@ -139,11 +151,28 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
 
   // ── Save ───────────────────────────────────────────────────────────────────
 
+  /// Pulls the epoch-ms timestamp from a recording filename, tolerating both
+  /// `recording_<ts>.<ext>` and `recording_<ts>_draft.<ext>` shapes (and any
+  /// future trailing segment) by scanning components for the first plausible
+  /// numeric epoch (B12).
+  int _extractTimestampMsFromFilename(String filename) {
+    final nameNoExt = filename.contains('.') ? filename.substring(0, filename.lastIndexOf('.')) : filename;
+    for (final part in nameNoExt.split('_')) {
+      final n = int.tryParse(part);
+      if (n != null && n > 946684800000) return n;
+    }
+    return 0;
+  }
+
   String get _liveTimeRangeLabel {
-    final name = _segment.path.split('/').last;
-    final part = name.contains('_') ? name.split('_').last.split('.').first : null;
-    final firstMs = part != null ? int.tryParse(part) : 0;
-    final origin = DateTime.fromMillisecondsSinceEpoch(firstMs ?? 0);
+    final seg = _segment;
+    if (seg == null) {
+      // Orphan / pending marker: anchor the range label on the marker tap itself.
+      final m = widget.markerConversation.markerTime;
+      return '${fmtHourMin(m)} – ${fmtHourMin(m)}';
+    }
+    final firstMs = _extractTimestampMsFromFilename(seg.path.split('/').last);
+    final origin = DateTime.fromMillisecondsSinceEpoch(firstMs);
     return '${fmtHourMin(origin.add(_cropStart))} – ${fmtHourMin(origin.add(_cropEnd))}';
   }
 
@@ -177,13 +206,14 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   }
 
   Future<void> _exportConversation() async {
-    if (_isExporting) return;
+    final seg = _segment;
+    if (seg == null || _isExporting) return;
     setState(() => _isExporting = true);
 
     try {
       final dir = await getTemporaryDirectory();
       final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final extension = _segment.path.split('.').last;
+      final extension = seg.path.split('.').last;
       final outputPath = '${dir.path}/export_$timestamp.$extension';
 
       final startSec = _cropStart.inMilliseconds / 1000.0;
@@ -191,7 +221,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
 
       // -ss is the start offset, -t is the duration
       // -c copy allows fast trimming without re-encoding
-      final command = '-y -i "${_segment.path}" -ss $startSec -t $durationSec -c copy "$outputPath"';
+      final command = '-y -i "${seg.path}" -ss $startSec -t $durationSec -c copy "$outputPath"';
 
       final session = await FFmpegKit.execute(command);
       final returnCode = await session.getReturnCode();
@@ -346,7 +376,31 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
         ),
         body: SafeArea(
           top: false,
-          child: _loadingAudio
+          child: _segment == null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        FaIcon(FontAwesomeIcons.solidBookmark, color: Colors.amber, size: 32),
+                        const SizedBox(height: 16),
+                        Text(
+                          'Marker recorded at ${widget.markerConversation.markerTimeLabel}',
+                          style: const TextStyle(color: Colors.white, fontSize: 16),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'No audio is attached to this marker. The surrounding audio was either silence or has not yet been processed.',
+                          style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : _loadingAudio
               ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
               : Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 24),
