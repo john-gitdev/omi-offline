@@ -100,7 +100,7 @@ class SharedPreferencesUtil {
   set autoModeVadMinSpeechSeconds(int v) => saveInt('auto_vadMinSpeechSeconds', v);
   int get autoModeVadSplitSeconds => getInt('auto_vadSplitSeconds', defaultValue: 120);
   set autoModeVadSplitSeconds(int v) => saveInt('auto_vadSplitSeconds', v);
-  int get autoModeFilterMinDurationSeconds => getInt('auto_filterMinDurationSeconds', defaultValue: 600);
+  int get autoModeFilterMinDurationSeconds => getInt('auto_filterMinDurationSeconds', defaultValue: 0);
   set autoModeFilterMinDurationSeconds(int v) => saveInt('auto_filterMinDurationSeconds', v);
   bool get autoModeDiscardShortRecordings => getBool('auto_discardShortRecordings', defaultValue: false);
   set autoModeDiscardShortRecordings(bool v) => saveBool('auto_discardShortRecordings', v);
