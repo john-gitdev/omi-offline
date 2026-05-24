@@ -441,6 +441,11 @@ class MarkerConversation {
 class _IsolateParams {
   final SendPort sendPort;
   final RootIsolateToken rootIsolateToken;
+  // Filesystem path to the Silero VAD ONNX model. Pre-copied from rootBundle
+  // on the main isolate because flutter_onnxruntime's createSessionFromAsset
+  // touches ServicesBinding.instance, which is unavailable in a background
+  // isolate (only BackgroundIsolateBinaryMessenger is initialised there).
+  final String? sileroModelPath;
   final ProcessingSettings settings;
   final String tempProcessingPath;
   final List<String> segmentPaths;
@@ -454,6 +459,7 @@ class _IsolateParams {
   const _IsolateParams({
     required this.sendPort,
     required this.rootIsolateToken,
+    required this.sileroModelPath,
     required this.settings,
     required this.tempProcessingPath,
     required this.segmentPaths,
@@ -494,9 +500,9 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
   }
 
   OrtSession? session;
-  if (params.settings.vadEnabled) {
+  if (params.settings.vadEnabled && params.sileroModelPath != null) {
     try {
-      session = await OnnxRuntime().createSessionFromAsset('assets/models/silero_vad.onnx');
+      session = await OnnxRuntime().createSession(params.sileroModelPath!);
       Logger.debug(
           'RecordingsManager isolate: Silero session — inputs=${session.inputNames} outputs=${session.outputNames}');
     } catch (e) {
@@ -1042,6 +1048,27 @@ class RecordingsManager {
 
         final Set<String> deletedSegmentFolders = {};
 
+        // Pre-copy the Silero VAD model from rootBundle to a temp file on the
+        // main isolate. flutter_onnxruntime's createSessionFromAsset uses
+        // ServicesBinding.instance internally, which isn't available in a
+        // background isolate — so the isolate loads from a filesystem path
+        // via createSession(path) instead. Cached across runs.
+        String? sileroModelPath;
+        final effectiveVadEnabled = settingsOverride?.vadEnabled ?? SharedPreferencesUtil().vadEnabled;
+        if (effectiveVadEnabled) {
+          try {
+            final dir = await getApplicationSupportDirectory();
+            final cached = File('${dir.path}/silero_vad.onnx');
+            if (!await cached.exists()) {
+              final data = await rootBundle.load('assets/models/silero_vad.onnx');
+              await cached.writeAsBytes(data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes), flush: true);
+            }
+            sileroModelPath = cached.path;
+          } catch (e) {
+            Logger.error('RecordingsManager: Failed to cache Silero model ($e) — AAD mode in isolate.');
+          }
+        }
+
         try {
           final receivePort = ReceivePort();
           final exitPort = ReceivePort();
@@ -1055,6 +1082,7 @@ class RecordingsManager {
             _IsolateParams(
               sendPort: receivePort.sendPort,
               rootIsolateToken: RootIsolateToken.instance!,
+              sileroModelPath: sileroModelPath,
               settings: settingsOverride ?? ProcessingSettings.fromPrefs(),
               tempProcessingPath: tempProcessingPath,
               segmentPaths: allSegments.map((f) => f.path).toList(),
