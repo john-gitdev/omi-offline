@@ -251,14 +251,13 @@ int main(void)
 
     /* Initialize unique session ID for this boot session. Race-safe vs.
      * the button-tap marker path which may also lazy-init on boot (B18). */
-    if (device_session_id == 0) {
+    if (atomic_get(&device_session_id) == 0) {
         uint32_t sid;
         do {
             sid = sys_rand32_get();
         } while (sid == 0);
-        if (!atomic_cas((atomic_t *)&device_session_id, 0, sid)) {
-            /* Another path beat us to it; keep theirs. */
-        }
+        /* atomic_cas returns false if another path beat us; their ID wins. */
+        (void)atomic_cas(&device_session_id, 0, (atomic_val_t)sid);
     }
 
     ret = led_start();
