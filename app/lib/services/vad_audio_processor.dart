@@ -522,8 +522,16 @@ class VadAudioProcessor {
                   Logger.debug('VadAudioProcessor: Discarding noise conversation before split.');
                 } else {
                   final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
+                  // Encoder failure leaves _pendingMarkers populated; surface as
+                  // orphans rather than letting them leak into the next conv.
+                  if (filePath == null) _emitOrphanMarkers();
                   if (filePath != null) savedFiles.add(filePath);
                 }
+              } else {
+                // Marker queued, no audio buffered yet → still emit orphan so
+                // the tap is preserved when this branch's in-place reset wipes
+                // _currentChunkDurationMs.
+                _emitOrphanMarkers();
               }
 
               final bool newConversationProtected =
@@ -615,6 +623,8 @@ class VadAudioProcessor {
 
           if (!tooShortSpeech) {
             final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
+            // Encoder failure path: preserve queued taps as orphans.
+            if (filePath == null) _emitOrphanMarkers();
             if (filePath != null) savedFiles.add(filePath);
           } else {
             final rec = _buildDiscardRecord('noise_max_duration');
@@ -679,6 +689,11 @@ class VadAudioProcessor {
     }
     discardGuardFiredOnLastFlush = false;
     final path = await _saveRecording(_currentRefs, _recordingStartTime!, isDraft: isDraft);
+    // _saveRecording consumes _pendingMarkers only when it returns a non-null
+    // result. If encoding produced zero frames or failed, any queued taps are
+    // still in _pendingMarkers; emit them as orphans before _resetState wipes
+    // them silently.
+    if (path == null) _emitOrphanMarkers();
     _resetState();
     return path;
   }
@@ -707,7 +722,7 @@ class VadAudioProcessor {
 
   void _resetState() {
     _forcedByMarker = false;
-    // Preserve _markerProtectedUntilMs across reset — the 50s window applies
+    // Preserve _markerProtectedUntilMs across reset — the 50 s window applies
     // to wall-clock time, so an inter-file split shouldn't drop protection
     // when the next bin starts within the window. It self-expires naturally
     // once audio wall time crosses it.
@@ -716,16 +731,25 @@ class VadAudioProcessor {
     _currentChunkDurationMs = 0;
     _currentMaxVoiceProb = 0.0;
     _recordingStartTime = null;
-    // NOTE: _pendingMarkers is intentionally NOT cleared here — orphan markers
-    // are emitted via _emitOrphanMarkers() before reset by callers that discard.
-    // Successful saves consume them in _saveRecording. We only clear if they
-    // somehow survived (defensive).
-    _pendingMarkers.clear();
+    // Defensive clear: callers that discard MUST call _emitOrphanMarkers()
+    // before _resetState() — otherwise the tap is lost silently. Anything
+    // still in _pendingMarkers here is a bug in the caller; we wipe it so it
+    // doesn't leak into the next conversation with a stale offset.
+    if (_pendingMarkers.isNotEmpty) {
+      Logger.error(
+          'VadAudioProcessor: _resetState dropping ${_pendingMarkers.length} pending marker(s) — caller forgot _emitOrphanMarkers()');
+      _pendingMarkers.clear();
+    }
   }
 
   /// Emits any queued button-tap markers as standalone EDL entries with no
   /// backing segment, so a tap is never lost when the surrounding audio
   /// is discarded by VAD/min-duration guards.
+  ///
+  /// Also clears `_markerProtectedUntilMs`: once a tap has been promoted to
+  /// an orphan EDL, the 50 s protection window is no longer "guarding the
+  /// real recording" — leaving it set would cause the next unrelated audio
+  /// in the same minute to be force-promoted with no marker to link to.
   void _emitOrphanMarkers() {
     if (_pendingMarkers.isEmpty) return;
     for (final m in _pendingMarkers) {
@@ -737,6 +761,7 @@ class VadAudioProcessor {
       });
     }
     _pendingMarkers.clear();
+    _markerProtectedUntilMs = null;
   }
 
   /// Builds a discard record from the current conversation state. Caller is
