@@ -1967,7 +1967,11 @@ class RecordingsManager {
 
           // Clamp cropEnd to the segment's actual encoded duration. Pre-0.12.0
           // EDLs stored wall-clock chunk duration which can exceed the playable
-          // file length when frames were silently dropped during decode.
+          // file length when frames were silently dropped during decode. The
+          // in-memory MC always gets the clamped value; if the on-disk EDL
+          // was over the encoded duration AND not user-saved (no risk of
+          // overwriting user crop intent), persist the clamp back to disk
+          // so the next load doesn't re-clamp (B9).
           int cropEndMs = json['cropEndMs'] as int? ?? 0;
           if (segmentFile != null) {
             try {
@@ -1976,7 +1980,19 @@ class RecordingsManager {
               if (metaBytes.length >= 8) {
                 final encodedMs = ByteData.sublistView(metaBytes).getUint32(4, Endian.little);
                 if (encodedMs > 0 && (cropEndMs == 0 || cropEndMs > encodedMs)) {
+                  final originalOnDisk = cropEndMs;
                   cropEndMs = encodedMs;
+                  final userSaved = json['userSaved'] as bool? ?? false;
+                  if (!userSaved && originalOnDisk > encodedMs) {
+                    json['cropEndMs'] = encodedMs;
+                    try {
+                      await _writeJsonAtomic(edlFile, json);
+                      Logger.debug(
+                          'RecordingsManager: Migrated EDL ${edlFile.path.split('/').last} cropEndMs ${originalOnDisk}→$encodedMs');
+                    } catch (e) {
+                      Logger.error('RecordingsManager: cropEnd migration write failed: $e');
+                    }
+                  }
                 }
               }
             } catch (_) {}
