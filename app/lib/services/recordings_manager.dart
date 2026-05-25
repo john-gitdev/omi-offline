@@ -1866,7 +1866,7 @@ class RecordingsManager {
       'userSaved': false,
     };
 
-    File edlFile = File('${liveDir.path}/marker_$markerMs.edl');
+    final File edlFile = File('${liveDir.path}/marker_$markerMs.edl');
     if (await edlFile.exists()) {
       try {
         final existing = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
@@ -1891,24 +1891,14 @@ class RecordingsManager {
               'RecordingsManager: Preserved user edits on marker_$markerMs.edl, re-pointed to $filename');
           return;
         }
-      } catch (_) {}
-      // No user edits to preserve and a different segment → write under a
-      // suffixed name. Bound the loop defensively to keep a transient
-      // filesystem error from spinning.
-      int suffix = 1;
-      const maxSuffix = 1000;
-      while (suffix < maxSuffix) {
-        final candidate = File('${liveDir.path}/marker_${markerMs}_$suffix.edl');
-        if (!await candidate.exists()) {
-          edlFile = candidate;
-          break;
-        }
-        suffix++;
+      } catch (_) {
+        // Corrupt/unparseable EDL — fall through and overwrite.
       }
-      if (suffix >= maxSuffix) {
-        Logger.error('RecordingsManager: marker_$markerMs collision suffix exhausted, dropping EDL');
-        return;
-      }
+      // No user edits to preserve: overwrite in place. Two physical taps
+      // cannot share a UTC ms (firmware ms resolution, taps take much
+      // longer than 1 ms), so the only way an EDL at this filename exists
+      // is the same physical tap from a previous run; the new payload is
+      // the authoritative one (B4/D1).
     }
     await _writeJsonAtomic(edlFile, payload);
     Logger.debug(
