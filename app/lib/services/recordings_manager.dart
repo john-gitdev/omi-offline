@@ -1230,6 +1230,13 @@ class RecordingsManager {
 
   /// Scans for draft recordings across all dates and stitches them with subsequent
   /// recordings if the gap is within the 2-minute threshold.
+  ///
+  /// The chronological-next lookup is **global across date folders** so a
+  /// recording that crossed local midnight (draft in day-N folder, next in
+  /// day-(N+1) folder, since `_saveRecordingCore` places files by their
+  /// `startTime.toLocal()` date) gets stitched into a single recording
+  /// instead of two split files. `_stitchOgg`/`_stitchWav` keep the draft's
+  /// filename and folder, deleting nextFile wherever it lived.
   Future<void> _stitchDraftRecordings({bool finalizeAll = false}) async {
     final directory = await getApplicationDocumentsDirectory();
     final recordingsDir = Directory('${directory.path}/recordings');
@@ -1238,111 +1245,116 @@ class RecordingsManager {
     final splitSeconds = SharedPreferencesUtil().vadSplitSeconds;
     final thresholdMs = splitSeconds * 1000;
 
-    final dateFolders = (await recordingsDir.list().toList()).whereType<Directory>().toList();
-    for (final folder in dateFolders) {
-      bool scanNeeded = true;
-      while (scanNeeded) {
-        scanNeeded = false;
+    bool scanNeeded = true;
+    while (scanNeeded) {
+      scanNeeded = false;
+
+      final dateFolders = (await recordingsDir.list().toList()).whereType<Directory>().toList();
+
+      // Build a single chronologically-sorted list across every date folder so
+      // the "next file after a draft" lookup can cross day boundaries.
+      final allAudioFiles = <File>[];
+      for (final folder in dateFolders) {
         final entities = (await folder.list().toList()).whereType<File>().toList();
-        final draftFiles = entities.where((f) => f.path.contains('_draft.') && !f.path.endsWith('.meta')).toList();
-
-        if (draftFiles.isEmpty) break;
-
-        // Sort files in this folder chronologically to find what comes after each draft.
-        final allAudioFiles = entities.where((f) {
+        allAudioFiles.addAll(entities.where((f) {
           final p = f.path;
           return (p.endsWith('.m4a') || p.endsWith('.wav') || p.endsWith('.ogg')) && !p.contains('.tmp');
-        }).toList()
-          ..sort((a, b) {
-            final tsA = _extractTimestamp(a.path);
-            final tsB = _extractTimestamp(b.path);
-            return tsA.compareTo(tsB);
-          });
+        }));
+      }
+      allAudioFiles.sort((a, b) {
+        final tsA = _extractTimestamp(a.path);
+        final tsB = _extractTimestamp(b.path);
+        return tsA.compareTo(tsB);
+      });
 
-        for (final draftFile in draftFiles) {
-          final draftTs = _extractTimestamp(draftFile.path);
-          final draftExt = draftFile.path.split('.').last;
-          final draftMeta = File(draftFile.path.replaceAllMapped(RegExp(r'\.' + draftExt + r'$'), (_) => '.meta'));
+      final draftFiles = allAudioFiles.where((f) => f.path.contains('_draft.')).toList();
+      if (draftFiles.isEmpty) break;
 
-          if (!await draftMeta.exists()) {
-            // No meta, can't stitch accurately. Finalize it.
-            await _finalizeDraft(draftFile, isForceSynced: finalizeAll);
+      for (final draftFile in draftFiles) {
+        final draftTs = _extractTimestamp(draftFile.path);
+        final draftExt = draftFile.path.split('.').last;
+        final draftMeta = File(draftFile.path.replaceAllMapped(RegExp(r'\.' + draftExt + r'$'), (_) => '.meta'));
+
+        if (!await draftMeta.exists()) {
+          // No meta, can't stitch accurately. Finalize it.
+          await _finalizeDraft(draftFile, isForceSynced: finalizeAll);
+          scanNeeded = true;
+          break;
+        }
+
+        // Get draft duration from meta
+        final metaBytes = await draftMeta.readAsBytes();
+        if (metaBytes.length < 8) {
+          await _finalizeDraft(draftFile, isForceSynced: finalizeAll);
+          scanNeeded = true;
+          break;
+        }
+        final durationMs = ByteData.sublistView(metaBytes).getUint32(4, Endian.little);
+        final draftEndTs = draftTs + durationMs;
+
+        // Find the next chronological file across all folders.
+        final currentIndex = allAudioFiles.indexWhere((f) => f.path == draftFile.path);
+        if (currentIndex == -1 || currentIndex == allAudioFiles.length - 1) {
+          // No next file anywhere.
+          if (finalizeAll) {
+            // Manual user trigger (Force Process) always finalizes immediately.
+            await _finalizeDraft(draftFile, isForceSynced: true);
             scanNeeded = true;
             break;
           }
+          continue;
+        }
 
-          // Get draft duration from meta
-          final metaBytes = await draftMeta.readAsBytes();
-          if (metaBytes.length < 8) {
-            await _finalizeDraft(draftFile, isForceSynced: finalizeAll);
-            scanNeeded = true;
-            break;
-          }
-          final durationMs = ByteData.sublistView(metaBytes).getUint32(4, Endian.little);
-          final draftEndTs = draftTs + durationMs;
+        final nextFile = allAudioFiles[currentIndex + 1];
+        final nextTs = _extractTimestamp(nextFile.path);
+        final nextExt = nextFile.path.split('.').last;
+        final nextMeta = File(nextFile.path.replaceAllMapped(RegExp(r'\.' + nextExt + r'$'), (_) => '.meta'));
 
-          // Find the next chronological file
-          final currentIndex = allAudioFiles.indexWhere((f) => f.path == draftFile.path);
-          if (currentIndex == -1 || currentIndex == allAudioFiles.length - 1) {
-            // No next file in this folder.
-            if (finalizeAll) {
-              // Manual user trigger (Force Process) always finalizes immediately.
-              await _finalizeDraft(draftFile, isForceSynced: true);
-              scanNeeded = true;
-              break;
-            }
-            continue;
-          }
+        int gapMs = nextTs - draftEndTs;
 
-          final nextFile = allAudioFiles[currentIndex + 1];
-          final nextTs = _extractTimestamp(nextFile.path);
-          final nextExt = nextFile.path.split('.').last;
-          final nextMeta = File(nextFile.path.replaceAllMapped(RegExp(r'\.' + nextExt + r'$'), (_) => '.meta'));
+        if (gapMs >= 0 && gapMs <= thresholdMs) {
+          // Check for clock jump using hardware uptime if both have meta files
+          bool isClockJump = false;
+          if (await nextMeta.exists()) {
+            try {
+              final nextMetaBytes = await nextMeta.readAsBytes();
+              if (metaBytes.length >= 416 && nextMetaBytes.length >= 416) {
+                final draftSessionId = ByteData.sublistView(metaBytes).getUint32(408, Endian.little);
+                final nextSessionId = ByteData.sublistView(nextMetaBytes).getUint32(408, Endian.little);
+                final draftUptimeSec = ByteData.sublistView(metaBytes).getUint32(412, Endian.little);
+                final nextUptimeSec = ByteData.sublistView(nextMetaBytes).getUint32(412, Endian.little);
 
-          int gapMs = nextTs - draftEndTs;
-
-          if (gapMs >= 0 && gapMs <= thresholdMs) {
-            // Check for clock jump using hardware uptime if both have meta files
-            bool isClockJump = false;
-            if (await nextMeta.exists()) {
-              try {
-                final nextMetaBytes = await nextMeta.readAsBytes();
-                if (metaBytes.length >= 416 && nextMetaBytes.length >= 416) {
-                  final draftSessionId = ByteData.sublistView(metaBytes).getUint32(408, Endian.little);
-                  final nextSessionId = ByteData.sublistView(nextMetaBytes).getUint32(408, Endian.little);
-                  final draftUptimeSec = ByteData.sublistView(metaBytes).getUint32(412, Endian.little);
-                  final nextUptimeSec = ByteData.sublistView(nextMetaBytes).getUint32(412, Endian.little);
-
-                  if (draftSessionId == nextSessionId && draftUptimeSec > 0 && nextUptimeSec > draftUptimeSec) {
-                    final draftDurationMs = durationMs;
-                    final uptimeGapMs = (nextUptimeSec * 1000) - ((draftUptimeSec * 1000) + draftDurationMs);
-                    if (uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000) {
-                      isClockJump = true;
-                    }
+                if (draftSessionId == nextSessionId && draftUptimeSec > 0 && nextUptimeSec > draftUptimeSec) {
+                  final draftDurationMs = durationMs;
+                  final uptimeGapMs = (nextUptimeSec * 1000) - ((draftUptimeSec * 1000) + draftDurationMs);
+                  if (uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000) {
+                    isClockJump = true;
                   }
                 }
-              } catch (_) {}
-            }
+              }
+            } catch (_) {}
+          }
 
-            // If it's a clock jump or a very small gap (under 10s AAD tail), stitch without padding.
-            if (isClockJump || gapMs < 10000) {
-              gapMs = 0;
-            }
+          // If it's a clock jump or a very small gap (under 10s AAD tail), stitch without padding.
+          if (isClockJump || gapMs < 10000) {
+            gapMs = 0;
+          }
 
-            Logger.debug(
-                'RecordingsManager: Stitching draft $draftTs with next $nextTs (gap=${gapMs}ms${isClockJump ? ", CLOCK JUMP" : ""})');
-            final success = await _performStitch(draftFile, nextFile, gapMs);
-            if (success) {
-              // After stitching, we need to re-scan this folder.
-              scanNeeded = true;
-              break;
-            }
-          } else {
-            // Gap too large or next file is in the past (shouldn't happen). Finalize.
-            await _finalizeDraft(draftFile, isForceSynced: false);
+          final crossFolder = draftFile.parent.path != nextFile.parent.path;
+          Logger.debug(
+              'RecordingsManager: Stitching draft $draftTs with next $nextTs (gap=${gapMs}ms${isClockJump ? ", CLOCK JUMP" : ""}${crossFolder ? ", CROSS-FOLDER" : ""})');
+          final success = await _performStitch(draftFile, nextFile, gapMs);
+          if (success) {
+            // After stitching, re-scan from the top — the global file list
+            // has changed (nextFile deleted, possibly in a different folder).
             scanNeeded = true;
             break;
           }
+        } else {
+          // Gap too large or next file is in the past (shouldn't happen). Finalize.
+          await _finalizeDraft(draftFile, isForceSynced: false);
+          scanNeeded = true;
+          break;
         }
       }
     }
@@ -2013,13 +2025,11 @@ class RecordingsManager {
       }
     }
 
-    // Step 2: Group EDLs by exact markerMs, then within each group pick a
-    // stable canonical entry (A4/D8). Preference order: userSaved > non-pending
-    // > earliest edl filename (basename sort). Any non-canonical entry that
-    // shares the same backing segment is treated as a duplicate and dropped;
-    // genuinely-distinct same-ms entries (different edl AND different segment)
-    // surface as separate items keyed by their edl path so ordering is stable
-    // across runs regardless of directory listing order.
+    // Step 2: Group EDLs by exact markerMs and pick one canonical per ms.
+    // Two physical button taps cannot share a UTC ms (firmware ms resolution,
+    // taps take much longer than 1 ms), so any group of >1 here is a bug or
+    // legacy data — pick the preferred (userSaved > non-pending > earliest
+    // basename) and warn on the rest so testing surfaces them in logs.
     final Map<int, List<MarkerConversation>> byMs = {};
     for (final mc in allConversations) {
       byMs.putIfAbsent(mc.markerTime.millisecondsSinceEpoch, () => []).add(mc);
@@ -2030,7 +2040,6 @@ class RecordingsManager {
         deduped.add(group.first);
         continue;
       }
-      // Stable sort: userSaved first, then non-pending, then edl basename.
       group.sort((a, b) {
         final saveCmp = (b.userSaved ? 1 : 0) - (a.userSaved ? 1 : 0);
         if (saveCmp != 0) return saveCmp;
@@ -2038,16 +2047,9 @@ class RecordingsManager {
         if (pendCmp != 0) return pendCmp;
         return a.edlFile.path.split('/').last.compareTo(b.edlFile.path.split('/').last);
       });
-      // Canonical is group[0]. Any remaining entry is a duplicate unless it
-      // references a genuinely different segment file.
       deduped.add(group[0]);
-      final seenSegments = <String?>{group[0].segment?.path};
-      for (int i = 1; i < group.length; i++) {
-        final segPath = group[i].segment?.path;
-        if (seenSegments.contains(segPath)) continue; // same-segment dup
-        seenSegments.add(segPath);
-        deduped.add(group[i]);
-      }
+      Logger.error(
+          'RecordingsManager: ${group.length} EDLs at markerMs=${group[0].markerTime.millisecondsSinceEpoch} — keeping ${group[0].edlFile.path.split('/').last}, dropping ${group.skip(1).map((m) => m.edlFile.path.split('/').last).join(", ")}');
     }
 
     deduped.sort((a, b) => b.markerTime.compareTo(a.markerTime));
