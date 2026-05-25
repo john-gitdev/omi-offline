@@ -121,7 +121,7 @@ class MarkerSubEntry extends StatelessWidget {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                mc.isPending ? 'Processing Marker…' : 'Marker at ${mc.markerTimeLabel}',
+                mc.isPending ? 'Marker at ${mc.markerTimeLabel} (no audio)' : 'Marker at ${mc.markerTimeLabel}',
                 style: TextStyle(
                   color: mc.isPending ? Colors.grey.shade600 : Colors.white,
                   fontSize: 13,

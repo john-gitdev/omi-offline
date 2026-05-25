@@ -356,22 +356,27 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                 }
               },
             ),
-            IconButton(
-              icon: const FaIcon(FontAwesomeIcons.shareFromSquare, size: 20, color: Colors.white),
-              onPressed: _exportConversation,
-              tooltip: 'Export',
-            ),
-            IconButton(
-              icon: FaIcon(
-                _isCropMode
-                    ? FontAwesomeIcons.floppyDisk
-                    : (_userSaved ? FontAwesomeIcons.circleCheck : FontAwesomeIcons.scissors),
-                size: 20,
-                color: _isCropMode ? Colors.amber : (_userSaved ? Colors.green : Colors.white),
+            // Hide Export and Crop buttons when there's no audio attached —
+            // tapping them was a no-op that misleadingly flipped _userSaved
+            // in memory without persisting anything (E6).
+            if (_segment != null)
+              IconButton(
+                icon: const FaIcon(FontAwesomeIcons.shareFromSquare, size: 20, color: Colors.white),
+                onPressed: _exportConversation,
+                tooltip: 'Export',
               ),
-              onPressed: _toggleCropMode,
-              tooltip: _isCropMode ? 'Save' : (_userSaved ? 'Saved' : 'Crop'),
-            ),
+            if (_segment != null)
+              IconButton(
+                icon: FaIcon(
+                  _isCropMode
+                      ? FontAwesomeIcons.floppyDisk
+                      : (_userSaved ? FontAwesomeIcons.circleCheck : FontAwesomeIcons.scissors),
+                  size: 20,
+                  color: _isCropMode ? Colors.amber : (_userSaved ? Colors.green : Colors.white),
+                ),
+                onPressed: _toggleCropMode,
+                tooltip: _isCropMode ? 'Save' : (_userSaved ? 'Saved' : 'Crop'),
+              ),
           ],
         ),
         body: SafeArea(
