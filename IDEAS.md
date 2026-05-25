@@ -84,3 +84,48 @@ Brainstormed three sensitivity presets for the hardware AAD threshold, adjustabl
 Hold time (`CONFIG_OMI_VAD_HOLD_MS = 10000`) could also vary per preset — longer hold at high sensitivity (quiet speech trails off slowly), shorter at low sensitivity (trust the threshold drop).
 
 **Decision: deferred.** Risk of missing audio outweighs the benefit. No real user complaints driving this. Battery drain from AAD is less impactful than BLE/SD/codec — and hold time is a bigger battery lever than threshold anyway. Revisit if noise-environment complaints surface.
+
+## Background Recording Finalization Flaw
+
+### Issue Summary
+Recordings are often not finalized when the app is running in the background. Instead, they remain indefinitely as `_draft.wav` files in the app's internal storage until a future background sync or a manual "Force Process".
+
+### The User's Theory (Wall-Clock Finalization)
+The user proposed that if `syncAll()` retrieves `0 WALs` (indicating the device is caught up), the app could check the real-world clock. If `Wall Clock Time > Draft End Time + Gap Threshold (e.g. 2 mins)`, the app could safely assume no further speech occurred and finalize the draft.
+
+### The Firmware Hurdle
+The user's theory is mathematically sound *if* the app could guarantee there was no audio left on the device. However, the firmware explicitly excludes the currently-open (active) recording bin from the BLE sync list to prevent read/write contention on the SD card.
+
+**Firmware proof (`omi/src/lib/core/storage.c`):**
+```c
+static int send_file_list_response(struct bt_conn *conn)
+{
+    // ...
+    if (sd_is_current_recording_file_meta(&meta)) {
+        continue; // The active file is excluded from the list!
+    }
+    // ...
+}
+```
+
+Because the firmware completely hides the active file, a background `syncAll()` will return `0 WALs` even if the user just spoke a 10-second sentence that is now sitting in the active bin.
+
+If we applied the user's wall-clock logic in this scenario:
+1. `0:00` - Previous speech ends, sync runs, saves a draft.
+2. `1:30` - User speaks for 10 seconds. This goes into the active, hidden bin.
+3. `3:00` - Background sync runs. It gets `0 WALs` because the active bin is hidden.
+4. `3:00` - Wall Clock Logic sees `0 WALs` and `Time (3:00) > Draft End (0:00) + 2 mins`. It incorrectly finalizes the draft!
+5. `10:00` - The active bin finally rotates natively on the device, becomes visible, and is synced. The 10-second sentence from `1:30` is completely orphaned into a fragmented conversation.
+
+### The 1-Minute UI Threshold Guard
+During the investigation, we also examined a 1-minute `threshold` check in the Dart `SDCardWalSync._buildWalsFromFilesLocked` loop:
+```dart
+      final newBytes = file.size - walOffset;
+      if (!ignoreThreshold && walOffset == 0 && newBytes < threshold) {
+        continue;
+      }
+```
+This guard does *not* affect the active file (since the active file is already hidden by the firmware). Instead, its purpose is to debounce partial downloads of *newly closed* files. It prevents the app from constantly waking up the background service or flashing the "Pending Sync" UI badge for trivial amounts of audio (under 1 minute) after a rotation occurs. When a sync actually starts (like a scheduled background task or a manual press), it passes `ignoreThreshold: true` to bypass this guard and sweep up everything.
+
+### Conclusion
+The current logic in `_stitchDraftRecordings` relies strictly on the timestamp of a *future* synced file to confirm that the gap threshold has elapsed. This is the only safe method, as it empirically proves no speech occurred during the gap, circumventing the firmware's active-file blindspot. Wall-clock finalization cannot be implemented safely without changing the firmware to allow syncing the active file.
