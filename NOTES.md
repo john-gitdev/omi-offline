@@ -243,3 +243,24 @@ The cross-reboot clock recovery ("IMU Bridge") uses the LSM6DS3TR-C's 24-bit har
 **Practical impact:** narrow. The IMU bridge only needs to span short crash/watchdog/reboot gaps (seconds). Any longer gap is corrected by the next BLE time-sync when the phone reconnects. The only residual symptom is recordings created in the window between a >29.8 h power-on and the next phone connection getting an early (wrong) UTC timestamp — and because they're already UTC-named, the time-sync rename pass (which only touches `TMP_` files) won't fix them retroactively.
 
 **No software fix is possible:** the computed delta is always in [0, 29.8 h], so a magnitude guard would be dead code; there's no second time source to corroborate against. Documented rather than "fixed."
+
+---
+
+## App: Marker EDL Audio-Format Hard-coding
+
+**File:** `app/lib/services/recordings_manager.dart` (`getMarkerConversations`, ~line 1856 draft-name fallback)
+
+`getMarkerConversations` resolves an EDL's `segmentFilename` to an on-disk audio file via a one-shot `{basename → File}` index. When that misses, the fallback tries swapping between `recording_<ts>.<ext>` and `recording_<ts>_draft.<ext>` via:
+
+```dart
+RegExp(r'\.(m4a|wav|ogg)$')
+```
+
+This regex is hard-coded to the three formats Omi currently supports. If a future codec lands (opus container, mp4, aac in a different container, …) the swap fails and markers on those files show as "no audio attached" even when the file is on disk — purely a UI orphaning, not data loss.
+
+**Why deferred:** no other codec is planned, and adding one would already require touching `_saveRecordingCore`, the encoder, and `audioSaveFormat` settings. Updating this regex is one line on top of that work.
+
+**To re-enable when adding a format:**
+1. Extend the regex's alternation list: `r'\.(m4a|wav|ogg|<new>)$'`.
+2. Search the file for the same regex in other helpers (`_extractTimestamp`, `_finalizeDraft`, `_stitchOgg`/`_stitchWav` ext checks) and update each — they're independent literal regexes, not a shared constant.
+3. Consider extracting a `const _audioExtRe = ...` so the next format only touches one place.
