@@ -1069,20 +1069,20 @@ bool write_to_storage(void)
     return write_custom_packet_to_storage(tx_buffer_size, buffer, tx_buffer_size);
 }
 
-uint32_t device_session_id = 0;
+atomic_t device_session_id = ATOMIC_INIT(0);
 
 /* Atomic lazy-init of device_session_id. Race-safe against parallel calls
  * from the audio path and the button-tap marker path during boot (B18). */
 static uint32_t ensure_device_session_id(void)
 {
-    uint32_t sid = device_session_id;
+    uint32_t sid = (uint32_t)atomic_get(&device_session_id);
     if (sid != 0) return sid;
     do {
         sid = sys_rand32_get();
     } while (sid == 0);
     /* If another thread already published an ID, keep theirs. */
-    if (!atomic_cas((atomic_t *)&device_session_id, 0, sid)) {
-        sid = device_session_id;
+    if (!atomic_cas(&device_session_id, 0, (atomic_val_t)sid)) {
+        sid = (uint32_t)atomic_get(&device_session_id);
     }
     return sid;
 }
@@ -1106,12 +1106,29 @@ bool write_marker_to_storage(void)
      * durable to SD even when no audio is flowing (e.g. mic muted) (B2).
      * Without this, a 20-byte marker can sit in RAM until the 440-byte
      * block fills — and never reach the card if the device powers off
-     * before the next audio frame. */
+     * before the next audio frame.
+     *
+     * IMPORTANT: only reset buffer_offset when write_to_file actually
+     * accepted the block. If the SD queue is full it returns 0; resetting
+     * the buffer in that case throws away both the marker AND whatever
+     * audio frames the audio thread interleaved between the mutex
+     * release in write_custom_packet_to_storage and this re-acquire
+     * (NEW9). Leaving buffer_offset intact lets the next audio write
+     * retry the block. */
     k_mutex_lock(&storage_temp_mutex, K_FOREVER);
     if (buffer_offset > 0) {
+        uint16_t saved_offset = buffer_offset;
         memset(storage_temp_data + buffer_offset, 0, MAX_WRITE_SIZE - buffer_offset);
-        write_to_file(storage_temp_data, MAX_WRITE_SIZE);
-        buffer_offset = 0;
+        uint32_t wrote = write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        if (wrote == MAX_WRITE_SIZE) {
+            buffer_offset = 0;
+        } else {
+            /* Queue rejected; keep the original payload bytes in place
+             * (the memset only touched the padding region). */
+            buffer_offset = saved_offset;
+            ok = false;
+            LOG_WRN("Marker flush dropped: SD queue full, retaining buffer (offset=%u)", saved_offset);
+        }
     }
     k_mutex_unlock(&storage_temp_mutex);
 
