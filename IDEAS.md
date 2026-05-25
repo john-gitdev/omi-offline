@@ -129,3 +129,35 @@ This guard does *not* affect the active file (since the active file is already h
 
 ### Conclusion
 The current logic in `_stitchDraftRecordings` relies strictly on the timestamp of a *future* synced file to confirm that the gap threshold has elapsed. This is the only safe method, as it empirically proves no speech occurred during the gap, circumventing the firmware's active-file blindspot. Wall-clock finalization cannot be implemented safely without changing the firmware to allow syncing the active file.
+
+## Marker Accuracy & Timestamp Synchronization
+
+### Issue Summary
+In-stream marker packets (`0xFFFFFFFE`) currently rely on their byte-position within the `.bin` stream to determine their timestamp in the final audio. If the firmware or SD card drops audio frames (due to write latency or buffer overflows), the timeline "shrinks," but the marker remains at its byte-offset, causing it to drift out of sync with the actual audio events.
+
+### Proposed Solution: The "Sequence & Sync" Strategy
+
+To achieve sub-millisecond accuracy and foolproof attribution, the system must move from "Offset-Based" to "Sequence-Based" synchronization.
+
+#### 1. "Sequence & Sync" Packets (Firmware)
+Wrap audio data in a tiny header that includes a **Sequence Number** and **Local Uptime**.
+- **Audio Packet:** `[Length:4][Sequence:4][UptimeMS:4][Audio Data:N]`
+- **Benefit:** If the app sees Sequence #100 followed by Sequence #105, it knows exactly 100ms of audio is missing and can compensate.
+
+#### 2. "Double-Anchored" Markers (Firmware)
+Markers should "hard-link" to the audio stream by referencing the last sent audio packet.
+- **Marker Packet:** Includes `UTC_Time`, `Uptime_MS`, and **`Last_Sequence_Number`**.
+- **Benefit:** The app can look at the marker and say: "This event happened exactly after Audio Packet #4502," regardless of how much audio was lost before or after that point.
+
+#### 3. "Virtual Timeline" Reconstruction (App)
+The `VadAudioProcessor` should treat the incoming stream as a sparse set of samples and reconstruct a rigid, gap-less timeline.
+- **Implementation:** When a sequence gap is detected, the processor inserts **Silence Frames** into the output `.wav`/`.m4a` file to maintain the correct wall-clock duration.
+- **Result:** The resulting audio file's length matches the real-world time elapsed, and markers placed via sequence numbers remain perfectly accurate.
+
+#### 4. Session Integrity & Guarding
+- **Sentinel Footer:** Firmware writes a "Footer Packet" at the end of every VAD-session containing the `Total_Samples_Captured` for audit/validation.
+- **Session ID Guard:** App strictly enforces the `Device_Session_ID` within markers to prevent "Cross-Pollination" (markers from one recording accidentally being tagged to another during a messy sync).
+
+### Trade-offs & Realism
+- **Pros:** Sample-accurate sync, resilience to SD card drops, "Instant-On" UI (if using a separate marker file/summary), and deterministic debugging.
+- **Cons:** Increased packet overhead (more bytes per write), slightly higher battery/SD card usage, and increased firmware/app complexity for the new demuxer logic.
