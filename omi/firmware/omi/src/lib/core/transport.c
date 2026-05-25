@@ -1023,13 +1023,24 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
 {
     /* Framed entry: [length:4LE][payload:NB] */
     uint32_t entry_size = data_size + 4;
+    bool ok = true;
 
     k_mutex_lock(&storage_temp_mutex, K_FOREVER);
 
     if (buffer_offset + entry_size > MAX_WRITE_SIZE) {
         /* Pad remaining block with 0 (NULL entries) */
         memset(storage_temp_data + buffer_offset, 0, MAX_WRITE_SIZE - buffer_offset);
-        write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        uint32_t wrote = write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        if (wrote != MAX_WRITE_SIZE) {
+            /* SD queue rejected the block — the buffered bytes (up to one
+             * full block of audio frames or markers) are lost. We still
+             * have to reset buffer_offset to make room for the entry the
+             * caller is trying to write; otherwise the writer is stuck
+             * forever and loses every subsequent frame too. Signal the
+             * loss via the return value. */
+            LOG_WRN("Storage rollover flush dropped block (wrote=%u/%u)", wrote, (uint32_t)MAX_WRITE_SIZE);
+            ok = false;
+        }
         buffer_offset = 0;
     }
 
@@ -1038,7 +1049,7 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
     storage_temp_data[buffer_offset + 1] = (uint8_t)((marker >> 8) & 0xFF);
     storage_temp_data[buffer_offset + 2] = (uint8_t)((marker >> 16) & 0xFF);
     storage_temp_data[buffer_offset + 3] = (uint8_t)((marker >> 24) & 0xFF);
-    
+
     /* Write payload */
     memcpy(storage_temp_data + buffer_offset + 4, data, data_size);
     buffer_offset += entry_size;
@@ -1051,7 +1062,13 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
     }
 
     if (buffer_offset == MAX_WRITE_SIZE) {
-        write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        uint32_t wrote = write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        if (wrote != MAX_WRITE_SIZE) {
+            /* Full-buffer flush rejected. Same trade-off as above: reset
+             * so subsequent writes can proceed, but report the loss. */
+            LOG_WRN("Storage full-block flush dropped (wrote=%u/%u)", wrote, (uint32_t)MAX_WRITE_SIZE);
+            ok = false;
+        }
         buffer_offset = 0;
     }
 
@@ -1060,7 +1077,7 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
 #ifdef CONFIG_OMI_ENABLE_MONITOR
     monitor_inc_storage_write();
 #endif
-    return true;
+    return ok;
 }
 
 bool write_to_storage(void)

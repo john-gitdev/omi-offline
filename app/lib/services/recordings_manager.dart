@@ -1888,14 +1888,18 @@ class RecordingsManager {
           return;
         }
         final userSaved = existing['userSaved'] as bool? ?? false;
-        final hasCustomCrop = (existing['cropStartMs'] as int? ?? 0) > 0 ||
-            ((existing['cropEndMs'] as int? ?? 0) > 0 && filename.isNotEmpty);
-        if (userSaved || hasCustomCrop) {
-          // Preserve the user's work: rewrite segmentFilename to point at the
-          // new file (and offsetMs since the audio anchor moved), but keep
-          // every other field — most importantly cropStart/cropEnd and
-          // userSaved. The "new" EDL the isolate computed is just a more
-          // recent default snapshot; the user's edits trump it.
+        if (userSaved) {
+          // User explicitly Saved → preserve their work. Re-point
+          // segmentFilename + offsetMs to the new audio anchor but keep
+          // cropStart/cropEnd and userSaved untouched. `userSaved` is the
+          // only reliable signal: it's set exclusively by the player's
+          // _saveConversation path, and any non-default crop the user
+          // committed went through that same path.
+          //
+          // A `cropEndMs > 0` heuristic was tried earlier but matches
+          // every default EDL (the isolate writes cropEndMs = encoded
+          // duration), so it'd freeze stale cropEndMs values against the
+          // new segment.
           existing['segmentFilename'] = filename;
           existing['markerOffsetMs'] = offsetMs;
           await _writeJsonAtomic(edlFile, existing);
