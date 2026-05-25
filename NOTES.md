@@ -264,3 +264,51 @@ This regex is hard-coded to the three formats Omi currently supports. If a futur
 1. Extend the regex's alternation list: `r'\.(m4a|wav|ogg|<new>)$'`.
 2. Search the file for the same regex in other helpers (`_extractTimestamp`, `_finalizeDraft`, `_stitchOgg`/`_stitchWav` ext checks) and update each — they're independent literal regexes, not a shared constant.
 3. Consider extracting a `const _audioExtRe = ...` so the next format only touches one place.
+
+---
+
+## App: Marker Pipeline Tripwires
+
+Two `Logger.error` lines are now load-bearing in the marker pipeline. They should **never fire in a healthy system** — if they do during testing, file what triggered them. Both are diagnostic, not fatal: the pipeline keeps running.
+
+### Tripwire 1 — pending markers wiped without orphan emit
+
+**Source:** `app/lib/services/vad_audio_processor.dart` — `_resetState()`
+
+```dart
+if (_pendingMarkers.isNotEmpty) {
+  Logger.error(
+      'VadAudioProcessor: _resetState dropping ${_pendingMarkers.length} pending marker(s) — caller forgot _emitOrphanMarkers()');
+  _pendingMarkers.clear();
+}
+```
+
+**What it means:** every reset path that discards an in-progress recording is supposed to call `_emitOrphanMarkers()` first, so any queued button-tap is surfaced as an orphan EDL instead of being silently lost. If this line fires, an un-audited reset path exists somewhere.
+
+**Audited reset paths (should never trip the tripwire):**
+- `flushRemaining` — empty/discard branch: emits orphans before reset.
+- `flushRemaining` — successful save branch: `_saveRecording` consumes `_pendingMarkers` into `_pendingEdlData` on success; on null result, the caller calls `_emitOrphanMarkers()` before `_resetState`.
+- VAD-resume split (both refs-non-empty and refs-empty branches): emit orphans.
+- Max-duration cut (both speech and noise branches): emit orphans.
+
+**If you see it:** copy the surrounding log context (which segment file, what `_currentChunkDurationMs`, was there a 0xFFFFFFFD or marker frame nearby?), then look for the most recent direct or indirect call to `_resetState()` that doesn't have an `_emitOrphanMarkers()` above it. Most likely culprit: a future code change that adds a new state-reset site without routing through one of the discard paths above.
+
+### Tripwire 2 — multiple EDLs at the same markerMs
+
+**Source:** `app/lib/services/recordings_manager.dart` — `getMarkerConversations()` dedup loop
+
+```dart
+deduped.add(group[0]);
+Logger.error(
+    'RecordingsManager: ${group.length} EDLs at markerMs=${group[0].markerTime.millisecondsSinceEpoch} — keeping ${group[0].edlFile.path.split('/').last}, dropping ${group.skip(1).map((m) => m.edlFile.path.split('/').last).join(", ")}');
+```
+
+**What it means:** two physical button taps cannot share a UTC ms — firmware uses millisecond RTC resolution and a tap takes far longer than 1 ms. So a group of >1 EDLs at the same `markerTimestampMs` always indicates one of:
+
+1. **Legacy data from before the B4/D1 fix:** older code wrote `marker_<ms>_1.edl`, `marker_<ms>_2.edl`, etc. on segment-filename collision. New code overwrites in place. If users have old data on disk, the dedup will surface the duplicates and drop the non-canonical ones (canonical = userSaved first, then non-pending, then alphabetically-first basename).
+2. **A bug in `_writeMarkerEdl`'s collision policy:** something is creating multiple EDL files for the same physical tap that the in-place overwrite path didn't catch.
+3. **Filesystem race during a re-process:** a concurrent run created a second EDL while the original was still on disk. Very narrow window since `_writeJsonAtomic` uses tmp+rename.
+
+**If you see it:** check whether the dropped EDL filenames have a `_<n>` suffix (legacy data — safe to delete via the dropped log line) or are plain `marker_<ms>.edl` in a different folder (cross-folder collision — investigate `_writeMarkerEdl`'s date-folder derivation).
+
+**Recovery:** the canonical EDL is preserved; the dropped ones are still on disk (the dedup is in-memory only). The hidden "Delete Problematic EDLs" debug button in `sync_page.dart` won't catch these because they're not pending — manually delete via filesystem if needed.
