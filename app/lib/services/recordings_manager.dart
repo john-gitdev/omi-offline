@@ -885,6 +885,31 @@ class RecordingsManager {
     VoidCallback? onRecordingFinalized,
     ProcessingSettings? settingsOverride,
   }) async {
+    // Strip bins that already produced a discard record. They stay on disk
+    // for the 48 h recovery window, but re-running VAD on them just re-derives
+    // the same outcome and appends a duplicate line to discards.jsonl every
+    // cycle. Recover/Delete/sweep all remove the record, after which the bin
+    // naturally re-enters the processing set.
+    final discardedRelBins = batches.expand((b) => b.discards).expand((d) => d.relativeBins).toSet();
+    if (discardedRelBins.isNotEmpty) {
+      batches = batches.map((b) {
+        final filtered = b.rawSegments.where((f) {
+          final parts = f.path.split('/raw_segments/');
+          return parts.length != 2 || !discardedRelBins.contains(parts.last);
+        }).toList();
+        if (filtered.length == b.rawSegments.length) return b;
+        return Batch(
+          dateString: b.dateString,
+          date: b.date,
+          rawSegments: filtered,
+          draftRecordings: b.draftRecordings,
+          finalizedRecordings: b.finalizedRecordings,
+          markerTimestamps: b.markerTimestamps,
+          discards: b.discards,
+        );
+      }).toList();
+    }
+
     final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty).toList();
     final hasDrafts = batches.any((b) => b.draftRecordings.isNotEmpty);
 
