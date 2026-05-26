@@ -49,7 +49,7 @@ class SharedPreferencesUtil {
   // Manual recording mode: recording is started/stopped by device double-tap.
   // When true, Silero VAD is off and the device AAD threshold is toggled between 0 and 32768.
   // Can only be toggled while the device is connected so the BLE write always lands.
-  bool get manualMode => getBool('manualMode', defaultValue: false);
+  bool get manualMode => getBool('manualMode', defaultValue: true);
   set manualMode(bool v) => saveBool('manualMode', v);
 
   int get autoVadThreshold => getInt('autoVadThreshold', defaultValue: 250);
