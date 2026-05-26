@@ -426,7 +426,34 @@ int aad_start(void)
 
 void aad_set_threshold(uint16_t threshold)
 {
+    uint16_t prev = vad_threshold;
+
+    /* Leaving the manual always-record state while a recording is active
+     * (button stop, BLE threshold push, or manual→auto mode switch): emit a
+     * session-end marker so the app finalizes the recording at this boundary,
+     * then end the recording immediately. Without the immediate state flip
+     * the normal VAD-hold tail (CONFIG_OMI_VAD_HOLD_MS) would leak ~10 s of
+     * post-stop audio into the bin and produce a spurious short recording.
+     * Marker first, then state flip, so the marker lands inside the active
+     * recording region while AAD frames are still flowing. */
+    bool leaving_manual_record = (prev == 65535 && threshold != 65535 && vad_is_recording);
+
+    if (leaving_manual_record) {
+        write_session_end_marker_to_storage();
+    }
+
     vad_threshold = threshold;
+
+    if (leaving_manual_record) {
+        vad_is_recording = false;
+        vad_sleeping = true;
+        vad_voice_streak = 0;
+        atomic_set(&sd_pause_pending, 1);
+        atomic_set(&adv_slow_req, 1);
+        k_sem_give(&aad_sem);
+        LOG_INF("AAD: manual stop — recording ended immediately");
+    }
+
     LOG_INF("AAD: threshold updated to %u", vad_threshold);
 }
 
