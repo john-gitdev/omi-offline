@@ -161,6 +161,10 @@ void check_button_level(struct k_work *work_item)
                             #endif
                         } else {
                             LOG_INF("Double tap — manual mode, stop recording");
+                            /* aad_set_threshold emits the session-end marker
+                             * itself on the 65535→other transition, so both
+                             * button-stop and BLE-driven mode switches finalize
+                             * cleanly through one path. */
                             #ifdef CONFIG_OMI_ENABLE_T5838_AAD
                             aad_set_threshold(32769);
                             #endif
