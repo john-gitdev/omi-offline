@@ -88,24 +88,36 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
 
   void _loadModeFields(bool manual) {
     final p = SharedPreferencesUtil();
-    _vadEnabled = manual ? p.manualModeVadEnabled : p.autoModeVadEnabled;
-    _vadSpeechThreshold = _snapToSensitivity(manual ? p.manualModeVadSpeechThreshold : p.autoModeVadSpeechThreshold);
-    _vadMinSpeechSeconds = manual ? p.manualModeVadMinSpeechSeconds : p.autoModeVadMinSpeechSeconds;
-    _vadSplitSeconds = manual ? p.manualModeVadSplitSeconds : p.autoModeVadSplitSeconds;
-    _filterMinDurationSeconds = manual ? p.manualModeFilterMinDurationSeconds : p.autoModeFilterMinDurationSeconds;
-    _discardShortRecordings = manual ? p.manualModeDiscardShortRecordings : p.autoModeDiscardShortRecordings;
-    _vadMaxConversationMinutes = manual ? p.manualModeVadMaxConversationMinutes : p.autoModeVadMaxConversationMinutes;
+    if (manual) {
+      // Manual mode pins everything except Max Conversation Length: VAD off
+      // (firmware-side AAD only), no speech/duration filtering, no discard.
+      // The session-end marker is the only boundary signal.
+      _vadEnabled = false;
+      _vadSpeechThreshold = 0.5;
+      _vadMinSpeechSeconds = 0;
+      // Any value ≤ 10 collapses to a 0-ms inter-bin gap threshold
+      // (max(0, vadSplitSeconds×1000 − firmwareVadHoldMs) where VAD-hold is
+      // 10 s), so any positive gap between bins splits. Defensive backup in
+      // case the session-end marker fails to land (e.g. SD queue full).
+      _vadSplitSeconds = 0;
+      _filterMinDurationSeconds = 0;
+      _discardShortRecordings = false;
+      _vadMaxConversationMinutes = p.manualModeVadMaxConversationMinutes;
+    } else {
+      _vadEnabled = p.autoModeVadEnabled;
+      _vadSpeechThreshold = _snapToSensitivity(p.autoModeVadSpeechThreshold);
+      _vadMinSpeechSeconds = p.autoModeVadMinSpeechSeconds;
+      _vadSplitSeconds = p.autoModeVadSplitSeconds;
+      _filterMinDurationSeconds = p.autoModeFilterMinDurationSeconds;
+      _discardShortRecordings = p.autoModeDiscardShortRecordings;
+      _vadMaxConversationMinutes = p.autoModeVadMaxConversationMinutes;
+    }
   }
 
   void _saveModeSnapshot(bool manual) {
     final p = SharedPreferencesUtil();
     if (manual) {
-      p.manualModeVadEnabled = _vadEnabled;
-      p.manualModeVadSpeechThreshold = _vadSpeechThreshold;
-      p.manualModeVadMinSpeechSeconds = _vadMinSpeechSeconds;
-      p.manualModeVadSplitSeconds = _vadSplitSeconds;
-      p.manualModeFilterMinDurationSeconds = _filterMinDurationSeconds;
-      p.manualModeDiscardShortRecordings = _discardShortRecordings;
+      // Only Max Conversation Length is user-tunable in manual mode.
       p.manualModeVadMaxConversationMinutes = _vadMaxConversationMinutes;
     } else {
       p.autoModeVadEnabled = _vadEnabled;
@@ -277,9 +289,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                     builder: (context, child) {
                       final t = _flashAnimation.value;
                       final autoMode = !_manualMode;
-                      final baseBorder = autoMode
-                          ? Colors.deepPurpleAccent.withOpacity(0.4)
-                          : Colors.white.withOpacity(0.05);
+                      final baseBorder =
+                          autoMode ? Colors.deepPurpleAccent.withOpacity(0.4) : Colors.white.withOpacity(0.05);
                       return Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
@@ -287,7 +298,12 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(color: Color.lerp(baseBorder, Colors.deepPurpleAccent, t)!),
                           boxShadow: t > 0
-                              ? [BoxShadow(color: Colors.deepPurpleAccent.withOpacity(0.35 * t), blurRadius: 14 * t, spreadRadius: 1 * t)]
+                              ? [
+                                  BoxShadow(
+                                      color: Colors.deepPurpleAccent.withOpacity(0.35 * t),
+                                      blurRadius: 14 * t,
+                                      spreadRadius: 1 * t)
+                                ]
                               : null,
                         ),
                         child: child,
@@ -324,241 +340,243 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
 
                   // VAD toggle + Speech Sensitivity (auto mode only)
                   if (!_manualMode) ...[
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1C1C1E),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.white.withOpacity(0.05)),
-                    ),
-                    child: SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Voice Activity Detection',
-                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                      subtitle: Text(
-                        _vadEnabled
-                            ? 'Silero VAD classifies each frame as speech or silence.'
-                            : 'AAD mode — splits by firmware timestamps only.',
-                        style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1C1C1E),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.white.withOpacity(0.05)),
                       ),
-                      value: _vadEnabled,
-                      onChanged: (value) {
-                        setState(() => _vadEnabled = value);
-                        _markDirty();
-                      },
-                      activeColor: Colors.deepPurpleAccent,
+                      child: SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Voice Activity Detection',
+                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                        subtitle: Text(
+                          _vadEnabled
+                              ? 'Silero VAD classifies each frame as speech or silence.'
+                              : 'AAD mode — splits by firmware timestamps only.',
+                          style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                        ),
+                        value: _vadEnabled,
+                        onChanged: (value) {
+                          setState(() => _vadEnabled = value);
+                          _markDirty();
+                        },
+                        activeColor: Colors.deepPurpleAccent,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 16),
+                    const SizedBox(height: 16),
 
-                  // Speech Sensitivity (Silero only)
-                  if (_vadEnabled) ...[
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1C1C1E),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.white.withOpacity(0.05)),
+                    // Speech Sensitivity (Silero only)
+                    if (_vadEnabled) ...[
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1C1C1E),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.white.withOpacity(0.05)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text(
+                                  'Speech Sensitivity',
+                                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                                ),
+                                DropdownButton<double>(
+                                  value: _snapToSensitivity(_vadSpeechThreshold),
+                                  dropdownColor: const Color(0xFF2C2C2E),
+                                  icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                                  underline: const SizedBox(),
+                                  style: const TextStyle(
+                                      color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                                  items: _kSpeechSensitivityOptions.map((option) {
+                                    return DropdownMenuItem(
+                                      value: option.$2,
+                                      child: Text(option.$1),
+                                    );
+                                  }).toList(),
+                                  onChanged: (value) {
+                                    if (value != null) {
+                                      setState(() => _vadSpeechThreshold = value);
+                                      _markDirty();
+                                    }
+                                  },
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Sensitive picks up quiet speech; Strict ignores background noise.',
+                              style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                            ),
+                          ],
+                        ),
                       ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text(
-                                'Speech Sensitivity',
-                                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                              ),
-                              DropdownButton<double>(
-                                value: _snapToSensitivity(_vadSpeechThreshold),
-                                dropdownColor: const Color(0xFF2C2C2E),
-                                icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                                underline: const SizedBox(),
-                                style: const TextStyle(
-                                    color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
-                                items: _kSpeechSensitivityOptions.map((option) {
-                                  return DropdownMenuItem(
-                                    value: option.$2,
-                                    child: Text(option.$1),
-                                  );
-                                }).toList(),
-                                onChanged: (value) {
-                                  if (value != null) {
-                                    setState(() => _vadSpeechThreshold = value);
-                                    _markDirty();
-                                  }
-                                },
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Sensitive picks up quiet speech; Strict ignores background noise.',
-                            style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                          ),
-                        ],
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1C1C1E),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.white.withOpacity(0.05)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text(
+                                  'Minimum Speech Required',
+                                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                                ),
+                                DropdownButton<int>(
+                                  value: _vadMinSpeechSeconds,
+                                  dropdownColor: const Color(0xFF2C2C2E),
+                                  icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                                  underline: const SizedBox(),
+                                  style: const TextStyle(
+                                      color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                                  items: [0, 3, 10, 30].map((sec) {
+                                    return DropdownMenuItem(
+                                      value: sec,
+                                      child: Text(sec == 0 ? 'Off' : '${sec}s'),
+                                    );
+                                  }).toList(),
+                                  onChanged: (value) {
+                                    if (value != null) {
+                                      setState(() => _vadMinSpeechSeconds = value);
+                                      _markDirty();
+                                    }
+                                  },
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              _vadMinSpeechSeconds == 0
+                                  ? 'All recordings with any detected speech are kept.'
+                                  : 'Recordings with less than ${_vadMinSpeechSeconds}s of actual speech will be discarded.',
+                              style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1C1C1E),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.white.withOpacity(0.05)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text(
-                                'Minimum Speech Required',
-                                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                              ),
-                              DropdownButton<int>(
-                                value: _vadMinSpeechSeconds,
-                                dropdownColor: const Color(0xFF2C2C2E),
-                                icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                                underline: const SizedBox(),
-                                style: const TextStyle(
-                                    color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
-                                items: [0, 3, 10, 30].map((sec) {
-                                  return DropdownMenuItem(
-                                    value: sec,
-                                    child: Text(sec == 0 ? 'Off' : '${sec}s'),
-                                  );
-                                }).toList(),
-                                onChanged: (value) {
-                                  if (value != null) {
-                                    setState(() => _vadMinSpeechSeconds = value);
-                                    _markDirty();
-                                  }
-                                },
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            _vadMinSpeechSeconds == 0
-                                ? 'All recordings with any detected speech are kept.'
-                                : 'Recordings with less than ${_vadMinSpeechSeconds}s of actual speech will be discarded.',
-                            style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
+                      const SizedBox(height: 16),
+                    ],
                   ], // end !_manualMode
 
                   // Silence to End Conversation (hidden in manual mode — always 3 s)
-                  if (!_manualMode) Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1C1C1E),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.white.withOpacity(0.05)),
+                  if (!_manualMode)
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1C1C1E),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.white.withOpacity(0.05)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text(
+                                'Silence to End Conversation',
+                                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                              ),
+                              DropdownButton<int>(
+                                value: _vadSplitSeconds,
+                                dropdownColor: const Color(0xFF2C2C2E),
+                                icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                                underline: const SizedBox(),
+                                style: const TextStyle(
+                                    color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                                items: [30, 60, 120, 300].map((sec) {
+                                  return DropdownMenuItem(
+                                    value: sec,
+                                    child: Text(sec < 60 ? '${sec}s' : '${sec ~/ 60} min'),
+                                  );
+                                }).toList(),
+                                onChanged: (value) {
+                                  if (value != null) {
+                                    setState(() => _vadSplitSeconds = value);
+                                    _markDirty();
+                                  }
+                                },
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'How long you need to be quiet before a new conversation begins.',
+                            style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                          ),
+                        ],
+                      ),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              'Silence to End Conversation',
-                              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                            ),
-                            DropdownButton<int>(
-                              value: _vadSplitSeconds,
-                              dropdownColor: const Color(0xFF2C2C2E),
-                              icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                              underline: const SizedBox(),
-                              style: const TextStyle(
-                                  color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
-                              items: [30, 60, 120, 300].map((sec) {
-                                return DropdownMenuItem(
-                                  value: sec,
-                                  child: Text(sec < 60 ? '${sec}s' : '${sec ~/ 60} min'),
-                                );
-                              }).toList(),
-                              onChanged: (value) {
-                                if (value != null) {
-                                  setState(() => _vadSplitSeconds = value);
-                                  _markDirty();
-                                }
-                              },
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'How long you need to be quiet before a new conversation begins.',
-                          style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                        ),
-                      ],
-                    ),
-                  ),
                   if (!_manualMode) const SizedBox(height: 16),
 
                   // Short Recordings (hidden in manual mode — always off)
-                  if (!_manualMode) Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1C1C1E),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.white.withOpacity(0.05)),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              'Short Recordings',
-                              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                            ),
-                            DropdownButton<int>(
-                              value: _filterMinDurationSeconds,
-                              dropdownColor: const Color(0xFF2C2C2E),
-                              icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                              underline: const SizedBox(),
-                              style: TextStyle(
-                                color: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade500,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w500,
+                  if (!_manualMode)
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1C1C1E),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.white.withOpacity(0.05)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text(
+                                'Short Recordings',
+                                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                               ),
-                              items: _kShortRecordingOptions.map((sec) {
-                                return DropdownMenuItem(
-                                  value: sec,
-                                  child: Text(_formatShortDuration(sec)),
-                                );
-                              }).toList(),
-                              onChanged: (value) {
-                                if (value != null) {
-                                  setState(() => _filterMinDurationSeconds = value);
-                                  _markDirty();
-                                }
-                              },
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          _filterMinDurationSeconds == 0
-                              ? 'All recordings are kept and shown regardless of length.'
-                              : _discardShortRecordings
-                                  ? 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are permanently deleted during processing.'
-                                  : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the main list and skipped by integrations.',
-                          style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                        ),
-                      ],
+                              DropdownButton<int>(
+                                value: _filterMinDurationSeconds,
+                                dropdownColor: const Color(0xFF2C2C2E),
+                                icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                                underline: const SizedBox(),
+                                style: TextStyle(
+                                  color: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade500,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                                items: _kShortRecordingOptions.map((sec) {
+                                  return DropdownMenuItem(
+                                    value: sec,
+                                    child: Text(_formatShortDuration(sec)),
+                                  );
+                                }).toList(),
+                                onChanged: (value) {
+                                  if (value != null) {
+                                    setState(() => _filterMinDurationSeconds = value);
+                                    _markDirty();
+                                  }
+                                },
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _filterMinDurationSeconds == 0
+                                ? 'All recordings are kept and shown regardless of length.'
+                                : _discardShortRecordings
+                                    ? 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are permanently deleted during processing.'
+                                    : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the main list and skipped by integrations.',
+                            style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
                   if (!_manualMode) const SizedBox(height: 16),
 
                   if (!_manualMode && _filterMinDurationSeconds > 0) ...[
@@ -669,7 +687,11 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                               items: [0, 30, 60, 120, 180].map((mins) {
                                 return DropdownMenuItem(
                                   value: mins,
-                                  child: Text(mins == 0 ? 'No Limit' : mins >= 60 ? '${mins ~/ 60}h' : '${mins}m'),
+                                  child: Text(mins == 0
+                                      ? 'No Limit'
+                                      : mins >= 60
+                                          ? '${mins ~/ 60}h'
+                                          : '${mins}m'),
                                 );
                               }).toList(),
                               onChanged: (value) {
