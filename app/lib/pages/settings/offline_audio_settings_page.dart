@@ -271,18 +271,19 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Manual Mode toggle — requires device connection to change
+                  // Automatic Mode toggle — requires device connection to change
                   AnimatedBuilder(
                     animation: _flashAnimation,
                     builder: (context, child) {
                       final t = _flashAnimation.value;
-                      final baseBorder = _manualMode
+                      final autoMode = !_manualMode;
+                      final baseBorder = autoMode
                           ? Colors.deepPurpleAccent.withOpacity(0.4)
                           : Colors.white.withOpacity(0.05);
                       return Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
-                          color: _manualMode ? const Color(0xFF2C1F4A) : const Color(0xFF1C1C1E),
+                          color: autoMode ? const Color(0xFF2C1F4A) : const Color(0xFF1C1C1E),
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(color: Color.lerp(baseBorder, Colors.deepPurpleAccent, t)!),
                           boxShadow: t > 0
@@ -294,7 +295,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                     },
                     child: SwitchListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: const Text('Manual Recording Mode',
+                      title: const Text('Automatic Recording Mode',
                           style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
                       subtitle: Text(
                         !isConnected
@@ -304,13 +305,14 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                                 : 'Automatic VAD-based recording. Double-tap marks a timestamp.',
                         style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                       ),
-                      value: _manualMode,
+                      value: !_manualMode,
                       onChanged: isConnected
                           ? (value) {
                               _saveModeSnapshot(_manualMode);
+                              final newManual = !value;
                               setState(() {
-                                _manualMode = value;
-                                _loadModeFields(value);
+                                _manualMode = newManual;
+                                _loadModeFields(newManual);
                               });
                               _markDirty();
                             }
