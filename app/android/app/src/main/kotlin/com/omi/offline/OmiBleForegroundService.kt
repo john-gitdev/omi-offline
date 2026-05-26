@@ -112,7 +112,13 @@ class OmiBleForegroundService : Service() {
         var hasEverConnected: Boolean = false,
         var pendingReconnect: Runnable? = null,
         var stabilityTimerRunnable: Runnable? = null,
-        var connectionTimeoutRunnable: Runnable? = null
+        var connectionTimeoutRunnable: Runnable? = null,
+        // Stale-bond recovery: when GATT disconnects with status 5 (INSUF_AUTHENTICATION)
+        // and the device is BOND_BONDED, we removeBond() and wait for BOND_NONE before
+        // reconnecting. bondRemovalAttempted prevents loops; resets on services discovered.
+        var bondRemovalAttempted: Boolean = false,
+        var pendingPostBondClearReconnect: Boolean = false,
+        var bondClearTimeoutRunnable: Runnable? = null
     )
 
     private val managedDevices = ConcurrentHashMap<String, ManagedDevice>()
@@ -128,17 +134,21 @@ class OmiBleForegroundService : Service() {
 
         override fun onGattConnected(address: String, gatt: BluetoothGatt) {
             val addr = address.uppercase()
-            val managed = managedDevices[addr] ?: return
+            // Fires on the binder thread pool, not main. Hold syncLock so writes to
+            // managed.* are visible to readers on other threads (manageDevice, retry runnable).
+            synchronized(syncLock) {
+                val managed = managedDevices[addr] ?: return
 
-            Log.i(TAG, "onGattConnected: $addr")
-            managed.retryCount = 0
-            managed.hasEverConnected = true
-            managed.pendingReconnect?.let { handler.removeCallbacks(it) }
-            managed.pendingReconnect = null
-            managed.connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
-            managed.connectionTimeoutRunnable = null
-            managed.connectionStartTime = System.currentTimeMillis()
-            managed.currentGattHash = gatt.hashCode()
+                Log.i(TAG, "onGattConnected: $addr")
+                managed.retryCount = 0
+                managed.hasEverConnected = true
+                managed.pendingReconnect?.let { handler.removeCallbacks(it) }
+                managed.pendingReconnect = null
+                managed.connectionTimeoutRunnable?.let { handler.removeCallbacks(it) }
+                managed.connectionTimeoutRunnable = null
+                managed.connectionStartTime = System.currentTimeMillis()
+                managed.currentGattHash = gatt.hashCode()
+            }
 
             startStabilityTimer(addr)
             bleManager.startRssiKeepAlive(addr)
@@ -157,6 +167,8 @@ class OmiBleForegroundService : Service() {
             val managed = managedDevices[addr] ?: return
 
             Log.i(TAG, "onGattServicesDiscovered: $addr (${services.size} services)")
+            // Link survived the auth-gated ops, so any prior stale bond is resolved.
+            managed.bondRemovalAttempted = false
 
             if (services.isEmpty()) {
                 Log.w(TAG, "No services discovered for $addr")
@@ -278,10 +290,15 @@ class OmiBleForegroundService : Service() {
         }
 
         if (existing != null) {
-            if (bond && !existing.requiresBond) existing.requiresBond = true
-            // Don't interfere with pending GATT connection or scheduled retry
-            if (existing.currentGattHash != null || existing.pendingReconnect != null) return
-            triggerReconnection(addr, "re-manage")
+            // The guard (currentGattHash / pendingReconnect) and the kick must be atomic
+            // relative to onGattConnected (binder thread) and the retry runnable (main),
+            // both of which mutate these fields. Without the lock, we can read stale nulls
+            // and spawn a duplicate connect on top of an in-flight one.
+            synchronized(syncLock) {
+                if (bond && !existing.requiresBond) existing.requiresBond = true
+                if (existing.currentGattHash != null || existing.pendingReconnect != null) return
+                triggerReconnection(addr, "re-manage")
+            }
             return
         }
 
@@ -402,6 +419,8 @@ class OmiBleForegroundService : Service() {
             managed.connectionTimeoutRunnable = null
             managed.stabilityTimerRunnable?.let { handler.removeCallbacks(it) }
             managed.stabilityTimerRunnable = null
+            managed.bondClearTimeoutRunnable?.let { handler.removeCallbacks(it) }
+            managed.bondClearTimeoutRunnable = null
 
             val duration = managed.connectionStartTime?.let { System.currentTimeMillis() - it } ?: 0
             if (duration >= STABILITY_TIMER_MS) {
@@ -434,7 +453,77 @@ class OmiBleForegroundService : Service() {
         }
 
         updateNotification("Disconnected")
+
+        if (status == 5 && tryRecoverFromStaleBond(addr)) {
+            return
+        }
+
         handleRetryLogic(addr, status)
+    }
+
+    // ── Stale-bond recovery ──
+    //
+    // Status 5 (GATT_INSUF_AUTHENTICATION) on a bonded device almost always means the
+    // phone's cached LTK no longer matches the peripheral — typically because the
+    // device was reflashed via OTA (the firmware's NVS bond store sits inside the
+    // mcuboot app slot and gets wiped on swap). Clear the bond and reconnect; the
+    // peripheral will re-pair from scratch.
+    //
+    // Returns true if recovery was kicked off (caller must skip the normal retry).
+    private fun tryRecoverFromStaleBond(addr: String): Boolean {
+        val managed = managedDevices[addr] ?: return false
+        if (managed.bondRemovalAttempted) return false
+
+        val device = remoteDeviceOrNull(addr) ?: return false
+        if (device.bondState != BluetoothDevice.BOND_BONDED) return false
+
+        Log.w(TAG, "gatt_status_5 on bonded $addr — removing stale bond and reconnecting")
+        managed.bondRemovalAttempted = true
+        managed.pendingPostBondClearReconnect = true
+
+        val removed = removeBondViaReflection(device)
+        if (!removed) {
+            Log.w(TAG, "removeBond reflection failed for $addr — falling back to normal retry")
+            managed.pendingPostBondClearReconnect = false
+            return false
+        }
+
+        // Fallback in case the BOND_NONE broadcast never arrives (some OEM stacks
+        // silently drop it). Without this, we'd hang with retry suppressed.
+        val timeout = Runnable {
+            val m = managedDevices[addr] ?: return@Runnable
+            if (m.pendingPostBondClearReconnect) {
+                Log.w(TAG, "BOND_NONE timeout for $addr — proceeding with retry anyway")
+                m.pendingPostBondClearReconnect = false
+                m.bondClearTimeoutRunnable = null
+                handleRetryLogic(addr, 5)
+            }
+        }
+        managed.bondClearTimeoutRunnable = timeout
+        handler.postDelayed(timeout, 3_000L)
+        return true
+    }
+
+    private fun remoteDeviceOrNull(addr: String): BluetoothDevice? {
+        return try {
+            val bm = application.getSystemService(Application.BLUETOOTH_SERVICE) as? BluetoothManager
+            bm?.adapter?.getRemoteDevice(addr)
+        } catch (e: Exception) {
+            Log.w(TAG, "remoteDeviceOrNull failed for $addr: ${e.message}")
+            null
+        }
+    }
+
+    private fun removeBondViaReflection(device: BluetoothDevice): Boolean {
+        return try {
+            val method = device.javaClass.getMethod("removeBond")
+            val result = method.invoke(device) as? Boolean ?: false
+            Log.i(TAG, "removeBond() returned $result for ${device.address}")
+            result
+        } catch (e: Exception) {
+            Log.e(TAG, "removeBond reflection failed: ${e.message}")
+            false
+        }
     }
 
     private fun handleRetryLogic(address: String, status: Int) {
@@ -447,8 +536,13 @@ class OmiBleForegroundService : Service() {
         Log.i(TAG, "Retry #${managed.retryCount} for $addr in ${RECONNECT_DELAY_MS}ms (status=$status)")
 
         val runnable = Runnable {
-            managed.pendingReconnect = null
-            connectToDevice(addr, "retry_${managed.retryCount}")
+            // Atomic with manageDevice's guard: an external manageDevice call must see
+            // either pendingReconnect != null (we haven't fired yet) or currentGattHash != null
+            // (connectToDevice has registered the new gatt) — never both null.
+            synchronized(syncLock) {
+                managed.pendingReconnect = null
+                connectToDevice(addr, "retry_${managed.retryCount}")
+            }
         }
         managed.pendingReconnect = runnable
         handler.postDelayed(runnable, RECONNECT_DELAY_MS)
@@ -486,6 +580,13 @@ class OmiBleForegroundService : Service() {
                 }
                 BluetoothDevice.BOND_NONE -> {
                     Log.w(TAG, "Bond removed/failed for $address")
+                    if (managed.pendingPostBondClearReconnect) {
+                        managed.pendingPostBondClearReconnect = false
+                        managed.bondClearTimeoutRunnable?.let { handler.removeCallbacks(it) }
+                        managed.bondClearTimeoutRunnable = null
+                        Log.i(TAG, "Stale bond cleared for $address — reconnecting")
+                        handler.postDelayed({ connectToDevice(address, "post_bond_clear") }, 500L)
+                    }
                 }
             }
         }
