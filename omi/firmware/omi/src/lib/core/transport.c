@@ -1158,7 +1158,7 @@ static uint32_t ensure_device_session_id(void)
     return sid;
 }
 
-bool write_marker_to_storage(void)
+static bool write_marker_header_to_storage(uint32_t header, const char *label)
 {
     uint32_t sid = ensure_device_session_id();
 
@@ -1170,8 +1170,8 @@ bool write_marker_to_storage(void)
     memcpy(temp_buffer + 8, &uptime_ms, 4);
     memcpy(temp_buffer + 12, &sid, 4);
 
-    LOG_INF("Writing marker to storage (DeviceSession: %u)", sid);
-    bool ok = write_custom_packet_to_storage(0xFFFFFFFE, temp_buffer, 16);
+    LOG_INF("Writing %s marker to storage (DeviceSession: %u)", label, sid);
+    bool ok = write_custom_packet_to_storage(header, temp_buffer, 16);
 
     /* Force-drain any partial block in storage_temp_data so the marker is
      * durable to SD even when no audio is flowing (e.g. mic muted) (B2).
@@ -1204,6 +1204,16 @@ bool write_marker_to_storage(void)
     k_mutex_unlock(&storage_temp_mutex);
 
     return ok;
+}
+
+bool write_marker_to_storage(void)
+{
+    return write_marker_header_to_storage(0xFFFFFFFE, "button-tap");
+}
+
+bool write_session_end_marker_to_storage(void)
+{
+    return write_marker_header_to_storage(0xFFFFFFFC, "session-end");
 }
 #endif
 
