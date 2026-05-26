@@ -199,7 +199,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             _wals = await _buildWalsFromFilesLocked(
               connection,
               _device!.id,
-              ignoreThreshold: true,
               prefetchedFiles: prefetchedFiles,
             );
           }
@@ -232,7 +231,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   }
 
   Future<List<Wal>> _getMissingWalsLocked(DeviceConnection connection, String deviceId) async {
-    final wals = await _buildWalsFromFilesLocked(connection, deviceId, ignoreThreshold: true);
+    final wals = await _buildWalsFromFilesLocked(connection, deviceId);
     Logger.debug('SDCardWalSync: getMissingWals returned ${wals.length} WALs');
     return wals;
   }
@@ -270,14 +269,12 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   Future<List<Wal>> _buildWalsFromFilesLocked(
     DeviceConnection connection,
     String deviceId, {
-    required bool ignoreThreshold,
     List<StorageFile>? prefetchedFiles,
   }) async {
     final files = prefetchedFiles ?? await connection.listFiles();
     if (files.isEmpty) return [];
 
     final codec = await connection.getAudioCodec() ?? BleAudioCodec.pcm8;
-    final threshold = codec.getStorageBytesPerMinute();
     final wals = <Wal>[];
 
     const int kMaxStorageBytes = 0x1E000000;
@@ -327,10 +324,6 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         : 0;
 
       final newBytes = file.size - walOffset;
-      if (!ignoreThreshold && walOffset == 0 && newBytes < threshold) {
-      continue;
-      }
-
       final ms = (newBytes / (codec.getStorageBytesPerMinute() / 60000.0)).truncate();
       final seconds = (ms / 1000).truncate();
 
@@ -1042,8 +1035,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       }
       if (!rotated) throw Exception('Rotation failed');
       
-      // Fetch files but ignore the threshold so we get everything that was just sealed.
-      final wals = await _buildWalsFromFilesLocked(connection, dev.id, ignoreThreshold: true);
+      final wals = await _buildWalsFromFilesLocked(connection, dev.id);
 
       if (_isCancelled) return null;
 
