@@ -2185,6 +2185,11 @@ uint32_t sd_get_boot_dropped_frames(void)
     return (uint32_t)atomic_get(&boot_dropped_frames);
 }
 
+uint32_t sd_get_stream_dropped_frames(void)
+{
+    return (uint32_t)atomic_get(&stat_dropped_frames);
+}
+
 void sd_request_wipe(void)
 {
     atomic_set(&proactive_wipe_requested, 1);
