@@ -1598,8 +1598,7 @@ class RecordingsManager {
     if (!reanchorOk) {
       // Leave nextFile on disk so the user (or a retry) can recover the
       // un-reanchored markers (D2). The stitched audio is still good.
-      Logger.error(
-          'RecordingsManager: _stitchOgg leaving ${nextFile.path} undeleted — re-anchor had errors');
+      Logger.error('RecordingsManager: _stitchOgg leaving ${nextFile.path} undeleted — re-anchor had errors');
       return true;
     }
 
@@ -1659,8 +1658,7 @@ class RecordingsManager {
     );
 
     if (!reanchorOk) {
-      Logger.error(
-          'RecordingsManager: _stitchWav leaving ${nextFile.path} undeleted — re-anchor had errors');
+      Logger.error('RecordingsManager: _stitchWav leaving ${nextFile.path} undeleted — re-anchor had errors');
       return true;
     }
 
@@ -1903,8 +1901,7 @@ class RecordingsManager {
           existing['segmentFilename'] = filename;
           existing['markerOffsetMs'] = offsetMs;
           await _writeJsonAtomic(edlFile, existing);
-          Logger.debug(
-              'RecordingsManager: Preserved user edits on marker_$markerMs.edl, re-pointed to $filename');
+          Logger.debug('RecordingsManager: Preserved user edits on marker_$markerMs.edl, re-pointed to $filename');
           return;
         }
       } catch (_) {
@@ -1974,8 +1971,7 @@ class RecordingsManager {
                 segmentFile = filenameIndex[finalizedName];
               } else {
                 // Or vice-versa: file is still a draft on disk.
-                final draftName = segmentFilename.replaceAllMapped(
-                    RegExp(r'\.(m4a|wav|ogg)$'), (m) => '_draft${m[0]}');
+                final draftName = segmentFilename.replaceAllMapped(RegExp(r'\.(m4a|wav|ogg)$'), (m) => '_draft${m[0]}');
                 segmentFile = filenameIndex[draftName];
               }
             }
@@ -2237,8 +2233,6 @@ class RecordingsManager {
       await removeDiscardRecord(d, deleteBins: true);
     }
 
-    if (!await recordingsDir.exists()) return;
-
     final availableSessionIds = batch.rawSegments
         .map((f) {
           final name = f.path.split('/').last.split('.').first;
@@ -2248,60 +2242,92 @@ class RecordingsManager {
         .toSet();
 
     if (!onlyReprocessable) {
-      await recordingsDir.delete(recursive: true);
-      Logger.debug(
-        'RecordingsManager: Deleted processed recordings for ${batch.dateString}',
-      );
-    } else {
-      // Surgical delete: only remove finalized recordings and drafts that
-      // belong to a session for which we still have raw data.
-      final allToProcess = [...batch.finalizedRecordings, ...batch.draftRecordings];
-      final dirEntities = await recordingsDir.list().toList();
-      final edlFiles = dirEntities.whereType<File>().where((f) => f.path.endsWith('.edl')).toList();
-      int deletedCount = 0;
-      final filenamesToDelete = <String>{};
-      for (final conv in allToProcess) {
-        if (conv.sessionId != null && availableSessionIds.contains(conv.sessionId)) {
-          final audioFilename = conv.file.path.split('/').last;
-          filenamesToDelete.add(audioFilename);
-          if (await conv.file.exists()) await conv.file.delete();
-          final metaFile = File('${conv.file.path.substring(0, conv.file.path.lastIndexOf('.'))}.meta');
-          if (await metaFile.exists()) await metaFile.delete();
-
-          // Also delete any raw .bin files that might have been moved into the
-          // recordings folder (some pipelines do this for portability).
-          final ts = conv.file.path.split('/').last.split('_').last.split('.').first;
-          final recordingsBin = File('${conv.file.parent.path}/recording_fs320_$ts.bin');
-          if (await recordingsBin.exists()) await recordingsBin.delete();
-
-          deletedCount++;
+      // Wipe the day's raw .bin segments too, bypassing the 48h discard hold.
+      // Without this, the next sync silently reprocesses them and resurrects
+      // the recordings the user just deleted.
+      final touchedSessionDirs = <Directory>{};
+      int deletedBins = 0;
+      for (final bin in batch.rawSegments) {
+        try {
+          if (await bin.exists()) {
+            await bin.delete();
+            deletedBins++;
+          }
+          touchedSessionDirs.add(bin.parent);
+        } catch (e) {
+          Logger.error('RecordingsManager: deleteDay failed to delete bin ${bin.path}: $e');
         }
       }
-
-      // Delete EDL files referencing any deleted recording so the re-resolver
-      // can recreate them after reprocessing. Without this, stale EDLs with a
-      // non-empty segmentFilename cause the re-resolver to skip the marker as
-      // already-resolved, leaving it permanently broken. One concurrent pass
-      // over EDLs with O(1) Set lookups replaces the old N*M sequential scan.
-      if (filenamesToDelete.isNotEmpty && edlFiles.isNotEmpty) {
-        await Future.wait(edlFiles.map((edl) async {
-          try {
-            final json = jsonDecode(await edl.readAsString()) as Map<String, dynamic>;
-            if (filenamesToDelete.contains(json['segmentFilename'])) {
-              await edl.delete();
-            }
-          } catch (_) {}
-        }));
+      for (final dir in touchedSessionDirs) {
+        try {
+          if (await dir.exists() && await dir.list().isEmpty) await dir.delete();
+        } catch (_) {}
       }
-      Logger.debug(
-        'RecordingsManager: Surgical delete for ${batch.dateString} — removed $deletedCount reprocessable recordings',
-      );
+      if (deletedBins > 0) {
+        Logger.debug(
+          'RecordingsManager: Deleted $deletedBins raw bins for ${batch.dateString}',
+        );
+      }
 
-      // If directory is now empty (or only contains orphaned files we don't know about), delete it.
-      try {
-        if (await recordingsDir.list().isEmpty) await recordingsDir.delete();
-      } catch (_) {}
+      if (await recordingsDir.exists()) {
+        await recordingsDir.delete(recursive: true);
+        Logger.debug(
+          'RecordingsManager: Deleted processed recordings for ${batch.dateString}',
+        );
+      }
+      return;
     }
+
+    if (!await recordingsDir.exists()) return;
+
+    // Surgical delete: only remove finalized recordings and drafts that
+    // belong to a session for which we still have raw data.
+    final allToProcess = [...batch.finalizedRecordings, ...batch.draftRecordings];
+    final dirEntities = await recordingsDir.list().toList();
+    final edlFiles = dirEntities.whereType<File>().where((f) => f.path.endsWith('.edl')).toList();
+    int deletedCount = 0;
+    final filenamesToDelete = <String>{};
+    for (final conv in allToProcess) {
+      if (conv.sessionId != null && availableSessionIds.contains(conv.sessionId)) {
+        final audioFilename = conv.file.path.split('/').last;
+        filenamesToDelete.add(audioFilename);
+        if (await conv.file.exists()) await conv.file.delete();
+        final metaFile = File('${conv.file.path.substring(0, conv.file.path.lastIndexOf('.'))}.meta');
+        if (await metaFile.exists()) await metaFile.delete();
+
+        // Also delete any raw .bin files that might have been moved into the
+        // recordings folder (some pipelines do this for portability).
+        final ts = conv.file.path.split('/').last.split('_').last.split('.').first;
+        final recordingsBin = File('${conv.file.parent.path}/recording_fs320_$ts.bin');
+        if (await recordingsBin.exists()) await recordingsBin.delete();
+
+        deletedCount++;
+      }
+    }
+
+    // Delete EDL files referencing any deleted recording so the re-resolver
+    // can recreate them after reprocessing. Without this, stale EDLs with a
+    // non-empty segmentFilename cause the re-resolver to skip the marker as
+    // already-resolved, leaving it permanently broken. One concurrent pass
+    // over EDLs with O(1) Set lookups replaces the old N*M sequential scan.
+    if (filenamesToDelete.isNotEmpty && edlFiles.isNotEmpty) {
+      await Future.wait(edlFiles.map((edl) async {
+        try {
+          final json = jsonDecode(await edl.readAsString()) as Map<String, dynamic>;
+          if (filenamesToDelete.contains(json['segmentFilename'])) {
+            await edl.delete();
+          }
+        } catch (_) {}
+      }));
+    }
+    Logger.debug(
+      'RecordingsManager: Surgical delete for ${batch.dateString} — removed $deletedCount reprocessable recordings',
+    );
+
+    // If directory is now empty (or only contains orphaned files we don't know about), delete it.
+    try {
+      if (await recordingsDir.list().isEmpty) await recordingsDir.delete();
+    } catch (_) {}
   }
 
   /// Deletes processed recordings for [batch] so the day can be reprocessed
@@ -2667,6 +2693,43 @@ class RecordingsManager {
         } catch (_) {}
       }
     }
+  }
+
+  /// Deletes raw .bin segments belonging to any of [sessionIds], bypassing the
+  /// 48h discard hold. Used after deleting conversations from a tab so an
+  /// emptied session does not silently reprocess on the next sync.
+  static Future<int> deleteBinsForSessions(Set<int> sessionIds) async {
+    if (sessionIds.isEmpty) return 0;
+    final directory = await getApplicationDocumentsDirectory();
+    final rawDir = Directory('${directory.path}/raw_segments');
+    if (!await rawDir.exists()) return 0;
+
+    int deleted = 0;
+    final touchedFolders = <Directory>{};
+    await for (final entity in rawDir.list(recursive: true)) {
+      if (entity is! File || !entity.path.endsWith('.bin')) continue;
+      final name = entity.path.split('/').last;
+      final parts = name.split('_');
+      if (parts.length < 2) continue;
+      final sid = int.tryParse(parts[1].split('.').first);
+      if (sid == null || !sessionIds.contains(sid)) continue;
+      try {
+        await entity.delete();
+        deleted++;
+        touchedFolders.add(entity.parent);
+      } catch (e) {
+        Logger.error('RecordingsManager: deleteBinsForSessions failed for ${entity.path}: $e');
+      }
+    }
+    for (final dir in touchedFolders) {
+      try {
+        if (await dir.exists() && await dir.list().isEmpty) await dir.delete();
+      } catch (_) {}
+    }
+    if (deleted > 0) {
+      Logger.debug('RecordingsManager: Deleted $deleted bins for orphaned sessions ${sessionIds.toList()}');
+    }
+    return deleted;
   }
 
   /// Deletes raw .bin segment files and parent device-session folders, except
