@@ -670,7 +670,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _persistProgress();
 
     WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask(title: 'Processing recordings...', text: 'Preparing to process segments...');
+    await ForegroundUtil.startForegroundTask(
+        title: 'Processing recordings...', text: 'Preparing to process segments...');
     try {
       await _manager.processAll(
         _batches,
@@ -852,10 +853,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (days <= 0) return false;
 
     final cutoff = DateTime.now().subtract(Duration(days: days));
-    final toDelete = _batches
-        .expand((b) => b.finalizedRecordings)
-        .where((c) => c.startTime.isBefore(cutoff))
-        .toList();
+    final toDelete = _batches.expand((b) => b.finalizedRecordings).where((c) => c.startTime.isBefore(cutoff)).toList();
 
     if (toDelete.isNotEmpty) {
       Logger.debug('Retention: deleting ${toDelete.length} recordings older than $days days');
@@ -890,7 +888,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       notifyListeners();
 
       WakelockPlus.enable();
-      await ForegroundUtil.startForegroundTask(title: 'Cleaning up recordings...', text: 'Processing segments before deletion...');
+      await ForegroundUtil.startForegroundTask(
+          title: 'Cleaning up recordings...', text: 'Processing segments before deletion...');
       try {
         await _manager.processAll(unprocessed, (_, __) {}, backgroundMode: false);
       } catch (e) {
@@ -1357,7 +1356,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       });
 
   double _computeAccumulatedMinutes(List<Batch> batches) {
-    final finalizedSessionIds = batches.expand((b) => b.finalizedRecordings).map((c) => c.sessionId).whereType<int>().toSet();
+    final finalizedSessionIds =
+        batches.expand((b) => b.finalizedRecordings).map((c) => c.sessionId).whereType<int>().toSet();
+
+    // Bins that VAD has already examined and rejected (still on disk for the
+    // 48h recovery window). They are no longer "waiting to finalize", so the
+    // banner must not count them.
+    final discardedRelBins = batches.expand((b) => b.discards).expand((d) => d.relativeBins).toSet();
 
     final Map<int, int> sessionRawBytes = {};
     int unknownRawBytes = 0;
@@ -1372,6 +1377,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
       // If session is already finalized, its raw segments don't count towards "accumulated"
       if (sid != null && finalizedSessionIds.contains(sid)) continue;
+
+      final pathParts = f.path.split('/raw_segments/');
+      if (pathParts.length == 2 && discardedRelBins.contains(pathParts.last)) continue;
 
       try {
         final len = f.lengthSync();
