@@ -149,6 +149,17 @@ bool sd_is_timesync_rename_pending(void);
 uint32_t sd_get_boot_dropped_frames(void);
 
 /**
+ * @brief Get the number of audio frames the SD queue rejected after boot.
+ *
+ * Tracks frames dropped in write_to_file() when the sd_msgq is saturated
+ * (typically caused by an SD card stalling during internal maintenance).
+ * Distinct from the boot-window counter. Safe to call from any thread.
+ *
+ * @return Cumulative stream-time dropped frames since boot.
+ */
+uint32_t sd_get_stream_dropped_frames(void);
+
+/**
  * @brief Put the SD card interface (controller) into a low-power (suspend) state.
  *        Note: This typically suspends the SPI controller managing the SD card slot.
  *
