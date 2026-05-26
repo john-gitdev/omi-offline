@@ -2,6 +2,7 @@
 #define TRANSPORT_H
 
 #include <zephyr/drivers/sensor.h>
+#include <zephyr/sys/atomic.h>
 #ifdef CONFIG_OMI_ENABLE_BATTERY
 extern uint8_t battery_percentage;
 // Set to true after the first successful ADC reading so callers can
@@ -69,7 +70,11 @@ typedef struct __attribute__((packed)) {
     uint32_t version;           // Struct version (v1 = 1)
 } RecordingHeader_v1_t;
 
-extern uint32_t device_session_id;
+/* Unique per-boot session ID. Declared atomic_t so concurrent lazy-init
+ * from the audio path, button-tap marker, and main() race safely and so
+ * cross-thread readers (sd_card.c) observe a consistent value. Use
+ * `(uint32_t)atomic_get(&device_session_id)` to read. */
+extern atomic_t device_session_id;
 
 bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t data_size);
 

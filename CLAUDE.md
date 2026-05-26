@@ -46,9 +46,10 @@ Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures a
 - On connect: time sync writes UTC as little-endian u32 to `timeSyncWriteCharacteristicUuid` so the device can anchor recording timestamps.
 
 **Audio pipeline** (`services/`):
-- `SDCardWalSyncImpl` saves downloaded segments to `raw_segments/<deviceSessionId>/<deviceSessionId>_<segmentIndex>.bin`; marker packets (20-byte frames: `0xFFFFFFFE` header + 16-byte payload) are extracted to `markers.txt` during transfer
+- `SDCardWalSyncImpl` saves downloaded segments to `raw_segments/<deviceSessionId>/<deviceSessionId>_<segmentIndex>.bin`. Marker packets (20-byte frames: `0xFFFFFFFE` header + 16-byte payload of `utc_ms(u64) + uptime_ms(u32) + session_id(u32)`) are left inline in the bin file — they are not extracted at transfer time. `VadAudioProcessor` parses them during the decode pass.
 - `OfflineAudioProcessor` decodes Opus → 16 kHz mono 16-bit PCM, adaptive noise floor tracking (initial -40 dBFS, SNR margin configurable), splits into `recordings/<YYYY-MM-DD>/recording_<millis>.m4a`
-- `RecordingsManager` / `Conversation` model parses finalized recordings from the `recordings/` directory for UI binding
+- `VadAudioProcessor` emits an EDL sidecar `recordings/<YYYY-MM-DD>/marker_<markerMs>.edl` (JSON: `markerTimestampMs`, `segmentFilename`, `markerOffsetMs`, `cropStartMs`, `cropEndMs`, `userSaved`) per detected button-tap. Markers with no surrounding audio are emitted as orphan EDLs with an empty `segmentFilename`. Markers re-anchored across stitched files have their offsets shifted by the prefix's wall-clock duration.
+- `RecordingsManager` / `Conversation` model parses finalized recordings from the `recordings/` directory for UI binding; `RecordingsManager.getMarkerConversations()` builds the `MarkerConversation` list from the EDL sidecars.
 
 **VAD processing design invariants** (`services/vad_audio_processor.dart`, `services/recordings_manager.dart`):
 - The firmware writes ~5-minute sequential bin files. Each file's `segmentStartTime` (the WAL `timerStart`) picks up exactly where the previous file ended — no overlaps, no gaps larger than clock drift.

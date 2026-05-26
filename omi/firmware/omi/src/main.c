@@ -249,11 +249,15 @@ int main(void)
     int ret;
     printk("Starting omi ...\n");
 
-    /* Initialize unique session ID for this boot session */
-    if (device_session_id == 0) {
+    /* Initialize unique session ID for this boot session. Race-safe vs.
+     * the button-tap marker path which may also lazy-init on boot (B18). */
+    if (atomic_get(&device_session_id) == 0) {
+        uint32_t sid;
         do {
-            device_session_id = sys_rand32_get();
-        } while (device_session_id == 0);
+            sid = sys_rand32_get();
+        } while (sid == 0);
+        /* atomic_cas returns false if another path beat us; their ID wins. */
+        (void)atomic_cas(&device_session_id, 0, (atomic_val_t)sid);
     }
 
     ret = led_start();

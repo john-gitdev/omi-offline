@@ -1193,12 +1193,15 @@ static int create_audio_file_with_timestamp(void)
     }
 
     k_mutex_lock(&current_filename_lock, K_FOREVER);
+    /* Read device_session_id once via atomic_get — it's atomic_t since
+     * the lazy-init in transport.c uses atomic_cas (A8/B7). */
+    uint32_t sid_snap = (uint32_t)atomic_get(&device_session_id);
     if (rtc_valid) {
-        snprintf(current_filename, sizeof(current_filename), "%08X_%08X.txt", timestamp, device_session_id);
+        snprintf(current_filename, sizeof(current_filename), "%08X_%08X.txt", timestamp, sid_snap);
         current_file_needs_rename = false;
     } else {
         uint32_t boot_uptime = (uint32_t) k_uptime_get_32();
-        snprintf(current_filename, sizeof(current_filename), "TMP_%08X_%08X.txt", boot_uptime, device_session_id);
+        snprintf(current_filename, sizeof(current_filename), "TMP_%08X_%08X.txt", boot_uptime, sid_snap);
         current_file_needs_rename = true;
     }
     build_file_path(current_filename, current_file_path, sizeof(current_file_path));
@@ -1225,7 +1228,7 @@ static int create_audio_file_with_timestamp(void)
             .payload_len = 28,
             .utc_start_ms = rtc_get_utc_time_ms(),
             .uptime_start_ms = (uint64_t)k_uptime_get(),
-            .session_id = device_session_id,
+            .session_id = (uint32_t)atomic_get(&device_session_id),
             .version = 1,
         };
         uint32_t imu_ts = 0;
@@ -1534,7 +1537,7 @@ void sd_update_filename_after_timesync(uint32_t synced_utc_time)
                 // Only rename files that belong to the current session. Files from
                 // previous sessions have an uptime that is not relative to the
                 // current rtc_offset and would result in incorrect timestamps.
-                if (session_id != device_session_id) {
+                if (session_id != (uint32_t)atomic_get(&device_session_id)) {
                     continue;
                 }
 
