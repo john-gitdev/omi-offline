@@ -5,6 +5,7 @@ import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
+import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/utils/byte_utils.dart';
 import 'package:omi/utils/logger.dart';
@@ -47,6 +48,9 @@ class OmiDeviceConnection extends DeviceConnection {
   // 8-byte diagnostics: [uint32 reset_cause LE] [uint32 uptime_seconds LE]
   static const String diagnosticsServiceUuid = '19b10060-e8f2-537e-4f6c-d104768a1214';
   static const String diagnosticsCharacteristicUuid = '19b10061-e8f2-537e-4f6c-d104768a1214';
+  // 20-byte drop counters: [blockDrops u32][lastDropUptimeMs u32]
+  //                        [sdStreamDrops u32][sdBootDrops u32][nowUptimeMs u32]
+  static const String diagnosticsDropsCharacteristicUuid = '19b10062-e8f2-537e-4f6c-d104768a1214';
 
   // Protects against stale packets from previous calls
   int _listFilesGeneration = 0;
@@ -174,6 +178,25 @@ class OmiDeviceConnection extends DeviceConnection {
       return log;
     } catch (e) {
       Logger.debug('Device diagnostics not available (older firmware): $e');
+      return null;
+    }
+  }
+
+  @override
+  Future<DeviceDropStats?> performGetDropStats() async {
+    try {
+      final data = await transport.readCharacteristic(diagnosticsServiceUuid, diagnosticsDropsCharacteristicUuid);
+      if (data.length < 20) return null;
+      return DeviceDropStats(
+        blockDrops: data.getUint32LittleEndian(0),
+        lastBlockDropUptimeMs: data.getUint32LittleEndian(4),
+        streamFrameDrops: data.getUint32LittleEndian(8),
+        bootFrameDrops: data.getUint32LittleEndian(12),
+        currentUptimeMs: data.getUint32LittleEndian(16),
+        readAt: DateTime.now(),
+      );
+    } catch (e) {
+      Logger.debug('Drop stats char not available (older firmware): $e');
       return null;
     }
   }
