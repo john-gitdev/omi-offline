@@ -117,16 +117,6 @@ If we applied the user's wall-clock logic in this scenario:
 4. `3:00` - Wall Clock Logic sees `0 WALs` and `Time (3:00) > Draft End (0:00) + 2 mins`. It incorrectly finalizes the draft!
 5. `10:00` - The active bin finally rotates natively on the device, becomes visible, and is synced. The 10-second sentence from `1:30` is completely orphaned into a fragmented conversation.
 
-### The 1-Minute UI Threshold Guard
-During the investigation, we also examined a 1-minute `threshold` check in the Dart `SDCardWalSync._buildWalsFromFilesLocked` loop:
-```dart
-      final newBytes = file.size - walOffset;
-      if (!ignoreThreshold && walOffset == 0 && newBytes < threshold) {
-        continue;
-      }
-```
-This guard does *not* affect the active file (since the active file is already hidden by the firmware). Instead, its purpose is to debounce partial downloads of *newly closed* files. It prevents the app from constantly waking up the background service or flashing the "Pending Sync" UI badge for trivial amounts of audio (under 1 minute) after a rotation occurs. When a sync actually starts (like a scheduled background task or a manual press), it passes `ignoreThreshold: true` to bypass this guard and sweep up everything.
-
 ### Conclusion
 The current logic in `_stitchDraftRecordings` relies strictly on the timestamp of a *future* synced file to confirm that the gap threshold has elapsed. This is the only safe method, as it empirically proves no speech occurred during the gap, circumventing the firmware's active-file blindspot. Wall-clock finalization cannot be implemented safely without changing the firmware to allow syncing the active file.
 
