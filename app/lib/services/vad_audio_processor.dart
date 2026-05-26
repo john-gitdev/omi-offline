@@ -111,6 +111,12 @@ class VadAudioProcessor {
   // Wall-clock timestamp (ms) after which normal gap-splitting resumes.
   // Set to markerTime + 50 s when a marker packet is processed.
   int? _markerProtectedUntilMs;
+  // After a 0xFFFFFFFC session-end marker, drop audio frames until the next
+  // 0xFFFFFFFD VAD-resume or 0xFFFFFFFE button-tap. Catches the 1-2 frame
+  // race between button.c writing the marker and aad_set_threshold ending
+  // the recording — without this, those stray frames would start a junk
+  // sub-50 ms recording.
+  bool _sessionEndPendingResume = false;
 
   // Markers accumulated since the last _saveRecording call, keyed by their
   // wall-clock timestamp and the recording offset at the time of the tap.
@@ -437,8 +443,7 @@ class VadAudioProcessor {
             final int offsetForMarker = _currentRefs.isEmpty ? 0 : _currentChunkDurationMs;
             if (markerMs > 946684800000) {
               _pendingMarkers.add((markerMs: markerMs, offsetAtMarkerMs: offsetForMarker));
-              Logger.debug(
-                  'VadAudioProcessor: Queued marker at $markerFrameTime (offset ${offsetForMarker}ms)');
+              Logger.debug('VadAudioProcessor: Queued marker at $markerFrameTime (offset ${offsetForMarker}ms)');
             }
             if (_currentRefs.isEmpty) {
               lastFrameWallTime = markerFrameTime;
@@ -470,6 +475,37 @@ class VadAudioProcessor {
             }
           }
           offset += 20;
+          // Button-tap means we're back in an active recording context; if the
+          // session-end skip was somehow still latched (mode switch, stale
+          // state), clear it so this tap's recording isn't dropped.
+          _sessionEndPendingResume = false;
+          continue;
+        }
+
+        // Session-end marker (0xFFFFFFFC, 20 bytes: 4-byte header + 16-byte payload).
+        // Written by firmware on manual-mode stop double-tap. Finalize the current
+        // recording at this exact boundary instead of holding it as a draft.
+        // Payload layout matches the button-tap marker but is treated as a control
+        // signal — no EDL bookmark is emitted.
+        if (frameLength == 0xFFFFFFFC) {
+          if (offset + 20 <= fileLength) {
+            Logger.debug(
+                'VadAudioProcessor: Session-end marker at $lastFrameWallTime — finalizing recording (refs=${_currentRefs.length}).');
+            if (_currentRefs.isNotEmpty) {
+              _forcedByMarker = true;
+              final filePath = await flushRemaining(isDraft: false);
+              if (filePath != null) savedFiles.add(filePath);
+            } else {
+              // No audio buffered for this session — still surface any pending
+              // taps as orphans so they aren't lost.
+              _emitOrphanMarkers();
+            }
+            _sessionEndPendingResume = true;
+            _pcmWindow.clear();
+            _state = Float32List(2 * 1 * 128);
+            _vadContext = Float32List(_vadContextSamples);
+          }
+          offset += 20;
           continue;
         }
 
@@ -477,6 +513,9 @@ class VadAudioProcessor {
         // from silence. Used to decide stitch vs split and recalibrate frame timestamps.
         // Payload: [0..3] UTC epoch seconds (u32 LE), [4..7] uptime ms (u32 LE), [8..15] padding.
         if (frameLength == 0xFFFFFFFD) {
+          // Resume signal — the user restarted recording, so any pending
+          // session-end skip is cleared and subsequent frames are honored.
+          _sessionEndPendingResume = false;
           if (offset + 12 <= fileLength) {
             final vadUtcSeconds = byteData.getUint32(offset + 4, Endian.little);
             final vadUptimeMs = byteData.getUint32(offset + 8, Endian.little);
@@ -564,6 +603,14 @@ class VadAudioProcessor {
         if (offset + 4 + frameLength > fileLength) {
           Logger.debug('VadAudioProcessor: Incomplete frame at offset $offset in ${segmentFile.path}');
           break;
+        }
+
+        // Session-end skip: drop audio frames until a resume signal arrives.
+        // Stray frames from the marker-write→threshold-flip race land here and
+        // would otherwise start a junk recording.
+        if (_sessionEndPendingResume) {
+          offset += 4 + ((frameLength + 3) & ~3);
+          continue;
         }
 
         if (frameIndex % 50 == 0) await Future.delayed(Duration.zero);
@@ -1073,8 +1120,7 @@ class VadAudioProcessor {
 
     final totalSkipped = skippedReadFail + skippedDecodeNull + skippedDecodeEmpty;
     if (totalFrameRefs > 0 && totalSkipped * 20 > totalFrameRefs) {
-      Logger.error(
-          'VadAudioProcessor: $m4aPath dropped $totalSkipped/$totalFrameRefs frames '
+      Logger.error('VadAudioProcessor: $m4aPath dropped $totalSkipped/$totalFrameRefs frames '
           '(${(100 * totalSkipped / totalFrameRefs).toStringAsFixed(1)}%): '
           'readFail=$skippedReadFail decodeNull=$skippedDecodeNull decodeEmpty=$skippedDecodeEmpty — '
           'wallClock=${_currentChunkDurationMs}ms encoded=${(totalSamples * 1000) ~/ sampleRate}ms');
@@ -1475,8 +1521,7 @@ class VadAudioProcessor {
 
       final totalSkipped = skippedReadFail + skippedDecodeNull + skippedDecodeEmpty;
       if (totalFrameRefs > 0 && totalSkipped * 20 > totalFrameRefs) {
-        Logger.error(
-            'VadAudioProcessor: $wavPath dropped $totalSkipped/$totalFrameRefs frames '
+        Logger.error('VadAudioProcessor: $wavPath dropped $totalSkipped/$totalFrameRefs frames '
             '(${(100 * totalSkipped / totalFrameRefs).toStringAsFixed(1)}%): '
             'readFail=$skippedReadFail decodeNull=$skippedDecodeNull decodeEmpty=$skippedDecodeEmpty — '
             'wallClock=${_currentChunkDurationMs}ms encoded=${(totalSamples * 1000) ~/ sampleRate}ms');
