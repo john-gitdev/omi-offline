@@ -38,6 +38,16 @@ int transport_off();
 bool write_marker_to_storage(void);
 
 /**
+ * @brief Write a session-end marker packet (header 0xFFFFFFFC) to storage.
+ *
+ * Emitted on manual-mode stop double-tap so the app can finalize the
+ * recording at the user-chosen boundary instead of holding it as a draft.
+ *
+ * @return true if successful
+ */
+bool write_session_end_marker_to_storage(void);
+
+/**
  * @brief Broadcast audio packets over BLE
  *
  * @param buffer Buffer containing audio data
