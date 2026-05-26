@@ -632,11 +632,11 @@ class _RecordingsPageState extends State<RecordingsPage> {
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                           decoration: BoxDecoration(
                             color:
-                                _prefs.manualMode ? Colors.deepPurpleAccent.withOpacity(0.15) : const Color(0xFF2A2A2E),
+                                _prefs.manualMode ? const Color(0xFF2A2A2E) : Colors.deepPurpleAccent.withOpacity(0.15),
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
                               color:
-                                  _prefs.manualMode ? Colors.deepPurpleAccent.withOpacity(0.6) : Colors.grey.shade700,
+                                  _prefs.manualMode ? Colors.grey.shade700 : Colors.deepPurpleAccent.withOpacity(0.6),
                             ),
                           ),
                           child: Row(
@@ -645,14 +645,14 @@ class _RecordingsPageState extends State<RecordingsPage> {
                               FaIcon(
                                 _prefs.manualMode ? FontAwesomeIcons.hand : FontAwesomeIcons.wandMagicSparkles,
                                 size: 11,
-                                color: _prefs.manualMode ? Colors.deepPurpleAccent : Colors.grey.shade400,
+                                color: _prefs.manualMode ? Colors.grey.shade400 : Colors.deepPurpleAccent,
                               ),
                               const SizedBox(width: 5),
                               Text(
                                 _prefs.manualMode ? 'Manual' : 'Automatic',
                                 style: TextStyle(
                                   fontSize: 12,
-                                  color: _prefs.manualMode ? Colors.deepPurpleAccent : Colors.grey.shade400,
+                                  color: _prefs.manualMode ? Colors.grey.shade400 : Colors.deepPurpleAccent,
                                   fontWeight: FontWeight.w500,
                                 ),
                               ),
