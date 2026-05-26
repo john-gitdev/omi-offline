@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
+import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
@@ -28,6 +29,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   double _progress = 0.0;
   String _statusMessage = 'Ready to sync';
   Timer? _pollTimer;
+  Timer? _dropPollTimer;
+  DeviceDropStats? _dropStats;
+  // Snapshot used to render "since baseline" deltas; null = show absolute totals.
+  DeviceDropStats? _dropBaseline;
+  bool _dropsUnsupported = false;
+  bool _dropsReading = false;
 
   @override
   void initState() {
@@ -36,6 +43,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       final processing = RecordingsManager.isProcessingAny;
       if (processing != _isProcessing) setState(() => _isProcessing = processing);
     });
+    // Poll the drop counters every 2 s while Debug Tools is open. Off-screen
+    // teardown happens in dispose().
+    _dropPollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _refreshDropStats());
+    unawaited(_refreshDropStats());
     // Do NOT call start() here. start() fires getMissingWals() asynchronously and
     // overwrites _wals via .then(), which races with syncAll() between the moment it
     // takes its local `wals` snapshot and when it sets _isSyncing = true.
@@ -404,7 +415,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
-
   Future<void> _cancelSync() async {
     Logger.debug('DebugTools: Cancel Download tapped');
     ServiceManager.instance().wal.getSyncs().cancelSync();
@@ -414,9 +424,42 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     });
   }
 
+  Future<void> _refreshDropStats() async {
+    if (_dropsUnsupported || _dropsReading) return;
+    if (!mounted) return;
+    final deviceProvider = Provider.of<DeviceProvider>(context, listen: false);
+    final dev = deviceProvider.connectedDevice;
+    if (dev == null) return;
+    _dropsReading = true;
+    try {
+      final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
+      if (conn == null) return;
+      final stats = await conn.getDropStats();
+      if (!mounted) return;
+      if (stats == null) {
+        setState(() => _dropsUnsupported = true);
+      } else {
+        setState(() => _dropStats = stats);
+      }
+    } catch (_) {
+      // Transient BLE errors are fine — try again on the next tick.
+    } finally {
+      _dropsReading = false;
+    }
+  }
+
+  void _snapshotDropBaseline() {
+    setState(() => _dropBaseline = _dropStats);
+  }
+
+  void _clearDropBaseline() {
+    setState(() => _dropBaseline = null);
+  }
+
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _dropPollTimer?.cancel();
     super.dispose();
   }
 
@@ -557,6 +600,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 ),
               ],
               const SizedBox(height: 24),
+              _buildDropStatsSection(),
+              const SizedBox(height: 24),
               const Divider(color: Color(0xFF2C2C2E), height: 1),
               const SizedBox(height: 24),
               if (_isProcessing) ...[
@@ -678,6 +723,145 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       ),
     );
   }
+
+  Widget _buildDropStatsSection() {
+    if (_dropsUnsupported) {
+      return const Row(
+        children: [
+          FaIcon(FontAwesomeIcons.circleInfo, size: 13, color: Colors.white38),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'SD Write Drops unavailable (older firmware).',
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+            ),
+          ),
+        ],
+      );
+    }
+    final stats = _dropStats;
+    if (stats == null) {
+      return const Row(
+        children: [
+          FaIcon(FontAwesomeIcons.circleNotch, size: 13, color: Colors.white38),
+          SizedBox(width: 8),
+          Text('Reading drop counters…', style: TextStyle(color: Colors.white38, fontSize: 12)),
+        ],
+      );
+    }
+
+    final baseline = _dropBaseline;
+    final blocks = baseline == null ? stats.blockDrops : (stats.blockDrops - baseline.blockDrops);
+    final frames = baseline == null ? stats.streamFrameDrops : (stats.streamFrameDrops - baseline.streamFrameDrops);
+    final boot = stats.bootFrameDrops; // boot drops are fixed at boot; baseline doesn't apply
+    final hasFreshDrops = blocks > 0 || frames > 0;
+
+    final color = hasFreshDrops ? Colors.amber : Colors.white70;
+
+    String lastDropLabel;
+    final sinceMs = stats.msSinceLastBlockDrop;
+    if (sinceMs == null) {
+      lastDropLabel = 'never';
+    } else {
+      lastDropLabel = '${_formatDuration(sinceMs)} ago';
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1C),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF2C2C2E)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              FaIcon(FontAwesomeIcons.solidHardDrive, size: 13, color: color),
+              const SizedBox(width: 8),
+              Text(
+                baseline == null ? 'SD Write Drops' : 'SD Write Drops (since baseline)',
+                style: TextStyle(color: color, fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _dropStatRow('440 B blocks dropped', blocks.toString(), hasFreshDrops),
+          _dropStatRow('Audio frames dropped (SD queue)', frames.toString(), hasFreshDrops),
+          _dropStatRow('Boot-window frame drops', boot.toString(), false),
+          _dropStatRow('Last block drop', lastDropLabel, hasFreshDrops),
+          _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _snapshotDropBaseline,
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Colors.amber, width: 1),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                  ),
+                  child: const Text('Snapshot baseline',
+                      style: TextStyle(color: Colors.amber, fontWeight: FontWeight.w600, fontSize: 13)),
+                ),
+              ),
+              if (baseline != null) ...[
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _clearDropBaseline,
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.white38, width: 1),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                    child: const Text('Clear',
+                        style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600, fontSize: 13)),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _dropStatRow(String label, String value, bool emphasize) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+          ),
+          Text(
+            value,
+            style: TextStyle(
+              color: emphasize ? Colors.amber : Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _formatDuration(int ms) {
+    if (ms < 1000) return '${ms}ms';
+    final s = ms ~/ 1000;
+    if (s < 60) return '${s}s';
+    final m = s ~/ 60;
+    final rs = s % 60;
+    if (m < 60) return '${m}m ${rs}s';
+    final h = m ~/ 60;
+    final rm = m % 60;
+    return '${h}h ${rm}m';
+  }
 }
 
 class _DiagnosticLogRow extends StatelessWidget {
@@ -693,7 +877,9 @@ class _DiagnosticLogRow extends StatelessWidget {
     final ts = (log['timestamp'] as String?) ?? (log['ts'] as String?) ?? '';
 
     final color = level == 'ERROR' ? Colors.redAccent : Colors.white70;
-    final icon = level == 'ERROR' ? FontAwesomeIcons.circleXmark : (level == 'WARN' ? FontAwesomeIcons.circleExclamation : FontAwesomeIcons.circleInfo);
+    final icon = level == 'ERROR'
+        ? FontAwesomeIcons.circleXmark
+        : (level == 'WARN' ? FontAwesomeIcons.circleExclamation : FontAwesomeIcons.circleInfo);
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
