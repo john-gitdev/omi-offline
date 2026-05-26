@@ -2,7 +2,7 @@
 
 A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
 
-**Current versions:** App `0.13.0` · Firmware `oo-1.7.9`
+**Current versions:** App `0.13.2` · Firmware `oo-1.7.10`
 
 ---
 
@@ -18,7 +18,7 @@ The nRF5340 wearable captures audio continuously via PDM microphones, encodes it
 - **Resumable BLE sync (WAL).** Per-file byte-offset bookmarks survive disconnects. Sync resumes exactly where it stopped.
 - **Silero VAD on-device.** ONNX Runtime executes Silero VAD v6.2.1 locally on the phone to strip silence and segment speech. Runs in a background isolate so platform threads stay unblocked.
 - **Two recording modes.** Automatic (VAD-driven, hands-free) and Manual (explicit double-tap start/stop on the hardware button).
-- **Markers.** A double-tap while recording drops a timestamped bookmark. The app builds an EDL sidecar for each marked clip.
+- **Verified Markers.** A double-tap drops a timestamped bookmark stored inline within the audio stream. During processing, the app parses these events with sub-frame precision to build high-precision EDL sidecars for the resulting recordings.
 - **Adjustment Mode.** Re-run VAD on already-downloaded segments without touching the device — tweak sensitivity and reprocess offline.
 - **Discard recovery (ghost rows).** Audio that VAD dropped (silenced as noise, or too short) is surfaced as a greyed-out "ghost" row in the recordings list. Source bins are protected for a 48 h window so you can recover a clip with a lower threshold or delete it.
 - **AAD (All-As-Detected).** Disable Silero entirely and treat all audio as speech, splitting only on firmware timestamps.
@@ -264,6 +264,13 @@ See [`NOMENCLATURE.md`](NOMENCLATURE.md) for the full glossary. Key terms:
 ---
 
 ## Recent Changes
+
+### Marker Creation Pipeline (0.13.2)
+
+- **Inline Source.** Markers (20-byte frames) are now stored directly within the raw `.bin` stream. This replaces the legacy `markers.txt` intermediate sidecar, ensuring that events are physically tied to the audio frames they accompany.
+- **On-the-fly Parsing.** The VAD processor now parses these inline markers during the decoding pass. This architectural shift ensures perfect synchronization between the audio stream and button-tap events.
+- **Robust EDL Sidecars.** The JSON-based **Edit Decision List (EDL)** system has been hardened with atomic writes, reliable deduping (no more `_1.edl` duplicates), and support for "orphan" markers (taps during silence).
+- **Timeline Recalibration.** Markers arriving mid-recording now recalibrate the anchor timestamp if the initial anchor was an estimate (derived from file mtime), fixing "second-order" drift in long recordings.
 
 ### Silero VAD v6 upgrade (0.13.0)
 
