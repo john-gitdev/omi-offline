@@ -11,9 +11,12 @@ class MarkerTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Pending markers (no backing segment) still need a long-press affordance
+    // so the user can delete them — otherwise orphan EDLs accumulate forever
+    // with no in-UI cleanup path (NEW1/C1).
     return InkWell(
       onTap: mc.isPending ? null : onTap,
-      onLongPress: mc.isPending ? null : onLongPress,
+      onLongPress: onLongPress,
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
@@ -30,7 +33,7 @@ class MarkerTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    mc.isPending ? 'Processing…' : mc.timeRangeLabel,
+                    mc.isPending ? 'No audio attached' : mc.timeRangeLabel,
                     style: TextStyle(
                       color: mc.isPending ? Colors.grey.shade600 : Colors.white,
                       fontSize: 15,

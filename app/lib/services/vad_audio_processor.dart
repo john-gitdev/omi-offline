@@ -399,26 +399,46 @@ class VadAudioProcessor {
             final markerUtcMs = byteData.getUint64(offset + 4, Endian.little);
             final markerUptimeMs = byteData.getUint32(offset + 12, Endian.little);
 
-            // 1. Primary: Use the derived wall time (locked to high-precision audio header)
-            // 2. Fallback: If no header found yet or wall time is suspicious, use marker's UTC
+            // Pick the most trustworthy wall-clock for this marker:
+            //   - Prefer derived audio wall time if the audio header was high-precision
+            //     (non-derived) AND the marker's RTC roughly agrees (within 60 s).
+            //   - Otherwise trust the marker's RTC (audio timestamp may be a stale
+            //     mtime fallback or the device may have been asleep).
             DateTime markerFrameTime = lastFrameWallTime;
-            // Always prefer the marker's own hardware RTC timestamp if it's valid.
-            // lastFrameWallTime can be extremely stale if the device was asleep (e.g. gap > 60s).
             if (markerUtcMs > 946684800000) {
-              markerFrameTime = DateTime.fromMillisecondsSinceEpoch(markerUtcMs, isUtc: true);
-              Logger.debug('VadAudioProcessor: Using marker UTC: $markerFrameTime');
+              final markerRtc = DateTime.fromMillisecondsSinceEpoch(markerUtcMs, isUtc: true);
+              if (_isDerivedTimestamp) {
+                // Audio wall time is unreliable — always trust the marker RTC.
+                markerFrameTime = markerRtc;
+                Logger.debug('VadAudioProcessor: Using marker UTC (audio derived): $markerFrameTime');
+              } else {
+                final driftMs = markerRtc.difference(lastFrameWallTime).inMilliseconds.abs();
+                if (driftMs > 60000) {
+                  // Large drift between hardware RTC and audio timeline — prefer audio
+                  // timeline since markerOffsetMs is computed against it. The marker
+                  // UTC is logged but discarded as the wall-clock anchor.
+                  Logger.debug(
+                      'VadAudioProcessor: Marker RTC $markerRtc drifts ${driftMs}ms from audio timeline — using audio wall time $lastFrameWallTime');
+                } else {
+                  markerFrameTime = markerRtc;
+                  Logger.debug('VadAudioProcessor: Using marker UTC: $markerFrameTime (drift ${driftMs}ms)');
+                }
+              }
             }
 
             final markerMs = markerFrameTime.millisecondsSinceEpoch;
-            if (markerMs > 946684800000) {
-              _pendingMarkers.add((markerMs: markerMs, offsetAtMarkerMs: _currentChunkDurationMs));
-              Logger.debug(
-                  'VadAudioProcessor: Queued marker at $markerFrameTime (offset ${_currentChunkDurationMs}ms)');
-            }
-
             _forcedByMarker = true;
             if (markerMs > 946684800000) {
               _markerProtectedUntilMs = markerMs + 50000;
+            }
+            // Capture offset *after* deciding whether this marker starts a new
+            // recording. Fresh start → offset 0 (matches _recordingStartTime).
+            // Mid-recording → current chunk duration.
+            final int offsetForMarker = _currentRefs.isEmpty ? 0 : _currentChunkDurationMs;
+            if (markerMs > 946684800000) {
+              _pendingMarkers.add((markerMs: markerMs, offsetAtMarkerMs: offsetForMarker));
+              Logger.debug(
+                  'VadAudioProcessor: Queued marker at $markerFrameTime (offset ${offsetForMarker}ms)');
             }
             if (_currentRefs.isEmpty) {
               lastFrameWallTime = markerFrameTime;
@@ -496,11 +516,22 @@ class VadAudioProcessor {
                 if (tooShortSpeech) {
                   final rec = _buildDiscardRecord('noise_pre_split');
                   if (rec != null) _pendingDiscards.add(rec);
+                  // Surface any queued tap as an orphan instead of leaking it
+                  // into the next conversation with a stale offset.
+                  _emitOrphanMarkers();
                   Logger.debug('VadAudioProcessor: Discarding noise conversation before split.');
                 } else {
                   final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
+                  // Encoder failure leaves _pendingMarkers populated; surface as
+                  // orphans rather than letting them leak into the next conv.
+                  if (filePath == null) _emitOrphanMarkers();
                   if (filePath != null) savedFiles.add(filePath);
                 }
+              } else {
+                // Marker queued, no audio buffered yet → still emit orphan so
+                // the tap is preserved when this branch's in-place reset wipes
+                // _currentChunkDurationMs.
+                _emitOrphanMarkers();
               }
 
               final bool newConversationProtected =
@@ -592,10 +623,13 @@ class VadAudioProcessor {
 
           if (!tooShortSpeech) {
             final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
+            // Encoder failure path: preserve queued taps as orphans.
+            if (filePath == null) _emitOrphanMarkers();
             if (filePath != null) savedFiles.add(filePath);
           } else {
             final rec = _buildDiscardRecord('noise_max_duration');
             if (rec != null) _pendingDiscards.add(rec);
+            _emitOrphanMarkers();
             Logger.debug('VadAudioProcessor: Discarding noise conversation during max-duration cut.');
           }
           final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
@@ -647,11 +681,19 @@ class VadAudioProcessor {
         if (rec != null) _pendingDiscards.add(rec);
         Logger.debug('VadAudioProcessor: flushRemaining discarding ${_currentRefs.length} frames ($reason)');
       }
+      // Emit any pending markers as orphan EDLs so a button-tap is never lost
+      // even when the surrounding audio was discarded (or never arrived).
+      _emitOrphanMarkers();
       _resetState();
       return null;
     }
     discardGuardFiredOnLastFlush = false;
     final path = await _saveRecording(_currentRefs, _recordingStartTime!, isDraft: isDraft);
+    // _saveRecording consumes _pendingMarkers only when it returns a non-null
+    // result. If encoding produced zero frames or failed, any queued taps are
+    // still in _pendingMarkers; emit them as orphans before _resetState wipes
+    // them silently.
+    if (path == null) _emitOrphanMarkers();
     _resetState();
     return path;
   }
@@ -680,13 +722,46 @@ class VadAudioProcessor {
 
   void _resetState() {
     _forcedByMarker = false;
-    _markerProtectedUntilMs = null;
+    // Preserve _markerProtectedUntilMs across reset — the 50 s window applies
+    // to wall-clock time, so an inter-file split shouldn't drop protection
+    // when the next bin starts within the window. It self-expires naturally
+    // once audio wall time crosses it.
     _currentRefs = [];
     _speechFrameCount = 0;
     _currentChunkDurationMs = 0;
     _currentMaxVoiceProb = 0.0;
     _recordingStartTime = null;
+    // Defensive clear: callers that discard MUST call _emitOrphanMarkers()
+    // before _resetState() — otherwise the tap is lost silently. Anything
+    // still in _pendingMarkers here is a bug in the caller; we wipe it so it
+    // doesn't leak into the next conversation with a stale offset.
+    if (_pendingMarkers.isNotEmpty) {
+      Logger.error(
+          'VadAudioProcessor: _resetState dropping ${_pendingMarkers.length} pending marker(s) — caller forgot _emitOrphanMarkers()');
+      _pendingMarkers.clear();
+    }
+  }
+
+  /// Emits any queued button-tap markers as standalone EDL entries with no
+  /// backing segment, so a tap is never lost when the surrounding audio
+  /// is discarded by VAD/min-duration guards.
+  ///
+  /// Also clears `_markerProtectedUntilMs`: once a tap has been promoted to
+  /// an orphan EDL, the 50 s protection window is no longer "guarding the
+  /// real recording" — leaving it set would cause the next unrelated audio
+  /// in the same minute to be force-promoted with no marker to link to.
+  void _emitOrphanMarkers() {
+    if (_pendingMarkers.isEmpty) return;
+    for (final m in _pendingMarkers) {
+      _pendingEdlData.add({
+        'filename': '', // empty → marker has no backing segment
+        'markerMs': m.markerMs,
+        'offsetMs': 0,
+        'durationMs': 0,
+      });
+    }
     _pendingMarkers.clear();
+    _markerProtectedUntilMs = null;
   }
 
   /// Builds a discard record from the current conversation state. Caller is

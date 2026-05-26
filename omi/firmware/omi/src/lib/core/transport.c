@@ -1023,13 +1023,24 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
 {
     /* Framed entry: [length:4LE][payload:NB] */
     uint32_t entry_size = data_size + 4;
+    bool ok = true;
 
     k_mutex_lock(&storage_temp_mutex, K_FOREVER);
 
     if (buffer_offset + entry_size > MAX_WRITE_SIZE) {
         /* Pad remaining block with 0 (NULL entries) */
         memset(storage_temp_data + buffer_offset, 0, MAX_WRITE_SIZE - buffer_offset);
-        write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        uint32_t wrote = write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        if (wrote != MAX_WRITE_SIZE) {
+            /* SD queue rejected the block — the buffered bytes (up to one
+             * full block of audio frames or markers) are lost. We still
+             * have to reset buffer_offset to make room for the entry the
+             * caller is trying to write; otherwise the writer is stuck
+             * forever and loses every subsequent frame too. Signal the
+             * loss via the return value. */
+            LOG_WRN("Storage rollover flush dropped block (wrote=%u/%u)", wrote, (uint32_t)MAX_WRITE_SIZE);
+            ok = false;
+        }
         buffer_offset = 0;
     }
 
@@ -1038,7 +1049,7 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
     storage_temp_data[buffer_offset + 1] = (uint8_t)((marker >> 8) & 0xFF);
     storage_temp_data[buffer_offset + 2] = (uint8_t)((marker >> 16) & 0xFF);
     storage_temp_data[buffer_offset + 3] = (uint8_t)((marker >> 24) & 0xFF);
-    
+
     /* Write payload */
     memcpy(storage_temp_data + buffer_offset + 4, data, data_size);
     buffer_offset += entry_size;
@@ -1051,7 +1062,13 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
     }
 
     if (buffer_offset == MAX_WRITE_SIZE) {
-        write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        uint32_t wrote = write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        if (wrote != MAX_WRITE_SIZE) {
+            /* Full-buffer flush rejected. Same trade-off as above: reset
+             * so subsequent writes can proceed, but report the loss. */
+            LOG_WRN("Storage full-block flush dropped (wrote=%u/%u)", wrote, (uint32_t)MAX_WRITE_SIZE);
+            ok = false;
+        }
         buffer_offset = 0;
     }
 
@@ -1060,7 +1077,7 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
 #ifdef CONFIG_OMI_ENABLE_MONITOR
     monitor_inc_storage_write();
 #endif
-    return true;
+    return ok;
 }
 
 bool write_to_storage(void)
@@ -1069,16 +1086,27 @@ bool write_to_storage(void)
     return write_custom_packet_to_storage(tx_buffer_size, buffer, tx_buffer_size);
 }
 
-uint32_t device_session_id = 0;
+atomic_t device_session_id = ATOMIC_INIT(0);
+
+/* Atomic lazy-init of device_session_id. Race-safe against parallel calls
+ * from the audio path and the button-tap marker path during boot (B18). */
+static uint32_t ensure_device_session_id(void)
+{
+    uint32_t sid = (uint32_t)atomic_get(&device_session_id);
+    if (sid != 0) return sid;
+    do {
+        sid = sys_rand32_get();
+    } while (sid == 0);
+    /* If another thread already published an ID, keep theirs. */
+    if (!atomic_cas(&device_session_id, 0, (atomic_val_t)sid)) {
+        sid = (uint32_t)atomic_get(&device_session_id);
+    }
+    return sid;
+}
 
 bool write_marker_to_storage(void)
 {
-    if (device_session_id == 0) {
-        // Should not really happen as we should be recording, but safety first
-        do {
-            device_session_id = sys_rand32_get();
-        } while (device_session_id == 0);
-    }
+    uint32_t sid = ensure_device_session_id();
 
     uint8_t temp_buffer[16];
     uint64_t utc_time_ms = rtc_get_utc_time_ms();
@@ -1086,10 +1114,42 @@ bool write_marker_to_storage(void)
 
     memcpy(temp_buffer, &utc_time_ms, 8);
     memcpy(temp_buffer + 8, &uptime_ms, 4);
-    memcpy(temp_buffer + 12, &device_session_id, 4);
+    memcpy(temp_buffer + 12, &sid, 4);
 
-    LOG_INF("Writing marker to storage (DeviceSession: %u)", device_session_id);
-    return write_custom_packet_to_storage(0xFFFFFFFE, temp_buffer, 16);
+    LOG_INF("Writing marker to storage (DeviceSession: %u)", sid);
+    bool ok = write_custom_packet_to_storage(0xFFFFFFFE, temp_buffer, 16);
+
+    /* Force-drain any partial block in storage_temp_data so the marker is
+     * durable to SD even when no audio is flowing (e.g. mic muted) (B2).
+     * Without this, a 20-byte marker can sit in RAM until the 440-byte
+     * block fills — and never reach the card if the device powers off
+     * before the next audio frame.
+     *
+     * IMPORTANT: only reset buffer_offset when write_to_file actually
+     * accepted the block. If the SD queue is full it returns 0; resetting
+     * the buffer in that case throws away both the marker AND whatever
+     * audio frames the audio thread interleaved between the mutex
+     * release in write_custom_packet_to_storage and this re-acquire
+     * (NEW9). Leaving buffer_offset intact lets the next audio write
+     * retry the block. */
+    k_mutex_lock(&storage_temp_mutex, K_FOREVER);
+    if (buffer_offset > 0) {
+        uint16_t saved_offset = buffer_offset;
+        memset(storage_temp_data + buffer_offset, 0, MAX_WRITE_SIZE - buffer_offset);
+        uint32_t wrote = write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        if (wrote == MAX_WRITE_SIZE) {
+            buffer_offset = 0;
+        } else {
+            /* Queue rejected; keep the original payload bytes in place
+             * (the memset only touched the padding region). */
+            buffer_offset = saved_offset;
+            ok = false;
+            LOG_WRN("Marker flush dropped: SD queue full, retaining buffer (offset=%u)", saved_offset);
+        }
+    }
+    k_mutex_unlock(&storage_temp_mutex);
+
+    return ok;
 }
 #endif
 
