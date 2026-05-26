@@ -287,18 +287,34 @@ static struct bt_gatt_attr battery_detail_service_attr[] = {
 static struct bt_gatt_service battery_detail_service = BT_GATT_SERVICE(battery_detail_service_attr);
 #endif
 
+/* Diagnostics: count 440-byte storage block flushes the SD queue rejected.
+ * Each rejected block contains up to ~5 Opus frames (~100 ms audio).
+ * Bumped from write_custom_packet_to_storage(); read via 0x19B10062. */
+static atomic_t storage_block_drops = ATOMIC_INIT(0);
+static atomic_t last_storage_drop_uptime_ms = ATOMIC_INIT(0);
+
 // --- Diagnostics Service ---
 // Service UUID:       19B10060-E8F2-537E-4F6C-D104768A1214
-// Characteristic:     19B10061-E8F2-537E-4F6C-D104768A1214
+// Characteristic A:   19B10061-E8F2-537E-4F6C-D104768A1214
 // Returns 8 bytes LE: [uint32 reset_cause] [uint32 uptime_seconds]
 //   reset_cause: Zephyr HWINFO bitmask for why the current boot started
 //     RESET_PIN=0x01  RESET_SOFTWARE=0x02  RESET_BROWNOUT=0x04  RESET_POR=0x08
 //     RESET_WATCHDOG=0x10  RESET_CPU_LOCKUP=0x100
 //   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
+//
+// Characteristic B:   19B10062-E8F2-537E-4F6C-D104768A1214
+// Returns 20 bytes LE:
+//   [uint32 storage_block_drops]   storage_block_drops since boot (each = ~5 Opus frames lost)
+//   [uint32 last_drop_uptime_ms]   k_uptime_get() at the most recent block drop (0 = none)
+//   [uint32 sd_stream_drops]       stat_dropped_frames from sd_card.c (queue-full audio frame drops)
+//   [uint32 sd_boot_drops]         frames lost during SD mount/boot window
+//   [uint32 current_uptime_ms]     k_uptime_get() at the moment of read
 static struct bt_uuid_128 diagnostics_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10061, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+static struct bt_uuid_128 diagnostics_drops_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10062, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 
 static ssize_t diagnostics_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                         void *buf, uint16_t len, uint16_t offset)
@@ -314,12 +330,46 @@ static ssize_t diagnostics_read_handler(struct bt_conn *conn, const struct bt_ga
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
 
+static inline void pack_u32_le(uint8_t *dst, uint32_t v)
+{
+    dst[0] = (uint8_t)(v);
+    dst[1] = (uint8_t)(v >> 8);
+    dst[2] = (uint8_t)(v >> 16);
+    dst[3] = (uint8_t)(v >> 24);
+}
+
+static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                              void *buf, uint16_t len, uint16_t offset)
+{
+    uint32_t block_drops    = (uint32_t)atomic_get(&storage_block_drops);
+    uint32_t last_drop_ms   = (uint32_t)atomic_get(&last_storage_drop_uptime_ms);
+    uint32_t sd_stream_drops = sd_get_stream_dropped_frames();
+    uint32_t sd_boot_drops   = sd_get_boot_dropped_frames();
+    uint32_t now_ms         = (uint32_t)k_uptime_get();
+
+    uint8_t payload[20];
+    pack_u32_le(payload + 0,  block_drops);
+    pack_u32_le(payload + 4,  last_drop_ms);
+    pack_u32_le(payload + 8,  sd_stream_drops);
+    pack_u32_le(payload + 12, sd_boot_drops);
+    pack_u32_le(payload + 16, now_ms);
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
+}
+
 static struct bt_gatt_attr diagnostics_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&diagnostics_service_uuid),
     BT_GATT_CHARACTERISTIC(&diagnostics_characteristic_uuid.uuid,
                            BT_GATT_CHRC_READ,
                            BT_GATT_PERM_READ,
                            diagnostics_read_handler,
+                           NULL,
+                           NULL),
+    /* Drops characteristic — appended last so existing diagnostics handles
+     * stay stable across firmware revisions. */
+    BT_GATT_CHARACTERISTIC(&diagnostics_drops_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ,
+                           diagnostics_drops_read_handler,
                            NULL,
                            NULL),
 };
@@ -1039,6 +1089,8 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
              * forever and loses every subsequent frame too. Signal the
              * loss via the return value. */
             LOG_WRN("Storage rollover flush dropped block (wrote=%u/%u)", wrote, (uint32_t)MAX_WRITE_SIZE);
+            atomic_inc(&storage_block_drops);
+            atomic_set(&last_storage_drop_uptime_ms, (atomic_val_t)k_uptime_get());
             ok = false;
         }
         buffer_offset = 0;
@@ -1067,6 +1119,8 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
             /* Full-buffer flush rejected. Same trade-off as above: reset
              * so subsequent writes can proceed, but report the loss. */
             LOG_WRN("Storage full-block flush dropped (wrote=%u/%u)", wrote, (uint32_t)MAX_WRITE_SIZE);
+            atomic_inc(&storage_block_drops);
+            atomic_set(&last_storage_drop_uptime_ms, (atomic_val_t)k_uptime_get());
             ok = false;
         }
         buffer_offset = 0;
