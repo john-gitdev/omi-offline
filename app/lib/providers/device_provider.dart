@@ -400,9 +400,14 @@ class DeviceProvider extends ChangeNotifier
     final pairedDeviceId = SharedPreferencesUtil().btDevice.id;
     if (pairedDeviceId.isNotEmpty) {
       try {
+        // Don't force: the native BLE layer owns reconnect retries (~1.5s cadence,
+        // way more aggressive than this 15s timer). Force=true here would dogpile
+        // on top of the native retry loop, spawning duplicate GATT handles.
+        // ensureConnection without force becomes a no-op if a transport already
+        // exists, and the discover() fallback below still runs if needed.
         await ServiceManager.instance()
             .device
-            .ensureConnection(pairedDeviceId, force: true)
+            .ensureConnection(pairedDeviceId)
             .timeout(const Duration(seconds: 10));
         await Future.delayed(const Duration(seconds: 1));
         device = await _getConnectedDevice();
