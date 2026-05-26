@@ -152,6 +152,53 @@ The `VadAudioProcessor` should treat the incoming stream as a sparse set of samp
 - **Pros:** Sample-accurate sync, resilience to SD card drops, "Instant-On" UI (if using a separate marker file/summary), and deterministic debugging.
 - **Cons:** Increased packet overhead (more bytes per write), slightly higher battery/SD card usage, and increased firmware/app complexity for the new demuxer logic.
 
+### Validation: SD Drop Counters (added 2026-05-26)
+
+**Premise to validate before committing to Sequence & Sync.** The proposal earns its complexity only if SD write drops actually happen in real use. Built lightweight instrumentation to measure drop frequency over normal usage; result determines whether to implement.
+
+**Validation infrastructure shipped:**
+- Firmware: two atomic counters (`storage_block_drops`, `last_storage_drop_uptime_ms`) added in `transport.c`, plus reuse of existing `stat_dropped_frames` (sd_card.c) and `boot_dropped_frames`.
+- New BLE characteristic `0x19B10062` on the diagnostics service. Read returns 20 bytes LE: `block_drops(u32) + last_drop_uptime_ms(u32) + sd_stream_drops(u32) + sd_boot_drops(u32) + current_uptime_ms(u32)`.
+- App reads via `OmiDeviceConnection.performGetDropStats()` and renders a card on the Debug Tools page (`SyncPage`) — polled every 2 s, with a "Snapshot baseline" button for delta measurement.
+
+**Three counters measure three failure modes:**
+| Counter | Source | Fires when |
+|---|---|---|
+| `block_drops` | `transport.c::write_custom_packet_to_storage` | `write_to_file` returns ≠ MAX_WRITE_SIZE — entire 440 B block lost (~5 Opus frames ≈ 100 ms audio) |
+| `sd_stream_drops` | `sd_card.c::write_to_file` (line ~2427) | `k_msgq_put(&sd_msgq, …)` times out after 1-5 ms retry — single audio frame lost |
+| `sd_boot_drops` | `sd_card.c::write_to_file` (line ~2377) | Audio frame written before SD mount + lfs_fs_gc + file open finishes |
+
+`block_drops` is the headline number — that's what the Sequence & Sync proposal is solving for. `sd_stream_drops` is the upstream signal (most block drops are downstream of a stream drop). `sd_boot_drops` is a separate cold-start issue, not relevant to mid-stream drift.
+
+**Test result so far (2026-05-26):**
+- 45 min device uptime, manual recording mode, BLE disconnected most of the time
+- 0 block drops, 0 stream frame drops, 0 boot drops
+- Firmware `oo-1.7.11`, app `0.13.3`
+- Inconclusive: `SD_REQ_QUEUE_MSGS = 100` (`sd_card.c:48`) = ~10 s of write buffer; typical SD GC stalls are 100-400 ms and won't saturate that. Needs days of soak.
+
+**How to check back in:**
+1. Open Debug Tools page in app. Look at the "SD Write Drops" card.
+2. If `block_drops` and `audio frames dropped (SD queue)` are still 0 after a few days of normal use → Sequence & Sync proposal is hypothetical, deprioritize.
+3. If either moves → drift is real. Investigate path:
+   - `block_drops` moving alone is unusual (means `write_to_file` returned 0 for a reason other than msgq saturation — boot-not-ready, shutdown, or `sd_write_blocked`). Check firmware logs.
+   - `sd_stream_drops` moving = real msgq saturation, real audio loss. Sequence & Sync is justified.
+   - `boot_drops` moving = cold-start window leaks; separate fix (likely buffer pre-mount or delay mic start).
+
+**How to force drops for a controlled test (if needed):**
+- Active BLE sync while recording: retry budget tightens from `K_MSEC(5)` → `K_MSEC(1)` and sync reads compete with writes on the SD worker thread. ~30-60 min typically enough.
+- Or temporarily drop `SD_REQ_QUEUE_MSGS` from 100 → 8 in `sd_card.c` and rebuild. Forces drops within minutes — proves the counters work but says nothing about real-world frequency. Revert after verifying.
+
+**Code locations (for future-self grep):**
+- `omi/firmware/omi/src/lib/core/transport.c` — counter declarations (search `storage_block_drops`), BLE handler (`diagnostics_drops_read_handler`), char registration appended last in `diagnostics_service_attr[]`, increment sites in `write_custom_packet_to_storage`.
+- `omi/firmware/omi/src/sd_card.c` — `stat_dropped_frames` atomic, `sd_get_stream_dropped_frames()` accessor, `SD_REQ_QUEUE_MSGS` macro.
+- `omi/firmware/omi/src/lib/core/sd_card.h` — `sd_get_stream_dropped_frames` declaration.
+- `app/lib/services/devices/device_drop_stats.dart` — model + parsing helpers.
+- `app/lib/services/devices/omi_connection.dart` — `diagnosticsDropsCharacteristicUuid`, `performGetDropStats()`.
+- `app/lib/services/devices/device_connection.dart` — abstract `getDropStats()`.
+- `app/lib/pages/settings/sync_page.dart` — state fields (`_dropStats`, `_dropBaseline`, `_dropsUnsupported`), 2 s `Timer.periodic` polling in `initState`, `_buildDropStatsSection()` widget.
+
+**Removal plan if validation says drops don't happen:** delete the characteristic + accessor + app widget. Leaves no functional residue — purely diagnostic surface area.
+
 ## Marker Pipeline: Recalibration Timeline Divergence (B7 second-order)
 
 **File:** `app/lib/services/vad_audio_processor.dart` (the marker branch around line 437 and the per-frame `frameTime` computation around line 580)
