@@ -220,8 +220,9 @@ class Conversation {
 
       final millisStr = baseName.contains('_') ? baseName.split('_').last : null;
       final millis = millisStr != null ? int.tryParse(millisStr) : null;
-      final startTime =
-          millis != null && millis > 0 ? DateTime.fromMillisecondsSinceEpoch(millis) : await metaFile.lastModified();
+      final startTime = millis != null && millis > 0
+          ? DateTime.fromMillisecondsSinceEpoch(millis)
+          : await metaFile.lastModified();
 
       return Conversation(
         file: virtualAudioFile,
@@ -504,7 +505,8 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     try {
       session = await OnnxRuntime().createSession(params.sileroModelPath!);
       Logger.debug(
-          'RecordingsManager isolate: Silero session — inputs=${session.inputNames} outputs=${session.outputNames}');
+        'RecordingsManager isolate: Silero session — inputs=${session.inputNames} outputs=${session.outputNames}',
+      );
     } catch (e) {
       Logger.error('RecordingsManager isolate: Silero session load failed ($e) — AAD mode active.');
     }
@@ -513,10 +515,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
   SimpleOpusDecoder? decoder;
   if (Platform.isIOS || Platform.isAndroid) {
     try {
-      decoder = SimpleOpusDecoder(
-        sampleRate: VadAudioProcessor.sampleRate,
-        channels: VadAudioProcessor.channels,
-      );
+      decoder = SimpleOpusDecoder(sampleRate: VadAudioProcessor.sampleRate, channels: VadAudioProcessor.channels);
     } catch (e) {
       // Opus failed to load — decoder stays null, WAV fallback will be used.
     }
@@ -536,9 +535,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       }
 
       final file = File(params.segmentPaths[i]);
-      final startTime = DateTime.fromMillisecondsSinceEpoch(
-        params.segmentStartTimesMs[i],
-      );
+      final startTime = DateTime.fromMillisecondsSinceEpoch(params.segmentStartTimesMs[i]);
       final startUptimeMs = params.segmentStartUptimesMs[i];
       final isDerived = params.segmentDerivedFlags[i];
       final sessionId = params.segmentSessionIds[i];
@@ -569,10 +566,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       // Delete segment files that are fully processed and no longer referenced by any buffer.
       final safeToDelete = processor.consumeSafeToDeletePaths();
       if (safeToDelete.isNotEmpty) {
-        params.sendPort.send({
-          'type': 'delete_segments',
-          'paths': safeToDelete.toList(),
-        });
+        params.sendPort.send({'type': 'delete_segments', 'paths': safeToDelete.toList()});
       }
 
       params.sendPort.send({
@@ -606,10 +600,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
 
     final finalSafe = processor.consumeSafeToDeletePaths();
     if (finalSafe.isNotEmpty) {
-      params.sendPort.send({
-        'type': 'delete_segments',
-        'paths': finalSafe.toList(),
-      });
+      params.sendPort.send({'type': 'delete_segments', 'paths': finalSafe.toList()});
     }
 
     params.sendPort.send({'type': 'done'});
@@ -659,9 +650,7 @@ class RecordingsManager {
     final prefs = SharedPreferencesUtil();
     if (!prefs.extractionInProgress) return;
 
-    Logger.debug(
-      'RecordingsManager: Detected incomplete extraction from previous run — rescuing completed files.',
-    );
+    Logger.debug('RecordingsManager: Detected incomplete extraction from previous run — rescuing completed files.');
     try {
       final directory = await getApplicationDocumentsDirectory();
       final tempDir = Directory('${directory.path}/processing_temp');
@@ -681,7 +670,8 @@ class RecordingsManager {
           if (!fileName.endsWith('.m4a') &&
               !fileName.endsWith('.wav') &&
               !fileName.endsWith('.ogg') &&
-              !fileName.endsWith('.meta')) continue;
+              !fileName.endsWith('.meta'))
+            continue;
           final parts = fileName.split('_');
           var millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
           if (millis == null || millis <= 0) continue;
@@ -691,17 +681,13 @@ class RecordingsManager {
           final dest = '${liveDir.path}/$fileName';
           try {
             await file.rename(dest);
-            Logger.debug(
-              'RecordingsManager: Rescued $fileName → recordings/$dateStr/',
-            );
+            Logger.debug('RecordingsManager: Rescued $fileName → recordings/$dateStr/');
           } catch (e) {
             Logger.error('RecordingsManager: Failed to rescue $fileName: $e');
           }
         }
         await tempDir.delete(recursive: true);
-        Logger.debug(
-          'RecordingsManager: Removed leftover processing_temp directory.',
-        );
+        Logger.debug('RecordingsManager: Removed leftover processing_temp directory.');
       }
     } catch (e) {
       Logger.error('RecordingsManager: Failed to clean up processing_temp: $e');
@@ -789,9 +775,7 @@ class RecordingsManager {
             )
             .toList();
 
-        final conversations = await Future.wait(
-          files.map((f) => Conversation.fromFileAsync(f)),
-        );
+        final conversations = await Future.wait(files.map((f) => Conversation.fromFileAsync(f)));
 
         // Also pick up passthrough conversations: .meta files with no matching audio file.
         final audioBasenames = files.map((f) {
@@ -826,20 +810,12 @@ class RecordingsManager {
     }
 
     // Merge keys
-    final allDates = {
-      ...rawSegmentsByDate.keys,
-      ...processedByDate.keys,
-      ...discardsByDate.keys,
-    }.toList();
+    final allDates = {...rawSegmentsByDate.keys, ...processedByDate.keys, ...discardsByDate.keys}.toList();
     List<Batch> batches = [];
 
     for (var dateStr in allDates) {
       final parts = dateStr.split('-');
-      final date = DateTime(
-        int.parse(parts[0]),
-        int.parse(parts[1]),
-        int.parse(parts[2]),
-      );
+      final date = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
 
       final raw = rawSegmentsByDate[dateStr] ?? [];
       // Sort raw segments chronologically by their filename. Since filenames are
@@ -936,23 +912,23 @@ class RecordingsManager {
         // Move .meta sidecars before .m4a/.wav so the sidecar is always present
         // by the time onRecordingFinalized fires and the scan reads the file.
         final folderEntities = await tempDir.list().toList();
-        final entities = folderEntities.whereType<File>().where((f) {
-          final name = f.path.split('/').last;
-          // Ignore temp files used during encoding to avoid race conditions
-          // where the main isolate moves a file while the background isolate is still writing it.
-          if (name.contains('.tmp')) return false;
-          // Only move known finalized file types
-          return name.endsWith('.m4a') ||
-              name.endsWith('.wav') ||
-              name.endsWith('.ogg') ||
-              name.endsWith('.meta') ||
-              name.endsWith('.bin');
-        }).toList()
-          ..sort((a, b) {
-            final aIsMeta = a.path.endsWith('.meta') ? 0 : 1;
-            final bIsMeta = b.path.endsWith('.meta') ? 0 : 1;
-            return aIsMeta.compareTo(bIsMeta);
-          });
+        final entities =
+            folderEntities.whereType<File>().where((f) {
+              final name = f.path.split('/').last;
+              // Ignore temp files used during encoding to avoid race conditions
+              // where the main isolate moves a file while the background isolate is still writing it.
+              if (name.contains('.tmp')) return false;
+              // Only move known finalized file types
+              return name.endsWith('.m4a') ||
+                  name.endsWith('.wav') ||
+                  name.endsWith('.ogg') ||
+                  name.endsWith('.meta') ||
+                  name.endsWith('.bin');
+            }).toList()..sort((a, b) {
+              final aIsMeta = a.path.endsWith('.meta') ? 0 : 1;
+              final bIsMeta = b.path.endsWith('.meta') ? 0 : 1;
+              return aIsMeta.compareTo(bIsMeta);
+            });
         for (final entity in entities) {
           final fileName = entity.path.split('/').last;
           final nameNoExt = fileName.split('.').first;
@@ -965,8 +941,9 @@ class RecordingsManager {
             millis = int.tryParse(tsStr);
           }
 
-          final dateStr =
-              (millis != null && millis > 946684800000) ? _dateStringFromMillis(millis) : activeBatches.last.dateString;
+          final dateStr = (millis != null && millis > 946684800000)
+              ? _dateStringFromMillis(millis)
+              : activeBatches.last.dateString;
           final liveDir = Directory('${directory.path}/recordings/$dateStr');
           await liveDir.create(recursive: true);
           final dest = '${liveDir.path}/$fileName';
@@ -992,9 +969,7 @@ class RecordingsManager {
 
           await entity.rename(dest);
           if (fileName.endsWith('.m4a')) {
-            final legacyWav = File(
-              '${liveDir.path}/${fileName.replaceAll('.m4a', '')}.wav',
-            );
+            final legacyWav = File('${liveDir.path}/${fileName.replaceAll('.m4a', '')}.wav');
             try {
               await legacyWav.delete();
             } on FileSystemException catch (_) {}
@@ -1038,9 +1013,7 @@ class RecordingsManager {
             segmentStartUptimesMs.add(0); // Hardware syncs RTC -> uptime in filename is lost
             segmentDerivedFlags.add(false);
           } else {
-            segmentStartTimesMs.add(
-              file.lastModifiedSync().toUtc().millisecondsSinceEpoch,
-            );
+            segmentStartTimesMs.add(file.lastModifiedSync().toUtc().millisecondsSinceEpoch);
             segmentStartUptimesMs.add((timerStart ?? 0) * 1000);
             segmentDerivedFlags.add(true);
           }
@@ -1145,16 +1118,12 @@ class RecordingsManager {
                   final paths = (msg['paths'] as List).cast<String>();
                   for (final path in paths) {
                     if (discardProtectedPaths.contains(path)) {
-                      Logger.debug(
-                        'RecordingsManager: Preserving raw segment for recovery: $path',
-                      );
+                      Logger.debug('RecordingsManager: Preserving raw segment for recovery: $path');
                       continue;
                     }
                     final f = File(path);
                     if (await f.exists()) {
-                      Logger.debug(
-                        'RecordingsManager: Deleting raw segment: $path',
-                      );
+                      Logger.debug('RecordingsManager: Deleting raw segment: $path');
                       await f.delete();
                       deletedSegmentFolders.add(f.parent.path);
                     }
@@ -1256,10 +1225,12 @@ class RecordingsManager {
       final allAudioFiles = <File>[];
       for (final folder in dateFolders) {
         final entities = (await folder.list().toList()).whereType<File>().toList();
-        allAudioFiles.addAll(entities.where((f) {
-          final p = f.path;
-          return (p.endsWith('.m4a') || p.endsWith('.wav') || p.endsWith('.ogg')) && !p.contains('.tmp');
-        }));
+        allAudioFiles.addAll(
+          entities.where((f) {
+            final p = f.path;
+            return (p.endsWith('.m4a') || p.endsWith('.wav') || p.endsWith('.ogg')) && !p.contains('.tmp');
+          }),
+        );
       }
       allAudioFiles.sort((a, b) {
         final tsA = _extractTimestamp(a.path);
@@ -1342,7 +1313,8 @@ class RecordingsManager {
 
           final crossFolder = draftFile.parent.path != nextFile.parent.path;
           Logger.debug(
-              'RecordingsManager: Stitching draft $draftTs with next $nextTs (gap=${gapMs}ms${isClockJump ? ", CLOCK JUMP" : ""}${crossFolder ? ", CROSS-FOLDER" : ""})');
+            'RecordingsManager: Stitching draft $draftTs with next $nextTs (gap=${gapMs}ms${isClockJump ? ", CLOCK JUMP" : ""}${crossFolder ? ", CROSS-FOLDER" : ""})',
+          );
           final success = await _performStitch(draftFile, nextFile, gapMs);
           if (success) {
             // After stitching, re-scan from the top — the global file list
@@ -1572,7 +1544,8 @@ class RecordingsManager {
     final int? draftDurationMsOrNull = await _readMetaDurationMs(draftFile);
     if (draftDurationMsOrNull == null) {
       Logger.error(
-          'RecordingsManager: _stitchOgg aborting — missing/short meta for ${draftFile.path}; finalizing draft to preserve marker offsets');
+        'RecordingsManager: _stitchOgg aborting — missing/short meta for ${draftFile.path}; finalizing draft to preserve marker offsets',
+      );
       await _finalizeDraft(draftFile);
       return false;
     }
@@ -1598,8 +1571,7 @@ class RecordingsManager {
     if (!reanchorOk) {
       // Leave nextFile on disk so the user (or a retry) can recover the
       // un-reanchored markers (D2). The stitched audio is still good.
-      Logger.error(
-          'RecordingsManager: _stitchOgg leaving ${nextFile.path} undeleted — re-anchor had errors');
+      Logger.error('RecordingsManager: _stitchOgg leaving ${nextFile.path} undeleted — re-anchor had errors');
       return true;
     }
 
@@ -1621,7 +1593,8 @@ class RecordingsManager {
     final int? draftDurationMsOrNull = await _readMetaDurationMs(draftFile);
     if (draftDurationMsOrNull == null) {
       Logger.error(
-          'RecordingsManager: _stitchWav aborting — missing/short meta for ${draftFile.path}; finalizing draft to preserve marker offsets');
+        'RecordingsManager: _stitchWav aborting — missing/short meta for ${draftFile.path}; finalizing draft to preserve marker offsets',
+      );
       await _finalizeDraft(draftFile);
       return false;
     }
@@ -1659,8 +1632,7 @@ class RecordingsManager {
     );
 
     if (!reanchorOk) {
-      Logger.error(
-          'RecordingsManager: _stitchWav leaving ${nextFile.path} undeleted — re-anchor had errors');
+      Logger.error('RecordingsManager: _stitchWav leaving ${nextFile.path} undeleted — re-anchor had errors');
       return true;
     }
 
@@ -1744,7 +1716,8 @@ class RecordingsManager {
           }
           await _writeJsonAtomic(entity, json);
           Logger.debug(
-              'RecordingsManager: Re-anchored EDL ${entity.path.split('/').last}: $fromFilename → $toFilename (+${offsetShiftMs}ms)${isDefaultCrop ? " [default crop]" : " [preserved crop]"}');
+            'RecordingsManager: Re-anchored EDL ${entity.path.split('/').last}: $fromFilename → $toFilename (+${offsetShiftMs}ms)${isDefaultCrop ? " [default crop]" : " [preserved crop]"}',
+          );
         } catch (e) {
           Logger.error('RecordingsManager: Failed to re-anchor EDL ${entity.path}: $e');
           allOk = false; // signal caller to leave nextFile in place for recovery
@@ -1864,8 +1837,9 @@ class RecordingsManager {
       final tsStr = parts.contains('draft') ? parts[parts.length - 2] : parts.last;
       millis = int.tryParse(tsStr);
     }
-    final dateStr =
-        (millis != null && millis > 946684800000) ? _dateStringFromMillis(millis) : _dateStringFromMillis(markerMs);
+    final dateStr = (millis != null && millis > 946684800000)
+        ? _dateStringFromMillis(millis)
+        : _dateStringFromMillis(markerMs);
     final liveDir = Directory('$docsPath/recordings/$dateStr');
     await liveDir.create(recursive: true);
 
@@ -1903,8 +1877,7 @@ class RecordingsManager {
           existing['segmentFilename'] = filename;
           existing['markerOffsetMs'] = offsetMs;
           await _writeJsonAtomic(edlFile, existing);
-          Logger.debug(
-              'RecordingsManager: Preserved user edits on marker_$markerMs.edl, re-pointed to $filename');
+          Logger.debug('RecordingsManager: Preserved user edits on marker_$markerMs.edl, re-pointed to $filename');
           return;
         }
       } catch (_) {
@@ -1918,7 +1891,8 @@ class RecordingsManager {
     }
     await _writeJsonAtomic(edlFile, payload);
     Logger.debug(
-        'RecordingsManager: Wrote EDL ${edlFile.path.split('/').last} → ${filename.isEmpty ? "(orphan)" : filename} at ${offsetMs}ms');
+      'RecordingsManager: Wrote EDL ${edlFile.path.split('/').last} → ${filename.isEmpty ? "(orphan)" : filename} at ${offsetMs}ms',
+    );
   }
 
   /// Scans all `recordings/<date>/` folders for `marker_*.edl` files and
@@ -1974,8 +1948,7 @@ class RecordingsManager {
                 segmentFile = filenameIndex[finalizedName];
               } else {
                 // Or vice-versa: file is still a draft on disk.
-                final draftName = segmentFilename.replaceAllMapped(
-                    RegExp(r'\.(m4a|wav|ogg)$'), (m) => '_draft${m[0]}');
+                final draftName = segmentFilename.replaceAllMapped(RegExp(r'\.(m4a|wav|ogg)$'), (m) => '_draft${m[0]}');
                 segmentFile = filenameIndex[draftName];
               }
             }
@@ -2004,7 +1977,8 @@ class RecordingsManager {
                     try {
                       await _writeJsonAtomic(edlFile, json);
                       Logger.debug(
-                          'RecordingsManager: Migrated EDL ${edlFile.path.split('/').last} cropEndMs ${originalOnDisk}→$encodedMs');
+                        'RecordingsManager: Migrated EDL ${edlFile.path.split('/').last} cropEndMs ${originalOnDisk}→$encodedMs',
+                      );
                     } catch (e) {
                       Logger.error('RecordingsManager: cropEnd migration write failed: $e');
                     }
@@ -2014,15 +1988,17 @@ class RecordingsManager {
             } catch (_) {}
           }
 
-          allConversations.add(MarkerConversation(
-            markerTime: DateTime.fromMillisecondsSinceEpoch(markerMs),
-            segment: segmentFile,
-            markerOffsetMs: json['markerOffsetMs'] as int? ?? 0,
-            cropStartMs: json['cropStartMs'] as int? ?? 0,
-            cropEndMs: cropEndMs,
-            edlFile: edlFile,
-            userSaved: json['userSaved'] as bool? ?? false,
-          ));
+          allConversations.add(
+            MarkerConversation(
+              markerTime: DateTime.fromMillisecondsSinceEpoch(markerMs),
+              segment: segmentFile,
+              markerOffsetMs: json['markerOffsetMs'] as int? ?? 0,
+              cropStartMs: json['cropStartMs'] as int? ?? 0,
+              cropEndMs: cropEndMs,
+              edlFile: edlFile,
+              userSaved: json['userSaved'] as bool? ?? false,
+            ),
+          );
         } catch (e) {
           Logger.error('RecordingsManager: Failed to parse EDL ${edlFile.path}: $e');
         }
@@ -2053,7 +2029,8 @@ class RecordingsManager {
       });
       deduped.add(group[0]);
       Logger.error(
-          'RecordingsManager: ${group.length} EDLs at markerMs=${group[0].markerTime.millisecondsSinceEpoch} — keeping ${group[0].edlFile.path.split('/').last}, dropping ${group.skip(1).map((m) => m.edlFile.path.split('/').last).join(", ")}');
+        'RecordingsManager: ${group.length} EDLs at markerMs=${group[0].markerTime.millisecondsSinceEpoch} — keeping ${group[0].edlFile.path.split('/').last}, dropping ${group.skip(1).map((m) => m.edlFile.path.split('/').last).join(", ")}',
+      );
     }
 
     deduped.sort((a, b) => b.markerTime.compareTo(a.markerTime));
@@ -2078,17 +2055,13 @@ class RecordingsManager {
     final batches = await manager.getBatches();
     final activeBatches = batches
         .where((b) => b.rawSegments.isNotEmpty)
-        .where(
-          (b) => !SharedPreferencesUtil().adjustmentMode || b.finalizedRecordings.isEmpty,
-        )
+        .where((b) => !SharedPreferencesUtil().adjustmentMode || b.finalizedRecordings.isEmpty)
         .toList();
     if (activeBatches.isEmpty) return;
     try {
       await manager.processAll(activeBatches, (_, __) {}, backgroundMode: true);
     } catch (e) {
-      Logger.error(
-        'RecordingsManager: Background processAllCompletedSessions error: $e',
-      );
+      Logger.error('RecordingsManager: Background processAllCompletedSessions error: $e');
     }
   }
 
@@ -2102,18 +2075,11 @@ class RecordingsManager {
     final batches = await manager.getBatches();
     final activeBatches = batches
         .where((b) => b.rawSegments.isNotEmpty || b.draftRecordings.isNotEmpty)
-        .where(
-          (b) => !SharedPreferencesUtil().adjustmentMode || b.finalizedRecordings.isEmpty,
-        )
+        .where((b) => !SharedPreferencesUtil().adjustmentMode || b.finalizedRecordings.isEmpty)
         .toList();
     if (activeBatches.isEmpty) return;
     try {
-      await manager.processAll(
-        activeBatches,
-        (_, __) {},
-        backgroundMode: false,
-        finalizeDrafts: true,
-      );
+      await manager.processAll(activeBatches, (_, __) {}, backgroundMode: false, finalizeDrafts: true);
     } catch (e) {
       Logger.error('RecordingsManager: forceProcessAll error: $e');
     }
@@ -2129,13 +2095,9 @@ class RecordingsManager {
       if (entity is File && (entity.path.endsWith('.tmp.m4a') || entity.path.endsWith('.ogg.tmp'))) {
         try {
           await entity.delete();
-          Logger.debug(
-            'RecordingsManager: Deleted orphaned temp file ${entity.path}',
-          );
+          Logger.debug('RecordingsManager: Deleted orphaned temp file ${entity.path}');
         } catch (e) {
-          Logger.error(
-            'RecordingsManager: Failed to delete orphaned temp file ${entity.path}: $e',
-          );
+          Logger.error('RecordingsManager: Failed to delete orphaned temp file ${entity.path}: $e');
         }
       }
     }
@@ -2163,30 +2125,32 @@ class RecordingsManager {
       final filenames = convsInDir.map((c) => c.file.path.split('/').last).toSet();
 
       // 1. Delete audio, meta, bin files
-      for (final c in convsInDir) {
-        final key = c.uploadKey;
-        if (key != null) {
-          await SharedPreferencesUtil().removeUploadedFromHeypocket({key});
-        }
-        final file = c.file;
-        // Drop the exists() probe and let delete() fail-soft — one syscall per file instead of two.
-        try {
-          await file.delete();
-        } on FileSystemException catch (_) {}
-        final metaPath = '${file.path.substring(0, file.path.lastIndexOf('.'))}.meta';
-        final metaFile = File(metaPath);
-        try {
-          await metaFile.delete();
-        } on FileSystemException catch (_) {}
-        try {
-          final ts = file.path.split('/').last.split('_').last.split('.').first;
-          final binPath = '${file.parent.path}/recording_fs320_$ts.bin';
-          final binFile = File(binPath);
-          try {
-            await binFile.delete();
-          } on FileSystemException catch (_) {}
-        } catch (_) {}
+      final keys = convsInDir.map((c) => c.uploadKey).whereType<String>().toSet();
+      if (keys.isNotEmpty) {
+        await SharedPreferencesUtil().removeUploadedFromHeypocket(keys);
       }
+      await Future.wait(
+        convsInDir.map((c) async {
+          final file = c.file;
+          // Drop the exists() probe and let delete() fail-soft — one syscall per file instead of two.
+          try {
+            await file.delete();
+          } on FileSystemException catch (_) {}
+          final metaPath = '${file.path.substring(0, file.path.lastIndexOf('.'))}.meta';
+          final metaFile = File(metaPath);
+          try {
+            await metaFile.delete();
+          } on FileSystemException catch (_) {}
+          try {
+            final ts = file.path.split('/').last.split('_').last.split('.').first;
+            final binPath = '${file.parent.path}/recording_fs320_$ts.bin';
+            final binFile = File(binPath);
+            try {
+              await binFile.delete();
+            } on FileSystemException catch (_) {}
+          } catch (_) {}
+        }),
+      );
 
       // 2. Delete EDL files for all deleted conversations in this directory at once.
       // Reads + deletes run concurrently — each EDL is an independent JSON sidecar.
@@ -2194,15 +2158,17 @@ class RecordingsManager {
         final dir = Directory(dirPath);
         if (await dir.exists()) {
           final dirEntities = await dir.list().toList();
-          await Future.wait(dirEntities.map((entity) async {
-            if (entity is! File || !entity.path.endsWith('.edl')) return;
-            try {
-              final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
-              if (filenames.contains(json['segmentFilename'])) {
-                await entity.delete();
-              }
-            } catch (_) {}
-          }));
+          await Future.wait(
+            dirEntities.map((entity) async {
+              if (entity is! File || !entity.path.endsWith('.edl')) return;
+              try {
+                final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
+                if (filenames.contains(json['segmentFilename'])) {
+                  await entity.delete();
+                }
+              } catch (_) {}
+            }),
+          );
         }
       } catch (e) {
         Logger.error('RecordingsManager: Failed to cleanup EDLs in $dirPath: $e');
@@ -2224,9 +2190,7 @@ class RecordingsManager {
   /// Safe to call while nothing is playing.
   Future<void> deleteDay(Batch batch, {bool onlyReprocessable = false}) async {
     final directory = await getApplicationDocumentsDirectory();
-    final recordingsDir = Directory(
-      '${directory.path}/recordings/${batch.dateString}',
-    );
+    final recordingsDir = Directory('${directory.path}/recordings/${batch.dateString}');
 
     // Drop any discard records for this day and their protected bins so the
     // ghosts disappear immediately rather than surviving until the next sweep.
@@ -2249,9 +2213,7 @@ class RecordingsManager {
 
     if (!onlyReprocessable) {
       await recordingsDir.delete(recursive: true);
-      Logger.debug(
-        'RecordingsManager: Deleted processed recordings for ${batch.dateString}',
-      );
+      Logger.debug('RecordingsManager: Deleted processed recordings for ${batch.dateString}');
     } else {
       // Surgical delete: only remove finalized recordings and drafts that
       // belong to a session for which we still have raw data.
@@ -2284,14 +2246,16 @@ class RecordingsManager {
       // already-resolved, leaving it permanently broken. One concurrent pass
       // over EDLs with O(1) Set lookups replaces the old N*M sequential scan.
       if (filenamesToDelete.isNotEmpty && edlFiles.isNotEmpty) {
-        await Future.wait(edlFiles.map((edl) async {
-          try {
-            final json = jsonDecode(await edl.readAsString()) as Map<String, dynamic>;
-            if (filenamesToDelete.contains(json['segmentFilename'])) {
-              await edl.delete();
-            }
-          } catch (_) {}
-        }));
+        await Future.wait(
+          edlFiles.map((edl) async {
+            try {
+              final json = jsonDecode(await edl.readAsString()) as Map<String, dynamic>;
+              if (filenamesToDelete.contains(json['segmentFilename'])) {
+                await edl.delete();
+              }
+            } catch (_) {}
+          }),
+        );
       }
       Logger.debug(
         'RecordingsManager: Surgical delete for ${batch.dateString} — removed $deletedCount reprocessable recordings',
@@ -2704,6 +2668,7 @@ class RecordingsManager {
       } catch (_) {}
     }
     Logger.debug(
-        'RecordingsManager: AM-exit cleanup — deleted $deleted bins, preserved $kept for recovery (48h window)');
+      'RecordingsManager: AM-exit cleanup — deleted $deleted bins, preserved $kept for recovery (48h window)',
+    );
   }
 }
