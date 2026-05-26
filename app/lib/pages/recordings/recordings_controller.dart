@@ -830,8 +830,24 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final keys = conversations.map((c) => c.uploadKey).whereType<String>().toSet();
     await _prefs.removeUploadedFromHeypocket(keys);
     await _prefs.removeOmiSynced(_binPathsForConversations(conversations));
+    final touchedSessionIds = conversations.map((c) => c.sessionId).whereType<int>().toSet();
     await RecordingsManager.deleteConversations(conversations);
     await _loadBatches();
+    // If a session has no remaining finalized/draft recording, its raw bins
+    // would silently reprocess on the next sync and resurrect what we just
+    // deleted. Wipe them, bypassing the 48h discard hold.
+    if (touchedSessionIds.isNotEmpty) {
+      final liveSessionIds = _batches
+          .expand((b) => [...b.finalizedRecordings, ...b.draftRecordings])
+          .map((c) => c.sessionId)
+          .whereType<int>()
+          .toSet();
+      final orphaned = touchedSessionIds.difference(liveSessionIds);
+      if (orphaned.isNotEmpty) {
+        await RecordingsManager.deleteBinsForSessions(orphaned);
+        await _loadBatches();
+      }
+    }
   }
 
   int countShortRecordings(int minSeconds) =>
