@@ -107,18 +107,10 @@ class SharedPreferencesUtil {
   int get autoModeVadMaxConversationMinutes => getInt('auto_vadMaxConversationMinutes', defaultValue: 0);
   set autoModeVadMaxConversationMinutes(int v) => saveInt('auto_vadMaxConversationMinutes', v);
 
-  bool get manualModeVadEnabled => getBool('manual_vadEnabled', defaultValue: false);
-  set manualModeVadEnabled(bool v) => saveBool('manual_vadEnabled', v);
-  double get manualModeVadSpeechThreshold => getDouble('manual_vadSpeechThreshold', defaultValue: vadSpeechThreshold);
-  set manualModeVadSpeechThreshold(double v) => saveDouble('manual_vadSpeechThreshold', v);
-  int get manualModeVadMinSpeechSeconds => getInt('manual_vadMinSpeechSeconds', defaultValue: vadMinSpeechSeconds);
-  set manualModeVadMinSpeechSeconds(int v) => saveInt('manual_vadMinSpeechSeconds', v);
-  int get manualModeVadSplitSeconds => getInt('manual_vadSplitSeconds', defaultValue: 3);
-  set manualModeVadSplitSeconds(int v) => saveInt('manual_vadSplitSeconds', v);
-  int get manualModeFilterMinDurationSeconds => getInt('manual_filterMinDurationSeconds', defaultValue: 0);
-  set manualModeFilterMinDurationSeconds(int v) => saveInt('manual_filterMinDurationSeconds', v);
-  bool get manualModeDiscardShortRecordings => getBool('manual_discardShortRecordings', defaultValue: false);
-  set manualModeDiscardShortRecordings(bool v) => saveBool('manual_discardShortRecordings', v);
+  // Manual mode pins VAD off, no speech/duration filtering, no short-recording
+  // discard, and uses the session-end marker as the conversation boundary, so
+  // those knobs aren't user-tunable and don't need per-mode snapshots. The cap
+  // below is the one user-editable manual-mode setting.
   int get manualModeVadMaxConversationMinutes => getInt('manual_vadMaxConversationMinutes', defaultValue: 0);
   set manualModeVadMaxConversationMinutes(int v) => saveInt('manual_vadMaxConversationMinutes', v);
 
