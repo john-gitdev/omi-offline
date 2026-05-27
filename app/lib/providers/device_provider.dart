@@ -143,8 +143,14 @@ class DeviceProvider extends ChangeNotifier
     if (data == 'heartbeat') {
       Logger.debug('DeviceProvider: Heartbeat received from foreground task');
       if (!_isAppInForeground) {
-        // Use heartbeat to trigger reconnection if disconnected
-        if (!isConnected && !isConnecting && SharedPreferencesUtil().btDevice.id.isNotEmpty) {
+        // Use heartbeat to trigger reconnection if disconnected. Skip when
+        // maximize-battery is on — that mode wants the device disconnected
+        // between scheduled syncs; the sync-if-due branch below still
+        // reconnects when a sync is actually due.
+        if (!isConnected &&
+            !isConnecting &&
+            SharedPreferencesUtil().btDevice.id.isNotEmpty &&
+            !SharedPreferencesUtil().maximizeBattery) {
           Logger.debug('DeviceProvider: Heartbeat triggering reconnection scan');
           scanAndConnectToDevice();
         }
@@ -731,6 +737,16 @@ class DeviceProvider extends ChangeNotifier
   }
 
   void onDeviceDisconnected({bool isManual = false}) async {
+    // The BLE transport fires two state-change callbacks for a single manual
+    // disconnect (isManual=false from the GATT layer, isManual=true from the
+    // dart-side intent) ~10ms apart. The re-entrancy guard below means only
+    // one fully runs; cancel any pending reconnect on every invocation so the
+    // survivor's racing isManual flag doesn't leave a stale timer armed.
+    _reconnectDelayTimer?.cancel();
+    if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground) {
+      _consecutiveAccidentalDisconnects = 0;
+      _reconnectionTimer?.cancel();
+    }
     if (_isHandlingDisconnect) return;
     _isHandlingDisconnect = true;
     if (!isConnected && connectedDevice == null) {
@@ -754,8 +770,12 @@ class DeviceProvider extends ChangeNotifier
     _isHandlingDisconnect = false;
 
     _reconnectDelayTimer?.cancel();
-    // Skip reconnect only when maximize-battery intentionally disconnected while in background.
-    if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground && isManual) {
+    // When maximize-battery is on and the app is backgrounded, never auto-
+    // reconnect — sync is driven by the background timer / heartbeat. Don't
+    // gate on `isManual`: the GATT layer's disconnect callback arrives as
+    // isManual=false even when WE initiated the disconnect, and may be the
+    // call that reaches this branch instead of the isManual=true one.
+    if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground) {
       _consecutiveAccidentalDisconnects = 0;
       return;
     }
