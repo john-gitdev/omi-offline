@@ -627,10 +627,14 @@ class DeviceProvider extends ChangeNotifier
     if (!_isAppInForeground) return;
     _isAppInForeground = false;
     _reconnectionTimer?.cancel();
-    // Also cancel any pending 1-second reconnect armed by a recent accidental
-    // disconnect; otherwise it fires after we transition to background and
-    // restarts periodicConnect's scan loop, defeating maximize-battery.
-    _reconnectDelayTimer?.cancel();
+    // If maximize-battery is on, also cancel any pending 1-second reconnect
+    // armed by a recent accidental disconnect — otherwise it fires after we
+    // transition to background and restarts periodicConnect's scan loop. For
+    // !maximize-battery users we keep the timer so an accidental drop right
+    // before lock-screen still reconnects quickly in background.
+    if (SharedPreferencesUtil().maximizeBattery) {
+      _reconnectDelayTimer?.cancel();
+    }
     // Keep _backgroundSyncTimer running so periodic sync fires overnight.
     // Start the foreground service so Android keeps the process alive with a
     // wake lock — without this the CPU sleeps and the Dart timer never fires.
@@ -747,15 +751,19 @@ class DeviceProvider extends ChangeNotifier
   }
 
   void onDeviceDisconnected({bool isManual = false}) async {
-    // The BLE transport fires two state-change callbacks for a single manual
-    // disconnect (isManual=false from the GATT layer, isManual=true from the
-    // dart-side intent) ~10ms apart. The re-entrancy guard below means only
-    // one fully runs; cancel any pending reconnect on every invocation so the
-    // survivor's racing isManual flag doesn't leave a stale timer armed.
-    _reconnectDelayTimer?.cancel();
+    // In maximize-battery + background mode, cancel any pending reconnect on
+    // every disconnect callback. The BLE transport fires two state-change
+    // callbacks per manual disconnect (isManual=false from the GATT layer
+    // then isManual=true from the dart-side intent) ~10ms apart, and the
+    // re-entrancy guard below only lets one fully run. Doing this before the
+    // re-entrancy / already-disconnected early-returns ensures the survivor
+    // can't leave a stale timer armed regardless of which event wins. Outside
+    // maximize-battery+background we leave the timer alone so a single
+    // accidental disconnect still reconnects via the body's arming below.
     if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground) {
-      _consecutiveAccidentalDisconnects = 0;
+      _reconnectDelayTimer?.cancel();
       _reconnectionTimer?.cancel();
+      _consecutiveAccidentalDisconnects = 0;
     }
     if (_isHandlingDisconnect) return;
     _isHandlingDisconnect = true;
