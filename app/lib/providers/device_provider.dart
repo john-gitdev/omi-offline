@@ -119,7 +119,13 @@ class DeviceProvider extends ChangeNotifier
       if (state == 'on') {
         isBluetoothEnabled = true;
         notifyListeners();
-        if (!isConnected && SharedPreferencesUtil().btDevice.id.isNotEmpty && !isConnecting) {
+        // Don't auto-reconnect on BT-toggle if maximize-battery is on and the
+        // app is backgrounded — that mode wants the device disconnected
+        // between scheduled syncs.
+        if (!isConnected &&
+            SharedPreferencesUtil().btDevice.id.isNotEmpty &&
+            !isConnecting &&
+            (!SharedPreferencesUtil().maximizeBattery || _isAppInForeground)) {
           scanAndConnectToDevice();
         }
       } else if (state == 'off') {
@@ -621,6 +627,10 @@ class DeviceProvider extends ChangeNotifier
     if (!_isAppInForeground) return;
     _isAppInForeground = false;
     _reconnectionTimer?.cancel();
+    // Also cancel any pending 1-second reconnect armed by a recent accidental
+    // disconnect; otherwise it fires after we transition to background and
+    // restarts periodicConnect's scan loop, defeating maximize-battery.
+    _reconnectDelayTimer?.cancel();
     // Keep _backgroundSyncTimer running so periodic sync fires overnight.
     // Start the foreground service so Android keeps the process alive with a
     // wake lock — without this the CPU sleeps and the Dart timer never fires.
