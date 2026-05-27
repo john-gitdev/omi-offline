@@ -504,16 +504,22 @@ class DeviceProvider extends ChangeNotifier
           // sanctioned background sync and shouldn't be dropped.
           _pendingBackgroundSync = true;
           bool connectedThisTick = false;
-          for (int attempt = 0; attempt < 3 && !isConnected; attempt++) {
-            if (attempt > 0) await Future.delayed(const Duration(seconds: 10));
-            await scanAndConnectToDevice();
-            if (isConnected) {
-              connectedThisTick = true;
-              break;
+          try {
+            for (int attempt = 0; attempt < 3 && !isConnected; attempt++) {
+              if (attempt > 0) await Future.delayed(const Duration(seconds: 10));
+              await scanAndConnectToDevice();
+              if (isConnected) {
+                connectedThisTick = true;
+                break;
+              }
             }
-          }
-          if (!connectedThisTick) {
-            _pendingBackgroundSync = false;
+          } finally {
+            // Clear in finally so a thrown scan (TimeoutException, GATT
+            // errors, permission failure) doesn't leave the flag stuck true
+            // and bypass the drop guard for future connections.
+            if (!connectedThisTick) {
+              _pendingBackgroundSync = false;
+            }
           }
           // If connectedThisTick, _finishDeviceSetup will clear the flag and
           // kick off _doBackgroundSync.
