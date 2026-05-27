@@ -405,10 +405,7 @@ class DeviceProvider extends ChangeNotifier
         // on top of the native retry loop, spawning duplicate GATT handles.
         // ensureConnection without force becomes a no-op if a transport already
         // exists, and the discover() fallback below still runs if needed.
-        await ServiceManager.instance()
-            .device
-            .ensureConnection(pairedDeviceId)
-            .timeout(const Duration(seconds: 10));
+        await ServiceManager.instance().device.ensureConnection(pairedDeviceId).timeout(const Duration(seconds: 10));
         await Future.delayed(const Duration(seconds: 1));
         device = await _getConnectedDevice();
         if (device != null) return device;
@@ -835,17 +832,28 @@ class DeviceProvider extends ChangeNotifier
     await updateChargingState();
     await initiateBleButtonListener();
 
-    if (SharedPreferencesUtil().manualMode) {
+    {
+      final prefs = SharedPreferencesUtil();
       final conn = await ServiceManager.instance().device.ensureConnection(device.id);
       final thr = await conn?.getVadThreshold();
-      if (thr == 65535) {
-        _manualRecording = true;
-      } else if (thr == 32769) {
-        _manualRecording = false;
+      if (prefs.manualMode) {
+        if (thr == 65535) {
+          _manualRecording = true;
+        } else if (thr == 32769) {
+          _manualRecording = false;
+        } else {
+          // Device is at an auto-mode threshold — push manual standby.
+          _manualRecording = false;
+          await _setDeviceVadThreshold(32769);
+        }
       } else {
-        // Device is at auto-mode default — hasn't been put into manual mode yet.
         _manualRecording = false;
-        await _setDeviceVadThreshold(32769);
+        // App is in auto mode; if firmware is in a manual state (e.g. after
+        // an OTA wiped settings_storage and the new firmware defaults to
+        // 32769), push the user's saved auto threshold.
+        if (thr == 32769 || thr == 65535) {
+          await _setDeviceVadThreshold(prefs.autoVadThreshold);
+        }
       }
     }
 
