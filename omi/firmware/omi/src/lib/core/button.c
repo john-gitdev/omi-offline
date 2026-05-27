@@ -28,6 +28,7 @@ extern bool is_off;
 volatile bool is_muted = false;
 volatile bool is_led_enabled = true;
 volatile uint8_t marker_flash_count = 0;
+volatile marker_flash_color_t marker_flash_color = MARKER_FLASH_WHITE;
 
 static const struct device *const buttons = DEVICE_DT_GET(DT_ALIAS(buttons));
 static const struct gpio_dt_spec usr_btn = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(usr_btn), gpios, {0});
@@ -153,14 +154,17 @@ void check_button_level(struct k_work *work_item)
                     uint16_t thr = 0;
                     #endif
                     if (in_manual) {
-                        marker_flash_count = 2;
                         if (thr == 32769) {
                             LOG_INF("Double tap — manual mode, start recording");
+                            marker_flash_color = MARKER_FLASH_GREEN;
+                            marker_flash_count = 2;
                             #ifdef CONFIG_OMI_ENABLE_T5838_AAD
                             aad_set_threshold(65535);
                             #endif
                         } else {
                             LOG_INF("Double tap — manual mode, stop recording");
+                            marker_flash_color = MARKER_FLASH_RED;
+                            marker_flash_count = 2;
                             /* aad_set_threshold emits the session-end marker
                              * itself on the 65535→other transition, so both
                              * button-stop and BLE-driven mode switches finalize
@@ -171,6 +175,7 @@ void check_button_level(struct k_work *work_item)
                         }
                     } else {
                         LOG_INF("Double tap (Marker) detected");
+                        marker_flash_color = MARKER_FLASH_WHITE;
                         marker_flash_count = 2;
                         #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
                         write_marker_to_storage();
