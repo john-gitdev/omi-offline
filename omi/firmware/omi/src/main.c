@@ -143,9 +143,9 @@ void set_led_state()
 
     // Priority 1: Marker Flash (Transient, overrides stealth)
     if (marker_flash_count > 0) {
-        set_led_red(true);
-        set_led_green(true);
-        set_led_blue(true);
+        set_led_red(marker_flash_color == MARKER_FLASH_WHITE || marker_flash_color == MARKER_FLASH_RED);
+        set_led_green(marker_flash_color == MARKER_FLASH_WHITE || marker_flash_color == MARKER_FLASH_GREEN);
+        set_led_blue(marker_flash_color == MARKER_FLASH_WHITE);
         return;
     }
 
