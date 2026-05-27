@@ -116,8 +116,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
     final clamped = target < Duration.zero
         ? Duration.zero
         : target > _total
-            ? _total
-            : target;
+        ? _total
+        : target;
     await _player.seek(clamped);
   }
 
@@ -141,10 +141,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
     );
     if (!mounted || date == null) return;
 
-    final TimeOfDay? time = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.now(),
-    );
+    final TimeOfDay? time = await showTimePicker(context: context, initialTime: TimeOfDay.now());
     if (!mounted || time == null) return;
 
     final newStart = DateTime(date.year, date.month, date.day, time.hour, time.minute);
@@ -174,12 +171,13 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
 
   Future<void> _handleUpload() async {
     if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Uploads paused — turn off Adjustment Mode first')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Uploads paused — turn off Adjustment Mode first')));
       return;
     }
-    final anyIntegrationEnabled = (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
+    final anyIntegrationEnabled =
+        (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
         (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty);
     if (!anyIntegrationEnabled || _isUploading) return;
 
@@ -204,8 +202,9 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
       final failures = await widget.controller.uploadConversation(widget.conversation, force: alreadyUploaded);
       if (!mounted) return;
       for (final failure in failures) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
       }
       setState(() {});
     } finally {
@@ -214,7 +213,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   }
 
   Widget _buildUploadAction() {
-    final anyIntegrationEnabled = (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
+    final anyIntegrationEnabled =
+        (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
         (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty);
     if (!anyIntegrationEnabled) return const SizedBox.shrink();
 
@@ -269,18 +269,16 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
 
   @override
   Widget build(BuildContext context) {
-    final progressRatio =
-        _total.inMilliseconds > 0 ? (_position.inMilliseconds / _total.inMilliseconds).clamp(0.0, 1.0) : 0.0;
+    final progressRatio = _total.inMilliseconds > 0
+        ? (_position.inMilliseconds / _total.inMilliseconds).clamp(0.0, 1.0)
+        : 0.0;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0D0D0D),
       appBar: AppBar(
         backgroundColor: const Color(0xFF0D0D0D),
         elevation: 0,
-        title: Text(
-          widget.conversation.timeRangeLabel,
-          style: const TextStyle(color: Colors.white, fontSize: 18),
-        ),
+        title: Text(widget.conversation.timeRangeLabel, style: const TextStyle(color: Colors.white, fontSize: 18)),
         actions: [
           if (widget.conversation.isUnknown)
             IconButton(
@@ -298,8 +296,10 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
                 builder: (c) => AlertDialog(
                   backgroundColor: Colors.grey.shade900,
                   title: const Text('Delete Conversation', style: TextStyle(color: Colors.white)),
-                  content: const Text('This will permanently delete this conversation. This cannot be undone.',
-                      style: TextStyle(color: Colors.white70)),
+                  content: const Text(
+                    'This will permanently delete this conversation. This cannot be undone.',
+                    style: TextStyle(color: Colors.white70),
+                  ),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.of(c).pop(false),
@@ -359,26 +359,28 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
                   child: _loadingWaveform
                       ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
                       : _waveform.isEmpty
-                          ? Center(
-                              child: Text('Waveform unavailable',
-                                  style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
-                            )
-                          : LayoutBuilder(
-                              builder: (ctx, constraints) => GestureDetector(
-                                onTapDown: (d) {
-                                  final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
-                                  _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
-                                },
-                                onHorizontalDragUpdate: (d) {
-                                  final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
-                                  _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
-                                },
-                                child: CustomPaint(
-                                  painter: _WaveformPainter(amplitudes: _waveform, progress: progressRatio),
-                                  size: Size(constraints.maxWidth, 120),
-                                ),
-                              ),
+                      ? Center(
+                          child: Text(
+                            'Waveform unavailable',
+                            style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+                          ),
+                        )
+                      : LayoutBuilder(
+                          builder: (ctx, constraints) => GestureDetector(
+                            onTapDown: (d) {
+                              final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
+                              _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
+                            },
+                            onHorizontalDragUpdate: (d) {
+                              final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
+                              _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
+                            },
+                            child: CustomPaint(
+                              painter: _WaveformPainter(amplitudes: _waveform, progress: progressRatio),
+                              size: Size(constraints.maxWidth, 120),
                             ),
+                          ),
+                        ),
                 ),
               ),
 
@@ -420,10 +422,11 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   _SeekButton(
-                      icon: FontAwesomeIcons.rotateLeft,
-                      seconds: 30,
-                      isForward: false,
-                      onTap: () => _seekRelative(-30)),
+                    icon: FontAwesomeIcons.rotateLeft,
+                    seconds: 30,
+                    isForward: false,
+                    onTap: () => _seekRelative(-30),
+                  ),
                   const SizedBox(width: 40),
                   Semantics(
                     button: true,
@@ -453,7 +456,11 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
                   ),
                   const SizedBox(width: 40),
                   _SeekButton(
-                      icon: FontAwesomeIcons.rotateRight, seconds: 30, isForward: true, onTap: () => _seekRelative(30)),
+                    icon: FontAwesomeIcons.rotateRight,
+                    seconds: 30,
+                    isForward: true,
+                    onTap: () => _seekRelative(30),
+                  ),
                 ],
               ),
             ],

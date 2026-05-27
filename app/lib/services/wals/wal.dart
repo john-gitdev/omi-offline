@@ -5,21 +5,11 @@ const flushIntervalInSeconds = 90;
 const sdcardSegmentDurationSecs = 60;
 const newFrameSize = 80;
 
-enum WalStorage {
-  local,
-  sdcard,
-}
+enum WalStorage { local, sdcard }
 
-enum WalStatus {
-  miss,
-  syncing,
-  synced,
-  corrupted,
-}
+enum WalStatus { miss, syncing, synced, corrupted }
 
-enum SyncMethod {
-  ble,
-}
+enum SyncMethod { ble }
 
 class Wal {
   final BleAudioCodec codec;

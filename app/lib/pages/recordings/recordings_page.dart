@@ -60,10 +60,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, setDialogState) => AlertDialog(
             backgroundColor: const Color(0xFF1C1C1E),
-            title: const Text(
-              'Force Sync',
-              style: TextStyle(color: Colors.white),
-            ),
+            title: const Text('Force Sync', style: TextStyle(color: Colors.white)),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -88,10 +85,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      const Text(
-                        'Don\'t show again',
-                        style: TextStyle(color: Colors.grey, fontSize: 13),
-                      ),
+                      const Text('Don\'t show again', style: TextStyle(color: Colors.grey, fontSize: 13)),
                     ],
                   ),
                 ),
@@ -100,17 +94,11 @@ class _RecordingsPageState extends State<RecordingsPage> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text(
-                  'Cancel',
-                  style: TextStyle(color: Colors.grey),
-                ),
+                child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
               ),
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(true),
-                child: const Text(
-                  'Yes',
-                  style: TextStyle(color: Colors.deepPurpleAccent),
-                ),
+                child: const Text('Yes', style: TextStyle(color: Colors.deepPurpleAccent)),
               ),
             ],
           ),
@@ -165,10 +153,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
         await _controller.deleteConversations(toDelete);
       }
     } catch (e) {
-      if (mounted)
-        messenger.showSnackBar(
-          SnackBar(content: Text('Error deleting day: $e')),
-        );
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Error deleting day: $e')));
     }
   }
 
@@ -226,15 +211,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
     try {
       await _controller.deleteConversation(conversation);
       if (mounted) {
-        messenger.showSnackBar(
-          SnackBar(content: Text('Deleted conversation from ${conversation.timeRangeLabel}')),
-        );
+        messenger.showSnackBar(SnackBar(content: Text('Deleted conversation from ${conversation.timeRangeLabel}')));
       }
     } catch (e) {
-      if (mounted)
-        messenger.showSnackBar(
-          SnackBar(content: Text('Error deleting conversation: $e')),
-        );
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Error deleting conversation: $e')));
     }
   }
 
@@ -255,18 +235,13 @@ class _RecordingsPageState extends State<RecordingsPage> {
     try {
       await _controller.deleteMarkerConversation(mc);
       if (mounted) {
-        messenger.showSnackBar(
-          SnackBar(content: Text('Deleted Marker at ${mc.markerTimeLabel}')),
-        );
+        messenger.showSnackBar(SnackBar(content: Text('Deleted Marker at ${mc.markerTimeLabel}')));
         if (_controller.markerConversations.isEmpty) {
           setState(() => _showMarkersOnly = false);
         }
       }
     } catch (e) {
-      if (mounted)
-        messenger.showSnackBar(
-          SnackBar(content: Text('Error deleting marker: $e')),
-        );
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Error deleting marker: $e')));
     }
   }
 
@@ -310,38 +285,27 @@ class _RecordingsPageState extends State<RecordingsPage> {
     try {
       await _controller.reprocessDay(batch);
     } catch (e) {
-      if (mounted)
-        messenger.showSnackBar(
-          SnackBar(content: Text('Error reprocessing day: $e')),
-        );
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Error reprocessing day: $e')));
     }
   }
 
   Future<void> _exportAll(Batch batch, List<Conversation> conversations) async {
     if (conversations.isEmpty) return;
     final files = conversations.map((r) => XFile(r.file.path)).toList();
-    await SharePlus.instance.share(
-      ShareParams(files: files, subject: 'Conversations – ${batch.dateString}'),
-    );
+    await SharePlus.instance.share(ShareParams(files: files, subject: 'Conversations – ${batch.dateString}'));
   }
 
   Future<void> _handleUploadTap(Conversation conversation) async {
     if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Uploads paused — turn off Adjustment Mode first'),
-        ),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Uploads paused — turn off Adjustment Mode first')));
       return;
     }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Upload key unavailable — please reconnect your device and try again.',
-          ),
-        ),
+        const SnackBar(content: Text('Upload key unavailable — please reconnect your device and try again.')),
       );
       return;
     }
@@ -366,8 +330,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
     final failures = await _controller.uploadConversation(conversation, force: alreadyUploaded);
     if (!mounted) return;
     for (final failure in failures) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
     }
   }
 
@@ -392,11 +357,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _openMarkerConversation(MarkerConversation mc) async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => MarkerConversationPlayerPage(markerConversation: mc),
-      ),
-    );
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => MarkerConversationPlayerPage(markerConversation: mc)));
     await _controller.reloadBatchesSilently();
   }
 
@@ -418,19 +381,11 @@ class _RecordingsPageState extends State<RecordingsPage> {
           padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
           child: Row(
             children: [
-              const FaIcon(
-                FontAwesomeIcons.circleQuestion,
-                color: Colors.amber,
-                size: 13,
-              ),
+              const FaIcon(FontAwesomeIcons.circleQuestion, color: Colors.amber, size: 13),
               const SizedBox(width: 8),
               const Text(
                 'Unorganized',
-                style: TextStyle(
-                  color: Colors.amber,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: TextStyle(color: Colors.amber, fontSize: 13, fontWeight: FontWeight.w600),
               ),
               const SizedBox(width: 6),
               Text(
@@ -451,10 +406,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                 onTap: () => _openConversation(conv),
                 onLongPress: () => _deleteConversation(conv),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 10,
-                    horizontal: 12,
-                  ),
+                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                   child: Row(
                     children: [
                       Expanded(
@@ -463,27 +415,17 @@ class _RecordingsPageState extends State<RecordingsPage> {
                           children: [
                             Text(
                               'Unknown date  ·  ${conv.durationLabel}',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 14,
-                              ),
+                              style: const TextStyle(color: Colors.white, fontSize: 14),
                             ),
                             const SizedBox(height: 3),
                             Text(
                               'Estimated: ${conv.startTime.year}-${conv.startTime.month.toString().padLeft(2, '0')}-${conv.startTime.day.toString().padLeft(2, '0')}  ·  ${conv.sizeLabel}',
-                              style: TextStyle(
-                                color: Colors.grey.shade500,
-                                fontSize: 12,
-                              ),
+                              style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
                             ),
                           ],
                         ),
                       ),
-                      FaIcon(
-                        FontAwesomeIcons.chevronRight,
-                        color: Colors.grey.shade600,
-                        size: 14,
-                      ),
+                      FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
                     ],
                   ),
                 ),
@@ -505,10 +447,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
           final snack = controller.consumePendingSnack();
           if (snack != null) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted)
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(SnackBar(content: Text(snack)));
+              if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(snack)));
             });
           }
           return Scaffold(
@@ -528,10 +467,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                               child: SizedBox(
                                 width: 20,
                                 height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                               ),
                             )
                           : Padding(
@@ -545,22 +481,17 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                   size: 20,
                                 ),
                                 tooltip: 'Find devices',
-                                onPressed: () => Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (c) => const FindDevicesPage(),
-                                  ),
-                                ),
+                                onPressed: () => Navigator.of(
+                                  context,
+                                ).push(MaterialPageRoute(builder: (c) => const FindDevicesPage())),
                               ),
                             ),
                     )
                   : BatteryStatusIndicator(
                       batteryLevel: deviceProvider.batteryLevel,
                       isCharging: deviceProvider.isCharging,
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (c) => const DeviceSettings(),
-                        ),
-                      ),
+                      onTap: () =>
+                          Navigator.of(context).push(MaterialPageRoute(builder: (c) => const DeviceSettings())),
                     ),
               actions: [
                 if (controller.markerConversations.isNotEmpty)
@@ -576,14 +507,16 @@ class _RecordingsPageState extends State<RecordingsPage> {
                 IconButton(
                   icon: FaIcon(
                     FontAwesomeIcons.boltLightning,
-                    color: (deviceProvider.isConnected &&
+                    color:
+                        (deviceProvider.isConnected &&
                             controller.spState == SyncProcessState.idle &&
                             !controller.forceSyncOnCooldown)
                         ? Colors.white
                         : Colors.grey.shade700,
                     size: 20,
                   ),
-                  onPressed: (deviceProvider.isConnected &&
+                  onPressed:
+                      (deviceProvider.isConnected &&
                           controller.spState == SyncProcessState.idle &&
                           !controller.forceSyncOnCooldown)
                       ? _forceSyncButtonPressed
@@ -591,11 +524,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   tooltip: 'Force sync',
                 ),
                 IconButton(
-                  icon: const FaIcon(
-                    FontAwesomeIcons.gear,
-                    color: Colors.white,
-                    size: 20,
-                  ),
+                  icon: const FaIcon(FontAwesomeIcons.gear, color: Colors.white, size: 20),
                   onPressed: () => SettingsDrawer.show(context, controller),
                   tooltip: 'Settings',
                 ),
@@ -611,11 +540,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     children: [
                       const Text(
                         'Conversations',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                        ),
+                        style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
                       ),
                       const Spacer(),
                       GestureDetector(
@@ -631,12 +556,14 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                           decoration: BoxDecoration(
-                            color:
-                                _prefs.manualMode ? const Color(0xFF2A2A2E) : Colors.deepPurpleAccent.withOpacity(0.15),
+                            color: _prefs.manualMode
+                                ? const Color(0xFF2A2A2E)
+                                : Colors.deepPurpleAccent.withOpacity(0.15),
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
-                              color:
-                                  _prefs.manualMode ? Colors.grey.shade700 : Colors.deepPurpleAccent.withOpacity(0.6),
+                              color: _prefs.manualMode
+                                  ? Colors.grey.shade700
+                                  : Colors.deepPurpleAccent.withOpacity(0.6),
                             ),
                           ),
                           child: Row(
@@ -676,9 +603,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                       ],
                     ),
                   ),
-                StorageWarningBanner(
-                  percentage: deviceProvider.storageFullPercentage,
-                ),
+                StorageWarningBanner(percentage: deviceProvider.storageFullPercentage),
                 SyncProcessCard(
                   data: SyncCardData(
                     state: controller.spState,
@@ -698,7 +623,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                       controller.startPipeline();
                     else if (controller.spState == SyncProcessState.resume)
                       controller.resumePipeline();
-                    else if (controller.spState == SyncProcessState.error) controller.retryFromError();
+                    else if (controller.spState == SyncProcessState.error)
+                      controller.retryFromError();
                   },
                 ),
                 AccumulatingBanner(
@@ -707,15 +633,13 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   onTap: () {
                     if (controller.spState == SyncProcessState.syncing ||
                         controller.spState == SyncProcessState.processing ||
-                        controller.spState == SyncProcessState.stopping) return;
+                        controller.spState == SyncProcessState.stopping)
+                      return;
                     showDialog(
                       context: context,
                       builder: (ctx) => AlertDialog(
                         backgroundColor: const Color(0xFF1C1C1E),
-                        title: const Text(
-                          'Process Audio',
-                          style: TextStyle(color: Colors.white),
-                        ),
+                        title: const Text('Process Audio', style: TextStyle(color: Colors.white)),
                         content: const Text(
                           'You can process the accumulated audio now. Processing normally will respect the conversation pause limits, while Force Processing will finalize everything immediately.',
                           style: TextStyle(color: Colors.white70, fontSize: 14),
@@ -723,30 +647,21 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         actions: [
                           TextButton(
                             onPressed: () => Navigator.of(ctx).pop(),
-                            child: const Text(
-                              'Cancel',
-                              style: TextStyle(color: Colors.grey),
-                            ),
+                            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
                           ),
                           TextButton(
                             onPressed: () {
                               Navigator.of(ctx).pop();
                               controller.startProcessingWithoutSync();
                             },
-                            child: const Text(
-                              'Process Normally',
-                              style: TextStyle(color: Colors.deepPurpleAccent),
-                            ),
+                            child: const Text('Process Normally', style: TextStyle(color: Colors.deepPurpleAccent)),
                           ),
                           TextButton(
                             onPressed: () {
                               Navigator.of(ctx).pop();
                               controller.startForceProcessingWithoutSync();
                             },
-                            child: const Text(
-                              'Force Process',
-                              style: TextStyle(color: Colors.deepPurpleAccent),
-                            ),
+                            child: const Text('Force Process', style: TextStyle(color: Colors.deepPurpleAccent)),
                           ),
                         ],
                       ),
@@ -762,11 +677,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                 ),
                 Expanded(
                   child: controller.isLoading
-                      ? const Center(
-                          child: CircularProgressIndicator(
-                            color: Colors.deepPurpleAccent,
-                          ),
-                        )
+                      ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
                       : Builder(
                           builder: (context) {
                             if (_showMarkersOnly) {
@@ -784,10 +695,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                             child: const Text(
                                               'No marked recordings yet.\nPress the button on your Omi to tag a moment.',
                                               textAlign: TextAlign.center,
-                                              style: TextStyle(
-                                                color: Colors.grey,
-                                                fontSize: 16,
-                                              ),
+                                              style: TextStyle(color: Colors.grey, fontSize: 16),
                                             ),
                                           ),
                                         ],
@@ -810,30 +718,34 @@ class _RecordingsPageState extends State<RecordingsPage> {
                             final minSeconds = _prefs.filterMinDurationSeconds;
                             final visibleBatches = minSeconds > 0
                                 ? switch (_filterMode) {
-                                    RecordingFilterMode.visible => controller.batches
-                                        .where(
-                                            (b) => b.finalizedRecordings.any((c) => c.duration.inSeconds >= minSeconds))
-                                        .toList(),
-                                    RecordingFilterMode.hidden => controller.batches
-                                        .where(
-                                            (b) => b.finalizedRecordings.any((c) => c.duration.inSeconds < minSeconds))
-                                        .toList(),
+                                    RecordingFilterMode.visible =>
+                                      controller.batches
+                                          .where(
+                                            (b) => b.finalizedRecordings.any((c) => c.duration.inSeconds >= minSeconds),
+                                          )
+                                          .toList(),
+                                    RecordingFilterMode.hidden =>
+                                      controller.batches
+                                          .where(
+                                            (b) => b.finalizedRecordings.any((c) => c.duration.inSeconds < minSeconds),
+                                          )
+                                          .toList(),
                                     RecordingFilterMode.all =>
                                       controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList(),
                                   }
                                 : controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
-                            final unknownRecordings =
-                                visibleBatches.expand((b) => b.finalizedRecordings).where((c) => c.isUnknown).toList();
+                            final unknownRecordings = visibleBatches
+                                .expand((b) => b.finalizedRecordings)
+                                .where((c) => c.isUnknown)
+                                .toList();
                             return RefreshIndicator(
                               color: Colors.deepPurpleAccent,
                               onRefresh: () {
                                 if (controller.spState != SyncProcessState.idle &&
                                     controller.spState != SyncProcessState.error) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('Sync already in progress'),
-                                    ),
-                                  );
+                                  ScaffoldMessenger.of(
+                                    context,
+                                  ).showSnackBar(const SnackBar(content: Text('Sync already in progress')));
                                   return Future.value();
                                 }
                                 return controller.startPipeline();
@@ -849,10 +761,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                               const Text(
                                                 'No conversations found.\nSwipe down to sync device.',
                                                 textAlign: TextAlign.center,
-                                                style: TextStyle(
-                                                  color: Colors.grey,
-                                                  fontSize: 16,
-                                                ),
+                                                style: TextStyle(color: Colors.grey, fontSize: 16),
                                               ),
                                               if (deviceProvider.isConnected) ...[
                                                 const SizedBox(height: 32),
@@ -860,13 +769,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                                   onPressed: controller.spState == SyncProcessState.idle
                                                       ? controller.startPipeline
                                                       : null,
-                                                  icon: const FaIcon(
-                                                    FontAwesomeIcons.rotate,
-                                                    size: 16,
-                                                  ),
-                                                  label: const Text(
-                                                    'Sync and Process',
-                                                  ),
+                                                  icon: const FaIcon(FontAwesomeIcons.rotate, size: 16),
+                                                  label: const Text('Sync and Process'),
                                                   style: ElevatedButton.styleFrom(
                                                     backgroundColor: Colors.deepPurpleAccent,
                                                     foregroundColor: Colors.white,
@@ -877,18 +781,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                                 ElevatedButton(
                                                   onPressed: () => Navigator.of(
                                                     context,
-                                                  ).push(
-                                                    MaterialPageRoute(
-                                                      builder: (c) => const FindDevicesPage(),
-                                                    ),
-                                                  ),
+                                                  ).push(MaterialPageRoute(builder: (c) => const FindDevicesPage())),
                                                   style: ElevatedButton.styleFrom(
                                                     backgroundColor: Colors.deepPurpleAccent,
                                                     foregroundColor: Colors.white,
                                                   ),
-                                                  child: const Text(
-                                                    'Connect Omi',
-                                                  ),
+                                                  child: const Text('Connect Omi'),
                                                 ),
                                               ],
                                             ],
@@ -902,14 +800,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                       itemCount: visibleBatches.length + 1,
                                       itemBuilder: (context, index) {
                                         if (index == 0) {
-                                          return _buildUnorganizedSection(
-                                            unknownRecordings,
-                                          );
+                                          return _buildUnorganizedSection(unknownRecordings);
                                         }
                                         final batchIndex = index - 1;
                                         final anyIntegrationEnabled =
                                             (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
-                                                (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty);
+                                            (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty);
                                         return BatchCard(
                                           batch: visibleBatches[batchIndex],
                                           markerMap: markerMap,
@@ -921,17 +817,11 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           onUploadTap: _handleUploadTap,
                                           onConversationTap: _openConversation,
                                           onMarkerTap: _openMarkerConversation,
-                                          onExportAll: (conversations) => _exportAll(
-                                            visibleBatches[batchIndex],
-                                            conversations,
-                                          ),
-                                          onDeleteDay: (toDelete) => _deleteDayConversations(
-                                            visibleBatches[batchIndex],
-                                            toDelete,
-                                          ),
-                                          onReprocessDay: () => _reprocessDay(
-                                            visibleBatches[batchIndex],
-                                          ),
+                                          onExportAll: (conversations) =>
+                                              _exportAll(visibleBatches[batchIndex], conversations),
+                                          onDeleteDay: (toDelete) =>
+                                              _deleteDayConversations(visibleBatches[batchIndex], toDelete),
+                                          onReprocessDay: () => _reprocessDay(visibleBatches[batchIndex]),
                                           onDeleteConversation: _deleteConversation,
                                           onDeleteMarkerConversation: _deleteMarkerConversation,
                                           onRecoverDiscard: controller.recoverDiscard,

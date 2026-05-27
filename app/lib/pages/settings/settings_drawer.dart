@@ -25,10 +25,7 @@ class SettingsDrawer extends StatefulWidget {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) => ChangeNotifierProvider.value(
-        value: controller,
-        child: const SettingsDrawer(),
-      ),
+      builder: (ctx) => ChangeNotifierProvider.value(value: controller, child: const SettingsDrawer()),
     );
   }
 }
@@ -83,11 +80,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
     }
   }
 
-  Widget _buildSettingsItem({
-    required String title,
-    required Widget icon,
-    required VoidCallback onTap,
-  }) {
+  Widget _buildSettingsItem({required String title, required Widget icon, required VoidCallback onTap}) {
     return Container(
       margin: const EdgeInsets.only(bottom: 1),
       child: Material(
@@ -97,10 +90,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
         child: InkWell(
           onTap: onTap,
           child: Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 16,
-              vertical: 18,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
             child: Row(
               children: [
                 SizedBox(width: 24, height: 24, child: icon),
@@ -108,18 +98,10 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                 Expanded(
                   child: Text(
                     title,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w400,
-                    ),
+                    style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
                   ),
                 ),
-                const Icon(
-                  Icons.chevron_right,
-                  color: Color(0xFF3C3C43),
-                  size: 20,
-                ),
+                const Icon(Icons.chevron_right, color: Color(0xFF3C3C43), size: 20),
               ],
             ),
           ),
@@ -130,10 +112,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
 
   Widget _buildSectionContainer({required List<Widget> children}) {
     return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFF1C1C1E),
-        borderRadius: BorderRadius.circular(20),
-      ),
+      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
       child: Column(children: children),
     );
   }
@@ -146,11 +125,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
       children: [
         Text(
           displayText,
-          style: const TextStyle(
-            color: Color(0xFF8E8E93),
-            fontSize: 13,
-            fontWeight: FontWeight.w400,
-          ),
+          style: const TextStyle(color: Color(0xFF8E8E93), fontSize: 13, fontWeight: FontWeight.w400),
         ),
         const SizedBox(width: 4),
         Semantics(
@@ -166,9 +141,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                 onTap: () async {
                   await Clipboard.setData(ClipboardData(text: displayText));
                   if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Copied to clipboard')),
-                    );
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
                   }
                 },
                 child: const Padding(
@@ -189,10 +162,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
       height: MediaQuery.of(context).size.height * 0.9,
       decoration: const BoxDecoration(
         color: Color(0xFF000000),
-        borderRadius: BorderRadius.only(
-          topLeft: Radius.circular(16),
-          topRight: Radius.circular(16),
-        ),
+        borderRadius: BorderRadius.only(topLeft: Radius.circular(16), topRight: Radius.circular(16)),
       ),
       child: Column(
         children: [
@@ -201,10 +171,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
             margin: const EdgeInsets.only(top: 8),
             height: 4,
             width: 36,
-            decoration: BoxDecoration(
-              color: const Color(0xFF3C3C43),
-              borderRadius: BorderRadius.circular(2),
-            ),
+            decoration: BoxDecoration(color: const Color(0xFF3C3C43), borderRadius: BorderRadius.circular(2)),
           ),
           // Header
           Container(
@@ -214,11 +181,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                 const Center(
                   child: Text(
                     'Settings',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                    ),
+                    style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
                   ),
                 ),
                 Positioned(
@@ -229,20 +192,14 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                     child: Material(
                       color: Colors.transparent,
                       clipBehavior: Clip.antiAlias,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8.0),
-                      ),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8.0)),
                       child: InkWell(
                         onTap: () => Navigator.pop(context),
                         child: const Padding(
                           padding: EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
                           child: Text(
                             'Done',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w400,
-                            ),
+                            style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w400),
                           ),
                         ),
                       ),
@@ -266,33 +223,21 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           if (deviceProvider.isConnected) {
                             return _buildSettingsItem(
                               title: 'Device Settings',
-                              icon: const FaIcon(
-                                FontAwesomeIcons.bluetooth,
-                                color: Color(0xFF8E8E93),
-                                size: 20,
-                              ),
+                              icon: const FaIcon(FontAwesomeIcons.bluetooth, color: Color(0xFF8E8E93), size: 20),
                               onTap: () {
-                                Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (context) => const DeviceSettings(),
-                                  ),
-                                );
+                                Navigator.of(
+                                  context,
+                                ).push(MaterialPageRoute(builder: (context) => const DeviceSettings()));
                               },
                             );
                           }
                           return _buildSettingsItem(
                             title: 'Find Omi Devices',
-                            icon: const FaIcon(
-                              FontAwesomeIcons.magnifyingGlass,
-                              color: Color(0xFF8E8E93),
-                              size: 20,
-                            ),
+                            icon: const FaIcon(FontAwesomeIcons.magnifyingGlass, color: Color(0xFF8E8E93), size: 20),
                             onTap: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (context) => const FindDevicesPage(),
-                                ),
-                              );
+                              Navigator.of(
+                                context,
+                              ).push(MaterialPageRoute(builder: (context) => const FindDevicesPage()));
                             },
                           );
                         },
@@ -300,16 +245,9 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
                       _buildSettingsItem(
                         title: 'Recording Settings',
-                        icon: const FaIcon(
-                          FontAwesomeIcons.microphoneLines,
-                          color: Color(0xFF8E8E93),
-                          size: 20,
-                        ),
+                        icon: const FaIcon(FontAwesomeIcons.microphoneLines, color: Color(0xFF8E8E93), size: 20),
                         onTap: () async {
-                          final controller = Provider.of<RecordingsController>(
-                            context,
-                            listen: false,
-                          );
+                          final controller = Provider.of<RecordingsController>(context, listen: false);
                           await Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => OfflineAudioSettingsPage(
@@ -324,27 +262,15 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
                       _buildSettingsItem(
                         title: 'App Settings',
-                        icon: const FaIcon(
-                          FontAwesomeIcons.gear,
-                          color: Color(0xFF8E8E93),
-                          size: 20,
-                        ),
+                        icon: const FaIcon(FontAwesomeIcons.gear, color: Color(0xFF8E8E93), size: 20),
                         onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => const AppSettingsPage(),
-                            ),
-                          );
+                          Navigator.of(context).push(MaterialPageRoute(builder: (context) => const AppSettingsPage()));
                         },
                       ),
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
                       _buildSettingsItem(
                         title: 'Integrations',
-                        icon: const FaIcon(
-                          FontAwesomeIcons.plug,
-                          color: Color(0xFF8E8E93),
-                          size: 20,
-                        ),
+                        icon: const FaIcon(FontAwesomeIcons.plug, color: Color(0xFF8E8E93), size: 20),
                         onTap: () async {
                           final controller = Provider.of<RecordingsController>(context, listen: false);
                           await Navigator.of(context).push(
@@ -363,17 +289,9 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                       const Divider(height: 1, color: Color(0xFF3C3C43)),
                       _buildSettingsItem(
                         title: 'Debug Tools',
-                        icon: const FaIcon(
-                          FontAwesomeIcons.bug,
-                          color: Color(0xFF8E8E93),
-                          size: 20,
-                        ),
+                        icon: const FaIcon(FontAwesomeIcons.bug, color: Color(0xFF8E8E93), size: 20),
                         onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => const SyncPage(),
-                            ),
-                          );
+                          Navigator.of(context).push(MaterialPageRoute(builder: (context) => const SyncPage()));
                         },
                       ),
                     ],

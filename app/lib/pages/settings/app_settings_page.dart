@@ -68,10 +68,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
         backgroundColor: const Color(0xFF1C1C1E),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Discard changes?', style: TextStyle(color: Colors.white)),
-        content: const Text(
-          'Your changes have not been saved.',
-          style: TextStyle(color: Colors.grey),
-        ),
+        content: const Text('Your changes have not been saved.', style: TextStyle(color: Colors.grey)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -137,8 +134,14 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                 ),
                 child: SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('Maximize Battery', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Disconnects Bluetooth after a sync completes to maximize battery life.', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+                  title: const Text(
+                    'Maximize Battery',
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: Text(
+                    'Disconnects Bluetooth after a sync completes to maximize battery life.',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                  ),
                   value: _maximizeBattery,
                   onChanged: (value) {
                     setState(() => _maximizeBattery = value);
@@ -152,10 +155,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
               // Auto Sync Interval
               Container(
                 padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
+                decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(16)),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -171,7 +171,11 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                           dropdownColor: const Color(0xFF2C2C2E),
                           icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                           underline: const SizedBox(),
-                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          style: const TextStyle(
+                            color: Colors.deepPurpleAccent,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                          ),
                           items: const [
                             DropdownMenuItem(value: 15, child: Text('15 Minutes')),
                             DropdownMenuItem(value: 30, child: Text('30 Minutes')),
@@ -197,8 +201,9 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                         if (provider.nextSyncTime == null || _backgroundSyncIntervalMinutes <= 0) {
                           return const SizedBox.shrink();
                         }
-                        final time = DateFormat(SharedPreferencesUtil().use24HourTime ? 'HH:mm' : 'h:mm a')
-                            .format(provider.nextSyncTime!.toLocal());
+                        final time = DateFormat(
+                          SharedPreferencesUtil().use24HourTime ? 'HH:mm' : 'h:mm a',
+                        ).format(provider.nextSyncTime!.toLocal());
                         return Padding(
                           padding: const EdgeInsets.only(top: 12),
                           child: Row(
@@ -208,7 +213,10 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                               Text(
                                 'Next sync at $time',
                                 style: const TextStyle(
-                                    color: Colors.deepPurpleAccent, fontSize: 13, fontWeight: FontWeight.w500),
+                                  color: Colors.deepPurpleAccent,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                ),
                               ),
                             ],
                           ),
@@ -223,14 +231,13 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
               // Time Format
               Container(
                 padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
+                decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(16)),
                 child: SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('24-Hour Time',
-                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  title: const Text(
+                    '24-Hour Time',
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
                   subtitle: Text(
                     _use24HourTime ? 'Times shown in 24-hour format.' : 'Times shown in AM/PM format.',
                     style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
@@ -248,10 +255,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
               // Save File Format As
               Container(
                 padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
+                decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(16)),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -267,11 +271,14 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                           dropdownColor: const Color(0xFF2C2C2E),
                           icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                           underline: const SizedBox(),
-                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          style: const TextStyle(
+                            color: Colors.deepPurpleAccent,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                          ),
                           items: [
                             const DropdownMenuItem(value: 'm4a', child: Text('M4A (AAC)')),
-                            if (!Platform.isIOS)
-                              const DropdownMenuItem(value: 'ogg', child: Text('OGG (Opus)')),
+                            if (!Platform.isIOS) const DropdownMenuItem(value: 'ogg', child: Text('OGG (Opus)')),
                             const DropdownMenuItem(value: 'wav', child: Text('WAV (PCM)')),
                           ],
                           onChanged: (value) {
@@ -288,8 +295,8 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                       _audioSaveFormat == 'm4a'
                           ? 'M4A provides maximum compatibility for cloud services and mobile players.'
                           : _audioSaveFormat == 'ogg'
-                              ? 'OGG provides the smallest file size by saving the original Opus stream (Android only).'
-                              : 'WAV provides uncompressed, lossless PCM audio but results in very large file sizes.',
+                          ? 'OGG provides the smallest file size by saving the original Opus stream (Android only).'
+                          : 'WAV provides uncompressed, lossless PCM audio but results in very large file sizes.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],
@@ -300,10 +307,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
               // Keep Recordings For
               Container(
                 padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
+                decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(16)),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -319,7 +323,11 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                           dropdownColor: const Color(0xFF2C2C2E),
                           underline: const SizedBox(),
                           icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          style: const TextStyle(
+                            color: Colors.deepPurpleAccent,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                          ),
                           items: const [
                             DropdownMenuItem(value: -1, child: Text('Always Keep')),
                             DropdownMenuItem(value: 3, child: Text('3 Days')),
@@ -333,7 +341,10 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                                 context: context,
                                 builder: (c) => AlertDialog(
                                   backgroundColor: const Color(0xFF1C1C1E),
-                                  title: const Text('Enable Delete After Upload?', style: TextStyle(color: Colors.white)),
+                                  title: const Text(
+                                    'Enable Delete After Upload?',
+                                    style: TextStyle(color: Colors.white),
+                                  ),
                                   content: const Text(
                                     'Recordings will be sent to your integrations and deleted from your device after a successful upload.',
                                     style: TextStyle(color: Colors.white70, fontSize: 14),
@@ -363,8 +374,8 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                       _keepRecordingsDays == -1
                           ? 'Audio recordings are kept on your device permanently.'
                           : _keepRecordingsDays == 0
-                              ? 'Audio is sent to your integrations and deleted locally after a successful upload.'
-                              : 'Audio recordings older than $_keepRecordingsDays days will be automatically deleted from your device.',
+                          ? 'Audio is sent to your integrations and deleted locally after a successful upload.'
+                          : 'Audio recordings older than $_keepRecordingsDays days will be automatically deleted from your device.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],

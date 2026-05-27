@@ -90,14 +90,17 @@ class MockDeviceConnection extends DeviceConnection {
   }
 
   @override
-  Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener(
-      {void Function(int p1)? onBatteryLevelChange, void Function(bool p1)? onChargingStateChange}) async {
+  Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({
+    void Function(int p1)? onBatteryLevelChange,
+    void Function(bool p1)? onChargingStateChange,
+  }) async {
     return null;
   }
 
   @override
-  Future<StreamSubscription<List<int>>?> performGetBleButtonListener(
-      {required void Function(List<int> p1) onButtonReceived}) async {
+  Future<StreamSubscription<List<int>>?> performGetBleButtonListener({
+    required void Function(List<int> p1) onButtonReceived,
+  }) async {
     return null;
   }
 
@@ -204,10 +207,7 @@ void main() {
       final device = BtDevice(id: '1', name: 'Test', type: DeviceType.omi, rssi: 0);
       final updatedDevice = device.copyWith(hardwareRevision: 'v2');
 
-      final mockConnection = MockDeviceConnection(
-        device,
-        onPerformGetDeviceInfo: (conn) async => updatedDevice,
-      );
+      final mockConnection = MockDeviceConnection(device, onPerformGetDeviceInfo: (conn) async => updatedDevice);
 
       final result = await device.getDeviceInfo(mockConnection);
       expect(result, equals(updatedDevice));

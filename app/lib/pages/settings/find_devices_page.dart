@@ -38,9 +38,9 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     if (statuses[Permission.bluetoothScan] != PermissionStatus.granted ||
         statuses[Permission.bluetoothConnect] != PermissionStatus.granted) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Bluetooth permissions are required to find Omi devices.')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Bluetooth permissions are required to find Omi devices.')));
       }
       return;
     }
@@ -70,9 +70,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     } catch (e) {
       Logger.error('FindDevicesPage: Error scanning for devices: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error scanning: $e')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error scanning: $e')));
       }
     } finally {
       if (mounted) {
@@ -88,9 +86,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (c) => const Center(
-        child: CircularProgressIndicator(color: Colors.deepPurpleAccent),
-      ),
+      builder: (c) => const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent)),
     );
 
     try {
@@ -103,17 +99,13 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
       if (mounted) {
         Navigator.of(context).pop(); // Close loading dialog
         Navigator.of(context).pop(); // Go back to settings
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Connected to ${device.name}')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Connected to ${device.name}')));
       }
     } catch (e) {
       Logger.error('FindDevicesPage: Error connecting to device: $e');
       if (mounted) {
         Navigator.of(context).pop(); // Close loading dialog
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to connect: $e')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to connect: $e')));
       }
     }
   }
@@ -173,15 +165,9 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                 children: [
                   FaIcon(FontAwesomeIcons.bluetooth, size: 64, color: Colors.grey.shade800),
                   const SizedBox(height: 24),
-                  const Text(
-                    'No Omi devices found nearby.',
-                    style: TextStyle(color: Colors.grey, fontSize: 16),
-                  ),
+                  const Text('No Omi devices found nearby.', style: TextStyle(color: Colors.grey, fontSize: 16)),
                   const SizedBox(height: 8),
-                  const Text(
-                    'Make sure your Omi is turned on.',
-                    style: TextStyle(color: Colors.grey, fontSize: 14),
-                  ),
+                  const Text('Make sure your Omi is turned on.', style: TextStyle(color: Colors.grey, fontSize: 14)),
                   const SizedBox(height: 32),
                   ElevatedButton(
                     onPressed: _startScan,
@@ -213,10 +199,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                       device.name,
                       style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                     ),
-                    subtitle: Text(
-                      device.id,
-                      style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-                    ),
+                    subtitle: Text(device.id, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
                     trailing: const Icon(Icons.chevron_right, color: Colors.grey),
                     onTap: () => _connectToDevice(device),
                   ),

@@ -139,9 +139,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     final label = _formatShortDuration(_filterMinDurationSeconds);
     if (count == 0) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No recordings to clean up.')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No recordings to clean up.')));
       }
       return;
     }
@@ -170,9 +168,9 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     if (confirm == true && mounted) {
       await widget.onDeleteShortRecordings!(_filterMinDurationSeconds);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deleted $count short recording${count == 1 ? '' : 's'}.')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Deleted $count short recording${count == 1 ? '' : 's'}.')));
       }
     }
   }
@@ -220,10 +218,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
         backgroundColor: const Color(0xFF1C1C1E),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Discard changes?', style: TextStyle(color: Colors.white)),
-        content: const Text(
-          'Your changes have not been saved.',
-          style: TextStyle(color: Colors.grey),
-        ),
+        content: const Text('Your changes have not been saved.', style: TextStyle(color: Colors.grey)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -289,8 +284,9 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                     builder: (context, child) {
                       final t = _flashAnimation.value;
                       final autoMode = !_manualMode;
-                      final baseBorder =
-                          autoMode ? Colors.deepPurpleAccent.withOpacity(0.4) : Colors.white.withOpacity(0.05);
+                      final baseBorder = autoMode
+                          ? Colors.deepPurpleAccent.withOpacity(0.4)
+                          : Colors.white.withOpacity(0.05);
                       return Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
@@ -300,9 +296,10 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                           boxShadow: t > 0
                               ? [
                                   BoxShadow(
-                                      color: Colors.deepPurpleAccent.withOpacity(0.35 * t),
-                                      blurRadius: 14 * t,
-                                      spreadRadius: 1 * t)
+                                    color: Colors.deepPurpleAccent.withOpacity(0.35 * t),
+                                    blurRadius: 14 * t,
+                                    spreadRadius: 1 * t,
+                                  ),
                                 ]
                               : null,
                         ),
@@ -311,14 +308,16 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                     },
                     child: SwitchListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: const Text('Automatic Recording Mode',
-                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                      title: const Text(
+                        'Automatic Recording Mode',
+                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                      ),
                       subtitle: Text(
                         !isConnected
                             ? 'Connect device to change mode.'
                             : _manualMode
-                                ? 'Double-tap to start recording. Double-tap again to stop. Turn off Voice Activity Detection below for unfiltered capture.'
-                                : 'Automatic VAD-based recording. Double-tap marks a timestamp.',
+                            ? 'Double-tap to start recording. Double-tap again to stop. Turn off Voice Activity Detection below for unfiltered capture.'
+                            : 'Automatic VAD-based recording. Double-tap marks a timestamp.',
                         style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                       ),
                       value: !_manualMode,
@@ -349,8 +348,10 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                       ),
                       child: SwitchListTile(
                         contentPadding: EdgeInsets.zero,
-                        title: const Text('Voice Activity Detection',
-                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                        title: const Text(
+                          'Voice Activity Detection',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
                         subtitle: Text(
                           _vadEnabled
                               ? 'Silero VAD classifies each frame as speech or silence.'
@@ -392,12 +393,12 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                                   icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                                   underline: const SizedBox(),
                                   style: const TextStyle(
-                                      color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                                    color: Colors.deepPurpleAccent,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
                                   items: _kSpeechSensitivityOptions.map((option) {
-                                    return DropdownMenuItem(
-                                      value: option.$2,
-                                      child: Text(option.$1),
-                                    );
+                                    return DropdownMenuItem(value: option.$2, child: Text(option.$1));
                                   }).toList(),
                                   onChanged: (value) {
                                     if (value != null) {
@@ -440,12 +441,12 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                                   icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                                   underline: const SizedBox(),
                                   style: const TextStyle(
-                                      color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                                    color: Colors.deepPurpleAccent,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                  ),
                                   items: [0, 3, 10, 30].map((sec) {
-                                    return DropdownMenuItem(
-                                      value: sec,
-                                      child: Text(sec == 0 ? 'Off' : '${sec}s'),
-                                    );
+                                    return DropdownMenuItem(value: sec, child: Text(sec == 0 ? 'Off' : '${sec}s'));
                                   }).toList(),
                                   onChanged: (value) {
                                     if (value != null) {
@@ -469,7 +470,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                       const SizedBox(height: 16),
                     ],
                   ], // end !_manualMode
-
                   // Silence to End Conversation (hidden in manual mode — always 3 s)
                   if (!_manualMode)
                     Container(
@@ -495,7 +495,10 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                                 icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                                 underline: const SizedBox(),
                                 style: const TextStyle(
-                                    color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                                  color: Colors.deepPurpleAccent,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w500,
+                                ),
                                 items: [30, 60, 120, 300].map((sec) {
                                   return DropdownMenuItem(
                                     value: sec,
@@ -551,10 +554,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                                   fontWeight: FontWeight.w500,
                                 ),
                                 items: _kShortRecordingOptions.map((sec) {
-                                  return DropdownMenuItem(
-                                    value: sec,
-                                    child: Text(_formatShortDuration(sec)),
-                                  );
+                                  return DropdownMenuItem(value: sec, child: Text(_formatShortDuration(sec)));
                                 }).toList(),
                                 onChanged: (value) {
                                   if (value != null) {
@@ -570,8 +570,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                             _filterMinDurationSeconds == 0
                                 ? 'All recordings are kept and shown regardless of length.'
                                 : _discardShortRecordings
-                                    ? 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are permanently deleted during processing.'
-                                    : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the main list and skipped by integrations.',
+                                ? 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are permanently deleted during processing.'
+                                : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the main list and skipped by integrations.',
                             style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                           ),
                         ],
@@ -604,16 +604,13 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                                 icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                                 underline: const SizedBox(),
                                 style: const TextStyle(
-                                    color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                                  color: Colors.deepPurpleAccent,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w500,
+                                ),
                                 items: const [
-                                  DropdownMenuItem(
-                                    value: false,
-                                    child: Text('Hide'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: true,
-                                    child: Text('Delete'),
-                                  ),
+                                  DropdownMenuItem(value: false, child: Text('Hide')),
+                                  DropdownMenuItem(value: true, child: Text('Delete')),
                                 ],
                                 onChanged: (value) {
                                   if (value != null) {
@@ -647,7 +644,10 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                                   child: Text(
                                     'Clean up existing short recordings',
                                     style: TextStyle(
-                                        color: Colors.redAccent.shade100, fontSize: 14, fontWeight: FontWeight.w500),
+                                      color: Colors.redAccent.shade100,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w500,
+                                    ),
                                   ),
                                 ),
                               ),
@@ -683,15 +683,20 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                               icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                               underline: const SizedBox(),
                               style: const TextStyle(
-                                  color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                                color: Colors.deepPurpleAccent,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w500,
+                              ),
                               items: [0, 30, 60, 120, 180].map((mins) {
                                 return DropdownMenuItem(
                                   value: mins,
-                                  child: Text(mins == 0
-                                      ? 'No Limit'
-                                      : mins >= 60
-                                          ? '${mins ~/ 60}h'
-                                          : '${mins}m'),
+                                  child: Text(
+                                    mins == 0
+                                        ? 'No Limit'
+                                        : mins >= 60
+                                        ? '${mins ~/ 60}h'
+                                        : '${mins}m',
+                                  ),
                                 );
                               }).toList(),
                               onChanged: (value) {
@@ -726,8 +731,10 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                       ),
                       child: SwitchListTile(
                         contentPadding: EdgeInsets.zero,
-                        title: const Text('Adjustment Mode',
-                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                        title: const Text(
+                          'Adjustment Mode',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
                         subtitle: Text(
                           'Raw audio files are kept on disk after processing. Use this when tweaking VAD settings — each day shows a Reprocess button to regenerate recordings from scratch.',
                           style: TextStyle(color: Colors.grey.shade400, fontSize: 13),

@@ -185,10 +185,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     } else if (_spState == SyncProcessState.processing) {
       final mins = _minutesRemaining.ceil();
       final text = mins > 0 ? '$mins min of audio to process...' : '<1 min of audio to process...';
-      ForegroundUtil.updateNotification(
-        title: 'Processing recordings',
-        text: text,
-      );
+      ForegroundUtil.updateNotification(title: 'Processing recordings', text: text);
     }
   }
 
@@ -222,14 +219,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _minutesRemaining = _prefs.getDouble(_kSpMinutesRemaining);
     _processingProgress = _prefs.getDouble(_kSpProcessingProgress);
     _markerCount = _prefs.getInt(_kSpMarkerCount);
-    _lastCompletedStage = _prefs.getString(
-      _kSpLastCompleted,
-      defaultValue: 'none',
-    );
-    _lastActiveStage = _prefs.getString(
-      _kSpLastActive,
-      defaultValue: 'syncing',
-    );
+    _lastCompletedStage = _prefs.getString(_kSpLastCompleted, defaultValue: 'none');
+    _lastActiveStage = _prefs.getString(_kSpLastActive, defaultValue: 'syncing');
 
     if (_spState == SyncProcessState.idle) {
       final syncs = ServiceManager.instance().wal.getSyncs();
@@ -290,8 +281,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
             if (_isDisposed) return;
             _spState = SyncProcessState.processing;
             _totalMinutes = totalBytes / 252000.0;
-            _minutesRemaining =
-                (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
+            _minutesRemaining = (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(
+              0.0,
+              _totalMinutes,
+            );
             _processingProgress = RecordingsManager.processingProgress.value;
             _throttledUpdate(force: true);
           }),
@@ -311,8 +304,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               if (_isDisposed) return;
               _spState = SyncProcessState.processing;
               _totalMinutes = totalBytes / 252000.0;
-              _minutesRemaining =
-                  (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
+              _minutesRemaining = (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(
+                0.0,
+                _totalMinutes,
+              );
               _processingProgress = RecordingsManager.processingProgress.value;
               _syncedCount = 0;
               _syncSpeed = 0.0;
@@ -374,9 +369,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_isDisposed) return;
     _isForcePipeline = false;
     _lastActiveStage = activeStage;
-    Logger.error(
-      'RecordingsController: Pipeline error [$activeStage]: $message',
-    );
+    Logger.error('RecordingsController: Pipeline error [$activeStage]: $message');
     _spState = SyncProcessState.error;
     _throttledUpdate(force: true);
     _prefs.saveString(_kSpState, 'error');
@@ -394,20 +387,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   @override
-  void onWalSyncedProgress(
-    double percentage, {
-    double? speedKBps,
-    SyncPhase? phase,
-  }) {
+  void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
     if (_isDisposed) return;
     _syncSpeed = speedKBps ?? 0.0;
 
     final currentEstimated = ServiceManager.instance().wal.getSyncs().recordingsCount;
     if (_totalCount <= 0 && currentEstimated > 0) {
       _totalCount = currentEstimated;
-      Logger.debug(
-        'RecordingsController: Backfilled totalCount from service: $_totalCount',
-      );
+      Logger.debug('RecordingsController: Backfilled totalCount from service: $_totalCount');
     }
 
     if (_totalCount > 0) {
@@ -531,10 +518,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _prefs.saveString(_kSpLastCompleted, 'syncing');
     await reloadBatchesSilently();
 
-    _markerCount = _batches.fold(
-      0,
-      (sum, b) => sum + b.markerTimestamps.length,
-    );
+    _markerCount = _batches.fold(0, (sum, b) => sum + b.markerTimestamps.length);
     notifyListeners();
     _persistProgress();
 
@@ -575,9 +559,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     await Future.delayed(const Duration(seconds: 1));
 
-    Logger.debug(
-      'RecordingsController: _runPipeline start — estimatedTotalSegments=$_totalCount',
-    );
+    Logger.debug('RecordingsController: _runPipeline start — estimatedTotalSegments=$_totalCount');
 
     notifyListeners();
     _persistProgress();
@@ -621,10 +603,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _prefs.saveString(_kSpLastCompleted, 'syncing');
     await reloadBatchesSilently();
 
-    _markerCount = _batches.fold(
-      0,
-      (sum, b) => sum + b.markerTimestamps.length,
-    );
+    _markerCount = _batches.fold(0, (sum, b) => sum + b.markerTimestamps.length);
     notifyListeners();
     _persistProgress();
 
@@ -671,7 +650,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     WakelockPlus.enable();
     await ForegroundUtil.startForegroundTask(
-        title: 'Processing recordings...', text: 'Preparing to process segments...');
+      title: 'Processing recordings...',
+      text: 'Preparing to process segments...',
+    );
     try {
       await _manager.processAll(
         _batches,
@@ -744,9 +725,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   void cancelPipeline() {
     if (_spState != SyncProcessState.syncing && _spState != SyncProcessState.processing) return;
-    Logger.debug(
-      'RecordingsController: Cancel confirmed — cancelling sync + processing.',
-    );
+    Logger.debug('RecordingsController: Cancel confirmed — cancelling sync + processing.');
     _transitionTo(SyncProcessState.stopping);
     ServiceManager.instance().wal.getSyncs().cancelSync();
     RecordingsManager.cancelProcessing();
@@ -756,10 +735,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _isLoading = true;
     notifyListeners();
     try {
-      final results = await Future.wait([
-        _manager.getBatches(),
-        _manager.getMarkerConversations(),
-      ]);
+      final results = await Future.wait([_manager.getBatches(), _manager.getMarkerConversations()]);
       if (!_isDisposed) {
         _batches = results[0] as List<Batch>;
         _markerConversations = results[1] as List<MarkerConversation>;
@@ -787,10 +763,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   Future<void> reloadBatchesSilently() async {
     try {
-      final results = await Future.wait([
-        _manager.getBatches(),
-        _manager.getMarkerConversations(),
-      ]);
+      final results = await Future.wait([_manager.getBatches(), _manager.getMarkerConversations()]);
       if (!_isDisposed) {
         _batches = results[0] as List<Batch>;
         _markerConversations = results[1] as List<MarkerConversation>;
@@ -854,8 +827,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       _batches.expand((b) => b.finalizedRecordings).where((c) => c.duration.inSeconds < minSeconds).length;
 
   Future<void> deleteShortRecordings(int minSeconds) async {
-    final toDelete =
-        _batches.expand((b) => b.finalizedRecordings).where((c) => c.duration.inSeconds < minSeconds).toList();
+    final toDelete = _batches
+        .expand((b) => b.finalizedRecordings)
+        .where((c) => c.duration.inSeconds < minSeconds)
+        .toList();
     await deleteConversations(toDelete);
   }
 
@@ -905,7 +880,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
       WakelockPlus.enable();
       await ForegroundUtil.startForegroundTask(
-          title: 'Cleaning up recordings...', text: 'Processing segments before deletion...');
+        title: 'Cleaning up recordings...',
+        text: 'Processing segments before deletion...',
+      );
       try {
         await _manager.processAll(unprocessed, (_, __) {}, backgroundMode: false);
       } catch (e) {
@@ -943,8 +920,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         .whereType<int>()
         .toSet();
 
-    final reprocessable =
-        batch.finalizedRecordings.where((c) => c.sessionId != null && availableSessionIds.contains(c.sessionId));
+    final reprocessable = batch.finalizedRecordings.where(
+      (c) => c.sessionId != null && availableSessionIds.contains(c.sessionId),
+    );
 
     final keys = reprocessable.map((c) => c.uploadKey).whereType<String>().toSet();
     await _prefs.removeUploadedFromHeypocket(keys);
@@ -953,11 +931,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await RecordingsManager.reprocessDay(batch);
     await _loadBatches();
 
-    final freshBatch = _batches
-        .where(
-          (b) => b.dateString == batch.dateString && b.rawSegments.isNotEmpty,
-        )
-        .toList();
+    final freshBatch = _batches.where((b) => b.dateString == batch.dateString && b.rawSegments.isNotEmpty).toList();
     if (freshBatch.isEmpty) return;
 
     final totalBytes = freshBatch.expand((b) => b.rawSegments).fold(0, (sum, f) {
@@ -1044,12 +1018,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _lastActiveStage = 'processing';
     _transitionTo(SyncProcessState.processing);
     try {
-      await _manager.processAll(
-        [syntheticBatch],
-        (_, __) {},
-        backgroundMode: false,
-        settingsOverride: override,
-      );
+      await _manager.processAll([syntheticBatch], (_, __) {}, backgroundMode: false, settingsOverride: override);
     } catch (e) {
       _transitionToError('processing', e.toString());
       return;
@@ -1097,28 +1066,29 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
         final isPassthrough = _prefs.passthroughMode;
         unawaited(
-          HeyPocketService.uploadRecording(apiKey, conversation).then((_) async {
-            await _prefs.markUploadedToHeypocket(uploadKey);
-            await _prefs.clearAutoUploadRetry(uploadKey);
-            if (isPassthrough) await _convertToPassthrough(conversation);
-          }).catchError((e) {
-            if (e is HeyPocketException && e.statusCode == 401) {
-              _prefs.heypocketEnabled = false;
-              _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
-            } else {
-              unawaited(_prefs.incrementAutoUploadRetry(uploadKey));
-            }
-            Logger.error('HeyPocket auto-upload failed: $e');
-          }).whenComplete(() {
-            _uploadingFiles.remove(uploadKey);
-            _autoUploadActive--;
-            if (!_isDisposed) {
-              notifyListeners();
-              WidgetsBinding.instance.addPostFrameCallback(
-                (_) => tryAutoUploadNext(),
-              );
-            }
-          }),
+          HeyPocketService.uploadRecording(apiKey, conversation)
+              .then((_) async {
+                await _prefs.markUploadedToHeypocket(uploadKey);
+                await _prefs.clearAutoUploadRetry(uploadKey);
+                if (isPassthrough) await _convertToPassthrough(conversation);
+              })
+              .catchError((e) {
+                if (e is HeyPocketException && e.statusCode == 401) {
+                  _prefs.heypocketEnabled = false;
+                  _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
+                } else {
+                  unawaited(_prefs.incrementAutoUploadRetry(uploadKey));
+                }
+                Logger.error('HeyPocket auto-upload failed: $e');
+              })
+              .whenComplete(() {
+                _uploadingFiles.remove(uploadKey);
+                _autoUploadActive--;
+                if (!_isDisposed) {
+                  notifyListeners();
+                  WidgetsBinding.instance.addPostFrameCallback((_) => tryAutoUploadNext());
+                }
+              }),
         );
       }
     }
@@ -1235,31 +1205,34 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _syncingBinFiles.add(binPath);
         final isPassthrough = _prefs.passthroughMode;
         unawaited(
-          OmiApiClient.syncLocalFiles([binFile]).then((result) async {
-            if (result != null && result.success) {
-              Logger.debug('OmiAutoSync: marked synced $binPath');
-              await _prefs.markOmiSynced(binPath);
-              await _prefs.clearAutoUploadRetry(binPath);
-              if (isPassthrough) await _convertToPassthrough(conversation);
-              unawaited(OmiApiClient.traceSyncResult(result));
-            } else {
-              Logger.error('OmiAutoSync: result success=false for $binPath: ${result?.status}');
-              unawaited(_prefs.incrementAutoUploadRetry(binPath));
-            }
-          }).catchError((e) {
-            if (e is OmiSyncException && e.isAuthError) {
-              _prefs.omiEnabled = false;
-              _pendingSnackMessage = 'Omi sync: credentials invalid — update them in Integrations';
-            } else {
-              unawaited(_prefs.incrementAutoUploadRetry(binPath));
-            }
-            Logger.error('Omi sync failed for $binPath: $e');
-          }).whenComplete(() {
-            _syncingBinFiles.remove(binPath);
-            if (!_isDisposed) {
-              WidgetsBinding.instance.addPostFrameCallback((_) => tryAutoSyncNext());
-            }
-          }),
+          OmiApiClient.syncLocalFiles([binFile])
+              .then((result) async {
+                if (result != null && result.success) {
+                  Logger.debug('OmiAutoSync: marked synced $binPath');
+                  await _prefs.markOmiSynced(binPath);
+                  await _prefs.clearAutoUploadRetry(binPath);
+                  if (isPassthrough) await _convertToPassthrough(conversation);
+                  unawaited(OmiApiClient.traceSyncResult(result));
+                } else {
+                  Logger.error('OmiAutoSync: result success=false for $binPath: ${result?.status}');
+                  unawaited(_prefs.incrementAutoUploadRetry(binPath));
+                }
+              })
+              .catchError((e) {
+                if (e is OmiSyncException && e.isAuthError) {
+                  _prefs.omiEnabled = false;
+                  _pendingSnackMessage = 'Omi sync: credentials invalid — update them in Integrations';
+                } else {
+                  unawaited(_prefs.incrementAutoUploadRetry(binPath));
+                }
+                Logger.error('Omi sync failed for $binPath: $e');
+              })
+              .whenComplete(() {
+                _syncingBinFiles.remove(binPath);
+                if (!_isDisposed) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) => tryAutoSyncNext());
+                }
+              }),
         );
         return; // one at a time
       }
@@ -1285,13 +1258,17 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       // HeyPocket
       if (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) {
         if (force || !_prefs.isUploadedToHeypocket(uploadKey)) {
-          uploads.add(HeyPocketService.uploadRecording(_prefs.heypocketApiKey, conversation).then((_) {
-            unawaited(_prefs.clearAutoUploadRetry(uploadKey));
-            return _prefs.markUploadedToHeypocket(uploadKey);
-          }).catchError((e) {
-            Logger.error('HeyPocket manual upload failed: $e');
-            failures.add(UploadFailure('HeyPocket', e));
-          }));
+          uploads.add(
+            HeyPocketService.uploadRecording(_prefs.heypocketApiKey, conversation)
+                .then((_) {
+                  unawaited(_prefs.clearAutoUploadRetry(uploadKey));
+                  return _prefs.markUploadedToHeypocket(uploadKey);
+                })
+                .catchError((e) {
+                  Logger.error('HeyPocket manual upload failed: $e');
+                  failures.add(UploadFailure('HeyPocket', e));
+                }),
+          );
         }
       }
 
@@ -1302,24 +1279,26 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final binFile = File(binPath);
         final binExists = binFile.existsSync();
         final alreadySynced = _prefs.isOmiSynced(binPath);
-        Logger.debug(
-          'OmiUpload: binPath=$binPath exists=$binExists alreadySynced=$alreadySynced force=$force',
-        );
+        Logger.debug('OmiUpload: binPath=$binPath exists=$binExists alreadySynced=$alreadySynced force=$force');
         if (binExists && (force || !alreadySynced)) {
           Logger.debug('OmiUpload: starting upload (${binFile.lengthSync()} bytes)');
-          uploads.add(OmiApiClient.syncLocalFiles([binFile]).then((result) async {
-            if (result != null && result.success) {
-              Logger.debug('OmiUpload: success, marking synced');
-              await _prefs.clearAutoUploadRetry(binPath);
-              await _prefs.markOmiSynced(binPath);
-              unawaited(OmiApiClient.traceSyncResult(result));
-            } else {
-              throw Exception('Omi upload failed: ${result?.status}');
-            }
-          }).catchError((e) {
-            Logger.error('Omi manual sync failed for $binPath: $e');
-            failures.add(UploadFailure('Omi Cloud', e));
-          }));
+          uploads.add(
+            OmiApiClient.syncLocalFiles([binFile])
+                .then((result) async {
+                  if (result != null && result.success) {
+                    Logger.debug('OmiUpload: success, marking synced');
+                    await _prefs.clearAutoUploadRetry(binPath);
+                    await _prefs.markOmiSynced(binPath);
+                    unawaited(OmiApiClient.traceSyncResult(result));
+                  } else {
+                    throw Exception('Omi upload failed: ${result?.status}');
+                  }
+                })
+                .catchError((e) {
+                  Logger.error('Omi manual sync failed for $binPath: $e');
+                  failures.add(UploadFailure('Omi Cloud', e));
+                }),
+          );
         } else if (!binExists) {
           Logger.error('OmiUpload: bin file missing — nothing to upload for ${conversation.file.path}');
           failures.add(UploadFailure('Omi Cloud', Exception('Binary file not found: $binPath')));
@@ -1367,13 +1346,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   bool isUploaded(Conversation c) => uploadStatus(c) == UploadStatus.all;
 
   static Iterable<String> _binPathsForConversations(List<Conversation> conversations) => conversations.map((c) {
-        final ts = c.file.path.split('/').last.split('_').last.split('.').first;
-        return '${c.file.parent.path}/recording_fs320_$ts.bin';
-      });
+    final ts = c.file.path.split('/').last.split('_').last.split('.').first;
+    return '${c.file.parent.path}/recording_fs320_$ts.bin';
+  });
 
   double _computeAccumulatedMinutes(List<Batch> batches) {
-    final finalizedSessionIds =
-        batches.expand((b) => b.finalizedRecordings).map((c) => c.sessionId).whereType<int>().toSet();
+    final finalizedSessionIds = batches
+        .expand((b) => b.finalizedRecordings)
+        .map((c) => c.sessionId)
+        .whereType<int>()
+        .toSet();
 
     // Bins that VAD has already examined and rejected (still on disk for the
     // 48h recovery window). They are no longer "waiting to finalize", so the

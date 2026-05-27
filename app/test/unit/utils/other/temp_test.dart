@@ -13,23 +13,17 @@ void main() {
       expect(result, '10:30 AM');
     });
 
-    test(
-      'should return "Yesterday at [time]" if the message date is yesterday',
-      () {
-        final dateTime = DateTime(2024, 5, 14, 9, 15);
-        final result = formatChatTimestamp(dateTime, now: fixedNow);
-        expect(result, 'Yesterday at 9:15 AM');
-      },
-    );
+    test('should return "Yesterday at [time]" if the message date is yesterday', () {
+      final dateTime = DateTime(2024, 5, 14, 9, 15);
+      final result = formatChatTimestamp(dateTime, now: fixedNow);
+      expect(result, 'Yesterday at 9:15 AM');
+    });
 
-    test(
-      'should return formatted date and time if the message date is older than yesterday',
-      () {
-        final dateTime = DateTime(2024, 5, 13, 16, 45);
-        final result = formatChatTimestamp(dateTime, now: fixedNow);
-        expect(result, 'May 13, 4:45 PM');
-      },
-    );
+    test('should return formatted date and time if the message date is older than yesterday', () {
+      final dateTime = DateTime(2024, 5, 13, 16, 45);
+      final result = formatChatTimestamp(dateTime, now: fixedNow);
+      expect(result, 'May 13, 4:45 PM');
+    });
 
     test('should return formatted date and time for much older dates', () {
       final dateTime = DateTime(2023, 1, 1, 12, 0);

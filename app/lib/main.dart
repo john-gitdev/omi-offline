@@ -82,11 +82,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [ChangeNotifierProvider(create: (_) => DeviceProvider())],
-      child: MaterialApp(
-        title: 'Offline Recorder',
-        theme: ThemeData.dark(),
-        home: const RecordingsPage(),
-      ),
+      child: MaterialApp(title: 'Offline Recorder', theme: ThemeData.dark(), home: const RecordingsPage()),
     );
   }
 }

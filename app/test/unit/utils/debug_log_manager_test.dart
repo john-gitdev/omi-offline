@@ -37,11 +37,12 @@ void main() {
 
     SharedPreferences.setMockInitialValues({'devLogsToFileEnabled': true});
 
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
-            (MethodCall methodCall) async {
-      return null;
-    });
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
+      (MethodCall methodCall) async {
+        return null;
+      },
+    );
 
     await SharedPreferencesUtil.init();
 

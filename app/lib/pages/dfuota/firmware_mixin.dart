@@ -24,9 +24,7 @@ class Manifest {
   final List<ManifestFile> files;
   Manifest({required this.files});
   factory Manifest.fromJson(Map<String, dynamic> json) {
-    return Manifest(
-      files: (json['files'] as List).map((e) => ManifestFile.fromJson(e)).toList(),
-    );
+    return Manifest(files: (json['files'] as List).map((e) => ManifestFile.fromJson(e)).toList());
   }
 }
 
@@ -35,10 +33,7 @@ class ManifestFile {
   final int image;
   ManifestFile({required this.file, required this.image});
   factory ManifestFile.fromJson(Map<String, dynamic> json) {
-    return ManifestFile(
-      file: json['file'],
-      image: int.tryParse(json['image_index']?.toString() ?? '0') ?? 0,
-    );
+    return ManifestFile(file: json['file'], image: int.tryParse(json['image_index']?.toString() ?? '0') ?? 0);
   }
 }
 
@@ -195,8 +190,8 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     updateManager.logger.logMessageStream
         .where((log) => log.level.rawValue > 1) // Filter debug messages
         .listen((log) {
-      Logger.debug('dfu log: ${log.message}');
-    });
+          Logger.debug('dfu log: ${log.message}');
+        });
 
     await updateManager.update(images, configuration: configuration);
   }

@@ -81,10 +81,7 @@ class ForegroundUtil {
           channelImportance: NotificationChannelImportance.LOW,
           priority: NotificationPriority.HIGH,
         ),
-        iosNotificationOptions: const IOSNotificationOptions(
-          showNotification: false,
-          playSound: false,
-        ),
+        iosNotificationOptions: const IOSNotificationOptions(showNotification: false, playSound: false),
         foregroundTaskOptions: ForegroundTaskOptions(
           eventAction: ForegroundTaskEventAction.repeat(60 * 1000 * 5),
           autoRunOnBoot: true,
@@ -113,10 +110,7 @@ class ForegroundUtil {
     try {
       ServiceRequestResult result;
       if (await FlutterForegroundTask.isRunningService) {
-        result = await FlutterForegroundTask.updateService(
-          notificationTitle: title,
-          notificationText: text,
-        );
+        result = await FlutterForegroundTask.updateService(notificationTitle: title, notificationText: text);
       } else {
         result = await FlutterForegroundTask.startService(
           notificationTitle: title,

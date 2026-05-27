@@ -350,8 +350,9 @@ class DeviceProvider extends ChangeNotifier
     final currentTime = now ?? DateTime.now();
     final delta = (_lastNotifiedBatteryLevel - value).abs();
     final batteryNotifyTime = _lastBatteryNotifyTime;
-    final elapsed =
-        batteryNotifyTime == null ? const Duration(minutes: 999) : currentTime.difference(batteryNotifyTime);
+    final elapsed = batteryNotifyTime == null
+        ? const Duration(minutes: 999)
+        : currentTime.difference(batteryNotifyTime);
     final crossedLowBatteryThreshold =
         (value < 20 && _lastNotifiedBatteryLevel >= 20) || (value >= 20 && _lastNotifiedBatteryLevel < 20);
     final shouldNotify =
@@ -446,10 +447,7 @@ class DeviceProvider extends ChangeNotifier
     isConnecting = value;
     if (!_isAppInForeground) {
       if (isConnecting && !isConnected) {
-        ForegroundUtil.updateNotification(
-          title: 'Scanning for Omi device...',
-          text: 'Looking for nearby device...',
-        );
+        ForegroundUtil.updateNotification(title: 'Scanning for Omi device...', text: 'Looking for nearby device...');
       } else if (!isConnecting) {
         ForegroundUtil.updateNotification(
           title: 'Omi is active',
@@ -561,10 +559,7 @@ class DeviceProvider extends ChangeNotifier
         await RecordingsManager.processAllCompletedSessions();
         RecordingsManager.processingProgress.removeListener(onProcessingProgress);
 
-        await ForegroundUtil.updateNotification(
-          title: 'Syncing recordings...',
-          text: 'Finalizing sync...',
-        );
+        await ForegroundUtil.updateNotification(title: 'Syncing recordings...', text: 'Finalizing sync...');
         await walSync.syncAll(progress: _BackgroundSyncProgress());
         SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
       } catch (e) {
@@ -595,14 +590,10 @@ class DeviceProvider extends ChangeNotifier
             isConnected) {
           final missingCount = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
           if (missingCount <= 0) {
-            Logger.debug(
-              'Maximizing battery: disconnecting device after background sync — no segments remaining.',
-            );
+            Logger.debug('Maximizing battery: disconnecting device after background sync — no segments remaining.');
             ServiceManager.instance().device.disconnectDevice(isManual: true);
           } else {
-            Logger.debug(
-              'Maximizing battery: keeping connection — $missingCount segments still remaining after sync.',
-            );
+            Logger.debug('Maximizing battery: keeping connection — $missingCount segments still remaining after sync.');
           }
         }
       }
@@ -875,7 +866,8 @@ class DeviceProvider extends ChangeNotifier
       final log = await conn.getDiagnostics();
       if (log != null) {
         // Only add if it's a new event (different device, cause, or uptime)
-        bool isDuplicate = crashLogs.isNotEmpty &&
+        bool isDuplicate =
+            crashLogs.isNotEmpty &&
             crashLogs.first.deviceId == log.deviceId &&
             crashLogs.first.resetCause == log.resetCause &&
             crashLogs.first.uptimeSeconds == log.uptimeSeconds;
@@ -900,11 +892,13 @@ class DeviceProvider extends ChangeNotifier
 
     if (_pendingAppOpenSync) {
       _pendingAppOpenSync = false;
-      unawaited(Future.delayed(const Duration(seconds: 10), () {
-        if (!_disposed && isConnected) {
-          unawaited(_doBackgroundSync().then((_) => _startBackgroundSyncTimer()));
-        }
-      }));
+      unawaited(
+        Future.delayed(const Duration(seconds: 10), () {
+          if (!_disposed && isConnected) {
+            unawaited(_doBackgroundSync().then((_) => _startBackgroundSyncTimer()));
+          }
+        }),
+      );
     }
   }
 

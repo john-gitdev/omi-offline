@@ -14,19 +14,23 @@ void main() {
       final completer2 = Completer<void>();
 
       // First acquire doesn't block
-      futures.add(mutex.acquire().then((_) {
-        count++;
-        completer1.complete();
-      }));
+      futures.add(
+        mutex.acquire().then((_) {
+          count++;
+          completer1.complete();
+        }),
+      );
 
       await completer1.future;
       expect(count, 1);
 
       // Second acquire should block because first hasn't released
-      futures.add(mutex.acquire().then((_) {
-        count++;
-        completer2.complete();
-      }));
+      futures.add(
+        mutex.acquire().then((_) {
+          count++;
+          completer2.complete();
+        }),
+      );
 
       // Wait a bit to ensure it doesn't run
       await Future.delayed(const Duration(milliseconds: 50));

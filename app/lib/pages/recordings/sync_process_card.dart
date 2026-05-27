@@ -14,13 +14,7 @@ class SyncProcessCard extends StatelessWidget {
   /// Called when the success banner is dismissed.
   final VoidCallback? onDismissTap;
 
-  const SyncProcessCard({
-    super.key,
-    required this.data,
-    this.onActionTap,
-    this.onCancelTap,
-    this.onDismissTap,
-  });
+  const SyncProcessCard({super.key, required this.data, this.onActionTap, this.onCancelTap, this.onDismissTap});
 
   @override
   Widget build(BuildContext context) {
@@ -29,10 +23,7 @@ class SyncProcessCard extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.05),
-        borderRadius: BorderRadius.circular(8),
-      ),
+      decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(8)),
       child: _buildContent(),
     );
   }
@@ -53,19 +44,13 @@ class SyncProcessCard extends StatelessWidget {
         mainText = 'Sync and Process Now';
         subText = 'Syncs files from device and prepares conversations';
         iconBg = Colors.deepPurpleAccent;
-        iconChild = const FaIcon(
-          FontAwesomeIcons.rotate,
-          color: Colors.white,
-          size: 16,
-        );
+        iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
         onIconTap = onActionTap;
         tooltipText = 'Start sync';
 
       case SyncProcessState.syncing:
         mainText = data.isForcePipeline ? 'Force Sync...' : 'Syncing segments';
-        final speedStr = data.syncSpeed > 0
-            ? '  ·  ${data.syncSpeed.toStringAsFixed(1)} KB/s'
-            : '';
+        final speedStr = data.syncSpeed > 0 ? '  ·  ${data.syncSpeed.toStringAsFixed(1)} KB/s' : '';
         subText = data.totalCount > 0
             ? '${data.syncedCount} of ${data.totalCount} segments synced$speedStr'
             : (data.isForcePipeline ? 'Rotating segment…' : 'Scanning device…');
@@ -78,19 +63,15 @@ class SyncProcessCard extends StatelessWidget {
         onIconTap = onCancelTap;
         tooltipText = 'Cancel sync';
         showProgress = true;
-        progressValue = data.totalCount > 0
-            ? (data.syncedCount / data.totalCount).clamp(0.0, 1.0)
-            : null;
+        progressValue = data.totalCount > 0 ? (data.syncedCount / data.totalCount).clamp(0.0, 1.0) : null;
 
       case SyncProcessState.processing:
         mainText = 'Preparing conversations';
         subText = data.isTranscoding
             ? 'Converting to m4a'
             : (data.minutesRemaining >= 1
-                ? '~${data.minutesRemaining.ceil()} min of audio to process'
-                : (data.minutesRemaining >= 0
-                    ? '< 1 min of audio to process'
-                    : 'Calculating…'));
+                  ? '~${data.minutesRemaining.ceil()} min of audio to process'
+                  : (data.minutesRemaining >= 0 ? '< 1 min of audio to process' : 'Calculating…'));
         iconBg = Colors.deepPurpleAccent;
         iconChild = const SizedBox(
           width: 16,
@@ -121,25 +102,15 @@ class SyncProcessCard extends StatelessWidget {
         mainText = 'Resume Sync and Processing';
         subText = 'Last run didn\'t finish';
         iconBg = Colors.amber.shade700;
-        iconChild = const FaIcon(
-          FontAwesomeIcons.rotate,
-          color: Colors.white,
-          size: 16,
-        );
+        iconChild = const FaIcon(FontAwesomeIcons.rotate, color: Colors.white, size: 16);
         onIconTap = onActionTap;
         tooltipText = 'Resume';
 
       case SyncProcessState.error:
-        mainText = data.lastActiveStage == 'processing'
-            ? 'Processing failed'
-            : 'Sync failed';
+        mainText = data.lastActiveStage == 'processing' ? 'Processing failed' : 'Sync failed';
         subText = 'Tap to retry';
         iconBg = Colors.redAccent;
-        iconChild = const FaIcon(
-          FontAwesomeIcons.circleExclamation,
-          color: Colors.white,
-          size: 16,
-        );
+        iconChild = const FaIcon(FontAwesomeIcons.circleExclamation, color: Colors.white, size: 16);
         onIconTap = onActionTap;
         tooltipText = 'Retry';
 
@@ -147,11 +118,7 @@ class SyncProcessCard extends StatelessWidget {
         mainText = 'Conversations ready';
         subText = 'Sync and processing complete';
         iconBg = Colors.green.shade600;
-        iconChild = const FaIcon(
-          FontAwesomeIcons.circleCheck,
-          color: Colors.white,
-          size: 16,
-        );
+        iconChild = const FaIcon(FontAwesomeIcons.circleCheck, color: Colors.white, size: 16);
         onIconTap = onDismissTap;
         tooltipText = 'Dismiss';
         showProgress = true;
@@ -170,16 +137,10 @@ class SyncProcessCard extends StatelessWidget {
                 children: [
                   Text(
                     mainText,
-                    style: TextStyle(
-                      color: Colors.grey.shade400,
-                      fontWeight: FontWeight.w500,
-                    ),
+                    style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500),
                   ),
                   const SizedBox(height: 2),
-                  Text(
-                    subText,
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
-                  ),
+                  Text(subText, style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
                 ],
               ),
             ),
@@ -195,11 +156,7 @@ class SyncProcessCard extends StatelessWidget {
                   clipBehavior: Clip.antiAlias,
                   child: InkWell(
                     onTap: onIconTap,
-                    child: SizedBox(
-                      width: 40,
-                      height: 40,
-                      child: Center(child: iconChild),
-                    ),
+                    child: SizedBox(width: 40, height: 40, child: Center(child: iconChild)),
                   ),
                 ),
               ),
@@ -208,11 +165,7 @@ class SyncProcessCard extends StatelessWidget {
         ),
         if (showProgress) ...[
           const SizedBox(height: 8),
-          LinearProgressIndicator(
-            value: progressValue,
-            backgroundColor: Colors.grey.shade800,
-            color: progressColor,
-          ),
+          LinearProgressIndicator(value: progressValue, backgroundColor: Colors.grey.shade800, color: progressColor),
         ],
       ],
     );

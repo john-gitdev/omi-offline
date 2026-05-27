@@ -9,18 +9,12 @@ import 'package:omi/services/omi_api_client.dart';
 void main() {
   group('OmiApiClient testConnection', () {
     test('returns false when refreshToken is empty', () async {
-      final result = await OmiApiClient.testConnection(
-        refreshToken: '',
-        apiKey: 'test_key',
-      );
+      final result = await OmiApiClient.testConnection(refreshToken: '', apiKey: 'test_key');
       expect(result, isFalse);
     });
 
     test('returns false when apiKey is empty', () async {
-      final result = await OmiApiClient.testConnection(
-        refreshToken: 'test_token',
-        apiKey: '',
-      );
+      final result = await OmiApiClient.testConnection(refreshToken: 'test_token', apiKey: '');
       expect(result, isFalse);
     });
 
@@ -30,10 +24,7 @@ void main() {
       });
 
       await http.runWithClient(() async {
-        final result = await OmiApiClient.testConnection(
-          refreshToken: 'test_token',
-          apiKey: 'test_key',
-        );
+        final result = await OmiApiClient.testConnection(refreshToken: 'test_token', apiKey: 'test_key');
         expect(result, isTrue);
       }, () => mockClient);
     });
@@ -44,10 +35,7 @@ void main() {
       });
 
       await http.runWithClient(() async {
-        final result = await OmiApiClient.testConnection(
-          refreshToken: 'test_token',
-          apiKey: 'test_key',
-        );
+        final result = await OmiApiClient.testConnection(refreshToken: 'test_token', apiKey: 'test_key');
         expect(result, isFalse);
       }, () => mockClient);
     });
@@ -58,10 +46,7 @@ void main() {
       });
 
       await http.runWithClient(() async {
-        final result = await OmiApiClient.testConnection(
-          refreshToken: 'test_token',
-          apiKey: 'test_key',
-        );
+        final result = await OmiApiClient.testConnection(refreshToken: 'test_token', apiKey: 'test_key');
         expect(result, isFalse);
       }, () => mockClient);
     });
@@ -72,10 +57,7 @@ void main() {
       });
 
       await http.runWithClient(() async {
-        final result = await OmiApiClient.testConnection(
-          refreshToken: 'test_token',
-          apiKey: 'test_key',
-        );
+        final result = await OmiApiClient.testConnection(refreshToken: 'test_token', apiKey: 'test_key');
         expect(result, isFalse);
       }, () => mockClient);
     });
@@ -86,10 +68,7 @@ void main() {
       });
 
       await http.runWithClient(() async {
-        final result = await OmiApiClient.testConnection(
-          refreshToken: 'test_token',
-          apiKey: 'test_key',
-        );
+        final result = await OmiApiClient.testConnection(refreshToken: 'test_token', apiKey: 'test_key');
         expect(result, isFalse);
       }, () => mockClient);
     });

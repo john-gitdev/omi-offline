@@ -14,11 +14,7 @@ class WavBytes {
   WavBytes._(this._pcmData, this._sampleRate, this._numChannels);
 
   /// Create a WAV bytes object from PCM data
-  factory WavBytes.fromPcm(
-    Uint8List pcmData, {
-    required int sampleRate,
-    required int numChannels,
-  }) {
+  factory WavBytes.fromPcm(Uint8List pcmData, {required int sampleRate, required int numChannels}) {
     return WavBytes._(pcmData, sampleRate, numChannels);
   }
 
@@ -131,11 +127,7 @@ class WavBytesUtil {
       }
     }
 
-    return WavBytes.fromPcm(
-      Uint8List.fromList(pcmData),
-      sampleRate: 16000,
-      numChannels: 1,
-    ).asBytes();
+    return WavBytes.fromPcm(Uint8List.fromList(pcmData), sampleRate: 16000, numChannels: 1).asBytes();
   }
 
   Uint8List getUInt8ListBytes() {

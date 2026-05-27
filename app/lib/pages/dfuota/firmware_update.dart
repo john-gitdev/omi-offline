@@ -436,8 +436,8 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
                     widget.isRollback
                         ? 'Install Stable Firmware'
                         : otaUpdateSteps.isEmpty
-                            ? 'Install Update'
-                            : 'Update Now',
+                        ? 'Install Update'
+                        : 'Update Now',
                     style: const TextStyle(color: Colors.black, fontSize: 17, fontWeight: FontWeight.w600),
                   ),
                 ],
@@ -455,10 +455,7 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildSectionHeader(
-          widget.isRollback ? 'Stable Firmware' : 'Checking for updates...',
-          subtitle: 'Please wait',
-        ),
+        _buildSectionHeader(widget.isRollback ? 'Stable Firmware' : 'Checking for updates...', subtitle: 'Please wait'),
         Container(
           decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(20)),
           child: Padding(
@@ -516,10 +513,10 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
             child: isLoading
                 ? _buildLoadingSection()
                 : isDownloading || isInstalling
-                    ? _buildProgressSection()
-                    : isInstalled
-                        ? _buildSuccessSection()
-                        : _buildUpdateSection(),
+                ? _buildProgressSection()
+                : isInstalled
+                ? _buildSuccessSection()
+                : _buildUpdateSection(),
           ),
         ),
       ),

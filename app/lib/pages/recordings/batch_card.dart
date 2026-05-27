@@ -113,11 +113,7 @@ class MarkerSubEntry extends StatelessWidget {
         padding: const EdgeInsets.only(left: 16, top: 6, bottom: 6, right: 4),
         child: Row(
           children: [
-            FaIcon(
-              FontAwesomeIcons.solidBookmark,
-              color: mc.isPending ? Colors.grey.shade600 : Colors.amber,
-              size: 11,
-            ),
+            FaIcon(FontAwesomeIcons.solidBookmark, color: mc.isPending ? Colors.grey.shade600 : Colors.amber, size: 11),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
@@ -165,8 +161,9 @@ class ConversationTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final sortedMarkers = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
     final isPassthrough = conversation.passthrough;
-    final subtitle =
-        isPassthrough ? conversation.durationLabel : '${conversation.durationLabel}  ·  ${conversation.sizeLabel}';
+    final subtitle = isPassthrough
+        ? conversation.durationLabel
+        : '${conversation.durationLabel}  ·  ${conversation.sizeLabel}';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -199,10 +196,7 @@ class ConversationTile extends StatelessWidget {
                         ],
                       ),
                       const SizedBox(height: 3),
-                      Text(
-                        subtitle,
-                        style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-                      ),
+                      Text(subtitle, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
                     ],
                   ),
                 ),
@@ -218,8 +212,10 @@ class ConversationTile extends StatelessWidget {
           ),
         ),
         if (!isPassthrough)
-          ...sortedMarkers.map((mc) =>
-              MarkerSubEntry(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
+          ...sortedMarkers.map(
+            (mc) =>
+                MarkerSubEntry(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc)),
+          ),
       ],
     );
   }
@@ -239,8 +235,7 @@ class GhostRow extends StatelessWidget {
 
   const GhostRow({super.key, required this.discard, required this.onTap});
 
-  static String _hourMin(DateTime t) =>
-      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+  static String _hourMin(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
   static String _durationLabel(Duration d) {
     final h = d.inHours;
@@ -268,17 +263,10 @@ class GhostRow extends StatelessWidget {
                 children: [
                   Text(
                     timeRange,
-                    style: TextStyle(
-                      color: Colors.grey.shade600,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w400,
-                    ),
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 15, fontWeight: FontWeight.w400),
                   ),
                   const SizedBox(height: 3),
-                  Text(
-                    '$subLabel  ·  $dur',
-                    style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
-                  ),
+                  Text('$subLabel  ·  $dur', style: TextStyle(color: Colors.grey.shade700, fontSize: 12)),
                 ],
               ),
             ),
@@ -298,8 +286,7 @@ Future<void> showDiscardSheet(
 }) async {
   String two(int n) => n.toString().padLeft(2, '0');
   String fmtTime(DateTime t) => '${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
-  String fmtAbs(DateTime t) =>
-      '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
+  String fmtAbs(DateTime t) => '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
   await showModalBottomSheet<void>(
     context: context,
     backgroundColor: const Color(0xFF1C1C1E),
@@ -423,18 +410,15 @@ class BatchCard extends StatelessWidget {
         ? switch (filterMode) {
             RecordingFilterMode.visible =>
               batch.discards.where((d) => d.duration.inSeconds >= minFilterSeconds).toList(),
-            RecordingFilterMode.hidden =>
-              batch.discards.where((d) => d.duration.inSeconds < minFilterSeconds).toList(),
+            RecordingFilterMode.hidden => batch.discards.where((d) => d.duration.inSeconds < minFilterSeconds).toList(),
             RecordingFilterMode.all => [...batch.discards],
           }
         : [...batch.discards];
     if (filtered.isEmpty && discards.isEmpty) return const SizedBox.shrink();
 
     // Time-sorted (newest first) merge of recordings and ghosts.
-    final items = <_Row>[
-      for (final c in filtered) _Row.recording(c),
-      for (final d in discards) _Row.ghost(d),
-    ]..sort((a, b) => b.startTime.compareTo(a.startTime));
+    final items = <_Row>[for (final c in filtered) _Row.recording(c), for (final d in discards) _Row.ghost(d)]
+      ..sort((a, b) => b.startTime.compareTo(a.startTime));
 
     return Card(
       color: const Color(0xFF1C1C1E),
@@ -456,12 +440,7 @@ class BatchCard extends StatelessWidget {
                 return GhostRow(
                   key: ValueKey('ghost_${d.id}'),
                   discard: d,
-                  onTap: () => showDiscardSheet(
-                    context,
-                    d,
-                    onRecover: onRecoverDiscard,
-                    onDeleteNow: onDeleteDiscard,
-                  ),
+                  onTap: () => showDiscardSheet(context, d, onRecover: onRecoverDiscard, onDeleteNow: onDeleteDiscard),
                 );
               }
               final c = r.recording!;

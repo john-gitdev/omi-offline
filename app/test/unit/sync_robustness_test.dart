@@ -7,6 +7,7 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
+import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:flutter/services.dart';
@@ -27,14 +28,7 @@ List<int> ackPacket(int result) => [0x03, result];
 
 /// Builds a PACKET_DATA: [0x01][offset LE 4B][payload]
 List<int> dataPacket(int offset, List<int> payload) {
-  return [
-    0x01,
-    offset & 0xFF,
-    (offset >> 8) & 0xFF,
-    (offset >> 16) & 0xFF,
-    (offset >> 24) & 0xFF,
-    ...payload,
-  ];
+  return [0x01, offset & 0xFF, (offset >> 8) & 0xFF, (offset >> 16) & 0xFF, (offset >> 24) & 0xFF, ...payload];
 }
 
 /// Builds a PACKET_EOT: [0x02]
@@ -105,6 +99,12 @@ class MockDeviceConnection implements DeviceConnection {
   Future<DeviceCrashLog?> performGetDiagnostics() async => null;
 
   @override
+  Future<DeviceDropStats?> getDropStats() async => null;
+
+  @override
+  Future<DeviceDropStats?> performGetDropStats() async => null;
+
+  @override
   Future<bool> deleteFile(StorageFile file, {int? timestamp}) async => true;
 
   List<StorageFile> files = [];
@@ -122,11 +122,8 @@ class MockDeviceConnection implements DeviceConnection {
   Future<bool> isConnected() async => true;
 
   @override
-  Future<StorageFileStats?> getStorageFileStats() async => StorageFileStats(
-        totalUsedBytes: 0,
-        fileCount: files.length,
-        freeBytes: 1000000,
-      );
+  Future<StorageFileStats?> getStorageFileStats() async =>
+      StorageFileStats(totalUsedBytes: 0, fileCount: files.length, freeBytes: 1000000);
 
   @override
   DeviceTransport get transport => throw UnimplementedError();
@@ -135,7 +132,10 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   DeviceConnectionState get status => DeviceConnectionState.connected;
   @override
-  Future<void> connect({void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged, bool requiresBond = false}) async {}
+  Future<void> connect({
+    void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged,
+    bool requiresBond = false,
+  }) async {}
   @override
   Future<void> disconnect({bool isManual = true}) async {}
   @override
@@ -163,13 +163,22 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<int?> getMicGain() async => null;
   @override
-  Future<StreamSubscription<List<int>>?> getBleBatteryLevelListener({void Function(int)? onBatteryLevelChange, void Function(bool)? onChargingStateChange}) async => null;
+  Future<StreamSubscription<List<int>>?> getBleBatteryLevelListener({
+    void Function(int)? onBatteryLevelChange,
+    void Function(bool)? onChargingStateChange,
+  }) async => null;
   @override
-  Future<StreamSubscription<List<int>>?> getBleButtonListener({required void Function(List<int>) onButtonReceived}) async => null;
+  Future<StreamSubscription<List<int>>?> getBleButtonListener({
+    required void Function(List<int>) onButtonReceived,
+  }) async => null;
   @override
   Future<List<int>> getStorageList() async => [];
   @override
-  Future<StreamSubscription<List<int>>?> getBleStorageBytesListener({required void Function(List<int>) onStorageBytesReceived, Function? onError, void Function()? onDone}) async => null;
+  Future<StreamSubscription<List<int>>?> getBleStorageBytesListener({
+    required void Function(List<int>) onStorageBytesReceived,
+    Function? onError,
+    void Function()? onDone,
+  }) async => null;
 
   @override
   Future<BtDevice> performGetDeviceInfo(DeviceConnection? connection) => throw UnimplementedError();
@@ -180,17 +189,23 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<bool> performRetrieveChargingState() => throw UnimplementedError();
   @override
-  Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({void Function(int)? onBatteryLevelChange, void Function(bool)? onChargingStateChange}) => throw UnimplementedError();
+  Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({
+    void Function(int)? onBatteryLevelChange,
+    void Function(bool)? onChargingStateChange,
+  }) => throw UnimplementedError();
   @override
   Future<List<int>> performGetButtonState() => throw UnimplementedError();
   @override
   Future<BleAudioCodec> performGetAudioCodec() => throw UnimplementedError();
   @override
-  Future<StreamSubscription<List<int>>?> performGetBleButtonListener({required void Function(List<int>) onButtonReceived}) => throw UnimplementedError();
+  Future<StreamSubscription<List<int>>?> performGetBleButtonListener({
+    required void Function(List<int>) onButtonReceived,
+  }) => throw UnimplementedError();
   @override
   Future<List<int>> performGetStorageList() => throw UnimplementedError();
   @override
-  Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp}) => throw UnimplementedError();
+  Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp}) =>
+      throw UnimplementedError();
   @override
   Future<int> performGetFeatures() => throw UnimplementedError();
   @override
@@ -242,10 +257,12 @@ void main() {
   setUp(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
-      const MethodChannel('disk_space_2'), (call) async => 1000.0,
+      const MethodChannel('disk_space_2'),
+      (call) async => 1000.0,
     );
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
-      const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'), (call) async => null,
+      const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
+      (call) async => null,
     );
     tempDir = Directory.systemTemp.createTempSync('sync_test');
     mockPathProvider = MockPathProvider()..tempPath = tempDir.path;
@@ -279,10 +296,15 @@ void main() {
     }
 
     Wal makeWal({int totalBytes = 10, int walOffset = 0}) => Wal(
-          codec: BleAudioCodec.opus, channel: 1, device: 'test-device',
-          fileNum: 1, walOffset: walOffset, storageTotalBytes: totalBytes,
-          timerStart: 0, storage: WalStorage.sdcard,
-        );
+      codec: BleAudioCodec.opus,
+      channel: 1,
+      device: 'test-device',
+      fileNum: 1,
+      walOffset: walOffset,
+      storageTotalBytes: totalBytes,
+      timerStart: 0,
+      storage: WalStorage.sdcard,
+    );
 
     setUp(() async {
       mockConn = MockDeviceConnection();
@@ -340,7 +362,7 @@ void main() {
       globalWriteCount = 0;
       mockConn.files = [
         StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 3000000),
-        StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 1000000)
+        StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 1000000),
       ];
       await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       await pump(10);
@@ -380,7 +402,7 @@ void main() {
       globalWriteCount = 0;
       mockConn.files = [
         StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 3000000),
-        StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 1000000)
+        StorageFile(index: 2, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 1000000),
       ];
       await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
       await pump(10);

@@ -175,9 +175,9 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
   }
 
   Future<void> _openOmiLogin({bool fallback = false}) async {
-    final result = await Navigator.of(context).push<Map<String, String>>(
-      MaterialPageRoute(builder: (_) => OmiLoginWebView(startFallback: fallback)),
-    );
+    final result = await Navigator.of(
+      context,
+    ).push<Map<String, String>>(MaterialPageRoute(builder: (_) => OmiLoginWebView(startFallback: fallback)));
 
     if (result != null) {
       final rt = result['refreshToken']!;
@@ -241,13 +241,22 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
         );
       case _ConnectionState.connected:
         return Container(
-            width: 10, height: 10, decoration: const BoxDecoration(color: Colors.green, shape: BoxShape.circle));
+          width: 10,
+          height: 10,
+          decoration: const BoxDecoration(color: Colors.green, shape: BoxShape.circle),
+        );
       case _ConnectionState.error:
         return Container(
-            width: 10, height: 10, decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle));
+          width: 10,
+          height: 10,
+          decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
+        );
       case _ConnectionState.idle:
         return Container(
-            width: 10, height: 10, decoration: BoxDecoration(color: Colors.grey.shade600, shape: BoxShape.circle));
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(color: Colors.grey.shade600, shape: BoxShape.circle),
+        );
     }
   }
 
@@ -314,10 +323,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             trailingWidget: _omiState == _ConnectionState.connected
                 ? Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade800,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
+                    decoration: BoxDecoration(color: Colors.grey.shade800, borderRadius: BorderRadius.circular(6)),
                     child: Text(
                       _prefs.omiConnectedViaFallback ? 'Web App' : 'Direct',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 11),
@@ -335,24 +341,26 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
-                    child: const Text('Log in with Omi',
-                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    child: const Text(
+                      'Log in with Omi',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 8),
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton(
-                    onPressed: _omiState == _ConnectionState.checking
-                        ? null
-                        : () => _openOmiLogin(fallback: true),
+                    onPressed: _omiState == _ConnectionState.checking ? null : () => _openOmiLogin(fallback: true),
                     style: OutlinedButton.styleFrom(
                       side: BorderSide(color: Colors.grey.shade600),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
-                    child: Text('Log in via app.omi.me',
-                        style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.bold)),
+                    child: Text(
+                      'Log in via app.omi.me',
+                      style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.bold),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -369,10 +377,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               if (_omiState == _ConnectionState.connected) ...[
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF2C2C2E),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+                  decoration: BoxDecoration(color: const Color(0xFF2C2C2E), borderRadius: BorderRadius.circular(10)),
                   child: Row(
                     children: [
                       const Icon(Icons.account_circle_outlined, color: Colors.grey, size: 18),
@@ -397,7 +402,10 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
-                    child: const Text('Log out', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                    child: const Text(
+                      'Log out',
+                      style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold),
+                    ),
                   ),
                 ),
                 Center(
@@ -476,10 +484,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     final isConnected = state == _ConnectionState.connected;
 
     return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFF1C1C1E),
-        borderRadius: BorderRadius.circular(16),
-      ),
+      decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(16)),
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -523,10 +528,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('Auto-Upload', style: TextStyle(color: Colors.white, fontSize: 14)),
-            subtitle: Text(
-              subtitle,
-              style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-            ),
+            subtitle: Text(subtitle, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
             value: autoUpload,
             activeThumbColor: Colors.deepPurpleAccent,
             onChanged: isChecking || !isConnected || !enabled ? null : onAutoUploadChanged,
@@ -551,17 +553,10 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
         hintStyle: TextStyle(color: Colors.grey.shade600, fontSize: 14),
         filled: true,
         fillColor: const Color(0xFF2C2C2E),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide.none,
-        ),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         suffixIcon: IconButton(
-          icon: FaIcon(
-            obscured ? FontAwesomeIcons.eye : FontAwesomeIcons.eyeSlash,
-            size: 14,
-            color: Colors.grey,
-          ),
+          icon: FaIcon(obscured ? FontAwesomeIcons.eye : FontAwesomeIcons.eyeSlash, size: 14, color: Colors.grey),
           onPressed: onToggleObscure,
           tooltip: obscured ? 'Show API key' : 'Hide API key',
         ),

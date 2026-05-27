@@ -190,8 +190,9 @@ abstract class DeviceConnection {
     return null;
   }
 
-  Future<StreamSubscription<List<int>>?> getBleButtonListener(
-      {required void Function(List<int>) onButtonReceived}) async {
+  Future<StreamSubscription<List<int>>?> getBleButtonListener({
+    required void Function(List<int>) onButtonReceived,
+  }) async {
     if (await isConnected()) return performGetBleButtonListener(onButtonReceived: onButtonReceived);
     return null;
   }
@@ -223,8 +224,9 @@ abstract class DeviceConnection {
   });
   Future<List<int>> performGetButtonState();
   Future<BleAudioCodec> performGetAudioCodec();
-  Future<StreamSubscription<List<int>>?> performGetBleButtonListener(
-      {required void Function(List<int>) onButtonReceived});
+  Future<StreamSubscription<List<int>>?> performGetBleButtonListener({
+    required void Function(List<int>) onButtonReceived,
+  });
   Future<List<int>> performGetStorageList();
   Future<bool> performWriteToStorage(int numFile, int command, int offset, {int? timestamp});
   Future<int> performGetFeatures();

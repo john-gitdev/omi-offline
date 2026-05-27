@@ -233,9 +233,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
         child: InkWell(
           onTap: () {
             Clipboard.setData(ClipboardData(text: copyValue));
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('$title copied to clipboard')));
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$title copied to clipboard')));
           },
           child: content,
         ),
@@ -295,12 +293,11 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               );
               if (result != null && result.files.single.path != null) {
                 if (mounted) {
-                  Navigator.of(context).push(MaterialPageRoute(
-                    builder: (c) => FirmwareUpdate(
-                      device: device,
-                      localZipPath: result.files.single.path,
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (c) => FirmwareUpdate(device: device, localZipPath: result.files.single.path),
                     ),
-                  ));
+                  );
                 }
               } else {
                 provider.setOnFirmwareUpdatePage(false);
@@ -858,8 +855,12 @@ class _DeviceSettingsState extends State<DeviceSettings> {
             height: 64,
             decoration: BoxDecoration(color: const Color(0xFF2A2A2E), borderRadius: BorderRadius.circular(16)),
             child: Center(
-                child: FaIcon(!isBluetoothEnabled ? FontAwesomeIcons.bluetooth : FontAwesomeIcons.linkSlash,
-                    color: Colors.grey.shade500, size: 24)),
+              child: FaIcon(
+                !isBluetoothEnabled ? FontAwesomeIcons.bluetooth : FontAwesomeIcons.linkSlash,
+                color: Colors.grey.shade500,
+                size: 24,
+              ),
+            ),
           ),
           const SizedBox(height: 20),
           Text(

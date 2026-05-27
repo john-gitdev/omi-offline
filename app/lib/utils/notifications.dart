@@ -4,19 +4,15 @@ class NotificationsService {
   static const _channelKey = 'device_alerts';
 
   static Future<void> initialize() async {
-    await AwesomeNotifications().initialize(
-      null,
-      [
-        NotificationChannel(
-          channelKey: _channelKey,
-          channelName: 'Device Alerts',
-          channelDescription: 'Notifications about device recording status.',
-          importance: NotificationImportance.High,
-          defaultPrivacy: NotificationPrivacy.Public,
-        ),
-      ],
-      debug: false,
-    );
+    await AwesomeNotifications().initialize(null, [
+      NotificationChannel(
+        channelKey: _channelKey,
+        channelName: 'Device Alerts',
+        channelDescription: 'Notifications about device recording status.',
+        importance: NotificationImportance.High,
+        defaultPrivacy: NotificationPrivacy.Public,
+      ),
+    ], debug: false);
 
     final allowed = await AwesomeNotifications().isNotificationAllowed();
     if (!allowed) {

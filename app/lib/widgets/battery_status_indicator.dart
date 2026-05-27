@@ -12,12 +12,7 @@ class BatteryStatusIndicator extends StatefulWidget {
   final bool isCharging;
   final VoidCallback? onTap;
 
-  const BatteryStatusIndicator({
-    super.key,
-    required this.batteryLevel,
-    required this.isCharging,
-    this.onTap,
-  });
+  const BatteryStatusIndicator({super.key, required this.batteryLevel, required this.isCharging, this.onTap});
 
   @override
   State<BatteryStatusIndicator> createState() => _BatteryStatusIndicatorState();
@@ -62,10 +57,10 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
   }
 
   Widget _dot() => Container(
-        width: 12,
-        height: 12,
-        decoration: BoxDecoration(color: _dotColor, shape: BoxShape.circle),
-      );
+    width: 12,
+    height: 12,
+    decoration: BoxDecoration(color: _dotColor, shape: BoxShape.circle),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -92,10 +87,8 @@ class _BatteryStatusIndicatorState extends State<BatteryStatusIndicator> with Si
                 if (widget.isCharging)
                   AnimatedBuilder(
                     animation: _blinkController,
-                    builder: (context, child) => Opacity(
-                      opacity: _blinkController.value < 0.5 ? 1.0 : 0.0,
-                      child: child,
-                    ),
+                    builder: (context, child) =>
+                        Opacity(opacity: _blinkController.value < 0.5 ? 1.0 : 0.0, child: child),
                     child: _dot(),
                   )
                 else

@@ -39,7 +39,8 @@ class AccumulatingBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     if (spState == SyncProcessState.syncing ||
         spState == SyncProcessState.processing ||
-        spState == SyncProcessState.stopping) return const SizedBox.shrink();
+        spState == SyncProcessState.stopping)
+      return const SizedBox.shrink();
     if (accumulatedMinutes < (1.0 / 60.0)) return const SizedBox.shrink();
 
     final totalSeconds = (accumulatedMinutes * 60).round();
@@ -52,10 +53,7 @@ class AccumulatingBanner extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.05),
-        borderRadius: BorderRadius.circular(8),
-      ),
+      decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(8)),
       child: Row(
         children: [
           Expanded(
@@ -67,10 +65,7 @@ class AccumulatingBanner extends StatelessWidget {
                   style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500),
                 ),
                 const SizedBox(height: 2),
-                Text(
-                  label,
-                  style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
-                ),
+                Text(label, style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
               ],
             ),
           ),

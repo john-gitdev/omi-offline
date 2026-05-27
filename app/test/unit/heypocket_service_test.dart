@@ -39,8 +39,7 @@ void main() {
         expect(
           () => HeyPocketService.testConnection('test_key'),
           throwsA(
-            isA<HeyPocketException>()
-                .having((e) => e.message, 'message', 'Connection timed out — check your network'),
+            isA<HeyPocketException>().having((e) => e.message, 'message', 'Connection timed out — check your network'),
           ),
         );
       }, () => mockClient);
@@ -54,10 +53,7 @@ void main() {
       await http.runWithClient(() async {
         expect(
           () => HeyPocketService.testConnection('test_key'),
-          throwsA(
-            isA<HeyPocketException>()
-                .having((e) => e.message, 'message', 'No network connection'),
-          ),
+          throwsA(isA<HeyPocketException>().having((e) => e.message, 'message', 'No network connection')),
         );
       }, () => mockClient);
     });
@@ -70,10 +66,7 @@ void main() {
       await http.runWithClient(() async {
         expect(
           () => HeyPocketService.testConnection('test_key'),
-          throwsA(
-            isA<HeyPocketException>()
-                .having((e) => e.message, 'message', 'Connection failed'),
-          ),
+          throwsA(isA<HeyPocketException>().having((e) => e.message, 'message', 'Connection failed')),
         );
       }, () => mockClient);
     });

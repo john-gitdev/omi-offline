@@ -58,9 +58,7 @@ class DeviceService implements IDeviceService {
   DeviceServiceStatus _status = DeviceServiceStatus.init;
   List<BtDevice> _devices = [];
 
-  final List<DeviceDiscoverer> _discoverers = [
-    NativeBluetoothDiscoverer(),
-  ];
+  final List<DeviceDiscoverer> _discoverers = [NativeBluetoothDiscoverer()];
 
   final Map<Object, IDeviceServiceSubscription> _subscriptions = {};
 
@@ -156,7 +154,10 @@ class DeviceService implements IDeviceService {
 
     if (_connection != null) {
       try {
-        await _connection!.connect(onConnectionStateChanged: onDeviceConnectionStateChanged, requiresBond: requiresBond);
+        await _connection!.connect(
+          onConnectionStateChanged: onDeviceConnectionStateChanged,
+          requiresBond: requiresBond,
+        );
       } catch (e) {
         Logger.debug('[DeviceService] Connection attempt failed for $id: $e');
         rethrow;
@@ -211,7 +212,11 @@ class DeviceService implements IDeviceService {
 
   void onDeviceConnectionStateChanged(String deviceId, DeviceConnectionState state, {bool isManual = false}) {
     Logger.debug("device connection state changed...$deviceId...$state (isManual: $isManual)");
-    DebugLogManager.logEvent('device_connection_state', {'device_id': deviceId, 'state': state.name, 'is_manual': isManual});
+    DebugLogManager.logEvent('device_connection_state', {
+      'device_id': deviceId,
+      'state': state.name,
+      'is_manual': isManual,
+    });
     for (var s in _subscriptions.values) {
       s.onDeviceConnectionStateChanged(deviceId, state, isManual: isManual);
     }

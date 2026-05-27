@@ -22,11 +22,7 @@ class MarkerTile extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
         child: Row(
           children: [
-            FaIcon(
-              FontAwesomeIcons.solidBookmark,
-              color: mc.isPending ? Colors.grey.shade600 : Colors.amber,
-              size: 14,
-            ),
+            FaIcon(FontAwesomeIcons.solidBookmark, color: mc.isPending ? Colors.grey.shade600 : Colors.amber, size: 14),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -41,10 +37,7 @@ class MarkerTile extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 3),
-                  Text(
-                    'Marker at ${mc.markerTimeLabel}',
-                    style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-                  ),
+                  Text('Marker at ${mc.markerTimeLabel}', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
                 ],
               ),
             ),
@@ -91,7 +84,10 @@ class MarkerDayCard extends StatelessWidget {
               style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
-            ...sorted.map((mc) => MarkerTile(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
+            ...sorted.map(
+              (mc) =>
+                  MarkerTile(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc)),
+            ),
           ],
         ),
       ),

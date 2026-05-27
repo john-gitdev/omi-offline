@@ -217,8 +217,10 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<StorageFileStats?> performGetStorageFileStats() async {
     try {
-      final data =
-          await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
+      final data = await transport.readCharacteristic(
+        storageDataStreamServiceUuid,
+        storageReadControlCharacteristicUuid,
+      );
       if (data.length >= 8) {
         return StorageFileStats(
           totalUsedBytes: data.getUint32LittleEndian(0),
@@ -273,8 +275,10 @@ class OmiDeviceConnection extends DeviceConnection {
 
     // Charging stream from custom service
     try {
-      final chargingStream =
-          await transport.getCharacteristicStream(batteryDetailServiceUuid, batteryDetailCharacteristicUuid);
+      final chargingStream = await transport.getCharacteristicStream(
+        batteryDetailServiceUuid,
+        batteryDetailCharacteristicUuid,
+      );
       await _chargingSubscription?.cancel();
       _chargingSubscription = chargingStream.listen((v) {
         if (v.isNotEmpty && onChargingStateChange != null) onChargingStateChange(v[0] == 1);
@@ -333,8 +337,10 @@ class OmiDeviceConnection extends DeviceConnection {
   @override
   Future<List<int>> performGetStorageList() async {
     try {
-      final data =
-          await transport.readCharacteristic(storageDataStreamServiceUuid, storageReadControlCharacteristicUuid);
+      final data = await transport.readCharacteristic(
+        storageDataStreamServiceUuid,
+        storageReadControlCharacteristicUuid,
+      );
       List<int> result = [];
       for (int i = 0; i < (data.length ~/ 4); i++) {
         result.add(data.getUint32LittleEndian(i * 4));
@@ -358,15 +364,13 @@ class OmiDeviceConnection extends DeviceConnection {
       ];
       if (command == 0x11 && timestamp != null) {
         // Extended CMD_READ_FILE: [0x11][index][offset:4LE][timestamp:4LE]
-        cmd.addAll([
-          timestamp & 0xFF,
-          (timestamp >> 8) & 0xFF,
-          (timestamp >> 16) & 0xFF,
-          (timestamp >> 24) & 0xFF,
-        ]);
+        cmd.addAll([timestamp & 0xFF, (timestamp >> 8) & 0xFF, (timestamp >> 16) & 0xFF, (timestamp >> 24) & 0xFF]);
       }
       await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, Uint8List.fromList(cmd));
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+        Uint8List.fromList(cmd),
+      );
       return true;
     } catch (_) {
       return false;
@@ -439,27 +443,37 @@ class OmiDeviceConnection extends DeviceConnection {
     try {
       String? model, fw, hw, manuf, sn;
       try {
-        model =
-            String.fromCharCodes(await transport.readCharacteristic(disServiceUuid, disModelNumberCharacteristicUuid));
+        model = String.fromCharCodes(
+          await transport.readCharacteristic(disServiceUuid, disModelNumberCharacteristicUuid),
+        );
       } catch (_) {}
       try {
         fw = String.fromCharCodes(
-            await transport.readCharacteristic(disServiceUuid, disFirmwareRevisionCharacteristicUuid));
+          await transport.readCharacteristic(disServiceUuid, disFirmwareRevisionCharacteristicUuid),
+        );
       } catch (_) {}
       try {
         hw = String.fromCharCodes(
-            await transport.readCharacteristic(disServiceUuid, disHardwareRevisionCharacteristicUuid));
+          await transport.readCharacteristic(disServiceUuid, disHardwareRevisionCharacteristicUuid),
+        );
       } catch (_) {}
       try {
         manuf = String.fromCharCodes(
-            await transport.readCharacteristic(disServiceUuid, disManufacturerNameCharacteristicUuid));
+          await transport.readCharacteristic(disServiceUuid, disManufacturerNameCharacteristicUuid),
+        );
       } catch (_) {}
       try {
-        sn =
-            String.fromCharCodes(await transport.readCharacteristic(disServiceUuid, disSerialNumberCharacteristicUuid));
+        sn = String.fromCharCodes(
+          await transport.readCharacteristic(disServiceUuid, disSerialNumberCharacteristicUuid),
+        );
       } catch (_) {}
       return device.copyWith(
-          modelNumber: model, firmwareRevision: fw, hardwareRevision: hw, manufacturerName: manuf, serialNumber: sn);
+        modelNumber: model,
+        firmwareRevision: fw,
+        hardwareRevision: hw,
+        manufacturerName: manuf,
+        serialNumber: sn,
+      );
     } catch (_) {
       return device;
     }
@@ -494,8 +508,10 @@ class OmiDeviceConnection extends DeviceConnection {
     }
 
     try {
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+      );
       int? expectedTotalBytes;
 
       _listFilesSub = stream.listen((blePacket) {
@@ -566,8 +582,9 @@ class OmiDeviceConnection extends DeviceConnection {
       _cccdRetryTimer = Timer(const Duration(seconds: 10), () async {
         if (isStale() || currentCompleter.isCompleted) return;
         try {
-          await transport
-              .writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x10]);
+          await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [
+            0x10,
+          ]);
         } catch (_) {}
       });
       return await currentCompleter.future;
@@ -580,8 +597,10 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<bool> performDeleteFile(StorageFile file, {int? timestamp}) async {
     try {
       final completer = Completer<bool>();
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+      );
       final sub = stream.listen((data) {
         if (completer.isCompleted) return;
         if (data.isNotEmpty && data[0] == 0x03) completer.complete(data.length < 2 || data[1] == 0);
@@ -590,16 +609,14 @@ class OmiDeviceConnection extends DeviceConnection {
 
       final List<int> cmd = [0x12, file.index & 0xFF];
       if (timestamp != null) {
-        cmd.addAll([
-          timestamp & 0xFF,
-          (timestamp >> 8) & 0xFF,
-          (timestamp >> 16) & 0xFF,
-          (timestamp >> 24) & 0xFF,
-        ]);
+        cmd.addAll([timestamp & 0xFF, (timestamp >> 8) & 0xFF, (timestamp >> 16) & 0xFF, (timestamp >> 24) & 0xFF]);
       }
 
       await transport.writeCharacteristic(
-          storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, Uint8List.fromList(cmd));
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+        Uint8List.fromList(cmd),
+      );
       try {
         return await completer.future.timeout(const Duration(seconds: 35));
       } finally {
@@ -614,8 +631,10 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<bool> performStopStorageSync() async {
     try {
       final completer = Completer<bool>();
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+      );
       final sub = stream.listen((data) {
         if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
           completer.complete(data.length < 2 || data[1] == 0);
@@ -637,8 +656,10 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<bool> performRotateFile() async {
     try {
       final completer = Completer<bool>();
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+      );
       final sub = stream.listen((data) {
         if (!completer.isCompleted && data.length >= 2 && data[0] == 0x03) completer.complete(data[1] == 0);
       });
@@ -659,8 +680,10 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<bool> performClearStorage() async {
     try {
       final completer = Completer<bool>();
-      final stream =
-          await transport.getCharacteristicStream(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid);
+      final stream = await transport.getCharacteristicStream(
+        storageDataStreamServiceUuid,
+        storageDataStreamCharacteristicUuid,
+      );
       final sub = stream.listen((data) {
         if (!completer.isCompleted && data.isNotEmpty && data[0] == 0x03) {
           completer.complete(data.length < 2 || data[1] == 0);
@@ -684,7 +707,10 @@ class OmiDeviceConnection extends DeviceConnection {
         int epoch = DateTime.now().millisecondsSinceEpoch ~/ 1000;
         final data = ByteData(4)..setUint32(0, epoch, Endian.little);
         await transport.writeCharacteristic(
-            timeSyncServiceUuid, timeSyncWriteCharacteristicUuid, data.buffer.asUint8List());
+          timeSyncServiceUuid,
+          timeSyncWriteCharacteristicUuid,
+          data.buffer.asUint8List(),
+        );
         return true;
       } catch (_) {
         await Future.delayed(Duration(milliseconds: 100 * (i + 1)));
@@ -702,17 +728,20 @@ class OmiDeviceConnection extends DeviceConnection {
     final actualBuffer = buffer.length > totalExpected ? buffer.sublist(0, totalExpected) : buffer;
 
     for (int i = 0; i < count && (4 + (i + 1) * 16) <= actualBuffer.length; i++) {
-      files.add(StorageFile(
-        index: actualBuffer.getUint32LittleEndian(4 + i * 16),
-        timestamp: actualBuffer.getUint32LittleEndian(8 + i * 16),
-        size: actualBuffer.getUint32LittleEndian(12 + i * 16),
-        sessionId: actualBuffer.getUint32LittleEndian(16 + i * 16),
-      ));
+      files.add(
+        StorageFile(
+          index: actualBuffer.getUint32LittleEndian(4 + i * 16),
+          timestamp: actualBuffer.getUint32LittleEndian(8 + i * 16),
+          size: actualBuffer.getUint32LittleEndian(12 + i * 16),
+          sessionId: actualBuffer.getUint32LittleEndian(16 + i * 16),
+        ),
+      );
     }
 
     for (int i = 0; i < files.length; i++) {
       Logger.debug(
-          'OmiDeviceConnection: file[$i] index=${files[i].index} ts=${files[i].timestamp} size=${files[i].size} sid=${files[i].sessionId}');
+        'OmiDeviceConnection: file[$i] index=${files[i].index} ts=${files[i].timestamp} size=${files[i].size} sid=${files[i].sessionId}',
+      );
     }
     Logger.debug('OmiDeviceConnection: Successfully parsed ${files.length} files (count field said $count)');
     success(files);

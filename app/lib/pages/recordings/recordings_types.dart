@@ -1,14 +1,6 @@
 enum RecordingFilterMode { visible, hidden, all }
 
-enum SyncProcessState {
-  idle,
-  syncing,
-  processing,
-  stopping,
-  resume,
-  error,
-  successUi,
-}
+enum SyncProcessState { idle, syncing, processing, stopping, resume, error, successUi }
 
 /// Snapshot of sync/process progress passed into [SyncProcessCard].
 class SyncCardData {

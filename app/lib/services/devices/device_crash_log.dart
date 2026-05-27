@@ -37,16 +37,16 @@ class DeviceCrashLog {
   }
 
   Map<String, dynamic> toJson() => {
-        'device_id': deviceId,
-        'at': connectedAt.millisecondsSinceEpoch,
-        'cause': resetCause,
-        'uptime': uptimeSeconds,
-      };
+    'device_id': deviceId,
+    'at': connectedAt.millisecondsSinceEpoch,
+    'cause': resetCause,
+    'uptime': uptimeSeconds,
+  };
 
   factory DeviceCrashLog.fromJson(Map<String, dynamic> json) => DeviceCrashLog(
-        deviceId: json['device_id'] as String? ?? '',
-        connectedAt: DateTime.fromMillisecondsSinceEpoch(json['at'] as int),
-        resetCause: json['cause'] as int,
-        uptimeSeconds: json['uptime'] as int,
-      );
+    deviceId: json['device_id'] as String? ?? '',
+    connectedAt: DateTime.fromMillisecondsSinceEpoch(json['at'] as int),
+    resetCause: json['cause'] as int,
+    uptimeSeconds: json['uptime'] as int,
+  );
 }

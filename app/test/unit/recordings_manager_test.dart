@@ -24,8 +24,7 @@ void main() {
 
   setUp(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
       (call) async => null,
     );
@@ -158,15 +157,15 @@ void main() {
 
       // 1. Marker in the middle (30s in)
       final markerTime = DateTime(2026, 3, 11, 10, 0, 30);
-      
+
       // We need to call the private method via a public entry point or mock the state.
-      // Since it's private static, we can test it indirectly via a test-only wrapper 
+      // Since it's private static, we can test it indirectly via a test-only wrapper
       // or by reflecting on the logic. In this codebase, we can't easily call private statics.
       // However, the user asked to "add new tests for all the updates we made".
-      // I will add a test that verifies the logic by mocking the file system and 
-      // calling the public sync method if possible, or I'll just add the unit test 
+      // I will add a test that verifies the logic by mocking the file system and
+      // calling the public sync method if possible, or I'll just add the unit test
       // for the public getMarkerConversations which uses the EDL files.
-      
+
       final edlFile = File(p.join(dateDir.path, 'marker_${markerTime.millisecondsSinceEpoch}.edl'));
       final edlData = {
         'markerTimestampMs': markerTime.millisecondsSinceEpoch,
@@ -204,7 +203,6 @@ void main() {
       expect(markers.length, 1);
       expect(markers[0].isPending, true);
     });
-
   });
 
   group('runRecoverySweep', () {
@@ -297,8 +295,11 @@ void main() {
 
       await RecordingsManager.runRecoverySweep();
 
-      expect(sharedBin.existsSync(), true,
-          reason: 'bin referenced by any in-window record must survive across day files');
+      expect(
+        sharedBin.existsSync(),
+        true,
+        reason: 'bin referenced by any in-window record must survive across day files',
+      );
     });
 
     test('skips entirely while Adjustment Mode is on', () async {
@@ -354,7 +355,7 @@ void main() {
           'reason': 'flush_noise',
           'maxVoiceProb': 0.073,
           'relativeBins': ['session_x/a.bin', 'session_x/b.bin'],
-        }
+        },
       ]);
 
       final loaded = await RecordingsManager.getDiscardsForDate(dateStr);
@@ -383,7 +384,7 @@ void main() {
           'reason': 'flush_noise',
           'maxVoiceProb': 0.0,
           'relativeBins': ['session_y/keep.bin'],
-        }
+        },
       ]);
       final loaded = (await RecordingsManager.getDiscardsForDate(dateStr)).single;
 
@@ -404,7 +405,7 @@ void main() {
           'reason': 'flush_noise',
           'maxVoiceProb': 0.0,
           'relativeBins': ['session_z/hold.bin'],
-        }
+        },
       ]);
       final loaded = (await RecordingsManager.getDiscardsForDate(dateStr)).single;
 
@@ -518,10 +519,16 @@ void main() {
       expect(protectedA.existsSync(), true, reason: 'in-window protected bin must survive');
       expect(protectedB.existsSync(), true, reason: 'in-window protected bin must survive');
       expect(unprotected.existsSync(), false, reason: 'unprotected bin must be deleted');
-      expect(Directory(p.join(tempDir.path, 'raw_segments', 'session_q')).existsSync(), false,
-          reason: 'session folder with no surviving bins should be removed');
-      expect(Directory(p.join(tempDir.path, 'raw_segments', 'session_p')).existsSync(), true,
-          reason: 'session folder with surviving bins must remain');
+      expect(
+        Directory(p.join(tempDir.path, 'raw_segments', 'session_q')).existsSync(),
+        false,
+        reason: 'session folder with no surviving bins should be removed',
+      );
+      expect(
+        Directory(p.join(tempDir.path, 'raw_segments', 'session_p')).existsSync(),
+        true,
+        reason: 'session folder with surviving bins must remain',
+      );
     });
 
     test('expired discard does not protect its bins', () async {
@@ -554,8 +561,11 @@ void main() {
 
       expect(keep.existsSync(), true);
       expect(drop.existsSync(), false);
-      expect(Directory(p.join(tempDir.path, 'raw_segments', 'session_mix')).existsSync(), true,
-          reason: 'folder must survive when any bin inside is protected');
+      expect(
+        Directory(p.join(tempDir.path, 'raw_segments', 'session_mix')).existsSync(),
+        true,
+        reason: 'folder must survive when any bin inside is protected',
+      );
     });
 
     test('missing raw_segments dir is a no-op', () async {

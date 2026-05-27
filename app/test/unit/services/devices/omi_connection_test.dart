@@ -40,7 +40,9 @@ class MockDeviceTransport implements DeviceTransport {
   @override
   Future<List<int>> readCharacteristic(String serviceUuid, String characteristicUuid) async {
     if (throwOuter) {
-      throw Exception('Outer failure'); // will not be caught by inner if not in the inner try blocks, but since all readCharacteristics are inside inner try blocks, this will just be caught by inner try blocks
+      throw Exception(
+        'Outer failure',
+      ); // will not be caught by inner if not in the inner try blocks, but since all readCharacteristics are inside inner try blocks, this will just be caught by inner try blocks
     }
 
     if (throwAllInner) {

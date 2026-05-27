@@ -7,9 +7,5 @@ class FrameRef {
   final int byteOffset; // position of the 4-byte length prefix in the file
   final int frameLength; // Opus payload length (not including the 4-byte prefix)
 
-  const FrameRef({
-    required this.segmentFile,
-    required this.byteOffset,
-    required this.frameLength,
-  });
+  const FrameRef({required this.segmentFile, required this.byteOffset, required this.frameLength});
 }

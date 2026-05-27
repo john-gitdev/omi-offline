@@ -14,10 +14,7 @@ class SyncLocalFilesResponse {
   });
 }
 
-enum SyncPhase {
-  downloading,
-  synced,
-}
+enum SyncPhase { downloading, synced }
 
 abstract class IWalSyncProgressListener {
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase});
@@ -38,13 +35,8 @@ abstract class IWalSyncListener {
 abstract class IWalSync {
   Future<List<Wal>> getMissingWals();
   Future deleteWal(Wal wal);
-  Future<SyncLocalFilesResponse?> syncAll({
-    IWalSyncProgressListener? progress,
-  });
-  Future<SyncLocalFilesResponse?> syncWal({
-    required Wal wal,
-    IWalSyncProgressListener? progress,
-  });
+  Future<SyncLocalFilesResponse?> syncAll({IWalSyncProgressListener? progress});
+  Future<SyncLocalFilesResponse?> syncWal({required Wal wal, IWalSyncProgressListener? progress});
   void cancelSync();
 
   void start();
@@ -62,11 +54,7 @@ abstract class IWalService {
   SDCardWalSync getSyncs();
 }
 
-enum WalServiceStatus {
-  init,
-  ready,
-  stop,
-}
+enum WalServiceStatus { init, ready, stop }
 
 abstract class SDCardWalSync implements IWalSync {
   /// [prefetchedFiles] — if provided, skips the CMD_LIST_FILES BLE round-trip

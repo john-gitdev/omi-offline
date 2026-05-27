@@ -24,16 +24,11 @@ class AacEncoder {
 
   /// Feed a batch of raw 16-bit little-endian PCM bytes to the encoder.
   static Future<void> encodeBuffer(String sessionId, Uint8List pcmBytes) async {
-    await _channel.invokeMethod<void>('encodeBuffer', {
-      'sessionId': sessionId,
-      'pcmBytes': pcmBytes,
-    });
+    await _channel.invokeMethod<void>('encodeBuffer', {'sessionId': sessionId, 'pcmBytes': pcmBytes});
   }
 
   /// Finalize the encoder: flush, close the file, and rename temp→final.
   static Future<void> finishEncoder(String sessionId) async {
-    await _channel.invokeMethod<void>('finishEncoder', {
-      'sessionId': sessionId,
-    });
+    await _channel.invokeMethod<void>('finishEncoder', {'sessionId': sessionId});
   }
 }

@@ -113,10 +113,10 @@ class HeyPocketService {
   }
 
   static String _errorMessage(int code) => switch (code) {
-        400 => 'Bad request — check file format',
-        401 => 'Unauthorized — check your API key',
-        _ => 'HeyPocket server error — try again later',
-      };
+    400 => 'Bad request — check file format',
+    401 => 'Unauthorized — check your API key',
+    _ => 'HeyPocket server error — try again later',
+  };
 }
 
 class HeyPocketException implements Exception {

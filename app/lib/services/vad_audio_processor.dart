@@ -162,7 +162,8 @@ class VadAudioProcessor {
       }
     }
     Logger.debug(
-        'VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'AAD mode${settings.vadEnabled ? ' (model unavailable)' : ''}'}');
+      'VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'AAD mode${settings.vadEnabled ? ' (model unavailable)' : ''}'}',
+    );
     return VadAudioProcessor._(outputDir: outputDir, decoder: decoder, session: session, settings: settings);
   }
 
@@ -176,23 +177,27 @@ class VadAudioProcessor {
     SimpleOpusDecoder? decoder,
   }) : this._(outputDir: outputDir, decoder: decoder, session: session, settings: settings);
 
-  VadAudioProcessor._(
-      {String? outputDir, SimpleOpusDecoder? decoder, OrtSession? session, required ProcessingSettings settings})
-      : _session = session,
-        _decoder = decoder ??
-            (Platform.isIOS || Platform.isAndroid
-                ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
-                : null),
-        _outputDir = outputDir,
-        _speechThreshold = settings.speechThreshold,
-        _silenceDurationToSplitMs = settings.silenceDurationToSplitMs,
-        _minDurationMs = settings.minDurationMs,
-        _minSpeechMs = settings.minSpeechMs,
-        _discardShort = settings.discardShort,
-        _maxChunkMs = settings.maxChunkMs,
-        _deviceId = settings.deviceId,
-        _audioSaveFormat = settings.audioSaveFormat,
-        _omiEnabled = settings.omiEnabled;
+  VadAudioProcessor._({
+    String? outputDir,
+    SimpleOpusDecoder? decoder,
+    OrtSession? session,
+    required ProcessingSettings settings,
+  }) : _session = session,
+       _decoder =
+           decoder ??
+           (Platform.isIOS || Platform.isAndroid
+               ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
+               : null),
+       _outputDir = outputDir,
+       _speechThreshold = settings.speechThreshold,
+       _silenceDurationToSplitMs = settings.silenceDurationToSplitMs,
+       _minDurationMs = settings.minDurationMs,
+       _minSpeechMs = settings.minSpeechMs,
+       _discardShort = settings.discardShort,
+       _maxChunkMs = settings.maxChunkMs,
+       _deviceId = settings.deviceId,
+       _audioSaveFormat = settings.audioSaveFormat,
+       _omiEnabled = settings.omiEnabled;
 
   void destroy() {
     _decoder?.destroy();
@@ -254,8 +259,13 @@ class VadAudioProcessor {
     }
   }
 
-  Future<List<String>> processSegmentFile(File segmentFile, DateTime segmentStartTime,
-      {int startUptimeMs = 0, bool isDerivedTimestamp = false, int? sessionId}) async {
+  Future<List<String>> processSegmentFile(
+    File segmentFile,
+    DateTime segmentStartTime, {
+    int startUptimeMs = 0,
+    bool isDerivedTimestamp = false,
+    int? sessionId,
+  }) async {
     final savedFiles = <String>[];
 
     // Only set _isDerivedTimestamp from the caller if it hasn't already been anchored
@@ -333,7 +343,8 @@ class VadAudioProcessor {
         // Suppress splits while we're within 50 s of a marker tap.
         final bool withinMarkerWindow =
             _markerProtectedUntilMs != null && segmentStartTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
-        final bool splitTriggered = !withinMarkerWindow &&
+        final bool splitTriggered =
+            !withinMarkerWindow &&
             ((sessionChanged && !imuGapMatches) ||
                 (gapMs > max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump));
 
@@ -369,7 +380,8 @@ class VadAudioProcessor {
         // Preserve _recordingStartTime when it is already set to a time AT OR AFTER
         // _lastSegmentEndTime — that means a cap cut just fired and set it to cutTime,
         // which must not be overwritten with an earlier bin timestamp.
-        final capJustFired = _recordingStartTime != null &&
+        final capJustFired =
+            _recordingStartTime != null &&
             _lastSegmentEndTime != null &&
             !_recordingStartTime!.isBefore(_lastSegmentEndTime!);
         if (!capJustFired) {
@@ -424,7 +436,8 @@ class VadAudioProcessor {
                   // timeline since markerOffsetMs is computed against it. The marker
                   // UTC is logged but discarded as the wall-clock anchor.
                   Logger.debug(
-                      'VadAudioProcessor: Marker RTC $markerRtc drifts ${driftMs}ms from audio timeline — using audio wall time $lastFrameWallTime');
+                    'VadAudioProcessor: Marker RTC $markerRtc drifts ${driftMs}ms from audio timeline — using audio wall time $lastFrameWallTime',
+                  );
                 } else {
                   markerFrameTime = markerRtc;
                   Logger.debug('VadAudioProcessor: Using marker UTC: $markerFrameTime (drift ${driftMs}ms)');
@@ -467,10 +480,12 @@ class VadAudioProcessor {
                 _currentFrameUptimeMs = markerUptimeMs;
                 _isDerivedTimestamp = false;
                 Logger.debug(
-                    'VadAudioProcessor: Marker at ${markerFrameTime.toLocal()} — recalibrated start to ${correctedStart.toLocal()} (offset ${_currentChunkDurationMs}ms).');
+                  'VadAudioProcessor: Marker at ${markerFrameTime.toLocal()} — recalibrated start to ${correctedStart.toLocal()} (offset ${_currentChunkDurationMs}ms).',
+                );
               } else {
                 Logger.debug(
-                    'VadAudioProcessor: Marker at ${markerFrameTime.toLocal()} — protecting active recording.');
+                  'VadAudioProcessor: Marker at ${markerFrameTime.toLocal()} — protecting active recording.',
+                );
               }
             }
           }
@@ -490,7 +505,8 @@ class VadAudioProcessor {
         if (frameLength == 0xFFFFFFFC) {
           if (offset + 20 <= fileLength) {
             Logger.debug(
-                'VadAudioProcessor: Session-end marker at $lastFrameWallTime — finalizing recording (refs=${_currentRefs.length}).');
+              'VadAudioProcessor: Session-end marker at $lastFrameWallTime — finalizing recording (refs=${_currentRefs.length}).',
+            );
             if (_currentRefs.isNotEmpty) {
               _forcedByMarker = true;
               final filePath = await flushRemaining(isDraft: false);
@@ -526,8 +542,9 @@ class VadAudioProcessor {
               newResumeTime = DateTime.fromMillisecondsSinceEpoch(vadUtcSeconds * 1000, isUtc: true);
             } else {
               // Fallback: derive from uptime delta since last frame to maintain timeline continuity
-              final int uptimeDeltaMs =
-                  (_currentFrameUptimeMs != null) ? (vadUptimeMs - _currentFrameUptimeMs!) & 0xFFFFFFFF : 0;
+              final int uptimeDeltaMs = (_currentFrameUptimeMs != null)
+                  ? (vadUptimeMs - _currentFrameUptimeMs!) & 0xFFFFFFFF
+                  : 0;
               newResumeTime = lastFrameWallTime.add(Duration(milliseconds: uptimeDeltaMs));
             }
 
@@ -588,7 +605,8 @@ class VadAudioProcessor {
                 _currentChunkDurationMs += gapMs;
               }
               Logger.debug(
-                  'VadAudioProcessor: VAD resume — gap ${gapMs}ms ${isClockJump ? "(CLOCK JUMP)" : "< threshold"}, stitching.');
+                'VadAudioProcessor: VAD resume — gap ${gapMs}ms ${isClockJump ? "(CLOCK JUMP)" : "< threshold"}, stitching.',
+              );
             }
 
             // Update anchors for subsequent frame calculations.
@@ -651,8 +669,9 @@ class VadAudioProcessor {
         if (_currentFrameUptimeMs != null) _currentFrameUptimeMs = _currentFrameUptimeMs! + frameDurationMs;
 
         if (_recordingStartTime == null) {
-          _recordingStartTime =
-              (vadResumeTime != null && vadResumeFrameIndex != null) ? vadResumeTime : segmentStartTime;
+          _recordingStartTime = (vadResumeTime != null && vadResumeFrameIndex != null)
+              ? vadResumeTime
+              : segmentStartTime;
         }
 
         // Compute accurate wall-clock time for this frame using VAD-resume anchor if available.
@@ -702,8 +721,10 @@ class VadAudioProcessor {
         final int ticksPassed = (segmentDurationMs / 6.4).toInt();
         _lastImuTicks = (currentImuTicks + ticksPassed) & 0x00FFFFFF;
       }
-      Logger.debug('VadAudioProcessor: ${segmentFile.path.split('/').last} — '
-          '$totalFrameCount frames, $segmentSpeechFrames speech frames, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}');
+      Logger.debug(
+        'VadAudioProcessor: ${segmentFile.path.split('/').last} — '
+        '$totalFrameCount frames, $segmentSpeechFrames speech frames, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}',
+      );
     } catch (e) {
       Logger.error('VadAudioProcessor: processSegmentFile error: $e');
     }
@@ -748,7 +769,8 @@ class VadAudioProcessor {
   Future<String?> flushOnlyCompleted() async {
     if (isCapturing) {
       Logger.debug(
-          'VadAudioProcessor: flushOnlyCompleted — capture in progress, skipping flush to allow continuation.');
+        'VadAudioProcessor: flushOnlyCompleted — capture in progress, skipping flush to allow continuation.',
+      );
       return null;
     }
     return flushRemaining();
@@ -784,7 +806,8 @@ class VadAudioProcessor {
     // doesn't leak into the next conversation with a stale offset.
     if (_pendingMarkers.isNotEmpty) {
       Logger.error(
-          'VadAudioProcessor: _resetState dropping ${_pendingMarkers.length} pending marker(s) — caller forgot _emitOrphanMarkers()');
+        'VadAudioProcessor: _resetState dropping ${_pendingMarkers.length} pending marker(s) — caller forgot _emitOrphanMarkers()',
+      );
       _pendingMarkers.clear();
     }
   }
@@ -853,8 +876,12 @@ class VadAudioProcessor {
   Future<String?> saveRecordingTest(List<Object> refs, DateTime startTime, {bool isDerivedTimestamp = false}) =>
       _saveRecording(refs, startTime, isDerivedTimestamp: isDerivedTimestamp);
 
-  Future<String?> _saveRecording(List<Object> refs, DateTime startTime,
-      {bool? isDerivedTimestamp, bool isDraft = false}) async {
+  Future<String?> _saveRecording(
+    List<Object> refs,
+    DateTime startTime, {
+    bool? isDerivedTimestamp,
+    bool isDraft = false,
+  }) async {
     final result = await _saveRecordingCore(refs, startTime, isDerivedTimestamp: isDerivedTimestamp, isDraft: isDraft);
     if (result != null) {
       if (_pendingMarkers.isNotEmpty) {
@@ -923,8 +950,12 @@ class VadAudioProcessor {
     Logger.debug('VadAudioProcessor: Saved bin for Omi sync — $binPath');
   }
 
-  Future<String?> _saveRecordingCore(List<Object> refs, DateTime startTime,
-      {bool? isDerivedTimestamp, bool isDraft = false}) async {
+  Future<String?> _saveRecordingCore(
+    List<Object> refs,
+    DateTime startTime, {
+    bool? isDerivedTimestamp,
+    bool isDraft = false,
+  }) async {
     final derived = isDerivedTimestamp ?? _isDerivedTimestamp;
     final prefix = derived ? 'unknown' : 'recording';
     final timestamp = startTime.millisecondsSinceEpoch;
@@ -1115,26 +1146,46 @@ class VadAudioProcessor {
       return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
     }
 
-    await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-        prefix: prefix, extension: 'm4a', suffix: suffix);
+    await _saveMetadata(
+      refs,
+      dateFolderPath,
+      timestamp,
+      totalSamples,
+      dynamicPeaks,
+      waveformBuckets,
+      prefix: prefix,
+      extension: 'm4a',
+      suffix: suffix,
+    );
 
     final totalSkipped = skippedReadFail + skippedDecodeNull + skippedDecodeEmpty;
     if (totalFrameRefs > 0 && totalSkipped * 20 > totalFrameRefs) {
-      Logger.error('VadAudioProcessor: $m4aPath dropped $totalSkipped/$totalFrameRefs frames '
-          '(${(100 * totalSkipped / totalFrameRefs).toStringAsFixed(1)}%): '
-          'readFail=$skippedReadFail decodeNull=$skippedDecodeNull decodeEmpty=$skippedDecodeEmpty — '
-          'wallClock=${_currentChunkDurationMs}ms encoded=${(totalSamples * 1000) ~/ sampleRate}ms');
+      Logger.error(
+        'VadAudioProcessor: $m4aPath dropped $totalSkipped/$totalFrameRefs frames '
+        '(${(100 * totalSkipped / totalFrameRefs).toStringAsFixed(1)}%): '
+        'readFail=$skippedReadFail decodeNull=$skippedDecodeNull decodeEmpty=$skippedDecodeEmpty — '
+        'wallClock=${_currentChunkDurationMs}ms encoded=${(totalSamples * 1000) ~/ sampleRate}ms',
+      );
     }
 
     Logger.debug(
-        'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
-        'starting at $_recordingStartTime to $m4aPath');
+      'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
+      'starting at $_recordingStartTime to $m4aPath',
+    );
     return m4aPath;
   }
 
-  Future<void> _saveMetadata(List<Object> refs, String dateFolderPath, int timestamp, int totalSamples,
-      List<double> dynamicPeaks, int waveformBuckets,
-      {required String prefix, required String extension, String suffix = ''}) async {
+  Future<void> _saveMetadata(
+    List<Object> refs,
+    String dateFolderPath,
+    int timestamp,
+    int totalSamples,
+    List<double> dynamicPeaks,
+    int waveformBuckets, {
+    required String prefix,
+    required String extension,
+    String suffix = '',
+  }) async {
     final finalAmplitudes = List<double>.filled(waveformBuckets, 0.0);
     if (dynamicPeaks.isNotEmpty) {
       final double ratio = dynamicPeaks.length / waveformBuckets;
@@ -1178,8 +1229,13 @@ class VadAudioProcessor {
     await File(metaPath).writeAsBytes(metaOut);
   }
 
-  Future<String?> _saveOgg(List<Object> refs, String dateFolderPath, int timestamp,
-      {String prefix = 'recording', String suffix = ''}) async {
+  Future<String?> _saveOgg(
+    List<Object> refs,
+    String dateFolderPath,
+    int timestamp, {
+    String prefix = 'recording',
+    String suffix = '',
+  }) async {
     final oggPath = '$dateFolderPath/${prefix}_$timestamp$suffix.ogg';
     final tmpPath = '$oggPath.tmp';
     final oggFile = File(tmpPath);
@@ -1291,14 +1347,24 @@ class VadAudioProcessor {
       await sink.flush();
       await sink.close();
 
-      await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-          prefix: prefix, extension: 'ogg', suffix: suffix);
+      await _saveMetadata(
+        refs,
+        dateFolderPath,
+        timestamp,
+        totalSamples,
+        dynamicPeaks,
+        waveformBuckets,
+        prefix: prefix,
+        extension: 'ogg',
+        suffix: suffix,
+      );
 
       await oggFile.rename(oggPath);
       renamed = true;
       Logger.debug(
-          'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
-          'starting at $_recordingStartTime to $oggPath');
+        'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
+        'starting at $_recordingStartTime to $oggPath',
+      );
       return oggPath;
     } catch (e) {
       Logger.error('VadAudioProcessor: _saveOgg failed: $e');
@@ -1346,8 +1412,14 @@ class VadAudioProcessor {
     return header.buffer.asUint8List();
   }
 
-  Uint8List _createOggPage(int granulePos, int pageSeqNum, int serial, List<Uint8List> packets,
-      {bool isFirstPage = false, bool isLastPage = false}) {
+  Uint8List _createOggPage(
+    int granulePos,
+    int pageSeqNum,
+    int serial,
+    List<Uint8List> packets, {
+    bool isFirstPage = false,
+    bool isLastPage = false,
+  }) {
     int pageHeaderSize = 27 + packets.length;
     int pageDataSize = packets.fold(0, (sum, p) => sum + p.length);
     final page = ByteData(pageHeaderSize + pageDataSize);
@@ -1409,8 +1481,13 @@ class VadAudioProcessor {
     return table;
   }
 
-  Future<String?> _saveWav(List<Object> refs, String dateFolderPath, int timestamp,
-      {String prefix = 'recording', String suffix = ''}) async {
+  Future<String?> _saveWav(
+    List<Object> refs,
+    String dateFolderPath,
+    int timestamp, {
+    String prefix = 'recording',
+    String suffix = '',
+  }) async {
     final wavPath = '$dateFolderPath/${prefix}_$timestamp$suffix.wav';
     final rawPath = '$dateFolderPath/${prefix}_$timestamp$suffix.raw';
     final rawFile = File(rawPath);
@@ -1514,22 +1591,34 @@ class VadAudioProcessor {
 
       await rawFile.delete();
 
-      await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-          prefix: prefix, extension: 'wav', suffix: suffix);
+      await _saveMetadata(
+        refs,
+        dateFolderPath,
+        timestamp,
+        totalSamples,
+        dynamicPeaks,
+        waveformBuckets,
+        prefix: prefix,
+        extension: 'wav',
+        suffix: suffix,
+      );
 
       await wavFile.rename(wavPath);
 
       final totalSkipped = skippedReadFail + skippedDecodeNull + skippedDecodeEmpty;
       if (totalFrameRefs > 0 && totalSkipped * 20 > totalFrameRefs) {
-        Logger.error('VadAudioProcessor: $wavPath dropped $totalSkipped/$totalFrameRefs frames '
-            '(${(100 * totalSkipped / totalFrameRefs).toStringAsFixed(1)}%): '
-            'readFail=$skippedReadFail decodeNull=$skippedDecodeNull decodeEmpty=$skippedDecodeEmpty — '
-            'wallClock=${_currentChunkDurationMs}ms encoded=${(totalSamples * 1000) ~/ sampleRate}ms');
+        Logger.error(
+          'VadAudioProcessor: $wavPath dropped $totalSkipped/$totalFrameRefs frames '
+          '(${(100 * totalSkipped / totalFrameRefs).toStringAsFixed(1)}%): '
+          'readFail=$skippedReadFail decodeNull=$skippedDecodeNull decodeEmpty=$skippedDecodeEmpty — '
+          'wallClock=${_currentChunkDurationMs}ms encoded=${(totalSamples * 1000) ~/ sampleRate}ms',
+        );
       }
 
       Logger.debug(
-          'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
-          'starting at $_recordingStartTime to $wavPath');
+        'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
+        'starting at $_recordingStartTime to $wavPath',
+      );
       return wavPath;
     } catch (e) {
       Logger.error('VadAudioProcessor: _saveWav failed: $e');

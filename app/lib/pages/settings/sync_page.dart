@@ -55,9 +55,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   void _showProcessingSnackbar() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Processing in progress — please wait until it finishes.')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Processing in progress — please wait until it finishes.')));
   }
 
   Future<void> _startSync() async {
@@ -87,7 +87,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       final result = await ServiceManager.instance().wal.getSyncs().syncAll(progress: this);
       deviceProvider.restartBackgroundSyncTimer();
       Logger.debug(
-          'DebugTools: syncAll complete — result=${result == null ? 'null (nothing to sync)' : 'SyncLocalFilesResponse'}');
+        'DebugTools: syncAll complete — result=${result == null ? 'null (nothing to sync)' : 'SyncLocalFilesResponse'}',
+      );
       if (!mounted) return;
       setState(() {
         if (result == null) {
@@ -405,8 +406,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       RecordingsManager.notifyRecordingsChanged();
       if (!mounted) return;
       setState(() {
-        _statusMessage =
-            problematic.isEmpty ? 'No problematic EDLs found.' : 'Deleted ${problematic.length} problematic EDL(s).';
+        _statusMessage = problematic.isEmpty
+            ? 'No problematic EDLs found.'
+            : 'Deleted ${problematic.length} problematic EDL(s).';
       });
     } catch (e) {
       Logger.error('DebugTools: _deleteProblematicEdls error — $e');
@@ -468,7 +470,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (mounted) {
       setState(() {
         _progress = percentage;
-        _statusMessage = 'Downloading segments: ${(percentage * 100).toStringAsFixed(1)}% '
+        _statusMessage =
+            'Downloading segments: ${(percentage * 100).toStringAsFixed(1)}% '
             '${speedKBps != null && speedKBps > 0 ? '(${speedKBps.toStringAsFixed(1)} KB/s)' : ''}';
       });
     }
@@ -506,10 +509,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               ),
               const SizedBox(height: 24),
               SwitchListTile(
-                title: const Text('Allow Upload During Adjustment',
-                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
-                subtitle: const Text('Integrations will remain active even when Adjustment Mode is enabled.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12)),
+                title: const Text(
+                  'Allow Upload During Adjustment',
+                  style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+                subtitle: const Text(
+                  'Integrations will remain active even when Adjustment Mode is enabled.',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
                 value: SharedPreferencesUtil().allowUploadDuringAdjustment,
                 onChanged: (val) {
                   setState(() {
@@ -521,10 +528,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               ),
               const SizedBox(height: 12),
               SwitchListTile(
-                title: const Text('Save Diagnostic Logs to File',
-                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
-                subtitle: const Text('Persists info/debug logs to a daily file on your device.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12)),
+                title: const Text(
+                  'Save Diagnostic Logs to File',
+                  style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+                subtitle: const Text(
+                  'Persists info/debug logs to a daily file on your device.',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
                 value: SharedPreferencesUtil().devLogsToFileEnabled,
                 onChanged: (val) async {
                   await DebugLogManager.setEnabled(val);
@@ -547,8 +558,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                           children: [
                             FaIcon(FontAwesomeIcons.listUl, size: 13, color: Colors.amber),
                             SizedBox(width: 8),
-                            Text('Recent Diagnostics',
-                                style: TextStyle(color: Colors.amber, fontSize: 14, fontWeight: FontWeight.w600)),
+                            Text(
+                              'Recent Diagnostics',
+                              style: TextStyle(color: Colors.amber, fontSize: 14, fontWeight: FontWeight.w600),
+                            ),
                           ],
                         ),
                         const SizedBox(height: 8),
@@ -576,8 +589,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                           padding: const EdgeInsets.symmetric(vertical: 12),
                         ),
-                        child: const Text('Share Logs',
-                            style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                        child: const Text(
+                          'Share Logs',
+                          style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+                        ),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -592,8 +607,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                           padding: const EdgeInsets.symmetric(vertical: 12),
                         ),
-                        child: const Text('Clear Logs',
-                            style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+                        child: const Text(
+                          'Clear Logs',
+                          style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold),
+                        ),
                       ),
                     ),
                   ],
@@ -803,8 +820,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     padding: const EdgeInsets.symmetric(vertical: 10),
                   ),
-                  child: const Text('Snapshot baseline',
-                      style: TextStyle(color: Colors.amber, fontWeight: FontWeight.w600, fontSize: 13)),
+                  child: const Text(
+                    'Snapshot baseline',
+                    style: TextStyle(color: Colors.amber, fontWeight: FontWeight.w600, fontSize: 13),
+                  ),
                 ),
               ),
               if (baseline != null) ...[
@@ -817,8 +836,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       padding: const EdgeInsets.symmetric(vertical: 10),
                     ),
-                    child: const Text('Clear',
-                        style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600, fontSize: 13)),
+                    child: const Text(
+                      'Clear',
+                      style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600, fontSize: 13),
+                    ),
                   ),
                 ),
               ],
@@ -885,10 +906,7 @@ class _DiagnosticLogRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1C1C1E),
-          borderRadius: BorderRadius.circular(8),
-        ),
+        decoration: BoxDecoration(color: const Color(0xFF1C1C1E), borderRadius: BorderRadius.circular(8)),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -959,7 +977,10 @@ class _DebugButton extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(label, style: TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.w600)),
+                    Text(
+                      label,
+                      style: TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.w600),
+                    ),
                     const SizedBox(height: 2),
                     Text(description, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
                   ],

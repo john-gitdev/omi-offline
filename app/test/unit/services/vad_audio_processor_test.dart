@@ -186,11 +186,7 @@ void main() {
 
     final refs = <FrameRef>[];
     for (int i = 0; i < 5; i++) {
-      refs.add(FrameRef(
-        segmentFile: dummyFile,
-        byteOffset: i * 54,
-        frameLength: 50,
-      ));
+      refs.add(FrameRef(segmentFile: dummyFile, byteOffset: i * 54, frameLength: 50));
     }
 
     final savedPath = await processor.saveRecordingTest(refs, DateTime.now());
@@ -237,11 +233,7 @@ void main() {
 
     final refs = <FrameRef>[];
     for (int i = 0; i < 5; i++) {
-      refs.add(FrameRef(
-        segmentFile: dummyFile,
-        byteOffset: i * 54,
-        frameLength: 50,
-      ));
+      refs.add(FrameRef(segmentFile: dummyFile, byteOffset: i * 54, frameLength: 50));
     }
 
     final savedPath = await processor.saveRecordingTest(refs, DateTime.now());
@@ -399,33 +391,33 @@ void main() {
 
       final utcEpochMs = 1000000000000;
       final startTime = DateTime.fromMillisecondsSinceEpoch(utcEpochMs, isUtc: true);
-      
+
       // File 1 (Session 1): 5 frames = 100 ms
       final file1 = _makeBinFileWithHeader(
-        tempDir, 
-        5, 
+        tempDir,
+        5,
         name: 'file1_imu.bin',
         utcStartMs: utcEpochMs,
         uptimeStartMs: 10000,
         imuTicks: 100000,
         sessionId: 1,
       );
-      
+
       await processor.processSegmentFile(file1, startTime);
 
       // File 2 (Session 2): Starts 15 seconds after File 1 ends
       // Gap = 15000 ms
-      // File 1 duration = 100 ms. 
+      // File 1 duration = 100 ms.
       // Ticks passed during file 1 = 100 / 6.4 = 15
       // Ticks passed during gap = 15000 / 6.4 = 2343
       // Expected currentImuTicks = 100000 + 15 + 2343 = 102358
       final gapMs = 15000;
       final nextUtcEpochMs = utcEpochMs + 100 + gapMs;
       final file2Start = DateTime.fromMillisecondsSinceEpoch(nextUtcEpochMs, isUtc: true);
-      
+
       final file2 = _makeBinFileWithHeader(
-        tempDir, 
-        5, 
+        tempDir,
+        5,
         name: 'file2_imu.bin',
         utcStartMs: nextUtcEpochMs,
         uptimeStartMs: 5000, // Re-booted, uptime resets
@@ -436,7 +428,7 @@ void main() {
       await processor.processSegmentFile(file2, file2Start);
 
       // If IMU bridge works, session change doesn't split the file.
-      // It should insert gap padding. 
+      // It should insert gap padding.
       // Expected: 100 (file1) + 15000 (padding) + 100 (file2) = 15200 ms
       expect(processor.currentChunkDurationMs, 15200);
       processor.destroy();
@@ -451,7 +443,7 @@ void main() {
       final startTimeMs = 1000000000000;
       final startTime = DateTime.fromMillisecondsSinceEpoch(startTimeMs, isUtc: true);
       final startUptime = 10000;
-      
+
       final framesBefore = 50; // 1000 ms
       final framesAfter = 50; // 1000 ms
       final sleepGapMs = 5000; // 5 seconds of VAD sleep
@@ -469,9 +461,9 @@ void main() {
 
       await processor.processSegmentFile(file, startTime, startUptimeMs: startUptime);
 
-      // Expected: 
-      // 1000 ms (framesBefore) 
-      // + 5000 ms (padding inserted by VAD resume marker) 
+      // Expected:
+      // 1000 ms (framesBefore)
+      // + 5000 ms (padding inserted by VAD resume marker)
       // + 1000 ms (framesAfter)
       // = 7000 ms
       expect(processor.currentChunkDurationMs, 7000);
@@ -487,7 +479,7 @@ void main() {
 
         final startSeconds = 1713892490;
         const startUptime = 10000;
-        
+
         // 1. Process initial frames (10 frames = 200ms at 20ms/frame)
         await processor.processSegmentFile(
           _makeBinFile(tempDir, 10, name: 'file1.bin'),
@@ -499,8 +491,8 @@ void main() {
         // lastFrameEndTime = 10:00:00.200
         // newResumeTime = 10:00:00.195 (-5ms jitter)
         final resumeSeconds = startSeconds; // Same second
-        const resumeUptime = startUptime + 200; 
-        
+        const resumeUptime = startUptime + 200;
+
         final binWithJitter = _makeBinFileWithVadResume(
           tempDir,
           0, // 0 frames before
@@ -511,8 +503,11 @@ void main() {
         );
 
         // This should not crash and should treat negative gap as 0
-        await processor.processSegmentFile(binWithJitter, DateTime.fromMillisecondsSinceEpoch(startSeconds * 1000, isUtc: true));
-        
+        await processor.processSegmentFile(
+          binWithJitter,
+          DateTime.fromMillisecondsSinceEpoch(startSeconds * 1000, isUtc: true),
+        );
+
         // Duration: 200ms (file1) + 0ms (jitter) + 100ms (jitter.bin) = 300ms
         expect(processor.currentChunkDurationMs, 300);
         processor.destroy();
@@ -526,9 +521,13 @@ void main() {
 
         // Session 1 ends near max 24-bit (0xFFFFFF = 16777215)
         final file1 = _makeBinFileWithHeader(
-          tempDir, 5, name: 'rollover1.bin',
-          utcStartMs: 1000000000000, uptimeStartMs: 10000,
-          imuTicks: 0xFFFF00, sessionId: 1,
+          tempDir,
+          5,
+          name: 'rollover1.bin',
+          utcStartMs: 1000000000000,
+          uptimeStartMs: 10000,
+          imuTicks: 0xFFFF00,
+          sessionId: 1,
         );
         await processor.processSegmentFile(file1, DateTime.fromMillisecondsSinceEpoch(1000000000000));
 
@@ -536,9 +535,13 @@ void main() {
         // Delta = 0x000100 - 0xFFFF00 = 0x000200 (using & 0xFFFFFF)
         // 0x000200 = 512 ticks = 512 * 6.4ms = 3276.8ms gap
         final file2 = _makeBinFileWithHeader(
-          tempDir, 5, name: 'rollover2.bin',
-          utcStartMs: 1000000003376, uptimeStartMs: 5000,
-          imuTicks: 0x000100, sessionId: 2,
+          tempDir,
+          5,
+          name: 'rollover2.bin',
+          utcStartMs: 1000000003376,
+          uptimeStartMs: 5000,
+          imuTicks: 0x000100,
+          sessionId: 2,
         );
         await processor.processSegmentFile(file2, DateTime.fromMillisecondsSinceEpoch(1000000003376));
 

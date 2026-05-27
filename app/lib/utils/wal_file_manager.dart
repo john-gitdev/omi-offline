@@ -115,9 +115,6 @@ class WalFileManager {
       backupFileSize = await _walBackupFile!.length();
     }
 
-    return {
-      'mainFileSize': mainFileSize,
-      'backupFileSize': backupFileSize,
-    };
+    return {'mainFileSize': mainFileSize, 'backupFileSize': backupFileSize};
   }
 }

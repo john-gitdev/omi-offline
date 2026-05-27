@@ -184,11 +184,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
     await _saveEdl();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Saved'),
-          duration: Duration(seconds: 1),
-          backgroundColor: Color(0xFF1C1C1E),
-        ),
+        const SnackBar(content: Text('Saved'), duration: Duration(seconds: 1), backgroundColor: Color(0xFF1C1C1E)),
       );
     }
   }
@@ -227,21 +223,14 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
       final returnCode = await session.getReturnCode();
 
       if (ReturnCode.isSuccess(returnCode)) {
-        await SharePlus.instance.share(
-          ShareParams(
-            files: [XFile(outputPath)],
-            subject: 'Conversation Export',
-          ),
-        );
+        await SharePlus.instance.share(ShareParams(files: [XFile(outputPath)], subject: 'Conversation Export'));
       } else {
         final logs = await session.getLogs();
         throw Exception('FFmpeg failed: ${logs.last.getMessage()}');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Export failed: $e')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export failed: $e')));
       }
     } finally {
       if (mounted) setState(() => _isExporting = false);
@@ -330,8 +319,10 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                   builder: (c) => AlertDialog(
                     backgroundColor: Colors.grey.shade900,
                     title: const Text('Delete Marker', style: TextStyle(color: Colors.white)),
-                    content: const Text('This will permanently delete this marker conversation.',
-                        style: TextStyle(color: Colors.white70)),
+                    content: const Text(
+                      'This will permanently delete this marker conversation.',
+                      style: TextStyle(color: Colors.white70),
+                    ),
                     actions: [
                       TextButton(
                         onPressed: () => Navigator.of(c).pop(false),
@@ -413,10 +404,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       // Time range label (live — updates during crop drag)
-                      Text(
-                        _liveTimeRangeLabel,
-                        style: TextStyle(color: Colors.grey.shade400, fontSize: 14),
-                      ),
+                      Text(_liveTimeRangeLabel, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
                       const SizedBox(height: 32),
 
                       // Waveform
@@ -426,7 +414,8 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                           height: 100,
                           child: _loadingWaveform
                               ? const Center(
-                                  child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
+                                  child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2),
+                                )
                               : LayoutBuilder(
                                   builder: (ctx, constraints) {
                                     final width = constraints.maxWidth;
@@ -543,10 +532,11 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           _SeekBtn(
-                              icon: FontAwesomeIcons.rotateLeft,
-                              seconds: 30,
-                              isForward: false,
-                              onTap: () => _seekRelative(-30)),
+                            icon: FontAwesomeIcons.rotateLeft,
+                            seconds: 30,
+                            isForward: false,
+                            onTap: () => _seekRelative(-30),
+                          ),
                           const SizedBox(width: 40),
                           Semantics(
                             button: true,
@@ -576,10 +566,11 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                           ),
                           const SizedBox(width: 40),
                           _SeekBtn(
-                              icon: FontAwesomeIcons.rotateRight,
-                              seconds: 30,
-                              isForward: true,
-                              onTap: () => _seekRelative(30)),
+                            icon: FontAwesomeIcons.rotateRight,
+                            seconds: 30,
+                            isForward: true,
+                            onTap: () => _seekRelative(30),
+                          ),
                         ],
                       ),
                       const SizedBox(height: 24),
@@ -592,8 +583,8 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                           final labelText = s == 1.0
                               ? '1×'
                               : s == 1.5
-                                  ? '1.5×'
-                                  : '2×';
+                              ? '1.5×'
+                              : '2×';
                           return Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 6),
                             child: Semantics(
@@ -603,9 +594,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                                 message: 'Set playback speed to $labelText',
                                 child: Material(
                                   color: selected ? Colors.deepPurpleAccent : const Color(0xFF2C2C2E),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                                   clipBehavior: Clip.antiAlias,
                                   child: InkWell(
                                     onTap: () => _setSpeed(s),
@@ -726,10 +715,7 @@ class _MarkerWaveformPainter extends CustomPainter {
     );
     // Small pill tab at top to indicate draggability
     canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromCenter(center: Offset(x, 8), width: 10, height: 16),
-        const Radius.circular(3),
-      ),
+      RRect.fromRectAndRadius(Rect.fromCenter(center: Offset(x, 8), width: 10, height: 16), const Radius.circular(3)),
       Paint()..color = color,
     );
   }
@@ -775,8 +761,10 @@ class _SeekBtn extends StatelessWidget {
                 children: [
                   FaIcon(icon, color: Colors.grey.shade300, size: 32),
                   const SizedBox(height: 5),
-                  Text('${seconds}s',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 11, fontWeight: FontWeight.w500)),
+                  Text(
+                    '${seconds}s',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 11, fontWeight: FontWeight.w500),
+                  ),
                 ],
               ),
             ),

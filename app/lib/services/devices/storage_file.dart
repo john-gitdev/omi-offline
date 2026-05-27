@@ -4,12 +4,7 @@ class StorageFile {
   final int size;
   final int? sessionId;
 
-  StorageFile({
-    required this.index,
-    required this.timestamp,
-    required this.size,
-    this.sessionId,
-  });
+  StorageFile({required this.index, required this.timestamp, required this.size, this.sessionId});
 
   @override
   String toString() {
@@ -22,9 +17,5 @@ class StorageFileStats {
   final int fileCount;
   final int freeBytes;
 
-  StorageFileStats({
-    required this.totalUsedBytes,
-    required this.fileCount,
-    required this.freeBytes,
-  });
+  StorageFileStats({required this.totalUsedBytes, required this.fileCount, required this.freeBytes});
 }

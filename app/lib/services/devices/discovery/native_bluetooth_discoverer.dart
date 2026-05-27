@@ -61,8 +61,7 @@ class NativeBluetoothDiscoverer extends DeviceDiscoverer {
 
   bool _isOmi(BlePeripheral p) {
     final name = p.name.toLowerCase();
-    return name.contains('omi') ||
-        _hasService(p, '19B10000-E8F2-537E-4F6C-D104768A1214');
+    return name.contains('omi') || _hasService(p, '19B10000-E8F2-537E-4F6C-D104768A1214');
   }
 
   bool _hasService(BlePeripheral p, String serviceUuid) {

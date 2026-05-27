@@ -140,11 +140,13 @@ class NativeBleTransport extends DeviceTransport {
   Future<bool> isConnected() async {
     try {
       final nativeConnected = await _hostApi.isPeripheralConnected(_peripheralUuid);
-      final bool isStablyConnected = _lastConnectedAt != null &&
-          DateTime.now().difference(_lastConnectedAt!).inSeconds > 5;
+      final bool isStablyConnected =
+          _lastConnectedAt != null && DateTime.now().difference(_lastConnectedAt!).inSeconds > 5;
 
       if (!nativeConnected && _state == DeviceTransportState.connected && isStablyConnected) {
-        Logger.warning('[NativeBleTransport] State mismatch detected! Native OS is disconnected but Dart is connected. Forcing cleanup.');
+        Logger.warning(
+          '[NativeBleTransport] State mismatch detected! Native OS is disconnected but Dart is connected. Forcing cleanup.',
+        );
         // Don't call disconnect() directly as it might interfere with callers waiting on states.
         // Just trigger the same cleanup path a native disconnection would.
         _handleConnectionState(false, 'native_state_mismatch');

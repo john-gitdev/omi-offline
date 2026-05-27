@@ -4,10 +4,7 @@ import 'package:omi/services/devices/discovery/device_locator.dart';
 export 'package:omi/services/devices/discovery/device_locator.dart';
 import 'package:omi/utils/logger.dart';
 
-enum DeviceType {
-  omi,
-  appleWatch,
-}
+enum DeviceType { omi, appleWatch }
 
 enum ImageOrientation {
   orientation0, // 0 degrees

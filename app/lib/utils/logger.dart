@@ -70,10 +70,7 @@ class LoggerSnackbar extends StatelessWidget {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.red,
-        borderRadius: BorderRadius.circular(10),
-      ),
+      decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(10)),
       child: ListTile(
         contentPadding: const EdgeInsets.all(0),
         leading: const Icon(Icons.error_outline, color: Colors.white),

@@ -1,19 +1,19 @@
 import 'package:pigeon/pigeon.dart';
 
-@ConfigurePigeon(PigeonOptions(
-  dartOut: 'lib/gen/pigeon_communicator.g.dart',
-  dartOptions: DartOptions(),
-  swiftOut: 'ios/Runner/PigeonCommunicator.g.swift',
-  swiftOptions: SwiftOptions(),
-  kotlinOut: 'android/app/src/main/kotlin/com/omi/offline/PigeonCommunicator.g.kt',
-  kotlinOptions: KotlinOptions(package: 'com.omi.offline'),
-  dartPackageName: 'omi_pigeon',
-))
-
+@ConfigurePigeon(
+  PigeonOptions(
+    dartOut: 'lib/gen/pigeon_communicator.g.dart',
+    dartOptions: DartOptions(),
+    swiftOut: 'ios/Runner/PigeonCommunicator.g.swift',
+    swiftOptions: SwiftOptions(),
+    kotlinOut: 'android/app/src/main/kotlin/com/omi/offline/PigeonCommunicator.g.kt',
+    kotlinOptions: KotlinOptions(package: 'com.omi.offline'),
+    dartPackageName: 'omi_pigeon',
+  ),
+)
 // =============================================================================
 // Watch Recorder APIs
 // =============================================================================
-
 @HostApi()
 abstract class WatchRecorderHostAPI {
   @SwiftFunction('startRecording()')
@@ -71,12 +71,7 @@ class BlePeripheral {
   final int rssi;
   final List<String> serviceUuids;
 
-  BlePeripheral({
-    required this.uuid,
-    required this.name,
-    required this.rssi,
-    required this.serviceUuids,
-  });
+  BlePeripheral({required this.uuid, required this.name, required this.rssi, required this.serviceUuids});
 }
 
 /// Discovered BLE service with its characteristic UUIDs.

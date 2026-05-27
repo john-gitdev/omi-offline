@@ -49,8 +49,9 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       // Google blocks OAuth in embedded WebViews (detects "wv" in default UA).
       // Override with a standard Chrome Mobile UA so sign-in is allowed.
       ..setUserAgent(
-          'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 '
-          '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36')
+        'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+      )
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) => setState(() => _isLoading = true),
@@ -106,7 +107,8 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
     _apiKey = _omiBackedFirebaseApiKey;
     _state = _generateState();
     _flowMode = _FlowMode.omiBacked;
-    final url = '$_omiAuthorizeUrl'
+    final url =
+        '$_omiAuthorizeUrl'
         '?provider=google'
         '&redirect_uri=${Uri.encodeComponent(_omiRedirectUri)}'
         '&state=${Uri.encodeComponent(_state!)}';
@@ -184,7 +186,9 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
     final providerId = tokenJson['provider_id'] as String? ?? (provider == 'apple' ? 'apple.com' : 'google.com');
     final accessToken = tokenJson['access_token'] as String? ?? '';
 
-    final postBody = StringBuffer('id_token=${Uri.encodeComponent(idToken)}&providerId=${Uri.encodeComponent(providerId)}');
+    final postBody = StringBuffer(
+      'id_token=${Uri.encodeComponent(idToken)}&providerId=${Uri.encodeComponent(providerId)}',
+    );
     if (accessToken.isNotEmpty) postBody.write('&access_token=${Uri.encodeComponent(accessToken)}');
 
     try {
@@ -378,10 +382,7 @@ class _OmiLoginWebViewState extends State<OmiLoginWebView> {
       body: Stack(
         children: [
           WebViewWidget(controller: _controller),
-          if (_isLoading)
-            const Center(
-              child: CircularProgressIndicator(color: Colors.deepPurpleAccent),
-            ),
+          if (_isLoading) const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent)),
           if (_errorMessage != null)
             _ErrorOverlay(
               message: _errorMessage!,
@@ -429,7 +430,10 @@ class _ErrorOverlay extends StatelessWidget {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
-                child: const Text('Try Another Method', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                child: const Text(
+                  'Try Another Method',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                ),
               ),
             ),
             const SizedBox(height: 12),
@@ -443,7 +447,10 @@ class _ErrorOverlay extends StatelessWidget {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
-              child: const Text('Retry Login', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              child: const Text(
+                'Retry Login',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
             ),
           ),
           const SizedBox(height: 12),
