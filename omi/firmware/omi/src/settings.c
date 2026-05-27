@@ -9,7 +9,7 @@ LOG_MODULE_REGISTER(app_settings, CONFIG_LOG_DEFAULT_LEVEL);
 // Default values if not found in flash
 #define DEFAULT_DIM_LIGHT_RATIO 50
 #define DEFAULT_MIC_GAIN 6
-#define DEFAULT_VAD_THRESHOLD 250
+#define DEFAULT_VAD_THRESHOLD 32769
 
 // In-memory cache for the settings
 static uint8_t dim_light_ratio = DEFAULT_DIM_LIGHT_RATIO;
