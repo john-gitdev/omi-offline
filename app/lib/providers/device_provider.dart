@@ -43,6 +43,7 @@ class DeviceProvider extends ChangeNotifier
   bool _hasLowBatteryAlerted = false;
 
   Timer? _reconnectionTimer;
+  Timer? _resumeReconnectDebounce;
   DateTime? _reconnectAt;
   final int _connectionCheckSeconds = 15; // Scan every 15s instead of 30s
 
@@ -498,6 +499,10 @@ class DeviceProvider extends ChangeNotifier
 
       if (!isConnected) {
         if (!isConnecting) {
+          // Set the flag BEFORE the scan so _handleDeviceConnected's
+          // maximize-battery+background guard knows this connection is a
+          // sanctioned background sync and shouldn't be dropped.
+          _pendingBackgroundSync = true;
           bool connectedThisTick = false;
           for (int attempt = 0; attempt < 3 && !isConnected; attempt++) {
             if (attempt > 0) await Future.delayed(const Duration(seconds: 10));
@@ -507,12 +512,11 @@ class DeviceProvider extends ChangeNotifier
               break;
             }
           }
-          if (connectedThisTick) {
-            // Defer sync until _finishDeviceSetup has called walSync.setDevice —
-            // calling _doBackgroundSync here races with that setup and syncAll
-            // returns null (device==null) if setup hasn't finished yet.
-            _pendingBackgroundSync = true;
+          if (!connectedThisTick) {
+            _pendingBackgroundSync = false;
           }
+          // If connectedThisTick, _finishDeviceSetup will clear the flag and
+          // kick off _doBackgroundSync.
         }
       } else {
         _doBackgroundSync();
@@ -635,6 +639,7 @@ class DeviceProvider extends ChangeNotifier
     if (SharedPreferencesUtil().maximizeBattery) {
       _reconnectDelayTimer?.cancel();
     }
+    _resumeReconnectDebounce?.cancel();
     // Keep _backgroundSyncTimer running so periodic sync fires overnight.
     // Start the foreground service so Android keeps the process alive with a
     // wake lock — without this the CPU sleeps and the Dart timer never fires.
@@ -692,7 +697,17 @@ class DeviceProvider extends ChangeNotifier
       }
     } else {
       if (prefs.btDevice.id.isNotEmpty) {
-        periodicConnect('app resumed', boundDeviceOnly: true);
+        // Debounce the resume-triggered scan. OnePlus (and similar OEMs) can
+        // emit transient resumed/paused cycles for system overlays or
+        // notification panels — without the debounce, each blip kicks off a
+        // 15s scan loop and the in-flight scan can complete (and stick) after
+        // the next pause, leaving a stale background connection.
+        _resumeReconnectDebounce?.cancel();
+        _resumeReconnectDebounce = Timer(const Duration(seconds: 2), () {
+          if (_isAppInForeground && !isConnected && !isConnecting) {
+            periodicConnect('app resumed', boundDeviceOnly: true);
+          }
+        });
       }
     }
   }
@@ -720,6 +735,7 @@ class DeviceProvider extends ChangeNotifier
     isFirmwareUpdateInProgress = true;
     _reconnectionTimer?.cancel();
     _reconnectDelayTimer?.cancel();
+    _resumeReconnectDebounce?.cancel();
     _backgroundSyncTimer?.cancel();
 
     final walSync = ServiceManager.instance().wal.getSyncs();
@@ -742,6 +758,7 @@ class DeviceProvider extends ChangeNotifier
     _bleButtonListener?.cancel();
     _reconnectionTimer?.cancel();
     _reconnectDelayTimer?.cancel();
+    _resumeReconnectDebounce?.cancel();
     _backgroundSyncTimer?.cancel();
     _disconnectDebouncer.cancel();
     _connectDebouncer.cancel();
@@ -951,6 +968,19 @@ class DeviceProvider extends ChangeNotifier
     try {
       var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
       if (connection == null) return;
+      // Defense in depth: if a foreground-initiated scan completed after the
+      // user backgrounded the app with maximize-battery on, drop the
+      // connection. Background syncs (timer / heartbeat-sync-if-due) set
+      // _pendingBackgroundSync first, so they're exempt.
+      if (SharedPreferencesUtil().maximizeBattery &&
+          !_isAppInForeground &&
+          !_pendingBackgroundSync &&
+          !isFirmwareUpdateInProgress &&
+          !_isOnFirmwareUpdatePage) {
+        Logger.debug('Maximizing battery: dropping background-completed connection');
+        unawaited(ServiceManager.instance().device.disconnectDevice(isManual: true));
+        return;
+      }
       _onDeviceConnected(connection.device);
     } catch (e) {
       updateConnectingStatus(false);
