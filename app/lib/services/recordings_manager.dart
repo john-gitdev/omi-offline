@@ -2226,12 +2226,15 @@ class RecordingsManager {
       final convsInDir = byDir[dirPath]!;
       final filenames = convsInDir.map((c) => c.file.path.split('/').last).toSet();
 
+      // ⚡ Bolt: Batch Heypocket prefs update to prevent O(N) SharedPreferences disk write contention
+      final keysToRemove = convsInDir.map((c) => c.uploadKey).whereType<String>().toSet();
+      if (keysToRemove.isNotEmpty) {
+        await SharedPreferencesUtil().removeUploadedFromHeypocket(keysToRemove);
+      }
+
+      // ⚡ Bolt: Batch concurrent file deletions to eliminate sequential IO stalls
       // 1. Delete audio, meta, bin files
-      for (final c in convsInDir) {
-        final key = c.uploadKey;
-        if (key != null) {
-          await SharedPreferencesUtil().removeUploadedFromHeypocket({key});
-        }
+      await Future.wait(convsInDir.map((c) async {
         final file = c.file;
         // Drop the exists() probe and let delete() fail-soft — one syscall per file instead of two.
         try {
@@ -2250,7 +2253,7 @@ class RecordingsManager {
             await binFile.delete();
           } on FileSystemException catch (_) {}
         } catch (_) {}
-      }
+      }));
 
       // 2. Delete EDL files for all deleted conversations in this directory at once.
       // Reads + deletes run concurrently — each EDL is an independent JSON sidecar.
@@ -2863,9 +2866,7 @@ class RecordingsManager {
       final folderName = folder.path.split('/').last;
       // session_<hex>/ holds pre-time-sync bins (uptime ticks, not UTC) — we
       // can't derive a wall-clock window for them, so leave them alone.
-      if (folderName.startsWith('session_') ||
-          folderName.startsWith('unknown_') ||
-          folderName.startsWith('.')) {
+      if (folderName.startsWith('session_') || folderName.startsWith('unknown_') || folderName.startsWith('.')) {
         continue;
       }
       await for (final binEntity in folder.list()) {
@@ -2903,8 +2904,7 @@ class RecordingsManager {
           await binEntity.delete();
           deletedCount++;
           touchedFolders.add(folder);
-          Logger.debug(
-              'RecordingsManager: pruneConsumedBins deleted $binName (covered by recording window)');
+          Logger.debug('RecordingsManager: pruneConsumedBins deleted $binName (covered by recording window)');
         } catch (e) {
           Logger.error('RecordingsManager: pruneConsumedBins failed to delete ${binEntity.path}: $e');
         }
