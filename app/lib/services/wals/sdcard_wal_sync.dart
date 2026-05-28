@@ -68,6 +68,8 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   int _totalBytesDownloaded = 0;
   DateTime? _downloadStartTime;
   double _currentSpeedKBps = 0.0;
+  DateTime? _lastWalPersistAt;
+  static const Duration _walPersistInterval = Duration(seconds: 1);
   @override
   double get currentSpeedKBps => _currentSpeedKBps;
 
@@ -797,13 +799,19 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               },
               onProgress: (offset) {
                 wal.walOffset = offset;
-                // Persist offset on every flush. Pairs with the truncate-on-resume
-                // guard at the start of _readStorageBytesToFileLocked: by keeping
-                // walOffset within a single-flush window of what's on disk, the
-                // truncate is bounded to at most one flush worth of bytes (handful
-                // of KB) rather than up to 2 MB. The SharedPreferences write cost
-                // is negligible compared to the audio data already being moved.
-                WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
+                // Throttle persistence to ~1 Hz. onProgress fires per BLE packet
+                // (~50/sec); without throttling this floods disk and logs with
+                // identical writes. The truncate-on-resume guard at the start of
+                // _readStorageBytesToFileLocked still bounds re-fetch on crash to
+                // one persist-window of bytes (tens of KB at BLE rates). End-of-
+                // file state transitions (deletion, transfer-failure, end-of-
+                // sync) still persist immediately below.
+                final now = DateTime.now();
+                if (_lastWalPersistAt == null ||
+                    now.difference(_lastWalPersistAt!) >= _walPersistInterval) {
+                  _lastWalPersistAt = now;
+                  WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
+                }
                 final double withinWal = (wal.storageTotalBytes > initialOffset)
                     ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
                     : 1.0;
