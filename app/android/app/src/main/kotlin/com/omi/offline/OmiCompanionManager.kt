@@ -24,13 +24,17 @@ class OmiCompanionManager(
         const val COMPANION_REQUEST_CODE = 42
 
         /**
-         * Start OS-level presence observation for the last-associated device.
-         * Idempotent — safe to call on every reconnect.
+         * Start OS-level presence observation for a specific device by MAC.
+         * Idempotent — safe to call on every reconnect. No-op if no association
+         * exists for that MAC.
          */
-        fun startObservingForLastAssociation(context: Context) {
+        fun startObservingForAddress(context: Context, address: String) {
             if (Build.VERSION.SDK_INT < 33) return
             val cdm = context.getSystemService(Context.COMPANION_DEVICE_SERVICE) as? CompanionDeviceManager ?: return
-            val association = cdm.myAssociations.lastOrNull() ?: return
+            val target = address.uppercase()
+            val association = cdm.myAssociations.firstOrNull {
+                it.deviceMacAddress?.toString()?.uppercase() == target
+            } ?: return
             try {
                 if (Build.VERSION.SDK_INT >= 36) {
                     val request = android.companion.ObservingDevicePresenceRequest.Builder()
@@ -38,37 +42,39 @@ class OmiCompanionManager(
                         .build()
                     cdm.startObservingDevicePresence(request)
                 } else {
-                    val mac = association.deviceMacAddress ?: return
-                    cdm.startObservingDevicePresence(mac.toString())
+                    cdm.startObservingDevicePresence(target)
                 }
-                Log.d(TAG, "startObservingForLastAssociation: ${association.id}")
+                Log.d(TAG, "startObservingForAddress: $target (assoc ${association.id})")
             } catch (e: Exception) {
-                Log.w(TAG, "startObservingForLastAssociation failed: ${e.message}")
+                Log.w(TAG, "startObservingForAddress failed: ${e.message}")
             }
         }
 
         /**
-         * Stop OS-level presence observation for all associations.
+         * Stop OS-level presence observation for a specific device by MAC.
          * Called on explicit disconnect so OnePlus-style passive scans don't keep
-         * the LE link warm after we close the GATT.
+         * the LE link warm after we close the GATT. Leaves any other managed
+         * device's observation untouched.
          */
-        fun stopObservingAll(context: Context) {
+        fun stopObservingForAddress(context: Context, address: String) {
             if (Build.VERSION.SDK_INT < 33) return
             val cdm = context.getSystemService(Context.COMPANION_DEVICE_SERVICE) as? CompanionDeviceManager ?: return
-            for (association in cdm.myAssociations) {
-                try {
-                    if (Build.VERSION.SDK_INT >= 36) {
-                        val request = android.companion.ObservingDevicePresenceRequest.Builder()
-                            .setAssociationId(association.id)
-                            .build()
-                        cdm.stopObservingDevicePresence(request)
-                    } else {
-                        val mac = association.deviceMacAddress ?: continue
-                        cdm.stopObservingDevicePresence(mac.toString())
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "stopObservingAll failed: ${e.message}")
+            val target = address.uppercase()
+            val association = cdm.myAssociations.firstOrNull {
+                it.deviceMacAddress?.toString()?.uppercase() == target
+            } ?: return
+            try {
+                if (Build.VERSION.SDK_INT >= 36) {
+                    val request = android.companion.ObservingDevicePresenceRequest.Builder()
+                        .setAssociationId(association.id)
+                        .build()
+                    cdm.stopObservingDevicePresence(request)
+                } else {
+                    cdm.stopObservingDevicePresence(target)
                 }
+                Log.d(TAG, "stopObservingForAddress: $target (assoc ${association.id})")
+            } catch (e: Exception) {
+                Log.w(TAG, "stopObservingForAddress failed: ${e.message}")
             }
         }
     }
