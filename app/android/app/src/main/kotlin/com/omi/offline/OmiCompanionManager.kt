@@ -22,6 +22,61 @@ class OmiCompanionManager(
     companion object {
         private const val TAG = "OmiBle.CompanionMgr"
         const val COMPANION_REQUEST_CODE = 42
+
+        /**
+         * Start OS-level presence observation for a specific device by MAC.
+         * Idempotent — safe to call on every reconnect. No-op if no association
+         * exists for that MAC.
+         */
+        fun startObservingForAddress(context: Context, address: String) {
+            if (Build.VERSION.SDK_INT < 33) return
+            val cdm = context.getSystemService(Context.COMPANION_DEVICE_SERVICE) as? CompanionDeviceManager ?: return
+            val target = address.uppercase()
+            val association = cdm.myAssociations.firstOrNull {
+                it.deviceMacAddress?.toString()?.uppercase() == target
+            } ?: return
+            try {
+                if (Build.VERSION.SDK_INT >= 36) {
+                    val request = android.companion.ObservingDevicePresenceRequest.Builder()
+                        .setAssociationId(association.id)
+                        .build()
+                    cdm.startObservingDevicePresence(request)
+                } else {
+                    cdm.startObservingDevicePresence(target)
+                }
+                Log.d(TAG, "startObservingForAddress: $target (assoc ${association.id})")
+            } catch (e: Exception) {
+                Log.w(TAG, "startObservingForAddress failed: ${e.message}")
+            }
+        }
+
+        /**
+         * Stop OS-level presence observation for a specific device by MAC.
+         * Called on explicit disconnect so OnePlus-style passive scans don't keep
+         * the LE link warm after we close the GATT. Leaves any other managed
+         * device's observation untouched.
+         */
+        fun stopObservingForAddress(context: Context, address: String) {
+            if (Build.VERSION.SDK_INT < 33) return
+            val cdm = context.getSystemService(Context.COMPANION_DEVICE_SERVICE) as? CompanionDeviceManager ?: return
+            val target = address.uppercase()
+            val association = cdm.myAssociations.firstOrNull {
+                it.deviceMacAddress?.toString()?.uppercase() == target
+            } ?: return
+            try {
+                if (Build.VERSION.SDK_INT >= 36) {
+                    val request = android.companion.ObservingDevicePresenceRequest.Builder()
+                        .setAssociationId(association.id)
+                        .build()
+                    cdm.stopObservingDevicePresence(request)
+                } else {
+                    cdm.stopObservingDevicePresence(target)
+                }
+                Log.d(TAG, "stopObservingForAddress: $target (assoc ${association.id})")
+            } catch (e: Exception) {
+                Log.w(TAG, "stopObservingForAddress failed: ${e.message}")
+            }
+        }
     }
 
     private val companionDeviceManager =

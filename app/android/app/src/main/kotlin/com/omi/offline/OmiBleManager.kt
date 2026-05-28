@@ -219,7 +219,20 @@ class OmiBleManager private constructor(private val application: Application) {
     fun closeGatt(address: String) {
         val addr = address.uppercase()
         cleanupPeripheral(addr)
-        connectedGatts[addr]?.close()
+        val gatt = connectedGatts[addr]
+        if (gatt != null) {
+            // Clear cached state + lingering autoConnect handle before close().
+            // OnePlus/Xiaomi stacks otherwise keep a passive reconnect alive
+            // after gatt.close(), making the LE link come back on its own and
+            // defeating maximize-battery disconnect.
+            try {
+                val refresh = gatt.javaClass.getMethod("refresh")
+                refresh.invoke(gatt)
+            } catch (e: Exception) {
+                Log.w(TAG, "gatt.refresh() reflection failed for $addr: ${e.message}")
+            }
+            gatt.close()
+        }
         connectedGatts.remove(addr)
     }
 

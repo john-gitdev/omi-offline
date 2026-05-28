@@ -412,18 +412,21 @@ class DeviceProvider extends ChangeNotifier
     if (device != null) return device;
     final pairedDeviceId = SharedPreferencesUtil().btDevice.id;
     if (pairedDeviceId.isNotEmpty) {
+      // Fast path: direct connect-by-MAC. On OnePlus and similar OEMs where the
+      // device is still system-cached, native OmiBleManager.connectGatt picks
+      // autoConnect=false and reattaches in <1s. Even when not cached, a direct
+      // connectGatt(autoConnect=false) to a known MAC is faster than a 10s scan.
       try {
-        // Don't force: the native BLE layer owns reconnect retries (~1.5s cadence,
-        // way more aggressive than this 15s timer). Force=true here would dogpile
-        // on top of the native retry loop, spawning duplicate GATT handles.
-        // ensureConnection without force becomes a no-op if a transport already
-        // exists, and the discover() fallback below still runs if needed.
-        await ServiceManager.instance().device.ensureConnection(pairedDeviceId).timeout(const Duration(seconds: 10));
+        await ServiceManager.instance().device
+            .ensureConnection(pairedDeviceId, force: true)
+            .timeout(const Duration(seconds: 10));
         await Future.delayed(const Duration(seconds: 1));
         device = await _getConnectedDevice();
         if (device != null) return device;
       } catch (_) {}
     }
+    // Fallback: full scan when direct connect failed (device out of range,
+    // bond lost, or MAC changed).
     await ServiceManager.instance().device.discover(desirableDeviceId: pairedDeviceId, timeout: 10);
     await Future.delayed(const Duration(seconds: 2));
     return connectedDevice;
