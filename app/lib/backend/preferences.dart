@@ -401,6 +401,12 @@ class SharedPreferencesUtil {
   bool get devLogsToFileEnabled => getBool('devLogsToFileEnabled');
   set devLogsToFileEnabled(bool value) => saveBool('devLogsToFileEnabled', value);
 
+  // When true, the SD Write Drops panel is shown on Debug Tools and polls the
+  // device's drop counters every 2s. Off by default so the BLE read never runs
+  // unless the user is actively investigating.
+  bool get showSdWriteDrops => getBool('showSdWriteDrops', defaultValue: false);
+  set showSdWriteDrops(bool value) => saveBool('showSdWriteDrops', value);
+
   //--------------------------- Setters & Getters -----------------------------//
 
   String getString(String key, {String defaultValue = ''}) => _preferences?.getString(key) ?? defaultValue;
