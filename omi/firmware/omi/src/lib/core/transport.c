@@ -751,6 +751,68 @@ static void post_connect_work_handler(struct k_work *work)
 }
 K_WORK_DELAYABLE_DEFINE(post_connect_work, post_connect_work_handler);
 
+/* Idle disconnect: drop the BLE link after IDLE_DISCONNECT_TIMEOUT_MS of no
+ * GATT activity on storage characteristics.  Saves Omi battery — when
+ * disconnected the radio reverts to advertising, which is ~10x lower power
+ * than maintaining a connection.  The Android system Bluetooth service does
+ * not auto-reconnect bonded LE peers unless an app explicitly requests it
+ * (verified 2026-05-27 by toggling BT off/on and observing no auto-reconnect
+ * for 30+ s), so the link stays down until the app's next periodic sync
+ * scans and connects. */
+#define IDLE_DISCONNECT_TIMEOUT_MS 30000
+#define IDLE_DISCONNECT_POLL_MS    5000
+
+static atomic_t last_activity_ms;
+
+void transport_mark_activity(void)
+{
+    atomic_set(&last_activity_ms, (atomic_val_t)k_uptime_get_32());
+}
+
+static void idle_disconnect_work_handler(struct k_work *work)
+{
+    if (!is_connected) {
+        return;
+    }
+
+    uint32_t now = k_uptime_get_32();
+    uint32_t last = (uint32_t)atomic_get(&last_activity_ms);
+    uint32_t idle_ms = now - last;
+
+    if (idle_ms < IDLE_DISCONNECT_TIMEOUT_MS) {
+        k_work_schedule(k_work_delayable_from_work(work), K_MSEC(IDLE_DISCONNECT_POLL_MS));
+        return;
+    }
+
+    /* Snapshot+null+unref under conn_mutex — same pattern as transport_off
+     * (see line ~1265) so a concurrent _transport_disconnected sees NULL and
+     * skips its unref of a connection we already released. */
+    struct bt_conn *conn_to_release = NULL;
+    k_mutex_lock(&conn_mutex, K_FOREVER);
+    /* Re-check idle under the lock: a disconnect+reconnect between the
+     * timestamp read above and acquiring the mutex would otherwise let us
+     * disconnect a freshly-connected link.  Cheap two-line guard. */
+    uint32_t idle_ms_locked = k_uptime_get_32() - (uint32_t)atomic_get(&last_activity_ms);
+    if (idle_ms_locked >= IDLE_DISCONNECT_TIMEOUT_MS) {
+        conn_to_release = current_connection;
+        current_connection = NULL;
+    }
+    k_mutex_unlock(&conn_mutex);
+
+    if (conn_to_release == NULL) {
+        /* Lost the race or already disconnected; reschedule and try again. */
+        k_work_schedule(k_work_delayable_from_work(work), K_MSEC(IDLE_DISCONNECT_POLL_MS));
+        return;
+    }
+
+    LOG_INF("Idle for %u ms, disconnecting to save power", idle_ms);
+    bt_conn_disconnect(conn_to_release, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    bt_conn_unref(conn_to_release);
+    /* _transport_disconnected fires next; it restarts advertising and the
+     * work item stays cancelled until the next connect. */
+}
+K_WORK_DELAYABLE_DEFINE(idle_disconnect_work, idle_disconnect_work_handler);
+
 static void update_conn_params(struct bt_conn *conn);
 
 static void _transport_connected(struct bt_conn *conn, uint8_t err)
@@ -801,6 +863,8 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
 #endif
 
     is_connected = true;
+    transport_mark_activity();
+    k_work_schedule(&idle_disconnect_work, K_MSEC(IDLE_DISCONNECT_POLL_MS));
 }
 
 static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
@@ -813,6 +877,7 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
 #endif
 
     k_work_cancel_delayable(&mtu_recheck_work);
+    k_work_cancel_delayable(&idle_disconnect_work);
 
     LOG_INF("Transport disconnected");
 
