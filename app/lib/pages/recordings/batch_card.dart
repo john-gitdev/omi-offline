@@ -4,6 +4,7 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
+import 'package:omi/utils/other/time_utils.dart';
 
 class UploadIconButton extends StatelessWidget {
   final Conversation? conversation;
@@ -239,9 +240,6 @@ class GhostRow extends StatelessWidget {
 
   const GhostRow({super.key, required this.discard, required this.onTap});
 
-  static String _hourMin(DateTime t) =>
-      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
-
   static String _durationLabel(Duration d) {
     final h = d.inHours;
     final m = d.inMinutes % 60;
@@ -252,7 +250,7 @@ class GhostRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final timeRange = '${_hourMin(discard.startTime)}–${_hourMin(discard.endTime)}';
+    final timeRange = '${fmtHourMin(discard.startTime)}–${fmtHourMin(discard.endTime)}';
     final dur = _durationLabel(discard.duration);
     final subLabel = discard.isNoise ? 'silenced by VAD' : 'too short';
     return InkWell(
@@ -296,10 +294,15 @@ Future<void> showDiscardSheet(
   required Future<void> Function(DiscardRecord) onRecover,
   required Future<void> Function(DiscardRecord) onDeleteNow,
 }) async {
+  final use24 = SharedPreferencesUtil().use24HourTime;
   String two(int n) => n.toString().padLeft(2, '0');
-  String fmtTime(DateTime t) => '${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
-  String fmtAbs(DateTime t) =>
-      '${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
+  String fmtTime(DateTime t) {
+    if (use24) return '${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
+    final h12 = t.hour == 0 ? 12 : (t.hour > 12 ? t.hour - 12 : t.hour);
+    return '$h12:${two(t.minute)}:${two(t.second)} ${t.hour < 12 ? 'AM' : 'PM'}';
+  }
+
+  String fmtAbs(DateTime t) => '${t.year}-${two(t.month)}-${two(t.day)} ${fmtHourMin(t)}';
   await showModalBottomSheet<void>(
     context: context,
     backgroundColor: const Color(0xFF1C1C1E),
