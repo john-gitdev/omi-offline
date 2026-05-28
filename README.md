@@ -2,7 +2,7 @@
 
 A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
 
-**Current versions:** App `0.13.2` · Firmware `oo-1.7.10`
+**Current versions:** App `0.14.4` · Firmware `oo-1.9.0`
 
 ---
 
@@ -62,20 +62,21 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
 
 ## Recording Modes
 
-### Automatic (default)
+### Manual (default since 0.14.0)
 
-The device monitors audio continuously. Silero VAD segments speech from silence; the LED stays off until audio above the AAD threshold wakes the mic pipeline (yellow = recording).
+Double-tap the button to start; double-tap again to stop. The LED flashes green on start and red on stop, then stays yellow while recording.
+
+- The AAD threshold is forced to `0xFFFF` (always-on) so the firmware never suppresses audio.
+- Stopping emits a dedicated `0xFFFFFFFC` session-end marker so the processor finalizes the recording without waiting for a silence timeout.
+- The app treats the captured span as a recording regardless of Silero VAD output.
+- AAD Sensitivity and certain VAD settings are hidden in the UI.
+
+### Automatic
+
+The device monitors audio continuously. Silero VAD segments speech from silence; the LED stays off until audio above the AAD threshold wakes the mic pipeline (yellow = recording). Double-tap drops a white-flash marker.
 
 - Split on: `vadSplitSeconds` of continuous silence (default 2 min), or `vadMaxConversationMinutes` cap (default 60 min).
 - Recordings accumulate across sync cycles — partial in-progress recordings are re-processed each run.
-
-### Manual
-
-Double-tap the button to start; double-tap again to stop. The LED turns yellow while recording and off while waiting.
-
-- The AAD threshold is forced to `0xFFFF` (always-on) so the firmware never suppresses audio.
-- The app treats the captured span as a recording regardless of Silero VAD output.
-- AAD Sensitivity and certain VAD settings are hidden in the UI.
 
 ---
 
@@ -87,7 +88,7 @@ Priority order (highest wins):
 |----------|-----------|-----|
 | 1 | Device off | Off |
 | 2 | Charging starts | Force LED on, continue |
-| 3 | Double-tap marker | White (~1 s flash, overrides stealth) |
+| 3 | Double-tap flash event | ~1 s flash, overrides stealth. White = marker tap (auto mode); Green = manual recording start; Red = manual recording stop |
 | 4 | Stealth mode | Off |
 | 5 | Muted | Solid Red |
 | 6 | Low battery (< 10%) | Solid Purple |
@@ -105,7 +106,8 @@ Priority order (highest wins):
 | Action | Effect |
 |--------|--------|
 | Single tap | No action |
-| Double tap | White flash; marks a timestamped event |
+| Double tap (automatic mode) | White flash; writes a timestamped marker |
+| Double tap (manual mode) | Green flash starts a recording; second double-tap (red flash) stops it and emits a session-end marker |
 | Double tap + hold (1 s on second press) | Toggle mute (Red LED, mic paused) |
 | Triple tap | Toggle Stealth Mode |
 | Triple tap + hold (3 s on third press) | Power off |
@@ -161,7 +163,6 @@ File indices are cache positions (0-based, rebuilt after every LIST and every de
 | Adjustment Mode | `adjustmentMode` | false | Keep raw segments for offline reprocessing |
 | Keep recordings for | `keepRecordingsDays` | -1 | -1 = forever, 0 = delete immediately after upload |
 | Maximize Battery | `maximizeBattery` | false | Disconnect BLE after each sync cycle |
-| 24-hour time | `use24HourFormat` | false | Toggle AM/PM vs 24 h in UI |
 
 ---
 
