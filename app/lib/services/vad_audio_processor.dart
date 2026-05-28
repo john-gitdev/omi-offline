@@ -669,7 +669,11 @@ class VadAudioProcessor {
           final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
           if (!tooShortSpeech) {
-            final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
+            // capEnded=true: VAD cut here because the recording hit the max-duration cap,
+            // not because of silence. The pruneConsumedBins guard reads this flag from
+            // .meta so it knows NOT to delete bins whose wall-clock extends past rec_end
+            // (those bins may contain the post-cap continuation of the conversation).
+            final filePath = await _saveRecording(_currentRefs, _recordingStartTime!, capEnded: true);
             // Encoder failure path: preserve queued taps as orphans.
             if (filePath == null) _emitOrphanMarkers();
             if (filePath != null) savedFiles.add(filePath);
@@ -854,8 +858,9 @@ class VadAudioProcessor {
       _saveRecording(refs, startTime, isDerivedTimestamp: isDerivedTimestamp);
 
   Future<String?> _saveRecording(List<Object> refs, DateTime startTime,
-      {bool? isDerivedTimestamp, bool isDraft = false}) async {
-    final result = await _saveRecordingCore(refs, startTime, isDerivedTimestamp: isDerivedTimestamp, isDraft: isDraft);
+      {bool? isDerivedTimestamp, bool isDraft = false, bool capEnded = false}) async {
+    final result = await _saveRecordingCore(refs, startTime,
+        isDerivedTimestamp: isDerivedTimestamp, isDraft: isDraft, capEnded: capEnded);
     if (result != null) {
       if (_pendingMarkers.isNotEmpty) {
         final filename = result.split('/').last;
@@ -924,7 +929,7 @@ class VadAudioProcessor {
   }
 
   Future<String?> _saveRecordingCore(List<Object> refs, DateTime startTime,
-      {bool? isDerivedTimestamp, bool isDraft = false}) async {
+      {bool? isDerivedTimestamp, bool isDraft = false, bool capEnded = false}) async {
     final derived = isDerivedTimestamp ?? _isDerivedTimestamp;
     final prefix = derived ? 'unknown' : 'recording';
     final timestamp = startTime.millisecondsSinceEpoch;
@@ -949,18 +954,18 @@ class VadAudioProcessor {
 
     final frameRefCount = refs.whereType<FrameRef>().length;
     if (frameRefCount > 0 && frameRefCount < 5) {
-      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
+      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix, capEnded: capEnded);
     }
 
     // Always use WAV for drafts if M4A is requested, as M4A doesn't support easy stitching.
     // The RecordingsManager will convert the finalized WAV to M4A during the promotion phase.
     if (_audioSaveFormat == 'wav' || (isDraft && _audioSaveFormat == 'm4a')) {
-      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
+      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix, capEnded: capEnded);
     } else if (_audioSaveFormat == 'ogg') {
       if (Platform.isIOS) {
-        return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
+        return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix, capEnded: capEnded);
       } else {
-        return await _saveOgg(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
+        return await _saveOgg(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix, capEnded: capEnded);
       }
     }
 
@@ -1112,11 +1117,11 @@ class VadAudioProcessor {
       try {
         if (await corruptFile.exists()) await corruptFile.delete();
       } catch (_) {}
-      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
+      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix, capEnded: capEnded);
     }
 
     await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-        prefix: prefix, extension: 'm4a', suffix: suffix);
+        prefix: prefix, extension: 'm4a', suffix: suffix, capEnded: capEnded);
 
     final totalSkipped = skippedReadFail + skippedDecodeNull + skippedDecodeEmpty;
     if (totalFrameRefs > 0 && totalSkipped * 20 > totalFrameRefs) {
@@ -1134,7 +1139,7 @@ class VadAudioProcessor {
 
   Future<void> _saveMetadata(List<Object> refs, String dateFolderPath, int timestamp, int totalSamples,
       List<double> dynamicPeaks, int waveformBuckets,
-      {required String prefix, required String extension, String suffix = ''}) async {
+      {required String prefix, required String extension, String suffix = '', bool capEnded = false}) async {
     final finalAmplitudes = List<double>.filled(waveformBuckets, 0.0);
     if (dynamicPeaks.isNotEmpty) {
       final double ratio = dynamicPeaks.length / waveformBuckets;
@@ -1173,13 +1178,26 @@ class VadAudioProcessor {
         final truncatedKey = keyBytes.length > 255 ? keyBytes.sublist(0, 255) : keyBytes;
         metaOut.add(truncatedKey.length);
         metaOut.addAll(truncatedKey);
+      } else {
+        metaOut.add(0); // empty keyLen so the flag bytes still land at flagOffset = 417
       }
+    } else {
+      metaOut.add(0); // empty keyLen — keep flag bytes positioned at flagOffset = 417
     }
+    // Three flag bytes at flagOffset = 417 + keyLen:
+    //   [0] passthrough (set later by integrations layer, 0 on initial write)
+    //   [1] forceSynced (set later by _finalizeDraft for manual-finalize cases, 0 on initial write)
+    //   [2] capEnded    (set HERE — true iff VAD ended this recording at the max-duration cap)
+    // pruneConsumedBins reads byte [2] to decide whether bins extending past rec_end may be
+    // safely deleted (silence-ended) or must be preserved (cap-ended).
+    metaOut.add(0); // passthrough
+    metaOut.add(0); // forceSynced
+    metaOut.add(capEnded ? 1 : 0); // capEnded
     await File(metaPath).writeAsBytes(metaOut);
   }
 
   Future<String?> _saveOgg(List<Object> refs, String dateFolderPath, int timestamp,
-      {String prefix = 'recording', String suffix = ''}) async {
+      {String prefix = 'recording', String suffix = '', bool capEnded = false}) async {
     final oggPath = '$dateFolderPath/${prefix}_$timestamp$suffix.ogg';
     final tmpPath = '$oggPath.tmp';
     final oggFile = File(tmpPath);
@@ -1292,7 +1310,7 @@ class VadAudioProcessor {
       await sink.close();
 
       await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-          prefix: prefix, extension: 'ogg', suffix: suffix);
+          prefix: prefix, extension: 'ogg', suffix: suffix, capEnded: capEnded);
 
       await oggFile.rename(oggPath);
       renamed = true;
@@ -1410,7 +1428,7 @@ class VadAudioProcessor {
   }
 
   Future<String?> _saveWav(List<Object> refs, String dateFolderPath, int timestamp,
-      {String prefix = 'recording', String suffix = ''}) async {
+      {String prefix = 'recording', String suffix = '', bool capEnded = false}) async {
     final wavPath = '$dateFolderPath/${prefix}_$timestamp$suffix.wav';
     final rawPath = '$dateFolderPath/${prefix}_$timestamp$suffix.raw';
     final rawFile = File(rawPath);
@@ -1515,7 +1533,7 @@ class VadAudioProcessor {
       await rawFile.delete();
 
       await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-          prefix: prefix, extension: 'wav', suffix: suffix);
+          prefix: prefix, extension: 'wav', suffix: suffix, capEnded: capEnded);
 
       await wavFile.rename(wavPath);
 
