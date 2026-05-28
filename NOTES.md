@@ -312,3 +312,71 @@ Logger.error(
 **If you see it:** check whether the dropped EDL filenames have a `_<n>` suffix (legacy data — safe to delete via the dropped log line) or are plain `marker_<ms>.edl` in a different folder (cross-folder collision — investigate `_writeMarkerEdl`'s date-folder derivation).
 
 **Recovery:** the canonical EDL is preserved; the dropped ones are still on disk (the dedup is in-memory only). The hidden "Delete Problematic EDLs" debug button in `sync_page.dart` won't catch these because they're not pending — manually delete via filesystem if needed.
+
+---
+
+## Firmware + App: SD Write Drop Counters (diagnostic instrumentation)
+
+**Status:** shipped and load-bearing as a canary; validated premise = no drops in real use.
+
+### Why this exists
+
+Originally built to validate a deferred proposal ("Sequence & Sync" marker re-synchronization, formerly in `IDEAS.md`). That proposal would have wrapped every audio packet in a sequence-number + uptime header so the app could detect dropped frames and reconstruct a gap-less timeline — protecting in-stream button-tap markers (`0xFFFFFFFE`) from drifting out of sync when frames are lost. In-stream markers currently rely on byte-position within the `.bin` stream to compute their audio timestamp; if the firmware/SD card drops frames the timeline "shrinks" but the marker stays at its byte-offset, so it drifts.
+
+That proposal's complexity is only justified **if SD write drops actually happen**. These counters were built to measure that. **Result: zero drops across the entire usage history since they shipped** — so the Sequence & Sync proposal was dropped as solving a non-problem (the section was removed from `IDEAS.md` on 2026-05-28). The counters are retained as a permanent cheap canary: if a future firmware change reintroduces drops, the Debug Tools page surfaces it instead of silently shipping marker drift.
+
+### Three counters, three failure modes
+
+| Counter | Source | Fires when |
+|---|---|---|
+| `block_drops` | `transport.c::write_custom_packet_to_storage` | `write_to_file` returns ≠ `MAX_WRITE_SIZE` — the entire 440 B block is lost (~5 Opus frames ≈ 100 ms of audio). This is the headline number — exactly the loss the marker-drift proposal solved for. |
+| `sd_stream_drops` | `sd_card.c::write_to_file` (~line 589) | `k_msgq_put(&sd_msgq, …)` times out after a 1–5 ms retry — a single audio frame is lost. This is the upstream signal; most block drops are downstream of a stream drop. |
+| `sd_boot_drops` | `sd_card.c::write_to_file` boot path | An audio frame arrives before the SD mount + `lfs_fs_gc` + file-open completes. Separate cold-start issue, **not** relevant to mid-stream drift. |
+
+### BLE characteristic `0x19B10062` (diagnostics service)
+
+Read-only. Returns **20 bytes, little-endian**, five `u32` fields in this order:
+
+```
+[ block_drops u32 ][ last_drop_uptime_ms u32 ][ sd_stream_drops u32 ][ sd_boot_drops u32 ][ now_uptime_ms u32 ]
+```
+
+- `block_drops` — see table above.
+- `last_drop_uptime_ms` — device uptime (ms) of the most recent block drop; 0 if none. Compare against `now_uptime_ms` to tell "recent" from "early-boot, long ago."
+- `sd_stream_drops` — single-frame msgq-saturation drops.
+- `sd_boot_drops` — cold-start pre-mount drops.
+- `now_uptime_ms` — current device uptime, the reference clock for `last_drop_uptime_ms`.
+
+All counters are cumulative since boot. They reset only on device reboot — there is no firmware reset command (the originally-planned `0x19B10063` "reset stats" write was never added; baseline subtraction is done app-side instead).
+
+### Firmware variables / internals
+
+- `transport.c`: `static atomic_t storage_block_drops` and `static atomic_t last_storage_drop_uptime_ms` (both `ATOMIC_INIT(0)`). Incremented together at the two `write_custom_packet_to_storage` failure sites (`atomic_inc` + `atomic_set(k_uptime_get())`). Exposed via `diagnostics_drops_read_handler`, registered as the last attribute in `diagnostics_service_attr[]`.
+- `sd_card.c`: `static atomic_t stat_dropped_frames` (stream drops) and `static atomic_t boot_dropped_frames` (boot drops). `SD_REQ_QUEUE_MSGS = 100` (sd_card.c:48) backs `K_MSGQ_DEFINE(sd_msgq, …)` — ~10 s of write buffer at 50 fps; typical SD GC stalls are 100–400 ms and won't saturate it. Accessors: `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`.
+- `sd_card.h`: declares `sd_get_stream_dropped_frames()` (line 160) and `sd_get_boot_dropped_frames()`.
+
+### App side / how to use it
+
+1. Open the **Debug Tools** page (`SyncPage`). Look at the **"SD Write Drops"** card (`_buildDropStatsSection()`, sync_page.dart:797). It polls the characteristic every 2 s via a `Timer.periodic` started in `initState`.
+2. State fields: `_dropStats` (latest read), `_dropBaseline` (snapshot for delta measurement), `_dropsUnsupported` (true if the char read fails — older firmware without the characteristic).
+3. **"Snapshot baseline"** button stores the current counters into `_dropBaseline`; the card then shows the delta since the snapshot — use this to measure drops over a specific window (e.g. an active sync-while-recording stress test) without rebooting the device.
+4. Healthy reading: all four drop counts at 0 (or unchanged from baseline). Any movement means real audio loss — investigate per the table above (`sd_stream_drops` moving = genuine msgq saturation → the marker-drift concern is back on the table; `boot_drops` moving = cold-start window leak, a separate fix).
+
+### Forcing drops for a controlled test
+
+- Run an active BLE sync **while recording**: the SD-worker retry budget tightens (`K_MSEC(5)` → `K_MSEC(1)`) and sync reads compete with writes on the same worker thread. ~30–60 min usually enough to provoke something if the system is marginal.
+- Or temporarily drop `SD_REQ_QUEUE_MSGS` from 100 → 8 in `sd_card.c` and rebuild — forces drops within minutes. This only proves the counters fire; it says nothing about real-world frequency. Revert after verifying.
+
+### Code locations
+
+- `omi/firmware/omi/src/lib/core/transport.c` — `storage_block_drops` / `last_storage_drop_uptime_ms` (declared ~line 293), `diagnostics_drops_read_handler` (~line 341), char registration in `diagnostics_service_attr[]` (UUID encode ~line 317), increment sites in `write_custom_packet_to_storage` (~lines 1157, 1187).
+- `omi/firmware/omi/src/sd_card.c` — `stat_dropped_frames` / `boot_dropped_frames` atomics (~line 267), `SD_REQ_QUEUE_MSGS` (line 48), `sd_get_stream_dropped_frames()` (~line 2188), `sd_get_boot_dropped_frames()` (~line 2183).
+- `omi/firmware/omi/src/lib/core/sd_card.h` — accessor declarations (line 160).
+- `app/lib/services/devices/device_drop_stats.dart` — `DeviceDropStats` model + 20-byte LE parsing.
+- `app/lib/services/devices/omi_connection.dart` — `diagnosticsDropsCharacteristicUuid` (line 53), `performGetDropStats()` (line 186).
+- `app/lib/services/devices/device_connection.dart` — abstract `getDropStats()` (line 89).
+- `app/lib/pages/settings/sync_page.dart` — state fields (lines 37–40), 2 s polling in `initState`, `_buildDropStatsSection()` (line 797).
+
+### Removal plan (if ever decided the canary isn't worth keeping)
+
+Delete the characteristic + handler + registration in `transport.c`, the `sd_card.c`/`.h` accessors if unused elsewhere, the Dart model/accessor, and the app widget + state. Leaves no functional residue — purely diagnostic surface area, no audio-path dependency.
