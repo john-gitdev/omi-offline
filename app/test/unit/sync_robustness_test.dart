@@ -7,6 +7,7 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
+import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/devices/transports/device_transport.dart';
 import 'package:flutter/services.dart';
@@ -103,6 +104,12 @@ class MockDeviceConnection implements DeviceConnection {
 
   @override
   Future<DeviceCrashLog?> performGetDiagnostics() async => null;
+
+  @override
+  Future<DeviceDropStats?> getDropStats() async => null;
+
+  @override
+  Future<DeviceDropStats?> performGetDropStats() async => null;
 
   @override
   Future<bool> deleteFile(StorageFile file, {int? timestamp}) async => true;
