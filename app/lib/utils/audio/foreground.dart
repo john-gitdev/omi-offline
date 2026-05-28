@@ -100,8 +100,12 @@ class ForegroundUtil {
     }
   }
 
+  /// Brand title shown on every Omi Offline foreground notification. The idle
+  /// "sync timer" notification overrides this with its own countdown title.
+  static const String defaultTitle = 'Omi Offline';
+
   static Future<ServiceRequestResult> startForegroundTask({
-    String title = 'Omi is active',
+    String title = defaultTitle,
     String text = 'Running in the background',
   }) async {
     if (_isStarting) {
@@ -134,7 +138,7 @@ class ForegroundUtil {
     }
   }
 
-  static Future<void> updateNotification({required String title, required String text}) async {
+  static Future<void> updateNotification({String title = defaultTitle, required String text}) async {
     if (!await FlutterForegroundTask.isRunningService) return;
     await FlutterForegroundTask.updateService(notificationTitle: title, notificationText: text);
   }
