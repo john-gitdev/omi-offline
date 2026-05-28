@@ -29,19 +29,20 @@ This document defines the official terminology for all audio-related data struct
 - `segmentIndex`: Used only on the Apple Watch / pigeon bridge (`flutter_communicator.g.dart`, `watch_interface.dart`); it does **not** appear in the SD-card sync path. Segments on disk are keyed by `timerStart`, not by an index.
 
 ### Capture (Live State)
-- `isCapturing`: A private getter on `VadAudioProcessor` (in `vad_audio_processor.dart`) — true while speech frames are being accumulated into an in-progress recording. There is no top-level/UI `isCapturing` flag.
+- `isCapturing`: A public getter on `VadAudioProcessor` (in `vad_audio_processor.dart`), only consumed internally — true while speech frames are being accumulated into an in-progress recording. There is no top-level/UI `isCapturing` flag.
 - `startCapture()` / `stopCapture()`: Aspirational API for initiating/ending the device stream (not yet implemented).
 - `captureStartTime`: Aspirational. The closest real value is the private `_recordingStartTime` inside `VadAudioProcessor`.
 
 ### VAD & Processing Settings (in `app/lib/backend/preferences.dart`)
 - `vadSplitSeconds` (default 120): Silence duration required to split into a new **Recording**.
 - `vadMinSpeechSeconds` (default 3): Minimum speech duration required for a valid **Recording**.
-- `vadMaxConversationMinutes` (default 60): Hard cap on a single **Recording**.
-- `autoMode*` / `manualMode*` variants: Per-mode overrides for the three settings above (e.g. `autoModeVadSplitSeconds`, `manualModeVadMinSpeechSeconds`).
+- `vadMaxConversationMinutes` (default 60 on the legacy global pref; the per-mode `autoModeVadMaxConversationMinutes` and `manualModeVadMaxConversationMinutes` both default to **0 = no cap** and are the values actually consulted now): Hard cap on a single **Recording**.
+- `manualMode` (default `true` since 0.14.0): Selects which per-mode snapshot is applied. Manual mode pins VAD off, ignores `vadSplitSeconds` / `vadMinSpeechSeconds` (no speech/duration filtering), and relies on the firmware-emitted session-end marker (`0xFFFFFFFC`) as the conversation boundary; the only user-tunable manual-mode knob is `manualModeVadMaxConversationMinutes`.
+- `autoMode*` variants: Per-mode overrides for auto mode (`autoModeVadEnabled`, `autoModeVadSpeechThreshold`, `autoModeVadMinSpeechSeconds`, `autoModeVadSplitSeconds`, `autoModeFilterMinDurationSeconds`, `autoModeDiscardShortRecordings`, `autoModeVadMaxConversationMinutes`).
 - **Note:** There is no `vadGapSeconds`, `vadSnrMarginDb`, or `vadPreSpeechSeconds` setting. The gap threshold between consecutive files is derived as `vadSplitSeconds - _firmwareVadHoldMs` (10 s); the SNR margin lives inside `OfflineAudioProcessor` and is not a user preference.
 
 ### Markers
-- `markerTimestamps`: List of event timestamps (Stars) associated with a **DeviceSession** or **Batch**.
+- `markerTimestamps`: `List<DateTime>` field on `Batch` — the event timestamps (button taps) of all markers that fell in that **Batch**'s UTC day.
 
 ### Recording (Artifacts)
 - `recordingFile`: The `File` object for the transcoded audio artifact.
@@ -54,14 +55,16 @@ This document defines the official terminology for all audio-related data struct
 
 - `/raw_segments/`: Physical storage for raw audio data.
   - `/{timerStart}/`: Numeric folder grouping **Segments** that share a `timerStart` (Unix UTC seconds), e.g. `raw_segments/1713892490/`. This is the normal "synced timestamps" layout.
-  - `/session_{hexSessionId}/`: Fallback folder used when `timerStart` predates the epoch validity check (`< 946684800`) — i.e. pre-time-sync data. The UI groups these under "Unorganized".
+  - `/session_{sessionId}/`: Fallback folder used when `timerStart` predates the epoch validity check (`< 946684800`) — i.e. pre-time-sync data. `sessionId` is rendered as a decimal `int` (e.g. `session_2847583920/`), not hex. The UI groups these under "Unorganized".
     - `{timerStart}_{sessionId}.bin`: **Segment** file. Written by `_flushToDisk()` in `sdcard_wal_sync.dart`. `sessionId` is the firmware's 32-bit DeviceSession ID (or `0` if unknown).
     - **Markers are not written here.** Marker events (`0xFFFFFFFE` packets inside the `.bin` stream) are decoded in-line by `VadAudioProcessor` and persisted as `.edl` sidecars next to the finalized recording.
 - `/recordings/`: Physical storage for finalized audio artifacts.
   - `/{yyyy-mm-dd}/`: Organized by the UTC date of the recording's start time.
     - `recording_{startMs}.m4a` / `.wav`: The final **Recording** artifact (millisecond UTC timestamp).
-    - `recording_{startMs}.meta`: Optional metadata sidecar.
-    - `marker_{markerMs}.edl`: **Marker** sidecar — JSON with `markerTimestampMs` and `segmentFilename` fields. Created during processing; "pending" markers (no matching recording yet) are detected via `getMarkerConversations()`.
+    - `recording_{startMs}_draft.m4a` / `.wav`: In-progress flush. Written by `flushRemaining(isDraft: true)` at end-of-run and re-stitched on the next sync+process cycle until silence/cap conditions promote it to a finalized recording. Not surfaced in the UI.
+    - `recording_{startMs}.meta`: Optional metadata sidecar (binary; carries duration, end timestamp, capEnded flag, upload key, passthrough/forceSynced flags, session id).
+    - `marker_{markerMs}.edl`: **Marker** sidecar — JSON with `markerTimestampMs`, `segmentFilename`, `markerOffsetMs`, `cropStartMs`, `cropEndMs`, and `userSaved` fields. Created during processing; orphan markers (no surrounding audio) are written with an empty `segmentFilename` and detected via `getMarkerConversations()`. Collision policy: if the same `markerMs` re-fires it lands at `marker_{markerMs}_{n}.edl`.
+    - `discards.jsonl`: One JSONL line per stretch of audio that VAD dropped, surfaced as greyed-out "ghost" rows in the recordings list so the user can attempt recovery. Parsed by `RecordingsManager.loadDiscards()` into `DiscardRecord`s.
 
 ---
 
@@ -115,10 +118,11 @@ The firmware (C / Zephyr RTOS on nRF5340) uses C snake_case conventions. Firmwar
 | Firmware (C) | File | App (Dart) | Notes |
 | :--- | :--- | :--- | :--- |
 | File timestamp | `CMD_LIST_FILES` | `timerStart` (and folder name) | The UNIX UTC timestamp (seconds) the firmware reports for each file. |
-| `device_session_id` (u32) | `transport.c`, `main.c` | `wal.sessionId` / `deviceSessionId` | 32-bit random ID generated at boot in `main()`. |
-| `write_marker_to_storage()` | `transport.c`, `transport.h` | `Marker` | Writes a custom-packet frame with the 32-bit length prefix value `0xFFFFFFFE` (not a single `0xFE` byte) and a 16-byte payload: `utc_time_ms` (u64), `uptime_ms` (u32), `device_session_id` (u32). |
-| `write_custom_packet_to_storage(0xFFFFFFFD, …)` | `aad.c` | AAD VAD start | Written by hardware AAD when a VAD event opens a recording; 16-byte payload similar to the marker. |
-| `marker_flash_count` (volatile u8) | `button.c`, `button.h`, `main.c` | *(no app equivalent)* | Drives the transient white LED flash on double-tap (Marker event). |
+| `device_session_id` (`atomic_t`, read as u32) | `transport.c`, `transport.h`, `main.c` | `wal.sessionId` / `deviceSessionId` | 32-bit random ID; lazy-initialized via `ensure_device_session_id()` in `transport.c` and also seeded from `main()` at boot. |
+| `write_marker_to_storage()` | `transport.c`, `transport.h`, `button.c` | `Marker` | Writes a custom-packet frame with the 32-bit length prefix value `0xFFFFFFFE` (not a single `0xFE` byte) and a 16-byte payload: `utc_time_ms` (u64), `uptime_ms` (u32), `device_session_id` (u32). |
+| `write_session_end_marker_to_storage()` | `transport.c`, `transport.h`, `aad.c` | Manual-mode stop boundary | Writes a 20-byte session-end frame (header `0xFFFFFFFC` + 16-byte payload). Emitted when manual mode receives a stop-tap and used by `VadAudioProcessor` to auto-finalize the recording without a Force Process. |
+| `write_custom_packet_to_storage(0xFFFFFFFD, …)` | `aad.c` | AAD VAD resume | Written by hardware AAD when a VAD event re-opens recording after silence; 16-byte payload similar to the marker. |
+| `marker_flash_count` (`volatile uint8_t`) | `button.c`, `button.h`, `main.c` | *(no app equivalent)* | Drives the transient white LED flash on double-tap (Marker event). |
 | `PACKET_EOT` = `0x02` (single byte) | `storage.c` | end-of-transfer signal | Sent over the storage data-stream characteristic to signal end of file (or end of file list); consumed by `SDCardWalSyncImpl`, not stored. |
 
 ---
