@@ -447,6 +447,28 @@ class SDCardWalSyncImpl implements SDCardWalSync {
         '${directory.path}/raw_segments/$subFolderPrefix/${timerStart}_${wal.sessionId ?? 0}.bin',
       );
       if (await existingFile.exists()) {
+        // Truncate-on-resume: file.length and wal.walOffset can diverge if a
+        // prior session was killed between writeAsBytes (which flushed bytes to
+        // disk) and the next walOffset persist (every ~2 MB / per-flush). Any
+        // bytes on disk beyond walOffset are about to be re-fetched from the
+        // device — keeping them would duplicate audio in the middle of the bin
+        // and confuse the VAD frame parser. The device's stored file is
+        // immutable until we send CMD_DELETE_FILE, so the re-fetch is safe.
+        try {
+          final actualSize = await existingFile.length();
+          if (actualSize > offset) {
+            final raf = await existingFile.open(mode: FileMode.append);
+            try {
+              await raf.truncate(offset);
+            } finally {
+              await raf.close();
+            }
+            Logger.debug(
+                'SDCardWalSync: Truncated ${existingFile.path} from $actualSize to $offset bytes (resume reconciliation)');
+          }
+        } catch (e) {
+          Logger.error('SDCardWalSync: truncate-on-resume failed for ${existingFile.path}: $e');
+        }
         flushedSegmentsThisTransfer.add('${timerStart}_${wal.sessionId ?? 0}');
       }
     }
@@ -775,11 +797,13 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               },
               onProgress: (offset) {
                 wal.walOffset = offset;
-                // Persist offset every ~2 MB so a crash or disconnect preserves
-                // progress and the next session resumes rather than re-downloading.
-                if ((offset - initialOffset) >= (2 * 1024 * 1024) && (offset - initialOffset) % (2 * 1024 * 1024) < 512) {
-                  WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
-                }
+                // Persist offset on every flush. Pairs with the truncate-on-resume
+                // guard at the start of _readStorageBytesToFileLocked: by keeping
+                // walOffset within a single-flush window of what's on disk, the
+                // truncate is bounded to at most one flush worth of bytes (handful
+                // of KB) rather than up to 2 MB. The SharedPreferences write cost
+                // is negligible compared to the audio data already being moved.
+                WalFileManager.saveWals(_wals, deviceId: deviceId).catchError((_) => Future.value(false));
                 final double withinWal = (wal.storageTotalBytes > initialOffset)
                     ? (offset - initialOffset) / (wal.storageTotalBytes - initialOffset)
                     : 1.0;
