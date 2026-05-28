@@ -48,7 +48,7 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
             // observation so the LE link doesn't get held warm by the OS.
             val activity = getActivity()
             if (activity != null) {
-                OmiCompanionManager.stopObservingAll(activity.applicationContext)
+                OmiCompanionManager.stopObservingForAddress(activity.applicationContext, uuid)
             }
             bleManager.closeGatt(uuid)
         }

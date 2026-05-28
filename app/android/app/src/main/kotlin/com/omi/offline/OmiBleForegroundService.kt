@@ -268,7 +268,7 @@ class OmiBleForegroundService : Service() {
         // Restore OS-level presence observation on every manage so the OS can wake
         // us when the device drifts back into range. Stopped in unmanageDevice
         // so OnePlus-style passive scans don't keep the LE link warm.
-        OmiCompanionManager.startObservingForLastAssociation(applicationContext)
+        OmiCompanionManager.startObservingForAddress(applicationContext, addr)
 
         if (!isBluetoothEnabled) {
             managedDevices[addr] = ManagedDevice(address = addr, requiresBond = bond)
@@ -324,7 +324,8 @@ class OmiBleForegroundService : Service() {
         // this, OnePlus/Xiaomi stacks immediately re-establish a passive LE link
         // to satisfy the observation, keeping the firmware's is_connected true
         // and the LED blue even after our gatt.close() — defeating maximize-battery.
-        OmiCompanionManager.stopObservingAll(applicationContext)
+        // Per-MAC so any other managed device's observation is untouched.
+        OmiCompanionManager.stopObservingForAddress(applicationContext, addr)
 
         bleManager.disconnectGatt(addr)
         bleManager.closeGatt(addr)
