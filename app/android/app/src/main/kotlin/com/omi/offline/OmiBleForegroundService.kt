@@ -152,7 +152,7 @@ class OmiBleForegroundService : Service() {
 
             startStabilityTimer(addr)
             bleManager.startRssiKeepAlive(addr)
-            updateNotification("Connected to Omi")
+            updateNotification("Connected to Omi Device")
         }
 
         override fun onGattDisconnected(address: String, gattHash: Int, status: Int) {
@@ -776,7 +776,7 @@ class OmiBleForegroundService : Service() {
         val intent = packageManager.getLaunchIntentForPackage(packageName)
         val pi = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Omi")
+            .setContentTitle("Omi Offline")
             .setContentText(text)
             .setSmallIcon(applicationInfo.icon)
             .setOngoing(true)
