@@ -58,6 +58,12 @@ class DeviceProvider extends ChangeNotifier
 
   Timer? _reconnectDelayTimer;
   Timer? _disconnectNotificationTimer;
+  // Foreground keep-alive: sends HEARTBEAT (0x32) to storage characteristic
+  // every 20s so the firmware (oo-1.9.0+) doesn't trip its 30s idle-disconnect
+  // while the user is actively in the app. Stops in background — background
+  // sync is driven by the periodic timer, and the firmware disconnect there
+  // saves Omi battery.
+  Timer? _foregroundKeepAliveTimer;
   final Debouncer _disconnectDebouncer = Debouncer(delay: const Duration(milliseconds: 500));
   final Debouncer _connectDebouncer = Debouncer(delay: const Duration(milliseconds: 1000));
   bool _isHandlingDisconnect = false;
@@ -482,6 +488,21 @@ class DeviceProvider extends ChangeNotifier
     notifyListeners();
   }
 
+  void _startForegroundKeepAlive() {
+    _foregroundKeepAliveTimer?.cancel();
+    if (!_isAppInForeground || !isConnected || connectedDevice == null) return;
+    _foregroundKeepAliveTimer = Timer.periodic(const Duration(seconds: 20), (_) async {
+      if (!isConnected || connectedDevice == null) return;
+      final conn = await ServiceManager.instance().device.ensureConnection(connectedDevice!.id);
+      await conn?.sendKeepAlive();
+    });
+  }
+
+  void _stopForegroundKeepAlive() {
+    _foregroundKeepAliveTimer?.cancel();
+    _foregroundKeepAliveTimer = null;
+  }
+
   void restartBackgroundSyncTimer() => _startBackgroundSyncTimer();
 
   void _startBackgroundSyncTimer() {
@@ -639,6 +660,7 @@ class DeviceProvider extends ChangeNotifier
   void onAppPaused() async {
     if (!_isAppInForeground) return;
     _isAppInForeground = false;
+    _stopForegroundKeepAlive();
     _reconnectionTimer?.cancel();
     // If maximize-battery is on, also cancel any pending 1-second reconnect
     // armed by a recent accidental disconnect — otherwise it fires after we
@@ -675,6 +697,7 @@ class DeviceProvider extends ChangeNotifier
 
   void onAppResumed() {
     _isAppInForeground = true;
+    if (isConnected) _startForegroundKeepAlive();
     // Release the overnight wake lock now that the user has the app open.
     final walSync = ServiceManager.instance().wal.getSyncs();
     if (!walSync.isSyncing) {
@@ -746,6 +769,7 @@ class DeviceProvider extends ChangeNotifier
     _reconnectDelayTimer?.cancel();
     _resumeReconnectDebounce?.cancel();
     _backgroundSyncTimer?.cancel();
+    _foregroundKeepAliveTimer?.cancel();
 
     final walSync = ServiceManager.instance().wal.getSyncs();
     if (walSync.isSyncing) {
@@ -769,6 +793,7 @@ class DeviceProvider extends ChangeNotifier
     _reconnectDelayTimer?.cancel();
     _resumeReconnectDebounce?.cancel();
     _backgroundSyncTimer?.cancel();
+    _foregroundKeepAliveTimer?.cancel();
     _disconnectDebouncer.cancel();
     _connectDebouncer.cancel();
     ServiceManager.instance().device.unsubscribe(this);
@@ -804,6 +829,7 @@ class DeviceProvider extends ChangeNotifier
     await setConnectedDevice(null);
     setIsConnected(false);
     updateConnectingStatus(false);
+    _stopForegroundKeepAlive();
 
     final walSync = ServiceManager.instance().wal.getSyncs();
     walSync.cancelSync();
@@ -880,6 +906,7 @@ class DeviceProvider extends ChangeNotifier
       setIsConnected(true);
       updateConnectingStatus(false);
       notifyListeners();
+      _startForegroundKeepAlive();
 
       // Perform remaining setup in background
       await _finishDeviceSetup(device);
