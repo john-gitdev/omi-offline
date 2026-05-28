@@ -24,17 +24,22 @@ class SyncPage extends StatefulWidget {
 }
 
 class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener {
+  static const int _logBufferSize = 50;
+  static const double _logWindowHeight = 240.0;
+
   bool _isSyncing = false;
   bool _isProcessing = false;
   double _progress = 0.0;
   String _statusMessage = 'Ready to sync';
   Timer? _pollTimer;
   Timer? _dropPollTimer;
+  Timer? _logPollTimer;
   DeviceDropStats? _dropStats;
   // Snapshot used to render "since baseline" deltas; null = show absolute totals.
   DeviceDropStats? _dropBaseline;
   bool _dropsUnsupported = false;
   bool _dropsReading = false;
+  List<Map<String, dynamic>> _recentLogs = const [];
 
   @override
   void initState() {
@@ -43,15 +48,46 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       final processing = RecordingsManager.isProcessingAny;
       if (processing != _isProcessing) setState(() => _isProcessing = processing);
     });
-    // Poll the drop counters every 2 s while Debug Tools is open. Off-screen
-    // teardown happens in dispose().
-    _dropPollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _refreshDropStats());
-    unawaited(_refreshDropStats());
+    // Drop-stats poll only runs when the user opts in via the Show SD Write
+    // Drops toggle. Logs poll only runs when Save Diagnostic Logs is on.
+    if (SharedPreferencesUtil().showSdWriteDrops) _startDropPolling();
+    if (SharedPreferencesUtil().devLogsToFileEnabled) _startLogPolling();
     // Do NOT call start() here. start() fires getMissingWals() asynchronously and
     // overwrites _wals via .then(), which races with syncAll() between the moment it
     // takes its local `wals` snapshot and when it sets _isSyncing = true.
     // _wals is already populated by setDevice() when the device connected, and
     // syncAll() refreshes it internally if empty.
+  }
+
+  void _startDropPolling() {
+    _dropPollTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _refreshDropStats());
+    unawaited(_refreshDropStats());
+  }
+
+  void _stopDropPolling() {
+    _dropPollTimer?.cancel();
+    _dropPollTimer = null;
+    _dropStats = null;
+    _dropBaseline = null;
+    _dropsUnsupported = false;
+  }
+
+  void _startLogPolling() {
+    _logPollTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _refreshLogs());
+    unawaited(_refreshLogs());
+  }
+
+  void _stopLogPolling() {
+    _logPollTimer?.cancel();
+    _logPollTimer = null;
+    _recentLogs = const [];
+  }
+
+  Future<void> _refreshLogs() async {
+    if (!mounted) return;
+    final logs = await DebugLogManager.getRecentLogs(limit: _logBufferSize);
+    if (!mounted) return;
+    setState(() => _recentLogs = logs);
   }
 
   void _showProcessingSnackbar() {
@@ -460,6 +496,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   void dispose() {
     _pollTimer?.cancel();
     _dropPollTimer?.cancel();
+    _logPollTimer?.cancel();
     super.dispose();
   }
 
@@ -528,6 +565,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 value: SharedPreferencesUtil().devLogsToFileEnabled,
                 onChanged: (val) async {
                   await DebugLogManager.setEnabled(val);
+                  if (val) {
+                    _startLogPolling();
+                  } else {
+                    _stopLogPolling();
+                  }
                   setState(() {});
                 },
                 activeColor: Colors.amber,
@@ -535,29 +577,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               ),
               if (SharedPreferencesUtil().devLogsToFileEnabled) ...[
                 const SizedBox(height: 12),
-                FutureBuilder<List<Map<String, dynamic>>>(
-                  future: DebugLogManager.getRecentLogs(limit: 5),
-                  builder: (context, snapshot) {
-                    final logs = snapshot.data ?? [];
-                    if (logs.isEmpty) return const SizedBox.shrink();
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Row(
-                          children: [
-                            FaIcon(FontAwesomeIcons.listUl, size: 13, color: Colors.amber),
-                            SizedBox(width: 8),
-                            Text('Recent Diagnostics',
-                                style: TextStyle(color: Colors.amber, fontSize: 14, fontWeight: FontWeight.w600)),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        ...logs.map((l) => _DiagnosticLogRow(log: l)),
-                        const SizedBox(height: 12),
-                      ],
-                    );
-                  },
-                ),
+                _buildLogWindow(),
+                const SizedBox(height: 12),
                 Row(
                   children: [
                     Expanded(
@@ -585,7 +606,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                       child: OutlinedButton(
                         onPressed: () async {
                           await DebugLogManager.clear();
-                          setState(() => _statusMessage = 'Diagnostic logs cleared');
+                          await _refreshLogs();
+                          if (mounted) setState(() => _statusMessage = 'Diagnostic logs cleared');
                         },
                         style: OutlinedButton.styleFrom(
                           side: const BorderSide(color: Colors.amber, width: 1),
@@ -599,8 +621,29 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   ],
                 ),
               ],
-              const SizedBox(height: 24),
-              _buildDropStatsSection(),
+              const SizedBox(height: 12),
+              SwitchListTile(
+                title: const Text('Show SD Write Drops',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+                subtitle: const Text('Polls the device every 2 s for SD-card drop counters. Off by default.',
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
+                value: SharedPreferencesUtil().showSdWriteDrops,
+                onChanged: (val) {
+                  SharedPreferencesUtil().showSdWriteDrops = val;
+                  if (val) {
+                    _startDropPolling();
+                  } else {
+                    _stopDropPolling();
+                  }
+                  setState(() {});
+                },
+                activeColor: Colors.amber,
+                contentPadding: EdgeInsets.zero,
+              ),
+              if (SharedPreferencesUtil().showSdWriteDrops) ...[
+                const SizedBox(height: 12),
+                _buildDropStatsSection(),
+              ],
               const SizedBox(height: 24),
               const Divider(color: Color(0xFF2C2C2E), height: 1),
               const SizedBox(height: 24),
@@ -721,6 +764,33 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildLogWindow() {
+    // Fixed-height terminal-style scroll box. ListView with reverse:true lays
+    // out the first element (the newest log, since _recentLogs is newest-first)
+    // at the bottom; the box keeps the same height even when the buffer is
+    // partially filled so it doesn't reflow as logs accumulate.
+    return Container(
+      height: _logWindowHeight,
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1C),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF2C2C2E)),
+      ),
+      child: _recentLogs.isEmpty
+          ? const Center(
+              child: Text('No logs yet.',
+                  style: TextStyle(color: Colors.white38, fontSize: 12)),
+            )
+          : ListView.builder(
+              reverse: true,
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              itemCount: _recentLogs.length,
+              itemBuilder: (context, i) => _DiagnosticLogRow(log: _recentLogs[i]),
+            ),
     );
   }
 
