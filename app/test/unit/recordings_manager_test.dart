@@ -33,6 +33,11 @@ void main() {
     mockPathProvider = MockPathProvider()..tempPath = tempDir.path;
     PathProviderPlatform.instance = mockPathProvider;
     SharedPreferences.setMockInitialValues({});
+    // Re-init so SharedPreferencesUtil._preferences picks up the fresh mock
+    // backing store. Without this, a prior test that called init() (e.g. the
+    // runRecoverySweep AM-mode case) leaves adjustmentMode=true cached in the
+    // static and pollutes every subsequent test.
+    await SharedPreferencesUtil.init();
   });
 
   tearDown(() {
@@ -561,6 +566,249 @@ void main() {
     test('missing raw_segments dir is a no-op', () async {
       // Nothing has been written; deleteAllRawSegments must not throw.
       await RecordingsManager.deleteAllRawSegments();
+    });
+  });
+
+  group('pruneConsumedBins', () {
+    // Test scaffolding — mirrors the on-disk layout the app creates:
+    //   raw_segments/<timerStartSec>/<timerStartSec>_<sessionId>.bin
+    //   recordings/<YYYY-MM-DD>/recording_<startMs>.wav  (+ .meta sidecar)
+    //
+    // Bin durations are derived from file size: opus on SD averages 81 B/frame
+    // × 50 fps ≈ 4050 B/s. To get a bin reading as N seconds long, we write
+    // 36 (header) + N * 4050 bytes. Verified the derivation matches the
+    // production rule by walking the same math the pruner uses.
+
+    String _dateOf(int millis) {
+      final dt = DateTime.fromMillisecondsSinceEpoch(millis);
+      return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+    }
+
+    Future<File> writeBin({
+      required int timerStartSec,
+      required int sessionId,
+      required int durationSec,
+    }) async {
+      final folder = Directory(p.join(tempDir.path, 'raw_segments', '$timerStartSec'));
+      folder.createSync(recursive: true);
+      final file = File(p.join(folder.path, '${timerStartSec}_$sessionId.bin'));
+      final bytes = Uint8List(36 + durationSec * 4050);
+      file.writeAsBytesSync(bytes);
+      return file;
+    }
+
+    /// Writes a stub recording_<startMs>.wav + .meta in the appropriate date
+    /// folder. The .meta sidecar carries: duration_ms at offset 4, then key
+    /// length byte at 416, then 3 flag bytes (passthrough, forceSynced,
+    /// capEnded). If [capEnded] is null the byte is omitted entirely — that
+    /// simulates a pre-flag recording (Conversation defaults capEnded=true
+    /// in that case, the conservative path).
+    Future<void> writeRecording({
+      required int startMs,
+      required int durationMs,
+      bool? capEnded,
+      bool isDraft = false,
+    }) async {
+      final dateDir = Directory(p.join(tempDir.path, 'recordings', _dateOf(startMs)));
+      dateDir.createSync(recursive: true);
+      final suffix = isDraft ? '_draft' : '';
+      final wav = File(p.join(dateDir.path, 'recording_$startMs$suffix.wav'));
+      wav.writeAsBytesSync(Uint8List(44)); // minimal WAV header so file exists
+
+      final meta = File(p.join(dateDir.path, 'recording_$startMs$suffix.meta'));
+      // 416-byte fixed header + 1-byte keyLen + optional flag bytes.
+      final headerBytes = 416;
+      final keyLen = 0; // no upload key — simpler, doesn't affect this test
+      final flagBytes = (capEnded == null) ? 0 : 3;
+      final total = headerBytes + 1 + keyLen + flagBytes;
+      final buf = Uint8List(total);
+      final bd = ByteData.sublistView(buf);
+      bd.setUint32(4, durationMs, Endian.little);
+      buf[416] = keyLen;
+      if (capEnded != null) {
+        buf[417] = 0; // passthrough
+        buf[418] = 0; // forceSynced
+        buf[419] = capEnded ? 1 : 0;
+      }
+      meta.writeAsBytesSync(buf);
+    }
+
+    test('silence-ended recording prunes covered bin', () async {
+      // Recording at 10:00:00, 4 minutes long, silence-ended.
+      // Bin covers 10:00:00-10:04:30 (slightly past rec_end, within +2min slack).
+      final recStartMs = DateTime.utc(2026, 5, 27, 10, 0, 0).millisecondsSinceEpoch;
+      await writeRecording(startMs: recStartMs, durationMs: 4 * 60 * 1000, capEnded: false);
+      final bin = await writeBin(
+        timerStartSec: recStartMs ~/ 1000,
+        sessionId: 42,
+        durationSec: 270, // 4m 30s — past rec_end but inside +2min silence slack
+      );
+      expect(bin.existsSync(), true);
+
+      final deleted = await RecordingsManager.pruneConsumedBins();
+
+      expect(deleted, 1);
+      expect(bin.existsSync(), false,
+          reason: 'bin entirely inside [rec_start - 10min, rec_end + 2min] must be pruned');
+    });
+
+    test('cap-ended recording preserves bin extending past rec_end', () async {
+      // Cap-ended recording: 60-min meeting that hit the duration cap.
+      // Bin extends 5min past rec_end and could contain post-cap conversation.
+      // The user's hour-long meetings depend on this preservation.
+      final recStartMs = DateTime.utc(2026, 5, 27, 9, 0, 0).millisecondsSinceEpoch;
+      final recEndSec = recStartMs ~/ 1000 + 60 * 60;
+      await writeRecording(startMs: recStartMs, durationMs: 60 * 60 * 1000, capEnded: true);
+      final bin = await writeBin(
+        timerStartSec: recEndSec - 60, // bin starts 1 min before rec_end
+        sessionId: 99,
+        durationSec: 5 * 60, // ends 4 min PAST rec_end
+      );
+      expect(bin.existsSync(), true);
+
+      final deleted = await RecordingsManager.pruneConsumedBins();
+
+      expect(deleted, 0);
+      expect(bin.existsSync(), true,
+          reason: 'cap-ended recording must not delete bins that extend past rec_end');
+    });
+
+    test('silence-ended: bin extending past rec_end + 2min slack is preserved', () async {
+      // Silence-ended recording, but bin extends ~3 min past rec_end — beyond
+      // the silence slack window. We don't know whether the extra audio is
+      // silence or speech, so the conservative answer is "keep the bin".
+      final recStartMs = DateTime.utc(2026, 5, 27, 11, 0, 0).millisecondsSinceEpoch;
+      await writeRecording(startMs: recStartMs, durationMs: 4 * 60 * 1000, capEnded: false);
+      final bin = await writeBin(
+        timerStartSec: recStartMs ~/ 1000,
+        sessionId: 7,
+        durationSec: 7 * 60, // 4 min recording + 3 min past = 7 min total
+      );
+
+      final deleted = await RecordingsManager.pruneConsumedBins();
+
+      expect(deleted, 0);
+      expect(bin.existsSync(), true,
+          reason: 'bin past silence slack edge has unknown content — must survive');
+    });
+
+    test('merged coverage: bin spanning two back-to-back recordings is pruned', () async {
+      // Two silence-ended recordings 30s apart. Their +2min right slacks
+      // overlap, so the merged coverage forms one continuous segment that
+      // fully contains a long bin straddling both.
+      final base = DateTime.utc(2026, 5, 27, 12, 0, 0).millisecondsSinceEpoch;
+      await writeRecording(startMs: base, durationMs: 4 * 60 * 1000, capEnded: false);
+      await writeRecording(startMs: base + (4 * 60 + 30) * 1000, durationMs: 3 * 60 * 1000, capEnded: false);
+      // Bin: 8 minutes long, fully inside merged window [base-10min, base+7m30s+2min]
+      final bin = await writeBin(
+        timerStartSec: base ~/ 1000,
+        sessionId: 5,
+        durationSec: 8 * 60,
+      );
+
+      final deleted = await RecordingsManager.pruneConsumedBins();
+
+      expect(deleted, 1);
+      expect(bin.existsSync(), false,
+          reason: 'merged coverage must recognize bin as fully consumed across two recordings');
+    });
+
+    test('AM mode is a no-op', () async {
+      SharedPreferences.setMockInitialValues({'adjustmentMode': true});
+      await SharedPreferencesUtil.init();
+      final recStartMs = DateTime.utc(2026, 5, 27, 13, 0, 0).millisecondsSinceEpoch;
+      await writeRecording(startMs: recStartMs, durationMs: 4 * 60 * 1000, capEnded: false);
+      final bin = await writeBin(
+        timerStartSec: recStartMs ~/ 1000,
+        sessionId: 5,
+        durationSec: 4 * 60,
+      );
+
+      final deleted = await RecordingsManager.pruneConsumedBins();
+
+      expect(deleted, 0);
+      expect(bin.existsSync(), true,
+          reason: 'AM mode contract: keep all bins for arbitrary reprocessing');
+    });
+
+    test('missing capEnded byte defaults to true (conservative)', () async {
+      // Old .meta written before the capEnded byte existed. Conversation
+      // defaults capEnded=true → treated as cap-ended → bins past rec_end
+      // are preserved even though we have no proof the recording was cap-ended.
+      final recStartMs = DateTime.utc(2026, 5, 27, 14, 0, 0).millisecondsSinceEpoch;
+      await writeRecording(startMs: recStartMs, durationMs: 4 * 60 * 1000, capEnded: null);
+      final bin = await writeBin(
+        timerStartSec: recStartMs ~/ 1000,
+        sessionId: 5,
+        durationSec: 5 * 60, // extends 1 min past rec_end
+      );
+
+      final deleted = await RecordingsManager.pruneConsumedBins();
+
+      // Bin extends past rec_end; with default capEnded=true, right edge =
+      // rec_end (no silence slack), so bin is NOT fully inside coverage.
+      expect(deleted, 0);
+      expect(bin.existsSync(), true,
+          reason: 'missing capEnded byte must be treated conservatively (assume cap-ended)');
+    });
+
+    test('drafts contribute to coverage', () async {
+      // A draft recording also "owns" its bins — we must not re-VAD the
+      // source bins on next launch just because the audio file is _draft.wav.
+      final recStartMs = DateTime.utc(2026, 5, 27, 15, 0, 0).millisecondsSinceEpoch;
+      await writeRecording(
+          startMs: recStartMs, durationMs: 3 * 60 * 1000, capEnded: false, isDraft: true);
+      final bin = await writeBin(
+        timerStartSec: recStartMs ~/ 1000,
+        sessionId: 5,
+        durationSec: 3 * 60,
+      );
+
+      final deleted = await RecordingsManager.pruneConsumedBins();
+
+      expect(deleted, 1);
+      expect(bin.existsSync(), false,
+          reason: 'bins covered by a draft recording must also be pruned');
+    });
+
+    test('pre-time-sync session_<hex>/ folder is skipped', () async {
+      // Bins written before RTC sync land in session_<hex>/ subfolders with
+      // uptime-tick filenames (not UTC). We can't derive wall-clock for them,
+      // so they must be left alone even if some recording's coverage happens
+      // to overlap their (unknown) time.
+      final recStartMs = DateTime.utc(2026, 5, 27, 16, 0, 0).millisecondsSinceEpoch;
+      await writeRecording(startMs: recStartMs, durationMs: 4 * 60 * 1000, capEnded: false);
+
+      final preSyncFolder = Directory(p.join(tempDir.path, 'raw_segments', 'session_DEADBEEF'));
+      preSyncFolder.createSync(recursive: true);
+      final preSyncBin = File(p.join(preSyncFolder.path, '12345_1.bin'))..writeAsBytesSync(Uint8List(36 + 4050 * 60));
+
+      final deleted = await RecordingsManager.pruneConsumedBins();
+
+      expect(deleted, 0);
+      expect(preSyncBin.existsSync(), true,
+          reason: 'pre-time-sync bins have no reliable wall-clock — must not prune');
+    });
+
+    test('no recordings, no bins → no-op', () async {
+      final deleted = await RecordingsManager.pruneConsumedBins();
+      expect(deleted, 0);
+    });
+
+    test('bin not covered by any recording is preserved', () async {
+      // Recording in the morning; orphan bin in the afternoon (gap > 10min
+      // slack on either side). The bin holds a genuine new conversation that
+      // hasn't been VAD'd yet — must not be pruned.
+      final morningMs = DateTime.utc(2026, 5, 27, 9, 0, 0).millisecondsSinceEpoch;
+      await writeRecording(startMs: morningMs, durationMs: 4 * 60 * 1000, capEnded: false);
+      final afternoonSec = DateTime.utc(2026, 5, 27, 15, 0, 0).millisecondsSinceEpoch ~/ 1000;
+      final bin = await writeBin(timerStartSec: afternoonSec, sessionId: 7, durationSec: 4 * 60);
+
+      final deleted = await RecordingsManager.pruneConsumedBins();
+
+      expect(deleted, 0);
+      expect(bin.existsSync(), true,
+          reason: 'orphan bin (no overlapping recording) is real un-processed audio');
     });
   });
 }
