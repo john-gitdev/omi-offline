@@ -93,4 +93,14 @@ void transport_notify_button_state(uint8_t state);
 int transport_set_adv_slow(void);
 int transport_set_adv_fast(void);
 
+/**
+ * @brief Mark inbound/outbound GATT activity on a power-relevant characteristic.
+ *
+ * Resets the idle-disconnect timer.  Call from storage command writes,
+ * outbound storage notifications, and CCC subscribe events.  Do NOT call
+ * from periodic battery autopushes or sporadic button events — those would
+ * prevent the idle window from ever closing.
+ */
+void transport_mark_activity(void);
+
 #endif // TRANSPORT_H
