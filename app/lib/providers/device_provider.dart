@@ -866,19 +866,27 @@ class DeviceProvider extends ChangeNotifier
       return;
     }
 
-    if (!isManual) {
-      _consecutiveAccidentalDisconnects++;
-    } else {
+    // Manual = the app or user explicitly disconnected (maximize-battery drop,
+    // Unpair from settings, DFU prep, keep-alive liveness force-disconnect).
+    // None of those want an immediate reconnect — manual unpair would scan
+    // uselessly for the just-removed device. Accidental drops below still get
+    // the exponential-backoff reconnect.
+    if (isManual) {
       _consecutiveAccidentalDisconnects = 0;
+      return;
     }
 
-    final delaySeconds = isManual ? 1 : (1 << (_consecutiveAccidentalDisconnects - 1)).clamp(1, 60);
+    _consecutiveAccidentalDisconnects++;
+    final delaySeconds = (1 << (_consecutiveAccidentalDisconnects - 1)).clamp(1, 60);
     Logger.debug(
       'DeviceProvider: reconnecting in $delaySeconds seconds (consecutiveFailures: $_consecutiveAccidentalDisconnects)',
     );
 
+    // boundDeviceOnly:true so periodicConnect self-cancels when btDevice.id
+    // is empty — closes the unpair race where the GATT layer's isManual=false
+    // callback wins over our isManual=true callback (see comment above).
     _reconnectDelayTimer = Timer(Duration(seconds: delaySeconds), () {
-      if (!_disposed) periodicConnect('coming from onDisconnect');
+      if (!_disposed) periodicConnect('coming from onDisconnect', boundDeviceOnly: true);
     });
   }
 
