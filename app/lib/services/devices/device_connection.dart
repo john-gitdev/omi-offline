@@ -130,6 +130,16 @@ abstract class DeviceConnection {
     return false;
   }
 
+  /// Sends a zero-payload HEARTBEAT (0x32) write to the storage characteristic.
+  /// Used as a foreground keep-alive to reset the firmware's idle-disconnect
+  /// timer (oo-1.9.0+). Fire-and-forget; failures are tolerated since the
+  /// next interval will retry or the disconnect handler will tear down state.
+  Future<void> sendKeepAlive() async {
+    if (await isConnected()) await performSendKeepAlive();
+  }
+
+  Future<void> performSendKeepAlive() async {}
+
   Future<BleAudioCodec?> getAudioCodec() async {
     if (await isConnected()) return performGetAudioCodec();
     return null;
