@@ -164,6 +164,7 @@ static int storage_notify(struct bt_conn *conn, const void *data, uint16_t len)
 
 static void storage_config_changed_handler(const struct bt_gatt_attr *attr, uint16_t value)
 {
+    transport_mark_activity();
 
     storage_is_on = true;
     if (value == BT_GATT_CCC_NOTIFY) {
@@ -599,6 +600,8 @@ static ssize_t storage_write_handler(struct bt_conn *conn,
                                      uint16_t offset,
                                      uint8_t flags)
 {
+    transport_mark_activity();
+
     if (len < 1) {
         uint8_t ack[2] = {PACKET_ACK, INVALID_COMMAND};
         LOG_WRN("storage write with empty payload");
@@ -629,6 +632,8 @@ static uint8_t ble_notify_buf[5 + SD_BLE_SIZE];
 
 static void write_to_gatt(struct bt_conn *conn)
 {
+    transport_mark_activity();
+
     int err;
     if (sync_speed_mode != SYNC_SPEED_MODE_BLE) {
         sync_speed_reset(SYNC_SPEED_MODE_BLE);
