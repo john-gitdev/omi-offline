@@ -62,8 +62,12 @@ class DeviceProvider extends ChangeNotifier
   // every 20s so the firmware (oo-1.9.0+) doesn't trip its 30s idle-disconnect
   // while the user is actively in the app. Stops in background — background
   // sync is driven by the periodic timer, and the firmware disconnect there
-  // saves Omi battery.
+  // saves Omi battery.  Also acts as a liveness probe: if the write fails
+  // twice in a row, the connection has silently died and we force-disconnect
+  // to resync state (avoids the "app thinks connected, BLE actually dead"
+  // failure mode).
   Timer? _foregroundKeepAliveTimer;
+  int _consecutiveKeepAliveFails = 0;
   final Debouncer _disconnectDebouncer = Debouncer(delay: const Duration(milliseconds: 500));
   final Debouncer _connectDebouncer = Debouncer(delay: const Duration(milliseconds: 1000));
   bool _isHandlingDisconnect = false;
@@ -491,16 +495,28 @@ class DeviceProvider extends ChangeNotifier
   void _startForegroundKeepAlive() {
     _foregroundKeepAliveTimer?.cancel();
     if (!_isAppInForeground || !isConnected || connectedDevice == null) return;
+    _consecutiveKeepAliveFails = 0;
     _foregroundKeepAliveTimer = Timer.periodic(const Duration(seconds: 20), (_) async {
       if (!isConnected || connectedDevice == null) return;
       final conn = await ServiceManager.instance().device.ensureConnection(connectedDevice!.id);
-      await conn?.sendKeepAlive();
+      final ok = (conn != null) && (await conn.sendKeepAlive());
+      if (ok) {
+        _consecutiveKeepAliveFails = 0;
+        return;
+      }
+      _consecutiveKeepAliveFails++;
+      if (_consecutiveKeepAliveFails >= 2) {
+        Logger.debug('KeepAlive: 2 consecutive failures, force-disconnecting to resync state');
+        _consecutiveKeepAliveFails = 0;
+        await ServiceManager.instance().device.disconnectDevice(isManual: false);
+      }
     });
   }
 
   void _stopForegroundKeepAlive() {
     _foregroundKeepAliveTimer?.cancel();
     _foregroundKeepAliveTimer = null;
+    _consecutiveKeepAliveFails = 0;
   }
 
   void restartBackgroundSyncTimer() => _startBackgroundSyncTimer();
