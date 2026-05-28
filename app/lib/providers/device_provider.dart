@@ -149,7 +149,12 @@ class DeviceProvider extends ChangeNotifier
     };
     if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
       Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true));
-      if (!SharedPreferencesUtil().maximizeBattery && _shouldSyncNow()) {
+      // Sync on app open whenever one is due — including maximize-battery mode.
+      // In that mode the device is disconnected in the background, so the
+      // periodic timer/heartbeat may not have fired; opening the app is the
+      // reliable trigger. _isAppInForeground is true here, so the connection
+      // survives _handleDeviceConnected's drop-guard long enough to sync.
+      if (_shouldSyncNow()) {
         _pendingAppOpenSync = true;
       }
     }
@@ -187,6 +192,14 @@ class DeviceProvider extends ChangeNotifier
           if (interval > 0) {
             nextSyncTime = DateTime.now().add(Duration(minutes: interval));
             notifyListeners();
+          }
+        } else {
+          // Not due yet — refresh the countdown subtext on the persistent
+          // notification. Skip while a sync/process is running; that flow owns
+          // the notification and shows its own progress.
+          final walSync = ServiceManager.instance().wal.getSyncs();
+          if (!walSync.isSyncing && !RecordingsManager.isProcessingAny && !_backgroundSyncActive) {
+            unawaited(_showSyncTimerNotification());
           }
         }
       }
@@ -427,7 +440,8 @@ class DeviceProvider extends ChangeNotifier
       // autoConnect=false and reattaches in <1s. Even when not cached, a direct
       // connectGatt(autoConnect=false) to a known MAC is faster than a 10s scan.
       try {
-        await ServiceManager.instance().device
+        await ServiceManager.instance()
+            .device
             .ensureConnection(pairedDeviceId, force: true)
             .timeout(const Duration(seconds: 10));
         await Future.delayed(const Duration(seconds: 1));
@@ -472,15 +486,13 @@ class DeviceProvider extends ChangeNotifier
     isConnecting = value;
     if (!_isAppInForeground) {
       if (isConnecting && !isConnected) {
-        ForegroundUtil.updateNotification(
-          title: 'Scanning for Omi device...',
-          text: 'Looking for nearby device...',
-        );
+        ForegroundUtil.updateNotification(text: 'Scanning for device...');
       } else if (!isConnecting) {
-        ForegroundUtil.updateNotification(
-          title: 'Omi is active',
-          text: isConnected ? 'Connected to device' : 'Running in the background',
-        );
+        if (isConnected) {
+          ForegroundUtil.updateNotification(text: 'Connected to Omi Device');
+        } else {
+          unawaited(_showSyncTimerNotification());
+        }
       }
     }
     notifyListeners();
@@ -517,6 +529,31 @@ class DeviceProvider extends ChangeNotifier
     _foregroundKeepAliveTimer?.cancel();
     _foregroundKeepAliveTimer = null;
     _consecutiveKeepAliveFails = 0;
+  }
+
+  /// Persistent background notification shown while waiting for the next
+  /// scheduled sync. The title doubles as the feature name and the subtext
+  /// counts down to [nextSyncTime] (refreshed each ~5-min heartbeat). When
+  /// auto-sync is off (interval = Manual Only) there is no countdown.
+  /// Safe to call from the foreground — [ForegroundUtil.updateNotification]
+  /// no-ops when the service isn't running.
+  Future<void> _showSyncTimerNotification({bool start = false}) async {
+    final next = nextSyncTime;
+    final String title;
+    final String text;
+    if (next == null) {
+      title = ForegroundUtil.defaultTitle;
+      text = 'Running in the background';
+    } else {
+      final mins = next.difference(DateTime.now()).inMinutes;
+      title = 'Omi Offline Sync Timer';
+      text = mins <= 0 ? 'Syncing soon...' : 'Next sync in ~$mins min';
+    }
+    if (start && !await ForegroundUtil.isRunningService) {
+      await ForegroundUtil.startForegroundTask(title: title, text: text);
+    } else {
+      await ForegroundUtil.updateNotification(title: title, text: text);
+    }
   }
 
   void restartBackgroundSyncTimer() => _startBackgroundSyncTimer();
@@ -594,8 +631,9 @@ class DeviceProvider extends ChangeNotifier
         if (!_isAppInForeground && RecordingsManager.isProcessingAny) {
           final progress = RecordingsManager.processingProgress.value;
           ForegroundUtil.updateNotification(
-            title: 'Processing recordings...',
-            text: progress < 1.0 ? '${(progress * 100).toInt()}% complete...' : 'Finishing processing...',
+            text: progress < 1.0
+                ? 'Processing recordings — ${(progress * 100).toInt()}% complete'
+                : 'Processing recordings — finishing...',
           );
         }
       }
@@ -603,30 +641,18 @@ class DeviceProvider extends ChangeNotifier
       try {
         WakelockPlus.enable();
         if (!await ForegroundUtil.isRunningService) {
-          await ForegroundUtil.startForegroundTask(
-            title: 'Syncing recordings...',
-            text: 'Preparing to sync segments...',
-          );
+          await ForegroundUtil.startForegroundTask(text: 'Syncing recordings — preparing...');
         } else {
-          await ForegroundUtil.updateNotification(
-            title: 'Syncing recordings...',
-            text: 'Preparing to sync segments...',
-          );
+          await ForegroundUtil.updateNotification(text: 'Syncing recordings — preparing...');
         }
         await walSync.syncAll(progress: _BackgroundSyncProgress());
 
-        await ForegroundUtil.updateNotification(
-          title: 'Processing recordings...',
-          text: 'Preparing to process segments...',
-        );
+        await ForegroundUtil.updateNotification(text: 'Processing recordings — preparing...');
         RecordingsManager.processingProgress.addListener(onProcessingProgress);
         await RecordingsManager.processAllCompletedSessions();
         RecordingsManager.processingProgress.removeListener(onProcessingProgress);
 
-        await ForegroundUtil.updateNotification(
-          title: 'Syncing recordings...',
-          text: 'Finalizing sync...',
-        );
+        await ForegroundUtil.updateNotification(text: 'Syncing recordings — finalizing...');
         await walSync.syncAll(progress: _BackgroundSyncProgress());
         SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
       } catch (e) {
@@ -640,11 +666,10 @@ class DeviceProvider extends ChangeNotifier
         // visible. In background we keep it alive so the next timer tick fires.
         if (_isAppInForeground) {
           await ForegroundUtil.stopForegroundTask();
+        } else if (isConnected) {
+          ForegroundUtil.updateNotification(text: 'Connected to Omi Device');
         } else {
-          ForegroundUtil.updateNotification(
-            title: isConnected ? 'Omi connected' : 'Omi is active',
-            text: isConnected ? 'Connected to device' : 'Running in the background',
-          );
+          unawaited(_showSyncTimerNotification());
         }
 
         // Disconnect after the full sync+process cycle (both syncAll calls) so
@@ -692,8 +717,12 @@ class DeviceProvider extends ChangeNotifier
     // wake lock — without this the CPU sleeps and the Dart timer never fires.
     final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     if (interval > 0 && SharedPreferencesUtil().btDevice.id.isNotEmpty) {
-      if (!await ForegroundUtil.isRunningService) {
-        await ForegroundUtil.startForegroundTask();
+      // A running sync/process already owns the foreground notification (and
+      // keeps the service alive); don't overwrite its live progress with the
+      // idle countdown. Otherwise start/refresh the "next sync" timer.
+      final walSync = ServiceManager.instance().wal.getSyncs();
+      if (!walSync.isSyncing && !RecordingsManager.isProcessingAny) {
+        await _showSyncTimerNotification(start: true);
       }
     }
     if (SharedPreferencesUtil().maximizeBattery && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage) {
@@ -706,9 +735,15 @@ class DeviceProvider extends ChangeNotifier
   }
 
   bool _shouldSyncNow() {
+    // One timer governs everything: opening the app syncs only once the auto-sync
+    // interval has elapsed since the last sync — the same threshold the background
+    // timer uses, not a separate hardcoded window. "Manual Only" (interval <= 0)
+    // never auto-syncs on open; the user syncs by hand.
+    final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
+    if (interval <= 0) return false;
     final lastMs = SharedPreferencesUtil().lastSyncCompletedMs;
     if (lastMs <= 0) return true;
-    return DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(lastMs)).inMinutes >= 10;
+    return DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(lastMs)).inMinutes >= interval;
   }
 
   void onAppResumed() {
@@ -721,7 +756,13 @@ class DeviceProvider extends ChangeNotifier
     }
 
     final prefs = SharedPreferencesUtil();
-    if (!prefs.maximizeBattery && prefs.btDevice.id.isNotEmpty && _shouldSyncNow()) {
+    // Sync on resume whenever one is due, regardless of maximize-battery. In
+    // maximize-battery mode the device is disconnected while backgrounded and
+    // the periodic timer/heartbeat are unreliable under Doze, so resuming the
+    // app is the dependable trigger. We're in the foreground now, so the
+    // reconnect survives _handleDeviceConnected's maximize-battery drop-guard
+    // and _finishDeviceSetup's _pendingAppOpenSync path fires the sync.
+    if (prefs.btDevice.id.isNotEmpty && _shouldSyncNow()) {
       if (isConnected) {
         unawaited(_doBackgroundSync().then((_) => _startBackgroundSyncTimer()));
       } else {
@@ -914,7 +955,18 @@ class DeviceProvider extends ChangeNotifier
   }
 
   @override
-  void onSyncFinished() {}
+  void onSyncFinished() {
+    // Re-anchor the auto-sync countdown to the moment this sync finished, so a
+    // sync at 3:05 with a 30-min interval pushes the next sync to ~3:35 — not to
+    // wherever the periodic timer happened to be. The WAL layer forwards this
+    // after every syncAll / syncWal / rotateAndSync, so it covers manual syncs
+    // (the recordings pipeline + Debug Tools) and background syncs uniformly.
+    // _startBackgroundSyncTimer re-reads the interval, so "Manual Only" still
+    // clears the countdown. _doBackgroundSync is fire-and-forget from the timer
+    // body, so cancelling/recreating the timer here can't re-enter it.
+    if (_disposed) return;
+    _startBackgroundSyncTimer();
+  }
 
   @override
   void onDeviceRecordingFailed() {}
@@ -1116,8 +1168,7 @@ class _BackgroundSyncProgress implements IWalSyncProgressListener {
   @override
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
     ForegroundUtil.updateNotification(
-      title: 'Syncing recordings...',
-      text: '${(percentage * 100).toInt()}% complete...',
+      text: 'Syncing recordings — ${(percentage * 100).toInt()}% complete',
     );
   }
 }
