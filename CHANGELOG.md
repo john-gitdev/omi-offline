@@ -1,5 +1,13 @@
 # Changelog
 
+### Background Sync, Notifications & Fixes (0.14.7)
+
+- **Sync on app open.** With "Maximize Battery" on, opening the app now triggers a sync whenever one is due — i.e. once the auto-sync interval has elapsed since the last sync (the same timer the background sync uses; "Manual Only" never auto-syncs on open). Previously the sync-on-open path was gated to non-battery-saver mode, so battery-saver users had to sync manually every time — opening the app only pushed the next-sync time out by another interval without actually syncing.
+- **Countdown re-anchors to the last sync.** The auto-sync countdown now resets to the moment the most recent sync *finished*, so a sync at 3:05 with a 30-min interval schedules the next one at ~3:35. Applies uniformly to manual syncs (the recordings pipeline and Debug Tools) and background syncs — previously a manual sync left the periodic timer on its original schedule.
+- **Sync-timer notification.** The persistent background notification is now titled **"Omi Offline Sync Timer"** and counts down to the next scheduled sync ("Next sync in ~N min"), refreshed on each ~5-min background heartbeat. The heartbeat continues to kick off the sync itself once the timer elapses (reconnecting first when needed).
+- **Notification wording.** Foreground-service and alert notifications are now consistently branded **"Omi Offline"**; the connected-state notification reads **"Connected to Omi Device"**. Per-operation detail (sync/processing progress) moved into the notification body.
+- **24-Hour Time toggle fix.** "Ghosted" entries (discarded / too-short recordings) and their detail sheet were always rendered in 24-hour time regardless of the 24-Hour Time setting. They now follow the toggle like the rest of the app.
+
 ### Bulk delete perf (0.14.6)
 
 - **Batched SharedPreferences writes.** `RecordingsManager.deleteConversations` was calling `removeUploadedFromHeypocket({key})` once per conversation, paying N disk syncs for an N-file delete. Keys are now collected up front and removed in a single prefs write.
