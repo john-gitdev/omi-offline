@@ -28,6 +28,14 @@ class Conversation {
   // deleted. Only the .meta sidecar remains; the conversation cannot be played.
   final bool passthrough;
   final bool forceSynced;
+  // True iff VAD ended this recording at the max-duration cap (vadMaxConversationMinutes)
+  // rather than because of detected silence. pruneConsumedBins uses this to decide whether
+  // raw bin files extending past rec_end may be safely deleted (silence-ended) or must be
+  // preserved (cap-ended, since bin tail may hold the post-cap continuation).
+  //
+  // Defaults to true so that old recordings whose .meta predates the flag are treated
+  // conservatively (no aggressive pruning past rec_end).
+  final bool capEnded;
 
   const Conversation({
     required this.file,
@@ -38,6 +46,7 @@ class Conversation {
     this.startUptime,
     this.passthrough = false,
     this.forceSynced = false,
+    this.capEnded = true,
   });
 
   DateTime get endTime => startTime.add(duration);
@@ -108,6 +117,9 @@ class Conversation {
           String? uploadKey;
           bool passthrough = false;
           bool forceSynced = false;
+          // Default true so recordings whose .meta predates the capEnded byte are treated
+          // conservatively by pruneConsumedBins (no aggressive prune past rec_end).
+          bool capEnded = true;
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
@@ -123,6 +135,9 @@ class Conversation {
               if (metaBytes.length > flagOffset + 1) {
                 forceSynced = (metaBytes[flagOffset + 1] & 0x01) != 0;
               }
+              if (metaBytes.length > flagOffset + 2) {
+                capEnded = (metaBytes[flagOffset + 2] & 0x01) != 0;
+              }
             }
           }
           // Fall back to filename (without extension) as upload key for recordings
@@ -137,6 +152,7 @@ class Conversation {
             startUptime: startUptime,
             passthrough: passthrough,
             forceSynced: forceSynced,
+            capEnded: capEnded,
           );
         }
       } catch (_) {
@@ -195,6 +211,7 @@ class Conversation {
       String? uploadKey;
       bool passthrough = false;
       bool forceSynced = false;
+      bool capEnded = true; // see Conversation.capEnded — default conservative
       if (metaBytes.length >= 417) {
         final keyLen = metaBytes[416];
         if (417 + keyLen <= metaBytes.length) {
@@ -207,6 +224,9 @@ class Conversation {
           }
           if (metaBytes.length > flagOffset + 1) {
             forceSynced = (metaBytes[flagOffset + 1] & 0x01) != 0;
+          }
+          if (metaBytes.length > flagOffset + 2) {
+            capEnded = (metaBytes[flagOffset + 2] & 0x01) != 0;
           }
         }
       }
@@ -232,6 +252,7 @@ class Conversation {
         startUptime: startUptime,
         passthrough: true,
         forceSynced: forceSynced,
+        capEnded: capEnded,
       );
     } catch (_) {
       return null;
@@ -276,6 +297,9 @@ class Conversation {
           String? uploadKey;
           bool passthrough = false;
           bool forceSynced = false;
+          // Default true so recordings whose .meta predates the capEnded byte are treated
+          // conservatively by pruneConsumedBins (no aggressive prune past rec_end).
+          bool capEnded = true;
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
@@ -291,6 +315,9 @@ class Conversation {
               if (metaBytes.length > flagOffset + 1) {
                 forceSynced = (metaBytes[flagOffset + 1] & 0x01) != 0;
               }
+              if (metaBytes.length > flagOffset + 2) {
+                capEnded = (metaBytes[flagOffset + 2] & 0x01) != 0;
+              }
             }
           }
           // Fall back to filename (without extension) as upload key for recordings
@@ -305,6 +332,7 @@ class Conversation {
             startUptime: startUptime,
             passthrough: passthrough,
             forceSynced: forceSynced,
+            capEnded: capEnded,
           );
         }
       } catch (_) {
@@ -1436,19 +1464,27 @@ class RecordingsManager {
         final bytes = await File(metaPath).readAsBytes();
         var outBytes = bytes;
 
-        // 1. Update flags (passthrough, forceSynced)
+        // 1. Update flags (passthrough, forceSynced, capEnded).
+        // Layout at flagOffset: [0]=passthrough, [1]=forceSynced, [2]=capEnded.
+        // capEnded is set by VAD when the recording was written; we preserve it across
+        // draft promotion (Force Process / stitch fallback should not relabel a cap-end
+        // recording as silence-end).
         if (bytes.length >= 417) {
           final keyLen = bytes[416];
           final flagOffset = 417 + keyLen;
-          if (bytes.length <= flagOffset + 1) {
-            // Re-allocate to ensure space for both flags
-            final newBytes = Uint8List(flagOffset + 2);
+          if (bytes.length < flagOffset + 3) {
+            // Extend to fit all 3 flag bytes, preserving any existing earlier bytes.
+            final existingPassthrough = (bytes.length > flagOffset) ? bytes[flagOffset] : 0;
+            final existingCapEnded = (bytes.length > flagOffset + 2) ? bytes[flagOffset + 2] : 0;
+            final newBytes = Uint8List(flagOffset + 3);
             newBytes.setRange(0, bytes.length, bytes);
-            newBytes[flagOffset] = 0; // passthrough
-            newBytes[flagOffset + 1] = isForceSynced ? 1 : 0; // forceSynced
+            newBytes[flagOffset] = existingPassthrough;
+            newBytes[flagOffset + 1] = isForceSynced ? 1 : 0;
+            newBytes[flagOffset + 2] = existingCapEnded;
             outBytes = newBytes;
           } else {
             outBytes[flagOffset + 1] = isForceSynced ? 1 : 0;
+            // capEnded byte preserved as-is at flagOffset + 2.
           }
         }
 
@@ -2095,6 +2131,11 @@ class RecordingsManager {
   /// Safe to call from a background timer; no-op if a marker process is running.
   static Future<void> processAllCompletedSessions() async {
     if (_isProcessingAny) return;
+    // Idempotency guard: drop any bins whose audio is already covered by an
+    // existing recording on disk. Catches the kill-mid-cleanup case where a
+    // previous run wrote the .wav but didn't get to delete its source bins
+    // (the bug that produces near-duplicate recordings 0.5s apart).
+    await pruneConsumedBins();
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
     final activeBatches = batches
@@ -2119,6 +2160,8 @@ class RecordingsManager {
   /// No-op if a process is already running.
   static Future<void> forceProcessAll() async {
     if (_isProcessingAny) return;
+    // Same idempotency guard as processAllCompletedSessions — see that method.
+    await pruneConsumedBins();
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
     final activeBatches = batches
@@ -2718,6 +2761,166 @@ class RecordingsManager {
         } catch (_) {}
       }
     }
+  }
+
+  /// Deletes raw .bin segments whose wall-clock window is already fully covered
+  /// by an existing recording. Idempotency guard against the mid-processing kill
+  /// path where VAD wrote a `recording_<ts>.wav` but the app was killed (e.g. by
+  /// an APK update) before the `delete_segments` IPC ran. Without this guard,
+  /// the leftover bins re-VAD on next launch and produce a near-duplicate .wav
+  /// with a slightly different VAD cut.
+  ///
+  /// Coverage rule per recording (finalized + drafts):
+  ///   left edge  = recStart - FILE_ROTATION_INTERVAL_MS (a bin's leading silence
+  ///                may have been trimmed by VAD; the bin can start up to one full
+  ///                firmware rotation interval before the first detected speech)
+  ///   right edge = capEnded ? recEnd                       (cap-ended: anything
+  ///                                                         past rec_end is
+  ///                                                         un-consumed audio)
+  ///              : recEnd + vadSplitSeconds * 1000ms       (silence-ended: VAD
+  ///                                                         observed this much
+  ///                                                         silence past rec_end,
+  ///                                                         so bin tail there is
+  ///                                                         provably silence)
+  ///
+  /// Per-day coverage intervals are then merged (overlapping intervals collapse)
+  /// so a bin spanning two back-to-back recordings is recognized as fully covered.
+  ///
+  /// A bin is deleted iff [binStart, binEnd] sits fully inside ONE merged
+  /// coverage interval. Bins that extend past the right edge are preserved
+  /// (this covers the cap-end case for the user's hour-long meeting recordings).
+  ///
+  /// No-op when Adjustment Mode is on — that mode's contract is "keep ALL bins
+  /// for arbitrary reprocessing," which this pruner would violate.
+  ///
+  /// Returns the number of bins deleted.
+  static Future<int> pruneConsumedBins() async {
+    if (SharedPreferencesUtil().adjustmentMode) return 0;
+    final directory = await getApplicationDocumentsDirectory();
+    final recordingsDir = Directory('${directory.path}/recordings');
+    final rawDir = Directory('${directory.path}/raw_segments');
+    if (!await rawDir.exists()) return 0;
+    if (!await recordingsDir.exists()) return 0;
+
+    // Firmware rotates SD files at most every FILE_ROTATION_INTERVAL_MS (10 min)
+    // — that's the upper bound on how much "leading slack" a bin can have before
+    // the recording's first-speech timestamp.
+    const int leftSlackMs = 10 * 60 * 1000;
+    // Silence-ended recordings observed at least vadSplitSeconds of silence
+    // past rec_end. Default 120s; honor user override.
+    final int silenceSlackMs = SharedPreferencesUtil().vadSplitSeconds * 1000;
+    // Opus on SD averages 81 B/frame × 50 fps. Used to derive bin duration
+    // from file size (sufficient for overlap math — exact frame walk is overkill).
+    const double opusBytesPerMs = 4050 / 1000;
+    // Bin file metadata header: 0xFFFFFFFB marker + 4-byte length + 28-byte payload.
+    const int binHeaderBytes = 36;
+
+    // Pass 1: collect every coverage interval across every day folder.
+    final List<List<int>> intervals = []; // each entry: [startMs, endMs]
+    await for (final dayFolder in recordingsDir.list()) {
+      if (dayFolder is! Directory) continue;
+      await for (final entity in dayFolder.list()) {
+        if (entity is! File) continue;
+        final path = entity.path;
+        // Audio file types we recognize as a "recording" — drafts included.
+        if (!(path.endsWith('.wav') || path.endsWith('.m4a') || path.endsWith('.ogg'))) {
+          continue;
+        }
+        if (path.endsWith('.tmp.m4a') || path.contains('.tmp.')) continue;
+        final conv = Conversation.fromFile(entity);
+        if (conv.isUnknown) continue; // no reliable wall-clock anchor
+        final recStartMs = conv.startTime.millisecondsSinceEpoch;
+        if (recStartMs <= 0) continue;
+        final recEndMs = recStartMs + conv.duration.inMilliseconds;
+        final rightEdge = conv.capEnded ? recEndMs : recEndMs + silenceSlackMs;
+        intervals.add([recStartMs - leftSlackMs, rightEdge]);
+      }
+    }
+    if (intervals.isEmpty) return 0;
+
+    // Pass 2: sort by start, then sweep-merge overlapping intervals.
+    // A bin that straddles two adjacent recordings' coverage windows must land
+    // inside the merged region to be recognized as fully consumed.
+    intervals.sort((a, b) => a[0].compareTo(b[0]));
+    final List<List<int>> merged = [intervals.first];
+    for (int i = 1; i < intervals.length; i++) {
+      final last = merged.last;
+      final cur = intervals[i];
+      if (cur[0] <= last[1]) {
+        if (cur[1] > last[1]) last[1] = cur[1];
+      } else {
+        merged.add(cur);
+      }
+    }
+
+    // Pass 3: walk every bin, check if its derived [binStart, binEnd] is fully
+    // inside any one merged interval. If yes, it's a leftover from a prior VAD
+    // pass that died before delete_segments ran — delete it.
+    int deletedCount = 0;
+    final touchedFolders = <Directory>{};
+    await for (final folder in rawDir.list()) {
+      if (folder is! Directory) continue;
+      final folderName = folder.path.split('/').last;
+      // session_<hex>/ holds pre-time-sync bins (uptime ticks, not UTC) — we
+      // can't derive a wall-clock window for them, so leave them alone.
+      if (folderName.startsWith('session_') ||
+          folderName.startsWith('unknown_') ||
+          folderName.startsWith('.')) {
+        continue;
+      }
+      await for (final binEntity in folder.list()) {
+        if (binEntity is! File || !binEntity.path.endsWith('.bin')) continue;
+        final binName = binEntity.path.split('/').last;
+        final parts = binName.split('.').first.split('_');
+        if (parts.isEmpty) continue;
+        final timerStart = int.tryParse(parts.first);
+        // 946684800 = 2000-01-01 epoch sec; smaller values are uptime ticks
+        if (timerStart == null || timerStart < 946684800) continue;
+        int binSize;
+        try {
+          binSize = await binEntity.length();
+        } catch (_) {
+          continue;
+        }
+        if (binSize <= binHeaderBytes) continue;
+        final binStartMs = timerStart * 1000;
+        // Use ceil so the bin-end estimate slightly overshoots — keeps the
+        // "fully inside" check conservative (a bin we can't be 100% sure is
+        // covered will survive).
+        final binDurationMs = (((binSize - binHeaderBytes) / opusBytesPerMs)).ceil();
+        final binEndMs = binStartMs + binDurationMs;
+
+        bool covered = false;
+        for (final iv in merged) {
+          if (binStartMs >= iv[0] && binEndMs <= iv[1]) {
+            covered = true;
+            break;
+          }
+        }
+        if (!covered) continue;
+
+        try {
+          await binEntity.delete();
+          deletedCount++;
+          touchedFolders.add(folder);
+          Logger.debug(
+              'RecordingsManager: pruneConsumedBins deleted $binName (covered by recording window)');
+        } catch (e) {
+          Logger.error('RecordingsManager: pruneConsumedBins failed to delete ${binEntity.path}: $e');
+        }
+      }
+    }
+
+    // Drop any session folders that just emptied — keeps raw_segments/ tidy.
+    for (final folder in touchedFolders) {
+      try {
+        if (await folder.exists() && await folder.list().isEmpty) {
+          await folder.delete();
+        }
+      } catch (_) {}
+    }
+
+    return deletedCount;
   }
 
   /// Deletes raw .bin segments belonging to any of [sessionIds], bypassing the
