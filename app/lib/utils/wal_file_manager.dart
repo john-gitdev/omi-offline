@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'package:omi/services/wals.dart';
 import 'package:omi/utils/logger.dart';
+import 'package:omi/utils/mutex.dart';
 
 class WalFileManager {
   static const String _walFileName = 'wals.json';
@@ -13,6 +14,11 @@ class WalFileManager {
   static File? _walFile;
   static File? _walBackupFile;
 
+  // Serializes all reads and writes so concurrent saveWals/loadWals calls can't
+  // observe a mid-truncate empty file (which would silently drop other devices'
+  // WALs during the merge step in saveWals).
+  static final Mutex _lock = Mutex();
+
   static Future<void> init() async {
     final directory = await getApplicationDocumentsDirectory();
     _walFile = File('${directory.path}/$_walFileName');
@@ -20,6 +26,15 @@ class WalFileManager {
   }
 
   static Future<List<Wal>> loadWals() async {
+    await _lock.acquire();
+    try {
+      return await _loadWalsUnlocked();
+    } finally {
+      _lock.release();
+    }
+  }
+
+  static Future<List<Wal>> _loadWalsUnlocked() async {
     if (_walFile == null) {
       await init();
     }
@@ -46,41 +61,46 @@ class WalFileManager {
   }
 
   static Future<bool> saveWals(List<Wal> wals, {String? deviceId}) async {
-    if (_walFile == null) {
-      await init();
-    }
-
-    if (_walFile == null) {
-      Logger.debug('WAL file is null, cannot save');
-      return false;
-    }
-
-    // Merge: keep WALs for other devices so switching devices doesn't erase
-    // their resume offsets.
-    List<Wal> allWals = wals;
-    if (deviceId != null) {
-      try {
-        final existing = await loadWals();
-        final others = existing.where((w) => w.device != deviceId).toList();
-        if (others.isNotEmpty) allWals = [...others, ...wals];
-      } catch (e) {
-        Logger.debug('WalFileManager: Failed to merge existing WALs, saving current device only: $e');
+    await _lock.acquire();
+    try {
+      if (_walFile == null) {
+        await init();
       }
+
+      if (_walFile == null) {
+        Logger.debug('WAL file is null, cannot save');
+        return false;
+      }
+
+      // Merge: keep WALs for other devices so switching devices doesn't erase
+      // their resume offsets.
+      List<Wal> allWals = wals;
+      if (deviceId != null) {
+        try {
+          final existing = await _loadWalsUnlocked();
+          final others = existing.where((w) => w.device != deviceId).toList();
+          if (others.isNotEmpty) allWals = [...others, ...wals];
+        } catch (e) {
+          Logger.debug('WalFileManager: Failed to merge existing WALs, saving current device only: $e');
+        }
+      }
+
+      await _createBackup();
+
+      final jsonData = {
+        'version': 1,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'wals': allWals.map((wal) => wal.toJson()).toList(),
+      };
+
+      final jsonString = jsonEncode(jsonData);
+      await _walFile!.writeAsString(jsonString);
+
+      Logger.debug('Successfully saved ${wals.length} WALs to file');
+      return true;
+    } finally {
+      _lock.release();
     }
-
-    await _createBackup();
-
-    final jsonData = {
-      'version': 1,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
-      'wals': allWals.map((wal) => wal.toJson()).toList(),
-    };
-
-    final jsonString = jsonEncode(jsonData);
-    await _walFile!.writeAsString(jsonString);
-
-    Logger.debug('Successfully saved ${wals.length} WALs to file');
-    return true;
   }
 
   static Future<void> _createBackup() async {
