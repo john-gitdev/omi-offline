@@ -2,7 +2,7 @@
 
 A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
 
-**Current versions:** App `0.14.4` · Firmware `oo-1.9.0`
+**Current versions:** App `0.14.5` · Firmware `oo-1.9.0`
 
 ---
 
@@ -265,6 +265,13 @@ See [`NOMENCLATURE.md`](NOMENCLATURE.md) for the full glossary. Key terms:
 ---
 
 ## Recent Changes
+
+### Debug Tools & WAL persistence (0.14.5)
+
+- **WAL save storm fixed.** `WalFileManager.saveWals` was firing per BLE packet (~50 Hz) from the fast-path sync, hammering the disk and flooding logs with identical writes. Throttled to 1 Hz; state-transition saves (deletion, transfer failure, end-of-sync) still persist immediately.
+- **WAL file races closed.** `loadWals` and `saveWals` are now serialized by a `Mutex`, so the merge-read inside `saveWals` can no longer observe a mid-truncate empty file — a latent path that could have silently dropped other devices' WAL entries.
+- **SD Write Drops opt-in.** The Debug Tools panel that polls SD-card drop counters every 2 s is now gated behind a toggle (off by default). Since the counter has stayed at zero in the field, the BLE read no longer runs unless you're actively investigating.
+- **Diagnostic-log window.** The "Recent Diagnostics" block is now a fixed-height (240 px) terminal-style scroll box showing the last 50 entries, anchored to the bottom. It no longer reflows the surrounding UI as logs accumulate, and refreshes every 2 s while the toggle is on.
 
 ### Connection Reliability & Battery (0.14.4, Firmware oo-1.9.0)
 
