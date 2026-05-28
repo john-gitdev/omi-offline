@@ -2226,12 +2226,14 @@ class RecordingsManager {
       final convsInDir = byDir[dirPath]!;
       final filenames = convsInDir.map((c) => c.file.path.split('/').last).toSet();
 
-      // 1. Delete audio, meta, bin files
-      for (final c in convsInDir) {
-        final key = c.uploadKey;
-        if (key != null) {
-          await SharedPreferencesUtil().removeUploadedFromHeypocket({key});
-        }
+      // 1. Delete audio, meta, bin files. Batch the SharedPreferences write so we
+      // pay one disk sync instead of one per conversation, and run the per-conversation
+      // file deletes concurrently (each touches disjoint paths).
+      final keysToRemove = convsInDir.map((c) => c.uploadKey).whereType<String>().toSet();
+      if (keysToRemove.isNotEmpty) {
+        await SharedPreferencesUtil().removeUploadedFromHeypocket(keysToRemove);
+      }
+      await Future.wait(convsInDir.map((c) async {
         final file = c.file;
         // Drop the exists() probe and let delete() fail-soft — one syscall per file instead of two.
         try {
@@ -2250,7 +2252,7 @@ class RecordingsManager {
             await binFile.delete();
           } on FileSystemException catch (_) {}
         } catch (_) {}
-      }
+      }));
 
       // 2. Delete EDL files for all deleted conversations in this directory at once.
       // Reads + deletes run concurrently — each EDL is an independent JSON sidecar.
