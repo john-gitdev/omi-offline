@@ -132,13 +132,16 @@ abstract class DeviceConnection {
 
   /// Sends a zero-payload HEARTBEAT (0x32) write to the storage characteristic.
   /// Used as a foreground keep-alive to reset the firmware's idle-disconnect
-  /// timer (oo-1.9.0+). Fire-and-forget; failures are tolerated since the
-  /// next interval will retry or the disconnect handler will tear down state.
-  Future<void> sendKeepAlive() async {
-    if (await isConnected()) await performSendKeepAlive();
+  /// timer (oo-1.9.0+).  Returns true on a successful write, false on any
+  /// failure (transient BLE error, dead connection, etc).  The caller uses
+  /// repeated failures as a liveness signal — if the underlying BLE silently
+  /// died while the app still thinks it's connected, the write will fail.
+  Future<bool> sendKeepAlive() async {
+    if (await isConnected()) return performSendKeepAlive();
+    return false;
   }
 
-  Future<void> performSendKeepAlive() async {}
+  Future<bool> performSendKeepAlive() async => false;
 
   Future<BleAudioCodec?> getAudioCodec() async {
     if (await isConnected()) return performGetAudioCodec();
