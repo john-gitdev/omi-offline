@@ -22,11 +22,16 @@ cd app && flutter run
 # Test
 cd app && bash test.sh
 
-# Format (pre-commit hook does this automatically)
+# Format (run manually — no pre-commit hook is installed)
 dart format --line-length 120 <files>
 clang-format -i <files>          # firmware C/C++
 
+# Build dev-flavor APK, rename oo<version>.apk, drop at repo root.
+# Reads version from app/pubspec.yaml; deterministic only — no bump/commit/push.
+./app/build-apk.sh
 ```
+
+The per-version history lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## Architecture
 
@@ -41,26 +46,37 @@ Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures a
 **State management**: `DeviceProvider` (ChangeNotifier) drives all UI. `ServiceManager` is the singleton that holds `IDeviceService`.
 
 **Connection pipeline** (`services/devices/`):
-- `DeviceService.ensureConnection()` is serialized via a `Mutex` — N concurrent callers (battery, storage, WAL sync) share one connection attempt. Critical: never bypass this.
-- Connection retry and reconnect logic is owned by the native BLE layer, not Dart.
+- `DeviceService.ensureConnection()` is serialized via a `Mutex` (`devices.dart`) — N concurrent callers (battery, storage, WAL sync) share one connection attempt. Critical: never bypass this.
+- Connection retry and reconnect logic is owned by the native BLE layer, not Dart. When the transport exists but is disconnected, do not dispose and recreate it — that cancels native's auto-reconnect.
+- `OmiDeviceConnection` has its own `_storageMutex` covering CMD_LIST_FILES / CMD_READ_FILE / CMD_DELETE_FILE so storage commands serialize against each other even when sharing the same connection.
 - On connect: time sync writes UTC as little-endian u32 to `timeSyncWriteCharacteristicUuid` so the device can anchor recording timestamps.
+- Foreground sends a periodic keep-alive (`0x32` to `storageDataStreamCharacteristicUuid`) to keep the firmware from idle-disconnecting. Dead connections are force-dropped after consecutive keep-alive failures.
 
 **Audio pipeline** (`services/`):
-- `SDCardWalSyncImpl` saves downloaded segments to `raw_segments/<deviceSessionId>/<deviceSessionId>_<segmentIndex>.bin`. Marker packets (20-byte frames: `0xFFFFFFFE` header + 16-byte payload of `utc_ms(u64) + uptime_ms(u32) + session_id(u32)`) are left inline in the bin file — they are not extracted at transfer time. `VadAudioProcessor` parses them during the decode pass.
+- `SDCardWalSyncImpl` saves downloaded segments to `raw_segments/<subFolder>/<timerStart>_<sessionId>.bin`. `<subFolder>` is the wall-clock day (post-time-sync) or `session_<sessionId>` for pre-time-sync bins (uptime ticks only — surfaced under the "Unorganized" UI section). Inline-frame types in the bin stream:
+  - `0xFFFFFFFB` metadata header (36 B: 4-byte tag + 4-byte length + 28-byte payload), peeked at offset 0
+  - `0xFFFFFFFC` session-end marker (20 B), written by firmware on manual-mode stop
+  - `0xFFFFFFFD` VAD-resume timestamp (16 B), written when AAD wakes after silence
+  - `0xFFFFFFFE` button-tap marker (20 B): 4-byte header + 16-byte payload of `utc_ms(u64) + uptime_ms(u32) + session_id(u32)`
+  - `0xFFFFFFFF` / `0`: sentinel slots
+  These frames are left inline in the bin file — not extracted at transfer time. `VadAudioProcessor` parses them during the decode pass.
 - `OfflineAudioProcessor` decodes Opus → 16 kHz mono 16-bit PCM, adaptive noise floor tracking (initial -40 dBFS, SNR margin configurable), splits into `recordings/<YYYY-MM-DD>/recording_<millis>.m4a`
 - `VadAudioProcessor` emits an EDL sidecar `recordings/<YYYY-MM-DD>/marker_<markerMs>.edl` (JSON: `markerTimestampMs`, `segmentFilename`, `markerOffsetMs`, `cropStartMs`, `cropEndMs`, `userSaved`) per detected button-tap. Markers with no surrounding audio are emitted as orphan EDLs with an empty `segmentFilename`. Markers re-anchored across stitched files have their offsets shifted by the prefix's wall-clock duration.
 - `RecordingsManager` / `Conversation` model parses finalized recordings from the `recordings/` directory for UI binding; `RecordingsManager.getMarkerConversations()` builds the `MarkerConversation` list from the EDL sidecars.
 
 **VAD processing design invariants** (`services/vad_audio_processor.dart`, `services/recordings_manager.dart`):
 - The firmware writes ~5-minute sequential bin files. Each file's `segmentStartTime` (the WAL `timerStart`) picks up exactly where the previous file ended — no overlaps, no gaps larger than clock drift.
-- The processor treats all bin files as one continuous audio stream. A recording starts when speech is detected and ends only on: (a) `vadSplitSeconds` of continuous silence (default 2 min), or (b) `vadMaxConversationMinutes` cap (default 60 min). Nothing else creates a boundary.
+- The processor treats all bin files as one continuous audio stream. A recording starts when speech is detected and ends only on: (a) `vadSplitSeconds` of continuous silence (auto-mode default 120 s; manual mode forces 0 / VAD-off), or (b) `vadMaxConversationMinutes` cap (auto/manual default 0 = no cap; legacy `vadMaxConversationMinutes` still exists for migration with default 60). Nothing else creates a boundary.
 - There is no separate `vadGapSeconds` constant. The gap threshold between consecutive files is `vadSplitSeconds - _firmwareVadHoldMs` (10 s). With the default `vadSplitSeconds` of 120 s, file gaps up to 110 s are stitched. BLE disconnects do not create file gaps — firmware writes straight to SD card regardless of phone connectivity.
+- Manual mode is the default since 0.14.0 (`manualMode` preference defaults to `true`). In manual mode the app writes `vadThreshold=65535` (VAD off, recording on) on start-tap and `32769` on stop-tap; the firmware emits `0xFFFFFFFC` on stop so the processor can auto-finalize without Force Process.
 - **End-of-run always flushes as a `_draft` file**, in both background and foreground modes. Recordings in progress are written via `flushRemaining(isDraft: true)`; the resulting `_draft.*` files are not surfaced as finalized recordings and are re-stitched with newly downloaded bins on the next sync+process cycle, then promoted to finalized recordings once silence/cap conditions are met. Do not change `isDraft: true` to `false` in the background path — that would prematurely promote partials and delete their source bin files, anchoring the next run's recordings to a too-early timestamp.
 - The `VadAudioProcessor` is stateless across runs (recreated in a fresh isolate each time). Persistence is implicit: `_draft` files plus uncut bin files stay on disk and are re-processed.
 
 **Sync** (`services/wals/`):
 - `WalService` creates `Wal` entries per file (tracks codec, device, storage location, sync status: miss → syncing → synced)
 - `SDCardWalSyncImpl` reads files over BLE — allows resume on reconnect without re-downloading
+- `WalFileManager.saveWals` / `loadWals` are serialized via a `Mutex` so a concurrent multi-device sync can't have one device's `saveWals` observe a mid-truncate empty file and drop another device's WALs.
+- During fast-path sync, `onProgress` fires per BLE packet (~50 Hz). Persist calls are throttled to ~1 Hz; state-transition saves (deletion, transfer failure, end-of-sync) still persist immediately. The truncate-on-resume guard at the start of `_readStorageBytesToFileLocked` bounds re-fetch on crash to one persist-window of bytes.
 
 ### Hardware (`omi/hardware/consumer/`)
 
@@ -87,31 +103,48 @@ Zephyr RTOS on nRF5340. Key threads: mic capture → codec ring buffer → Opus 
 
 ### BLE Protocol
 
-All Omi services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`:
+Omi-custom services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`. Source of truth is `app/lib/services/devices/omi_connection.dart`.
 
 | Service | UUID suffix | Purpose |
 |---------|-------------|---------|
-| Audio | `0000` / `0001` / `0002` | Stream + codec ID |
-| Settings | `0010` / `0011` / `0012` | Dim ratio, mic gain |
-| Features | `0020` / `0021` | Capability flags |
+| Audio | `0000` (service) / `0001` / `0002` | `0001` stream notify, `0002` codec ID read. `0000` is also the BLE advertised service used for discovery. |
+| Settings | `0010` / `0011` / `0012` / `0013` | LED dim ratio, mic gain, VAD threshold |
+| Features | `0020` / `0021` | Capability bitfield (see `OmiFeatures`: accelerometer, button, battery, usb, haptic, offlineStorage, ledDimming, micGain, vadThreshold) |
 | Time sync | `0030` / `0031` | Write epoch seconds (u32 LE) |
-| Speaker/haptic | `0040` / `0041` | Playback commands |
-| Battery detail | `0050` / `0051` | Notify 1 byte: uint8 charging 0/1 |
-| Storage | `30295780-…` | File list + read/delete |
-| Button | `23ba7924-…` | Tap events (1=single, 2=double, 3=long, 4=press, 5=release) |
+| Button | `0040` / `0041` | Tap-event notify (1 byte). App currently consumes event `2` only (double-tap → manual mode toggle). Firmware emits inline `0xFFFFFFFE` markers in the audio stream regardless. |
+| Battery detail | `0050` / `0051` | Notify 1 byte: `charging` (0/1) |
+| Diagnostics | `0060` / `0061` / `0062` | `0061` 8 B: `reset_cause u32 LE` + `uptime_seconds u32 LE`. `0062` 20 B drop counters: `blockDrops` + `lastDropUptimeMs` + `sdStreamDrops` + `sdBootDrops` + `nowUptimeMs` (all u32 LE). |
 
-Storage protocol: write commands to `storageDataStreamCharacteristicUuid`: `0x10`=LIST_FILES, `0x11`=READ `[cmd, fileNum, offset_4B LE, timestamp_4B LE]` (timestamp optional, used for index-shift recovery), `0x12`=DELETE `[cmd, fileNum, timestamp_4B LE]` (timestamp optional), `0x13`=ROTATE, `0x14`=CLEAR_STORAGE.
+Non-Omi-prefix services in use:
+
+| Service | UUID | Purpose |
+|---------|------|---------|
+| Standard Battery | `0000180f-…` / char `00002a19-…` | Battery level (0–100 %) |
+| Device Info (DIS) | `0000180a-…` | Model `2a24`, firmware rev `2a26`, hardware rev `2a27`, manufacturer `2a29`, serial `2a25` |
+| Storage | `30295780-4301-eabd-2904-2849adfeae43` | Data stream char `…81`, read-control char `…82` |
+
+Storage protocol: write commands to `storageDataStreamCharacteristicUuid` (`…81`). Responses arrive on the same characteristic; `0x03` first byte = `PACKET_ACK` (`data[1]==0` = success).
+
+| Cmd | Name | Payload |
+|-----|------|---------|
+| `0x03` | STOP_STORAGE_SYNC | `[0x03]` |
+| `0x10` | LIST_FILES | `[0x10]` |
+| `0x11` | READ_FILE | `[0x11, fileIndex, offset_4B LE, timestamp_4B LE?]` (timestamp optional, used for index-shift recovery) |
+| `0x12` | DELETE_FILE | `[0x12, fileIndex, timestamp_4B LE?]` (timestamp optional) |
+| `0x13` | ROTATE_FILE | `[0x13]` |
+| `0x14` | CLEAR_STORAGE | `[0x14]` |
+| `0x32` | KEEP_ALIVE | `[0x32]` (added 0.14.4; prevents firmware idle-disconnect) |
 
 File indices are **cache positions** (0-based sequential) that shift after each deletion — the firmware rebuilds its file-list cache on every CMD_LIST_FILES and after every delete, so after deleting index 0, what was index 1 becomes index 0. Supplying the timestamp in CMD_READ_FILE and CMD_DELETE_FILE lets the firmware re-locate the file by timestamp if the index shifted between LIST and READ/DELETE.
 
-Audio codec IDs: 1=pcm8, 20=opus (80 B/frame, 50 fps), 21=opusFS320 (40 B/frame, 50 fps).
+Audio codec ID (read from `0002`): the app explicitly recognises `20` = opus (80 B/frame, 50 fps) and `21` = opusFS320 (40 B/frame, 50 fps). Anything else falls back to `pcm8`. The `BleAudioCodec` enum also defines `pcm16`, `mulaw8`, `mulaw16`, `unknown` but no current code path reads those over the wire.
 
 ## Formatting
 
-The pre-commit hook handles formatting automatically. To run manually:
+There is no pre-commit hook installed in this repo — run formatters manually before committing:
 
 ```bash
-dart format --line-length 120 <files>   # Dart (not *.gen.dart or *.g.dart)
+dart format --line-length 120 <files>   # Dart (skip *.gen.dart and *.g.dart)
 clang-format -i <files>                  # C/C++ firmware
 ```
 
@@ -124,4 +157,6 @@ clang-format -i <files>                  # C/C++ firmware
 - Never push or create PRs unless explicitly asked — commit locally by default.
 
 ### RELEASE / release command
-When the user says "release" or "RELEASE", increment the patch digit in `app/pubspec.yaml` by 1, commit, and push. The patch digit serves as the build number — there is no separate `+N` suffix. Example: `0.3.18` → `0.3.19`.
+When the user says "release" or "RELEASE", increment the patch digit in `app/pubspec.yaml` by 1, commit, and push. The patch digit serves as the build number — there is no separate `+N` suffix. Example: `0.3.18` → `0.3.19`. After the bump, `app/build-apk.sh` can produce the matching `oo<digits>.apk` at repo root (deterministic, no extra git ops).
+
+Document user-visible behavioural changes in `CHANGELOG.md` (newest entry on top). `README.md` only links to it.
