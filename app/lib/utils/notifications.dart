@@ -29,7 +29,7 @@ class NotificationsService {
       content: NotificationContent(
         id: 100,
         channelKey: _channelKey,
-        title: 'Device stopped recording',
+        title: 'Omi Offline',
         body: 'Your Omi device stopped recording. Reconnect or restart the device.',
         notificationLayout: NotificationLayout.Default,
         autoDismissible: true,
