@@ -1,6 +1,6 @@
 # Ideas
 
-## Apple Watch Integration [minor]
+## Apple Watch Integration [minor] [Deferred]
 
 The platform layer (watchOS app, iOS AppDelegate, Pigeon-generated Swift/Dart code) is complete and functional. The Dart side is never wired up.
 
@@ -23,7 +23,7 @@ The platform layer (watchOS app, iOS AppDelegate, Pigeon-generated Swift/Dart co
 - `app/ios/Runner/RecorderHostApiImpl.swift` - host API implementation, already functional
 - `app/ios/omiWatchApp/` - watchOS app, already functional
 
-## AAD Threshold Refactor & Noise Profiling
+## AAD Threshold Refactor & Noise Profiling [Deferred]
 
 Refactor the hardware-acoustic Wake-on-Voice (AAD) system to be user-adjustable and self-tuning.
 
@@ -32,7 +32,7 @@ Successfully implemented manual threshold control from the app.
 - **Firmware:** Added `vad_threshold` to settings NVS, dynamic `aad_set_threshold()` API, and BLE Characteristic `0x19B10013`.
 - **App:** Added AAD Sensitivity slider (0–32768) in Device Settings with presets and "Always On" (0) / "Manual Only" (32768) support.
 
-### Phase 2: Learning & Auto-Tune [In Progress]
+### Phase 2: Learning & Auto-Tune [Deferred]
 Implement a hybrid statistical/distribution profiling system to allow the device to "Auto-Tune" to its environment.
 
 **Architectural Separation:**
@@ -64,14 +64,14 @@ Implement a hybrid statistical/distribution profiling system to allow the device
 - `app/lib/pages/settings/device_settings.dart` - UI Dashboard and Auto-Tune logic.
 - `app/lib/services/devices/omi_connection.dart` - BLE communication.
 
-## Auto-Tune Mic Gain
+## Auto-Tune Mic Gain [Deferred]
 - [ ] Incorporate automatic tuning of Mic Gain based on hardware amplitude detection.
   - **Concept:** Use the peak amplitude tracking from the Noise Profiler to dynamically adjust the hardware microphone gain.
   - **Anti-Clipping:** If the peak amplitude consistently hits the ceiling (e.g., > 30,000), automatically step down the `mic_gain` to prevent distorted, blown-out audio.
   - **Auto-Boost:** If the peak amplitude of recorded speech is consistently very low, incrementally step up the `mic_gain` to improve signal-to-noise ratio.
   - **Implementation Idea:** The firmware could run a slow PID loop or hysteresis check on the `peak` value over a multi-minute window, adjusting the gain setting directly and notifying the app of the change.
 
-## Firmware AAD: VAD Sensitivity Presets (Deferred)
+## Firmware AAD: VAD Sensitivity Presets [Deferred]
 
 Brainstormed three sensitivity presets for the hardware AAD threshold, adjustable via a new BLE characteristic (same pattern as mic gain — `settings.c` + `transport.c` + `aad.c`).
 
@@ -84,120 +84,6 @@ Brainstormed three sensitivity presets for the hardware AAD threshold, adjustabl
 Hold time (`CONFIG_OMI_VAD_HOLD_MS = 10000`) could also vary per preset — longer hold at high sensitivity (quiet speech trails off slowly), shorter at low sensitivity (trust the threshold drop).
 
 **Decision: deferred.** Risk of missing audio outweighs the benefit. No real user complaints driving this. Battery drain from AAD is less impactful than BLE/SD/codec — and hold time is a bigger battery lever than threshold anyway. Revisit if noise-environment complaints surface.
-
-## Background Recording Finalization Flaw
-
-### Issue Summary
-Recordings are often not finalized when the app is running in the background. Instead, they remain indefinitely as `_draft.wav` files in the app's internal storage until a future background sync or a manual "Force Process".
-
-### The User's Theory (Wall-Clock Finalization)
-The user proposed that if `syncAll()` retrieves `0 WALs` (indicating the device is caught up), the app could check the real-world clock. If `Wall Clock Time > Draft End Time + Gap Threshold (e.g. 2 mins)`, the app could safely assume no further speech occurred and finalize the draft.
-
-### The Firmware Hurdle
-The user's theory is mathematically sound *if* the app could guarantee there was no audio left on the device. However, the firmware explicitly excludes the currently-open (active) recording bin from the BLE sync list to prevent read/write contention on the SD card.
-
-**Firmware proof (`omi/src/lib/core/storage.c`):**
-```c
-static int send_file_list_response(struct bt_conn *conn)
-{
-    // ...
-    if (sd_is_current_recording_file_meta(&meta)) {
-        continue; // The active file is excluded from the list!
-    }
-    // ...
-}
-```
-
-Because the firmware completely hides the active file, a background `syncAll()` will return `0 WALs` even if the user just spoke a 10-second sentence that is now sitting in the active bin.
-
-If we applied the user's wall-clock logic in this scenario:
-1. `0:00` - Previous speech ends, sync runs, saves a draft.
-2. `1:30` - User speaks for 10 seconds. This goes into the active, hidden bin.
-3. `3:00` - Background sync runs. It gets `0 WALs` because the active bin is hidden.
-4. `3:00` - Wall Clock Logic sees `0 WALs` and `Time (3:00) > Draft End (0:00) + 2 mins`. It incorrectly finalizes the draft!
-5. `10:00` - The active bin finally rotates natively on the device, becomes visible, and is synced. The 10-second sentence from `1:30` is completely orphaned into a fragmented conversation.
-
-### Conclusion
-The current logic in `_stitchDraftRecordings` relies strictly on the timestamp of a *future* synced file to confirm that the gap threshold has elapsed. This is the only safe method, as it empirically proves no speech occurred during the gap, circumventing the firmware's active-file blindspot. Wall-clock finalization cannot be implemented safely without changing the firmware to allow syncing the active file.
-
-## Marker Accuracy & Timestamp Synchronization
-
-### Issue Summary
-In-stream marker packets (`0xFFFFFFFE`) currently rely on their byte-position within the `.bin` stream to determine their timestamp in the final audio. If the firmware or SD card drops audio frames (due to write latency or buffer overflows), the timeline "shrinks," but the marker remains at its byte-offset, causing it to drift out of sync with the actual audio events.
-
-### Proposed Solution: The "Sequence & Sync" Strategy
-
-To achieve sub-millisecond accuracy and foolproof attribution, the system must move from "Offset-Based" to "Sequence-Based" synchronization.
-
-#### 1. "Sequence & Sync" Packets (Firmware)
-Wrap audio data in a tiny header that includes a **Sequence Number** and **Local Uptime**.
-- **Audio Packet:** `[Length:4][Sequence:4][UptimeMS:4][Audio Data:N]`
-- **Benefit:** If the app sees Sequence #100 followed by Sequence #105, it knows exactly 100ms of audio is missing and can compensate.
-
-#### 2. "Double-Anchored" Markers (Firmware)
-Markers should "hard-link" to the audio stream by referencing the last sent audio packet.
-- **Marker Packet:** Includes `UTC_Time`, `Uptime_MS`, and **`Last_Sequence_Number`**.
-- **Benefit:** The app can look at the marker and say: "This event happened exactly after Audio Packet #4502," regardless of how much audio was lost before or after that point.
-
-#### 3. "Virtual Timeline" Reconstruction (App)
-The `VadAudioProcessor` should treat the incoming stream as a sparse set of samples and reconstruct a rigid, gap-less timeline.
-- **Implementation:** When a sequence gap is detected, the processor inserts **Silence Frames** into the output `.wav`/`.m4a` file to maintain the correct wall-clock duration.
-- **Result:** The resulting audio file's length matches the real-world time elapsed, and markers placed via sequence numbers remain perfectly accurate.
-
-#### 4. Session Integrity & Guarding
-- **Sentinel Footer:** Firmware writes a "Footer Packet" at the end of every VAD-session containing the `Total_Samples_Captured` for audit/validation.
-- **Session ID Guard:** App strictly enforces the `Device_Session_ID` within markers to prevent "Cross-Pollination" (markers from one recording accidentally being tagged to another during a messy sync).
-
-### Trade-offs & Realism
-- **Pros:** Sample-accurate sync, resilience to SD card drops, "Instant-On" UI (if using a separate marker file/summary), and deterministic debugging.
-- **Cons:** Increased packet overhead (more bytes per write), slightly higher battery/SD card usage, and increased firmware/app complexity for the new demuxer logic.
-
-### Validation: SD Drop Counters (added 2026-05-26)
-
-**Premise to validate before committing to Sequence & Sync.** The proposal earns its complexity only if SD write drops actually happen in real use. Built lightweight instrumentation to measure drop frequency over normal usage; result determines whether to implement.
-
-**Validation infrastructure shipped:**
-- Firmware: two atomic counters (`storage_block_drops`, `last_storage_drop_uptime_ms`) added in `transport.c`, plus reuse of existing `stat_dropped_frames` (sd_card.c) and `boot_dropped_frames`.
-- New BLE characteristic `0x19B10062` on the diagnostics service. Read returns 20 bytes LE: `block_drops(u32) + last_drop_uptime_ms(u32) + sd_stream_drops(u32) + sd_boot_drops(u32) + current_uptime_ms(u32)`.
-- App reads via `OmiDeviceConnection.performGetDropStats()` and renders a card on the Debug Tools page (`SyncPage`) — polled every 2 s, with a "Snapshot baseline" button for delta measurement.
-
-**Three counters measure three failure modes:**
-| Counter | Source | Fires when |
-|---|---|---|
-| `block_drops` | `transport.c::write_custom_packet_to_storage` | `write_to_file` returns ≠ MAX_WRITE_SIZE — entire 440 B block lost (~5 Opus frames ≈ 100 ms audio) |
-| `sd_stream_drops` | `sd_card.c::write_to_file` (line ~2427) | `k_msgq_put(&sd_msgq, …)` times out after 1-5 ms retry — single audio frame lost |
-| `sd_boot_drops` | `sd_card.c::write_to_file` (line ~2377) | Audio frame written before SD mount + lfs_fs_gc + file open finishes |
-
-`block_drops` is the headline number — that's what the Sequence & Sync proposal is solving for. `sd_stream_drops` is the upstream signal (most block drops are downstream of a stream drop). `sd_boot_drops` is a separate cold-start issue, not relevant to mid-stream drift.
-
-**Test result so far (2026-05-26):**
-- 45 min device uptime, manual recording mode, BLE disconnected most of the time
-- 0 block drops, 0 stream frame drops, 0 boot drops
-- Firmware `oo-1.7.11`, app `0.13.3`
-- Inconclusive: `SD_REQ_QUEUE_MSGS = 100` (`sd_card.c:48`) = ~10 s of write buffer; typical SD GC stalls are 100-400 ms and won't saturate that. Needs days of soak.
-
-**How to check back in:**
-1. Open Debug Tools page in app. Look at the "SD Write Drops" card.
-2. If `block_drops` and `audio frames dropped (SD queue)` are still 0 after a few days of normal use → Sequence & Sync proposal is hypothetical, deprioritize.
-3. If either moves → drift is real. Investigate path:
-   - `block_drops` moving alone is unusual (means `write_to_file` returned 0 for a reason other than msgq saturation — boot-not-ready, shutdown, or `sd_write_blocked`). Check firmware logs.
-   - `sd_stream_drops` moving = real msgq saturation, real audio loss. Sequence & Sync is justified.
-   - `boot_drops` moving = cold-start window leaks; separate fix (likely buffer pre-mount or delay mic start).
-
-**How to force drops for a controlled test (if needed):**
-- Active BLE sync while recording: retry budget tightens from `K_MSEC(5)` → `K_MSEC(1)` and sync reads compete with writes on the SD worker thread. ~30-60 min typically enough.
-- Or temporarily drop `SD_REQ_QUEUE_MSGS` from 100 → 8 in `sd_card.c` and rebuild. Forces drops within minutes — proves the counters work but says nothing about real-world frequency. Revert after verifying.
-
-**Code locations (for future-self grep):**
-- `omi/firmware/omi/src/lib/core/transport.c` — counter declarations (search `storage_block_drops`), BLE handler (`diagnostics_drops_read_handler`), char registration appended last in `diagnostics_service_attr[]`, increment sites in `write_custom_packet_to_storage`.
-- `omi/firmware/omi/src/sd_card.c` — `stat_dropped_frames` atomic, `sd_get_stream_dropped_frames()` accessor, `SD_REQ_QUEUE_MSGS` macro.
-- `omi/firmware/omi/src/lib/core/sd_card.h` — `sd_get_stream_dropped_frames` declaration.
-- `app/lib/services/devices/device_drop_stats.dart` — model + parsing helpers.
-- `app/lib/services/devices/omi_connection.dart` — `diagnosticsDropsCharacteristicUuid`, `performGetDropStats()`.
-- `app/lib/services/devices/device_connection.dart` — abstract `getDropStats()`.
-- `app/lib/pages/settings/sync_page.dart` — state fields (`_dropStats`, `_dropBaseline`, `_dropsUnsupported`), 2 s `Timer.periodic` polling in `initState`, `_buildDropStatsSection()` widget.
-
-**Removal plan if validation says drops don't happen:** delete the characteristic + accessor + app widget. Leaves no functional residue — purely diagnostic surface area.
 
 ## Marker Pipeline: Recalibration Timeline Divergence (B7 second-order)
 
