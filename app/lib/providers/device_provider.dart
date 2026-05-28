@@ -419,7 +419,7 @@ class DeviceProvider extends ChangeNotifier
       try {
         await ServiceManager.instance().device
             .ensureConnection(pairedDeviceId, force: true)
-            .timeout(const Duration(seconds: 5));
+            .timeout(const Duration(seconds: 10));
         await Future.delayed(const Duration(seconds: 1));
         device = await _getConnectedDevice();
         if (device != null) return device;
