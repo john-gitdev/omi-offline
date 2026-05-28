@@ -123,10 +123,10 @@ class MockDeviceConnection implements DeviceConnection {
   Future<bool> stopStorageSync() async => true;
 
   @override
-  Future<void> sendKeepAlive() async {}
+  Future<bool> sendKeepAlive() async => true;
 
   @override
-  Future<void> performSendKeepAlive() async {}
+  Future<bool> performSendKeepAlive() async => true;
 
   @override
   Future<Stream<List<int>>> getBleStorageBytesStream() async => _controller.stream;
