@@ -44,7 +44,12 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
         if (inst != null) {
             inst.unmanageDevice(uuid)
         } else {
-            // Fallback if service not running
+            // Fallback if service not running — still must stop OS-level presence
+            // observation so the LE link doesn't get held warm by the OS.
+            val activity = getActivity()
+            if (activity != null) {
+                OmiCompanionManager.stopObservingForAddress(activity.applicationContext, uuid)
+            }
             bleManager.closeGatt(uuid)
         }
     }
