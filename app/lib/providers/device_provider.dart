@@ -65,7 +65,7 @@ class DeviceProvider extends ChangeNotifier
   // prevents a firmware idle-drop, so don't re-add _stopForegroundKeepAlive()
   // at the top of onAppPaused.
   Timer? _pauseDisconnectTimer;
-  static const Duration _backgroundDisconnectGrace = Duration(seconds: 20);
+  static const Duration _backgroundDisconnectGrace = Duration(seconds: 30);
   // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 20s so
   // the firmware (oo-1.9.0+) doesn't trip its 30s idle-disconnect. Runs while
   // the user is actively in the app, during an active background sync
