@@ -1,5 +1,9 @@
 # Changelog
 
+### Banner shows minutes-to-process (0.14.14)
+
+- **The "Conversation in progress" banner now leads with how much audio is actually waiting to be decoded** — "~N minutes to process", counting only the raw `.bin` audio that's pending (finalized-session and discarded/silence bins excluded, matching what processing actually does). It falls back to the open draft's "Xm Ys accumulated" only when there's no raw audio left to process. This removes the confusing jump where the banner showed a tiny "accumulated" figure and the next screen then showed a much larger "to process" number for the same backlog.
+
 ### App-side silence splitting so conversations actually finalize (0.14.13)
 
 - **Auto-mode recordings now split on the app's own VAD detecting silence, not only on the firmware's gap signal.** Previously, conversation boundaries depended entirely on the firmware reporting a long-enough silence gap (`0xFFFFFFFD`). In a continuous-audio environment the firmware rarely produces a gap anywhere near the ~110s threshold, so the *entire* synced backlog stitched into one unbounded conversation that never finalized — its `.bin` files were never deleted, and every sync re-decoded the whole growing pile from scratch (~80s per ~12-min segment), which the OS then killed before it could finish. The processor now independently cuts when its Silero VAD has seen `vadSplitSeconds` of continuous non-speech: the speech is finalized (trailing silence trimmed off), so its bins are deleted and the backlog drains instead of growing. Long pure-silence stretches are trashed, but their raw `.bin` files are kept recoverable on disk (excluding any bin that also backs a saved recording, so nothing gets duplicated).
