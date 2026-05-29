@@ -2,45 +2,6 @@
 
 ## ACTIVE
 
-### Marker Pipeline: Recalibration Timeline Divergence (B7 second-order)
-
-**File:** `app/lib/services/vad_audio_processor.dart` (the marker branch around line 437 and the per-frame `frameTime` computation around line 580)
-
-### What was fixed
-When a marker arrives mid-recording with a valid RTC AND the active audio header was "derived" (mtime fallback, not high-precision), the marker branch recalibrates the recording's anchor:
-
-```dart
-_recordingStartTime = correctedStart;   // = markerFrameTime - _currentChunkDurationMs
-lastFrameWallTime  = markerFrameTime;
-_currentFrameUptimeMs = markerUptimeMs;
-_isDerivedTimestamp = false;
-```
-
-This anchors the *recording's* timeline to the marker's RTC, so the eventual `recording_<startMs>.m4a` filename is right and `markerOffsetMs == _currentChunkDurationMs` (frame-count-based) stays consistent with the encoded file length.
-
-### What's still odd
-The per-frame wall-time loop (`frameTime = segmentStartTime + frameIndex * 20ms`, line ~580) keeps using `segmentStartTime` — the **original** un-recalibrated value from the bin header / filename / mtime. So `lastFrameWallTime` after the marker continues to advance from the old base, not from `_recordingStartTime`.
-
-Code that compares `lastFrameWallTime` against `_markerProtectedUntilMs` (the 50 s protection window) then reads two different timelines:
-- `_markerProtectedUntilMs` is a marker's RTC ms (new timeline)
-- `lastFrameWallTime` is `segmentStartTime + N*20ms` (old timeline)
-
-If `segmentStartTime` and `markerFrameTime` disagree by more than 50 s — exactly the scenario that triggered the recalibration in the first place — the protection-window comparison will be against the wrong wall clock. Either the window appears to have already expired (`lastFrameWallTime` >> markerFrameTime+50s because the old timeline was running ahead), or it never engages (`lastFrameWallTime` << markerFrameTime).
-
-### Why it's deferred
-- `markerOffsetMs` (the only consumer-visible value) stays correct — it's frame-count-based, not wall-clock-based.
-- Requires audio whose header is derived/mtime (rare in current firmware; legacy bins only).
-- The visible symptom is "protection window engages at the wrong time for the next marker in the same bin" — and most users only tap once per conversation.
-
-### To fix later
-Have the per-frame wall-time loop re-anchor on the recalibrated values:
-```dart
-final frameTime = (vadResumeTime != null && vadResumeFrameIndex != null)
-    ? vadResumeTime.add(...)
-    : (_recordingStartTime ?? segmentStartTime).add(Duration(milliseconds: _currentChunkDurationMs));
-```
-or store a "wallClockAnchor"/"anchorChunkMs" pair that's updated on every recalibration site and used as the base for subsequent frames. Either way, write a synthetic-bin test (see "Marker Pipeline: Test Coverage" below) that exercises the recalibration before changing this.
-
 ### Marker Pipeline: Test Coverage
 
 **File:** `app/test/unit/recordings_manager_test.dart` (exists; doesn't yet cover the marker pipeline)
