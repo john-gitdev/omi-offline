@@ -1,5 +1,9 @@
 # Changelog
 
+### "Conversation in progress" banner shows pending bins
+
+- **Unprocessed-bin count in the banner.** The "Conversation in progress" banner now surfaces how many synced raw `.bin` files are still waiting to be folded into the accumulated draft, alongside the existing accumulated duration (e.g. "2m 30s accumulated · 4 bins pending"). Finalized and VAD-discarded bins are excluded. The banner now also appears when there are pending bins even if the accumulated draft duration is still under a second.
+
 ### Background Sync, Notifications & Fixes (0.14.7)
 
 - **Sync on app open.** With "Maximize Battery" on, opening the app now triggers a sync whenever one is due — i.e. once the auto-sync interval has elapsed since the last sync (the same timer the background sync uses; "Manual Only" never auto-syncs on open). Previously the sync-on-open path was gated to non-battery-saver mode, so battery-saver users had to sync manually every time — opening the app only pushed the next-sync time out by another interval without actually syncing.
