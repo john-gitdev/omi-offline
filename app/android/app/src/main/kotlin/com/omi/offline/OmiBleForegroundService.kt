@@ -152,7 +152,6 @@ class OmiBleForegroundService : Service() {
 
             startStabilityTimer(addr)
             bleManager.startRssiKeepAlive(addr)
-            updateNotification("Connected to Omi Device")
         }
 
         override fun onGattDisconnected(address: String, gattHash: Int, status: Int) {
@@ -272,7 +271,6 @@ class OmiBleForegroundService : Service() {
 
         if (!isBluetoothEnabled) {
             managedDevices[addr] = ManagedDevice(address = addr, requiresBond = bond)
-            updateNotification("Bluetooth is off")
             bleManager.mainHandler.post {
                 bleManager.flutterApi?.onPeripheralDisconnected(addr, "bluetooth_off") {}
             }
@@ -395,8 +393,6 @@ class OmiBleForegroundService : Service() {
             }
             managed.connectionTimeoutRunnable = timeoutRunnable
             handler.postDelayed(timeoutRunnable, timeoutMs)
-
-            updateNotification("Connecting to Omi...")
         }
     }
 
@@ -463,8 +459,6 @@ class OmiBleForegroundService : Service() {
         bleManager.mainHandler.post {
             bleManager.flutterApi?.onPeripheralDisconnected(addr, error) {}
         }
-
-        updateNotification("Disconnected")
 
         if (status == 5 && tryRecoverFromStaleBond(addr)) {
             return
@@ -639,7 +633,6 @@ class OmiBleForegroundService : Service() {
                             managed.currentGattHash = null
                         }
                     }
-                    updateNotification("Bluetooth is off")
                 }
                 BluetoothAdapter.STATE_TURNING_ON -> {
                     isBluetoothEnabled = false
@@ -650,7 +643,6 @@ class OmiBleForegroundService : Service() {
                     bleManager.mainHandler.post {
                         bleManager.flutterApi?.onBluetoothStateChanged("on") {}
                     }
-                    updateNotification("Reconnecting...")
                     handler.postDelayed({
                         for ((addr, _) in managedDevices) {
                             triggerReconnection(addr, "bluetoothOn")
@@ -677,14 +669,20 @@ class OmiBleForegroundService : Service() {
 
         // Call startForeground in onCreate to satisfy the OS requirement as early as possible.
         // Android 14+ requires providing the service type.
+        //
+        // The text is a fixed, connection-state-independent baseline. This service shares
+        // notification id 2001 / channel omi_ble_channel with the Dart flutter_foreground_task,
+        // last-writer-wins. Writing connection state here ("Connected"/"Connecting"/etc.) clobbers
+        // the Dart-owned sync/processing progress and the idle sync-countdown, so the native side
+        // never updates the text — see device_provider._showIdleNotification / _syncOwnsNotification.
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,
-                buildNotification("Connecting to Omi..."),
+                buildNotification("Running in the background"),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             )
         } else {
-            startForeground(NOTIFICATION_ID, buildNotification("Connecting to Omi..."))
+            startForeground(NOTIFICATION_ID, buildNotification("Running in the background"))
         }
 
         registerReceiver(
@@ -757,15 +755,10 @@ class OmiBleForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     // ── Notification ──
-
-    private fun updateNotification(text: String) {
-        try {
-            val nm = getSystemService(NotificationManager::class.java)
-            nm.notify(NOTIFICATION_ID, buildNotification(text))
-        } catch (e: Exception) {
-            Log.w(TAG, "updateNotification failed: ${e.message}")
-        }
-    }
+    //
+    // No updateNotification(): the notification text is a fixed baseline set once at
+    // startForeground (onCreate). Connection/sync state is owned by the Dart side, which
+    // shares the same notification id (2001) and channel; native writes would clobber it.
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(CHANNEL_ID, "Omi BLE", NotificationManager.IMPORTANCE_LOW)
