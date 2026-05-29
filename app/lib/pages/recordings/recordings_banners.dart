@@ -31,14 +31,14 @@ class StorageWarningBanner extends StatelessWidget {
 
 class AccumulatingBanner extends StatelessWidget {
   final SyncProcessState spState;
-  final double accumulatedMinutes;
-  final int unprocessedBinCount;
+  final double toProcessMinutes;
+  final double draftMinutes;
   final VoidCallback? onTap;
   const AccumulatingBanner({
     super.key,
     required this.spState,
-    required this.accumulatedMinutes,
-    this.unprocessedBinCount = 0,
+    required this.toProcessMinutes,
+    this.draftMinutes = 0.0,
     this.onTap,
   });
 
@@ -47,17 +47,26 @@ class AccumulatingBanner extends StatelessWidget {
     if (spState == SyncProcessState.syncing ||
         spState == SyncProcessState.processing ||
         spState == SyncProcessState.stopping) return const SizedBox.shrink();
-    if (accumulatedMinutes < (1.0 / 60.0) && unprocessedBinCount == 0) return const SizedBox.shrink();
 
-    final totalSeconds = (accumulatedMinutes * 60).round();
-    final mins = totalSeconds ~/ 60;
-    final secs = totalSeconds % 60;
-    final String accumulatedLabel = mins > 0
-        ? (secs > 0 ? '${mins}m ${secs}s accumulated' : '$mins ${mins == 1 ? 'minute' : 'minutes'} accumulated')
-        : '$secs ${secs == 1 ? 'second' : 'seconds'} accumulated';
-    final String binsLabel =
-        unprocessedBinCount > 0 ? '$unprocessedBinCount ${unprocessedBinCount == 1 ? 'bin' : 'bins'} pending' : '';
-    final String label = binsLabel.isEmpty ? accumulatedLabel : '$accumulatedLabel · $binsLabel';
+    const double minShown = 1.0 / 60.0; // ~1 second
+    final bool hasToProcess = toProcessMinutes >= minShown;
+    final bool hasDraft = draftMinutes >= minShown;
+    if (!hasToProcess && !hasDraft) return const SizedBox.shrink();
+
+    // Show raw audio still waiting to be decoded; only when there's none left
+    // do we fall back to the open draft's accumulated duration.
+    final String label;
+    if (hasToProcess) {
+      final mins = toProcessMinutes.ceil();
+      label = '~$mins ${mins == 1 ? 'minute' : 'minutes'} to process';
+    } else {
+      final totalSeconds = (draftMinutes * 60).round();
+      final mins = totalSeconds ~/ 60;
+      final secs = totalSeconds % 60;
+      label = mins > 0
+          ? (secs > 0 ? '${mins}m ${secs}s accumulated' : '$mins ${mins == 1 ? 'minute' : 'minutes'} accumulated')
+          : '$secs ${secs == 1 ? 'second' : 'seconds'} accumulated';
+    }
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
