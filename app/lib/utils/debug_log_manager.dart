@@ -27,7 +27,14 @@ class DebugLogManager {
   static bool _initializing = false;
   static bool _prunedOnce = false;
 
-  static bool get isEnabled => SharedPreferencesUtil().devLogsToFileEnabled;
+  /// Forces logging on/off regardless of SharedPreferences. Set this in
+  /// background isolates, where SharedPreferences isn't initialised and
+  /// `devLogsToFileEnabled` would otherwise always read its `false` default,
+  /// silently dropping every log line. The main isolate reads the real pref
+  /// and forwards it across the isolate boundary.
+  static bool? enabledOverride;
+
+  static bool get isEnabled => enabledOverride ?? SharedPreferencesUtil().devLogsToFileEnabled;
 
   static Future<File> _ensureFile() async {
     if (_file != null) return _file!;
