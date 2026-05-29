@@ -15,6 +15,7 @@ import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 class SyncPage extends StatefulWidget {
   const SyncPage({super.key});
@@ -623,6 +624,21 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               ],
               const SizedBox(height: 12),
               SwitchListTile(
+                title: const Text('Keep Screen On',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+                subtitle: const Text('Holds a wakelock while the app is open so the screen never sleeps.',
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
+                value: SharedPreferencesUtil().keepScreenOn,
+                onChanged: (val) async {
+                  SharedPreferencesUtil().keepScreenOn = val;
+                  await WakelockPlus.toggle(enable: val);
+                  setState(() {});
+                },
+                activeColor: Colors.amber,
+                contentPadding: EdgeInsets.zero,
+              ),
+              const SizedBox(height: 12),
+              SwitchListTile(
                 title: const Text('Show SD Write Drops',
                     style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
                 subtitle: const Text('Polls the device every 2 s for SD-card drop counters. Off by default.',
@@ -782,8 +798,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       ),
       child: _recentLogs.isEmpty
           ? const Center(
-              child: Text('No logs yet.',
-                  style: TextStyle(color: Colors.white38, fontSize: 12)),
+              child: Text('No logs yet.', style: TextStyle(color: Colors.white38, fontSize: 12)),
             )
           : ListView.builder(
               reverse: true,
