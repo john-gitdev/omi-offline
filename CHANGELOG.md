@@ -1,5 +1,10 @@
 # Changelog
 
+### Notification fix: native connection-state clobber & live foreground processing progress (0.14.10)
+
+- **"Connected to Omi Device" no longer overrides sync/processing progress.** 0.14.9 stopped the *Dart* side from writing connection state to the persistent notification, but the native Android BLE service shares that same notification and was still posting "Connected to Omi Device" / "Connecting…" / "Disconnected" / "Reconnecting…" on every connection change — so the moment the link (re)connected during a sync or processing pass, it clobbered the progress text. The native service now uses a single fixed baseline and never writes connection state.
+- **Notification shows live processing progress with the app open.** When a sync finished and processing began while you were watching the app, the notification froze at "Processing recordings — preparing…" instead of advancing. It now counts through the actual processing progress in the foreground, the same as it already did in the background.
+
 ### Single background mode, grace-period disconnect & notification fix (0.14.9)
 
 - **One background behaviour; "Maximize Battery" toggle removed.** The app used to have two background modes — stay-connected (the default) and disconnect-after-sync ("Maximize Battery") — but the stay-connected default never actually held the link: with no background keep-alive the firmware idle-dropped the connection every ~30 s and the app immediately reconnected, churning Bluetooth (and the notification) about once a minute for no benefit. Since the Omi records to its SD card whether or not the phone is connected, holding the link in the background gained nothing. The app now **always disconnects Bluetooth while backgrounded** and reconnects only when a sync is due (on the auto-sync interval, or on app open/resume). The toggle and its setting are gone.
