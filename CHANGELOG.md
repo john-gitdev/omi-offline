@@ -1,5 +1,10 @@
 # Changelog
 
+### Stuck-sync recovery & "Keep Screen On" toggle (0.14.12)
+
+- **The sync/processing banner can no longer wedge with no way out.** When the BLE link died mid-transfer (e.g. the device stopped streaming partway through a file in the background), the WAL service's "syncing" flag could stay stuck set, stranding the banner in *Syncing…* or — after tapping Cancel — *Stopping…* forever, with no way to start a new sync short of force-closing the app. A watchdog now force-recovers to idle when a sync makes no progress for 60s, or when a cancel doesn't take effect within 12s, releasing the wakelock and foreground notification the same way a normal finish does. The recovery is logged (with the stuck flags and time-since-progress) so the underlying stall is diagnosable.
+- **New "Keep Screen On" toggle in Debug Tools.** Holds a wakelock while the app is open so the screen never sleeps — useful for babysitting a foreground sync/processing run. It survives backgrounding (re-asserted on resume) and no longer gets cleared when a sync/processing pass finishes.
+
 ### Debug logging now captures background audio processing (0.14.11)
 
 - **VAD/processing logs reach the debug log file.** With dev logging enabled, the audio-processing pass (Opus decode → VAD → encode) runs in a background isolate where `SharedPreferences` isn't initialized, so `DebugLogManager` read its `false` default and silently dropped every line — none of the processor's per-file, marker, or stitching logs ever hit `omi_debug_*.log`. The real preference is now forwarded across the isolate boundary, so those lines are persisted alongside the main-isolate logs.
