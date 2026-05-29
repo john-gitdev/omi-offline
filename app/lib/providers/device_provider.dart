@@ -735,20 +735,34 @@ class DeviceProvider extends ChangeNotifier
     // quick app-switch / notification-shade glance shouldn't force a reconnect
     // when the user comes right back. Leave the keep-alive running so the
     // firmware doesn't idle-drop the link before the window elapses;
-    // onAppResumed cancels this timer. Once it fires (still backgrounded, not
-    // mid-sync) we stop the keep-alive and disconnect to save battery.
+    // onAppResumed cancels this. If a sync is still in flight when it fires it
+    // re-arms, so for the start-a-sync-then-background case the grace
+    // effectively begins once the sync finishes.
+    _armPauseDisconnect();
+  }
+
+  /// Arm (or re-arm) the post-background disconnect. A method (not an inline
+  /// closure) so the tick can re-arm itself while a sync is still running.
+  void _armPauseDisconnect() {
     _pauseDisconnectTimer?.cancel();
-    _pauseDisconnectTimer = Timer(_backgroundDisconnectGrace, () {
-      if (_disposed || _isAppInForeground || !isConnected) return;
-      if (isFirmwareUpdateInProgress || _isOnFirmwareUpdatePage) return;
-      // A sync is actively using the BLE link — let it finish (its own flow
-      // disconnects afterward). Local decode/VAD processing doesn't hold the
-      // link, so we don't block on it here.
-      if (ServiceManager.instance().wal.getSyncs().isSyncing || _backgroundSyncActive) return;
-      _stopForegroundKeepAlive();
-      Logger.debug('Background grace elapsed: disconnecting device to save battery.');
-      ServiceManager.instance().device.disconnectDevice(isManual: true);
-    });
+    _pauseDisconnectTimer = Timer(_backgroundDisconnectGrace, _onPauseDisconnectTick);
+  }
+
+  void _onPauseDisconnectTick() {
+    if (_disposed || _isAppInForeground || !isConnected) return;
+    if (isFirmwareUpdateInProgress || _isOnFirmwareUpdatePage) return;
+    // A sync is actively using the BLE link — keep the connection (and the
+    // keep-alive) alive until it finishes, then re-check. This is the
+    // start-a-sync-then-background case: keep-alive runs through the sync and
+    // the grace effectively starts once it's over. Local decode/VAD processing
+    // doesn't hold the link, so it doesn't block the disconnect.
+    if (ServiceManager.instance().wal.getSyncs().isSyncing || _backgroundSyncActive) {
+      _armPauseDisconnect();
+      return;
+    }
+    _stopForegroundKeepAlive();
+    Logger.debug('Background grace elapsed: disconnecting device to save battery.');
+    ServiceManager.instance().device.disconnectDevice(isManual: true);
   }
 
   bool _shouldSyncNow() {
