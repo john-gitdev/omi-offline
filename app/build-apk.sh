@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the dev-flavor release APK, rename it after the current pubspec
-# version (e.g. 0.14.6 -> oo0146.apk), and drop it at the repo root.
+# version (e.g. 0.14.6 -> oo0146.apk), and drop it in releases/ at the repo root.
 #
 # Deterministic only: no version bump, no commit, no push. Run those
 # steps yourself (or via the /RELEASE flow) before calling this.
@@ -18,9 +18,12 @@ if [[ -z "${VERSION:-}" ]]; then
 fi
 
 SHORT="oo$(echo "$VERSION" | tr -d '.')"
-OUT_PATH="$ROOT_DIR/${SHORT}.apk"
+RELEASES_DIR="$ROOT_DIR/releases"
+OUT_PATH="$RELEASES_DIR/${SHORT}.apk"
 
 echo "build-apk: version=$VERSION  output=$OUT_PATH"
+
+mkdir -p "$RELEASES_DIR"
 
 cd "$APP_DIR"
 flutter clean
