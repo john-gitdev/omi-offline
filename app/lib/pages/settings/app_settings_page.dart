@@ -16,7 +16,6 @@ class AppSettingsPage extends StatefulWidget {
 }
 
 class _AppSettingsPageState extends State<AppSettingsPage> {
-  late bool _maximizeBattery;
   late int _backgroundSyncIntervalMinutes;
   late bool _use24HourTime;
   late String _audioSaveFormat;
@@ -27,7 +26,6 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
   @override
   void initState() {
     super.initState();
-    _maximizeBattery = SharedPreferencesUtil().maximizeBattery;
     _backgroundSyncIntervalMinutes = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
     _audioSaveFormat = SharedPreferencesUtil().audioSaveFormat;
@@ -40,7 +38,6 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
 
   Future<void> _saveSettings() async {
     final prefs = SharedPreferencesUtil();
-    prefs.maximizeBattery = _maximizeBattery;
     prefs.backgroundSyncIntervalMinutes = _backgroundSyncIntervalMinutes;
     if (context.mounted) {
       Provider.of<DeviceProvider>(context, listen: false).restartBackgroundSyncTimer();
@@ -128,27 +125,6 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.white.withOpacity(0.05)),
-                ),
-                child: SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Maximize Battery', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Disconnects Bluetooth after a sync completes to maximize battery life.', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
-                  value: _maximizeBattery,
-                  onChanged: (value) {
-                    setState(() => _maximizeBattery = value);
-                    _markDirty();
-                  },
-                  activeColor: Colors.deepPurpleAccent,
-                ),
-              ),
-              const SizedBox(height: 16),
-
               // Auto Sync Interval
               Container(
                 padding: const EdgeInsets.all(16),
@@ -171,7 +147,8 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                           dropdownColor: const Color(0xFF2C2C2E),
                           icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                           underline: const SizedBox(),
-                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          style: const TextStyle(
+                              color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
                           items: const [
                             DropdownMenuItem(value: 15, child: Text('15 Minutes')),
                             DropdownMenuItem(value: 30, child: Text('30 Minutes')),
@@ -267,11 +244,11 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                           dropdownColor: const Color(0xFF2C2C2E),
                           icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
                           underline: const SizedBox(),
-                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          style: const TextStyle(
+                              color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
                           items: [
                             const DropdownMenuItem(value: 'm4a', child: Text('M4A (AAC)')),
-                            if (!Platform.isIOS)
-                              const DropdownMenuItem(value: 'ogg', child: Text('OGG (Opus)')),
+                            if (!Platform.isIOS) const DropdownMenuItem(value: 'ogg', child: Text('OGG (Opus)')),
                             const DropdownMenuItem(value: 'wav', child: Text('WAV (PCM)')),
                           ],
                           onChanged: (value) {
@@ -319,7 +296,8 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                           dropdownColor: const Color(0xFF2C2C2E),
                           underline: const SizedBox(),
                           icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                          style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
+                          style: const TextStyle(
+                              color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
                           items: const [
                             DropdownMenuItem(value: -1, child: Text('Always Keep')),
                             DropdownMenuItem(value: 3, child: Text('3 Days')),
@@ -333,7 +311,8 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                                 context: context,
                                 builder: (c) => AlertDialog(
                                   backgroundColor: const Color(0xFF1C1C1E),
-                                  title: const Text('Enable Delete After Upload?', style: TextStyle(color: Colors.white)),
+                                  title:
+                                      const Text('Enable Delete After Upload?', style: TextStyle(color: Colors.white)),
                                   content: const Text(
                                     'Recordings will be sent to your integrations and deleted from your device after a successful upload.',
                                     style: TextStyle(color: Colors.white70, fontSize: 14),
