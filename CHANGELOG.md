@@ -1,7 +1,8 @@
 # Changelog
 
-### "Conversation in progress" banner shows pending bins
+### Background-sync keep-alive & "Conversation in progress" banner (0.14.8)
 
+- **Large recordings now finish syncing in the background.** During a background sync the app now sends the firmware keep-alive (HEARTBEAT `0x32`, the same one used in the foreground) every 20 s, so the device no longer trips its 30-second idle-disconnect mid-transfer. Previously any single file that took longer than ~30 s to download — typically the large stitched/draft recordings — dropped with "Stream closed without EOT" and only inched forward via resume across reconnects; with **Maximize Battery** on (which suppresses background reconnects) such a file could stall indefinitely. Batches of small files were unaffected, because each file's read/delete command already reset the firmware's idle timer.
 - **Unprocessed-bin count in the banner.** The "Conversation in progress" banner now surfaces how many synced raw `.bin` files are still waiting to be folded into the accumulated draft, alongside the existing accumulated duration (e.g. "2m 30s accumulated · 4 bins pending"). Finalized and VAD-discarded bins are excluded. The banner now also appears when there are pending bins even if the accumulated draft duration is still under a second.
 
 ### Background Sync, Notifications & Fixes (0.14.7)
