@@ -85,6 +85,16 @@ class VadAudioProcessor {
   // VAD state counters
   int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
 
+  // App-side silence-split tracking. _silenceRunMs is the length of the current
+  // unbroken run of non-speech frames (reset to 0 on any speech frame). The
+  // high-water marks record _currentRefs.length / _currentChunkDurationMs as of
+  // the last speech frame, so a split can trim the trailing silence off the
+  // saved recording. Reset on every conversation boundary (see _resetState and
+  // the inline resets in the gap-split / max-cap paths).
+  int _silenceRunMs = 0;
+  int _lastSpeechRefCount = 0;
+  int _lastSpeechChunkMs = 0;
+
   // Max Silero voice_prob observed during the current conversation. Surfaced in
   // discard records so the recovery UI can explain why VAD rejected the audio.
   // AAD mode (no Silero session) leaves this at 0.
@@ -579,6 +589,9 @@ class VadAudioProcessor {
               _currentRefs = [];
               _speechFrameCount = 0;
               _currentChunkDurationMs = 0;
+              _silenceRunMs = 0;
+              _lastSpeechRefCount = 0;
+              _lastSpeechChunkMs = 0;
               _recordingStartTime = newResumeTime;
               Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
             } else {
@@ -645,9 +658,18 @@ class VadAudioProcessor {
         if (isSpeech) {
           _speechFrameCount++;
           segmentSpeechFrames++;
+          _silenceRunMs = 0;
+        } else {
+          _silenceRunMs += frameDurationMs;
         }
         _currentRefs.add(frameRef);
         _currentChunkDurationMs += frameDurationMs;
+        if (isSpeech) {
+          // High-water mark of the conversation's last speech, used to trim the
+          // trailing silence off the saved recording on an in-stream split.
+          _lastSpeechRefCount = _currentRefs.length;
+          _lastSpeechChunkMs = _currentChunkDurationMs;
+        }
         if (_currentFrameUptimeMs != null) _currentFrameUptimeMs = _currentFrameUptimeMs! + frameDurationMs;
 
         if (_recordingStartTime == null) {
@@ -661,8 +683,21 @@ class VadAudioProcessor {
             : segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
         lastFrameWallTime = frameTime;
 
-        // Silence-based splits are handled by 0xFFFFFFFD timestamp packets.
-        // Only enforce the max conversation duration cap here.
+        // App-side silence split. The firmware only emits a 0xFFFFFFFD gap once
+        // its own AAD has gone quiet long enough; in a continuous-audio
+        // environment that gap may never reach the split threshold, so the
+        // whole stream stitches into one unbounded conversation that never
+        // finalizes. Independently cut here once the Silero VAD has seen
+        // _silenceDurationToSplitMs of continuous non-speech.
+        if (_silenceRunMs >= _silenceDurationToSplitMs) {
+          await _splitOnSilence(savedFiles);
+          offset += 4 + ((frameLength + 3) & ~3);
+          frameIndex++;
+          totalFrameCount++;
+          continue;
+        }
+
+        // Max conversation duration cap (0 / disabled by default).
         if (_currentChunkDurationMs >= _maxChunkMs) {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
           final speechMs = _speechFrameCount * frameDurationMs;
@@ -692,6 +727,9 @@ class VadAudioProcessor {
           _currentRefs = [];
           _speechFrameCount = 0;
           _currentChunkDurationMs = 0;
+          _silenceRunMs = 0;
+          _lastSpeechRefCount = 0;
+          _lastSpeechChunkMs = 0;
           _recordingStartTime = cutTime;
         }
 
@@ -714,6 +752,60 @@ class VadAudioProcessor {
 
     _processedFiles.add(segmentFile.path);
     return savedFiles;
+  }
+
+  /// Cuts the current conversation when the Silero VAD has observed
+  /// [_silenceDurationToSplitMs] of continuous non-speech. The speech is saved
+  /// trimmed at the last speech frame (or discarded if below the speech
+  /// minimum); the trailing silence is trashed but its bins are kept
+  /// recoverable on disk (excluding any bin that also backs the saved
+  /// recording). Pure-silence runs with no speech yet are trashed wholesale so
+  /// the buffer can't grow unbounded. Leaves state reset so the next speech
+  /// frame starts a fresh conversation.
+  Future<void> _splitOnSilence(List<String> savedFiles) async {
+    if (_speechFrameCount > 0 && _lastSpeechRefCount > 0 && _lastSpeechRefCount <= _currentRefs.length) {
+      final savedRefs = _currentRefs.sublist(0, _lastSpeechRefCount);
+      final trailingSilence = _currentRefs.sublist(_lastSpeechRefCount);
+      final savedBins = _binsOf(savedRefs);
+      final silenceStart = _recordingStartTime!.add(Duration(milliseconds: _lastSpeechChunkMs));
+      final trailingMs = _currentChunkDurationMs - _lastSpeechChunkMs;
+
+      // Present only the speech portion to the save/discard + marker bookkeeping
+      // (both read _currentRefs / _currentChunkDurationMs), so the trailing
+      // silence is trimmed off the recording and the EDL durations stay honest.
+      _currentRefs = savedRefs;
+      _currentChunkDurationMs = _lastSpeechChunkMs;
+
+      final speechMs = _speechFrameCount * frameDurationMs;
+      final tooShort = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+      if (tooShort) {
+        final rec = _buildDiscardRecord('noise_silence_split');
+        if (rec != null) _pendingDiscards.add(rec);
+        _emitOrphanMarkers();
+        Logger.debug('VadAudioProcessor: Silence split — discarding ${speechMs}ms low-speech chunk.');
+      } else {
+        final filePath = await _saveRecording(savedRefs, _recordingStartTime!);
+        if (filePath == null) {
+          _emitOrphanMarkers();
+        } else {
+          savedFiles.add(filePath);
+        }
+        Logger.debug('VadAudioProcessor: Silence split — saved ${_lastSpeechChunkMs}ms speech, '
+            'trimmed ${trailingMs}ms trailing silence.');
+      }
+
+      final silenceDiscard =
+          _buildDiscardRecordFor(trailingSilence, silenceStart, trailingMs, 'silence_trimmed', excludeBins: savedBins);
+      if (silenceDiscard != null) _pendingDiscards.add(silenceDiscard);
+    } else {
+      // No speech yet — the whole buffer is silence. Trash it (bins recoverable).
+      final rec = _buildDiscardRecord('silence_only');
+      if (rec != null) _pendingDiscards.add(rec);
+      _emitOrphanMarkers();
+      Logger.debug('VadAudioProcessor: Trashing ${_currentChunkDurationMs}ms of speechless silence.');
+    }
+
+    _resetState();
   }
 
   Future<String?> flushRemaining({bool isDraft = false}) async {
@@ -782,6 +874,9 @@ class VadAudioProcessor {
     _currentChunkDurationMs = 0;
     _currentMaxVoiceProb = 0.0;
     _recordingStartTime = null;
+    _silenceRunMs = 0;
+    _lastSpeechRefCount = 0;
+    _lastSpeechChunkMs = 0;
     // Defensive clear: callers that discard MUST call _emitOrphanMarkers()
     // before _resetState() — otherwise the tap is lost silently. Anything
     // still in _pendingMarkers here is a bug in the caller; we wipe it so it
@@ -817,19 +912,35 @@ class VadAudioProcessor {
 
   /// Builds a discard record from the current conversation state. Caller is
   /// responsible for adding to [_pendingDiscards] and resetting state afterwards.
-  Map<String, dynamic>? _buildDiscardRecord(String reason) {
-    if (_currentRefs.isEmpty || _recordingStartTime == null) return null;
-    final relativeBins = <String>{};
-    for (final item in _currentRefs) {
+  // Maps refs → set of relative bin paths (the `raw_segments/...` tail).
+  Set<String> _binsOf(Iterable<Object> refs) {
+    final bins = <String>{};
+    for (final item in refs) {
       if (item is! FrameRef) continue;
       // Path layout: <docs>/raw_segments/<sessionId>/<file>.bin → store relative tail.
       final segments = item.segmentFile.path.split('/raw_segments/');
-      relativeBins.add(segments.length == 2 ? segments.last : item.segmentFile.path);
+      bins.add(segments.length == 2 ? segments.last : item.segmentFile.path);
     }
+    return bins;
+  }
+
+  Map<String, dynamic>? _buildDiscardRecord(String reason) =>
+      _buildDiscardRecordFor(_currentRefs, _recordingStartTime, _currentChunkDurationMs, reason);
+
+  /// Builds a discard record for an explicit ref list / span so the referenced
+  /// bins are preserved on disk for recovery. [excludeBins] drops any bin that
+  /// is also kept alive by a saved recording — protecting such a bin would let
+  /// it be re-gathered and re-decoded next run, duplicating the saved audio.
+  /// Returns null when there is nothing left to protect.
+  Map<String, dynamic>? _buildDiscardRecordFor(List<Object> refs, DateTime? startTime, int durationMs, String reason,
+      {Set<String>? excludeBins}) {
+    if (refs.isEmpty || startTime == null) return null;
+    final relativeBins = _binsOf(refs);
+    if (excludeBins != null) relativeBins.removeAll(excludeBins);
     if (relativeBins.isEmpty) return null;
     return {
-      'startMs': _recordingStartTime!.millisecondsSinceEpoch,
-      'endMs': _recordingStartTime!.millisecondsSinceEpoch + _currentChunkDurationMs,
+      'startMs': startTime.millisecondsSinceEpoch,
+      'endMs': startTime.millisecondsSinceEpoch + durationMs,
       'reason': reason,
       'maxVoiceProb': _currentMaxVoiceProb,
       'relativeBins': relativeBins.toList(),
