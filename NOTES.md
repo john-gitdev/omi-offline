@@ -380,3 +380,33 @@ All counters are cumulative since boot. They reset only on device reboot — the
 ### Removal plan (if ever decided the canary isn't worth keeping)
 
 Delete the characteristic + handler + registration in `transport.c`, the `sd_card.c`/`.h` accessors if unused elsewhere, the Dart model/accessor, and the app widget + state. Leaves no functional residue — purely diagnostic surface area, no audio-path dependency.
+
+---
+
+## App: Background Connection Lifecycle (single mode + grace disconnect)
+
+Shipped in 0.14.9. The two-mode "Maximize Battery" toggle is gone — there is now one background behavior. Recorded here because the invariants below are easy to undo by accident.
+
+### Why one mode
+The old default (Maximize Battery **off**) tried to stay connected in the background, but the keep-alive is off while backgrounded, so the firmware idle-dropped the link every ~30 s and the app immediately reconnected — a perpetual connect↔disconnect churn (~once/min) that also made the foreground-service notification flicker between "Connected" and the sync countdown. Since the Omi records to SD regardless of BLE, holding the link in the background gained nothing. Collapsed to the old Maximize-**on** behavior: disconnect in the background, reconnect only when a sync is due (scheduled interval, or app open/resume). The `maximizeBattery` pref and the App Settings toggle were removed; every `maximizeBattery` branch was treated as always-on.
+
+### Grace disconnect — load-bearing invariant
+`onAppPaused` does **not** disconnect immediately; it arms `_pauseDisconnectTimer` (`_backgroundDisconnectGrace`, 30 s) so a quick app-switch / notification-shade glance doesn't force a reconnect on return.
+- **The keep-alive must keep running during the grace window.** That — not the grace duration — is what stops the firmware idle-drop, so the link is still live if the user returns. `onAppPaused` therefore must **not** call `_stopForegroundKeepAlive()` (it used to, pre-0.14.9). A future "simplify" that re-adds the early stop silently reintroduces a mid-grace firmware drop. There's an inline comment on the field warning about this.
+- **The tick re-arms while a sync is in flight** (`_onPauseDisconnectTick` → `_armPauseDisconnect`). Start-a-sync-then-background case: keep-alive holds the link through the sync, the grace effectively restarts once `isSyncing` / `_backgroundSyncActive` clears, then it stops the keep-alive and disconnects. Without the re-arm the one-shot timer bailed forever and the device stayed connected (keep-alive pinging) until the next scheduled sync. Local decode/VAD processing does **not** hold the BLE link, so it isn't part of the bail condition.
+- Cancelled on resume, on any background disconnect (`onDeviceDisconnected`), in `dispose` and `prepareDFU`.
+- **30 s value**: covers essentially all quick app-switches; extra connected time vs 20 s is negligible against the device's always-on mic draw. Deliberately a fixed constant, **not** user-selectable — a "grace seconds" slider is the battery-vs-convenience toggle we just removed, in disguise, and isn't a knob a user can reason about.
+
+### Firmware idle-drop — keep it (do NOT remove)
+The app-side disconnect is *cooperative* — it only fires while the app's process is alive and the OS runs its lifecycle callbacks. For the *non-cooperative* cases (app killed/swiped/crashed, frozen under Doze, phone out of range) nothing app-side fires, and the firmware's ~30 s idle-drop is the only thing that frees the Omi's radio. The grace delay *widens* the window where the app might not get to disconnect cleanly, so it relies on the firmware net more, not less. No firmware change was made for this work, and the idle-drop should stay.
+
+### Notification
+One foreground-service notification (id 2001, channel `omi_ble_channel`). All idle writes go through `_showIdleNotification` — **connection-state-independent**, shows only the next-sync countdown — guarded by `_syncOwnsNotification` (sync/processing/`_backgroundSyncActive`) so an active sync keeps its own live progress. The old "Connected to Omi Device" / "Scanning for device…" background writes were removed; they fought the countdown across connect/disconnect transitions.
+
+### Always disconnect after a background sync
+`_doBackgroundSync`'s finally disconnects unconditionally in the background. The old `missingCount > 0` "keep the connection" branch was dropped — with the keep-alive stopped it just idle-dropped within ~30 s anyway. Leftover segments are picked up by the next scheduled sync / on resume (`onAppResumed` has a defensive drain for the rare resume-onto-live-link race).
+
+### Code locations
+- `app/lib/providers/device_provider.dart` — `_backgroundDisconnectGrace` + `_pauseDisconnectTimer` (field decl ~line 67), `onAppPaused` / `_armPauseDisconnect` / `_onPauseDisconnectTick`, `onAppResumed` (cancel), `_doBackgroundSync` finally (post-sync disconnect), `_handleDeviceConnected` background drop-guard, `onDeviceDisconnected` background guards, `_showIdleNotification` + `_syncOwnsNotification`.
+- Removed: `maximizeBattery` getter/setter in `app/lib/backend/preferences.dart`; the `SwitchListTile` + `_maximizeBattery` state in `app/lib/pages/settings/app_settings_page.dart`.
+- Keep-alive: `_startForegroundKeepAlive` / `_stopForegroundKeepAlive` (same file) — see the field-comment invariant above.
