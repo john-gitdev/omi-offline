@@ -397,6 +397,11 @@ class SharedPreferencesUtil {
   bool get devLogsToFileEnabled => getBool('devLogsToFileEnabled');
   set devLogsToFileEnabled(bool value) => saveBool('devLogsToFileEnabled', value);
 
+  // When true, the app holds a wakelock while open so the screen never sleeps
+  // (useful for babysitting a foreground sync/processing run).
+  bool get keepScreenOn => getBool('keepScreenOn');
+  set keepScreenOn(bool value) => saveBool('keepScreenOn', value);
+
   // When true, the SD Write Drops panel is shown on Debug Tools and polls the
   // device's drop counters every 2s. Off by default so the BLE read never runs
   // unless the user is actively investigating.
