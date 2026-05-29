@@ -74,6 +74,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   double _accumulatedMinutes = 0.0;
   double get accumulatedMinutes => _accumulatedMinutes;
 
+  // Count of raw .bin files still waiting to be processed into the accumulated
+  // draft (not yet finalized and not VAD-discarded). Surfaced in the banner so
+  // the user can see there is synced audio that isn't reflected in the draft.
+  int _unprocessedBinCount = 0;
+  int get unprocessedBinCount => _unprocessedBinCount;
+
   String _lastCompletedStage = 'none';
   String get lastCompletedStage => _lastCompletedStage;
 
@@ -766,7 +772,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         }
 
         _isLoading = false;
-        _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
+        final acc = _computeAccumulated(_batches);
+        _accumulatedMinutes = acc.minutes;
+        _unprocessedBinCount = acc.unprocessedBins;
         _checkCleanupFlag();
         notifyListeners();
         tryAutoUploadNext();
@@ -796,7 +804,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
           _markerConversations = await _manager.getMarkerConversations();
         }
 
-        _accumulatedMinutes = _computeAccumulatedMinutes(_batches);
+        final acc = _computeAccumulated(_batches);
+        _accumulatedMinutes = acc.minutes;
+        _unprocessedBinCount = acc.unprocessedBins;
         _checkCleanupFlag();
         notifyListeners();
       }
@@ -1366,7 +1376,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         return '${c.file.parent.path}/recording_fs320_$ts.bin';
       });
 
-  double _computeAccumulatedMinutes(List<Batch> batches) {
+  ({double minutes, int unprocessedBins}) _computeAccumulated(List<Batch> batches) {
     final finalizedSessionIds =
         batches.expand((b) => b.finalizedRecordings).map((c) => c.sessionId).whereType<int>().toSet();
 
@@ -1377,6 +1387,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     final Map<int, int> sessionRawBytes = {};
     int unknownRawBytes = 0;
+
+    // Raw bins still on disk that aren't yet folded into the accumulated draft
+    // (in normal mode, bins are deleted once processed into a draft, so any
+    // remaining pending bin is genuinely unprocessed).
+    int unprocessedBins = 0;
 
     for (final f in batches.expand((b) => b.rawSegments)) {
       final name = f.path.split('/').last;
@@ -1394,6 +1409,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
       try {
         final len = f.lengthSync();
+        unprocessedBins++;
         if (sid != null) {
           sessionRawBytes[sid] = (sessionRawBytes[sid] ?? 0) + len;
         } else {
@@ -1429,6 +1445,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
     }
 
-    return totalMinutes;
+    return (minutes: totalMinutes, unprocessedBins: unprocessedBins);
   }
 }
