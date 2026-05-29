@@ -685,16 +685,14 @@ class DeviceProvider extends ChangeNotifier
 
         // Disconnect after the full sync+process cycle (both syncAll calls) so
         // that new firmware files created during processing are also captured
-        // before we drop the connection. The device stays disconnected in the
-        // background until the next scheduled sync reconnects it.
+        // before we drop the connection. Always disconnect — even if segments
+        // remain there is no point holding the link, because the keep-alive has
+        // stopped and the firmware idle-drops it within ~30s with nothing to
+        // reconnect it in the background. Any leftover segments are picked up by
+        // the next scheduled sync (or on app open/resume when one is due).
         if (!_isAppInForeground && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage && isConnected) {
-          final missingCount = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
-          if (missingCount <= 0) {
-            Logger.debug('Background sync done: disconnecting device — no segments remaining.');
-            ServiceManager.instance().device.disconnectDevice(isManual: true);
-          } else {
-            Logger.debug('Background sync done: keeping connection — $missingCount segments still remaining.');
-          }
+          Logger.debug('Background sync done: disconnecting device.');
+          ServiceManager.instance().device.disconnectDevice(isManual: true);
         }
       }
     } finally {
@@ -773,9 +771,10 @@ class DeviceProvider extends ChangeNotifier
     }
 
     if (isConnected) {
-      // Drain pending segments if the background sync left the connection
-      // alive because missingCount > 0. Without this the user resumes onto a
-      // live connection that just sits idle until the next 30-min tick.
+      // Defensive: if we somehow resume onto a still-live connection that has
+      // pending segments (e.g. a quick background→foreground bounce before the
+      // pause-disconnect completed), drain them now instead of leaving the
+      // connection idle until the next scheduled tick.
       if (!walSync.isSyncing && walSync.estimatedTotalSegments > 0) {
         unawaited(_doBackgroundSync());
       }
