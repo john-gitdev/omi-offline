@@ -704,6 +704,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                 AccumulatingBanner(
                   spState: controller.spState,
                   accumulatedMinutes: controller.accumulatedMinutes,
+                  unprocessedBinCount: controller.unprocessedBinCount,
                   onTap: () {
                     if (controller.spState == SyncProcessState.syncing ||
                         controller.spState == SyncProcessState.processing ||
