@@ -71,14 +71,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   double _syncSpeed = 0.0;
   double get syncSpeed => _syncSpeed;
 
-  double _accumulatedMinutes = 0.0;
-  double get accumulatedMinutes => _accumulatedMinutes;
+  // Raw .bin audio still waiting to be decoded (excludes finalized + discarded
+  // bins). The banner shows this as "~N min to process" whenever it's non-zero.
+  double _toProcessMinutes = 0.0;
+  double get toProcessMinutes => _toProcessMinutes;
 
-  // Count of raw .bin files still waiting to be processed into the accumulated
-  // draft (not yet finalized and not VAD-discarded). Surfaced in the banner so
-  // the user can see there is synced audio that isn't reflected in the draft.
-  int _unprocessedBinCount = 0;
-  int get unprocessedBinCount => _unprocessedBinCount;
+  // Duration already folded into open draft recordings. Shown in the banner as
+  // "accumulated" only when there is no raw audio left to process.
+  double _draftMinutes = 0.0;
+  double get draftMinutes => _draftMinutes;
 
   String _lastCompletedStage = 'none';
   String get lastCompletedStage => _lastCompletedStage;
@@ -901,8 +902,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
         _isLoading = false;
         final acc = _computeAccumulated(_batches);
-        _accumulatedMinutes = acc.minutes;
-        _unprocessedBinCount = acc.unprocessedBins;
+        _toProcessMinutes = acc.toProcessMinutes;
+        _draftMinutes = acc.draftMinutes;
         _checkCleanupFlag();
         notifyListeners();
         tryAutoUploadNext();
@@ -933,8 +934,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         }
 
         final acc = _computeAccumulated(_batches);
-        _accumulatedMinutes = acc.minutes;
-        _unprocessedBinCount = acc.unprocessedBins;
+        _toProcessMinutes = acc.toProcessMinutes;
+        _draftMinutes = acc.draftMinutes;
         _checkCleanupFlag();
         notifyListeners();
       }
@@ -1504,75 +1505,42 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         return '${c.file.parent.path}/recording_fs320_$ts.bin';
       });
 
-  ({double minutes, int unprocessedBins}) _computeAccumulated(List<Batch> batches) {
+  /// Splits pending audio into two figures for the banner:
+  ///  - [toProcessMinutes]: raw `.bin` audio still waiting to be decoded.
+  ///  - [draftMinutes]: duration already folded into open draft recordings.
+  /// Finalized-session bins and discarded/silence bins are excluded from both.
+  /// The banner shows "to process" whenever any raw audio is waiting and only
+  /// falls back to the draft figure otherwise, so the two are reported
+  /// separately rather than summed (no double-count to reconcile).
+  ({double toProcessMinutes, double draftMinutes}) _computeAccumulated(List<Batch> batches) {
     final finalizedSessionIds =
         batches.expand((b) => b.finalizedRecordings).map((c) => c.sessionId).whereType<int>().toSet();
 
     // Bins that VAD has already examined and rejected (still on disk for the
-    // 48h recovery window). They are no longer "waiting to finalize", so the
-    // banner must not count them.
+    // recovery window). They are no longer "waiting to process", so exclude them.
     final discardedRelBins = batches.expand((b) => b.discards).expand((d) => d.relativeBins).toSet();
 
-    final Map<int, int> sessionRawBytes = {};
-    int unknownRawBytes = 0;
-
-    // Raw bins still on disk that aren't yet folded into the accumulated draft
-    // (in normal mode, bins are deleted once processed into a draft, so any
-    // remaining pending bin is genuinely unprocessed).
-    int unprocessedBins = 0;
-
+    int rawBytes = 0;
     for (final f in batches.expand((b) => b.rawSegments)) {
       final name = f.path.split('/').last;
       final parts = name.split('_');
-      int? sid;
-      if (parts.length > 1) {
-        sid = int.tryParse(parts[1].split('.').first);
-      }
+      final sid = parts.length > 1 ? int.tryParse(parts[1].split('.').first) : null;
 
-      // If session is already finalized, its raw segments don't count towards "accumulated"
+      // Skip bins whose session is already finalized or that VAD discarded.
       if (sid != null && finalizedSessionIds.contains(sid)) continue;
-
       final pathParts = f.path.split('/raw_segments/');
       if (pathParts.length == 2 && discardedRelBins.contains(pathParts.last)) continue;
 
       try {
-        final len = f.lengthSync();
-        unprocessedBins++;
-        if (sid != null) {
-          sessionRawBytes[sid] = (sessionRawBytes[sid] ?? 0) + len;
-        } else {
-          unknownRawBytes += len;
-        }
+        rawBytes += f.lengthSync();
       } catch (_) {}
     }
 
-    double totalMinutes = (unknownRawBytes / 252000.0);
-
-    final Map<int, int> draftDurations = {};
+    int draftMs = 0;
     for (final c in batches.expand((b) => b.draftRecordings)) {
-      if (c.sessionId != null) {
-        draftDurations[c.sessionId!] = c.duration.inMilliseconds;
-      } else {
-        totalMinutes += (c.duration.inMilliseconds / 60000.0);
-      }
+      draftMs += c.duration.inMilliseconds;
     }
 
-    final allPendingSids = {...sessionRawBytes.keys, ...draftDurations.keys};
-    for (final sid in allPendingSids) {
-      final rawMin = (sessionRawBytes[sid] ?? 0) / 252000.0;
-      final draftMin = (draftDurations[sid] ?? 0) / 60000.0;
-
-      if (_prefs.adjustmentMode) {
-        // In adjustment mode, we take the max of raw vs draft to avoid double-counting
-        // the same audio that exists both as a .bin and as a .m4a draft.
-        totalMinutes += (rawMin > draftMin ? rawMin : draftMin);
-      } else {
-        // In normal mode, segments are deleted once processed into a draft,
-        // so they are disjoint and should be summed.
-        totalMinutes += (rawMin + draftMin);
-      }
-    }
-
-    return (minutes: totalMinutes, unprocessedBins: unprocessedBins);
+    return (toProcessMinutes: rawBytes / 252000.0, draftMinutes: draftMs / 60000.0);
   }
 }
