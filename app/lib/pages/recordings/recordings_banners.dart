@@ -32,22 +32,32 @@ class StorageWarningBanner extends StatelessWidget {
 class AccumulatingBanner extends StatelessWidget {
   final SyncProcessState spState;
   final double accumulatedMinutes;
+  final int unprocessedBinCount;
   final VoidCallback? onTap;
-  const AccumulatingBanner({super.key, required this.spState, required this.accumulatedMinutes, this.onTap});
+  const AccumulatingBanner({
+    super.key,
+    required this.spState,
+    required this.accumulatedMinutes,
+    this.unprocessedBinCount = 0,
+    this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     if (spState == SyncProcessState.syncing ||
         spState == SyncProcessState.processing ||
         spState == SyncProcessState.stopping) return const SizedBox.shrink();
-    if (accumulatedMinutes < (1.0 / 60.0)) return const SizedBox.shrink();
+    if (accumulatedMinutes < (1.0 / 60.0) && unprocessedBinCount == 0) return const SizedBox.shrink();
 
     final totalSeconds = (accumulatedMinutes * 60).round();
     final mins = totalSeconds ~/ 60;
     final secs = totalSeconds % 60;
-    final String label = mins > 0
+    final String accumulatedLabel = mins > 0
         ? (secs > 0 ? '${mins}m ${secs}s accumulated' : '$mins ${mins == 1 ? 'minute' : 'minutes'} accumulated')
         : '$secs ${secs == 1 ? 'second' : 'seconds'} accumulated';
+    final String binsLabel =
+        unprocessedBinCount > 0 ? '$unprocessedBinCount ${unprocessedBinCount == 1 ? 'bin' : 'bins'} pending' : '';
+    final String label = binsLabel.isEmpty ? accumulatedLabel : '$accumulatedLabel · $binsLabel';
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
