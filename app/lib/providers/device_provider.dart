@@ -58,14 +58,17 @@ class DeviceProvider extends ChangeNotifier
 
   Timer? _reconnectDelayTimer;
   Timer? _disconnectNotificationTimer;
-  // Foreground keep-alive: sends HEARTBEAT (0x32) to storage characteristic
-  // every 20s so the firmware (oo-1.9.0+) doesn't trip its 30s idle-disconnect
-  // while the user is actively in the app. Stops in background — background
-  // sync is driven by the periodic timer, and the firmware disconnect there
-  // saves Omi battery.  Also acts as a liveness probe: if the write fails
-  // twice in a row, the connection has silently died and we force-disconnect
-  // to resync state (avoids the "app thinks connected, BLE actually dead"
-  // failure mode).
+  // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 20s so
+  // the firmware (oo-1.9.0+) doesn't trip its 30s idle-disconnect. Runs while
+  // the user is actively in the app, and also during an active background sync
+  // (_backgroundSyncActive) — a single large-file read sends no command for
+  // >30s, so without an in-flight keep-alive the firmware drops the link
+  // mid-file and that file can never finish syncing ("Stream closed without
+  // EOT"). Otherwise stops in the background, where the firmware disconnect
+  // saves Omi battery and reconnect is driven by the periodic timer. Also acts
+  // as a liveness probe: if the write fails twice in a row, the connection has
+  // silently died and we force-disconnect to resync state (avoids the "app
+  // thinks connected, BLE actually dead" failure mode).
   Timer? _foregroundKeepAliveTimer;
   int _consecutiveKeepAliveFails = 0;
   final Debouncer _disconnectDebouncer = Debouncer(delay: const Duration(milliseconds: 500));
@@ -506,7 +509,7 @@ class DeviceProvider extends ChangeNotifier
 
   void _startForegroundKeepAlive() {
     _foregroundKeepAliveTimer?.cancel();
-    if (!_isAppInForeground || !isConnected || connectedDevice == null) return;
+    if ((!_isAppInForeground && !_backgroundSyncActive) || !isConnected || connectedDevice == null) return;
     _consecutiveKeepAliveFails = 0;
     _foregroundKeepAliveTimer = Timer.periodic(const Duration(seconds: 20), (_) async {
       if (!isConnected || connectedDevice == null) return;
@@ -640,6 +643,13 @@ class DeviceProvider extends ChangeNotifier
 
       try {
         WakelockPlus.enable();
+        // Keep the firmware from idle-dropping the link mid-sync. Without this a
+        // single >30s file read (large stitched/draft recordings) sends no
+        // command for the firmware's 30s idle window and dies as "Stream closed
+        // without EOT", so that file never finishes. _backgroundSyncActive is
+        // set, so this also arms the keep-alive in the background. See
+        // _startForegroundKeepAlive.
+        _startForegroundKeepAlive();
         if (!await ForegroundUtil.isRunningService) {
           await ForegroundUtil.startForegroundTask(text: 'Syncing recordings — preparing...');
         } else {
@@ -661,6 +671,9 @@ class DeviceProvider extends ChangeNotifier
         notifyListeners();
       } finally {
         WakelockPlus.disable();
+        // The keep-alive only covers the sync itself in the background; in the
+        // foreground the connect/resume keep-alive owns it, so leave it running.
+        if (!_isAppInForeground) _stopForegroundKeepAlive();
         RecordingsManager.processingProgress.removeListener(onProcessingProgress);
         // Only release the foreground service (and wake lock) when the app is
         // visible. In background we keep it alive so the next timer tick fires.
