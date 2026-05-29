@@ -58,17 +58,26 @@ class DeviceProvider extends ChangeNotifier
 
   Timer? _reconnectDelayTimer;
   Timer? _disconnectNotificationTimer;
+  // Grace window after the app is backgrounded before we drop the BLE link, so
+  // a quick app-switch / notification-shade glance doesn't force a reconnect on
+  // return. The link survives the window because the keep-alive keeps running
+  // throughout (see onAppPaused) — that, not the grace duration, is what
+  // prevents a firmware idle-drop, so don't re-add _stopForegroundKeepAlive()
+  // at the top of onAppPaused.
+  Timer? _pauseDisconnectTimer;
+  static const Duration _backgroundDisconnectGrace = Duration(seconds: 20);
   // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 20s so
   // the firmware (oo-1.9.0+) doesn't trip its 30s idle-disconnect. Runs while
-  // the user is actively in the app, and also during an active background sync
+  // the user is actively in the app, during an active background sync
   // (_backgroundSyncActive) — a single large-file read sends no command for
   // >30s, so without an in-flight keep-alive the firmware drops the link
   // mid-file and that file can never finish syncing ("Stream closed without
-  // EOT"). Otherwise stops in the background, where the firmware disconnect
-  // saves Omi battery and reconnect is driven by the periodic timer. Also acts
-  // as a liveness probe: if the write fails twice in a row, the connection has
-  // silently died and we force-disconnect to resync state (avoids the "app
-  // thinks connected, BLE actually dead" failure mode).
+  // EOT") — and during the post-background grace window so a quick return
+  // doesn't pay a reconnect. Otherwise stops in the background, where the
+  // firmware disconnect saves Omi battery and reconnect is driven by the
+  // periodic timer. Also acts as a liveness probe: if the write fails twice in
+  // a row, the connection has silently died and we force-disconnect to resync
+  // state (avoids the "app thinks connected, BLE actually dead" failure mode).
   Timer? _foregroundKeepAliveTimer;
   int _consecutiveKeepAliveFails = 0;
   final Debouncer _disconnectDebouncer = Debouncer(delay: const Duration(milliseconds: 500));
@@ -703,7 +712,6 @@ class DeviceProvider extends ChangeNotifier
   void onAppPaused() async {
     if (!_isAppInForeground) return;
     _isAppInForeground = false;
-    _stopForegroundKeepAlive();
     _reconnectionTimer?.cancel();
     // Cancel any pending 1-second reconnect armed by a recent accidental
     // disconnect — otherwise it fires after we transition to background and
@@ -723,13 +731,24 @@ class DeviceProvider extends ChangeNotifier
         await _showIdleNotification(start: true);
       }
     }
-    if (!isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage) {
-      final walSync = ServiceManager.instance().wal.getSyncs();
-      if (!walSync.isSyncing) {
-        Logger.debug('App paused: disconnecting device to save battery in the background.');
-        ServiceManager.instance().device.disconnectDevice(isManual: true);
-      }
-    }
+    // Grace period: don't drop the link the instant we're backgrounded — a
+    // quick app-switch / notification-shade glance shouldn't force a reconnect
+    // when the user comes right back. Leave the keep-alive running so the
+    // firmware doesn't idle-drop the link before the window elapses;
+    // onAppResumed cancels this timer. Once it fires (still backgrounded, not
+    // mid-sync) we stop the keep-alive and disconnect to save battery.
+    _pauseDisconnectTimer?.cancel();
+    _pauseDisconnectTimer = Timer(_backgroundDisconnectGrace, () {
+      if (_disposed || _isAppInForeground || !isConnected) return;
+      if (isFirmwareUpdateInProgress || _isOnFirmwareUpdatePage) return;
+      // A sync is actively using the BLE link — let it finish (its own flow
+      // disconnects afterward). Local decode/VAD processing doesn't hold the
+      // link, so we don't block on it here.
+      if (ServiceManager.instance().wal.getSyncs().isSyncing || _backgroundSyncActive) return;
+      _stopForegroundKeepAlive();
+      Logger.debug('Background grace elapsed: disconnecting device to save battery.');
+      ServiceManager.instance().device.disconnectDevice(isManual: true);
+    });
   }
 
   bool _shouldSyncNow() {
@@ -746,6 +765,8 @@ class DeviceProvider extends ChangeNotifier
 
   void onAppResumed() {
     _isAppInForeground = true;
+    // Came back within the grace window — keep the (still-live) connection.
+    _pauseDisconnectTimer?.cancel();
     if (isConnected) _startForegroundKeepAlive();
     // Release the overnight wake lock now that the user has the app open.
     final walSync = ServiceManager.instance().wal.getSyncs();
@@ -824,6 +845,7 @@ class DeviceProvider extends ChangeNotifier
     _reconnectionTimer?.cancel();
     _reconnectDelayTimer?.cancel();
     _resumeReconnectDebounce?.cancel();
+    _pauseDisconnectTimer?.cancel();
     _backgroundSyncTimer?.cancel();
     _foregroundKeepAliveTimer?.cancel();
 
@@ -848,6 +870,7 @@ class DeviceProvider extends ChangeNotifier
     _reconnectionTimer?.cancel();
     _reconnectDelayTimer?.cancel();
     _resumeReconnectDebounce?.cancel();
+    _pauseDisconnectTimer?.cancel();
     _backgroundSyncTimer?.cancel();
     _foregroundKeepAliveTimer?.cancel();
     _disconnectDebouncer.cancel();
@@ -870,6 +893,7 @@ class DeviceProvider extends ChangeNotifier
     if (!_isAppInForeground) {
       _reconnectDelayTimer?.cancel();
       _reconnectionTimer?.cancel();
+      _pauseDisconnectTimer?.cancel();
       _consecutiveAccidentalDisconnects = 0;
     }
     if (_isHandlingDisconnect) return;
