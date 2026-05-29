@@ -1,5 +1,10 @@
 # Changelog
 
+### Debug logging now captures background audio processing (0.14.11)
+
+- **VAD/processing logs reach the debug log file.** With dev logging enabled, the audio-processing pass (Opus decode → VAD → encode) runs in a background isolate where `SharedPreferences` isn't initialized, so `DebugLogManager` read its `false` default and silently dropped every line — none of the processor's per-file, marker, or stitching logs ever hit `omi_debug_*.log`. The real preference is now forwarded across the isolate boundary, so those lines are persisted alongside the main-isolate logs.
+- **Per-run processing timings.** The processing isolate now logs run start (segment count + background flag), per-segment wall-clock time (`segment i/N (bytes) processed in Nms`), and a run-end summary (total segments/bytes/ms) — to make it possible to diagnose why a background pass takes as long as it does.
+
 ### Notification fix: native connection-state clobber & live foreground processing progress (0.14.10)
 
 - **"Connected to Omi Device" no longer overrides sync/processing progress.** 0.14.9 stopped the *Dart* side from writing connection state to the persistent notification, but the native Android BLE service shares that same notification and was still posting "Connected to Omi Device" / "Connecting…" / "Disconnected" / "Reconnecting…" on every connection change — so the moment the link (re)connected during a sync or processing pass, it clobbered the progress text. The native service now uses a single fixed baseline and never writes connection state.
