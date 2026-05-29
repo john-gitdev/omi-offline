@@ -133,13 +133,10 @@ class DeviceProvider extends ChangeNotifier
       if (state == 'on') {
         isBluetoothEnabled = true;
         notifyListeners();
-        // Don't auto-reconnect on BT-toggle if maximize-battery is on and the
-        // app is backgrounded — that mode wants the device disconnected
-        // between scheduled syncs.
-        if (!isConnected &&
-            SharedPreferencesUtil().btDevice.id.isNotEmpty &&
-            !isConnecting &&
-            (!SharedPreferencesUtil().maximizeBattery || _isAppInForeground)) {
+        // Only auto-reconnect on BT-toggle while the app is in the foreground.
+        // In the background the device is left disconnected between scheduled
+        // syncs (the sync timer / heartbeat reconnects when a sync is due).
+        if (!isConnected && SharedPreferencesUtil().btDevice.id.isNotEmpty && !isConnecting && _isAppInForeground) {
           scanAndConnectToDevice();
         }
       } else if (state == 'off') {
@@ -152,11 +149,11 @@ class DeviceProvider extends ChangeNotifier
     };
     if (SharedPreferencesUtil().btDevice.id.isNotEmpty) {
       Future.microtask(() => periodicConnect('app open', boundDeviceOnly: true));
-      // Sync on app open whenever one is due — including maximize-battery mode.
-      // In that mode the device is disconnected in the background, so the
-      // periodic timer/heartbeat may not have fired; opening the app is the
-      // reliable trigger. _isAppInForeground is true here, so the connection
-      // survives _handleDeviceConnected's drop-guard long enough to sync.
+      // Sync on app open whenever one is due. The device is disconnected in the
+      // background, so the periodic timer/heartbeat may not have fired; opening
+      // the app is the reliable trigger. _isAppInForeground is true here, so the
+      // connection survives _handleDeviceConnected's drop-guard long enough to
+      // sync.
       if (_shouldSyncNow()) {
         _pendingAppOpenSync = true;
       }
@@ -168,17 +165,9 @@ class DeviceProvider extends ChangeNotifier
     if (data == 'heartbeat') {
       Logger.debug('DeviceProvider: Heartbeat received from foreground task');
       if (!_isAppInForeground) {
-        // Use heartbeat to trigger reconnection if disconnected. Skip when
-        // maximize-battery is on — that mode wants the device disconnected
-        // between scheduled syncs; the sync-if-due branch below still
-        // reconnects when a sync is actually due.
-        if (!isConnected &&
-            !isConnecting &&
-            SharedPreferencesUtil().btDevice.id.isNotEmpty &&
-            !SharedPreferencesUtil().maximizeBattery) {
-          Logger.debug('DeviceProvider: Heartbeat triggering reconnection scan');
-          scanAndConnectToDevice();
-        }
+        // The device is left disconnected in the background; the sync-if-due
+        // branch below is the only thing that reconnects, and only when a sync
+        // is actually due.
 
         // Use heartbeat to trigger sync if due
         final next = nextSyncTime;
@@ -200,9 +189,8 @@ class DeviceProvider extends ChangeNotifier
           // Not due yet — refresh the countdown subtext on the persistent
           // notification. Skip while a sync/process is running; that flow owns
           // the notification and shows its own progress.
-          final walSync = ServiceManager.instance().wal.getSyncs();
-          if (!walSync.isSyncing && !RecordingsManager.isProcessingAny && !_backgroundSyncActive) {
-            unawaited(_showSyncTimerNotification());
+          if (!_syncOwnsNotification) {
+            unawaited(_showIdleNotification());
           }
         }
       }
@@ -487,16 +475,15 @@ class DeviceProvider extends ChangeNotifier
 
   void updateConnectingStatus(bool value) {
     isConnecting = value;
-    if (!_isAppInForeground) {
-      if (isConnecting && !isConnected) {
-        ForegroundUtil.updateNotification(text: 'Scanning for device...');
-      } else if (!isConnecting) {
-        if (isConnected) {
-          ForegroundUtil.updateNotification(text: 'Connected to Omi Device');
-        } else {
-          unawaited(_showSyncTimerNotification());
-        }
-      }
+    // Route every background connection-state transition through the one idle
+    // notification, which ignores connection state. The device connects only
+    // briefly at scheduled-sync time, so without this the transient
+    // connect/scan would flip the notification between "Scanning…",
+    // "Connected", and the countdown instead of leaving a stable countdown.
+    // The foreground never shows this notification (it's stopped on resume),
+    // so connecting status surfaces through the widget tree instead.
+    if (!_isAppInForeground && !_syncOwnsNotification) {
+      unawaited(_showIdleNotification());
     }
     notifyListeners();
   }
@@ -534,13 +521,26 @@ class DeviceProvider extends ChangeNotifier
     _consecutiveKeepAliveFails = 0;
   }
 
-  /// Persistent background notification shown while waiting for the next
-  /// scheduled sync. The title doubles as the feature name and the subtext
-  /// counts down to [nextSyncTime] (refreshed each ~5-min heartbeat). When
-  /// auto-sync is off (interval = Manual Only) there is no countdown.
-  /// Safe to call from the foreground — [ForegroundUtil.updateNotification]
-  /// no-ops when the service isn't running.
-  Future<void> _showSyncTimerNotification({bool start = false}) async {
+  /// True while a sync or processing run owns the foreground notification (it
+  /// shows its own live progress). Idle-notification writers must check this
+  /// before touching the notification so they don't clobber that progress.
+  bool get _syncOwnsNotification =>
+      ServiceManager.instance().wal.getSyncs().isSyncing || RecordingsManager.isProcessingAny || _backgroundSyncActive;
+
+  /// The single source of truth for the persistent background notification when
+  /// no sync/process is running. It is deliberately **connection-state
+  /// independent**: the device stays disconnected in the background and only
+  /// connects briefly at scheduled-sync time, so reflecting connection state
+  /// here (or writing transient "Scanning…"/"Connected" text) would make the
+  /// connection-status and sync-timer writers fight and flicker. Showing only
+  /// the next-sync countdown keeps the notification stable.
+  ///
+  /// The title doubles as the feature name and the subtext counts down to
+  /// [nextSyncTime] (refreshed each ~5-min heartbeat). When auto-sync is off
+  /// (interval = Manual Only) there is no countdown. Safe to call from the
+  /// foreground — [ForegroundUtil.updateNotification] no-ops when the service
+  /// isn't running.
+  Future<void> _showIdleNotification({bool start = false}) async {
     final next = nextSyncTime;
     final String title;
     final String text;
@@ -580,8 +580,8 @@ class DeviceProvider extends ChangeNotifier
       if (!isConnected) {
         if (!isConnecting) {
           // Set the flag BEFORE the scan so _handleDeviceConnected's
-          // maximize-battery+background guard knows this connection is a
-          // sanctioned background sync and shouldn't be dropped.
+          // background drop-guard knows this connection is a sanctioned
+          // background sync and shouldn't be dropped.
           _pendingBackgroundSync = true;
           bool connectedThisTick = false;
           try {
@@ -679,30 +679,21 @@ class DeviceProvider extends ChangeNotifier
         // visible. In background we keep it alive so the next timer tick fires.
         if (_isAppInForeground) {
           await ForegroundUtil.stopForegroundTask();
-        } else if (isConnected) {
-          ForegroundUtil.updateNotification(text: 'Connected to Omi Device');
         } else {
-          unawaited(_showSyncTimerNotification());
+          unawaited(_showIdleNotification());
         }
 
         // Disconnect after the full sync+process cycle (both syncAll calls) so
         // that new firmware files created during processing are also captured
-        // before we drop the connection.
-        if (!_isAppInForeground &&
-            SharedPreferencesUtil().maximizeBattery &&
-            !isFirmwareUpdateInProgress &&
-            !_isOnFirmwareUpdatePage &&
-            isConnected) {
+        // before we drop the connection. The device stays disconnected in the
+        // background until the next scheduled sync reconnects it.
+        if (!_isAppInForeground && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage && isConnected) {
           final missingCount = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
           if (missingCount <= 0) {
-            Logger.debug(
-              'Maximizing battery: disconnecting device after background sync — no segments remaining.',
-            );
+            Logger.debug('Background sync done: disconnecting device — no segments remaining.');
             ServiceManager.instance().device.disconnectDevice(isManual: true);
           } else {
-            Logger.debug(
-              'Maximizing battery: keeping connection — $missingCount segments still remaining after sync.',
-            );
+            Logger.debug('Background sync done: keeping connection — $missingCount segments still remaining.');
           }
         }
       }
@@ -716,14 +707,11 @@ class DeviceProvider extends ChangeNotifier
     _isAppInForeground = false;
     _stopForegroundKeepAlive();
     _reconnectionTimer?.cancel();
-    // If maximize-battery is on, also cancel any pending 1-second reconnect
-    // armed by a recent accidental disconnect — otherwise it fires after we
-    // transition to background and restarts periodicConnect's scan loop. For
-    // !maximize-battery users we keep the timer so an accidental drop right
-    // before lock-screen still reconnects quickly in background.
-    if (SharedPreferencesUtil().maximizeBattery) {
-      _reconnectDelayTimer?.cancel();
-    }
+    // Cancel any pending 1-second reconnect armed by a recent accidental
+    // disconnect — otherwise it fires after we transition to background and
+    // restarts periodicConnect's scan loop. The device is meant to stay
+    // disconnected in the background until the next scheduled sync.
+    _reconnectDelayTimer?.cancel();
     _resumeReconnectDebounce?.cancel();
     // Keep _backgroundSyncTimer running so periodic sync fires overnight.
     // Start the foreground service so Android keeps the process alive with a
@@ -733,15 +721,14 @@ class DeviceProvider extends ChangeNotifier
       // A running sync/process already owns the foreground notification (and
       // keeps the service alive); don't overwrite its live progress with the
       // idle countdown. Otherwise start/refresh the "next sync" timer.
-      final walSync = ServiceManager.instance().wal.getSyncs();
-      if (!walSync.isSyncing && !RecordingsManager.isProcessingAny) {
-        await _showSyncTimerNotification(start: true);
+      if (!_syncOwnsNotification) {
+        await _showIdleNotification(start: true);
       }
     }
-    if (SharedPreferencesUtil().maximizeBattery && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage) {
+    if (!isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage) {
       final walSync = ServiceManager.instance().wal.getSyncs();
       if (!walSync.isSyncing) {
-        Logger.debug('Maximizing battery: disconnecting device because app is paused.');
+        Logger.debug('App paused: disconnecting device to save battery in the background.');
         ServiceManager.instance().device.disconnectDevice(isManual: true);
       }
     }
@@ -769,12 +756,12 @@ class DeviceProvider extends ChangeNotifier
     }
 
     final prefs = SharedPreferencesUtil();
-    // Sync on resume whenever one is due, regardless of maximize-battery. In
-    // maximize-battery mode the device is disconnected while backgrounded and
-    // the periodic timer/heartbeat are unreliable under Doze, so resuming the
-    // app is the dependable trigger. We're in the foreground now, so the
-    // reconnect survives _handleDeviceConnected's maximize-battery drop-guard
-    // and _finishDeviceSetup's _pendingAppOpenSync path fires the sync.
+    // Sync on resume whenever one is due. The device is disconnected while
+    // backgrounded and the periodic timer/heartbeat are unreliable under Doze,
+    // so resuming the app is the dependable trigger. We're in the foreground
+    // now, so the reconnect survives _handleDeviceConnected's background
+    // drop-guard and _finishDeviceSetup's _pendingAppOpenSync path fires the
+    // sync.
     if (prefs.btDevice.id.isNotEmpty && _shouldSyncNow()) {
       if (isConnected) {
         unawaited(_doBackgroundSync().then((_) => _startBackgroundSyncTimer()));
@@ -789,7 +776,7 @@ class DeviceProvider extends ChangeNotifier
       // Drain pending segments if the background sync left the connection
       // alive because missingCount > 0. Without this the user resumes onto a
       // live connection that just sits idle until the next 30-min tick.
-      if (prefs.maximizeBattery && !walSync.isSyncing && walSync.estimatedTotalSegments > 0) {
+      if (!walSync.isSyncing && walSync.estimatedTotalSegments > 0) {
         unawaited(_doBackgroundSync());
       }
       // Don't reset the timer if it's already ticking — preserves the overnight
@@ -872,16 +859,16 @@ class DeviceProvider extends ChangeNotifier
   }
 
   void onDeviceDisconnected({bool isManual = false}) async {
-    // In maximize-battery + background mode, cancel any pending reconnect on
-    // every disconnect callback. The BLE transport fires two state-change
-    // callbacks per manual disconnect (isManual=false from the GATT layer
-    // then isManual=true from the dart-side intent) ~10ms apart, and the
-    // re-entrancy guard below only lets one fully run. Doing this before the
-    // re-entrancy / already-disconnected early-returns ensures the survivor
-    // can't leave a stale timer armed regardless of which event wins. Outside
-    // maximize-battery+background we leave the timer alone so a single
-    // accidental disconnect still reconnects via the body's arming below.
-    if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground) {
+    // In the background, cancel any pending reconnect on every disconnect
+    // callback. The BLE transport fires two state-change callbacks per manual
+    // disconnect (isManual=false from the GATT layer then isManual=true from
+    // the dart-side intent) ~10ms apart, and the re-entrancy guard below only
+    // lets one fully run. Doing this before the re-entrancy / already-
+    // disconnected early-returns ensures the survivor can't leave a stale timer
+    // armed regardless of which event wins. In the foreground we leave the
+    // timer alone so a single accidental disconnect still reconnects via the
+    // body's arming below.
+    if (!_isAppInForeground) {
       _reconnectDelayTimer?.cancel();
       _reconnectionTimer?.cancel();
       _consecutiveAccidentalDisconnects = 0;
@@ -910,17 +897,17 @@ class DeviceProvider extends ChangeNotifier
     _isHandlingDisconnect = false;
 
     _reconnectDelayTimer?.cancel();
-    // When maximize-battery is on and the app is backgrounded, never auto-
-    // reconnect — sync is driven by the background timer / heartbeat. Don't
-    // gate on `isManual`: the GATT layer's disconnect callback arrives as
-    // isManual=false even when WE initiated the disconnect, and may be the
-    // call that reaches this branch instead of the isManual=true one.
-    if (SharedPreferencesUtil().maximizeBattery && !_isAppInForeground) {
+    // In the background, never auto-reconnect — sync is driven by the background
+    // timer / heartbeat. Don't gate on `isManual`: the GATT layer's disconnect
+    // callback arrives as isManual=false even when WE initiated the disconnect,
+    // and may be the call that reaches this branch instead of the isManual=true
+    // one.
+    if (!_isAppInForeground) {
       _consecutiveAccidentalDisconnects = 0;
       return;
     }
 
-    // Manual = the app or user explicitly disconnected (maximize-battery drop,
+    // Manual = the app or user explicitly disconnected (background-pause drop,
     // Unpair from settings, DFU prep, keep-alive liveness force-disconnect).
     // None of those want an immediate reconnect — manual unpair would scan
     // uselessly for the just-removed device. Accidental drops below still get
@@ -1094,15 +1081,12 @@ class DeviceProvider extends ChangeNotifier
       var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
       if (connection == null) return;
       // Defense in depth: if a foreground-initiated scan completed after the
-      // user backgrounded the app with maximize-battery on, drop the
-      // connection. Background syncs (timer / heartbeat-sync-if-due) set
-      // _pendingBackgroundSync first, so they're exempt.
-      if (SharedPreferencesUtil().maximizeBattery &&
-          !_isAppInForeground &&
-          !_pendingBackgroundSync &&
-          !isFirmwareUpdateInProgress &&
-          !_isOnFirmwareUpdatePage) {
-        Logger.debug('Maximizing battery: dropping background-completed connection');
+      // user backgrounded the app, drop the connection — the device is meant to
+      // stay disconnected in the background. Background syncs (timer /
+      // heartbeat-sync-if-due) set _pendingBackgroundSync first, so they're
+      // exempt.
+      if (!_isAppInForeground && !_pendingBackgroundSync && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage) {
+        Logger.debug('App backgrounded: dropping background-completed connection');
         unawaited(ServiceManager.instance().device.disconnectDevice(isManual: true));
         return;
       }
