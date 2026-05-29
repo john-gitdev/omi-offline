@@ -210,7 +210,6 @@ app/.fvm/
 app/android/.kotlin/
 .playwright-mcp/
 
-CLAUDE.md
 web/app/next-env.d.ts
 .claude/settings.local.json
 app/.claude/
@@ -226,3 +225,6 @@ app/macos/Runner/LocalDev.entitlements
 # Generated browser snapshots (contain PII)
 builds-snapshot.md
 *-snapshot.md
+
+# Built APKs
+/releases/
