@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/services/vad_audio_processor.dart';
+import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/time_utils.dart';
 
@@ -483,6 +484,9 @@ class _IsolateParams {
   final List<int?> segmentSessionIds;
   final List<bool> segmentDerivedFlags;
   final bool backgroundMode;
+  // Forwarded so DebugLogManager can write to the log file from this isolate;
+  // SharedPreferences isn't initialised here so it can't read the pref itself.
+  final bool devLogsEnabled;
 
   const _IsolateParams({
     required this.sendPort,
@@ -497,6 +501,7 @@ class _IsolateParams {
     required this.segmentSessionIds,
     required this.segmentDerivedFlags,
     required this.backgroundMode,
+    required this.devLogsEnabled,
   });
 }
 
@@ -508,6 +513,11 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
   // Allow platform channel calls (AacEncoder MethodChannel, opus_flutter.load(),
   // flutter_onnxruntime asset loader) from this isolate.
   BackgroundIsolateBinaryMessenger.ensureInitialized(params.rootIsolateToken);
+
+  // SharedPreferences isn't initialised in this isolate, so DebugLogManager
+  // would otherwise treat logging as disabled and drop every line. Forward the
+  // real pref from the main isolate so VAD/processing logs reach the file.
+  DebugLogManager.enabledOverride = params.devLogsEnabled;
 
   // Send back a control port so the main isolate can forward cancel requests.
   final controlPort = ReceivePort();
@@ -557,6 +567,10 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     decoder: decoder,
   );
 
+  final runStopwatch = Stopwatch()..start();
+  Logger.debug(
+      'RecordingsManager isolate: processing run started — ${params.segmentPaths.length} segment(s), backgroundMode=${params.backgroundMode}');
+
   try {
     for (int i = 0; i < params.segmentPaths.length; i++) {
       if (cancelled) {
@@ -571,6 +585,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       final isDerived = params.segmentDerivedFlags[i];
       final sessionId = params.segmentSessionIds[i];
 
+      final fileStopwatch = Stopwatch()..start();
       await processor.processSegmentFile(
         file,
         startTime,
@@ -578,6 +593,9 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
         isDerivedTimestamp: isDerived,
         sessionId: sessionId,
       );
+      fileStopwatch.stop();
+      Logger.debug('RecordingsManager isolate: segment ${i + 1}/${params.segmentPaths.length} '
+          '(${params.segmentFileSizes[i]} B) processed in ${fileStopwatch.elapsedMilliseconds}ms');
 
       final edlData = processor.consumePendingEdlData();
       if (edlData.isNotEmpty) {
@@ -639,6 +657,11 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
         'paths': finalSafe.toList(),
       });
     }
+
+    runStopwatch.stop();
+    final totalBytes = params.segmentFileSizes.fold<int>(0, (a, b) => a + b);
+    Logger.debug('RecordingsManager isolate: processing run finished — '
+        '${params.segmentPaths.length} segment(s), $totalBytes B in ${runStopwatch.elapsedMilliseconds}ms');
 
     params.sendPort.send({'type': 'done'});
   } catch (e, st) {
@@ -1145,6 +1168,7 @@ class RecordingsManager {
               segmentSessionIds: segmentSessionIds,
               segmentDerivedFlags: segmentDerivedFlags,
               backgroundMode: backgroundMode,
+              devLogsEnabled: SharedPreferencesUtil().devLogsToFileEnabled,
             ),
             onExit: exitPort.sendPort,
           );
@@ -2865,9 +2889,7 @@ class RecordingsManager {
       final folderName = folder.path.split('/').last;
       // session_<hex>/ holds pre-time-sync bins (uptime ticks, not UTC) — we
       // can't derive a wall-clock window for them, so leave them alone.
-      if (folderName.startsWith('session_') ||
-          folderName.startsWith('unknown_') ||
-          folderName.startsWith('.')) {
+      if (folderName.startsWith('session_') || folderName.startsWith('unknown_') || folderName.startsWith('.')) {
         continue;
       }
       await for (final binEntity in folder.list()) {
@@ -2905,8 +2927,7 @@ class RecordingsManager {
           await binEntity.delete();
           deletedCount++;
           touchedFolders.add(folder);
-          Logger.debug(
-              'RecordingsManager: pruneConsumedBins deleted $binName (covered by recording window)');
+          Logger.debug('RecordingsManager: pruneConsumedBins deleted $binName (covered by recording window)');
         } catch (e) {
           Logger.error('RecordingsManager: pruneConsumedBins failed to delete ${binEntity.path}: $e');
         }
