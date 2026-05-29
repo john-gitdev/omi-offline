@@ -105,6 +105,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   bool _isUserTriggered = false;
   Completer<void>? _pipelineCompleter;
 
+  // Bumped by the stall watchdog when it force-recovers. A pipeline runner
+  // parked on a wedged BLE await (rotateAndSync/syncAll/processAll) can outlive
+  // the recovery; when it finally unwinds it must NOT run its normal
+  // post-await transitions (which would pop a spurious error banner or clobber
+  // a freshly-started sync). Each runner snapshots this at entry and bails if
+  // it changed across an await.
+  int _pipelineGeneration = 0;
+
   bool _isForcePipeline = false;
   bool get isForcePipeline => _isForcePipeline;
 
@@ -127,6 +135,35 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   DateTime _lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastPollTime = DateTime.fromMillisecondsSinceEpoch(0);
 
+  // Pipeline-stall watchdog. The native BLE layer can leave a sync wedged
+  // (e.g. the device stops streaming mid-file in the background and the link
+  // dies before any timer fires), which strands the WAL service's isSyncing
+  // flag set — so the controller never leaves `syncing`/`stopping` and the
+  // banner sticks with no way to re-sync short of force-closing the app. This
+  // watchdog force-recovers to idle when no progress has been seen for too
+  // long. Anchored on _lastProgressAt, which is bumped on every sync-progress
+  // callback (including the per-file fileDone tick that fires after each
+  // delete) so a slow delete cycle never false-triggers.
+  DateTime _lastProgressAt = DateTime.fromMillisecondsSinceEpoch(0);
+  // syncing: per-packet progress fires ~50 Hz during a healthy transfer; the
+  // only no-signal windows are list/delete/settle gaps (seconds). 60s of total
+  // silence means the transfer is genuinely dead.
+  static const _syncingStallTimeout = Duration(seconds: 60);
+  // stopping: after a user cancel, teardown should be quick. The underlying
+  // BLE awaits are timeout-bounded (≤65s) and acquireStorageLock has its own
+  // 10s timeout, so force-clearing here is safe — a re-wedge surfaces as a
+  // bounded error on the next sync, not a silent hang.
+  static const _stoppingStallTimeout = Duration(seconds: 12);
+
+  AppLifecycleState? _lastLifecycleState;
+
+  /// Releases the foreground wakelock unless the user has pinned the screen on
+  /// via the debug "Keep Screen On" toggle, in which case it stays held.
+  void _releaseWakelock() {
+    if (_prefs.keepScreenOn) return;
+    WakelockPlus.disable();
+  }
+
   void _throttledUpdate({bool force = false}) {
     if (_isDisposed) return;
     final now = DateTime.now();
@@ -142,6 +179,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   void init() {
     _lastHpKey = _prefs.heypocketApiKey;
+    if (_prefs.keepScreenOn) WakelockPlus.enable();
     _restoreState();
     _loadBatches();
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(this);
@@ -171,6 +209,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   void _onProgressChanged() {
     if (_isDisposed) return;
+    _lastProgressAt = DateTime.now();
     final progress = RecordingsManager.processingProgress.value;
     _processingProgress = progress;
     if (_spState == SyncProcessState.processing) {
@@ -238,6 +277,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       final syncs = ServiceManager.instance().wal.getSyncs();
       if (syncs.isSyncing) {
         _spState = SyncProcessState.syncing;
+        // Anchor the stall watchdog, else the first poll would measure against
+        // epoch 0 and instantly false-recover a healthy in-flight sync.
+        _lastProgressAt = DateTime.now();
         _totalCount = syncs.estimatedTotalSegments;
       } else if (RecordingsManager.isProcessingAny) {
         _spState = SyncProcessState.processing;
@@ -254,6 +296,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final isBackground = state != null && state != AppLifecycleState.resumed;
     final now = DateTime.now();
 
+    // Re-assert keep-screen-on after returning to the foreground; Android can
+    // drop the wakelock while the app is backgrounded.
+    if (state != _lastLifecycleState) {
+      if (state == AppLifecycleState.resumed && _prefs.keepScreenOn) {
+        WakelockPlus.enable();
+      }
+      _lastLifecycleState = state;
+    }
+
     if (isBackground && now.difference(_lastPollTime).inSeconds < 2) {
       return;
     }
@@ -267,14 +318,35 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (!serviceIsSyncing && !serviceIsProcessing) {
         _transitionTo(SyncProcessState.idle);
         unawaited(reloadBatchesSilently());
+      } else if (now.difference(_lastProgressAt) > _stoppingStallTimeout) {
+        _forceRecoverStuckPipeline(
+          'cancel did not clear within ${_stoppingStallTimeout.inSeconds}s',
+          serviceIsSyncing,
+          serviceIsProcessing,
+        );
       }
       _pollHeyPocket();
+      return;
+    }
+
+    // Stall watchdog: a wedged native transfer leaves serviceIsSyncing stuck
+    // true with no further progress, stranding the banner in `syncing`. Runs
+    // regardless of _isUserTriggered so both auto- and force-syncs recover.
+    if (_spState == SyncProcessState.syncing &&
+        serviceIsSyncing &&
+        now.difference(_lastProgressAt) > _syncingStallTimeout) {
+      _forceRecoverStuckPipeline(
+        'no sync progress for ${_syncingStallTimeout.inSeconds}s',
+        serviceIsSyncing,
+        serviceIsProcessing,
+      );
       return;
     }
 
     if (!_isUserTriggered) {
       if (serviceIsSyncing && (_spState == SyncProcessState.idle || _spState == SyncProcessState.processing)) {
         _spState = SyncProcessState.syncing;
+        _lastProgressAt = now;
         _totalCount = syncs.estimatedTotalSegments;
         _syncedCount = 0;
         _syncSpeed = 0.0;
@@ -357,6 +429,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void _transitionTo(SyncProcessState newState) {
     if (_isDisposed) return;
     _spState = newState;
+    // Anchor the stall watchdog on entry to any active phase so it measures
+    // time-since-progress, not time-since-app-start.
+    if (newState == SyncProcessState.syncing || newState == SyncProcessState.stopping) {
+      _lastProgressAt = DateTime.now();
+    }
     _throttledUpdate(force: true);
 
     if (newState != SyncProcessState.successUi) {
@@ -403,6 +480,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     SyncPhase? phase,
   }) {
     if (_isDisposed) return;
+    _lastProgressAt = DateTime.now();
     _syncSpeed = speedKBps ?? 0.0;
 
     final currentEstimated = ServiceManager.instance().wal.getSyncs().recordingsCount;
@@ -483,6 +561,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> _runForcePipeline() async {
+    final int gen = _pipelineGeneration;
     _isUserTriggered = true;
     _isForcePipeline = true;
     _lastActiveStage = 'syncing';
@@ -505,9 +584,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     try {
       await syncs.rotateAndSync(progress: this);
     } catch (e) {
+      if (gen != _pipelineGeneration) return; // watchdog already recovered
       _isUserTriggered = false;
       _isForcePipeline = false;
-      WakelockPlus.disable();
+      _releaseWakelock();
       await ForegroundUtil.stopForegroundTask();
       if (_spState == SyncProcessState.stopping) {
         _transitionTo(SyncProcessState.idle);
@@ -517,9 +597,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
       return;
     }
+    if (gen != _pipelineGeneration) return; // watchdog already recovered
 
     if (_spState == SyncProcessState.stopping) {
-      WakelockPlus.disable();
+      _releaseWakelock();
       await ForegroundUtil.stopForegroundTask();
       _isForcePipeline = false;
       _transitionTo(SyncProcessState.idle);
@@ -566,6 +647,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> _runPipeline() async {
+    final int gen = _pipelineGeneration;
     _isUserTriggered = true;
     _lastActiveStage = 'syncing';
 
@@ -597,8 +679,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         Logger.debug('RecordingsController: syncAll returned null (no new segments)');
       }
     } catch (e) {
+      if (gen != _pipelineGeneration) return; // watchdog already recovered
       _isUserTriggered = false;
-      WakelockPlus.disable();
+      _releaseWakelock();
       await ForegroundUtil.stopForegroundTask();
       if (_spState == SyncProcessState.stopping) {
         _transitionTo(SyncProcessState.idle);
@@ -608,9 +691,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
       return;
     }
+    if (gen != _pipelineGeneration) return; // watchdog already recovered
 
     if (_spState == SyncProcessState.stopping) {
-      WakelockPlus.disable();
+      _releaseWakelock();
       await ForegroundUtil.stopForegroundTask();
       _transitionTo(SyncProcessState.idle);
       unawaited(reloadBatchesSilently());
@@ -636,6 +720,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<void> _runProcessing() async {
+    final int gen = _pipelineGeneration;
     _lastActiveStage = 'processing';
 
     _totalMinutes = 0.0;
@@ -685,7 +770,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         },
       );
     } catch (e) {
-      WakelockPlus.disable();
+      if (gen != _pipelineGeneration) return; // watchdog already recovered
+      _releaseWakelock();
       await ForegroundUtil.stopForegroundTask();
       if (_spState == SyncProcessState.stopping) {
         _transitionTo(SyncProcessState.idle);
@@ -695,16 +781,17 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
       return;
     }
+    if (gen != _pipelineGeneration) return; // watchdog already recovered
 
     if (_spState == SyncProcessState.stopping) {
-      WakelockPlus.disable();
+      _releaseWakelock();
       await ForegroundUtil.stopForegroundTask();
       _transitionTo(SyncProcessState.idle);
       unawaited(reloadBatchesSilently());
       return;
     }
 
-    WakelockPlus.disable();
+    _releaseWakelock();
     await ForegroundUtil.stopForegroundTask();
 
     _minutesRemaining = 0;
@@ -752,6 +839,47 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _transitionTo(SyncProcessState.stopping);
     ServiceManager.instance().wal.getSyncs().cancelSync();
     RecordingsManager.cancelProcessing();
+  }
+
+  /// Last-resort recovery when the pipeline is wedged: the native BLE transfer
+  /// can stall with the WAL service's isSyncing flag stuck set, so the normal
+  /// completion path never runs and the UI is stranded in `syncing`/`stopping`
+  /// with no escape but force-closing the app. Triggered by the stall watchdog
+  /// in [_poll]. Mirrors the normal exit cleanup (wakelock, foreground task,
+  /// idle state) and self-instruments the wedge so a recurrence is diagnosable.
+  void _forceRecoverStuckPipeline(String reason, bool serviceIsSyncing, bool serviceIsProcessing) {
+    final ageMs = DateTime.now().difference(_lastProgressAt).inMilliseconds;
+    Logger.warning('RecordingsController: pipeline watchdog force-recovery — $reason '
+        '(state=${_spState.name}, isSyncing=$serviceIsSyncing, isProcessing=$serviceIsProcessing, '
+        'sinceProgress=${ageMs}ms, lifecycle=${WidgetsBinding.instance.lifecycleState})');
+
+    // Invalidate any pipeline runner still parked on the wedged await so it
+    // bails instead of running its post-await transitions over our recovery.
+    _pipelineGeneration++;
+
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    try {
+      syncs.cancelSync();
+    } catch (_) {}
+    // stop() resets the WAL sync state (clears isSyncing). The wedged native op
+    // may still hold the storage lock until it unwinds, but acquireStorageLock
+    // has a 10s timeout, so the next sync surfaces a bounded error rather than
+    // deadlocking.
+    unawaited(syncs.stop().catchError((_) {}));
+    RecordingsManager.cancelProcessing();
+
+    _isUserTriggered = false;
+    _isForcePipeline = false;
+    _syncedCount = 0;
+    _totalCount = 0;
+    _syncSpeed = 0.0;
+    _minutesRemaining = 0;
+    _processingProgress = 0.0;
+    _totalMinutes = 0;
+    _releaseWakelock();
+    unawaited(ForegroundUtil.stopForegroundTask());
+    _transitionTo(SyncProcessState.idle);
+    unawaited(reloadBatchesSilently());
   }
 
   Future<void> _loadBatches() async {
@@ -914,12 +1042,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       try {
         await _manager.processAll(unprocessed, (_, __) {}, backgroundMode: false);
       } catch (e) {
-        WakelockPlus.disable();
+        _releaseWakelock();
         await ForegroundUtil.stopForegroundTask();
         _transitionToError('processing', e.toString());
         return;
       }
-      WakelockPlus.disable();
+      _releaseWakelock();
       await ForegroundUtil.stopForegroundTask();
     }
 
@@ -992,12 +1120,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         },
       );
     } catch (e) {
-      WakelockPlus.disable();
+      _releaseWakelock();
       await ForegroundUtil.stopForegroundTask();
       _transitionToError('processing', e.toString());
       return;
     }
-    WakelockPlus.disable();
+    _releaseWakelock();
     await ForegroundUtil.stopForegroundTask();
     await reloadBatchesSilently();
     await _finishSuccess();
