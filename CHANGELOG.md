@@ -1,5 +1,9 @@
 # Changelog
 
+### App-side silence splitting so conversations actually finalize (0.14.13)
+
+- **Auto-mode recordings now split on the app's own VAD detecting silence, not only on the firmware's gap signal.** Previously, conversation boundaries depended entirely on the firmware reporting a long-enough silence gap (`0xFFFFFFFD`). In a continuous-audio environment the firmware rarely produces a gap anywhere near the ~110s threshold, so the *entire* synced backlog stitched into one unbounded conversation that never finalized — its `.bin` files were never deleted, and every sync re-decoded the whole growing pile from scratch (~80s per ~12-min segment), which the OS then killed before it could finish. The processor now independently cuts when its Silero VAD has seen `vadSplitSeconds` of continuous non-speech: the speech is finalized (trailing silence trimmed off), so its bins are deleted and the backlog drains instead of growing. Long pure-silence stretches are trashed, but their raw `.bin` files are kept recoverable on disk (excluding any bin that also backs a saved recording, so nothing gets duplicated).
+
 ### Stuck-sync recovery & "Keep Screen On" toggle (0.14.12)
 
 - **The sync/processing banner can no longer wedge with no way out.** When the BLE link died mid-transfer (e.g. the device stopped streaming partway through a file in the background), the WAL service's "syncing" flag could stay stuck set, stranding the banner in *Syncing…* or — after tapping Cancel — *Stopping…* forever, with no way to start a new sync short of force-closing the app. A watchdog now force-recovers to idle when a sync makes no progress for 60s, or when a cancel doesn't take effect within 12s, releasing the wakelock and foreground notification the same way a normal finish does. The recovery is logged (with the stuck flags and time-since-progress) so the underlying stall is diagnosable.
