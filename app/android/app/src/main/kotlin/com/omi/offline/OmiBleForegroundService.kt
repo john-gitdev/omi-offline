@@ -678,11 +678,11 @@ class OmiBleForegroundService : Service() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,
-                buildNotification("Running in the background"),
+                buildNotification("Connecting..."),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             )
         } else {
-            startForeground(NOTIFICATION_ID, buildNotification("Running in the background"))
+            startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
         }
 
         registerReceiver(
