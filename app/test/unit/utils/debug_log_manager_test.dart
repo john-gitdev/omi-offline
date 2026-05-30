@@ -37,9 +37,8 @@ void main() {
 
     SharedPreferences.setMockInitialValues({'devLogsToFileEnabled': true});
 
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
-            (MethodCall methodCall) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'), (MethodCall methodCall) async {
       return null;
     });
 
@@ -147,6 +146,27 @@ void main() {
       expect(content, isEmpty);
     });
 
+    test('setEnabled(false) deletes the log file', () async {
+      await DebugLogManager.logInfo('some log');
+      final path = (await DebugLogManager.getLogFile())!.path;
+      expect(File(path).existsSync(), isTrue);
+
+      await DebugLogManager.setEnabled(false);
+      expect(File(path).existsSync(), isFalse);
+    });
+
+    test('setEnabled(true) cleans up old log files and opens a fresh one', () async {
+      // Strays from a previous scheme that the toggle-on should clean up.
+      await File('${docsDir.path}/omi_debug_20230101.log').writeAsString('old\n');
+      await File('${docsDir.path}/omi_debug_20230102.log').writeAsString('old\n');
+
+      await DebugLogManager.setEnabled(true);
+
+      final files = await DebugLogManager.listLogFiles();
+      expect(files.length, 1); // strays gone, single fresh file
+      expect(await files.first.readAsString(), isEmpty);
+    });
+
     test('listLogFiles() correctly lists valid log files', () async {
       // Setup multiple files in docsDir
       final file1 = File('${docsDir.path}/omi_debug_20230101.log');
@@ -178,6 +198,40 @@ void main() {
       expect(logs.length, 2);
       expect(logs[0]['message'], 'another valid log');
       expect(logs[1]['message'], 'valid log');
+    });
+
+    test('getRecentLogs survives malformed UTF-8 bytes (the blank-window bug)', () async {
+      // A torn concurrent append can leave invalid UTF-8 in the file. Strict
+      // decoding (readAsLines' default) throws FormatException on the whole read,
+      // which the catch turns into [] — blanking the in-app window. Lenient decode
+      // must keep the surrounding valid lines instead.
+      final file = await DebugLogManager.getLogFile();
+      await file!.writeAsString('{"level":"INFO","message":"before"}\n', mode: FileMode.append);
+      await file.writeAsBytes([0xFF, 0xFE, 0x0A], mode: FileMode.append); // lone invalid bytes + newline
+      await file.writeAsString('{"level":"WARN","message":"after"}\n', mode: FileMode.append);
+
+      final messages = (await DebugLogManager.getRecentLogs()).map((l) => l['message']).toList();
+      expect(messages, containsAll(['before', 'after'])); // pre-fix strict decode returned []
+    });
+
+    test('getRecentLogs tail-reads a file larger than the read window', () async {
+      final file = await DebugLogManager.getLogFile();
+      // Exceed the 256 KB tail window so the read starts mid-file (start > 0)
+      // and the partial first line is dropped. ~100 B/line * 6000 ≈ 600 KB.
+      final buf = StringBuffer();
+      for (int i = 0; i < 6000; i++) {
+        buf.writeln(jsonEncode({'level': 'INFO', 'message': 'line $i', 'pad': 'x' * 60}));
+      }
+      await file!.writeAsString(buf.toString(), mode: FileMode.append);
+
+      final logs = await DebugLogManager.getRecentLogs(limit: 5);
+      // Newest-first; the newest line is the last written, and every returned
+      // line is fully-formed (no truncated first line leaked through).
+      expect(logs.length, 5);
+      expect(logs.first['message'], 'line 5999');
+      for (final l in logs) {
+        expect(l['message'], startsWith('line '));
+      }
     });
   });
 }
