@@ -81,6 +81,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   double _draftMinutes = 0.0;
   double get draftMinutes => _draftMinutes;
 
+  // Count of raw .bin files behind _toProcessMinutes, shown alongside it.
+  int _unprocessedBinCount = 0;
+  int get unprocessedBinCount => _unprocessedBinCount;
+
   String _lastCompletedStage = 'none';
   String get lastCompletedStage => _lastCompletedStage;
 
@@ -904,6 +908,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final acc = _computeAccumulated(_batches);
         _toProcessMinutes = acc.toProcessMinutes;
         _draftMinutes = acc.draftMinutes;
+        _unprocessedBinCount = acc.unprocessedBins;
         _checkCleanupFlag();
         notifyListeners();
         tryAutoUploadNext();
@@ -936,6 +941,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final acc = _computeAccumulated(_batches);
         _toProcessMinutes = acc.toProcessMinutes;
         _draftMinutes = acc.draftMinutes;
+        _unprocessedBinCount = acc.unprocessedBins;
         _checkCleanupFlag();
         notifyListeners();
       }
@@ -1505,14 +1511,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         return '${c.file.parent.path}/recording_fs320_$ts.bin';
       });
 
-  /// Splits pending audio into two figures for the banner:
-  ///  - [toProcessMinutes]: raw `.bin` audio still waiting to be decoded.
+  /// Splits pending audio into figures for the banner:
+  ///  - [toProcessMinutes] / [unprocessedBins]: raw `.bin` audio still waiting
+  ///    to be decoded, and how many bin files that is.
   ///  - [draftMinutes]: duration already folded into open draft recordings.
   /// Finalized-session bins and discarded/silence bins are excluded from both.
   /// The banner shows "to process" whenever any raw audio is waiting and only
   /// falls back to the draft figure otherwise, so the two are reported
   /// separately rather than summed (no double-count to reconcile).
-  ({double toProcessMinutes, double draftMinutes}) _computeAccumulated(List<Batch> batches) {
+  ({double toProcessMinutes, double draftMinutes, int unprocessedBins}) _computeAccumulated(List<Batch> batches) {
     final finalizedSessionIds =
         batches.expand((b) => b.finalizedRecordings).map((c) => c.sessionId).whereType<int>().toSet();
 
@@ -1521,6 +1528,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final discardedRelBins = batches.expand((b) => b.discards).expand((d) => d.relativeBins).toSet();
 
     int rawBytes = 0;
+    int unprocessedBins = 0;
     for (final f in batches.expand((b) => b.rawSegments)) {
       final name = f.path.split('/').last;
       final parts = name.split('_');
@@ -1533,6 +1541,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
       try {
         rawBytes += f.lengthSync();
+        unprocessedBins++;
       } catch (_) {}
     }
 
@@ -1541,6 +1550,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       draftMs += c.duration.inMilliseconds;
     }
 
-    return (toProcessMinutes: rawBytes / 252000.0, draftMinutes: draftMs / 60000.0);
+    return (
+      toProcessMinutes: rawBytes / 252000.0,
+      draftMinutes: draftMs / 60000.0,
+      unprocessedBins: unprocessedBins,
+    );
   }
 }
