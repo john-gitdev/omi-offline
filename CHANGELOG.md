@@ -1,5 +1,9 @@
 # Changelog
 
+### Banner title follows its figure (0.14.15)
+
+- The pending-audio banner now titles itself **"Audio to process"** when it's showing the minutes-to-process figure, and keeps **"Conversation in progress"** only when it falls back to an open draft's accumulated duration — so a large backlog no longer reads as a single in-progress conversation.
+
 ### Banner shows minutes-to-process (0.14.14)
 
 - **The "Conversation in progress" banner now leads with how much audio is actually waiting to be decoded** — "~N minutes to process", counting only the raw `.bin` audio that's pending (finalized-session and discarded/silence bins excluded, matching what processing actually does). It falls back to the open draft's "Xm Ys accumulated" only when there's no raw audio left to process. This removes the confusing jump where the banner showed a tiny "accumulated" figure and the next screen then showed a much larger "to process" number for the same backlog.
