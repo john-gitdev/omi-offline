@@ -121,6 +121,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   bool _isForcePipeline = false;
   bool get isForcePipeline => _isForcePipeline;
 
+  // When the user cancels mid-sync they pick whether to process what already
+  // downloaded (true) or stop everything (false). Disconnects never set this —
+  // they always auto-process via the non-`stopping` paths. Read once by the
+  // sync runner's stopping branch, reset at the start of each pipeline run.
+  bool _processAfterCancel = false;
+
   bool _forceSyncOnCooldown = false;
   bool get forceSyncOnCooldown => _forceSyncOnCooldown;
 
@@ -159,6 +165,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   // 10s timeout, so force-clearing here is safe — a re-wedge surfaces as a
   // bounded error on the next sync, not a silent hang.
   static const _stoppingStallTimeout = Duration(seconds: 12);
+  // processing: the decode isolate emits a progress tick after each ~5-min
+  // segment (tens of seconds apart on-device), so this is set well clear of a
+  // healthy slow decode while still bounding a wedged isolate. Gated on
+  // !_isTranscoding below, since the final m4a transcode legitimately pins
+  // progress for a stretch with no ticks.
+  static const _processingStallTimeout = Duration(minutes: 3);
 
   AppLifecycleState? _lastLifecycleState;
 
@@ -355,6 +367,26 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       return;
     }
 
+    // Processing-stall watchdog: a wedged decode isolate (native deadlock /
+    // infinite loop) never exits, so `processAll` never unwinds and
+    // isProcessingAny stays stuck true — leaving the banner spinning with no way
+    // out. Like the syncing watchdog, runs regardless of _isUserTriggered so
+    // both foreground-pipeline and background-driven processing recover.
+    // _forceRecoverStuckPipeline kills the isolate so the flag actually clears
+    // (a plain cancel wouldn't, for a hang). Skipped during transcode, where
+    // progress legitimately pauses.
+    if (_spState == SyncProcessState.processing &&
+        serviceIsProcessing &&
+        !_isTranscoding &&
+        now.difference(_lastProgressAt) > _processingStallTimeout) {
+      _forceRecoverStuckPipeline(
+        'no processing progress for ${_processingStallTimeout.inMinutes}m',
+        serviceIsSyncing,
+        serviceIsProcessing,
+      );
+      return;
+    }
+
     if (!_isUserTriggered) {
       if (serviceIsSyncing && (_spState == SyncProcessState.idle || _spState == SyncProcessState.processing)) {
         _spState = SyncProcessState.syncing;
@@ -376,6 +408,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
             final totalBytes = lengths.fold(0, (s, len) => s + len);
             if (_isDisposed) return;
             _spState = SyncProcessState.processing;
+            // Anchor the processing-stall watchdog so it measures since this
+            // promotion, not since app start / last sync tick.
+            _lastProgressAt = DateTime.now();
             _totalMinutes = totalBytes / 252000.0;
             _minutesRemaining =
                 (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
@@ -397,6 +432,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               final totalBytes = lengths.fold(0, (s, len) => s + len);
               if (_isDisposed) return;
               _spState = SyncProcessState.processing;
+              // Anchor the processing-stall watchdog (see sibling promotion above).
+              _lastProgressAt = DateTime.now();
               _totalMinutes = totalBytes / 252000.0;
               _minutesRemaining =
                   (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
@@ -443,7 +480,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _spState = newState;
     // Anchor the stall watchdog on entry to any active phase so it measures
     // time-since-progress, not time-since-app-start.
-    if (newState == SyncProcessState.syncing || newState == SyncProcessState.stopping) {
+    if (newState == SyncProcessState.syncing ||
+        newState == SyncProcessState.stopping ||
+        newState == SyncProcessState.processing) {
       _lastProgressAt = DateTime.now();
     }
     _throttledUpdate(force: true);
@@ -576,6 +615,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final int gen = _pipelineGeneration;
     _isUserTriggered = true;
     _isForcePipeline = true;
+    _processAfterCancel = false;
     _lastActiveStage = 'syncing';
 
     _totalCount = 0;
@@ -593,31 +633,39 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       await ForegroundUtil.updateNotification(text: 'Syncing recordings — preparing...');
     }
 
+    SyncLocalFilesResponse? result;
     try {
-      await syncs.rotateAndSync(progress: this);
+      result = await syncs.rotateAndSync(progress: this);
     } catch (e) {
       if (gen != _pipelineGeneration) return; // watchdog already recovered
-      _isUserTriggered = false;
-      _isForcePipeline = false;
-      _releaseWakelock();
-      await ForegroundUtil.stopForegroundTask();
       if (_spState == SyncProcessState.stopping) {
-        _transitionTo(SyncProcessState.idle);
-        unawaited(reloadBatchesSilently());
+        // User cancelled — honor the choice they made in the cancel dialog.
+        await _resolveUserCancel();
       } else {
-        _transitionToError('syncing', e.toString());
+        // Disconnect or rotation/sync failure — auto-process the bins already
+        // on disk (the helper drops to draft mode so an interrupted Force Sync
+        // won't finalize the trailing partial bin and delete its source); a
+        // genuine failure with nothing downloaded still surfaces as an error.
+        await _processBinsAfterInterruptedSync(errorIfEmpty: e.toString());
       }
       return;
     }
     if (gen != _pipelineGeneration) return; // watchdog already recovered
 
     if (_spState == SyncProcessState.stopping) {
-      _releaseWakelock();
-      await ForegroundUtil.stopForegroundTask();
-      _isForcePipeline = false;
-      _transitionTo(SyncProcessState.idle);
-      unawaited(reloadBatchesSilently());
+      // User cancelled the force sync — honor the dialog choice.
+      await _resolveUserCancel();
       return;
+    }
+
+    if (result?.isPartial == true) {
+      // The transfer was interrupted (e.g. a BLE drop mid-file) but unwound
+      // without throwing, so the trailing bin is partial. Drop out of force
+      // mode for the processing pass: finalizing that partial draft here would
+      // prune its source bin and break resume on the next sync — the same
+      // invariant _processBinsAfterInterruptedSync guards on the throw/cancel
+      // paths. A clean Force Sync (isPartial false) still finalizes drafts.
+      _isForcePipeline = false;
     }
 
     _syncedCount = _totalCount;
@@ -661,6 +709,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   Future<void> _runPipeline() async {
     final int gen = _pipelineGeneration;
     _isUserTriggered = true;
+    _processAfterCancel = false;
     _lastActiveStage = 'syncing';
 
     final syncs = ServiceManager.instance().wal.getSyncs();
@@ -692,24 +741,21 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
     } catch (e) {
       if (gen != _pipelineGeneration) return; // watchdog already recovered
-      _isUserTriggered = false;
-      _releaseWakelock();
-      await ForegroundUtil.stopForegroundTask();
       if (_spState == SyncProcessState.stopping) {
-        _transitionTo(SyncProcessState.idle);
-        unawaited(reloadBatchesSilently());
+        // User cancelled — honor the choice they made in the cancel dialog.
+        await _resolveUserCancel();
       } else {
-        _transitionToError('syncing', e.toString());
+        // Disconnect or sync failure — auto-process bins already on disk; a
+        // genuine failure with nothing downloaded still surfaces as an error.
+        await _processBinsAfterInterruptedSync(errorIfEmpty: e.toString());
       }
       return;
     }
     if (gen != _pipelineGeneration) return; // watchdog already recovered
 
     if (_spState == SyncProcessState.stopping) {
-      _releaseWakelock();
-      await ForegroundUtil.stopForegroundTask();
-      _transitionTo(SyncProcessState.idle);
-      unawaited(reloadBatchesSilently());
+      // User cancelled the download — honor the dialog choice.
+      await _resolveUserCancel();
       return;
     }
 
@@ -816,6 +862,81 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await _finishSuccess();
   }
 
+  /// Resolves a user cancel once the sync has unwound: continue into processing
+  /// the segments already on disk, or stop everything, per the choice captured
+  /// in the cancel dialog ([_processAfterCancel]). Disconnects never reach here
+  /// — they auto-process via the non-`stopping` paths.
+  Future<void> _resolveUserCancel() async {
+    if (_processAfterCancel) {
+      await _processBinsAfterInterruptedSync();
+    } else {
+      await _settleCancelledToIdle();
+    }
+  }
+
+  /// Tears the pipeline down to idle after a "stop everything" cancel, leaving
+  /// downloaded segments on disk for the next sync. Mirrors the normal exit
+  /// cleanup (wakelock, foreground task, state).
+  Future<void> _settleCancelledToIdle() async {
+    _isUserTriggered = false;
+    _isForcePipeline = false;
+    _releaseWakelock();
+    await ForegroundUtil.stopForegroundTask();
+    _transitionTo(SyncProcessState.idle);
+    unawaited(reloadBatchesSilently());
+  }
+
+  /// Falls through from an interrupted sync — a "process downloaded" cancel or
+  /// a setup-phase failure (no connection, listFiles disconnect, storage full,
+  /// rotation failure) — into processing the bins that already reached disk,
+  /// instead of dropping straight to idle/error and leaving them for the next
+  /// sync.
+  ///
+  /// Always processes in draft/background mode. An interrupted sync downloads
+  /// oldest-first and deletes each whole file immediately, so the only possibly
+  /// incomplete bin is the trailing one. Finalizing drafts here (Force Sync
+  /// behaviour) would promote that partial and let bin-pruning delete its
+  /// source, breaking resume — the exact failure the draft-flush invariant
+  /// guards against — so `_isForcePipeline` is cleared up front.
+  ///
+  /// Transitions to `processing` synchronously before the first await: the
+  /// `_poll` timer would otherwise observe `stopping`/`syncing` with the WAL
+  /// service no longer syncing and yank the state to idle during the reload
+  /// below. [errorIfEmpty] is the failure message for the throw path; with
+  /// nothing on disk to process we surface it as an error rather than a
+  /// misleading success (null = clean cancel, which settles back to idle).
+  Future<void> _processBinsAfterInterruptedSync({String? errorIfEmpty}) async {
+    if (_isDisposed) return;
+    _isForcePipeline = false;
+    _lastActiveStage = 'processing';
+    _transitionTo(SyncProcessState.processing);
+    _syncedCount = _totalCount;
+    _lastCompletedStage = 'syncing';
+    _prefs.saveString(_kSpLastCompleted, 'syncing');
+    await reloadBatchesSilently();
+
+    final hasBins = _batches.any((b) => b.rawSegments.isNotEmpty);
+    final hasMarkers = _batches.any((b) => b.markerTimestamps.isNotEmpty);
+    if (!hasBins && !hasMarkers) {
+      _isUserTriggered = false;
+      _releaseWakelock();
+      await ForegroundUtil.stopForegroundTask();
+      if (errorIfEmpty != null) {
+        _transitionToError('syncing', errorIfEmpty);
+      } else {
+        _transitionTo(SyncProcessState.idle);
+        unawaited(reloadBatchesSilently());
+      }
+      return;
+    }
+
+    _markerCount = _batches.fold(0, (sum, b) => sum + b.markerTimestamps.length);
+    notifyListeners();
+    _persistProgress();
+    await _runProcessing();
+    _isUserTriggered = false;
+  }
+
   void dismissSuccess() {
     if (_spState != SyncProcessState.successUi) return;
 
@@ -843,10 +964,21 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     dismissSuccess();
   }
 
-  void cancelPipeline() {
+  /// [processDownloaded] only applies when cancelling during the syncing phase:
+  /// true continues into processing the segments already on disk, false stops
+  /// everything and settles to idle. It is irrelevant when cancelling during
+  /// processing (the download is already done) — pass false there.
+  void cancelPipeline({bool processDownloaded = false}) {
     if (_spState != SyncProcessState.syncing && _spState != SyncProcessState.processing) return;
+    // If the sync finished while the cancel dialog was open, the pipeline has
+    // already advanced to processing — a "process downloaded" request is now
+    // being satisfied, so don't tear that processing down. ("Stop everything"
+    // still stops it.)
+    if (processDownloaded && _spState == SyncProcessState.processing) return;
+    _processAfterCancel = processDownloaded;
     Logger.debug(
-      'RecordingsController: Cancel confirmed — cancelling sync + processing.',
+      'RecordingsController: Cancel confirmed — '
+      '${processDownloaded ? 'will process downloaded segments' : 'stopping everything'}.',
     );
     _transitionTo(SyncProcessState.stopping);
     ServiceManager.instance().wal.getSyncs().cancelSync();
@@ -878,7 +1010,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // has a 10s timeout, so the next sync surfaces a bounded error rather than
     // deadlocking.
     unawaited(syncs.stop().catchError((_) {}));
-    RecordingsManager.cancelProcessing();
+    // Kill (not just cooperatively cancel) any processing isolate: a wedged
+    // isolate never reads the cancel, so only a kill lets processAll unwind and
+    // clear isProcessingAny — without that, the next _poll re-promotes straight
+    // back to `processing` and the banner bounces back.
+    RecordingsManager.forceResetProcessing();
 
     _isUserTriggered = false;
     _isForcePipeline = false;
