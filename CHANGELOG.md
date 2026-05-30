@@ -1,5 +1,10 @@
 # Changelog
 
+### Diagnostic logs: blank-window fix & simpler one-file lifecycle (0.14.18)
+
+- **The Debug Tools log window no longer shows "No logs yet." on a non-empty log.** A single malformed UTF-8 byte — e.g. from a torn write when the main and background isolates append concurrently — made the strict reader throw on the whole file, so the in-app window went blank even though the log had content and was still shareable. The reader now decodes leniently (bad bytes become `U+FFFD`) and skips only the affected line, and it tail-reads the file so the 2s refresh stays cheap as the log grows.
+- **Diagnostic logging is now a single file with a clear on/off lifecycle.** Instead of rolling a new file per day, there's one `omi_debug_*.log` named for the day logging started. Turning the toggle **on** cleans up any old log files and opens a fresh one; turning it **off** deletes the file; **Clear Logs** deletes the file and starts a new one; **Share Logs** shares the current file. On overflow (20 MB) the most recent half is kept, so the log stays a sliding window of recent activity instead of being wiped wholesale.
+
 ### Ghost recordings: fixed overlapping timestamps & grouped consecutive discards (0.14.17)
 
 - **Discarded "ghost" recordings no longer stack on top of each other with identical timestamps.** After an in-stream silence split, the next conversation was re-anchored to the *start of the bin file* (or the last VAD-resume point) instead of the current frame's wall clock — so every chunk in a long ambient-noise stream got the same start time and the discard records piled onto each other in the recordings list. Each new conversation is now anchored to its first frame's actual time, so timestamps advance monotonically and never overlap.
