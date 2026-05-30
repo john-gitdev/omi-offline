@@ -705,6 +705,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   spState: controller.spState,
                   toProcessMinutes: controller.toProcessMinutes,
                   draftMinutes: controller.draftMinutes,
+                  unprocessedBinCount: controller.unprocessedBinCount,
                   onTap: () {
                     if (controller.spState == SyncProcessState.syncing ||
                         controller.spState == SyncProcessState.processing ||
