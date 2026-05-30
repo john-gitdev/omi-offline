@@ -1,5 +1,12 @@
 # Changelog
 
+### Interrupted sync no longer strands the segments it already downloaded (0.14.19)
+
+- **If the Omi disconnects mid-sync, the app now automatically decodes the raw segments that already reached the phone** instead of erroring out and leaving them on disk until the next sync. This applies to both manual syncs and the background scheduled sync. (A disconnect *during* a transfer already did this; this also covers a disconnect before/between transfers, which previously just surfaced an error and skipped processing.)
+- **Cancelling a sync now asks what you want to do** — *Process downloaded* (decode the segments already pulled to the phone) or *Stop everything* (leave them for the next sync). Previously Cancel always dropped straight back to idle, leaving the just-downloaded `.bin` files unprocessed. Cancelling during the processing phase still just stops.
+- In every interruption case — auto-process on disconnect, a "Process downloaded" cancel, or an interrupted **Force Sync** — processing runs in draft mode, so the trailing (possibly partial) segment is flushed as a draft and its source bin is kept for resume rather than being prematurely finalized and its bin deleted. (Previously an interrupted Force Sync could finalize that partial segment and prune its source, corrupting resume on the next sync.) A clean Force Sync still finalizes drafts as before; a genuine failure with nothing downloaded still shows the error.
+- **The processing banner no longer spins forever if decoding wedges.** A processing-stall watchdog now recovers the UI to idle when no progress is seen for 3 minutes (outside the final audio-conversion step, which legitimately pauses progress). Recovery force-kills the stuck decode worker so it actually stops — previously a wedged decode left the banner stuck with no way out, and even pressing Cancel couldn't fully clear it. Partial results already written are kept; remaining segments re-process on the next run.
+
 ### Diagnostic logs: blank-window fix & simpler one-file lifecycle (0.14.18)
 
 - **The Debug Tools log window no longer shows "No logs yet." on a non-empty log.** A single malformed UTF-8 byte — e.g. from a torn write when the main and background isolates append concurrently — made the strict reader throw on the whole file, so the in-app window went blank even though the log had content and was still shareable. The reader now decodes leniently (bad bytes become `U+FFFD`) and skips only the affected line, and it tail-reads the file so the 2s refresh stays cheap as the log grows.
