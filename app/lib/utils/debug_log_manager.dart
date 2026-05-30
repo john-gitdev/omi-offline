@@ -12,7 +12,10 @@ import 'package:omi/backend/preferences.dart';
 class DebugLogManager {
   DebugLogManager._();
 
-  static String _dailyFileName() {
+  // Name for a brand-new log file: the UTC day it is first created. There is
+  // only ever one log file and it keeps this name for its whole life (it is not
+  // rotated per day), so the name records the day logging started.
+  static String _newFileName() {
     final d = DateTime.now().toUtc();
     final y = d.year.toString().padLeft(4, '0');
     final m = d.month.toString().padLeft(2, '0');
@@ -20,12 +23,14 @@ class DebugLogManager {
     return 'omi_debug_$y$m$day.log';
   }
 
-  static const int _maxFileBytes = 5 * 1024 * 1024; // 5MB cap
+  // Single persistent file is capped here. On overflow the most recent half is
+  // kept (see _rotateIfNeeded) rather than the whole file being wiped, so the
+  // log stays a sliding window of recent activity spanning several days.
+  static const int _maxFileBytes = 20 * 1024 * 1024; // 20MB cap
 
   static File? _file;
   static final DateFormat _ts = DateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
   static bool _initializing = false;
-  static bool _prunedOnce = false;
 
   /// Forces logging on/off regardless of SharedPreferences. Set this in
   /// background isolates, where SharedPreferences isn't initialised and
@@ -36,6 +41,12 @@ class DebugLogManager {
 
   static bool get isEnabled => enabledOverride ?? SharedPreferencesUtil().devLogsToFileEnabled;
 
+  // Resolves the current log file. Reusing the newest existing omi_debug_*.log
+  // (rather than always creating today's) keeps the main and background isolates
+  // on the same file without sharing memory, and preserves the file across app
+  // restarts. The create path runs only when none exists, and its name is the
+  // UTC day, so even two isolates cold-creating at once land on the same path.
+  // Deleting/replacing files is done explicitly by setEnabled/clear, not here.
   static Future<File> _ensureFile() async {
     if (_file != null) return _file!;
     if (_initializing) {
@@ -48,11 +59,8 @@ class DebugLogManager {
     _initializing = true;
     try {
       final dir = await getApplicationDocumentsDirectory();
-      if (!_prunedOnce) {
-        await _pruneOldLogs(retainDays: 3);
-        _prunedOnce = true;
-      }
-      final f = File('${dir.path}/${_dailyFileName()}');
+      final existing = await listLogFiles(); // newest first
+      final f = existing.isNotEmpty ? existing.first : File('${dir.path}/${_newFileName()}');
       if (!(await f.exists())) {
         await f.create(recursive: true);
       }
@@ -73,9 +81,29 @@ class DebugLogManager {
 
   static Future<void> setEnabled(bool enabled) async {
     SharedPreferencesUtil().devLogsToFileEnabled = enabled;
-    if (!enabled) return;
+    if (enabled) {
+      // Turning on: clean up any old log files, then open a fresh one.
+      await _startFreshFile();
+    } else {
+      // Turning off: remove the log file entirely.
+      await _deleteAllLogFiles();
+    }
+  }
+
+  /// Deletes every debug log file and drops the cached handle.
+  static Future<void> _deleteAllLogFiles() async {
+    for (final f in await listLogFiles()) {
+      try {
+        await f.delete();
+      } catch (_) {}
+    }
+    _file = null;
+  }
+
+  /// Deletes any existing log files, then opens a fresh one.
+  static Future<void> _startFreshFile() async {
+    await _deleteAllLogFiles();
     await _ensureFile();
-    await _pruneOldLogs(retainDays: 3);
   }
 
   static String _timestamp() => _ts.format(DateTime.now().toUtc());
@@ -84,8 +112,21 @@ class DebugLogManager {
     try {
       final len = await f.length();
       if (len <= _maxFileBytes) return;
-      // Simple rotation: delete old file
-      await f.writeAsString('', mode: FileMode.write, flush: true);
+      // Keep the most recent half so the log stays a sliding window of recent
+      // activity instead of being wiped wholesale on overflow.
+      const keep = _maxFileBytes ~/ 2;
+      final raf = await f.open();
+      late final List<int> tail;
+      try {
+        await raf.setPosition(len - keep);
+        tail = await raf.read(keep);
+      } finally {
+        await raf.close();
+      }
+      // Drop the partial first line so the file starts on a clean boundary.
+      final nl = tail.indexOf(0x0A);
+      final body = (nl >= 0 && nl + 1 < tail.length) ? tail.sublist(nl + 1) : tail;
+      await f.writeAsBytes(body, mode: FileMode.write, flush: true);
     } catch (_) {}
   }
 
@@ -104,7 +145,30 @@ class DebugLogManager {
     try {
       final f = await _ensureFile();
       if (!await f.exists()) return [];
-      final lines = await f.readAsLines();
+      // Read only the tail: the window shows the newest `limit` lines, and the
+      // single persistent file can be many MB — re-reading all of it on the 2 s
+      // poll would be wasteful. 256 KB easily covers the displayed lines.
+      const tailBytes = 256 * 1024;
+      final raf = await f.open();
+      late final List<int> bytes;
+      int start;
+      try {
+        final len = await raf.length();
+        start = len > tailBytes ? len - tailBytes : 0;
+        await raf.setPosition(start);
+        bytes = await raf.read(len - start);
+      } finally {
+        await raf.close();
+      }
+      // Decode leniently. Strict UTF-8 (allowMalformed: false, the readAsLines
+      // default) throws FormatException on a single bad byte — e.g. a torn append
+      // when the main and background isolates write concurrently — which the
+      // outer catch turns into an empty list, blanking the window even though the
+      // file is fine to share. Replace bad bytes with U+FFFD instead of failing.
+      final text = utf8.decode(bytes, allowMalformed: true);
+      var lines = const LineSplitter().convert(text);
+      // If we started mid-file the first line is partial — drop it.
+      if (start > 0 && lines.isNotEmpty) lines = lines.sublist(1);
       return lines.reversed
           .take(limit)
           .map((l) {
@@ -121,14 +185,12 @@ class DebugLogManager {
     }
   }
 
+  /// Deletes the current log file and starts a new one.
   static Future<void> clear() async {
-    try {
-      final f = await _ensureFile();
-      await f.writeAsString('', mode: FileMode.write, flush: true);
-    } catch (_) {}
+    await _startFreshFile();
   }
 
-  /// Returns available debug log files (within retention), sorted newest first.
+  /// Returns the debug log file(s), newest first — normally just the one.
   static Future<List<File>> listLogFiles() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -151,33 +213,6 @@ class DebugLogManager {
     } catch (_) {
       return const <File>[];
     }
-  }
-
-  static Future<void> _pruneOldLogs({int retainDays = 3}) async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final now = DateTime.now().toUtc();
-      final stream = Directory(dir.path).list(followLinks: false);
-      await for (final entity in stream) {
-        if (entity is! File) continue;
-        final name = entity.uri.pathSegments.isNotEmpty ? entity.uri.pathSegments.last : '';
-        if (!name.startsWith('omi_debug_') || !name.endsWith('.log')) continue;
-        // Expect format omi_debug_YYYYMMDD.log
-        final datePart = name.replaceAll('omi_debug_', '').replaceAll('.log', '');
-        if (datePart.length != 8) continue;
-        final y = int.tryParse(datePart.substring(0, 4));
-        final m = int.tryParse(datePart.substring(4, 6));
-        final d = int.tryParse(datePart.substring(6, 8));
-        if (y == null || m == null || d == null) continue;
-        final fileDate = DateTime.utc(y, m, d);
-        final age = now.difference(fileDate).inDays;
-        if (age > retainDays) {
-          try {
-            await entity.delete();
-          } catch (_) {}
-        }
-      }
-    } catch (_) {}
   }
 
   static Future<void> logError(Object error,
