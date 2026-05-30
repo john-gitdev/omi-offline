@@ -576,15 +576,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               SwitchListTile(
                 title: const Text('Save Diagnostic Logs to File',
                     style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
-                subtitle: const Text('Persists info/debug logs to a daily file on your device.',
+                subtitle: const Text('Persists info/debug logs to a file on your device.',
                     style: TextStyle(color: Colors.grey, fontSize: 12)),
                 value: SharedPreferencesUtil().devLogsToFileEnabled,
                 onChanged: (val) async {
-                  await DebugLogManager.setEnabled(val);
                   if (val) {
+                    await DebugLogManager.setEnabled(true);
                     _startLogPolling();
                   } else {
+                    // Stop the 2 s poll before deleting so getRecentLogs can't
+                    // recreate the file we're removing.
                     _stopLogPolling();
+                    await DebugLogManager.setEnabled(false);
                   }
                   setState(() {});
                 },
