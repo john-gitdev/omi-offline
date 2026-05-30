@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
@@ -30,6 +32,11 @@ class RecordingsPage extends StatefulWidget {
 }
 
 class _RecordingsPageState extends State<RecordingsPage> {
+  // Back press on the root page minimizes the app (moves the task to back)
+  // rather than finishing MainActivity — finishing would tear down the BLE
+  // foreground service and drop its persistent notification.
+  static const _systemChannel = MethodChannel('com.omi.offline/system');
+
   final _prefs = SharedPreferencesUtil();
   late final RecordingsController _controller;
 
@@ -519,7 +526,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider.value(
+    final body = ChangeNotifierProvider.value(
       value: _controller,
       child: Consumer2<DeviceProvider, RecordingsController>(
         builder: (context, deviceProvider, controller, child) {
@@ -972,6 +979,16 @@ class _RecordingsPageState extends State<RecordingsPage> {
           );
         },
       ),
+    );
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        // Root page: minimize instead of closing so the BLE foreground service
+        // (and its notification) survives. iOS forbids self-backgrounding.
+        if (Platform.isAndroid) _systemChannel.invokeMethod('moveTaskToBack');
+      },
+      child: body,
     );
   }
 }
