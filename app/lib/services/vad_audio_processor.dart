@@ -672,16 +672,22 @@ class VadAudioProcessor {
         }
         if (_currentFrameUptimeMs != null) _currentFrameUptimeMs = _currentFrameUptimeMs! + frameDurationMs;
 
-        if (_recordingStartTime == null) {
-          _recordingStartTime =
-              (vadResumeTime != null && vadResumeFrameIndex != null) ? vadResumeTime : segmentStartTime;
-        }
-
         // Compute accurate wall-clock time for this frame using VAD-resume anchor if available.
         final frameTime = (vadResumeTime != null && vadResumeFrameIndex != null)
             ? vadResumeTime.add(Duration(milliseconds: (frameIndex - vadResumeFrameIndex) * frameDurationMs))
             : segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
         lastFrameWallTime = frameTime;
+
+        // Anchor a fresh conversation to THIS frame's wall-clock time. After an
+        // in-stream silence split, _splitOnSilence resets _recordingStartTime to
+        // null mid-file; anchoring to segmentStartTime / vadResumeTime here would
+        // back-date the new conversation to the start of the file (or the resume
+        // point), stacking it on top of the chunk just split off and producing
+        // overlapping records with identical timestamps. frameTime is the correct
+        // per-frame wall clock and advances monotonically across splits.
+        if (_recordingStartTime == null) {
+          _recordingStartTime = frameTime;
+        }
 
         // App-side silence split. The firmware only emits a 0xFFFFFFFD gap once
         // its own AAD has gone quiet long enough; in a continuous-audio
