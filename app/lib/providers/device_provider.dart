@@ -670,16 +670,40 @@ class DeviceProvider extends ChangeNotifier
         } else {
           await ForegroundUtil.updateNotification(text: 'Syncing recordings — preparing...');
         }
-        await walSync.syncAll(progress: _BackgroundSyncProgress());
+        // A setup-phase failure in this first sync (no connection, storage full,
+        // or any early abort that throws) must NOT skip processing — bins that
+        // already reached disk should still be decoded, mirroring how the
+        // foreground pipeline auto-processes on disconnect. A transfer-phase
+        // disconnect doesn't throw (syncAll returns partial and falls through),
+        // so this inner catch only covers the early-abort cases.
+        bool firstSyncOk = true;
+        try {
+          await walSync.syncAll(progress: _BackgroundSyncProgress());
+        } catch (e) {
+          firstSyncOk = false;
+          lastSyncError = e.toString();
+          lastSyncErrorTime = DateTime.now();
+          notifyListeners();
+        }
 
         await ForegroundUtil.updateNotification(text: 'Processing recordings — preparing...');
         RecordingsManager.processingProgress.addListener(onProcessingProgress);
+        // processAllCompletedSessions decodes in draft mode (a partial trailing
+        // bin stays a draft and its source bin is kept for resume) and swallows
+        // its own errors, so it runs whether or not the sync above succeeded.
         await RecordingsManager.processAllCompletedSessions();
         RecordingsManager.processingProgress.removeListener(onProcessingProgress);
 
-        await ForegroundUtil.updateNotification(text: 'Syncing recordings — finalizing...');
-        await walSync.syncAll(progress: _BackgroundSyncProgress());
-        SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
+        // Finalizing re-sync (captures firmware files created during processing)
+        // and the completion stamp only apply to a clean cycle. If the first
+        // sync failed or the link dropped, skip both and leave the cycle "due"
+        // so the next timer tick / app open retries promptly instead of waiting
+        // a full interval — anything left on disk was already processed above.
+        if (firstSyncOk && isConnected) {
+          await ForegroundUtil.updateNotification(text: 'Syncing recordings — finalizing...');
+          await walSync.syncAll(progress: _BackgroundSyncProgress());
+          SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
+        }
       } catch (e) {
         lastSyncError = e.toString();
         lastSyncErrorTime = DateTime.now();
