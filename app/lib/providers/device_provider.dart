@@ -439,11 +439,16 @@ class DeviceProvider extends ChangeNotifier
       // device is still system-cached, native OmiBleManager.connectGatt picks
       // autoConnect=false and reattaches in <1s. Even when not cached, a direct
       // connectGatt(autoConnect=false) to a known MAC is faster than a 10s scan.
+      // Timeout is 5s (not 10s): when the device is asleep / not advertising
+      // (e.g. after an app update, which kills the warm native reconnect state),
+      // this attempt can't succeed anyway, so a long wait here is pure dead time
+      // before the fallback scan even starts. 5s still covers a cached fast
+      // reattach with margin. See NOTES.md "App: BLE Connection Latency Levers".
       try {
         await ServiceManager.instance()
             .device
             .ensureConnection(pairedDeviceId, force: true)
-            .timeout(const Duration(seconds: 10));
+            .timeout(const Duration(seconds: 5));
         await Future.delayed(const Duration(seconds: 1));
         device = await _getConnectedDevice();
         if (device != null) return device;
