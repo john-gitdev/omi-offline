@@ -24,8 +24,7 @@ void main() {
 
   setUp(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
       (call) async => null,
     );
@@ -163,15 +162,15 @@ void main() {
 
       // 1. Marker in the middle (30s in)
       final markerTime = DateTime(2026, 3, 11, 10, 0, 30);
-      
+
       // We need to call the private method via a public entry point or mock the state.
-      // Since it's private static, we can test it indirectly via a test-only wrapper 
+      // Since it's private static, we can test it indirectly via a test-only wrapper
       // or by reflecting on the logic. In this codebase, we can't easily call private statics.
       // However, the user asked to "add new tests for all the updates we made".
-      // I will add a test that verifies the logic by mocking the file system and 
-      // calling the public sync method if possible, or I'll just add the unit test 
+      // I will add a test that verifies the logic by mocking the file system and
+      // calling the public sync method if possible, or I'll just add the unit test
       // for the public getMarkerConversations which uses the EDL files.
-      
+
       final edlFile = File(p.join(dateDir.path, 'marker_${markerTime.millisecondsSinceEpoch}.edl'));
       final edlData = {
         'markerTimestampMs': markerTime.millisecondsSinceEpoch,
@@ -209,7 +208,6 @@ void main() {
       expect(markers.length, 1);
       expect(markers[0].isPending, true);
     });
-
   });
 
   group('runRecoverySweep', () {
@@ -448,6 +446,108 @@ void main() {
       expect(remaining.first.startTime.millisecondsSinceEpoch, startB);
     });
 
+    test('coalesces consecutive discards into one entry', () async {
+      final base = DateTime(2026, 3, 15, 12, 0, 0).millisecondsSinceEpoch;
+      final dateStr = _dateOf(base);
+      await writeJsonl(dateStr, [
+        {
+          'startMs': base,
+          'endMs': base + 120000,
+          'reason': 'silence_only',
+          'maxVoiceProb': 0.02,
+          'relativeBins': ['session_n/a.bin'],
+        },
+        {
+          // Abuts the previous chunk exactly (gap 0).
+          'startMs': base + 120000,
+          'endMs': base + 240000,
+          'reason': 'noise_silence_split',
+          'maxVoiceProb': 0.31,
+          'relativeBins': ['session_n/b.bin'],
+        },
+        {
+          // 5 s later — within the 30 s merge tolerance (RTC drift).
+          'startMs': base + 245000,
+          'endMs': base + 360000,
+          'reason': 'silence_trimmed',
+          'maxVoiceProb': 0.04,
+          'relativeBins': ['session_n/c.bin'],
+        },
+      ]);
+
+      final loaded = await RecordingsManager.getDiscardsForDate(dateStr);
+
+      expect(loaded.length, 1, reason: 'three back-to-back chunks must collapse to one entry');
+      expect(loaded.first.startTime.millisecondsSinceEpoch, base);
+      expect(loaded.first.endTime.millisecondsSinceEpoch, base + 360000);
+      expect(loaded.first.relativeBins, ['session_n/a.bin', 'session_n/b.bin', 'session_n/c.bin']);
+      expect(loaded.first.maxVoiceProb, closeTo(0.31, 0.0001), reason: 'keeps the highest voice prob');
+      expect(loaded.first.isNoise, true, reason: 'any noise constituent makes the merged entry noise');
+    });
+
+    test('leaves a far-apart discard as its own entry', () async {
+      final base = DateTime(2026, 3, 15, 12, 0, 0).millisecondsSinceEpoch;
+      final dateStr = _dateOf(base);
+      await writeJsonl(dateStr, [
+        {
+          'startMs': base,
+          'endMs': base + 120000,
+          'reason': 'silence_only',
+          'maxVoiceProb': 0.0,
+          'relativeBins': ['session_m/a.bin'],
+        },
+        {
+          // 60 s gap > 30 s tolerance → separate entry (e.g. a real recording sat here).
+          'startMs': base + 180000,
+          'endMs': base + 300000,
+          'reason': 'noise_silence_split',
+          'maxVoiceProb': 0.0,
+          'relativeBins': ['session_m/b.bin'],
+        },
+      ]);
+
+      final loaded = await RecordingsManager.getDiscardsForDate(dateStr);
+      expect(loaded.length, 2);
+    });
+
+    test('removeDiscardRecord on a coalesced span clears every constituent line', () async {
+      final base = DateTime(2026, 3, 15, 12, 0, 0).millisecondsSinceEpoch;
+      final dateStr = _dateOf(base);
+      await writeJsonl(dateStr, [
+        {
+          'startMs': base,
+          'endMs': base + 120000,
+          'reason': 'silence_only',
+          'maxVoiceProb': 0.0,
+          'relativeBins': ['session_p/a.bin'],
+        },
+        {
+          'startMs': base + 120000,
+          'endMs': base + 240000,
+          'reason': 'noise_silence_split',
+          'maxVoiceProb': 0.0,
+          'relativeBins': ['session_p/b.bin'],
+        },
+        {
+          // Far apart → its own entry, must survive deletion of the merged span.
+          'startMs': base + 600000,
+          'endMs': base + 660000,
+          'reason': 'silence_only',
+          'maxVoiceProb': 0.0,
+          'relativeBins': ['session_p/c.bin'],
+        },
+      ]);
+
+      final loaded = await RecordingsManager.getDiscardsForDate(dateStr);
+      expect(loaded.length, 2, reason: 'first two merge, third stays separate');
+
+      await RecordingsManager.removeDiscardRecord(loaded.first, deleteBins: false);
+
+      final remaining = await RecordingsManager.getDiscardsForDate(dateStr);
+      expect(remaining.length, 1, reason: 'both constituent lines of the merged span are gone');
+      expect(remaining.first.startTime.millisecondsSinceEpoch, base + 600000);
+    });
+
     test('removeDiscardRecord on missing jsonl is no-op', () async {
       final ghost = DiscardRecord(
         startTime: DateTime.now(),
@@ -648,8 +748,7 @@ void main() {
       final deleted = await RecordingsManager.pruneConsumedBins();
 
       expect(deleted, 1);
-      expect(bin.existsSync(), false,
-          reason: 'bin entirely inside [rec_start - 10min, rec_end + 2min] must be pruned');
+      expect(bin.existsSync(), false, reason: 'bin entirely inside [rec_start - 10min, rec_end + 2min] must be pruned');
     });
 
     test('cap-ended recording preserves bin extending past rec_end', () async {
@@ -669,8 +768,7 @@ void main() {
       final deleted = await RecordingsManager.pruneConsumedBins();
 
       expect(deleted, 0);
-      expect(bin.existsSync(), true,
-          reason: 'cap-ended recording must not delete bins that extend past rec_end');
+      expect(bin.existsSync(), true, reason: 'cap-ended recording must not delete bins that extend past rec_end');
     });
 
     test('silence-ended: bin extending past rec_end + 2min slack is preserved', () async {
@@ -688,8 +786,7 @@ void main() {
       final deleted = await RecordingsManager.pruneConsumedBins();
 
       expect(deleted, 0);
-      expect(bin.existsSync(), true,
-          reason: 'bin past silence slack edge has unknown content — must survive');
+      expect(bin.existsSync(), true, reason: 'bin past silence slack edge has unknown content — must survive');
     });
 
     test('merged coverage: bin spanning two back-to-back recordings is pruned', () async {
@@ -727,8 +824,7 @@ void main() {
       final deleted = await RecordingsManager.pruneConsumedBins();
 
       expect(deleted, 0);
-      expect(bin.existsSync(), true,
-          reason: 'AM mode contract: keep all bins for arbitrary reprocessing');
+      expect(bin.existsSync(), true, reason: 'AM mode contract: keep all bins for arbitrary reprocessing');
     });
 
     test('missing capEnded byte defaults to true (conservative)', () async {
@@ -748,16 +844,14 @@ void main() {
       // Bin extends past rec_end; with default capEnded=true, right edge =
       // rec_end (no silence slack), so bin is NOT fully inside coverage.
       expect(deleted, 0);
-      expect(bin.existsSync(), true,
-          reason: 'missing capEnded byte must be treated conservatively (assume cap-ended)');
+      expect(bin.existsSync(), true, reason: 'missing capEnded byte must be treated conservatively (assume cap-ended)');
     });
 
     test('drafts contribute to coverage', () async {
       // A draft recording also "owns" its bins — we must not re-VAD the
       // source bins on next launch just because the audio file is _draft.wav.
       final recStartMs = DateTime.utc(2026, 5, 27, 15, 0, 0).millisecondsSinceEpoch;
-      await writeRecording(
-          startMs: recStartMs, durationMs: 3 * 60 * 1000, capEnded: false, isDraft: true);
+      await writeRecording(startMs: recStartMs, durationMs: 3 * 60 * 1000, capEnded: false, isDraft: true);
       final bin = await writeBin(
         timerStartSec: recStartMs ~/ 1000,
         sessionId: 5,
@@ -767,8 +861,7 @@ void main() {
       final deleted = await RecordingsManager.pruneConsumedBins();
 
       expect(deleted, 1);
-      expect(bin.existsSync(), false,
-          reason: 'bins covered by a draft recording must also be pruned');
+      expect(bin.existsSync(), false, reason: 'bins covered by a draft recording must also be pruned');
     });
 
     test('pre-time-sync session_<hex>/ folder is skipped', () async {
@@ -786,8 +879,7 @@ void main() {
       final deleted = await RecordingsManager.pruneConsumedBins();
 
       expect(deleted, 0);
-      expect(preSyncBin.existsSync(), true,
-          reason: 'pre-time-sync bins have no reliable wall-clock — must not prune');
+      expect(preSyncBin.existsSync(), true, reason: 'pre-time-sync bins have no reliable wall-clock — must not prune');
     });
 
     test('no recordings, no bins → no-op', () async {
@@ -807,8 +899,7 @@ void main() {
       final deleted = await RecordingsManager.pruneConsumedBins();
 
       expect(deleted, 0);
-      expect(bin.existsSync(), true,
-          reason: 'orphan bin (no overlapping recording) is real un-processed audio');
+      expect(bin.existsSync(), true, reason: 'orphan bin (no overlapping recording) is real un-processed audio');
     });
   });
 }
