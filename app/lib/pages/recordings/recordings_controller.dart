@@ -209,7 +209,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void _onTranscodingChanged() {
     if (_isDisposed) return;
     _isTranscoding = RecordingsManager.isTranscoding.value;
-    notifyListeners();
+    _throttledUpdate(force: true);
   }
 
   void _onProgressChanged() {
@@ -232,9 +232,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         text: 'Syncing recordings — $_syncedCount of $_totalCount segments ($percent%)',
       );
     } else if (_spState == SyncProcessState.processing) {
-      final mins = _minutesRemaining.ceil();
-      final text =
-          mins > 0 ? 'Processing recordings — $mins min of audio left' : 'Processing recordings — <1 min of audio left';
+      final String text;
+      if (_isTranscoding) {
+        text = 'Processing recordings — Converting to ${_prefs.audioSaveFormat}';
+      } else if (_minutesRemaining < 0) {
+        text = 'Processing recordings — Calculating…';
+      } else if (_minutesRemaining >= 1) {
+        text = 'Processing recordings — ~${_minutesRemaining.ceil()} min of audio to process';
+      } else {
+        text = 'Processing recordings — < 1 min of audio to process';
+      }
       ForegroundUtil.updateNotification(text: text);
     }
   }
