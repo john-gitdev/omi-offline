@@ -124,20 +124,41 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _showCancelModal() async {
-    if (_controller.spState != SyncProcessState.syncing && _controller.spState != SyncProcessState.processing) return;
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (c) => getDialog(
-        c,
-        () => Navigator.of(c).pop(false),
-        () => Navigator.of(c).pop(true),
-        'Cancel sync and processing?',
-        'Progress will pause and can be resumed later.',
-        confirmText: 'Stop',
-      ),
-    );
-    if (confirm != true) return;
-    _controller.cancelPipeline();
+    final state = _controller.spState;
+    if (state == SyncProcessState.syncing) {
+      // Mid-download: let the user keep the segments already pulled to the phone
+      // (continue into processing) or stop everything. Dismissing keeps syncing.
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (c) => getDialog(
+          c,
+          () => Navigator.of(c).pop('stop'),
+          () => Navigator.of(c).pop('process'),
+          'Stop syncing?',
+          'Process the segments already downloaded to this phone, or stop and leave them for the next sync?',
+          cancelText: 'Stop everything',
+          confirmText: 'Process downloaded',
+        ),
+      );
+      if (choice == 'process') {
+        _controller.cancelPipeline(processDownloaded: true);
+      } else if (choice == 'stop') {
+        _controller.cancelPipeline(processDownloaded: false);
+      }
+    } else if (state == SyncProcessState.processing) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (c) => getDialog(
+          c,
+          () => Navigator.of(c).pop(false),
+          () => Navigator.of(c).pop(true),
+          'Stop processing?',
+          'Processing will stop. Downloaded segments are kept and finish on the next sync.',
+          confirmText: 'Stop',
+        ),
+      );
+      if (confirm == true) _controller.cancelPipeline(processDownloaded: false);
+    }
   }
 
   Future<void> _deleteDayConversations(Batch batch, List<Conversation> toDelete) async {
