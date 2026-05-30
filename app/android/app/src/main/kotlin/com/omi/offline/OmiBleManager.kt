@@ -417,6 +417,14 @@ class OmiBleManager private constructor(private val application: Application) {
         val prefix = addr.lowercase()
         readCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { readCompletions.remove(it)?.invoke(Result.failure(Exception("Disconnected"))) }
         writeCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { writeCompletions.remove(it)?.invoke(Result.failure(Exception("Disconnected"))) }
+        // Drop any queued (and the in-flight) GATT command. A with-response write
+        // on a wedged link never gets onCharacteristicWrite, so completeCommand()
+        // never runs and the in-flight command stays at the head of gattQueue with
+        // isProcessingCommand stuck true. Resetting only the flag would leave that
+        // stale command (referencing the now-dead gatt) to be re-posted on the next
+        // enqueue after reconnect. Clear the queue so the next connection starts
+        // with a clean command pipeline.
+        gattQueue.clear()
         isProcessingCommand = false
     }
 
