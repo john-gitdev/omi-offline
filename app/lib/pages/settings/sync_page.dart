@@ -544,6 +544,21 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               ),
               const SizedBox(height: 24),
               SwitchListTile(
+                title: const Text('Keep Screen On',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+                subtitle: const Text('Holds a wakelock while the app is open so the screen never sleeps.',
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
+                value: SharedPreferencesUtil().keepScreenOn,
+                onChanged: (val) async {
+                  SharedPreferencesUtil().keepScreenOn = val;
+                  await WakelockPlus.toggle(enable: val);
+                  setState(() {});
+                },
+                activeColor: Colors.amber,
+                contentPadding: EdgeInsets.zero,
+              ),
+              const SizedBox(height: 12),
+              SwitchListTile(
                 title: const Text('Allow Upload During Adjustment',
                     style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
                 subtitle: const Text('Integrations will remain active even when Adjustment Mode is enabled.',
@@ -622,21 +637,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   ],
                 ),
               ],
-              const SizedBox(height: 12),
-              SwitchListTile(
-                title: const Text('Keep Screen On',
-                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
-                subtitle: const Text('Holds a wakelock while the app is open so the screen never sleeps.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12)),
-                value: SharedPreferencesUtil().keepScreenOn,
-                onChanged: (val) async {
-                  SharedPreferencesUtil().keepScreenOn = val;
-                  await WakelockPlus.toggle(enable: val);
-                  setState(() {});
-                },
-                activeColor: Colors.amber,
-                contentPadding: EdgeInsets.zero,
-              ),
               const SizedBox(height: 12),
               SwitchListTile(
                 title: const Text('Show SD Write Drops',
