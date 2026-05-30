@@ -1,5 +1,10 @@
 # Changelog
 
+### Sync no longer freezes on a half-dead BLE link (0.15.1)
+
+- **A stalled sync now recovers into processing instead of getting stuck.** If the Omi's firmware wedged mid-transfer while the BLE link stayed nominally "connected" (the phone never saw a disconnect), the app could hang forever on the in-flight BLE command — leaving the notification frozen at "Syncing recordings — N% complete" with no progress and no way out short of reopening the app. Every native BLE read/write is now time-bounded (10 s), so a dead peer surfaces as a normal error: the sync unwinds, the segments already downloaded are decoded, and the notification advances to the processing details (and then the idle/next-sync state) — the expected disconnect-then-process behavior.
+- **A wedged command no longer poisons the next connection (Android).** The native GATT command queue is now cleared on disconnect, so a command left stuck by a half-dead link can't block the first commands of the following connection.
+
 ### Back button keeps the app running; clearer Manual-Only notification (0.15.0)
 
 - **Pressing Back on the recordings screen now minimizes the app instead of closing it.** Previously Back finished the activity, which tore down the BLE foreground service and made its persistent notification vanish — so background sync silently stopped. Back now pushes the app to the background (like Home) and the service keeps running. Swiping the app away from Recents still stops it as before.
