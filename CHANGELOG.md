@@ -1,5 +1,9 @@
 # Changelog
 
+### Banner shows bin count alongside minutes-to-process (0.14.16)
+
+- The "Audio to process" banner now reads **"~X minutes to process · Y bins"**, so you can see both the estimated decode time and how many raw `.bin` files are waiting. The draft fallback is unchanged ("X min Y sec accumulated").
+
 ### Banner title follows its figure (0.14.15)
 
 - The pending-audio banner now titles itself **"Audio to process"** when it's showing the minutes-to-process figure, and keeps **"Conversation in progress"** only when it falls back to an open draft's accumulated duration — so a large backlog no longer reads as a single in-progress conversation.
