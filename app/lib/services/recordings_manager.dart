@@ -690,10 +690,32 @@ class RecordingsManager {
 
   static bool _cancelRequested = false;
   static SendPort? _activeIsolateControlPort;
+  static Isolate? _activeIsolate;
 
+  /// Cooperative cancel: ask the decode isolate to stop at the next checkpoint.
+  /// Relies on the isolate reading its control port, so it does nothing for an
+  /// isolate that is wedged (native deadlock / infinite loop) — use
+  /// [forceResetProcessing] for that.
   static void cancelProcessing() {
     _cancelRequested = true;
     _activeIsolateControlPort?.send('cancel');
+  }
+
+  /// Last-resort recovery for a wedged processing run. A hung isolate never
+  /// reads the cooperative 'cancel', so `processAll`'s `finally` never runs and
+  /// [_isProcessingAny] stays stuck true — stranding the UI in `processing`.
+  /// Killing the isolate fires its `onExit`, which closes the receive port,
+  /// ends `processAll`'s `await for`, and lets it unwind and clear the flag
+  /// naturally. No-op when no isolate is active.
+  static void forceResetProcessing() {
+    _cancelRequested = true;
+    _activeIsolateControlPort?.send('cancel'); // best-effort, in case it's only slow
+    final isolate = _activeIsolate;
+    if (isolate != null) {
+      Logger.warning('RecordingsManager: force-killing wedged processing isolate');
+      isolate.kill(priority: Isolate.immediate);
+      _activeIsolate = null;
+    }
   }
 
   /// Global notification system to alert UI pages when the recordings folder
@@ -1153,7 +1175,7 @@ class RecordingsManager {
           final startTime = DateTime.now();
           int processedBytes = 0;
 
-          await Isolate.spawn(
+          _activeIsolate = await Isolate.spawn(
             _processingIsolateEntry,
             _IsolateParams(
               sendPort: receivePort.sendPort,
@@ -1299,6 +1321,8 @@ class RecordingsManager {
       onProgress(1.0, Duration.zero);
     } finally {
       _isProcessingAny = false;
+      _activeIsolate = null;
+      _activeIsolateControlPort = null;
       processingProgress.value = 0.0;
       isTranscoding.value = false;
       SharedPreferencesUtil().extractionInProgress = false;
