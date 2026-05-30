@@ -86,6 +86,15 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // Lets the root Flutter page minimize the app on Back instead of finishing
+        // MainActivity — finishing tears down the BLE foreground service (see onDestroy).
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.omi.offline/system").setMethodCallHandler { call, result ->
+            when (call.method) {
+                "moveTaskToBack" -> result.success(moveTaskToBack(true))
+                else -> result.notImplemented()
+            }
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
