@@ -1,5 +1,10 @@
 # Changelog
 
+### Ghost recordings: fixed overlapping timestamps & grouped consecutive discards (0.14.17)
+
+- **Discarded "ghost" recordings no longer stack on top of each other with identical timestamps.** After an in-stream silence split, the next conversation was re-anchored to the *start of the bin file* (or the last VAD-resume point) instead of the current frame's wall clock — so every chunk in a long ambient-noise stream got the same start time and the discard records piled onto each other in the recordings list. Each new conversation is now anchored to its first frame's actual time, so timestamps advance monotonically and never overlap.
+- **Consecutive discards now group into a single entry.** A continuous noise/silence period — which the processor internally splits into many ~2-minute chunks — used to surface as dozens of back-to-back ghost rows. The recordings list now coalesces discards whose gaps are within 30s (RTC-drift tolerance) into one entry spanning the whole period, with the union of their bins. A real recording or a device-idle gap still separates genuinely distinct periods. Note: recovering or deleting a grouped entry now acts on the whole span (the merged block recovers as one recording).
+
 ### Banner shows bin count alongside minutes-to-process (0.14.16)
 
 - The "Audio to process" banner now reads **"~X minutes to process · Y bins"**, so you can see both the estimated decode time and how many raw `.bin` files are waiting. The draft fallback is unchanged ("X min Y sec accumulated").
