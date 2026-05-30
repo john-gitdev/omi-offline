@@ -55,14 +55,17 @@ class AccumulatingBanner extends StatelessWidget {
 
     // Show raw audio still waiting to be decoded; only when there's none left
     // do we fall back to the open draft's accumulated duration.
+    final String title;
     final String label;
     if (hasToProcess) {
       final mins = toProcessMinutes.ceil();
+      title = 'Audio to process';
       label = '~$mins ${mins == 1 ? 'minute' : 'minutes'} to process';
     } else {
       final totalSeconds = (draftMinutes * 60).round();
       final mins = totalSeconds ~/ 60;
       final secs = totalSeconds % 60;
+      title = 'Conversation in progress';
       label = mins > 0
           ? (secs > 0 ? '${mins}m ${secs}s accumulated' : '$mins ${mins == 1 ? 'minute' : 'minutes'} accumulated')
           : '$secs ${secs == 1 ? 'second' : 'seconds'} accumulated';
@@ -82,7 +85,7 @@ class AccumulatingBanner extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Conversation in progress',
+                  title,
                   style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500),
                 ),
                 const SizedBox(height: 2),
