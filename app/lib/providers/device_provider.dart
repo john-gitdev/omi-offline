@@ -537,25 +537,32 @@ class DeviceProvider extends ChangeNotifier
       ServiceManager.instance().wal.getSyncs().isSyncing || RecordingsManager.isProcessingAny || _backgroundSyncActive;
 
   /// The single source of truth for the persistent background notification when
-  /// no sync/process is running. It is deliberately **connection-state
+  /// no sync/process is running.
+  ///
+  /// When auto-sync is **on** the notification is deliberately **connection-state
   /// independent**: the device stays disconnected in the background and only
   /// connects briefly at scheduled-sync time, so reflecting connection state
   /// here (or writing transient "Scanning…"/"Connected" text) would make the
   /// connection-status and sync-timer writers fight and flicker. Showing only
-  /// the next-sync countdown keeps the notification stable.
+  /// the next-sync countdown keeps the notification stable. The title doubles as
+  /// the feature name and the subtext counts down to [nextSyncTime] (refreshed
+  /// each ~1-min heartbeat).
   ///
-  /// The title doubles as the feature name and the subtext counts down to
-  /// [nextSyncTime] (refreshed each ~5-min heartbeat). When auto-sync is off
-  /// (interval = Manual Only) there is no countdown. Safe to call from the
-  /// foreground — [ForegroundUtil.updateNotification] no-ops when the service
-  /// isn't running.
+  /// When auto-sync is **off** (interval = Manual Only) there is no scheduled
+  /// connect/disconnect cycle, so the connection state is stable enough to
+  /// surface — the notification reflects Connected/Connecting/Disconnected
+  /// instead of a countdown. It self-corrects to the current state on the next
+  /// heartbeat (see [_onForegroundTaskData]).
+  ///
+  /// Safe to call from the foreground — [ForegroundUtil.updateNotification]
+  /// no-ops when the service isn't running.
   Future<void> _showIdleNotification({bool start = false}) async {
     final next = nextSyncTime;
     final String title;
     final String text;
     if (next == null) {
       title = ForegroundUtil.defaultTitle;
-      text = 'Running in the background';
+      text = isConnected ? 'Omi is Connected' : (isConnecting ? 'Connecting...' : 'Omi is Disconnected');
     } else {
       final mins = next.difference(DateTime.now()).inMinutes;
       title = 'Omi Offline Sync Timer';
