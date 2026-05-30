@@ -86,7 +86,7 @@ class ForegroundUtil {
           playSound: false,
         ),
         foregroundTaskOptions: ForegroundTaskOptions(
-          eventAction: ForegroundTaskEventAction.repeat(60 * 1000 * 5),
+          eventAction: ForegroundTaskEventAction.repeat(60 * 1000),
           autoRunOnBoot: true,
           allowWakeLock: true,
           allowWifiLock: false,
@@ -106,7 +106,7 @@ class ForegroundUtil {
 
   static Future<ServiceRequestResult> startForegroundTask({
     String title = defaultTitle,
-    String text = 'Running in the background',
+    String text = 'Connecting...',
   }) async {
     if (_isStarting) {
       return const ServiceRequestSuccess();
