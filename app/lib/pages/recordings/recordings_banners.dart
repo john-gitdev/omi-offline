@@ -33,12 +33,14 @@ class AccumulatingBanner extends StatelessWidget {
   final SyncProcessState spState;
   final double toProcessMinutes;
   final double draftMinutes;
+  final int unprocessedBinCount;
   final VoidCallback? onTap;
   const AccumulatingBanner({
     super.key,
     required this.spState,
     required this.toProcessMinutes,
     this.draftMinutes = 0.0,
+    this.unprocessedBinCount = 0,
     this.onTap,
   });
 
@@ -60,7 +62,9 @@ class AccumulatingBanner extends StatelessWidget {
     if (hasToProcess) {
       final mins = toProcessMinutes.ceil();
       title = 'Audio to process';
-      label = '~$mins ${mins == 1 ? 'minute' : 'minutes'} to process';
+      final binsLabel =
+          unprocessedBinCount > 0 ? ' · $unprocessedBinCount ${unprocessedBinCount == 1 ? 'bin' : 'bins'}' : '';
+      label = '~$mins ${mins == 1 ? 'minute' : 'minutes'} to process$binsLabel';
     } else {
       final totalSeconds = (draftMinutes * 60).round();
       final mins = totalSeconds ~/ 60;
