@@ -1,5 +1,11 @@
 # Changelog
 
+### Back button keeps the app running; clearer Manual-Only notification (0.15.0)
+
+- **Pressing Back on the recordings screen now minimizes the app instead of closing it.** Previously Back finished the activity, which tore down the BLE foreground service and made its persistent notification vanish — so background sync silently stopped. Back now pushes the app to the background (like Home) and the service keeps running. Swiping the app away from Recents still stops it as before.
+- **With auto-sync off (Manual Only), the notification now shows the connection state** — "Omi is Connected", "Connecting...", or "Omi is Disconnected" — instead of the generic "Running in the background". When auto-sync is on, the notification still shows only the next-sync countdown (reflecting the transient connect/disconnect cycle there would just make it flicker).
+- **The background heartbeat now ticks every minute instead of every five.** A due background sync is picked up sooner and the notification's countdown / connection-state text stays fresher.
+
 ### Interrupted sync no longer strands the segments it already downloaded (0.14.19)
 
 - **If the Omi disconnects mid-sync, the app now automatically decodes the raw segments that already reached the phone** instead of erroring out and leaving them on disk until the next sync. This applies to both manual syncs and the background scheduled sync. (A disconnect *during* a transfer already did this; this also covers a disconnect before/between transfers, which previously just surfaced an error and skipped processing.)
