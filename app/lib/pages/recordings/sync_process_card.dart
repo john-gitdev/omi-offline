@@ -63,9 +63,7 @@ class SyncProcessCard extends StatelessWidget {
 
       case SyncProcessState.syncing:
         mainText = data.isForcePipeline ? 'Force Sync...' : 'Syncing segments';
-        final speedStr = data.syncSpeed > 0
-            ? '  ·  ${data.syncSpeed.toStringAsFixed(1)} KB/s'
-            : '';
+        final speedStr = data.syncSpeed > 0 ? '  ·  ${data.syncSpeed.toStringAsFixed(1)} KB/s' : '';
         subText = data.totalCount > 0
             ? '${data.syncedCount} of ${data.totalCount} segments synced$speedStr'
             : (data.isForcePipeline ? 'Rotating segment…' : 'Scanning device…');
@@ -78,19 +76,15 @@ class SyncProcessCard extends StatelessWidget {
         onIconTap = onCancelTap;
         tooltipText = 'Cancel sync';
         showProgress = true;
-        progressValue = data.totalCount > 0
-            ? (data.syncedCount / data.totalCount).clamp(0.0, 1.0)
-            : null;
+        progressValue = data.totalCount > 0 ? (data.syncedCount / data.totalCount).clamp(0.0, 1.0) : null;
 
       case SyncProcessState.processing:
         mainText = 'Preparing conversations';
         subText = data.isTranscoding
-            ? 'Converting to m4a'
+            ? 'Converting to ${data.audioSaveFormat}'
             : (data.minutesRemaining >= 1
                 ? '~${data.minutesRemaining.ceil()} min of audio to process'
-                : (data.minutesRemaining >= 0
-                    ? '< 1 min of audio to process'
-                    : 'Calculating…'));
+                : (data.minutesRemaining >= 0 ? '< 1 min of audio to process' : 'Calculating…'));
         iconBg = Colors.deepPurpleAccent;
         iconChild = const SizedBox(
           width: 16,
@@ -130,9 +124,7 @@ class SyncProcessCard extends StatelessWidget {
         tooltipText = 'Resume';
 
       case SyncProcessState.error:
-        mainText = data.lastActiveStage == 'processing'
-            ? 'Processing failed'
-            : 'Sync failed';
+        mainText = data.lastActiveStage == 'processing' ? 'Processing failed' : 'Sync failed';
         subText = 'Tap to retry';
         iconBg = Colors.redAccent;
         iconChild = const FaIcon(
