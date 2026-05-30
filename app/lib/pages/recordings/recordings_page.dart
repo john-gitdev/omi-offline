@@ -689,6 +689,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     minutesRemaining: controller.minutesRemaining,
                     processingProgress: controller.processingProgress,
                     isTranscoding: controller.isTranscoding,
+                    audioSaveFormat: _prefs.audioSaveFormat,
                     lastActiveStage: controller.lastActiveStage,
                   ),
                   onCancelTap: () => unawaited(_showCancelModal()),
