@@ -14,6 +14,16 @@ class NativeBleTransport extends DeviceTransport {
   final String _peripheralUuid;
   final bool requiresBond;
   final BleHostApi _hostApi = BleHostApi();
+
+  // Bounds a single native GATT read/write. A with-response write on a half-dead
+  // link (firmware app wedged, but the BLE link is still up so Android never
+  // fires a disconnect) never gets its onCharacteristicWrite/Read callback, so
+  // the Pigeon future would otherwise park forever — wedging the WAL sync's read
+  // `finally` (stopStorageSync), which strands the whole sync and freezes the
+  // "Syncing recordings…" foreground notification. Healthy ops finish sub-second;
+  // this only trips on a dead peer, surfacing it as a thrown error so the sync
+  // unwinds into processing instead of hanging.
+  static const Duration _gattOpTimeout = Duration(seconds: 10);
   final StreamController<DeviceTransportState> _connectionStateController =
       StreamController<DeviceTransportState>.broadcast();
 
@@ -140,11 +150,12 @@ class NativeBleTransport extends DeviceTransport {
   Future<bool> isConnected() async {
     try {
       final nativeConnected = await _hostApi.isPeripheralConnected(_peripheralUuid);
-      final bool isStablyConnected = _lastConnectedAt != null &&
-          DateTime.now().difference(_lastConnectedAt!).inSeconds > 5;
+      final bool isStablyConnected =
+          _lastConnectedAt != null && DateTime.now().difference(_lastConnectedAt!).inSeconds > 5;
 
       if (!nativeConnected && _state == DeviceTransportState.connected && isStablyConnected) {
-        Logger.warning('[NativeBleTransport] State mismatch detected! Native OS is disconnected but Dart is connected. Forcing cleanup.');
+        Logger.warning(
+            '[NativeBleTransport] State mismatch detected! Native OS is disconnected but Dart is connected. Forcing cleanup.');
         // Don't call disconnect() directly as it might interfere with callers waiting on states.
         // Just trigger the same cleanup path a native disconnection would.
         _handleConnectionState(false, 'native_state_mismatch');
@@ -213,7 +224,8 @@ class NativeBleTransport extends DeviceTransport {
   Future<List<int>> readCharacteristic(String serviceUuid, String characteristicUuid) async {
     if (!_hasCharacteristic(serviceUuid, characteristicUuid)) return [];
     try {
-      final data = await _hostApi.readCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid);
+      final data =
+          await _hostApi.readCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid).timeout(_gattOpTimeout);
       return data.toList();
     } catch (e) {
       Logger.debug('[NativeBleTransport] Failed to read $serviceUuid:$characteristicUuid: $e');
@@ -227,7 +239,9 @@ class NativeBleTransport extends DeviceTransport {
       throw Exception('Characteristic not available: $characteristicUuid');
     }
     try {
-      await _hostApi.writeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid, Uint8List.fromList(data));
+      await _hostApi
+          .writeCharacteristic(_peripheralUuid, serviceUuid, characteristicUuid, Uint8List.fromList(data))
+          .timeout(_gattOpTimeout);
     } catch (e) {
       Logger.debug('[NativeBleTransport] Failed to write characteristic: $e');
       rethrow;
