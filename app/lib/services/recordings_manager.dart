@@ -2589,6 +2589,16 @@ class RecordingsManager {
   /// sweep reclaims them. Adjustment Mode pauses the sweep entirely.
   static const Duration discardRetentionWindow = Duration(hours: 48);
 
+  /// Consecutive discard records whose inter-record gap is within this tolerance
+  /// are coalesced into a single entry by [getDiscardsForDate], so a long
+  /// ambient-noise period surfaces as one row instead of dozens of back-to-back
+  /// ~2-minute ghosts. Back-to-back chunks abut at ~0 gap (the next conversation
+  /// is re-anchored to the frame right after a silence split); this window only
+  /// needs to absorb RTC drift / inter-file rounding. It is far below the
+  /// multi-minute gap a real saved recording or a device-idle (AAD-sleep) period
+  /// introduces, so genuinely separate noise periods stay separate.
+  static const Duration discardMergeGap = Duration(seconds: 30);
+
   /// Appends one JSONL record to `recordings/<date>/discards.jsonl`. The date
   /// folder is derived from the record's startMs in local time.
   static Future<void> _persistDiscardRecord(String docsPath, Map<String, dynamic> rec) async {
@@ -2651,7 +2661,62 @@ class RecordingsManager {
       }
     }
     out.sort((a, b) => a.startTime.compareTo(b.startTime));
-    return out;
+    return _coalesceDiscards(out);
+  }
+
+  /// Merges time-adjacent [DiscardRecord]s (input MUST be sorted by startTime)
+  /// so a continuous noise/silence period reads as one entry. The merged record
+  /// spans `[first.start, max(end)]`, unions the referenced bins, keeps the
+  /// highest `maxVoiceProb`, and reports a noise reason if any constituent was
+  /// noise (so the UI's noise-vs-too-short label stays accurate for the common
+  /// ambient-noise case). Two records merge when the later one starts within
+  /// [discardMergeGap] of the running end — overlaps included.
+  static List<DiscardRecord> _coalesceDiscards(List<DiscardRecord> sorted) {
+    if (sorted.length < 2) return sorted;
+    final merged = <DiscardRecord>[];
+
+    DateTime start = sorted.first.startTime;
+    DateTime end = sorted.first.endTime;
+    double maxProb = sorted.first.maxVoiceProb;
+    final bins = <String>{...sorted.first.relativeBins};
+    String reason = sorted.first.reason;
+    bool noise = sorted.first.isNoise;
+    File src = sorted.first.sourceJsonl;
+
+    DiscardRecord build() => DiscardRecord(
+          startTime: start,
+          endTime: end,
+          reason: reason,
+          maxVoiceProb: maxProb,
+          relativeBins: bins.toList()..sort(),
+          sourceJsonl: src,
+        );
+
+    for (var i = 1; i < sorted.length; i++) {
+      final r = sorted[i];
+      if (r.startTime.difference(end) <= discardMergeGap) {
+        if (r.endTime.isAfter(end)) end = r.endTime;
+        if (r.maxVoiceProb > maxProb) maxProb = r.maxVoiceProb;
+        bins.addAll(r.relativeBins);
+        if (!noise && r.isNoise) {
+          noise = true;
+          reason = r.reason;
+        }
+      } else {
+        merged.add(build());
+        start = r.startTime;
+        end = r.endTime;
+        maxProb = r.maxVoiceProb;
+        bins
+          ..clear()
+          ..addAll(r.relativeBins);
+        reason = r.reason;
+        noise = r.isNoise;
+        src = r.sourceJsonl;
+      }
+    }
+    merged.add(build());
+    return merged;
   }
 
   /// Deletes a discard record (and optionally its referenced bins) atomically.
@@ -2685,7 +2750,14 @@ class RecordingsManager {
       if (line.isEmpty) continue;
       try {
         final m = jsonDecode(line) as Map<String, dynamic>;
-        if (m['startMs'] == targetMs && m['endMs'] == targetEndMs) continue;
+        // Range match (not exact equality): a record surfaced by
+        // getDiscardsForDate may be a coalesced span covering several jsonl
+        // lines. Drop every constituent line whose [startMs,endMs] falls within
+        // the (possibly merged) target span. A non-merged record matches exactly,
+        // so this stays correct for single records too.
+        final s = m['startMs'] as int;
+        final e = m['endMs'] as int;
+        if (s >= targetMs && e <= targetEndMs) continue;
       } catch (_) {
         // Keep malformed lines so we don't quietly destroy data we couldn't parse.
         keep.add(line);
