@@ -414,3 +414,53 @@ Foreground processing progress: `_doBackgroundSync`'s `onProcessingProgress` is 
 - `app/lib/providers/device_provider.dart` — `_backgroundDisconnectGrace` + `_pauseDisconnectTimer` (field decl ~line 67), `onAppPaused` / `_armPauseDisconnect` / `_onPauseDisconnectTick`, `onAppResumed` (cancel), `_doBackgroundSync` finally (post-sync disconnect), `_handleDeviceConnected` background drop-guard, `onDeviceDisconnected` background guards, `_showIdleNotification` + `_syncOwnsNotification`.
 - Removed: `maximizeBattery` getter/setter in `app/lib/backend/preferences.dart`; the `SwitchListTile` + `_maximizeBattery` state in `app/lib/pages/settings/app_settings_page.dart`.
 - Keep-alive: `_startForegroundKeepAlive` / `_stopForegroundKeepAlive` (same file) — see the field-comment invariant above.
+
+---
+
+## App: BLE Connection Latency Levers
+
+Where reconnect time goes, and the knobs that control each stage. Motivated by the "why is reconnect so slow after an app update" investigation: an app update kills the process **and** the native foreground service, so all warm native BLE state is gone (the `autoConnect=true` passive-scan reconnect and the `OmiCompanionManager` OS-level presence observation are only re-registered when `manageDevice` runs again in the new process). The first reconnect after an update therefore pays the full cold sequence below, instead of the near-instant warm reattach a normal background sync gets. It's compounded when the firmware is in low-power sleep (idle-dropped to save battery, so not advertising continuously) — the phone literally cannot connect until the device wakes and advertises, and several of these timeouts are spent *waiting* on exactly that.
+
+### Observed cold-reconnect timeline (~44 s, from a real post-update log)
+
+| Stage | Duration | What's happening |
+|---|---|---|
+| App + FGS boot | ~5 s | Flutter engine + plugins start, then `initializeForegroundService` fires `ensureConnection(force: true)`. |
+| Fast-path direct-connect timeout | **10 s → now 5 s** | `_scanConnectDevice` direct connect-by-MAC, wrapped in `.timeout(...)`. When the device is asleep this *cannot* succeed, so it just burns the whole timeout, swallows the error (`catch (_) {}`), and falls through to the scan. **This is the lever that was reduced.** |
+| Full BLE scan window | 10 s | `discover(timeout: 10)` does `startScan` then `await Future.delayed(10s)` — a *fixed* wait regardless of when the device is actually found. |
+| Native connect retries | ~19 s | Native fires its own 15 s connect timeout (`gatt_status_-1`, ignored by Dart as "transient" so native can retry), then retries on a flat 1.5 s backoff until the sleeping device finally wakes, advertises, and answers. |
+
+### Lever 1 — fast-path direct-connect timeout (DONE)
+
+**File:** `app/lib/providers/device_provider.dart` — `_scanConnectDevice()`, the `.timeout(...)` on the `ensureConnection(pairedDeviceId, force: true)` call.
+
+**Change:** `10 s` → `5 s`. A cached fast reattach finishes in <1 s, so 5 s keeps full margin for the case the fast path can actually help; when the device is asleep the extra 5 s was pure dead time before the fallback scan started. Net: shaves up to 5 s off every cold reconnect (post-update, or any time the device is asleep / out of system cache).
+
+**Why this is the safe one:** it only shortens a wait that, in the slow case, was *always* going to fail anyway. It cannot make a successful warm reattach slower (those complete well under 5 s).
+
+### Lever 2 — run fast-path direct-connect and scan concurrently (NOT done)
+
+**File:** same `_scanConnectDevice()`. Currently the fast path and the fallback `discover(timeout: 10)` are **sequential** — the scan only starts after the direct-connect attempt gives up. Racing them (or kicking off the scan and letting native's retry loop carry the direct connect) would overlap the two biggest stages instead of summing them.
+
+**Why deferred:** more invasive — has to reconcile two connection attempts to the same MAC without tripping `ensureConnection`'s `_mutex` / the "don't dispose-and-recreate the transport" invariant (CLAUDE.md), and without two in-flight `connectGatt`s racing in native. Needs care and on-device testing across OEMs. Bigger potential win than Lever 1 (could overlap ~10 s) but higher risk.
+
+### Lever 3 — shorten the fixed scan window (NOT done)
+
+**File:** `app/lib/services/devices/discovery/native_bluetooth_discoverer.dart` — `discover()` does `_hostApi.startScan(timeout, [])` then `await Future.delayed(Duration(seconds: timeout))`. The wait is the **full** `timeout` every time; it does not early-exit when the desired device appears in the `peripheralDiscoveredCallback`.
+
+**Two sub-levers:**
+1. Drop the `timeout: 10` passed at the call site in `_scanConnectDevice` (and `periodicConnect`'s path) to something shorter, letting native's 1.5 s-backoff retry loop carry the rest.
+2. Make `discover()` **early-exit**: complete as soon as `desirableDeviceId` shows up in `results` instead of always waiting the full window. This is the cleaner fix — turns a fixed 10 s into "as fast as the device advertises," with the timeout only as an upper bound.
+
+**Why deferred:** sub-lever 2 changes discovery completion semantics (callers that expect the full device list after a scan would now sometimes get an early single-device result); needs an audit of `discover` callers. Sub-lever 1 is low-risk but only helps when the device is already advertising.
+
+### Lever 4 — tighten native's first-attempt connect timeout (NOT done)
+
+**File:** `app/android/app/src/main/kotlin/com/omi/offline/OmiBleForegroundService.kt` — `connectToDevice()`. For `source == "manageDevice"` (the very first attempt) `autoConnect=false` and the timeout is `CONNECTION_TIMEOUT_MS = 30_000L`… wait, it's actually `15_000L` for the direct path (`timeoutMs = if (autoConnect) CONNECTION_TIMEOUT_MS else 15_000L`). That 15 s is what produces the `gatt_status_-1` "transient" line ~15 s after `manageDevice`. Lowering it (e.g. 15 s → 8–10 s) makes the **first** retry kick in sooner when the initial direct connect is doomed (device not yet advertising).
+
+**Constants involved:** `CONNECTION_TIMEOUT_MS = 30_000L`, the inline `15_000L` direct-path timeout, `RECONNECT_DELAY_MS = 1_500L` (flat backoff between retries), `STABILITY_TIMER_MS = 60_000L` (resets `retryCount` after a connection holds 60 s), and the `retryCount <= 3` threshold that flips `autoConnect` false→true (direct → passive scan).
+
+**Why deferred:** native timeout tuning is the riskiest — too short and you abort a connect that was about to succeed on a slow OEM stack, causing *more* churn (close → 1.5 s wait → fresh `connectGatt`), which can be net slower and burns radio. Wants real cross-device measurement before touching.
+
+### Rule of thumb
+Levers 1+3 attack *fixed dead-time waits* (safe, bounded downside). Levers 2+4 attack *sequential/serial structure and native timing* (bigger wins, real regression risk on slow OEM BLE stacks — measure on-device before shipping).
