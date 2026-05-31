@@ -1,5 +1,13 @@
 # Changelog
 
+### Cross-midnight marker cleanup (0.15.4)
+
+- **A button-tap marker made just before midnight no longer leaves a stale orphan file on disk.** If the user tapped near midnight and there was silence at that moment, the app wrote a temporary "orphan" marker entry in that day's folder. When audio from the next day later arrived and paired with the tap, a second marker entry was correctly written into the new day's folder, but the original orphan was never removed. The stale orphan was harmless to display (a dedup pass already suppressed it), but it emitted an error-level log on every load and left a dead file accumulating on disk. The orphan is now deleted as soon as the paired entry is written.
+
+### Cancelling processing no longer crashes the app (0.15.3)
+
+- **Pressing Cancel during the processing phase used to occasionally take the whole app down with it.** The decode isolate only checked for a cancel between segments, and a single segment can take more than 12 s of VAD/ONNX work — so a cancel mid-segment never landed in time and the stall watchdog had to fall back to force-killing the isolate. That kill, while the isolate was parked in a native ONNX or Opus call, corrupted process-level native state and crashed the app outright. Cancel is now polled from inside the per-frame decode loop, so it takes effect within milliseconds even mid-segment; the watchdog's force-kill path is no longer reached on a normal cancel, and the rare last-resort kill now waits for in-flight native calls to finish first instead of yanking them mid-flight.
+
 ### Background processing and notification reliability (0.15.2)
 
 - **A large recording backlog now drains in one pass instead of re-processing the same segments over and over.** Processing a big backlog could leave the notification stuck (e.g. "Processing 63% complete" for many minutes) while the app appeared to connect, sync, and disconnect repeatedly. Root cause: the foreground service was being torn down while a background decode was still running, which let Android suspend the process mid-decode; on wake, the processing-stall watchdog misread the elapsed time as a wedge and force-killed a perfectly healthy run, restarting the whole backlog. The foreground service is now held for the full duration of a processing run, the watchdog re-anchors across a suspension/wake gap instead of killing, and the decode/save loops now emit a liveness signal so a slow-but-progressing run (decoding a large segment or saving a multi-hour stitched recording) is no longer mistaken for a hang. A genuinely wedged decode is still caught and recovered as before.
