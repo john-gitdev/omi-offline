@@ -11,6 +11,17 @@ import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/services/frame_ref.dart';
 import 'package:omi/utils/logger.dart';
 
+/// Thrown from inside [VadAudioProcessor]'s decode loop when the caller-supplied
+/// `isCancelled` callback flips to true. The isolate entry catches this as a
+/// clean abort (no error message, no draft flush) so the watchdog never has to
+/// force-kill the isolate — an `Isolate.kill(immediate)` while parked in an
+/// ONNX/Opus FFI call corrupts native state and takes the whole app down.
+class VadProcessingCancelled implements Exception {
+  const VadProcessingCancelled();
+  @override
+  String toString() => 'VadProcessingCancelled';
+}
+
 /// All VAD/processing settings captured from SharedPreferences in the main isolate
 /// before spawning the processing isolate. All fields are primitives — safe to send
 /// across isolate boundaries.
@@ -74,6 +85,12 @@ class VadAudioProcessor {
   // external stall watchdog can distinguish a slow-but-progressing run (long
   // segment / large stitched save) from a genuine wedge. No-op when null.
   final void Function()? _onLiveness;
+
+  // Optional cancel-check callback. Polled from inside the per-frame decode
+  // loop in [processSegmentFile]; when it returns true the loop throws
+  // [VadProcessingCancelled] so the caller can bail out within milliseconds
+  // instead of waiting for the (potentially >12 s) current segment to finish.
+  final bool Function()? _isCancelled;
 
   // Per-conversation accumulation — FrameRef disk-pointers only, no Opus in RAM.
   // Can also contain Duration objects representing silence gaps to be padded.
@@ -190,16 +207,25 @@ class VadAudioProcessor {
     OrtSession? session,
     SimpleOpusDecoder? decoder,
     void Function()? onLiveness,
-  }) : this._(outputDir: outputDir, decoder: decoder, session: session, settings: settings, onLiveness: onLiveness);
+    bool Function()? isCancelled,
+  }) : this._(
+            outputDir: outputDir,
+            decoder: decoder,
+            session: session,
+            settings: settings,
+            onLiveness: onLiveness,
+            isCancelled: isCancelled);
 
   VadAudioProcessor._(
       {String? outputDir,
       SimpleOpusDecoder? decoder,
       OrtSession? session,
       required ProcessingSettings settings,
-      void Function()? onLiveness})
+      void Function()? onLiveness,
+      bool Function()? isCancelled})
       : _session = session,
         _onLiveness = onLiveness,
+        _isCancelled = isCancelled,
         _decoder = decoder ??
             (Platform.isIOS || Platform.isAndroid
                 ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
@@ -403,6 +429,9 @@ class VadAudioProcessor {
 
       while (offset < fileLength) {
         _onLiveness?.call();
+        if (_isCancelled?.call() == true) {
+          throw const VadProcessingCancelled();
+        }
         if (offset + 4 > fileLength) break;
 
         final frameLength = byteData.getUint32(offset, Endian.little);
@@ -764,6 +793,11 @@ class VadAudioProcessor {
       }
       Logger.debug('VadAudioProcessor: ${segmentFile.path.split('/').last} — '
           '$totalFrameCount frames, $segmentSpeechFrames speech frames, maxAmp=${segmentMaxAmp.toStringAsFixed(4)}');
+    } on VadProcessingCancelled {
+      // Cooperative cancel from the isolate — propagate so the caller can bail
+      // out cleanly without marking this segment as processed (we did not
+      // finish it, and a future run must redo it).
+      rethrow;
     } catch (e) {
       Logger.error('VadAudioProcessor: processSegmentFile error: $e');
     }
