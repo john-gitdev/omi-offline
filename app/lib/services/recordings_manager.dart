@@ -572,6 +572,12 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     session: session,
     decoder: decoder,
     onLiveness: () => livenessTick++,
+    // Threaded into the per-frame decode loop so cooperative cancel takes
+    // effect within milliseconds instead of waiting for the current (possibly
+    // >12 s) segment to finish — otherwise the controller's stoppingStallTimeout
+    // fires and force-kills the isolate, which crashes the app from inside an
+    // ONNX/Opus FFI call.
+    isCancelled: () => cancelled,
   );
 
   int lastSeenLivenessTick = -1;
@@ -601,13 +607,24 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       final sessionId = params.segmentSessionIds[i];
 
       final fileStopwatch = Stopwatch()..start();
-      await processor.processSegmentFile(
-        file,
-        startTime,
-        startUptimeMs: startUptimeMs,
-        isDerivedTimestamp: isDerived,
-        sessionId: sessionId,
-      );
+      try {
+        await processor.processSegmentFile(
+          file,
+          startTime,
+          startUptimeMs: startUptimeMs,
+          isDerivedTimestamp: isDerived,
+          sessionId: sessionId,
+        );
+      } on VadProcessingCancelled {
+        // Cooperative cancel landed inside the per-frame loop; bail out of the
+        // segment-iteration loop. Don't emit progress for the half-finished
+        // segment — the bin file is left on disk and reprocessed next run.
+        cancelled = true;
+        fileStopwatch.stop();
+        Logger.debug('RecordingsManager isolate: segment ${i + 1}/${params.segmentPaths.length} '
+            'cancelled mid-decode after ${fileStopwatch.elapsedMilliseconds}ms');
+        break;
+      }
       fileStopwatch.stop();
       Logger.debug('RecordingsManager isolate: segment ${i + 1}/${params.segmentPaths.length} '
           '(${params.segmentFileSizes[i]} B) processed in ${fileStopwatch.elapsedMilliseconds}ms');
@@ -648,34 +665,40 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       }
     }
 
-    // Always flush the remaining audio at the end of a run.
-    // In both background and foreground modes, we save it as a '_draft' file
-    // so it can be stitched with future syncs or finalized later.
-    await processor.flushRemaining(isDraft: true);
+    // Skip the draft flush on cancel — flushRemaining triggers another save
+    // pass (potentially several seconds), and we already broke out specifically
+    // to make the cancel responsive. Any unfinalised state stays in-memory only
+    // and is rebuilt from disk on the next run.
+    if (!cancelled) {
+      // Always flush the remaining audio at the end of a run.
+      // In both background and foreground modes, we save it as a '_draft' file
+      // so it can be stitched with future syncs or finalized later.
+      await processor.flushRemaining(isDraft: true);
 
-    final flushEdlData = processor.consumePendingEdlData();
-    if (flushEdlData.isNotEmpty) {
-      params.sendPort.send({'type': 'marker_edl', 'items': flushEdlData});
-    }
+      final flushEdlData = processor.consumePendingEdlData();
+      if (flushEdlData.isNotEmpty) {
+        params.sendPort.send({'type': 'marker_edl', 'items': flushEdlData});
+      }
 
-    final flushDiscards = processor.consumePendingDiscards();
-    if (flushDiscards.isNotEmpty) {
-      params.sendPort.send({'type': 'discard_records', 'items': flushDiscards});
-    }
+      final flushDiscards = processor.consumePendingDiscards();
+      if (flushDiscards.isNotEmpty) {
+        params.sendPort.send({'type': 'discard_records', 'items': flushDiscards});
+      }
 
-    params.sendPort.send({'type': 'move'});
+      params.sendPort.send({'type': 'move'});
 
-    final finalSafe = processor.consumeSafeToDeletePaths();
-    if (finalSafe.isNotEmpty) {
-      params.sendPort.send({
-        'type': 'delete_segments',
-        'paths': finalSafe.toList(),
-      });
+      final finalSafe = processor.consumeSafeToDeletePaths();
+      if (finalSafe.isNotEmpty) {
+        params.sendPort.send({
+          'type': 'delete_segments',
+          'paths': finalSafe.toList(),
+        });
+      }
     }
 
     runStopwatch.stop();
     final totalBytes = params.segmentFileSizes.fold<int>(0, (a, b) => a + b);
-    Logger.debug('RecordingsManager isolate: processing run finished — '
+    Logger.debug('RecordingsManager isolate: processing run ${cancelled ? 'cancelled' : 'finished'} — '
         '${params.segmentPaths.length} segment(s), $totalBytes B in ${runStopwatch.elapsedMilliseconds}ms');
 
     params.sendPort.send({'type': 'done'});
@@ -716,9 +739,11 @@ class RecordingsManager {
   static Isolate? _activeIsolate;
 
   /// Cooperative cancel: ask the decode isolate to stop at the next checkpoint.
-  /// Relies on the isolate reading its control port, so it does nothing for an
-  /// isolate that is wedged (native deadlock / infinite loop) — use
-  /// [forceResetProcessing] for that.
+  /// The isolate's control port listener flips its local `cancelled` flag,
+  /// which is polled from inside the per-frame decode loop in
+  /// [VadAudioProcessor] — so cancel takes effect within milliseconds even
+  /// mid-segment. Falls back to [forceResetProcessing] only for a genuine
+  /// wedge (native deadlock that ignores the flag check too).
   static void cancelProcessing() {
     _cancelRequested = true;
     _activeIsolateControlPort?.send('cancel');
@@ -730,13 +755,23 @@ class RecordingsManager {
   /// Killing the isolate fires its `onExit`, which closes the receive port,
   /// ends `processAll`'s `await for`, and lets it unwind and clear the flag
   /// naturally. No-op when no isolate is active.
+  ///
+  /// DANGER: `Isolate.kill(immediate)` while the isolate is parked in an
+  /// ONNX/Opus FFI call can corrupt process-level native state and crash the
+  /// whole app. The fine-grained cancel check inside [VadAudioProcessor]'s
+  /// per-frame loop is designed to make cooperative cancel land within
+  /// milliseconds, so this path should fire only for a genuine native deadlock.
+  /// `beforeNextEvent` is preferred — it lets any in-flight native call finish
+  /// before the kill, dodging the FFI-corruption crash; `immediate` only
+  /// matters if even cooperative-cancel + event delivery are wedged, in which
+  /// case the app crash is already imminent.
   static void forceResetProcessing() {
     _cancelRequested = true;
     _activeIsolateControlPort?.send('cancel'); // best-effort, in case it's only slow
     final isolate = _activeIsolate;
     if (isolate != null) {
       Logger.warning('RecordingsManager: force-killing wedged processing isolate');
-      isolate.kill(priority: Isolate.immediate);
+      isolate.kill(priority: Isolate.beforeNextEvent);
       _activeIsolate = null;
     }
   }
@@ -2052,6 +2087,27 @@ class RecordingsManager {
     await _writeJsonAtomic(edlFile, payload);
     Logger.debug(
         'RecordingsManager: Wrote EDL ${edlFile.path.split('/').last} → ${filename.isEmpty ? "(orphan)" : filename} at ${offsetMs}ms');
+
+    // If the audio file is from a different day than the tap, a previous run may
+    // have written an orphan EDL into the markerMs date folder. Delete it now
+    // that we have the real paired EDL in the correct folder.
+    if (filename.isNotEmpty) {
+      final orphanDateStr = _dateStringFromMillis(markerMs);
+      if (orphanDateStr != dateStr) {
+        final orphanFile = File('$docsPath/recordings/$orphanDateStr/marker_$markerMs.edl');
+        if (await orphanFile.exists()) {
+          try {
+            final orphan = jsonDecode(await orphanFile.readAsString()) as Map<String, dynamic>;
+            final orphanFilename = orphan['segmentFilename'] as String? ?? '';
+            final orphanUserSaved = orphan['userSaved'] as bool? ?? false;
+            if (orphanFilename.isEmpty && !orphanUserSaved) {
+              await orphanFile.delete();
+              Logger.debug('RecordingsManager: Deleted cross-midnight orphan marker_$markerMs.edl from $orphanDateStr');
+            }
+          } catch (_) {}
+        }
+      }
+    }
   }
 
   /// Scans all `recordings/<date>/` folders for `marker_*.edl` files and
