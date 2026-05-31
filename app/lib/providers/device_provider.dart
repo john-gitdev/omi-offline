@@ -826,7 +826,12 @@ class DeviceProvider extends ChangeNotifier
     if (isConnected) _startForegroundKeepAlive();
     // Release the overnight wake lock now that the user has the app open.
     final walSync = ServiceManager.instance().wal.getSyncs();
-    if (!walSync.isSyncing) {
+    // Don't tear down the foreground service while a sync OR a background
+    // processing run is still active. Without it the OS can suspend (Doze) the
+    // process mid-decode — which freezes the progress notification and later
+    // makes the stall watchdog misread the wake-up time-jump as a wedge and
+    // force-kill a healthy run, restarting the whole backlog.
+    if (!walSync.isSyncing && !RecordingsManager.isProcessingAny) {
       ForegroundUtil.stopForegroundTask();
     }
 
