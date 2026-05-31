@@ -4,6 +4,7 @@
 
 - **A stalled sync now recovers into processing instead of getting stuck.** If the Omi's firmware wedged mid-transfer while the BLE link stayed nominally "connected" (the phone never saw a disconnect), the app could hang forever on the in-flight BLE command — leaving the notification frozen at "Syncing recordings — N% complete" with no progress and no way out short of reopening the app. Every native BLE read/write is now time-bounded (10 s), so a dead peer surfaces as a normal error: the sync unwinds, the segments already downloaded are decoded, and the notification advances to the processing details (and then the idle/next-sync state) — the expected disconnect-then-process behavior.
 - **A wedged command no longer poisons the next connection (Android).** The native GATT command queue is now cleared on disconnect, so a command left stuck by a half-dead link can't block the first commands of the following connection.
+- **Faster reconnect when the device is asleep.** The fast-path direct connect-by-MAC attempt now times out after 5 s instead of 10 s. When the Omi isn't advertising (e.g. after an app update kills the warm native reconnect state) that attempt can't succeed anyway, so the old 10 s was pure dead time before the fallback scan even started; 5 s still covers a cached fast reattach with margin.
 
 ### Back button keeps the app running; clearer Manual-Only notification (0.15.0)
 
