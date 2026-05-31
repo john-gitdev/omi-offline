@@ -70,6 +70,11 @@ class VadAudioProcessor {
   final SimpleOpusDecoder? _decoder;
   final String? _outputDir;
 
+  // Optional liveness callback, invoked from the decode and save loops so an
+  // external stall watchdog can distinguish a slow-but-progressing run (long
+  // segment / large stitched save) from a genuine wedge. No-op when null.
+  final void Function()? _onLiveness;
+
   // Per-conversation accumulation — FrameRef disk-pointers only, no Opus in RAM.
   // Can also contain Duration objects representing silence gaps to be padded.
   List<Object> _currentRefs = [];
@@ -184,11 +189,17 @@ class VadAudioProcessor {
     String? outputDir,
     OrtSession? session,
     SimpleOpusDecoder? decoder,
-  }) : this._(outputDir: outputDir, decoder: decoder, session: session, settings: settings);
+    void Function()? onLiveness,
+  }) : this._(outputDir: outputDir, decoder: decoder, session: session, settings: settings, onLiveness: onLiveness);
 
   VadAudioProcessor._(
-      {String? outputDir, SimpleOpusDecoder? decoder, OrtSession? session, required ProcessingSettings settings})
+      {String? outputDir,
+      SimpleOpusDecoder? decoder,
+      OrtSession? session,
+      required ProcessingSettings settings,
+      void Function()? onLiveness})
       : _session = session,
+        _onLiveness = onLiveness,
         _decoder = decoder ??
             (Platform.isIOS || Platform.isAndroid
                 ? SimpleOpusDecoder(sampleRate: sampleRate, channels: channels)
@@ -391,6 +402,7 @@ class VadAudioProcessor {
       }
 
       while (offset < fileLength) {
+        _onLiveness?.call();
         if (offset + 4 > fileLength) break;
 
         final frameLength = byteData.getUint32(offset, Endian.little);
@@ -1025,6 +1037,7 @@ class VadAudioProcessor {
       String? currentFilePath;
       Uint8List? currentFileBytes;
       for (var i = 0; i < refs.length; i++) {
+        _onLiveness?.call();
         final item = refs[i];
         if (item is! FrameRef) continue;
 
@@ -1137,6 +1150,7 @@ class VadAudioProcessor {
       Uint8List? currentFileBytes;
 
       for (var i = 0; i < refs.length; i++) {
+        _onLiveness?.call();
         final item = refs[i];
 
         if (item is Duration) {
@@ -1344,6 +1358,7 @@ class VadAudioProcessor {
       sink.add(_createOggPage(0, 1, serial, [_createOggOpusCommentHeader()]));
 
       for (var i = 0; i < refs.length; i++) {
+        _onLiveness?.call();
         final item = refs[i];
 
         if (item is Duration) {
@@ -1568,6 +1583,7 @@ class VadAudioProcessor {
       String? currentFilePath;
       Uint8List? currentFileBytes;
       for (var i = 0; i < refs.length; i++) {
+        _onLiveness?.call();
         final item = refs[i];
 
         if (item is Duration) {
