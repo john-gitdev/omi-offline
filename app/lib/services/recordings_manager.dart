@@ -560,12 +560,27 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     }
   }
 
+  // Liveness: VadAudioProcessor bumps this counter from inside its decode/save
+  // loops, so it advances even within a single long segment or save. The timer
+  // below forwards a 'heartbeat' to the main isolate only when the count
+  // actually moved — a truly wedged loop sends nothing, so the stall watchdog
+  // still catches a genuine hang.
+  int livenessTick = 0;
   final processor = VadAudioProcessor.fromSettings(
     settings: params.settings,
     outputDir: params.tempProcessingPath,
     session: session,
     decoder: decoder,
+    onLiveness: () => livenessTick++,
   );
+
+  int lastSeenLivenessTick = -1;
+  final heartbeatTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+    if (livenessTick != lastSeenLivenessTick) {
+      lastSeenLivenessTick = livenessTick;
+      params.sendPort.send({'type': 'heartbeat'});
+    }
+  });
 
   final runStopwatch = Stopwatch()..start();
   Logger.debug(
@@ -667,6 +682,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
   } catch (e, st) {
     params.sendPort.send({'type': 'error', 'message': '$e\n$st'});
   } finally {
+    heartbeatTimer.cancel();
     processor.destroy();
     controlPort.close();
   }
@@ -684,6 +700,13 @@ class RecordingsManager {
 
   /// Global progress of the current processing task (0.0 to 1.0).
   static final ValueNotifier<double> processingProgress = ValueNotifier(0.0);
+
+  /// Bumped on each isolate liveness heartbeat — emitted while the decode/save
+  /// loops are actively advancing, so it ticks even within a single long
+  /// segment or a multi-hour stitched-recording save where the per-segment
+  /// [processingProgress] tick can't. The pipeline-stall watchdog anchors on
+  /// this so a healthy-but-slow run isn't force-killed as a wedge.
+  static final ValueNotifier<int> processingLiveness = ValueNotifier(0);
 
   /// True when a WAV file is being transcoded to M4A.
   static final ValueNotifier<bool> isTranscoding = ValueNotifier(false);
@@ -1215,6 +1238,10 @@ class RecordingsManager {
                 if (_cancelRequested) {
                   _activeIsolateControlPort?.send('cancel');
                 }
+              case 'heartbeat':
+                // Liveness from the decode/save loops — re-anchors the stall
+                // watchdog so a slow-but-progressing run isn't killed as a wedge.
+                processingLiveness.value++;
               case 'marker_edl':
                 // Persist EDLs eagerly so a mid-run isolate death does not
                 // strand markers in memory only (B3). A throw from any single
