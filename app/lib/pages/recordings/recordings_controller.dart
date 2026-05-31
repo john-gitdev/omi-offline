@@ -202,6 +202,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(this);
     RecordingsManager.recordingsChangeNotifier.addListener(_onRecordingsChanged);
     RecordingsManager.processingProgress.addListener(_onProgressChanged);
+    RecordingsManager.processingLiveness.addListener(_onLivenessChanged);
     RecordingsManager.isTranscoding.addListener(_onTranscodingChanged);
     _pollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _poll());
   }
@@ -214,6 +215,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(null);
     RecordingsManager.recordingsChangeNotifier.removeListener(_onRecordingsChanged);
     RecordingsManager.processingProgress.removeListener(_onProgressChanged);
+    RecordingsManager.processingLiveness.removeListener(_onLivenessChanged);
     RecordingsManager.isTranscoding.removeListener(_onTranscodingChanged);
     super.dispose();
   }
@@ -222,6 +224,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_isDisposed) return;
     _isTranscoding = RecordingsManager.isTranscoding.value;
     _throttledUpdate(force: true);
+  }
+
+  // Liveness ticks fire from inside the decode/save loops, so they advance even
+  // within one long segment or save where the per-segment progress tick can't.
+  // Anchoring the stall watchdog on them keeps a slow-but-alive run from being
+  // force-killed, without affecting the displayed progress/ETA.
+  void _onLivenessChanged() {
+    if (_isDisposed) return;
+    _lastProgressAt = DateTime.now();
   }
 
   void _onProgressChanged() {
@@ -329,10 +340,21 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       _lastLifecycleState = state;
     }
 
-    if (isBackground && now.difference(_lastPollTime).inSeconds < 2) {
+    final previousPollTime = _lastPollTime;
+    if (isBackground && now.difference(previousPollTime).inSeconds < 2) {
       return;
     }
     _lastPollTime = now;
+
+    // The poll timer fires every 0.5–2 s while the process runs; a gap much
+    // larger than that means the OS suspended us (Doze / background limits).
+    // On wake the elapsed wall-clock makes a healthy-but-frozen pipeline look
+    // stalled, so re-anchor the stall watchdog across the gap before the checks
+    // below — otherwise the first post-wake poll force-kills a run that was
+    // merely parked, discarding minutes of decode and restarting the backlog.
+    if (now.difference(previousPollTime) > const Duration(seconds: 10)) {
+      _lastProgressAt = now;
+    }
 
     final syncs = ServiceManager.instance().wal.getSyncs();
     final serviceIsSyncing = syncs.isSyncing;
