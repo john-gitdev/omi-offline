@@ -2,6 +2,70 @@
 
 ## ACTIVE
 
+### VAD state reset: centralize cleanup + flush partial window at conversation end
+
+**File:** `app/lib/services/vad_audio_processor.dart`
+
+Two separate bugs, both need fixing.
+
+---
+
+#### Bug 1: `_resetState()` doesn't clear Silero model state
+
+`_resetState()` (line 918) resets conversation-tracking variables but omits the three VAD buffers:
+- `_pcmWindow` — accumulated samples toward the next 512-sample VAD window
+- `_state` — Silero LSTM recurrent state (`Float32List(2 * 1 * 128)`)
+- `_vadContext` — trailing 64 samples used as context for the next window
+
+Result: a new conversation inherits the previous conversation's model state and partial audio context, causing stale bias in the first few VAD decisions.
+
+**Fix — add to `_resetState()`:**
+```dart
+_pcmWindow.clear();
+_state = Float32List(2 * 1 * 128);
+_vadContext = Float32List(_vadContextSamples);
+```
+
+This covers paths through `_splitOnSilence` (line 860) and `flushRemaining` (lines 883, 893).
+
+**Critical: two inline-reset paths bypass `_resetState()` entirely and also need the clears:**
+1. `0xFFFFFFFD` split path (lines ~629–636): when the VAD-resume gap exceeds the split threshold, inline reset without calling `_resetState()`. Add the three clears there too.
+2. Max-cap cut (lines ~774–781): same — inline reset, no `_resetState()` call.
+
+**Redundant clears to remove after fixing `_resetState()`:**
+- Inter-file gap split (lines 393–395): manual clears *before* `flushRemaining()`. Redundant — `_resetState()` inside `flushRemaining()` handles it.
+- `0xFFFFFFFC` session-end (lines 555–557): manual clears *after* `flushRemaining()`. Redundant for the same reason.
+
+**Stitching invariant to preserve:** when `0xFFFFFFFD` decides to *stitch* (gap below threshold), `_resetState()` must NOT be called — the model needs temporal continuity across the silence padding.
+
+---
+
+#### Bug 2: last partial window at conversation end is never VAD-scored
+
+Each Opus frame decodes to 320 samples. VAD fires only when `_pcmWindow` reaches 512. The accumulation cycle (320 → 640→fire+128 → 448 → 768→fire+256 → ...) means 0–511 samples are always left in `_pcmWindow` at any conversation boundary.
+
+Those frames were already added to `_currentRefs` and `_currentChunkDurationMs` unconditionally, but `isSpeech` defaulted to `false` — so `_lastSpeechRefCount` / `_lastSpeechChunkMs` can be off by 1–2 frames, causing `_splitOnSilence` to over-trim by up to ~32 ms.
+
+Bug 1's fix clears the partial window on reset (correct — prevents contamination of the next conversation's first VAD call), but doesn't retroactively classify those tail frames for the *current* conversation.
+
+**Fix — zero-pad the partial window and run one final VAD pass before `_resetState()`:**
+```dart
+if (_pcmWindow.isNotEmpty) {
+    final padded = List<double>.from(_pcmWindow)
+      ..addAll(List.filled(512 - _pcmWindow.length, 0.0));
+    if (await _runVad(padded)) {
+        _lastSpeechRefCount = _currentRefs.length;
+        _lastSpeechChunkMs = _currentChunkDurationMs;
+    }
+}
+```
+
+This needs to run at every site that calls `_resetState()` *and* at the two inline-reset paths in Bug 1. Extract into a `_flushPartialWindow()` helper (async, since `_runVad` is async) called immediately before each reset.
+
+**Where this actually matters:** `0xFFFFFFFC` manual stop mid-speech and draft flushes — the tail could be live speech that gets miscounted as silence and trimmed. For silence-triggered splits and `0xFFFFFFFD` gaps the tail is almost certainly silence, so the default `false` is usually fine.
+
+---
+
 ### Marker Pipeline: Test Coverage
 
 **File:** `app/test/unit/recordings_manager_test.dart` (exists; doesn't yet cover the marker pipeline)
