@@ -98,7 +98,9 @@ class SyncProcessCard extends StatelessWidget {
 
       case SyncProcessState.stopping:
         mainText = 'Stopping…';
-        subText = data.isSyncing ? 'Transferring current file…' : 'Finishing current step';
+        // lastActiveStage is controller-owned and drives notify, so this stays
+        // reactive — it reflects whichever stage was running when cancel landed.
+        subText = data.lastActiveStage == 'syncing' ? 'Transferring current file…' : 'Finishing current step';
         iconBg = Colors.grey.shade700;
         iconChild = const SizedBox(
           width: 16,
