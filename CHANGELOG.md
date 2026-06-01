@@ -1,5 +1,10 @@
 # Changelog
 
+### Sync reliability: Manual-Only respected on resume; interrupted syncs resume on reconnect (0.15.5)
+
+- **With auto-sync off (Manual Only), the app no longer triggers a sync when you resume to a still-live connection.** If the app came to the foreground while the Omi was still connected with pending segments — e.g. a quick screen-on-off bounce before the pause-disconnect timer fired — it would silently trigger a background sync regardless of the sync-interval setting. Every other auto-sync path already checked the setting; this "drain the pending connection" shortcut was the one gap.
+- **A sync interrupted by a mid-transfer BLE drop now resumes as soon as the device reconnects, instead of waiting for the next scheduled tick.** When BLE dropped during an active sync while the app was backgrounded, the Omi's firmware kept trying to reconnect (as expected). The app, however, was immediately dropping those reconnections because the "sanctioned background sync" flag is only set by the periodic timer path — not by user-initiated or app-open syncs that moved to the background. The remaining files are now fetched and processed as soon as the link comes back.
+
 ### Cross-midnight marker cleanup (0.15.4)
 
 - **A button-tap marker made just before midnight no longer leaves a stale orphan file on disk.** If the user tapped near midnight and there was silence at that moment, the app wrote a temporary "orphan" marker entry in that day's folder. When audio from the next day later arrived and paired with the tap, a second marker entry was correctly written into the new day's folder, but the original orphan was never removed. The stale orphan was harmless to display (a dedup pass already suppressed it), but it emitted an error-level log on every load and left a dead file accumulating on disk. The orphan is now deleted as soon as the paired entry is written.
