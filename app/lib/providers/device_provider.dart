@@ -51,6 +51,10 @@ class DeviceProvider extends ChangeNotifier
   DateTime? nextSyncTime;
   bool _pendingAppOpenSync = false;
   bool _pendingBackgroundSync = false;
+  // Set when a background disconnect interrupts an active sync. Allows the
+  // native BLE auto-reconnect to pass _handleDeviceConnected's drop-guard and
+  // fire _doBackgroundSync to finish what was left on the device.
+  bool _pendingSyncResume = false;
   // Guards against overlapping _doBackgroundSync runs. The wakelock is a global
   // boolean (not ref-counted), so two interleaved runs would let the first to
   // finish disable it while the second is still syncing in the background.
@@ -974,6 +978,12 @@ class DeviceProvider extends ChangeNotifier
     _stopForegroundKeepAlive();
 
     final walSync = ServiceManager.instance().wal.getSyncs();
+    // Mark for resume before cancelling so the flag is set even if cancelSync
+    // triggers a re-entrant callback. Only arm it in the background — foreground
+    // disconnects recover through the normal reconnect loop.
+    if (!_isAppInForeground && walSync.isSyncing) {
+      _pendingSyncResume = true;
+    }
     walSync.cancelSync();
     walSync.setDevice(null);
 
@@ -1112,9 +1122,12 @@ class DeviceProvider extends ChangeNotifier
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
 
     // Timer connected in background and deferred the sync until now so that
-    // walSync._device is set before syncAll is called.
-    if (_pendingBackgroundSync) {
+    // walSync._device is set before syncAll is called. _pendingSyncResume takes
+    // the same path: fire _doBackgroundSync to pick up what the interrupted sync
+    // left on the device.
+    if (_pendingBackgroundSync || _pendingSyncResume) {
       _pendingBackgroundSync = false;
+      _pendingSyncResume = false;
       unawaited(_doBackgroundSync());
     }
 
@@ -1170,7 +1183,7 @@ class DeviceProvider extends ChangeNotifier
       // stay disconnected in the background. Background syncs (timer /
       // heartbeat-sync-if-due) set _pendingBackgroundSync first, so they're
       // exempt.
-      if (!_isAppInForeground && !_pendingBackgroundSync && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage) {
+      if (!_isAppInForeground && !_pendingBackgroundSync && !_pendingSyncResume && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage) {
         Logger.debug('App backgrounded: dropping background-completed connection');
         unawaited(ServiceManager.instance().device.disconnectDevice(isManual: true));
         return;
