@@ -655,14 +655,13 @@ class DeviceProvider extends ChangeNotifier
       }
       if (RecordingsManager.isProcessingAny) return;
 
-      // Update progress in both foreground and background. App-open syncs run
-      // through this path too (onAppResumed → _doBackgroundSync), so gating on
-      // !_isAppInForeground would freeze the notification at "preparing..." while
-      // the user watches with the app open. The RecordingsController pipeline never
-      // runs concurrently (guarded above by isProcessingAny / isSyncing), so there
-      // is no competing foreground writer to clobber.
+      // Only update the notification from the background path when the app is not
+      // in the foreground. When the app is open, RecordingsController owns
+      // notification formatting (time-remaining format) and is already listening
+      // to the same processingProgress notifier — writing here too would cause
+      // both to fire on each tick, flickering between "47% complete" and "~686 min".
       void onProcessingProgress() {
-        if (RecordingsManager.isProcessingAny) {
+        if (!_isAppInForeground && RecordingsManager.isProcessingAny) {
           final progress = RecordingsManager.processingProgress.value;
           ForegroundUtil.updateNotification(
             text: progress < 1.0
