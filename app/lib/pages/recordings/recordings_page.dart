@@ -715,6 +715,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     totalCount: controller.totalCount,
                     syncSpeed: controller.syncSpeed,
                     minutesRemaining: controller.minutesRemaining,
+                    totalMinutes: controller.totalMinutes,
                     processingProgress: controller.processingProgress,
                     isTranscoding: controller.isTranscoding,
                     audioSaveFormat: _prefs.audioSaveFormat,
