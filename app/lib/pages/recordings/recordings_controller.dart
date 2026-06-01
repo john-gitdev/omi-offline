@@ -557,10 +557,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _syncSpeed = speedKBps ?? 0.0;
 
     final currentEstimated = ServiceManager.instance().wal.getSyncs().recordingsCount;
-    if (_totalCount <= 0 && currentEstimated > 0) {
+    if (currentEstimated > _totalCount) {
       _totalCount = currentEstimated;
       Logger.debug(
-        'RecordingsController: Backfilled totalCount from service: $_totalCount',
+        'RecordingsController: Updated totalCount from service: $_totalCount',
       );
     }
 
