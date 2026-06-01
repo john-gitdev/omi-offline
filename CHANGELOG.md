@@ -1,5 +1,11 @@
 # Changelog
 
+### VAD processing: faster inference and cleaner conversation boundaries (0.15.6)
+
+- **Processing a backlog is now significantly faster.** The Silero VAD model's 256-float LSTM state used to make a full round-trip through Dart memory on every inference cycle (~31 cycles per second of audio): native → Dart list → native again. The state is now kept as a live native tensor and swapped in-place between calls, removing that copy entirely. The per-call allocations dropped from ~6 objects to ~1 (only the transient input tensor), and the sample accumulation buffer was replaced with a fixed typed-data ring buffer so window management no longer triggers GC.
+- **The last 1–2 frames of each conversation are now correctly VAD-scored before the boundary is committed.** Each Opus frame decodes to 320 samples; the VAD window is 512. At any split or flush point, 0–511 samples were stranded in the accumulator, added to the recording's frame list as silence (the default), but never actually evaluated. Those tail frames are now zero-padded to 512 and passed through Silero before the boundary fires — so the speech high-water mark used to trim trailing silence lands at the right frame instead of potentially one or two frames early.
+- **A new conversation no longer inherits the previous conversation's Silero LSTM state.** The recurrent state and context buffer are now cleared at every conversation boundary — including the two inline-reset paths (`0xFFFFFFFD` gap-split and max-cap cut) that were previously skipping the reset entirely.
+
 ### Sync reliability: Manual-Only respected on resume; interrupted syncs resume on reconnect (0.15.5)
 
 - **With auto-sync off (Manual Only), the app no longer triggers a sync when you resume to a still-live connection.** If the app came to the foreground while the Omi was still connected with pending segments — e.g. a quick screen-on-off bounce before the pause-disconnect timer fired — it would silently trigger a background sync regardless of the sync-interval setting. Every other auto-sync path already checked the setting; this "drain the pending connection" shortcut was the one gap.
