@@ -539,6 +539,22 @@ class DeviceProvider extends ChangeNotifier
     _consecutiveKeepAliveFails = 0;
   }
 
+  /// Notification writer for background processing progress. Registered on
+  /// [RecordingsManager.processingProgress] whenever the app is backgrounded so
+  /// the notification stays live even if [RecordingsController] is disposed.
+  /// Gated on [_isAppInForeground] so it is silent when the app is open and
+  /// [RecordingsController] owns the notification in time-remaining format.
+  void _onProcessingProgress() {
+    if (!_isAppInForeground && RecordingsManager.isProcessingAny) {
+      final progress = RecordingsManager.processingProgress.value;
+      ForegroundUtil.updateNotification(
+        text: progress < 1.0
+            ? 'Processing recordings — ${(progress * 100).toInt()}% complete'
+            : 'Processing recordings — finishing...',
+      );
+    }
+  }
+
   /// True while a sync or processing run owns the foreground notification (it
   /// shows its own live progress). Idle-notification writers must check this
   /// before touching the notification so they don't clobber that progress.
@@ -655,22 +671,6 @@ class DeviceProvider extends ChangeNotifier
       }
       if (RecordingsManager.isProcessingAny) return;
 
-      // Only update the notification from the background path when the app is not
-      // in the foreground. When the app is open, RecordingsController owns
-      // notification formatting (time-remaining format) and is already listening
-      // to the same processingProgress notifier — writing here too would cause
-      // both to fire on each tick, flickering between "47% complete" and "~686 min".
-      void onProcessingProgress() {
-        if (!_isAppInForeground && RecordingsManager.isProcessingAny) {
-          final progress = RecordingsManager.processingProgress.value;
-          ForegroundUtil.updateNotification(
-            text: progress < 1.0
-                ? 'Processing recordings — ${(progress * 100).toInt()}% complete'
-                : 'Processing recordings — finishing...',
-          );
-        }
-      }
-
       try {
         WakelockPlus.enable();
         // Keep the firmware from idle-dropping the link mid-sync. Without this a
@@ -702,12 +702,12 @@ class DeviceProvider extends ChangeNotifier
         }
 
         await ForegroundUtil.updateNotification(text: 'Processing recordings — preparing...');
-        RecordingsManager.processingProgress.addListener(onProcessingProgress);
+        RecordingsManager.processingProgress.addListener(_onProcessingProgress);
         // processAllCompletedSessions decodes in draft mode (a partial trailing
         // bin stays a draft and its source bin is kept for resume) and swallows
         // its own errors, so it runs whether or not the sync above succeeded.
         await RecordingsManager.processAllCompletedSessions();
-        RecordingsManager.processingProgress.removeListener(onProcessingProgress);
+        RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
 
         // Finalizing re-sync (captures firmware files created during processing)
         // and the completion stamp only apply to a clean cycle. If the first
@@ -728,7 +728,7 @@ class DeviceProvider extends ChangeNotifier
         // The keep-alive only covers the sync itself in the background; in the
         // foreground the connect/resume keep-alive owns it, so leave it running.
         if (!_isAppInForeground) _stopForegroundKeepAlive();
-        RecordingsManager.processingProgress.removeListener(onProcessingProgress);
+        RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
         // Only release the foreground service (and wake lock) when the app is
         // visible. In background we keep it alive so the next timer tick fires.
         if (_isAppInForeground) {
@@ -757,6 +757,12 @@ class DeviceProvider extends ChangeNotifier
   void onAppPaused() async {
     if (!_isAppInForeground) return;
     _isAppInForeground = false;
+    // Take over processing-progress notification updates in case a foreground-
+    // triggered run is in flight. Remove before add to guarantee exactly one
+    // registration — _doBackgroundSync may have already registered it, and
+    // ChangeNotifier allows duplicates that each fire separately.
+    RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
+    RecordingsManager.processingProgress.addListener(_onProcessingProgress);
     _reconnectionTimer?.cancel();
     // Cancel any pending 1-second reconnect armed by a recent accidental
     // disconnect — otherwise it fires after we transition to background and
@@ -824,6 +830,8 @@ class DeviceProvider extends ChangeNotifier
 
   void onAppResumed() {
     _isAppInForeground = true;
+    // RecordingsController resumes ownership of processing notifications.
+    RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
     // Came back within the grace window — keep the (still-live) connection.
     _pauseDisconnectTimer?.cancel();
     if (isConnected) _startForegroundKeepAlive();
