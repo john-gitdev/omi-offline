@@ -902,4 +902,380 @@ void main() {
       expect(bin.existsSync(), true, reason: 'orphan bin (no overlapping recording) is real un-processed audio');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // _writeMarkerEdl collision policy
+  // ---------------------------------------------------------------------------
+  group('_writeMarkerEdl collision policy', () {
+    // Reference epoch: 2026-05-01 12:00:00 local — well past year-2000 guard.
+    final int kMarkerMs = DateTime(2026, 5, 1, 12, 0, 0).millisecondsSinceEpoch;
+
+    Map<String, dynamic> _edl({required String filename, int offsetMs = 0, int durationMs = 10000}) => {
+          'filename': filename,
+          'markerMs': kMarkerMs,
+          'offsetMs': offsetMs,
+          'durationMs': durationMs,
+        };
+
+    File _edlFile(String dateStr) {
+      return File(p.join(tempDir.path, 'recordings', dateStr, 'marker_$kMarkerMs.edl'));
+    }
+
+    String _dateOf(int ms) {
+      final d = DateTime.fromMillisecondsSinceEpoch(ms);
+      return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    }
+
+    test('user-saved EDL: preserve crops and userSaved, update segmentFilename only', () async {
+      final dateStr = _dateOf(kMarkerMs);
+      final edlFile = _edlFile(dateStr);
+      await edlFile.parent.create(recursive: true);
+      await edlFile.writeAsString(jsonEncode({
+        'markerTimestampMs': kMarkerMs,
+        'segmentFilename': 'old.wav',
+        'markerOffsetMs': 0,
+        'cropStartMs': 2000,
+        'cropEndMs': 8000,
+        'userSaved': true,
+      }));
+
+      final manager = RecordingsManager();
+      await manager.writeMarkerEdlTest(tempDir.path, _edl(filename: 'new.wav', offsetMs: 1000));
+
+      final updated = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+      expect(updated['segmentFilename'], 'new.wav');
+      expect(updated['markerOffsetMs'], 1000);
+      expect(updated['cropStartMs'], 2000, reason: 'user crop must be preserved');
+      expect(updated['cropEndMs'], 8000, reason: 'user crop must be preserved');
+      expect(updated['userSaved'], true);
+    });
+
+    test('default-crop EDL with different filename: overwrite in place (no _1.edl created)', () async {
+      final dateStr = _dateOf(kMarkerMs);
+      final edlFile = _edlFile(dateStr);
+      await edlFile.parent.create(recursive: true);
+      await edlFile.writeAsString(jsonEncode({
+        'markerTimestampMs': kMarkerMs,
+        'segmentFilename': 'old.wav',
+        'markerOffsetMs': 0,
+        'cropStartMs': 0,
+        'cropEndMs': 5000,
+        'userSaved': false,
+      }));
+
+      final manager = RecordingsManager();
+      await manager.writeMarkerEdlTest(tempDir.path, _edl(filename: 'new.wav', durationMs: 8000));
+
+      final updated = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+      expect(updated['segmentFilename'], 'new.wav');
+      // No _1.edl variant should exist
+      expect(File(p.join(tempDir.path, 'recordings', dateStr, 'marker_${kMarkerMs}_1.edl')).existsSync(), isFalse);
+    });
+
+    test('corrupt EDL: overwrite cleanly with valid payload', () async {
+      final dateStr = _dateOf(kMarkerMs);
+      final edlFile = _edlFile(dateStr);
+      await edlFile.parent.create(recursive: true);
+      await edlFile.writeAsString('this is not json {{{');
+
+      final manager = RecordingsManager();
+      await manager.writeMarkerEdlTest(tempDir.path, _edl(filename: 'good.wav', offsetMs: 500, durationMs: 6000));
+
+      final Map<String, dynamic> result = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+      expect(result['segmentFilename'], 'good.wav');
+      expect(result['markerOffsetMs'], 500);
+      expect(result['cropEndMs'], 6000);
+    });
+
+    test('same filename: noop — on-disk EDL unchanged', () async {
+      final dateStr = _dateOf(kMarkerMs);
+      final edlFile = _edlFile(dateStr);
+      await edlFile.parent.create(recursive: true);
+      final original = {
+        'markerTimestampMs': kMarkerMs,
+        'segmentFilename': 'same.wav',
+        'markerOffsetMs': 0,
+        'cropStartMs': 0,
+        'cropEndMs': 5000,
+        'userSaved': false,
+      };
+      await edlFile.writeAsString(jsonEncode(original));
+      final mtimeBefore = edlFile.lastModifiedSync();
+
+      final manager = RecordingsManager();
+      await manager.writeMarkerEdlTest(tempDir.path, _edl(filename: 'same.wav', durationMs: 9999));
+
+      // Same filename → noop: file should not be rewritten.
+      expect(edlFile.lastModifiedSync(), mtimeBefore);
+      final onDisk = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+      expect(onDisk['cropEndMs'], 5000, reason: 'noop must not update cropEndMs');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // _reanchorMarkerEdls
+  // ---------------------------------------------------------------------------
+  group('_reanchorMarkerEdls', () {
+    Future<File> writeEdl(Directory dir, Map<String, dynamic> data) async {
+      await dir.create(recursive: true);
+      final ms = data['markerTimestampMs'] as int;
+      final file = File(p.join(dir.path, 'marker_$ms.edl'));
+      await file.writeAsString(jsonEncode(data));
+      return file;
+    }
+
+    test('default-crop EDL: filename rewritten, offset shifted, cropEnd = newDurationMs', () async {
+      final dir = Directory(p.join(tempDir.path, '2026-05-01'));
+      final edlFile = await writeEdl(dir, {
+        'markerTimestampMs': 1000,
+        'segmentFilename': 'next.wav',
+        'markerOffsetMs': 5000,
+        'cropStartMs': 0,
+        'cropEndMs': 10000,
+        'userSaved': false,
+      });
+
+      final manager = RecordingsManager();
+      final ok = await manager.reanchorMarkerEdlsTest(
+        fromFilename: 'next.wav',
+        toFilename: 'draft.wav',
+        offsetShiftMs: 300000,
+        newDurationMs: 400000,
+        folders: [dir],
+      );
+
+      expect(ok, isTrue);
+      final updated = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+      expect(updated['segmentFilename'], 'draft.wav');
+      expect(updated['markerOffsetMs'], 5000 + 300000);
+      expect(updated['cropStartMs'], 0, reason: 'default crop: start stays 0');
+      expect(updated['cropEndMs'], 400000, reason: 'default crop: end = newDurationMs (NEW6/E5)');
+    });
+
+    test('user-saved EDL: crops are shifted and clamped to newDurationMs', () async {
+      final dir = Directory(p.join(tempDir.path, '2026-05-02'));
+      final edlFile = await writeEdl(dir, {
+        'markerTimestampMs': 2000,
+        'segmentFilename': 'next.wav',
+        'markerOffsetMs': 5000,
+        'cropStartMs': 2000,
+        'cropEndMs': 8000,
+        'userSaved': true,
+      });
+
+      final manager = RecordingsManager();
+      await manager.reanchorMarkerEdlsTest(
+        fromFilename: 'next.wav',
+        toFilename: 'draft.wav',
+        offsetShiftMs: 300000,
+        newDurationMs: 310000,
+        folders: [dir],
+      );
+
+      final updated = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+      expect(updated['markerOffsetMs'], 305000);
+      expect(updated['cropStartMs'], 302000);
+      // cropEnd = 8000 + 300000 = 308000 which is <= 310000 → not clamped
+      expect(updated['cropEndMs'], 308000);
+    });
+
+    test('user-saved EDL: cropEnd clamped when shift would exceed newDurationMs', () async {
+      final dir = Directory(p.join(tempDir.path, '2026-05-03'));
+      final edlFile = await writeEdl(dir, {
+        'markerTimestampMs': 3000,
+        'segmentFilename': 'next.wav',
+        'markerOffsetMs': 1000,
+        'cropStartMs': 0,
+        'cropEndMs': 50000,
+        'userSaved': true,
+      });
+
+      final manager = RecordingsManager();
+      await manager.reanchorMarkerEdlsTest(
+        fromFilename: 'next.wav',
+        toFilename: 'draft.wav',
+        offsetShiftMs: 300000,
+        newDurationMs: 320000,
+        folders: [dir],
+      );
+
+      final updated = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+      // cropEnd = 50000 + 300000 = 350000 → clamped to 320000
+      expect(updated['cropEndMs'], 320000);
+    });
+
+    test('cross-folder: EDL in second folder is rewritten', () async {
+      final dirA = Directory(p.join(tempDir.path, '2026-05-04a'));
+      final dirB = Directory(p.join(tempDir.path, '2026-05-04b'));
+      final edlFile = await writeEdl(dirB, {
+        'markerTimestampMs': 4000,
+        'segmentFilename': 'next.wav',
+        'markerOffsetMs': 1000,
+        'cropStartMs': 0,
+        'cropEndMs': 5000,
+        'userSaved': false,
+      });
+
+      final manager = RecordingsManager();
+      final ok = await manager.reanchorMarkerEdlsTest(
+        fromFilename: 'next.wav',
+        toFilename: 'draft.wav',
+        offsetShiftMs: 60000,
+        newDurationMs: 70000,
+        folders: [dirA, dirB],
+      );
+
+      expect(ok, isTrue);
+      final updated = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+      expect(updated['segmentFilename'], 'draft.wav');
+      expect(updated['markerOffsetMs'], 1000 + 60000);
+    });
+
+    test('non-matching segmentFilename is untouched', () async {
+      final dir = Directory(p.join(tempDir.path, '2026-05-05'));
+      final edlFile = await writeEdl(dir, {
+        'markerTimestampMs': 5000,
+        'segmentFilename': 'other.wav',
+        'markerOffsetMs': 9999,
+        'cropStartMs': 0,
+        'cropEndMs': 9999,
+        'userSaved': false,
+      });
+
+      final manager = RecordingsManager();
+      await manager.reanchorMarkerEdlsTest(
+        fromFilename: 'next.wav', // different filename — no match
+        toFilename: 'draft.wav',
+        offsetShiftMs: 100000,
+        newDurationMs: 200000,
+        folders: [dir],
+      );
+
+      final unchanged = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
+      expect(unchanged['segmentFilename'], 'other.wav');
+      expect(unchanged['markerOffsetMs'], 9999);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getMarkerConversations dedup
+  // ---------------------------------------------------------------------------
+  group('getMarkerConversations dedup', () {
+    // Fixed timestamp well past year-2000 guard: 2026-05-10 10:00:00 UTC.
+    const int kMarkerMs = 1746871200000;
+
+    Directory _mkDateDir(String dateStr) {
+      final root = Directory(p.join(tempDir.path, 'recordings'))..createSync(recursive: true);
+      return Directory(p.join(root.path, dateStr))..createSync();
+    }
+
+    void _writeEdlSync(Directory dir, String edlName, Map<String, dynamic> data) {
+      File(p.join(dir.path, edlName)).writeAsStringSync(jsonEncode(data));
+    }
+
+    test('two EDLs same markerMs same segmentFilename → exactly one MarkerConversation', () async {
+      final dir1 = _mkDateDir('2026-05-10');
+      final dir2 = _mkDateDir('2026-05-11');
+      _writeEdlSync(dir1, 'marker_$kMarkerMs.edl', {
+        'markerTimestampMs': kMarkerMs,
+        'segmentFilename': 'recording_1234.wav',
+        'markerOffsetMs': 5000,
+        'cropStartMs': 0,
+        'cropEndMs': 30000,
+        'userSaved': false,
+      });
+      _writeEdlSync(dir2, 'marker_$kMarkerMs.edl', {
+        'markerTimestampMs': kMarkerMs,
+        'segmentFilename': 'recording_1234.wav',
+        'markerOffsetMs': 5000,
+        'cropStartMs': 0,
+        'cropEndMs': 30000,
+        'userSaved': false,
+      });
+
+      final markers = await RecordingsManager().getMarkerConversations();
+      expect(markers.where((m) => m.markerTime.millisecondsSinceEpoch == kMarkerMs).length, 1,
+          reason: 'same markerMs → deduplicated to one entry');
+    });
+
+    test('two EDLs same markerMs different filenames: userSaved wins canonicalization', () async {
+      final dir1 = _mkDateDir('2026-05-10');
+      final dir2 = _mkDateDir('2026-05-11');
+      _writeEdlSync(dir1, 'marker_$kMarkerMs.edl', {
+        'markerTimestampMs': kMarkerMs,
+        'segmentFilename': 'recording_aaa.wav',
+        'markerOffsetMs': 1000,
+        'cropStartMs': 0,
+        'cropEndMs': 10000,
+        'userSaved': false,
+      });
+      _writeEdlSync(dir2, 'marker_$kMarkerMs.edl', {
+        'markerTimestampMs': kMarkerMs,
+        'segmentFilename': 'recording_bbb.wav',
+        'markerOffsetMs': 1000,
+        'cropStartMs': 1000,
+        'cropEndMs': 9000,
+        'userSaved': true, // wins canonicalization
+      });
+
+      final markers = await RecordingsManager().getMarkerConversations();
+      final group = markers.where((m) => m.markerTime.millisecondsSinceEpoch == kMarkerMs).toList();
+      expect(group.length, 1, reason: 'same markerMs → one canonical entry');
+      expect(group[0].userSaved, isTrue, reason: 'userSaved candidate must win canonicalization');
+    });
+
+    test('same markerMs: non-pending beats pending in canonicalization', () async {
+      final dir1 = _mkDateDir('2026-05-10');
+      final dir2 = _mkDateDir('2026-05-11');
+      // Non-pending requires the segment file to actually exist so filenameIndex resolves it.
+      File(p.join(dir2.path, 'recording_xyz.wav')).writeAsBytesSync(Uint8List(44));
+      _writeEdlSync(dir1, 'marker_$kMarkerMs.edl', {
+        'markerTimestampMs': kMarkerMs,
+        'segmentFilename': '', // pending
+        'markerOffsetMs': 0,
+        'cropStartMs': 0,
+        'cropEndMs': 0,
+        'userSaved': false,
+      });
+      _writeEdlSync(dir2, 'marker_$kMarkerMs.edl', {
+        'markerTimestampMs': kMarkerMs,
+        'segmentFilename': 'recording_xyz.wav', // non-pending wins
+        'markerOffsetMs': 2000,
+        'cropStartMs': 0,
+        'cropEndMs': 15000,
+        'userSaved': false,
+      });
+
+      final markers = await RecordingsManager().getMarkerConversations();
+      final group = markers.where((m) => m.markerTime.millisecondsSinceEpoch == kMarkerMs).toList();
+      expect(group.length, 1);
+      expect(group[0].isPending, isFalse, reason: 'non-pending must win over pending');
+    });
+
+    test('legacy marker_<ms>_1.edl with distinct internal markerMs surfaces as separate entry', () async {
+      final dir = _mkDateDir('2026-05-10');
+      const legacyMs = kMarkerMs + 1;
+      _writeEdlSync(dir, 'marker_$kMarkerMs.edl', {
+        'markerTimestampMs': kMarkerMs,
+        'segmentFilename': 'recording_abc.wav',
+        'markerOffsetMs': 1000,
+        'cropStartMs': 0,
+        'cropEndMs': 10000,
+        'userSaved': false,
+      });
+      // Legacy _1.edl with a distinct internal markerMs → treated as its own marker.
+      _writeEdlSync(dir, 'marker_${kMarkerMs}_1.edl', {
+        'markerTimestampMs': legacyMs,
+        'segmentFilename': '',
+        'markerOffsetMs': 0,
+        'cropStartMs': 0,
+        'cropEndMs': 0,
+        'userSaved': false,
+      });
+
+      final markers = await RecordingsManager().getMarkerConversations();
+      expect(markers.length, greaterThanOrEqualTo(2),
+          reason: 'legacy _1.edl with distinct markerMs must surface as its own entry');
+    });
+  });
 }
