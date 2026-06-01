@@ -1,5 +1,9 @@
 # Changelog
 
+### Processing resumes from where it left off instead of restarting (0.15.7)
+
+- **Interrupted processing now picks up from the last completed segment instead of re-decoding everything from scratch.** After each segment finishes, the app writes a small checkpoint file (`vad_checkpoint.json`) containing the full VAD processor state — Silero LSTM weights, context buffer, PCM tail, conversation frame list, and all counters. When processing resumes (after a background kill, BLE disconnect, or manual cancel), the isolate restores this snapshot and skips all segments already processed. The Silero model continues with the exact recurrent state it had when the run was interrupted, so conversation boundaries and silence detection behave identically to an uninterrupted run. Any bin files that were ready for deletion in the prior run but weren't cleaned up are re-sent on resume. The checkpoint is automatically deleted on clean completion and preserved on cancel.
+
 ### VAD processing: faster inference and cleaner conversation boundaries (0.15.6)
 
 - **Processing a backlog is now significantly faster.** The Silero VAD model's 256-float LSTM state used to make a full round-trip through Dart memory on every inference cycle (~31 cycles per second of audio): native → Dart list → native again. The state is now kept as a live native tensor and swapped in-place between calls, removing that copy entirely. The per-call allocations dropped from ~6 objects to ~1 (only the transient input tensor), and the sample accumulation buffer was replaced with a fixed typed-data ring buffer so window management no longer triggers GC.
