@@ -7,6 +7,7 @@
 - **The background processing-progress notification can no longer fire its update twice per tick.** A duplicate listener registration is now prevented.
 - **The "Stopping…" subtext is now driven by the controller's own state** rather than a live snapshot read during widget build, so it stays accurate as the cancel drains.
 - **The in-app sync card no longer flashes "< 1 min" for a large backlog.** It now shows "Calculating…" until the audio total is measured, matching the notification.
+- **The accumulated-audio banner no longer hides bins that are still waiting to be decoded.** It excluded every bin sharing a session id with any already-finalized recording — but a single firmware session routinely finalizes one recording while a later conversation is still an open draft with its source bins kept on disk. Those kept bins were hidden, so the banner showed "Conversation in progress" while real, decodable audio sat on disk. The banner now counts exactly what processing will decode (all bins except VAD-discarded ones), so it correctly shows "~N minutes to process · N bins".
 
 ### Notification pipeline fixes (0.15.8)
 
