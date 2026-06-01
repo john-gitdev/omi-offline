@@ -1,5 +1,10 @@
 # Changelog
 
+### Sync banner and transfer speed fixes (0.15.10)
+
+- **The sync banner no longer shows a stale segment count at startup.** The count was read from WALs persisted on disk from the previous session before the device was queried, so the banner would flash the wrong number (e.g. "4 segments") immediately on sync start. The count is now left at zero until `getMissingWals` completes and the first real progress callback arrives from the device — the banner shows "Scanning device…" in the interim.
+- **File transfers are no longer stalled by keep-alive timeouts.** The foreground keep-alive writes `0x32` to the same BLE characteristic used for storage streaming. During an active transfer the firmware is busy sending data and cannot service the write, causing a 10-second `TimeoutException` per keep-alive tick. The keep-alive is now skipped whenever a storage operation holds the lock — an active data stream already proves the link is alive — eliminating multi-second stalls mid-download.
+
 ### Marker pipeline: synthetic test harness
 
 - **The marker pipeline now has a CI-enforced test harness.** Twenty-one tests cover the fifteen interacting fixes that were previously verified only by reading the code. Six tests exercise `VadAudioProcessor` directly against synthetic `.bin` payloads: mid-recording and start-of-recording tap offset, bad-UTC fallback to audio wall time, the >60 s drift guard, orphan EDL emission when no audio surrounds a tap, and session-end finalisation with trailing-frame suppression. Fifteen tests exercise `RecordingsManager` via new `@visibleForTesting` wrappers: `_writeMarkerEdl` collision policy (user-saved preservation, default-crop in-place overwrite, corrupt overwrite, noop); `_reanchorMarkerEdls` (default-crop reset, user-saved shift and clamp, cross-folder reanchor, non-matching noop); and `getMarkerConversations` dedup (same-segment dedup, userSaved canonicalization, non-pending-over-pending, legacy `_1.edl` discovery).
