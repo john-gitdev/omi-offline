@@ -2135,6 +2135,25 @@ class RecordingsManager {
     await tmp.rename(target.path);
   }
 
+  @visibleForTesting
+  Future<void> writeMarkerEdlTest(String docsPath, Map<String, dynamic> edl) => _writeMarkerEdl(docsPath, edl);
+
+  @visibleForTesting
+  Future<bool> reanchorMarkerEdlsTest({
+    required String fromFilename,
+    required String toFilename,
+    required int offsetShiftMs,
+    int? newDurationMs,
+    required List<Directory> folders,
+  }) =>
+      _reanchorMarkerEdls(
+        fromFilename: fromFilename,
+        toFilename: toFilename,
+        offsetShiftMs: offsetShiftMs,
+        newDurationMs: newDurationMs,
+        folders: folders,
+      );
+
   /// Persists one marker EDL sidecar. Called eagerly per `marker_edl`
   /// isolate message so an isolate crash mid-run still leaves the marker
   /// on disk.
@@ -2253,7 +2272,7 @@ class RecordingsManager {
       try {
         await for (final entity in folder.list()) {
           if (entity is! File) continue;
-          final name = entity.path.split('/').last;
+          final name = entity.uri.pathSegments.last;
           // First write wins — date folder placement is deterministic.
           filenameIndex.putIfAbsent(name, () => entity);
         }
@@ -2265,7 +2284,7 @@ class RecordingsManager {
     for (final dateFolder in dateFolders) {
       final edlFiles = await dateFolder
           .list()
-          .where((e) => e is File && e.path.split('/').last.startsWith('marker_') && e.path.endsWith('.edl'))
+          .where((e) => e is File && e.uri.pathSegments.last.startsWith('marker_') && e.path.endsWith('.edl'))
           .cast<File>()
           .toList();
 

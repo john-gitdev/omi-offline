@@ -624,4 +624,187 @@ void main() {
       });
     });
   });
+
+  group('Marker pipeline (0xFFFFFFFE button-tap)', () {
+    // Reference epoch: 2026-05-01 00:00:00 UTC (well past year-2000 guard)
+    const int kBase = 1746057600000;
+
+    ProcessingSettings markerSettings() => ProcessingSettings(
+          vadEnabled: false,
+          speechThreshold: 0.5,
+          silenceDurationToSplitMs: 120000,
+          minDurationMs: 0,
+          minSpeechMs: 0,
+          discardShort: false,
+          maxChunkMs: 0x7FFFFFFFFFFFFFFF,
+          deviceId: '',
+          audioSaveFormat: 'wav',
+          omiEnabled: false,
+        );
+
+    /// Bin: 0xFFFFFFFB header + [before] frames + 0xFFFFFFFE marker + [after] frames.
+    File makeTappedBin(
+      String name, {
+      required int utcStartMs,
+      int before = 0,
+      int after = 0,
+      int markerUtcMs = 0,
+    }) {
+      final builder = BytesBuilder();
+      // header
+      final hdr = ByteData(36);
+      hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+      hdr.setUint32(4, 28, Endian.little);
+      hdr.setUint64(8, utcStartMs, Endian.little);
+      hdr.setUint64(16, 0, Endian.little);
+      hdr.setUint32(24, 0, Endian.little);
+      hdr.setUint32(28, 1, Endian.little);
+      builder.add(hdr.buffer.asUint8List());
+      // audio frames
+      final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+      for (int i = 0; i < before; i++) {
+        builder.add(fhdr.buffer.asUint8List());
+        builder.add(List.filled(4, 0));
+      }
+      // marker packet
+      final m = ByteData(20);
+      m.setUint32(0, 0xFFFFFFFE, Endian.little);
+      m.setUint64(4, markerUtcMs, Endian.little);
+      m.setUint32(12, 0, Endian.little);
+      m.setUint32(16, 1, Endian.little);
+      builder.add(m.buffer.asUint8List());
+      // more frames
+      for (int i = 0; i < after; i++) {
+        builder.add(fhdr.buffer.asUint8List());
+        builder.add(List.filled(4, 0));
+      }
+      final f = File('${tempDir.path}/$name');
+      f.writeAsBytesSync(builder.toBytes());
+      return f;
+    }
+
+    test('mid-recording tap: offsetMs equals frames-before × 20ms', () async {
+      // 10 frames (200 ms) before tap, 10 frames after → offsetMs = 200.
+      // markerUtcMs = kBase+200 is within 60 s of audio wall time → RTC used for markerMs.
+      final file = makeTappedBin('mid.bin', utcStartMs: kBase, before: 10, after: 10, markerUtcMs: kBase + 200);
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      await proc.flushRemaining(isDraft: true);
+      final edls = proc.consumePendingEdlData();
+      proc.destroy();
+
+      expect(edls.length, 1);
+      expect(edls[0]['offsetMs'], 200);
+      expect(edls[0]['markerMs'], kBase + 200);
+      expect((edls[0]['filename'] as String).isNotEmpty, isTrue);
+    });
+
+    test('tap at start (no prior frames): offsetMs = 0', () async {
+      final file = makeTappedBin('start.bin', utcStartMs: kBase, before: 0, after: 20, markerUtcMs: kBase);
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      await proc.flushRemaining(isDraft: true);
+      final edls = proc.consumePendingEdlData();
+      proc.destroy();
+
+      expect(edls.length, 1);
+      expect(edls[0]['offsetMs'], 0);
+      expect(edls[0]['markerMs'], kBase);
+    });
+
+    test('bad marker UTC (epoch 0) falls back to audio wall time', () async {
+      // 5 frames before tap: lastFrameWallTime = kBase + 4*20 = kBase+80.
+      // _currentChunkDurationMs = 5*20 = 100.
+      final file = makeTappedBin('badutc.bin', utcStartMs: kBase, before: 5, after: 10, markerUtcMs: 0);
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      await proc.flushRemaining(isDraft: true);
+      final edls = proc.consumePendingEdlData();
+      proc.destroy();
+
+      // markerUtcMs = 0 → falls back to lastFrameWallTime = kBase + 4*20.
+      expect(edls.length, 1);
+      expect(edls[0]['markerMs'], kBase + 80);
+      expect(edls[0]['offsetMs'], 100);
+    });
+
+    test('marker UTC drifting >60s from audio wall time: keeps audio time (B8)', () async {
+      // _isDerivedTimestamp=false (header has valid UTC). 10 frames before tap.
+      // lastFrameWallTime = kBase + 9*20 = kBase+180.
+      // markerUtcMs = kBase+180+90000 → drift 90s > 60s → audio time kept.
+      final file = makeTappedBin('drift.bin',
+          utcStartMs: kBase, before: 10, after: 10, markerUtcMs: kBase + 180 + 90000);
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      await proc.flushRemaining(isDraft: true);
+      final edls = proc.consumePendingEdlData();
+      proc.destroy();
+
+      expect(edls.length, 1);
+      // Audio wall time used — NOT the drifted RTC.
+      expect(edls[0]['markerMs'], kBase + 180);
+      expect(edls[0]['markerMs'], isNot(kBase + 180 + 90000));
+    });
+
+    test('tap with zero surrounding audio emits orphan EDL (empty filename)', () async {
+      // No frames before or after → _currentRefs stays empty → orphan path.
+      final file = makeTappedBin('orphan.bin', utcStartMs: kBase, before: 0, after: 0, markerUtcMs: kBase + 1000);
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      await proc.flushRemaining(isDraft: true);
+      final edls = proc.consumePendingEdlData();
+      proc.destroy();
+
+      expect(edls.length, 1);
+      expect(edls[0]['filename'], '');
+      expect(edls[0]['markerMs'], kBase + 1000);
+      expect(edls[0]['offsetMs'], 0);
+    });
+
+    test('session-end marker (0xFFFFFFFC) finalizes and sets sessionEndPendingResume', () async {
+      // Build bin: header + 10 frames + 0xFFFFFFFC session-end + 5 trailing frames.
+      // The session-end should finalize the recording; the 5 trailing frames should be dropped.
+      final builder = BytesBuilder();
+      final hdr = ByteData(36);
+      hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+      hdr.setUint32(4, 28, Endian.little);
+      hdr.setUint64(8, kBase, Endian.little);
+      hdr.setUint64(16, 0, Endian.little);
+      hdr.setUint32(24, 0, Endian.little);
+      hdr.setUint32(28, 1, Endian.little);
+      builder.add(hdr.buffer.asUint8List());
+      final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+      // Pre-session-end: 10 frames + button tap (so _forcedByMarker=true)
+      final tapMarker = ByteData(20);
+      tapMarker.setUint32(0, 0xFFFFFFFE, Endian.little);
+      tapMarker.setUint64(4, kBase + 100, Endian.little);
+      tapMarker.setUint32(12, 0, Endian.little);
+      tapMarker.setUint32(16, 1, Endian.little);
+      for (int i = 0; i < 10; i++) {
+        builder.add(fhdr.buffer.asUint8List());
+        builder.add(List.filled(4, 0));
+      }
+      builder.add(tapMarker.buffer.asUint8List());
+      // Session-end packet
+      final endMarker = ByteData(20);
+      endMarker.setUint32(0, 0xFFFFFFFC, Endian.little);
+      builder.add(endMarker.buffer.asUint8List());
+      // Trailing junk frames (should be skipped by sessionEndPendingResume)
+      for (int i = 0; i < 5; i++) {
+        builder.add(fhdr.buffer.asUint8List());
+        builder.add(List.filled(4, 0));
+      }
+      final file = File('${tempDir.path}/sessionend.bin')..writeAsBytesSync(builder.toBytes());
+
+      final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+      final saved = await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      // flushRemaining should have nothing left (session-end already saved the recording)
+      final flushed = await proc.flushRemaining();
+      proc.destroy();
+
+      // The 10-frame recording should be saved by the session-end marker path.
+      expect(saved.length, 1, reason: 'session-end should produce one finalized recording');
+      expect(flushed, isNull, reason: 'nothing remaining after session-end flush');
+    });
+  });
 }
