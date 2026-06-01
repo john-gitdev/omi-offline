@@ -405,7 +405,7 @@ One foreground-service notification (id 2001, channel `omi_ble_channel`). **Two 
 
 The **native** service must call `startForeground` (FGS requirement) but uses a single fixed baseline text ("Running in the background") and has **no `updateNotification`** — it never writes connection state. An earlier build had the native side post "Connected to Omi Device" / "Connecting…" / "Disconnected" / "Reconnecting…" on every GATT transition; because it shares id 2001 those clobbered the Dart-owned progress and countdown (the exact bug the Dart-side removal was meant to fix — the native twin was missed). Do not re-add native `updateNotification` calls.
 
-Foreground processing progress: `_doBackgroundSync`'s `onProcessingProgress` is **not** gated on `!_isAppInForeground` — app-open syncs (`onAppResumed` → `_doBackgroundSync`) run through this path while foregrounded, so gating it would freeze the notification at "Processing recordings — preparing…" with the app open.
+Foreground processing progress: `_onProcessingProgress` (a class method on `DeviceProvider`) is gated on `!_isAppInForeground`. When the app is open, `RecordingsController` owns the notification in time-remaining format. `_onProcessingProgress` is registered on `RecordingsManager.processingProgress` in `onAppPaused` (covering both background syncs and foreground-triggered processing that the user backgrounds) and unregistered in `onAppResumed`. `_doBackgroundSync` also registers/unregisters it for the duration of `processAllCompletedSessions`. Remove-before-add in `onAppPaused` prevents double-registration.
 
 ### Always disconnect after a background sync
 `_doBackgroundSync`'s finally disconnects unconditionally in the background. The old `missingCount > 0` "keep the connection" branch was dropped — with the keep-alive stopped it just idle-dropped within ~30 s anyway. Leftover segments are picked up by the next scheduled sync / on resume (`onAppResumed` has a defensive drain for the rare resume-onto-live-link race).
@@ -414,6 +414,63 @@ Foreground processing progress: `_doBackgroundSync`'s `onProcessingProgress` is 
 - `app/lib/providers/device_provider.dart` — `_backgroundDisconnectGrace` + `_pauseDisconnectTimer` (field decl ~line 67), `onAppPaused` / `_armPauseDisconnect` / `_onPauseDisconnectTick`, `onAppResumed` (cancel), `_doBackgroundSync` finally (post-sync disconnect), `_handleDeviceConnected` background drop-guard, `onDeviceDisconnected` background guards, `_showIdleNotification` + `_syncOwnsNotification`.
 - Removed: `maximizeBattery` getter/setter in `app/lib/backend/preferences.dart`; the `SwitchListTile` + `_maximizeBattery` state in `app/lib/pages/settings/app_settings_page.dart`.
 - Keep-alive: `_startForegroundKeepAlive` / `_stopForegroundKeepAlive` (same file) — see the field-comment invariant above.
+
+---
+
+## App: Notification Pipeline
+
+One persistent foreground-service notification (id 2001, `omi_ble_channel`). **Two services share it, last-writer-wins**: the native `OmiBleForegroundService` (required `connectedDevice`-type FGS) and the Dart `flutter_foreground_task` (`ForegroundUtil`). The native service calls `startForeground` with a fixed baseline text and never calls `updateNotification` — all content writes go through the Dart side.
+
+### Ownership rules
+
+**`DeviceProvider`** is the sole writer when the app is in the background. It is also the owner of the foreground-service lifecycle (start/stop) during background syncs.
+
+**`RecordingsController`** is the sole writer when the app is in the foreground. It calls `ForegroundUtil.updateNotification` via `_updateForegroundProgress()`, which is throttled (1 s foreground / 2 s background) and only fires when `_spState` is `syncing` or `processing`.
+
+**Transition guard:** `DeviceProvider._onProcessingProgress` is gated on `!_isAppInForeground`. `RecordingsController._updateForegroundProgress` only fires when `_spState == processing || syncing`. The two writers never overlap on the same tick.
+
+### All notification strings, by trigger
+
+| When | Who writes | Text |
+|---|---|---|
+| Background sync starts | `DeviceProvider._doBackgroundSync` | `"Syncing recordings — preparing..."` |
+| Background sync, per-packet | `_BackgroundSyncProgress.onWalSyncedProgress` | `"Syncing recordings — 47% complete"` |
+| Background sync → processing handoff | `DeviceProvider._doBackgroundSync` | `"Processing recordings — preparing..."` |
+| Background processing, per-segment | `DeviceProvider._onProcessingProgress` | `"Processing recordings — 47% complete"` |
+| Background processing at 100% | `DeviceProvider._onProcessingProgress` | `"Processing recordings — finishing..."` |
+| Background finalizing re-sync | `DeviceProvider._doBackgroundSync` | `"Syncing recordings — finalizing..."` |
+| Foreground sync starts | `RecordingsController._runPipeline` / `_runSyncOnly` | `"Syncing recordings — preparing..."` |
+| Foreground sync, per-packet | `RecordingsController._updateForegroundProgress` | `"Syncing recordings — N of M segments (X%)"` |
+| Foreground processing starts | `RecordingsController._startProcessing` | `"Processing recordings — preparing..."` |
+| Foreground processing, duration unknown | `RecordingsController._updateForegroundProgress` | `"Processing recordings — Calculating…"` |
+| Foreground processing, ≥ 1 min remaining | `RecordingsController._updateForegroundProgress` | `"Processing recordings — ~686 min of audio to process"` |
+| Foreground processing, < 1 min remaining | `RecordingsController._updateForegroundProgress` | `"Processing recordings — < 1 min of audio to process"` |
+| Foreground transcoding | `RecordingsController._updateForegroundProgress` | `"Processing recordings — Converting to m4a"` |
+| Delete recordings | `RecordingsController` | `"Cleaning up recordings..."` |
+| Force-reprocess a day | `RecordingsController` | `"Reprocessing day..."` |
+| Idle, auto-sync on | `DeviceProvider._showIdleNotification` | `"Next sync in ~N min"` / `"Syncing soon..."` |
+| Idle, Manual Only (no schedule) | `DeviceProvider._showIdleNotification` | `"Omi is Connected"` / `"Connecting..."` / `"Omi is Disconnected"` |
+
+### "Calculating…" guard
+
+`_totalMinutes == 0` means the async file-size measurement (triggered in `_poll` via `_pendingProcessingTransition`) hasn't completed yet. `_updateForegroundProgress` shows "Calculating…" while `_totalMinutes == 0 || _minutesRemaining < 0` to avoid flashing "< 1 min" during the ~100–500 ms async gap when `_spState` flips to `processing` before the byte-count is known.
+
+### Foreground → background handoff
+
+When the user backgrounds the app during a foreground-triggered processing run, `onAppPaused` does `removeListener(_onProcessingProgress)` + `addListener(_onProcessingProgress)` (remove-before-add prevents duplicates if `_doBackgroundSync` also registered it). From that point `DeviceProvider._onProcessingProgress` updates the notification even if `RecordingsController` is eventually disposed. `onAppResumed` removes the listener and `RecordingsController` resumes ownership.
+
+### Stopping subtext
+
+`SyncProcessCard` shows `"Stopping…"` with a dynamic subtext: `"Transferring current file…"` while `isSyncing` is true (a BLE segment write is still in flight to avoid corruption), `"Finishing current step"` once the transfer has drained. `isSyncing` is passed in via `SyncCardData.isSyncing`, read from `ServiceManager.instance().wal.getSyncs().isSyncing` at the build site in `recordings_page.dart`.
+
+### Code locations
+
+- `app/lib/providers/device_provider.dart` — `_onProcessingProgress` (class method), `_syncOwnsNotification`, `_showIdleNotification`, `_doBackgroundSync` (registers/unregisters listener, writes lifecycle strings), `onAppPaused` / `onAppResumed` (listener handoff).
+- `app/lib/pages/recordings/recordings_controller.dart` — `_updateForegroundProgress`, `_onProgressChanged`, `onWalSyncedProgress`.
+- `app/lib/pages/recordings/sync_process_card.dart` — `SyncProcessState.stopping` case (dynamic subtext via `data.isSyncing`).
+- `app/lib/pages/recordings/recordings_types.dart` — `SyncCardData.isSyncing` field.
+- `app/lib/pages/recordings/recordings_page.dart` — `SyncCardData` construction (passes `isSyncing` from `ServiceManager`).
+- `app/lib/services/wals/sdcard_wal_sync.dart` — `_BackgroundSyncProgress.onWalSyncedProgress` (per-packet background sync percentage).
 
 ---
 
