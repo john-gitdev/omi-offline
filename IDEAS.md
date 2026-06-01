@@ -2,6 +2,24 @@
 
 ## Sync and Processing Improvements
 
+### Stale Total Segment Count during Sync
+- **Problem:** `RecordingsController` UI shows a stale total segment count (e.g., "4 segments to transfer") even if the device later reports more (e.g., 6 WALs).
+- **Analysis:** `RecordingsController.onWalSyncedProgress` has a guard that only backfills `_totalCount` from the service if it is currently `<= 0`. Since an initial estimate is often set at the start of the pipeline, this backfill never triggers when the real count is discovered during `syncAll`.
+- **Where to look for problem:** `app/lib/pages/recordings/recordings_controller.dart` (lines 550-575).
+- **Proposed Fix:** Update `onWalSyncedProgress` to allow updating `_totalCount` if the service reports a different/larger count than the cached estimate.
+
+### Premature Background Sync Termination on Disconnect
+- **Problem:** Sync stops early and fails to resume if the BLE link drops while the app is in the background.
+- **Analysis:** 
+    1. `SDCardWalSync` aborts its internal loop on disconnect. 
+    2. `RecordingsController` transitions the pipeline to processing/idle after the error, instead of waiting for a reconnect. 
+    3. When the device auto-reconnects, `DeviceProvider` intentionally drops the connection if the app is backgrounded because the `_pendingBackgroundSync` flag (only used for scheduled timer syncs) is not set for foreground-initiated syncs that moved to the background.
+- **Where to look for problem:** 
+    - `app/lib/services/wals/sdcard_wal_sync.dart` (line 888) - `syncAll` aborts on connection loss.
+    - `app/lib/pages/recordings/recordings_controller.dart` (lines 765-775) - Pipeline ends on sync error.
+    - `app/lib/providers/device_provider.dart` (lines 1172-1176) - `_handleDeviceConnected` drops background connections.
+- **Proposed Fix:** Maintain a "should resume sync" state that allows `DeviceProvider` to keep background connections alive if a sync was interrupted, and update `RecordingsController` to handle reconnections during an active pipeline.
+
 ### Dual/Conflicting Notifications during Processing
 - **Problem:** Both `DeviceProvider` (background) and `RecordingsController` (UI) update the same foreground notification with different string formats (percentage vs time remaining), causing the notification to flicker/alternate.
 - **Proposed Fix:** Centralize notification management. `DeviceProvider` should update a shared state, and only `RecordingsController` should be responsible for formatting and pushing the notification string.
@@ -37,6 +55,19 @@
 - **Where to add fix:** 
     - Update `VadAudioProcessor` to serialize/deserialize state.
     - Update `RecordingsManager` isolate loop to save checkpoints and check for existing ones on startup.
+
+### High-Performance VAD Processing (Zero-Allocation & Native Persistence)
+- **Problem:** The current VAD implementation causes significant processing backlogs and "noticeable delay" due to high object churn (~150 objects/sec), redundant Dart ↔ Native memory copies for LSTM state, and $O(N)$ list operations during windowing.
+- **Analysis:**
+    1. **Generic List Operations:** `_pcmWindow.sublist` and `removeRange` on a generic `List<double>` are $O(N)$ and involve repeated allocations/copying.
+    2. **Object Churn:** Creation of 3 `OrtValue` tensors, 1 `Int64List`, and 1 `Float32List` every 32ms of audio.
+    3. **Bridge Latency:** Manually converting the 256-element LSTM `state` tensor from Native to Dart and back every cycle is the primary bottleneck.
+- **Where to look for problem:** `app/lib/services/vad_audio_processor.dart` (lines 75-80, 254-303, and 617-630).
+- **Proposed Fix:**
+    1. **Zero-Allocation Buffers:** Replace `List<double> _pcmWindow` with a fixed-size `Float32List _pcmBuffer`. Use `setRange` for shifting samples instead of `removeRange`.
+    2. **Native State Persistence:** Cache `OrtValue` objects for `state` and `sr` (sample rate) tensors. Reuse the output state tensor directly as the input for the next inference cycle to eliminate Dart ↔ Native copying of the LSTM state.
+    3. **Fast-Path Windowing:** Use `Float32List.sublistView` to pass audio windows to the ONNX session without allocating new lists or copying memory.
+    4. **Explicit Resource Management:** Manually dispose of the transient input tensors while keeping cached tensors alive; update `destroy()` to perform final cleanup of persistent native resources.
 
 ## ACTIVE
 
