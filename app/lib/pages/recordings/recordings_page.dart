@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/services/services.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/pages/settings/settings_drawer.dart';
 import 'package:omi/pages/settings/find_devices_page.dart';
@@ -719,6 +720,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     isTranscoding: controller.isTranscoding,
                     audioSaveFormat: _prefs.audioSaveFormat,
                     lastActiveStage: controller.lastActiveStage,
+                    isSyncing: ServiceManager.instance().wal.getSyncs().isSyncing,
                   ),
                   onCancelTap: () => unawaited(_showCancelModal()),
                   onDismissTap: () => controller.dismissSuccess(),
