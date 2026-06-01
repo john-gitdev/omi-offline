@@ -40,6 +40,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   DeviceDropStats? _dropBaseline;
   bool _dropsUnsupported = false;
   bool _dropsReading = false;
+  // True once we've attempted to restore the persisted baseline this polling session.
+  bool _baselineRestored = false;
+
+  static const _kBaselineBlocks = 'drop_baseline_blocks';
+  static const _kBaselineFrames = 'drop_baseline_frames';
+  static const _kBaselineBoot = 'drop_baseline_boot';
   List<Map<String, dynamic>> _recentLogs = const [];
 
   @override
@@ -71,6 +77,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     _dropStats = null;
     _dropBaseline = null;
     _dropsUnsupported = false;
+    _baselineRestored = false;
   }
 
   void _startLogPolling() {
@@ -477,6 +484,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         setState(() => _dropsUnsupported = true);
       } else {
         setState(() => _dropStats = stats);
+        _tryRestoreBaseline(stats);
       }
     } catch (_) {
       // Transient BLE errors are fine — try again on the next tick.
@@ -485,11 +493,41 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
+  void _tryRestoreBaseline(DeviceDropStats stats) {
+    if (_baselineRestored) return;
+    _baselineRestored = true;
+    final prefs = SharedPreferencesUtil();
+    final savedBlocks = prefs.getInt(_kBaselineBlocks, defaultValue: -1);
+    if (savedBlocks < 0) return; // no saved baseline
+    final savedFrames = prefs.getInt(_kBaselineFrames, defaultValue: 0);
+    final savedBoot = prefs.getInt(_kBaselineBoot, defaultValue: 0);
+    // Device rebooted — counters reset below the saved baseline; discard it.
+    if (stats.blockDrops < savedBlocks || stats.streamFrameDrops < savedFrames) {
+      unawaited(prefs.remove(_kBaselineBlocks));
+      return;
+    }
+    setState(() => _dropBaseline = DeviceDropStats(
+          blockDrops: savedBlocks,
+          lastBlockDropUptimeMs: 0,
+          streamFrameDrops: savedFrames,
+          bootFrameDrops: savedBoot,
+          currentUptimeMs: 0,
+          readAt: DateTime.now(),
+        ));
+  }
+
   void _snapshotDropBaseline() {
-    setState(() => _dropBaseline = _dropStats);
+    final stats = _dropStats;
+    if (stats == null) return;
+    final prefs = SharedPreferencesUtil();
+    unawaited(prefs.saveInt(_kBaselineBlocks, stats.blockDrops));
+    unawaited(prefs.saveInt(_kBaselineFrames, stats.streamFrameDrops));
+    unawaited(prefs.saveInt(_kBaselineBoot, stats.bootFrameDrops));
+    setState(() => _dropBaseline = stats);
   }
 
   void _clearDropBaseline() {
+    unawaited(SharedPreferencesUtil().remove(_kBaselineBlocks));
     setState(() => _dropBaseline = null);
   }
 
@@ -869,7 +907,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               FaIcon(FontAwesomeIcons.solidHardDrive, size: 13, color: color),
               const SizedBox(width: 8),
               Text(
-                baseline == null ? 'SD Write Drops' : 'SD Write Drops (since baseline)',
+                baseline == null ? 'SD Write Drops' : 'SD Write Drops (since reset)',
                 style: TextStyle(color: color, fontSize: 14, fontWeight: FontWeight.w600),
               ),
             ],
@@ -881,36 +919,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _dropStatRow('Last block drop', lastDropLabel, hasFreshDrops),
           _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
           const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: _snapshotDropBaseline,
-                  style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: Colors.amber, width: 1),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                  ),
-                  child: const Text('Snapshot baseline',
-                      style: TextStyle(color: Colors.amber, fontWeight: FontWeight.w600, fontSize: 13)),
-                ),
-              ),
-              if (baseline != null) ...[
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _clearDropBaseline,
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Colors.white38, width: 1),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                    ),
-                    child: const Text('Clear',
-                        style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600, fontSize: 13)),
-                  ),
-                ),
-              ],
-            ],
+          OutlinedButton(
+            onPressed: _snapshotDropBaseline,
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: Colors.amber, width: 1),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              padding: const EdgeInsets.symmetric(vertical: 10),
+            ),
+            child: const Text('Reset to zero',
+                style: TextStyle(color: Colors.amber, fontWeight: FontWeight.w600, fontSize: 13)),
           ),
         ],
       ),
