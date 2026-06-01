@@ -18,6 +18,7 @@ class SyncCardData {
   final int totalCount;
   final double syncSpeed;
   final double minutesRemaining;
+  final double totalMinutes;
   final double processingProgress;
   final bool isTranscoding;
   final String audioSaveFormat;
@@ -30,6 +31,7 @@ class SyncCardData {
     required this.totalCount,
     required this.syncSpeed,
     required this.minutesRemaining,
+    required this.totalMinutes,
     required this.processingProgress,
     required this.isTranscoding,
     required this.audioSaveFormat,
