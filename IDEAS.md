@@ -8,18 +8,6 @@
 - **Where to look for problem:** `app/lib/pages/recordings/recordings_controller.dart` (lines 550-575).
 - **Proposed Fix:** Update `onWalSyncedProgress` to allow updating `_totalCount` if the service reports a different/larger count than the cached estimate.
 
-### Premature Background Sync Termination on Disconnect
-- **Problem:** Sync stops early and fails to resume if the BLE link drops while the app is in the background.
-- **Analysis:** 
-    1. `SDCardWalSync` aborts its internal loop on disconnect. 
-    2. `RecordingsController` transitions the pipeline to processing/idle after the error, instead of waiting for a reconnect. 
-    3. When the device auto-reconnects, `DeviceProvider` intentionally drops the connection if the app is backgrounded because the `_pendingBackgroundSync` flag (only used for scheduled timer syncs) is not set for foreground-initiated syncs that moved to the background.
-- **Where to look for problem:** 
-    - `app/lib/services/wals/sdcard_wal_sync.dart` (line 888) - `syncAll` aborts on connection loss.
-    - `app/lib/pages/recordings/recordings_controller.dart` (lines 765-775) - Pipeline ends on sync error.
-    - `app/lib/providers/device_provider.dart` (lines 1172-1176) - `_handleDeviceConnected` drops background connections.
-- **Proposed Fix:** Maintain a "should resume sync" state that allows `DeviceProvider` to keep background connections alive if a sync was interrupted, and update `RecordingsController` to handle reconnections during an active pipeline.
-
 ### Dual/Conflicting Notifications during Processing
 - **Problem:** Both `DeviceProvider` (background) and `RecordingsController` (UI) update the same foreground notification with different string formats (percentage vs time remaining), causing the notification to flicker/alternate.
 - **Proposed Fix:** Centralize notification management. `DeviceProvider` should update a shared state, and only `RecordingsController` should be responsible for formatting and pushing the notification string.
@@ -39,12 +27,6 @@
 - **Proposed Fix:** Add a guard to the notification formatter to show "Calculating..." if total minutes is 0 while in processing state.
 - **Where to look for problem:** `app/lib/pages/recordings/recordings_controller.dart` (lines 262-266).
 - **Where to add fix:** Update `_updateForegroundProgress` in `recordings_controller.dart` to check if `_totalMinutes == 0` during processing.
-
-### Auto-Sync Bypass of "Manual Only" Setting
-- **Problem:** App triggers an automatic sync on app resume even when set to "Manual Only".
-- **Proposed Fix:** Wrap the defensive resume-sync logic with a check for the sync interval setting.
-- **Where to look for problem:** `app/lib/providers/device_provider.dart` (lines 847-850).
-- **Where to add fix:** Add `if (SharedPreferencesUtil().backgroundSyncIntervalMinutes > 0)` before the `_doBackgroundSync()` call in `device_provider.dart`.
 
 ### Processing Persistence (VAD Checkpointing)
 - **Problem:** Processing always restarts from the first unprocessed bin because VAD state and progress are not persisted across sessions.
