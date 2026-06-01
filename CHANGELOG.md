@@ -6,6 +6,7 @@
 - **Processing checkpoints are written far less often on long sessions.** The checkpoint serializes the entire in-flight conversation, whose frame list is uncapped by default, so writing it after every ~5-minute segment could rival the decode time itself. Writes are now throttled to once every few seconds — except a write is always forced (and the segment-file deletion held back) right before any source file is deleted, so a resumed run can never reference a file already removed from disk.
 - **The background processing-progress notification can no longer fire its update twice per tick.** A duplicate listener registration is now prevented.
 - **The "Stopping…" subtext is now driven by the controller's own state** rather than a live snapshot read during widget build, so it stays accurate as the cancel drains.
+- **The in-app sync card no longer flashes "< 1 min" for a large backlog.** It now shows "Calculating…" until the audio total is measured, matching the notification.
 
 ### Notification pipeline fixes (0.15.8)
 
