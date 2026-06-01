@@ -258,7 +258,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       final String text;
       if (_isTranscoding) {
         text = 'Processing recordings — Converting to ${_prefs.audioSaveFormat}';
-      } else if (_minutesRemaining < 0) {
+      } else if (_totalMinutes == 0 || _minutesRemaining < 0) {
         text = 'Processing recordings — Calculating…';
       } else if (_minutesRemaining >= 1) {
         text = 'Processing recordings — ~${_minutesRemaining.ceil()} min of audio to process';
