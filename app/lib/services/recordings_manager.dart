@@ -487,6 +487,11 @@ class _IsolateParams {
   // Forwarded so DebugLogManager can write to the log file from this isolate;
   // SharedPreferences isn't initialised here so it can't read the pref itself.
   final bool devLogsEnabled;
+  // Checkpoint fields — null/empty means fresh run (no prior state to restore).
+  final Map<String, dynamic>? checkpointState;
+  final int checkpointResumeIndex;
+  final String? checkpointPath;
+  final List<String> checkpointPendingDeletes;
 
   const _IsolateParams({
     required this.sendPort,
@@ -502,6 +507,10 @@ class _IsolateParams {
     required this.segmentDerivedFlags,
     required this.backgroundMode,
     required this.devLogsEnabled,
+    this.checkpointState,
+    this.checkpointResumeIndex = 0,
+    this.checkpointPath,
+    this.checkpointPendingDeletes = const [],
   });
 }
 
@@ -593,7 +602,18 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       'RecordingsManager isolate: processing run started — ${params.segmentPaths.length} segment(s), backgroundMode=${params.backgroundMode}');
 
   try {
-    for (int i = 0; i < params.segmentPaths.length; i++) {
+    if (params.checkpointState != null) {
+      await processor.restoreState(params.checkpointState!);
+      Logger.debug(
+          'RecordingsManager isolate: restored checkpoint state, resuming from segment ${params.checkpointResumeIndex}/${params.segmentPaths.length}.');
+    }
+    // Re-send pending deletes from the prior run — delete handler checks existence first so this is idempotent.
+    if (params.checkpointPendingDeletes.isNotEmpty) {
+      params.sendPort.send({'type': 'delete_segments', 'paths': params.checkpointPendingDeletes});
+    }
+    final checkpointPendingDeletes = List<String>.from(params.checkpointPendingDeletes);
+
+    for (int i = params.checkpointResumeIndex; i < params.segmentPaths.length; i++) {
       if (cancelled) {
         break;
       }
@@ -647,6 +667,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       // Delete segment files that are fully processed and no longer referenced by any buffer.
       final safeToDelete = processor.consumeSafeToDeletePaths();
       if (safeToDelete.isNotEmpty) {
+        checkpointPendingDeletes.addAll(safeToDelete);
         params.sendPort.send({
           'type': 'delete_segments',
           'paths': safeToDelete.toList(),
@@ -659,6 +680,20 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
         'index': i,
         'total': params.segmentPaths.length,
       });
+
+      if (params.checkpointPath != null) {
+        try {
+          final cpState = await processor.serializeState();
+          await File(params.checkpointPath!).writeAsString(jsonEncode({
+            'lastIndex': i,
+            'paths': params.segmentPaths,
+            'state': cpState,
+            'pendingDeletes': checkpointPendingDeletes,
+          }));
+        } catch (e) {
+          Logger.error('RecordingsManager isolate: checkpoint write failed ($e)');
+        }
+      }
 
       if (params.backgroundMode) {
         await Future.delayed(const Duration(milliseconds: 200));
@@ -701,7 +736,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     Logger.debug('RecordingsManager isolate: processing run ${cancelled ? 'cancelled' : 'finished'} — '
         '${params.segmentPaths.length} segment(s), $totalBytes B in ${runStopwatch.elapsedMilliseconds}ms');
 
-    params.sendPort.send({'type': 'done'});
+    params.sendPort.send({'type': 'done', 'cancelled': cancelled});
   } catch (e, st) {
     params.sendPort.send({'type': 'error', 'message': '$e\n$st'});
   } finally {
@@ -1225,13 +1260,51 @@ class RecordingsManager {
           }
         }
 
+        Map<String, dynamic>? checkpointState;
+        int checkpointResumeIndex = 0;
+        List<String> checkpointPendingDeletes = [];
+        final checkpointFile = File('${directory.path}/vad_checkpoint.json');
+        try {
+          if (await checkpointFile.exists()) {
+            final content = await checkpointFile.readAsString();
+            final data = jsonDecode(content) as Map<String, dynamic>;
+            final savedPaths = (data['paths'] as List).cast<String>();
+            final lastIndex = data['lastIndex'] as int;
+            final currentPaths = allSegments.map((f) => f.path).toList();
+            bool valid = lastIndex >= 0 && lastIndex + 1 < currentPaths.length;
+            if (valid) {
+              for (int k = 0; k <= lastIndex && k < savedPaths.length && k < currentPaths.length; k++) {
+                if (currentPaths[k] != savedPaths[k]) {
+                  valid = false;
+                  break;
+                }
+              }
+            }
+            if (valid) {
+              checkpointState = data['state'] as Map<String, dynamic>?;
+              checkpointResumeIndex = lastIndex + 1;
+              checkpointPendingDeletes = (data['pendingDeletes'] as List?)?.cast<String>() ?? [];
+              Logger.debug(
+                  'RecordingsManager: Resuming from checkpoint — skipping $checkpointResumeIndex/${currentPaths.length} segments.');
+            } else {
+              Logger.debug('RecordingsManager: Checkpoint segment list changed — starting fresh.');
+              await checkpointFile.delete();
+            }
+          }
+        } catch (e) {
+          Logger.error('RecordingsManager: Checkpoint load failed ($e) — starting fresh.');
+          try {
+            await checkpointFile.delete();
+          } catch (_) {}
+        }
+
         try {
           final receivePort = ReceivePort();
           final exitPort = ReceivePort();
           bool isolateDone = false;
 
           final startTime = DateTime.now();
-          int processedBytes = 0;
+          int processedBytes = segmentFileSizes.sublist(0, checkpointResumeIndex).fold<int>(0, (a, b) => a + b);
 
           _activeIsolate = await Isolate.spawn(
             _processingIsolateEntry,
@@ -1249,6 +1322,10 @@ class RecordingsManager {
               segmentDerivedFlags: segmentDerivedFlags,
               backgroundMode: backgroundMode,
               devLogsEnabled: SharedPreferencesUtil().devLogsToFileEnabled,
+              checkpointState: checkpointState,
+              checkpointResumeIndex: checkpointResumeIndex,
+              checkpointPath: checkpointFile.path,
+              checkpointPendingDeletes: checkpointPendingDeletes,
             ),
             onExit: exitPort.sendPort,
           );
@@ -1341,10 +1418,20 @@ class RecordingsManager {
                 onProgress(progress, eta);
               case 'done':
                 isolateDone = true;
+                final wasCancelled = msg['cancelled'] as bool? ?? false;
                 receivePort.close();
+                // Checkpoint preserved on cancel so the next run can resume from it.
+                if (!wasCancelled) {
+                  try {
+                    if (await checkpointFile.exists()) await checkpointFile.delete();
+                  } catch (_) {}
+                }
               case 'error':
                 isolateDone = true;
                 receivePort.close();
+                try {
+                  if (await checkpointFile.exists()) await checkpointFile.delete();
+                } catch (_) {}
                 throw Exception(msg['message']);
             }
           }
