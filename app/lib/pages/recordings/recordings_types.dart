@@ -22,7 +22,6 @@ class SyncCardData {
   final bool isTranscoding;
   final String audioSaveFormat;
   final String lastActiveStage;
-  final bool isSyncing;
 
   const SyncCardData({
     required this.state,
@@ -35,6 +34,5 @@ class SyncCardData {
     required this.isTranscoding,
     required this.audioSaveFormat,
     required this.lastActiveStage,
-    required this.isSyncing,
   });
 }
