@@ -265,6 +265,108 @@ class VadAudioProcessor {
     _cachedSrValue = null;
   }
 
+  /// Serializes all conversation and VAD model state to a JSON-compatible map
+  /// for checkpointing between isolate runs. Returns null when there is nothing
+  /// to save (empty refs and empty PCM buffer — processor is between conversations).
+  Future<Map<String, dynamic>?> serializeState() async {
+    if (_currentRefs.isEmpty && _pcmBufferLen == 0) return null;
+    final refs = <Map<String, dynamic>>[];
+    for (final item in _currentRefs) {
+      if (item is FrameRef) {
+        refs.add({'t': 'f', 'p': item.segmentFile.path, 'o': item.byteOffset, 'l': item.frameLength});
+      } else if (item is Duration) {
+        refs.add({'t': 's', 'ms': item.inMilliseconds});
+      }
+    }
+    List<double>? vadStateFloats;
+    if (_cachedStateValue != null) {
+      try {
+        vadStateFloats = (await _cachedStateValue!.asFlattenedList()).cast<double>();
+      } catch (_) {}
+    }
+    return {
+      'refs': refs,
+      'sfc': _speechFrameCount,
+      'rst': _recordingStartTime?.millisecondsSinceEpoch,
+      'lse': _lastSegmentEndTime?.millisecondsSinceEpoch,
+      'idt': _isDerivedTimestamp,
+      'csi': _currentSessionId,
+      'csu': _currentStartUptime,
+      'cfu': _currentFrameUptimeMs,
+      'lit': _lastImuTicks,
+      'ccd': _currentChunkDurationMs,
+      'srm': _silenceRunMs,
+      'lsr': _lastSpeechRefCount,
+      'lsc': _lastSpeechChunkMs,
+      'cmv': _currentMaxVoiceProb,
+      'fbm': _forcedByMarker,
+      'mpu': _markerProtectedUntilMs,
+      'sep': _sessionEndPendingResume,
+      'pm': _pendingMarkers.map((m) => {'ms': m.markerMs, 'o': m.offsetAtMarkerMs}).toList(),
+      'vs': vadStateFloats,
+      'vc': _vadContext.toList(),
+      'pb': List<double>.generate(_pcmBufferLen, (i) => _pcmBuffer[i]),
+      'pbl': _pcmBufferLen,
+    };
+  }
+
+  /// Restores conversation and VAD model state from a previously serialized map.
+  /// Called at the start of a resumed processing run to pick up where the
+  /// prior (cancelled or backgrounded) run left off.
+  Future<void> restoreState(Map<String, dynamic> s) async {
+    _currentRefs = [];
+    for (final item in (s['refs'] as List).cast<Map<String, dynamic>>()) {
+      if (item['t'] == 'f') {
+        _currentRefs.add(FrameRef(
+            segmentFile: File(item['p'] as String), byteOffset: item['o'] as int, frameLength: item['l'] as int));
+      } else if (item['t'] == 's') {
+        _currentRefs.add(Duration(milliseconds: item['ms'] as int));
+      }
+    }
+    // Register restored refs in _processedFiles so consumeSafeToDeletePaths()
+    // can return their segment paths once the conversation ends and refs are cleared.
+    for (final item in _currentRefs) {
+      if (item is FrameRef) _processedFiles.add(item.segmentFile.path);
+    }
+    _speechFrameCount = s['sfc'] as int;
+    final rstMs = s['rst'] as int?;
+    _recordingStartTime = rstMs != null ? DateTime.fromMillisecondsSinceEpoch(rstMs, isUtc: true) : null;
+    final lseMs = s['lse'] as int?;
+    _lastSegmentEndTime = lseMs != null ? DateTime.fromMillisecondsSinceEpoch(lseMs, isUtc: true) : null;
+    _isDerivedTimestamp = s['idt'] as bool;
+    _currentSessionId = s['csi'] as int?;
+    _currentStartUptime = s['csu'] as int?;
+    _currentFrameUptimeMs = s['cfu'] as int?;
+    _lastImuTicks = s['lit'] as int?;
+    _currentChunkDurationMs = s['ccd'] as int;
+    _silenceRunMs = s['srm'] as int;
+    _lastSpeechRefCount = s['lsr'] as int;
+    _lastSpeechChunkMs = s['lsc'] as int;
+    _currentMaxVoiceProb = (s['cmv'] as num).toDouble();
+    _forcedByMarker = s['fbm'] as bool;
+    _markerProtectedUntilMs = s['mpu'] as int?;
+    _sessionEndPendingResume = s['sep'] as bool;
+    _pendingMarkers.clear();
+    for (final m in (s['pm'] as List).cast<Map<String, dynamic>>()) {
+      _pendingMarkers.add((markerMs: m['ms'] as int, offsetAtMarkerMs: m['o'] as int));
+    }
+    final vsRaw = s['vs'] as List?;
+    if (vsRaw != null && _session != null) {
+      final vsFloats = Float32List.fromList(vsRaw.cast<num>().map((n) => n.toDouble()).toList());
+      _cachedStateValue?.dispose();
+      _cachedStateValue = await OrtValue.fromList(vsFloats, [2, 1, 128]);
+    }
+    final vcRaw = (s['vc'] as List).cast<num>();
+    for (int i = 0; i < _vadContextSamples && i < vcRaw.length; i++) {
+      _vadContext[i] = vcRaw[i].toDouble();
+    }
+    final pbRaw = (s['pb'] as List).cast<num>();
+    _pcmBufferLen = s['pbl'] as int;
+    for (int i = 0; i < _pcmBufferLen && i < pbRaw.length; i++) {
+      _pcmBuffer[i] = pbRaw[i].toDouble();
+    }
+  }
+
   bool get isCapturing => (_currentRefs.isNotEmpty && _speechFrameCount > 0) || _forcedByMarker;
 
   Future<bool> _runVad(Float32List samples512) async {
