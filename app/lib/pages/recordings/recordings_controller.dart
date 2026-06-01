@@ -1680,14 +1680,21 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   ///  - [toProcessMinutes] / [unprocessedBins]: raw `.bin` audio still waiting
   ///    to be decoded, and how many bin files that is.
   ///  - [draftMinutes]: duration already folded into open draft recordings.
-  /// Finalized-session bins and discarded/silence bins are excluded from both.
+  ///
+  /// The "to process" set mirrors exactly what [RecordingsManager.processAll]
+  /// will decode: every raw bin on disk EXCEPT those VAD already rejected (kept
+  /// on disk for the 48 h recovery window). It deliberately does NOT exclude
+  /// bins by finalized-session id — a single firmware session routinely splits
+  /// into a finalized recording PLUS a still-open `_draft` whose source bins are
+  /// kept on disk. Those kept bins carry the finalized recording's session id,
+  /// so the old exclusion hid them and the banner fell back to "Conversation in
+  /// progress" while real, decodable audio sat on disk. processAll excludes only
+  /// discarded bins, so the banner now matches it.
+  ///
   /// The banner shows "to process" whenever any raw audio is waiting and only
   /// falls back to the draft figure otherwise, so the two are reported
   /// separately rather than summed (no double-count to reconcile).
   ({double toProcessMinutes, double draftMinutes, int unprocessedBins}) _computeAccumulated(List<Batch> batches) {
-    final finalizedSessionIds =
-        batches.expand((b) => b.finalizedRecordings).map((c) => c.sessionId).whereType<int>().toSet();
-
     // Bins that VAD has already examined and rejected (still on disk for the
     // recovery window). They are no longer "waiting to process", so exclude them.
     final discardedRelBins = batches.expand((b) => b.discards).expand((d) => d.relativeBins).toSet();
@@ -1695,12 +1702,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     int rawBytes = 0;
     int unprocessedBins = 0;
     for (final f in batches.expand((b) => b.rawSegments)) {
-      final name = f.path.split('/').last;
-      final parts = name.split('_');
-      final sid = parts.length > 1 ? int.tryParse(parts[1].split('.').first) : null;
-
-      // Skip bins whose session is already finalized or that VAD discarded.
-      if (sid != null && finalizedSessionIds.contains(sid)) continue;
       final pathParts = f.path.split('/raw_segments/');
       if (pathParts.length == 2 && discardedRelBins.contains(pathParts.last)) continue;
 
