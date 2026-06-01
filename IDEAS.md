@@ -2,12 +2,6 @@
 
 ## Sync and Processing Improvements
 
-### Stale Total Segment Count during Sync
-- **Problem:** `RecordingsController` UI shows a stale total segment count (e.g., "4 segments to transfer") even if the device later reports more (e.g., 6 WALs).
-- **Analysis:** `RecordingsController.onWalSyncedProgress` has a guard that only backfills `_totalCount` from the service if it is currently `<= 0`. Since an initial estimate is often set at the start of the pipeline, this backfill never triggers when the real count is discovered during `syncAll`.
-- **Where to look for problem:** `app/lib/pages/recordings/recordings_controller.dart` (lines 550-575).
-- **Proposed Fix:** Update `onWalSyncedProgress` to allow updating `_totalCount` if the service reports a different/larger count than the cached estimate.
-
 ### Incorrect "Stopping" Subtext during Sync Cancellation
 - **Problem:** When cancelling sync, the UI immediately shows "Finishing current step" while the background process may still be transferring a large file segment to prevent corruption.
 - **Proposed Fix:** Make the "Stopping" state subtext dynamic based on the actual WAL service status.
