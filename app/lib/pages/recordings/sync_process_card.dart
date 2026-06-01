@@ -98,7 +98,7 @@ class SyncProcessCard extends StatelessWidget {
 
       case SyncProcessState.stopping:
         mainText = 'Stopping…';
-        subText = 'Finishing current step';
+        subText = data.isSyncing ? 'Transferring current file…' : 'Finishing current step';
         iconBg = Colors.grey.shade700;
         iconChild = const SizedBox(
           width: 16,
