@@ -83,8 +83,11 @@ class VadAudioProcessor {
   // to each 512-sample input so the model has temporal continuity. Reset
   // alongside _cachedStateValue on any state-reset path.
   final Float32List _vadContext = Float32List(_vadContextSamples);
-  // Ring-style sample buffer — index-based, never reallocated.
-  final Float32List _pcmBuffer = Float32List(1024);
+  // Sample buffer feeding the VAD windower — index-based, never reallocated.
+  // Drained inline at exactly _vadWindowSamples (see processSegmentFile), so it
+  // never holds more than one window regardless of decoded frame size. Sized at
+  // _vadWindowSamples is sufficient; the extra headroom is defensive only.
+  final Float32List _pcmBuffer = Float32List(_vadWindowSamples * 2);
   int _pcmBufferLen = 0;
 
   // Opus decoder
@@ -818,16 +821,20 @@ class VadAudioProcessor {
         if (pcmData != null) {
           for (int s = 0; s < pcmData.length; s++) {
             final sample = pcmData[s] / 32768.0;
-            _pcmBuffer[_pcmBufferLen++] = sample;
             if (sample.abs() > segmentMaxAmp) segmentMaxAmp = sample.abs();
-          }
-          while (_pcmBufferLen >= _vadWindowSamples) {
-            // Pass a zero-copy view into the buffer — _runVad copies into its
-            // pre-allocated input buffer before any await, so the shift below
-            // is safe even though this view aliases _pcmBuffer.
-            if (await _runVad(Float32List.sublistView(_pcmBuffer, 0, _vadWindowSamples))) isSpeech = true;
-            _pcmBuffer.setRange(0, _pcmBufferLen - _vadWindowSamples, _pcmBuffer, _vadWindowSamples);
-            _pcmBufferLen -= _vadWindowSamples;
+            _pcmBuffer[_pcmBufferLen++] = sample;
+            // Drain the moment a full window is buffered. Doing this inline —
+            // rather than appending the whole frame then draining — keeps
+            // _pcmBufferLen bounded at _vadWindowSamples no matter how many
+            // samples the decoder returned, so an oversized frame can never
+            // overrun the fixed buffer.
+            if (_pcmBufferLen == _vadWindowSamples) {
+              // Zero-copy view: _runVad copies it into its pre-allocated input
+              // buffer synchronously before any await, so resetting the length
+              // below is safe even though the view aliases _pcmBuffer.
+              if (await _runVad(Float32List.sublistView(_pcmBuffer, 0, _vadWindowSamples))) isSpeech = true;
+              _pcmBufferLen = 0;
+            }
           }
         }
 
