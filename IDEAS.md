@@ -1,5 +1,43 @@
 # Ideas
 
+## Sync and Processing Improvements
+
+### Dual/Conflicting Notifications during Processing
+- **Problem:** Both `DeviceProvider` (background) and `RecordingsController` (UI) update the same foreground notification with different string formats (percentage vs time remaining), causing the notification to flicker/alternate.
+- **Proposed Fix:** Centralize notification management. `DeviceProvider` should update a shared state, and only `RecordingsController` should be responsible for formatting and pushing the notification string.
+- **Where to look for problem:** 
+    - `app/lib/providers/device_provider.dart` (lines 665-670) - `onProcessingProgress` listener.
+    - `app/lib/pages/recordings/recordings_controller.dart` (lines 252-268) - `_updateForegroundProgress` method.
+- **Where to add fix:** Update `DeviceProvider` to not call `ForegroundUtil` directly during processing, and ensure `RecordingsController` is the primary writer.
+
+### Incorrect "Stopping" Subtext during Sync Cancellation
+- **Problem:** When cancelling sync, the UI immediately shows "Finishing current step" while the background process may still be transferring a large file segment to prevent corruption.
+- **Proposed Fix:** Make the "Stopping" state subtext dynamic based on the actual WAL service status.
+- **Where to look for problem:** `app/lib/pages/recordings/sync_process_card.dart` (line 101).
+- **Where to add fix:** Modify the `SyncProcessState.stopping` case in `sync_process_card.dart` to check `ServiceManager.instance().wal.getSyncs().isSyncing`.
+
+### "Calculating..." Race Condition in Notifications
+- **Problem:** Notification shows "< 1 min" briefly before jumping to the true duration (e.g., "686 minutes") because the calculation is asynchronous.
+- **Proposed Fix:** Add a guard to the notification formatter to show "Calculating..." if total minutes is 0 while in processing state.
+- **Where to look for problem:** `app/lib/pages/recordings/recordings_controller.dart` (lines 262-266).
+- **Where to add fix:** Update `_updateForegroundProgress` in `recordings_controller.dart` to check if `_totalMinutes == 0` during processing.
+
+### Auto-Sync Bypass of "Manual Only" Setting
+- **Problem:** App triggers an automatic sync on app resume even when set to "Manual Only".
+- **Proposed Fix:** Wrap the defensive resume-sync logic with a check for the sync interval setting.
+- **Where to look for problem:** `app/lib/providers/device_provider.dart` (lines 847-850).
+- **Where to add fix:** Add `if (SharedPreferencesUtil().backgroundSyncIntervalMinutes > 0)` before the `_doBackgroundSync()` call in `device_provider.dart`.
+
+### Processing Persistence (VAD Checkpointing)
+- **Problem:** Processing always restarts from the first unprocessed bin because VAD state and progress are not persisted across sessions.
+- **Proposed Fix:** Implement a checkpointing system that saves the Silero VAD RNN state and conversation metadata to a temporary file after each successful bin processing.
+- **Where to look for problem:** 
+    - `app/lib/services/recordings_manager.dart` (lines 1030-1400) - Isolate spawning and management.
+    - `app/lib/services/vad_audio_processor.dart` - `_state`, `_vadContext`, and `_currentRefs` management.
+- **Where to add fix:** 
+    - Update `VadAudioProcessor` to serialize/deserialize state.
+    - Update `RecordingsManager` isolate loop to save checkpoints and check for existing ones on startup.
+
 ## ACTIVE
 
 ### VAD state reset: centralize cleanup + flush partial window at conversation end
