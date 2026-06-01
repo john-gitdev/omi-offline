@@ -613,6 +613,18 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     }
     final checkpointPendingDeletes = List<String>.from(params.checkpointPendingDeletes);
 
+    // Checkpoint serialization cost scales with the in-flight conversation's ref
+    // count (uncapped by default), so writing every segment can rival decode time
+    // on long sessions. Throttle to one write per interval — a cancel between
+    // writes just reprocesses the few segments since the last checkpoint, which
+    // is cheap. Initialised so the first eligible segment always writes.
+    const checkpointMinIntervalMs = 5000;
+    int lastCheckpointMs = -checkpointMinIntervalMs;
+    // Deletes are held here until a checkpoint that excludes them from the live
+    // ref-state is durably written (see below) — so a throttled-away checkpoint
+    // can never leave the resume state pointing at a file already gone from disk.
+    final pendingDeleteBatch = <String>[];
+
     for (int i = params.checkpointResumeIndex; i < params.segmentPaths.length; i++) {
       if (cancelled) {
         break;
@@ -664,15 +676,10 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
       // Ask the main isolate to move any completed recordings out of temp.
       params.sendPort.send({'type': 'move'});
 
-      // Delete segment files that are fully processed and no longer referenced by any buffer.
-      final safeToDelete = processor.consumeSafeToDeletePaths();
-      if (safeToDelete.isNotEmpty) {
-        checkpointPendingDeletes.addAll(safeToDelete);
-        params.sendPort.send({
-          'type': 'delete_segments',
-          'paths': safeToDelete.toList(),
-        });
-      }
+      // Segment files that are fully processed and no longer referenced by any
+      // buffer become safe to delete — but hold them; they're only sent once a
+      // checkpoint excluding them is durably written, below.
+      pendingDeleteBatch.addAll(processor.consumeSafeToDeletePaths());
 
       params.sendPort.send({
         'type': 'progress',
@@ -681,16 +688,31 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
         'total': params.segmentPaths.length,
       });
 
-      if (params.checkpointPath != null) {
+      // Write a checkpoint when the throttle interval has elapsed, OR force one
+      // whenever deletes are pending — the persisted ref-state must be committed
+      // before any source bin leaves disk, otherwise a resume could reference a
+      // deleted file. Deletes only occur at conversation boundaries, so the
+      // common (no-delete) segments are genuinely throttled.
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      if (params.checkpointPath != null &&
+          (pendingDeleteBatch.isNotEmpty || nowMs - lastCheckpointMs >= checkpointMinIntervalMs)) {
         try {
           final cpState = await processor.serializeState();
           await File(params.checkpointPath!).writeAsString(jsonEncode({
             'lastIndex': i,
             'paths': params.segmentPaths,
             'state': cpState,
-            'pendingDeletes': checkpointPendingDeletes,
+            'pendingDeletes': [...checkpointPendingDeletes, ...pendingDeleteBatch],
           }));
+          lastCheckpointMs = nowMs;
+          // Checkpoint is durable → safe to release the held deletes now.
+          checkpointPendingDeletes.addAll(pendingDeleteBatch);
+          if (pendingDeleteBatch.isNotEmpty) {
+            params.sendPort.send({'type': 'delete_segments', 'paths': pendingDeleteBatch.toList()});
+            pendingDeleteBatch.clear();
+          }
         } catch (e) {
+          // Write failed — keep the deletes held; the next checkpoint retries.
           Logger.error('RecordingsManager isolate: checkpoint write failed ($e)');
         }
       }
@@ -722,7 +744,11 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
 
       params.sendPort.send({'type': 'move'});
 
-      final finalSafe = processor.consumeSafeToDeletePaths();
+      // On clean completion the checkpoint is deleted, so consistency between it
+      // and on-disk files no longer matters — flush any deletes still held from
+      // a failed checkpoint write alongside the run's final safe-to-delete set.
+      final finalSafe = processor.consumeSafeToDeletePaths()..addAll(pendingDeleteBatch);
+      pendingDeleteBatch.clear();
       if (finalSafe.isNotEmpty) {
         params.sendPort.send({
           'type': 'delete_segments',
@@ -793,13 +819,25 @@ class RecordingsManager {
   ///
   /// DANGER: `Isolate.kill(immediate)` while the isolate is parked in an
   /// ONNX/Opus FFI call can corrupt process-level native state and crash the
-  /// whole app. The fine-grained cancel check inside [VadAudioProcessor]'s
-  /// per-frame loop is designed to make cooperative cancel land within
-  /// milliseconds, so this path should fire only for a genuine native deadlock.
-  /// `beforeNextEvent` is preferred — it lets any in-flight native call finish
-  /// before the kill, dodging the FFI-corruption crash; `immediate` only
-  /// matters if even cooperative-cancel + event delivery are wedged, in which
-  /// case the app crash is already imminent.
+  /// whole app, so we use `beforeNextEvent` — it lets any in-flight native call
+  /// finish before the kill, dodging the FFI-corruption crash.
+  ///
+  /// The hard truth this method can't escape: `beforeNextEvent` AND cooperative
+  /// 'cancel' BOTH require the isolate to return to its event loop —
+  /// `beforeNextEvent` to schedule the kill, the cancel message to even be read
+  /// off the port. A genuine native deadlock (a synchronous FFI call that never
+  /// returns) services neither, so this method cannot actually reap that case;
+  /// the zombie isolate and its native resources leak until the OS reclaims the
+  /// process. `immediate` is the only priority that could kill such an isolate,
+  /// but at the cost of likely native-heap corruption — strictly worse than a
+  /// leaked isolate. We accept the leak: the per-frame cancel check in
+  /// [VadAudioProcessor] makes cooperative cancel land within milliseconds for
+  /// every realistic wedge, so a true unrecoverable native deadlock is the only
+  /// scenario that reaches here unhandled, and there is no clean kill for it
+  /// inside Dart's shared-process isolate model (only OS process isolation
+  /// would give a corruption-free hard kill). What this method DOES guarantee is
+  /// that `_activeIsolate` is cleared so the controller's state machine recovers
+  /// to idle even when the underlying isolate can't be reaped.
   static void forceResetProcessing() {
     _cancelRequested = true;
     _activeIsolateControlPort?.send('cancel'); // best-effort, in case it's only slow
