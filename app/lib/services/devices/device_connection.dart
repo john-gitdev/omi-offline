@@ -137,6 +137,11 @@ abstract class DeviceConnection {
   /// repeated failures as a liveness signal — if the underlying BLE silently
   /// died while the app still thinks it's connected, the write will fail.
   Future<bool> sendKeepAlive() async {
+    // An active storage operation (file transfer) keeps the BLE link busy.
+    // Writing the keep-alive byte to the same characteristic during a transfer
+    // races with the stream and times out (10 s), stalling the download. Skip
+    // it: data flowing over the link is already proof the connection is alive.
+    if (isStorageBusy) return true;
     if (await isConnected()) return performSendKeepAlive();
     return false;
   }
