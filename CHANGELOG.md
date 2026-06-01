@@ -1,5 +1,10 @@
 # Changelog
 
+### Marker pipeline: synthetic test harness (0.15.10)
+
+- **The marker pipeline now has a CI-enforced test harness.** Twenty-one tests cover the fifteen interacting fixes that were previously verified only by reading the code. Six tests exercise `VadAudioProcessor` directly against synthetic `.bin` payloads: mid-recording and start-of-recording tap offset, bad-UTC fallback to audio wall time, the >60 s drift guard, orphan EDL emission when no audio surrounds a tap, and session-end finalisation with trailing-frame suppression. Fifteen tests exercise `RecordingsManager` via new `@visibleForTesting` wrappers: `_writeMarkerEdl` collision policy (user-saved preservation, default-crop in-place overwrite, corrupt overwrite, noop); `_reanchorMarkerEdls` (default-crop reset, user-saved shift and clamp, cross-folder reanchor, non-matching noop); and `getMarkerConversations` dedup (same-segment dedup, userSaved canonicalization, non-pending-over-pending, legacy `_1.edl` discovery).
+- **`getMarkerConversations` now resolves filenames correctly on Windows.** The scanner used `e.path.split('/')` to extract the last path component from directory listings, which silently returned the full path on Windows (where `dart:io` joins child entries with `\`). Both usages replaced with `e.uri.pathSegments.last`, which normalises to forward slashes on all platforms.
+
 ### Processing robustness and notification cleanups (0.15.9)
 
 - **A decoded audio frame larger than the VAD window can no longer overrun the sample buffer.** The fixed-size PCM buffer was filled with a whole decoded frame before any 512-sample windows were drained, so a frame bigger than the buffer's headroom would have thrown a range error mid-decode. Windows are now drained the instant one is complete, bounding the buffer at a single window regardless of decoded frame size.
