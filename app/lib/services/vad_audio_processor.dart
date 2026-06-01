@@ -417,6 +417,7 @@ class VadAudioProcessor {
             'sessionChanged=$sessionChanged, gapMs=$gapMs (threshold=${_silenceDurationToSplitMs - _firmwareVadHoldMs}ms effective), '
             'lastEnd=${_lastSegmentEndTime?.toUtc()} segmentStart=${segmentStartTime.toUtc()} — flushing.',
           );
+          await _flushPartialWindow();
           _cachedStateValue?.dispose();
           _cachedStateValue = null;
           _vadContext.fillRange(0, _vadContextSamples, 0.0);
@@ -628,6 +629,7 @@ class VadAudioProcessor {
 
             if (gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump) {
               // Gap exceeds threshold — flush current recording, start new conversation.
+              await _flushPartialWindow();
               final speechMs = _speechFrameCount * frameDurationMs;
               final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
@@ -663,6 +665,11 @@ class VadAudioProcessor {
               _lastSpeechRefCount = 0;
               _lastSpeechChunkMs = 0;
               _recordingStartTime = newResumeTime;
+              _pcmBufferLen = 0;
+              // ignore: unawaited_futures, discarded_futures
+              _cachedStateValue?.dispose();
+              _cachedStateValue = null;
+              _vadContext.fillRange(0, _vadContextSamples, 0.0);
               Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
             } else {
               // Gap within threshold or clock jump — stitch, padding with silence so playback reflects real timing.
@@ -779,6 +786,7 @@ class VadAudioProcessor {
         // Max conversation duration cap (0 / disabled by default).
         if (_currentChunkDurationMs >= _maxChunkMs) {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
+          await _flushPartialWindow();
           final speechMs = _speechFrameCount * frameDurationMs;
           final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
@@ -810,6 +818,11 @@ class VadAudioProcessor {
           _lastSpeechRefCount = 0;
           _lastSpeechChunkMs = 0;
           _recordingStartTime = cutTime;
+          _pcmBufferLen = 0;
+          // ignore: unawaited_futures, discarded_futures
+          _cachedStateValue?.dispose();
+          _cachedStateValue = null;
+          _vadContext.fillRange(0, _vadContextSamples, 0.0);
         }
 
         offset += 4 + ((frameLength + 3) & ~3); // advance past 4-byte-aligned frame (matches SD card wire format)
@@ -847,6 +860,7 @@ class VadAudioProcessor {
   /// the buffer can't grow unbounded. Leaves state reset so the next speech
   /// frame starts a fresh conversation.
   Future<void> _splitOnSilence(List<String> savedFiles) async {
+    await _flushPartialWindow();
     if (_speechFrameCount > 0 && _lastSpeechRefCount > 0 && _lastSpeechRefCount <= _currentRefs.length) {
       final savedRefs = _currentRefs.sublist(0, _lastSpeechRefCount);
       final trailingSilence = _currentRefs.sublist(_lastSpeechRefCount);
@@ -893,6 +907,7 @@ class VadAudioProcessor {
   }
 
   Future<String?> flushRemaining({bool isDraft = false}) async {
+    await _flushPartialWindow();
     final speechMs = _speechFrameCount * frameDurationMs;
     final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
@@ -977,6 +992,25 @@ class VadAudioProcessor {
       Logger.error(
           'VadAudioProcessor: _resetState dropping ${_pendingMarkers.length} pending marker(s) — caller forgot _emitOrphanMarkers()');
       _pendingMarkers.clear();
+    }
+  }
+
+  /// Zero-pads the partial sample buffer to 512 samples and runs one final
+  /// VAD pass at a conversation boundary. If speech is detected in the tail,
+  /// updates the high-water marks so [_splitOnSilence] trims at the correct
+  /// frame rather than over-trimming by up to 1–2 frames (~32 ms).
+  ///
+  /// Must be called — with the current LSTM state intact — immediately before
+  /// any [_resetState] call or inline state reset. Is a no-op when the buffer
+  /// is empty or no Silero session is loaded (AAD mode).
+  Future<void> _flushPartialWindow() async {
+    if (_session == null || _pcmBufferLen == 0) return;
+    final padded = Float32List(_vadWindowSamples);
+    padded.setRange(0, _pcmBufferLen, _pcmBuffer);
+    // Remainder is already zero — Float32List default.
+    if (await _runVad(padded)) {
+      _lastSpeechRefCount = _currentRefs.length;
+      _lastSpeechChunkMs = _currentChunkDurationMs;
     }
   }
 
