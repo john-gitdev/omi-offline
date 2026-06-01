@@ -857,7 +857,8 @@ class DeviceProvider extends ChangeNotifier
       // pending segments (e.g. a quick background→foreground bounce before the
       // pause-disconnect completed), drain them now instead of leaving the
       // connection idle until the next scheduled tick.
-      if (!walSync.isSyncing && walSync.estimatedTotalSegments > 0) {
+      // Skip for Manual Only (interval <= 0) — user controls sync explicitly.
+      if (prefs.backgroundSyncIntervalMinutes > 0 && !walSync.isSyncing && walSync.estimatedTotalSegments > 0) {
         unawaited(_doBackgroundSync());
       }
       // Don't reset the timer if it's already ticking — preserves the overnight
