@@ -315,7 +315,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         // Anchor the stall watchdog, else the first poll would measure against
         // epoch 0 and instantly false-recover a healthy in-flight sync.
         _lastProgressAt = DateTime.now();
-        _totalCount = syncs.estimatedTotalSegments;
+        _totalCount = 0; // real count arrives via onWalSyncedProgress once device query completes
       } else if (RecordingsManager.isProcessingAny) {
         _spState = SyncProcessState.processing;
         _isTranscoding = RecordingsManager.isTranscoding.value;
@@ -413,7 +413,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (serviceIsSyncing && (_spState == SyncProcessState.idle || _spState == SyncProcessState.processing)) {
         _spState = SyncProcessState.syncing;
         _lastProgressAt = now;
-        _totalCount = syncs.estimatedTotalSegments;
+        _totalCount = 0; // real count arrives via onWalSyncedProgress once device query completes
         _syncedCount = 0;
         _syncSpeed = 0.0;
         _throttledUpdate(force: true);
@@ -735,7 +735,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _lastActiveStage = 'syncing';
 
     final syncs = ServiceManager.instance().wal.getSyncs();
-    _totalCount = syncs.estimatedTotalSegments;
+    _totalCount = 0; // real count arrives via onWalSyncedProgress once device query completes
     _syncedCount = 0;
     _syncSpeed = 0.0;
 
@@ -743,9 +743,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     await Future.delayed(const Duration(seconds: 1));
 
-    Logger.debug(
-      'RecordingsController: _runPipeline start — estimatedTotalSegments=$_totalCount',
-    );
+    Logger.debug('RecordingsController: _runPipeline start');
 
     notifyListeners();
     _persistProgress();
