@@ -68,14 +68,24 @@ class ProcessingSettings {
 }
 
 class VadAudioProcessor {
-  // Silero VAD session + LSTM state (reset on gap detection)
+  // Silero VAD session + persistent native state (reset on gap detection)
   OrtSession? _session;
-  Float32List _state = Float32List(2 * 1 * 128); // Silero v5+ recurrent state
+  // Silero v5+ recurrent state kept as a live OrtValue so the LSTM weights
+  // never make a round-trip through Dart between inference cycles. Null means
+  // "use zero-initialised state" — set by _resetState and consumed lazily.
+  OrtValue? _cachedStateValue;
+  // SR tensor is constant for the processor's lifetime — created once, reused.
+  OrtValue? _cachedSrValue;
+  // Pre-allocated [context(64) | window(512)] input buffer — filled in-place
+  // on every _runVad call, never reallocated.
+  final Float32List _windowedInputBuffer = Float32List(_vadContextSamples + _vadWindowSamples);
   // Silero v5+ requires the last 64 samples of the prior window prepended
   // to each 512-sample input so the model has temporal continuity. Reset
-  // alongside _state on any state-reset path.
-  Float32List _vadContext = Float32List(_vadContextSamples);
-  final List<double> _pcmWindow = []; // accumulates samples toward 512-window
+  // alongside _cachedStateValue on any state-reset path.
+  final Float32List _vadContext = Float32List(_vadContextSamples);
+  // Ring-style sample buffer — index-based, never reallocated.
+  final Float32List _pcmBuffer = Float32List(1024);
+  int _pcmBufferLen = 0;
 
   // Opus decoder
   final SimpleOpusDecoder? _decoder;
@@ -247,27 +257,41 @@ class VadAudioProcessor {
     _session = null;
     // ignore: unawaited_futures, discarded_futures
     s?.close();
+    // ignore: unawaited_futures, discarded_futures
+    _cachedStateValue?.dispose();
+    _cachedStateValue = null;
+    // ignore: unawaited_futures, discarded_futures
+    _cachedSrValue?.dispose();
+    _cachedSrValue = null;
   }
 
   bool get isCapturing => (_currentRefs.isNotEmpty && _speechFrameCount > 0) || _forcedByMarker;
 
-  Future<bool> _runVad(List<double> samples512) async {
+  Future<bool> _runVad(Float32List samples512) async {
     final session = _session;
     if (session == null) {
       // Hardware AAD mode — all audio treated as speech; splitting driven by firmware timestamps only.
       return true;
     }
-    // v5+ requires context + window concatenated: [_vadContext (64) | samples (512)] → [1, 576].
-    final windowed = Float32List(_vadContextSamples + _vadWindowSamples);
-    windowed.setRange(0, _vadContextSamples, _vadContext);
-    for (int i = 0; i < _vadWindowSamples; i++) {
-      windowed[_vadContextSamples + i] = samples512[i];
-    }
+
+    // Fill pre-allocated [context(64) | window(512)] buffer — no heap allocation.
+    _windowedInputBuffer.setRange(0, _vadContextSamples, _vadContext);
+    _windowedInputBuffer.setRange(_vadContextSamples, _vadContextSamples + _vadWindowSamples, samples512);
+
+    // SR tensor is constant — create once and keep alive for the processor's lifetime.
+    _cachedSrValue ??= await OrtValue.fromList(Int64List.fromList([sampleRate]), []);
+
+    // State tensor starts as zeros; after each inference the output stateN is
+    // adopted directly — no Dart round-trip for the 256 LSTM floats.
+    _cachedStateValue ??= await OrtValue.fromList(Float32List(2 * 1 * 128), [2, 1, 128]);
+
+    // Only the input tensor is transient — allocate once per call.
+    final inputTensor = await OrtValue.fromList(_windowedInputBuffer, [1, _vadContextSamples + _vadWindowSamples]);
 
     final inputs = <String, OrtValue>{
-      'input': await OrtValue.fromList(windowed, [1, _vadContextSamples + _vadWindowSamples]),
-      'state': await OrtValue.fromList(_state, [2, 1, 128]),
-      'sr': await OrtValue.fromList(Int64List.fromList([sampleRate]), []),
+      'input': inputTensor,
+      'state': _cachedStateValue!,
+      'sr': _cachedSrValue!,
     };
 
     Map<String, OrtValue>? outputs;
@@ -275,9 +299,14 @@ class VadAudioProcessor {
       outputs = await session.run(inputs);
       // Silero v5+ ONNX outputs: 'output' (prob), 'stateN' (recurrent state).
       final prob = ((await outputs['output']!.asFlattenedList()).cast<double>())[0];
-      _state = Float32List.fromList((await outputs['stateN']!.asFlattenedList()).cast<double>());
-      // Save the trailing 64 samples for the next call's context window.
-      _vadContext = Float32List(_vadContextSamples);
+      // Swap state OrtValues: adopt the output, dispose the old input.
+      // Keeps the LSTM state native-side; removes the 256-float Dart copy.
+      final prevState = _cachedStateValue;
+      _cachedStateValue = outputs['stateN'];
+      outputs.remove('stateN'); // exclude from bulk disposal below
+      // ignore: unawaited_futures, discarded_futures
+      prevState?.dispose();
+      // Update context buffer in-place — trailing 64 samples of this window.
       _vadContext.setRange(0, _vadContextSamples, samples512, _vadWindowSamples - _vadContextSamples);
       if (prob > _currentMaxVoiceProb) _currentMaxVoiceProb = prob;
       return prob > _speechThreshold;
@@ -288,10 +317,8 @@ class VadAudioProcessor {
       session.close();
       return true;
     } finally {
-      for (final t in inputs.values) {
-        // ignore: unawaited_futures, discarded_futures
-        t.dispose();
-      }
+      // ignore: unawaited_futures, discarded_futures
+      inputTensor.dispose();
       if (outputs != null) {
         for (final o in outputs.values) {
           // ignore: unawaited_futures, discarded_futures
@@ -390,9 +417,10 @@ class VadAudioProcessor {
             'sessionChanged=$sessionChanged, gapMs=$gapMs (threshold=${_silenceDurationToSplitMs - _firmwareVadHoldMs}ms effective), '
             'lastEnd=${_lastSegmentEndTime?.toUtc()} segmentStart=${segmentStartTime.toUtc()} — flushing.',
           );
-          _state = Float32List(2 * 1 * 128);
-          _vadContext = Float32List(_vadContextSamples);
-          _pcmWindow.clear();
+          _cachedStateValue?.dispose();
+          _cachedStateValue = null;
+          _vadContext.fillRange(0, _vadContextSamples, 0.0);
+          _pcmBufferLen = 0;
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
         } else if (_currentRefs.isNotEmpty && (_currentChunkDurationMs + gapMs) >= _maxChunkMs) {
@@ -552,9 +580,10 @@ class VadAudioProcessor {
               _emitOrphanMarkers();
             }
             _sessionEndPendingResume = true;
-            _pcmWindow.clear();
-            _state = Float32List(2 * 1 * 128);
-            _vadContext = Float32List(_vadContextSamples);
+            _pcmBufferLen = 0;
+            _cachedStateValue?.dispose();
+            _cachedStateValue = null;
+            _vadContext.fillRange(0, _vadContextSamples, 0.0);
           }
           offset += 20;
           continue;
@@ -680,13 +709,16 @@ class VadAudioProcessor {
         if (pcmData != null) {
           for (int s = 0; s < pcmData.length; s++) {
             final sample = pcmData[s] / 32768.0;
-            _pcmWindow.add(sample);
+            _pcmBuffer[_pcmBufferLen++] = sample;
             if (sample.abs() > segmentMaxAmp) segmentMaxAmp = sample.abs();
           }
-          while (_pcmWindow.length >= 512) {
-            final window = _pcmWindow.sublist(0, 512);
-            _pcmWindow.removeRange(0, 512);
-            if (await _runVad(window)) isSpeech = true;
+          while (_pcmBufferLen >= _vadWindowSamples) {
+            // Pass a zero-copy view into the buffer — _runVad copies into its
+            // pre-allocated input buffer before any await, so the shift below
+            // is safe even though this view aliases _pcmBuffer.
+            if (await _runVad(Float32List.sublistView(_pcmBuffer, 0, _vadWindowSamples))) isSpeech = true;
+            _pcmBuffer.setRange(0, _pcmBufferLen - _vadWindowSamples, _pcmBuffer, _vadWindowSamples);
+            _pcmBufferLen -= _vadWindowSamples;
           }
         }
 
@@ -929,6 +961,14 @@ class VadAudioProcessor {
     _silenceRunMs = 0;
     _lastSpeechRefCount = 0;
     _lastSpeechChunkMs = 0;
+    // Reset VAD model state so the next conversation starts with a clean LSTM.
+    // Not resetting these contaminates the first few VAD decisions of the new
+    // conversation with the previous conversation's recurrent state.
+    _pcmBufferLen = 0;
+    // ignore: unawaited_futures, discarded_futures
+    _cachedStateValue?.dispose();
+    _cachedStateValue = null;
+    _vadContext.fillRange(0, _vadContextSamples, 0.0);
     // Defensive clear: callers that discard MUST call _emitOrphanMarkers()
     // before _resetState() — otherwise the tap is lost silently. Anything
     // still in _pendingMarkers here is a bug in the caller; we wipe it so it
