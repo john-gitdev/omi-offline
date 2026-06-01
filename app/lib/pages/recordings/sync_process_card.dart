@@ -80,11 +80,16 @@ class SyncProcessCard extends StatelessWidget {
 
       case SyncProcessState.processing:
         mainText = 'Preparing conversations';
+        // Mirror the notification logic: show "Calculating…" until the total is
+        // known (totalMinutes == 0 during the async byte-count) so the card never
+        // flashes "< 1 min" for a large backlog.
         subText = data.isTranscoding
             ? 'Converting to ${data.audioSaveFormat}'
-            : (data.minutesRemaining >= 1
-                ? '~${data.minutesRemaining.ceil()} min of audio to process'
-                : (data.minutesRemaining >= 0 ? '< 1 min of audio to process' : 'Calculating…'));
+            : (data.totalMinutes == 0 || data.minutesRemaining < 0
+                ? 'Calculating…'
+                : (data.minutesRemaining >= 1
+                    ? '~${data.minutesRemaining.ceil()} min of audio to process'
+                    : '< 1 min of audio to process'));
         iconBg = Colors.deepPurpleAccent;
         iconChild = const SizedBox(
           width: 16,
