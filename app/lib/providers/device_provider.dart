@@ -702,6 +702,9 @@ class DeviceProvider extends ChangeNotifier
         }
 
         await ForegroundUtil.updateNotification(text: 'Processing recordings — preparing...');
+        // Remove-before-add: onAppPaused may already hold a registration, and
+        // ChangeNotifier allows duplicates that each fire separately.
+        RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
         RecordingsManager.processingProgress.addListener(_onProcessingProgress);
         // processAllCompletedSessions decodes in draft mode (a partial trailing
         // bin stays a draft and its source bin is kept for resume) and swallows
@@ -1190,7 +1193,11 @@ class DeviceProvider extends ChangeNotifier
       // stay disconnected in the background. Background syncs (timer /
       // heartbeat-sync-if-due) set _pendingBackgroundSync first, so they're
       // exempt.
-      if (!_isAppInForeground && !_pendingBackgroundSync && !_pendingSyncResume && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage) {
+      if (!_isAppInForeground &&
+          !_pendingBackgroundSync &&
+          !_pendingSyncResume &&
+          !isFirmwareUpdateInProgress &&
+          !_isOnFirmwareUpdatePage) {
         Logger.debug('App backgrounded: dropping background-completed connection');
         unawaited(ServiceManager.instance().device.disconnectDevice(isManual: true));
         return;
