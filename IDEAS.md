@@ -1,13 +1,5 @@
 # Ideas
 
-## Sync and Processing Improvements
-
-### Incorrect "Stopping" Subtext during Sync Cancellation
-- **Problem:** When cancelling sync, the UI immediately shows "Finishing current step" while the background process may still be transferring a large file segment to prevent corruption.
-- **Proposed Fix:** Make the "Stopping" state subtext dynamic based on the actual WAL service status.
-- **Where to look for problem:** `app/lib/pages/recordings/sync_process_card.dart` (line 101).
-- **Where to add fix:** Modify the `SyncProcessState.stopping` case in `sync_process_card.dart` to check `ServiceManager.instance().wal.getSyncs().isSyncing`.
-
 ## ACTIVE
 
 ### Marker Pipeline: Test Coverage
