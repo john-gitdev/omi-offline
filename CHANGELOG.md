@@ -1,5 +1,10 @@
 # Changelog
 
+### BLE bonding and notification fixes (0.16.3)
+
+- **Opening Debug Tools no longer triggers a Bluetooth pairing dialog or disconnects the device.** The `ensureConnection` default was `requiresBond: true`, so every routine GATT call (drop-counter poll, device info read, battery, VAD threshold) would mark the managed device as needing a bond. On the next reconnect `requestBond()` fired, Android showed a system pairing UI, the firmware rejected it with no passcode, and the connection dropped. Default changed to `requiresBond: false`; no existing caller requested bonding explicitly so the fix is global.
+- **Foreground notification no longer makes sound on every sync status update.** The Android notification channel was configured with `priority: HIGH` (audible on pre-Android-8) and `onlyAlertOnce: false`, causing a sound every time the notification text was updated during a sync or processing run. Priority lowered to `LOW` and `onlyAlertOnce: true` added so the alert fires only when the notification first appears.
+
 ### BLE stability and notification fixes (0.16.2)
 
 - **SD Write Drops polling no longer disconnects the device during file transfer.** The 2-second drop-counter poll (`19b10062`) was issuing a GATT characteristic read concurrently with the notification stream from an active file download. On Android this causes GATT Error 133 and a connection drop mid-sync. The poll now skips when the storage lock is held (`conn.isStorageBusy`), so the read only fires in the window between transfers.
