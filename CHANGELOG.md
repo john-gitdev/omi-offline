@@ -1,5 +1,9 @@
 # Changelog
 
+### Waveform display now shows dynamic range (0.16.11)
+
+- **Waveform bars now reflect subtle level changes instead of appearing as a solid rectangle.** Loud or steady recordings previously rendered as a flat block because amplitudes were mapped linearly. Waveform values are now converted to dBFS with a −40 dB floor so quiet passages and level variations are perceptually visible in both the recording player and the marker player.
+
 ### Fix: discarded audio no longer reprocessed every sync (0.16.10)
 
 - **Audio that VAD already discarded as noise is no longer re-decoded on every sync.** A date-key mismatch (raw-segment batches are keyed by epoch seconds misread as milliseconds, so they land in a 1970 bucket, while discard records are filed under the real date) left the reprocess-skip filter empty — so previously-discarded audio re-ran the full VAD pass each cycle, wasting battery and inflating the "~N min of audio to process" banner with audio that never produces a recording. The skip filter now reads the complete persisted discard set, and the banner estimate matches what will actually be processed. Adjustment Mode still keeps all bins for reprocessing, and Recover still brings a discarded day back.
