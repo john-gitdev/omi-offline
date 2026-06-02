@@ -2,7 +2,7 @@
 
 A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
 
-**Current versions:** App `0.16.10` · Firmware `oo-1.9.1`
+**Current versions:** App `0.17.0` · Firmware `oo-1.9.2`
 
 ---
 
@@ -92,7 +92,7 @@ Priority order (highest wins):
 | Priority | Condition | LED |
 |----------|-----------|-----|
 | 1 | Device off | Off |
-| 2 | Charging starts | Force LED on, continue |
+| 2 | Charging starts | Force LED on (restored to prior state on unplug), continue |
 | 3 | Double-tap flash event | ~1 s flash, overrides stealth. White = marker tap (auto mode); Green = manual recording start; Red = manual recording stop |
 | 4 | Stealth mode | Off |
 | 5 | Muted | Solid Red |
