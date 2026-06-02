@@ -2632,23 +2632,32 @@ class RecordingsManager {
     final edlFiles = dirEntities.whereType<File>().where((f) => f.path.endsWith('.edl')).toList();
     int deletedCount = 0;
     final filenamesToDelete = <String>{};
-    for (final conv in allToProcess) {
+    // ⚡ Bolt: Process files concurrently and remove sequential await .exists() checks.
+    // Reduces file I/O latency by avoiding N+1 sequential system calls for file existence checks and deletions.
+    await Future.wait(allToProcess.map((conv) async {
       if (conv.sessionId != null && availableSessionIds.contains(conv.sessionId)) {
         final audioFilename = conv.file.path.split('/').last;
         filenamesToDelete.add(audioFilename);
-        if (await conv.file.exists()) await conv.file.delete();
+        deletedCount++;
+
+        try {
+          await conv.file.delete();
+        } on FileSystemException catch (_) {}
+
         final metaFile = File('${conv.file.path.substring(0, conv.file.path.lastIndexOf('.'))}.meta');
-        if (await metaFile.exists()) await metaFile.delete();
+        try {
+          await metaFile.delete();
+        } on FileSystemException catch (_) {}
 
         // Also delete any raw .bin files that might have been moved into the
         // recordings folder (some pipelines do this for portability).
         final ts = conv.file.path.split('/').last.split('_').last.split('.').first;
         final recordingsBin = File('${conv.file.parent.path}/recording_fs320_$ts.bin');
-        if (await recordingsBin.exists()) await recordingsBin.delete();
-
-        deletedCount++;
+        try {
+          await recordingsBin.delete();
+        } on FileSystemException catch (_) {}
       }
-    }
+    }));
 
     // Delete EDL files referencing any deleted recording so the re-resolver
     // can recreate them after reprocessing. Without this, stale EDLs with a
