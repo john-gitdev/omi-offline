@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -97,7 +98,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           amplitudes.add(0.05);
           continue;
         }
-        final end = min(start + samplesPerBar, pcm.length);
+        final end = min(start + samplesPerBar, pcm.length) as int;
         int maxAbs = 0;
         for (int j = start; j < end; j++) {
           final abs = pcm[j].abs();
