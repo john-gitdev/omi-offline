@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+import 'package:omi/pages/recordings/waveform_utils.dart';
 
 enum _DragMode { none, left, right, seek }
 
@@ -94,7 +95,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
       final bytes = meta.readAsBytesSync();
       if (bytes.length < 408) return List.filled(200, 0.05);
       final bd = ByteData.sublistView(bytes);
-      return List.generate(200, (i) => bd.getUint16(8 + i * 2, Endian.little) / 65535.0);
+      return List.generate(200, (i) => logScale(bd.getUint16(8 + i * 2, Endian.little) / 65535.0));
     } catch (_) {
       return List.filled(200, 0.05);
     }
