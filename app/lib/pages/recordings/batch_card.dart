@@ -252,7 +252,11 @@ class GhostRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final timeRange = '${fmtHourMin(discard.startTime)}–${fmtHourMin(discard.endTime)}';
     final dur = _durationLabel(discard.duration);
-    final subLabel = discard.isNoise ? 'silenced by VAD' : 'too short';
+    final subLabel = discard.isNoise
+        ? 'below minimum speech'
+        : discard.reason == 'silence_only'
+            ? 'no speech detected'
+            : 'below minimum length';
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(8),

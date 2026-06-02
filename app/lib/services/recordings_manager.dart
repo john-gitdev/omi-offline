@@ -2906,6 +2906,7 @@ class RecordingsManager {
           relativeBins: (m['relativeBins'] as List).cast<String>(),
           sourceJsonl: jsonl,
         );
+        if (rec.reason == 'silence_trimmed') continue;
         if (seen.add(rec.id)) out.add(rec);
       } catch (e) {
         Logger.error('RecordingsManager: skipping malformed discard line in ${jsonl.path}: $e');

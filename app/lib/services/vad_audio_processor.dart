@@ -736,7 +736,7 @@ class VadAudioProcessor {
               // Gap exceeds threshold — flush current recording, start new conversation.
               await _flushPartialWindow();
               final speechMs = _speechFrameCount * frameDurationMs;
-              final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+              final bool tooShortSpeech = _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
               if (_currentRefs.isNotEmpty) {
                 if (tooShortSpeech) {
@@ -817,23 +817,28 @@ class VadAudioProcessor {
           pcmData = _decoder?.decode(input: opusBytes);
         } catch (_) {}
 
-        bool isSpeech = false;
+        // In AAD mode (no Silero session), every frame is speech by definition —
+        // counting only window-boundary frames (~12.5% of Opus frames) would
+        // severely undercount speechMs and trigger false noise discards.
+        bool isSpeech = _session == null;
         if (pcmData != null) {
           for (int s = 0; s < pcmData.length; s++) {
             final sample = pcmData[s] / 32768.0;
             if (sample.abs() > segmentMaxAmp) segmentMaxAmp = sample.abs();
-            _pcmBuffer[_pcmBufferLen++] = sample;
-            // Drain the moment a full window is buffered. Doing this inline —
-            // rather than appending the whole frame then draining — keeps
-            // _pcmBufferLen bounded at _vadWindowSamples no matter how many
-            // samples the decoder returned, so an oversized frame can never
-            // overrun the fixed buffer.
-            if (_pcmBufferLen == _vadWindowSamples) {
-              // Zero-copy view: _runVad copies it into its pre-allocated input
-              // buffer synchronously before any await, so resetting the length
-              // below is safe even though the view aliases _pcmBuffer.
-              if (await _runVad(Float32List.sublistView(_pcmBuffer, 0, _vadWindowSamples))) isSpeech = true;
-              _pcmBufferLen = 0;
+            if (_session != null) {
+              _pcmBuffer[_pcmBufferLen++] = sample;
+              // Drain the moment a full window is buffered. Doing this inline —
+              // rather than appending the whole frame then draining — keeps
+              // _pcmBufferLen bounded at _vadWindowSamples no matter how many
+              // samples the decoder returned, so an oversized frame can never
+              // overrun the fixed buffer.
+              if (_pcmBufferLen == _vadWindowSamples) {
+                // Zero-copy view: _runVad copies it into its pre-allocated input
+                // buffer synchronously before any await, so resetting the length
+                // below is safe even though the view aliases _pcmBuffer.
+                if (await _runVad(Float32List.sublistView(_pcmBuffer, 0, _vadWindowSamples))) isSpeech = true;
+                _pcmBufferLen = 0;
+              }
             }
           }
         }
@@ -897,7 +902,7 @@ class VadAudioProcessor {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
           await _flushPartialWindow();
           final speechMs = _speechFrameCount * frameDurationMs;
-          final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+          final bool tooShortSpeech = _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
           if (!tooShortSpeech) {
             // capEnded=true: VAD cut here because the recording hit the max-duration cap,
@@ -984,7 +989,7 @@ class VadAudioProcessor {
       _currentChunkDurationMs = _lastSpeechChunkMs;
 
       final speechMs = _speechFrameCount * frameDurationMs;
-      final tooShort = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+      final tooShort = _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
       if (tooShort) {
         final rec = _buildDiscardRecord('noise_silence_split');
         if (rec != null) _pendingDiscards.add(rec);
@@ -1018,7 +1023,7 @@ class VadAudioProcessor {
   Future<String?> flushRemaining({bool isDraft = false}) async {
     await _flushPartialWindow();
     final speechMs = _speechFrameCount * frameDurationMs;
-    final bool tooShortSpeech = _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+    final bool tooShortSpeech = _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
     if (_currentRefs.isEmpty ||
         (_discardShort && _currentChunkDurationMs < _minDurationMs && !_forcedByMarker) ||
