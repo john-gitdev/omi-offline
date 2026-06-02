@@ -74,6 +74,24 @@ void main() {
     expect(batches[1].rawSegments.length, 2);
   });
 
+  test('getBatches groups epoch-second bin filenames under the real date, not 1970', () async {
+    // Real device bins are named <epochSeconds>_<sessionId>.bin. The timestamp
+    // must be read as seconds (×1000); reading it as ms bucketed every bin into
+    // 1970, splitting it from same-day recordings/discards and defeating the
+    // reprocess-skip filter. 1780358400 = 2026-06-02 00:00:00 UTC (mid-year, so
+    // the local date is 2026 in any timezone).
+    final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
+    final session = Directory(p.join(rawDir.path, '1780358400'))..createSync(recursive: true);
+    File(p.join(session.path, '1780358400_2867336594.bin')).writeAsBytesSync([0]);
+
+    final manager = RecordingsManager();
+    final batches = await manager.getBatches();
+
+    expect(batches.length, 1);
+    expect(batches[0].dateString.startsWith('2026-'), true);
+    expect(batches[0].rawSegments.length, 1);
+  });
+
   test('getBatches sorts segments by filename within a day', () async {
     final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
     final deviceSession100Dir = Directory(p.join(rawDir.path, '100'))..createSync(recursive: true);
@@ -469,7 +487,9 @@ void main() {
           // 5 s later — within the 30 s merge tolerance (RTC drift).
           'startMs': base + 245000,
           'endMs': base + 360000,
-          'reason': 'silence_trimmed',
+          // Not silence_trimmed: getDiscardsForDate drops those (trailing
+          // silence of a saved recording), so it can't participate in a merge.
+          'reason': 'silence_only',
           'maxVoiceProb': 0.04,
           'relativeBins': ['session_n/c.bin'],
         },
