@@ -16,7 +16,7 @@ abstract class IDeviceService {
   void stop();
   Future<List<BtDevice>> discover({String? desirableDeviceId, int timeout = 5});
 
-  Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false, bool requiresBond = true});
+  Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false, bool requiresBond = false});
 
   void subscribe(IDeviceServiceSubscription subscription, Object context);
   void unsubscribe(Object context);
@@ -229,7 +229,7 @@ class DeviceService implements IDeviceService {
 
   final Mutex _mutex = Mutex();
   @override
-  Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false, bool requiresBond = true}) async {
+  Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false, bool requiresBond = false}) async {
     await _mutex.acquire();
     try {
       final currentId = _connection?.device.id;

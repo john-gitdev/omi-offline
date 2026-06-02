@@ -80,7 +80,8 @@ class ForegroundUtil {
           channelName: 'Omi BLE',
           channelDescription: 'Omi background services.',
           channelImportance: NotificationChannelImportance.LOW,
-          priority: NotificationPriority.HIGH,
+          priority: NotificationPriority.LOW,
+          onlyAlertOnce: true,
         ),
         iosNotificationOptions: const IOSNotificationOptions(
           showNotification: false,
