@@ -76,7 +76,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           final amplitudes = <double>[];
           for (int i = 0; i < barCount; i++) {
             final peak = bd.getUint16(8 + i * 2, Endian.little);
-            amplitudes.add(peak / 65535.0);
+            amplitudes.add(_logScale(peak / 65535.0));
           }
           return amplitudes;
         }
@@ -103,7 +103,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           final abs = pcm[j].abs();
           if (abs > maxAbs) maxAbs = abs;
         }
-        amplitudes.add(maxAbs / 32768.0);
+        amplitudes.add(_logScale(maxAbs / 32768.0));
       }
       return amplitudes;
     } catch (_) {
@@ -505,6 +505,13 @@ class _SeekButton extends StatelessWidget {
       ),
     );
   }
+}
+
+double _logScale(double x) {
+  const floorDb = -40.0;
+  if (x <= 0) return 0.0;
+  final db = 20.0 * log(x) / log(10);
+  return ((db - floorDb) / (-floorDb)).clamp(0.0, 1.0);
 }
 
 class _WaveformPainter extends CustomPainter {

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -94,7 +95,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
       final bytes = meta.readAsBytesSync();
       if (bytes.length < 408) return List.filled(200, 0.05);
       final bd = ByteData.sublistView(bytes);
-      return List.generate(200, (i) => bd.getUint16(8 + i * 2, Endian.little) / 65535.0);
+      return List.generate(200, (i) => _logScale(bd.getUint16(8 + i * 2, Endian.little) / 65535.0));
     } catch (_) {
       return List.filled(200, 0.05);
     }
@@ -635,6 +636,13 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
       ),
     );
   }
+}
+
+double _logScale(double x) {
+  const floorDb = -40.0;
+  if (x <= 0) return 0.0;
+  final db = 20.0 * log(x) / log(10);
+  return ((db - floorDb) / (-floorDb)).clamp(0.0, 1.0);
 }
 
 // ── Waveform painter ──────────────────────────────────────────────────────────
