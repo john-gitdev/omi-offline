@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import 'package:opus_dart/opus_dart.dart';
 import 'package:opus_flutter/opus_flutter.dart' as opus_flutter;
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/audio/aac_encoder.dart';
@@ -549,7 +550,8 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
   OrtSession? session;
   if (params.settings.vadEnabled && params.sileroModelPath != null) {
     try {
-      session = await OnnxRuntime().createSession(params.sileroModelPath!);
+      session = await OnnxRuntime()
+          .createSession(params.sileroModelPath!, options: await VadAudioProcessor.buildSileroSessionOptions());
       Logger.debug(
           'RecordingsManager isolate: Silero session — inputs=${session.inputNames} outputs=${session.outputNames}');
     } catch (e) {
@@ -952,26 +954,27 @@ class RecordingsManager {
 
         await Future.wait(
           files.map((file) async {
-            DateTime date;
+            String dateStr;
             try {
               final name = file.path.split('/').last;
               final tsStr = name.split('_').first;
               final ts = int.tryParse(tsStr);
-              if (ts != null && ts > 0) {
-                // If timestamp is uptime (very small), use lastModified as fallback for date grouping.
-                if (ts < 1000000000) {
-                  date = await file.lastModified();
-                } else {
-                  // Assume milliseconds
-                  date = DateTime.fromMillisecondsSinceEpoch(ts);
-                }
+              // The bin filename timestamp is epoch SECONDS (the WAL timerStart).
+              // Convert to ms and group via the canonical local-date helper, so
+              // raw bins land in the SAME date batch as their recordings and
+              // discard records. (Previously read as ms — `fromMillisecondsSinceEpoch(ts)`
+              // — so every UTC-stamped bin fell into a 1970 bucket, splitting it
+              // from same-day recordings/discards.) Uptime ticks (pre-time-sync,
+              // below kMinValidEpoch) and unparseable names fall back to mtime.
+              if (ts != null && ts > 946684800) {
+                dateStr = _dateStringFromMillis(ts * 1000);
               } else {
-                date = await file.lastModified();
+                dateStr = _dateStringFromMillis((await file.lastModified()).millisecondsSinceEpoch);
               }
             } catch (_) {
-              date = await file.lastModified();
+              dateStr = _dateStringFromMillis((await file.lastModified()).millisecondsSinceEpoch);
             }
-            rawSegmentsByDate.putIfAbsent(fmtDate(date), () => []).add(file);
+            rawSegmentsByDate.putIfAbsent(dateStr, () => []).add(file);
           }),
         );
       }
@@ -1093,8 +1096,10 @@ class RecordingsManager {
     // for the 48 h recovery window, but re-running VAD on them just re-derives
     // the same outcome and appends a duplicate line to discards.jsonl every
     // cycle. Recover/Delete/sweep all remove the record, after which the bin
-    // naturally re-enters the processing set.
-    final discardedRelBins = batches.expand((b) => b.discards).expand((d) => d.relativeBins).toSet();
+    // naturally re-enters the processing set. Uses the global persisted set
+    // (see [discardedRelBinPaths]) so this strip and the "minutes to process"
+    // estimate never disagree.
+    final discardedRelBins = await discardedRelBinPaths();
     if (discardedRelBins.isNotEmpty) {
       batches = batches.map((b) {
         final filtered = b.rawSegments.where((f) {
@@ -2885,6 +2890,35 @@ class RecordingsManager {
     return out;
   }
 
+  /// Relative bin paths (`<session>/<file>.bin` tail) that already have a
+  /// persisted discard record and are therefore NOT awaiting processing —
+  /// shared by [processAll]'s reprocess-strip and the "minutes to process"
+  /// estimate so the two never disagree.
+  ///
+  /// Reads the FULL persisted set rather than per-batch discards: a record is
+  /// filed under its conversation's local-date folder, which routinely differs
+  /// from the bin's own raw-segment batch (raw batches are keyed off the bin
+  /// filename's timestamp, and callers pre-filter to rawSegments-bearing days),
+  /// so a per-batch derivation drops cross-date records and the bins re-run VAD
+  /// every sync cycle (inflating "minutes to process", never finalizing).
+  /// `silence_trimmed` is excluded — recording-adjacent trailing silence,
+  /// pruned elsewhere, not a reprocess guard.
+  ///
+  /// Empty in Adjustment Mode, whose contract is "keep ALL bins for arbitrary
+  /// reprocessing" — the same carve-out [pruneConsumedBins] makes.
+  static Future<Set<String>> discardedRelBinPaths() async {
+    if (SharedPreferencesUtil().adjustmentMode) return const <String>{};
+    final out = <String>{};
+    for (final group in await _readAllDiscardRecords()) {
+      for (final rec in group.records) {
+        if (rec['reason'] == 'silence_trimmed') continue;
+        final bins = rec['relativeBins'];
+        if (bins is List) out.addAll(bins.cast<String>());
+      }
+    }
+    return out;
+  }
+
   /// Parses `recordings/<dateString>/discards.jsonl` into [DiscardRecord]s.
   /// Returns an empty list if the file does not exist. Malformed lines are
   /// skipped with a warning.
@@ -3210,7 +3244,7 @@ class RecordingsManager {
     final touchedFolders = <Directory>{};
     await for (final folder in rawDir.list()) {
       if (folder is! Directory) continue;
-      final folderName = folder.path.split('/').last;
+      final folderName = p.basename(folder.path);
       // session_<hex>/ holds pre-time-sync bins (uptime ticks, not UTC) — we
       // can't derive a wall-clock window for them, so leave them alone.
       if (folderName.startsWith('session_') || folderName.startsWith('unknown_') || folderName.startsWith('.')) {
@@ -3218,7 +3252,7 @@ class RecordingsManager {
       }
       await for (final binEntity in folder.list()) {
         if (binEntity is! File || !binEntity.path.endsWith('.bin')) continue;
-        final binName = binEntity.path.split('/').last;
+        final binName = p.basename(binEntity.path);
         final parts = binName.split('.').first.split('_');
         if (parts.isEmpty) continue;
         final timerStart = int.tryParse(parts.first);
@@ -3315,7 +3349,11 @@ class RecordingsManager {
     final rawSegmentsDir = Directory('${directory.path}/raw_segments');
     if (!await rawSegmentsDir.exists()) return;
 
-    final protected = await activeDiscardProtectedPaths();
+    // Normalise separators so the comparison holds regardless of host: the
+    // protected set is built with '/' literals while entity.path uses the
+    // platform separator (the '\' temp paths on a Windows test host would never
+    // match the '/'-built protected paths, silently deleting protected bins).
+    final protected = (await activeDiscardProtectedPaths()).map(p.normalize).toSet();
     if (protected.isEmpty) {
       await rawSegmentsDir.delete(recursive: true);
       Logger.debug('RecordingsManager: Deleted all raw segments after adjustment mode exit');
@@ -3326,7 +3364,7 @@ class RecordingsManager {
     int deleted = 0;
     await for (final entity in rawSegmentsDir.list(recursive: true)) {
       if (entity is! File || !entity.path.endsWith('.bin')) continue;
-      if (protected.contains(entity.path)) {
+      if (protected.contains(p.normalize(entity.path))) {
         kept++;
         continue;
       }
