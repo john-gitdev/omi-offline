@@ -87,6 +87,11 @@ class OmiBleManager private constructor(private val application: Application) {
     private var rssiKeepAliveRunnable: Runnable? = null
     private val rssiKeepAliveInterval = 3000L
 
+    private var storageKeepAliveRunnable: Runnable? = null
+    private val storageKeepAliveInterval = 15_000L
+    private val STORAGE_SERVICE_UUID = UUID.fromString("30295780-4301-eabd-2904-2849adfeae43")
+    private val STORAGE_CHAR_UUID    = UUID.fromString("30295781-4301-eabd-2904-2849adfeae43")
+
     private var bondCompletionCallback: ((Boolean) -> Unit)? = null
     private var bondTimeoutRunnable: Runnable? = null
     private var bondingAddress: String? = null
@@ -374,6 +379,46 @@ class OmiBleManager private constructor(private val application: Application) {
         rssiKeepAliveRunnable = null
     }
 
+    // Sends 0x32 (KEEP_ALIVE) to the storage characteristic every 15 s using
+    // WRITE_NO_RESPONSE so it bypasses the GATT command queue and never stalls
+    // an in-flight file read. Resets the firmware's 30 s idle-disconnect timer
+    // regardless of whether a data stream is active.
+    fun startStorageKeepAlive(address: String) {
+        stopStorageKeepAlive()
+        val runnable = object : Runnable {
+            override fun run() {
+                sendStorageKeepAliveNoResponse(address)
+                mainHandler.postDelayed(this, storageKeepAliveInterval)
+            }
+        }
+        storageKeepAliveRunnable = runnable
+        mainHandler.postDelayed(runnable, storageKeepAliveInterval)
+    }
+
+    fun stopStorageKeepAlive() {
+        storageKeepAliveRunnable?.let { mainHandler.removeCallbacks(it) }
+        storageKeepAliveRunnable = null
+    }
+
+    private fun sendStorageKeepAliveNoResponse(address: String) {
+        val addr = address.uppercase()
+        val gatt = connectedGatts[addr] ?: return
+        val characteristic = gatt.getService(STORAGE_SERVICE_UUID)?.getCharacteristic(STORAGE_CHAR_UUID) ?: return
+        val data = ByteArray(1) { 0x32 }
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(characteristic, data, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+            } else {
+                @Suppress("DEPRECATION")
+                characteristic.value = data
+                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                gatt.writeCharacteristic(characteristic)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "sendStorageKeepAliveNoResponse failed for $addr: ${e.message}")
+        }
+    }
+
     fun getBluetoothState(): String {
         val adapter = bluetoothAdapter ?: return "unsupported"
         return when (adapter.state) {
@@ -414,6 +459,7 @@ class OmiBleManager private constructor(private val application: Application) {
         servicesDiscoveredFor.remove(addr)
         discoveryTimeouts.remove(addr)?.let { mainHandler.removeCallbacks(it) }
         stopRssiKeepAlive()
+        stopStorageKeepAlive()
         val prefix = addr.lowercase()
         readCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { readCompletions.remove(it)?.invoke(Result.failure(Exception("Disconnected"))) }
         writeCompletions.keys().toList().filter { it.startsWith(prefix) }.forEach { writeCompletions.remove(it)?.invoke(Result.failure(Exception("Disconnected"))) }

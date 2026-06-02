@@ -1,5 +1,9 @@
 # Changelog
 
+### Native storage keep-alive — fix 30s idle disconnect during file reads (0.16.4)
+
+- **File transfers no longer time out with "Stream closed without EOT" on large files.** The firmware disconnects after 30 s of receiving no write command ("idle disconnect"). The Dart-layer keep-alive was skipped whenever a storage operation was in flight (`isStorageBusy`) — so any file read longer than 30 s would hit the firmware's idle timer mid-transfer. The fix moves the keep-alive to the native Android service: `OmiBleManager.startStorageKeepAlive()` sends `0x32` with `WRITE_TYPE_NO_RESPONSE` every 15 s, bypassing the GATT command queue entirely so it never stalls an in-flight read. The Dart keep-alive is unchanged (still serves as a liveness probe when storage is not busy).
+
 ### BLE bonding and notification fixes (0.16.3)
 
 - **Opening Debug Tools no longer triggers a Bluetooth pairing dialog or disconnects the device.** The `ensureConnection` default was `requiresBond: true`, so every routine GATT call (drop-counter poll, device info read, battery, VAD threshold) would mark the managed device as needing a bond. On the next reconnect `requestBond()` fired, Android showed a system pairing UI, the firmware rejected it with no passcode, and the connection dropped. Default changed to `requiresBond: false`; no existing caller requested bonding explicitly so the fix is global.
