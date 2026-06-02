@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omi/services/vad_audio_processor.dart';
+import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/frame_ref.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -129,6 +130,14 @@ ProcessingSettings _settings({required int minDurationMs, required bool discardS
   );
 }
 
+/// A non-null [OrtSession] placeholder. Host tests can't load the real Silero
+/// model (no native ONNX runtime), but the silence-split tests need
+/// `_session != null` so the VAD treats undecodable (null-decoder) frames as
+/// SILENCE instead of AAD-mode speech. The session is never invoked — the null
+/// decoder skips `_runVad` entirely — so a fromMap placeholder is sufficient.
+OrtSession _fakeSession() =>
+    OrtSession.fromMap({'sessionId': 'host-test-fake', 'inputNames': <String>[], 'outputNames': <String>[]});
+
 void main() {
   late Directory tempDir;
   late MockPathProviderPlatform mockPathProvider;
@@ -151,6 +160,13 @@ void main() {
         if (methodCall.method == 'deleteAll') return null;
         return null;
       },
+    );
+
+    // Mock flutter_onnxruntime so a placeholder OrtSession's close()/dispose()
+    // are no-ops (host tests have no native ONNX runtime).
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('flutter_onnxruntime'),
+      (MethodCall methodCall) async => null,
     );
 
     SharedPreferences.setMockInitialValues({'convertOpusToM4a': true});
@@ -342,6 +358,7 @@ void main() {
       final processor = VadAudioProcessor.fromSettings(
         settings: _settings(minDurationMs: 0, discardShort: false),
         outputDir: tempDir.path,
+        session: _fakeSession(),
       );
 
       // Host tests run with a null Opus decoder → every frame is treated as silence, so the
@@ -374,6 +391,7 @@ void main() {
       final processor = VadAudioProcessor.fromSettings(
         settings: _settings(minDurationMs: 0, discardShort: false),
         outputDir: tempDir.path,
+        session: _fakeSession(),
       );
 
       final startTime = DateTime(2024, 1, 1, 10, 0, 0);
@@ -732,8 +750,8 @@ void main() {
       // _isDerivedTimestamp=false (header has valid UTC). 10 frames before tap.
       // lastFrameWallTime = kBase + 9*20 = kBase+180.
       // markerUtcMs = kBase+180+90000 → drift 90s > 60s → audio time kept.
-      final file = makeTappedBin('drift.bin',
-          utcStartMs: kBase, before: 10, after: 10, markerUtcMs: kBase + 180 + 90000);
+      final file =
+          makeTappedBin('drift.bin', utcStartMs: kBase, before: 10, after: 10, markerUtcMs: kBase + 180 + 90000);
       final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
       await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
       await proc.flushRemaining(isDraft: true);
