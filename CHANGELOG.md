@@ -1,5 +1,9 @@
 # Changelog
 
+### Fix: OTA no longer wipes SD card or forces BLE re-pair (0.17.1)
+
+- **Firmware OTA no longer wipes BLE bonding keys or app settings.** The MCUmgr DFU was configured with `eraseAppSettings=true`, which wiped the NVS settings partition before every update. This deleted BLE bonds (requiring a re-pair on iOS after every flash) and deleted the stored firmware version string — causing the firmware's own version-change SD wipe to fire on every boot post-OTA, even when reflashing the same version. Setting `eraseAppSettings=false` restores correct behaviour: bonds survive OTA, and the SD wipe only triggers when the firmware version actually changes.
+
 ### Charging LED respects stealth mode; DFU no longer drops connection (0.17.0 / fw oo-1.9.2)
 
 - **Charging no longer permanently disables stealth mode.** Plugging in the charger still forces the LED on so you can see the charging indicator, but unplugging now restores whichever state the device was in before — stealth stays stealth, LED-on stays LED-on.
