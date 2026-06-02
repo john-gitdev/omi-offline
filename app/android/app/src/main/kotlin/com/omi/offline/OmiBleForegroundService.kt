@@ -257,6 +257,9 @@ class OmiBleForegroundService : Service() {
             Log.w(TAG, "fireDeviceReady: $addr disconnected during pipeline, skipping")
             return
         }
+        // Dart owns the notification when it has persisted sync/processing text; otherwise
+        // update the notification to "Connected" so it doesn't stay stuck at "Connecting...".
+        updateNativeNotification("Connected")
         bleManager.mainHandler.post {
             bleManager.flutterApi?.onDeviceReady(addr, services) {}
         }
@@ -381,6 +384,10 @@ class OmiBleForegroundService : Service() {
             val timeoutMs = if (autoConnect) CONNECTION_TIMEOUT_MS else 15_000L
 
             Log.i(TAG, "connectToDevice($source): $addr (autoConnect=$autoConnect, timeout=${timeoutMs}ms)")
+            // Flip back to "Connecting..." when retrying after a disconnect so the notification
+            // doesn't stay stuck at "Connected". Skip for the initial manageDevice call since
+            // onCreate already set "Connecting..." from lastDartNotification().
+            if (source != "manageDevice") updateNativeNotification(DEFAULT_NOTIF_TEXT)
             val gatt = try {
                 bleManager.connectGatt(addr, autoConnect = autoConnect)
             } catch (e: SecurityException) {
@@ -772,11 +779,24 @@ class OmiBleForegroundService : Service() {
 
     // ── Notification ──
     //
-    // No updateNotification(): this service writes the notification exactly once, at
-    // startForeground (onCreate), seeded from the last Dart-mirrored title/text (see
-    // lastDartNotification). After that, connection/sync state is owned by the Dart side,
-    // which shares the same notification id (2001) and channel; further native writes
-    // would clobber it.
+    // Dart owns the notification (id 2001, channel omi_ble_channel) whenever it has persisted
+    // sync/processing text into FLUTTER_PREFS. When the prefs are empty Dart has released
+    // control, and this service takes over: "Connecting..." while establishing and "Connected"
+    // once ready. updateNativeNotification() enforces this hand-off.
+
+    // Update notification 2001 only when Dart has not persisted custom text (i.e. no active
+    // sync/processing run owns the notification). Returns without writing if Dart owns it.
+    private fun updateNativeNotification(text: String) {
+        try {
+            val dartText = getSharedPreferences(FLUTTER_PREFS, MODE_PRIVATE)
+                .getString(PREFS_NOTIF_TEXT, null)
+            if (!dartText.isNullOrEmpty()) return
+            getSystemService(NotificationManager::class.java)
+                ?.notify(NOTIFICATION_ID, buildNotification(DEFAULT_NOTIF_TITLE, text))
+        } catch (e: Exception) {
+            Log.w(TAG, "updateNativeNotification failed: ${e.message}")
+        }
+    }
 
     // Last notification title/text Dart mirrored into SharedPreferences, or the
     // "Connecting..." fallback when nothing is set (cleared on stopForegroundTask).
