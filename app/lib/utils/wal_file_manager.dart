@@ -96,7 +96,6 @@ class WalFileManager {
       final jsonString = jsonEncode(jsonData);
       await _walFile!.writeAsString(jsonString);
 
-      Logger.debug('Successfully saved ${wals.length} WALs to file');
       return true;
     } finally {
       _lock.release();
