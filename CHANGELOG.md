@@ -1,5 +1,18 @@
 # Changelog
 
+### Faster recording save + WAV header fix (0.16.6)
+
+- **Recording save is faster across all formats (WAV, M4A, OGG).** The WAV path no longer writes PCM to a temporary `.raw` file and copies it back to add the header — it counts samples up front, writes the header first, and streams PCM straight to the final file, eliminating ~2× the file size in disk I/O on long recordings. Silence-gap waveform computation is now O(buckets) instead of O(samples) (a 2-minute gap dropped from ~1.9M loop iterations to constant time), and redundant event-loop yields were removed from all three save paths.
+- **Fixed a WAV corruption case when audio frames are dropped.** When a recording contains unreadable or undecodable frames, the single-pass WAV header is now patched with the true byte count after writing, so the `data`/RIFF sizes always match the file — preventing a noise tail, wrong duration, or "corrupt file" errors that could otherwise occur.
+
+### Foreground notification fully silent (0.16.6)
+
+- **The foreground notification no longer makes any sound or vibration.** The channel now explicitly sets `setSound(null, null)` and `enableVibration(false)`, and each notification is built with `.setSilent(true)` and `.setOnlyAlertOnce(true)` — covering cases where Android serves a cached channel config from a prior install.
+
+### LED off by default after boot (fw oo-1.9.1)
+
+- **LED now defaults to off after the boot sequence completes.** The initialization flash (white breathe → solid white → fade to off) still plays on every boot so you can confirm the device started correctly. After the fade, the LED stays dark. Triple-tap to toggle it on; triple-tap again to return to stealth.
+
 ### SD Write Drops status subtext during sync (0.16.5)
 
 - **SD Write Drops panel now shows "Waiting for sync to complete…" instead of "Reading drop counters…" when a file transfer is in progress.** The drop-counter poll is intentionally skipped during active storage operations to avoid GATT conflicts, but the UI previously showed the generic loading text regardless — making it look like a slow read rather than a deliberate wait.
