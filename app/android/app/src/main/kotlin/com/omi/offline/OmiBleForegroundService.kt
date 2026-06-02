@@ -821,6 +821,8 @@ class OmiBleForegroundService : Service() {
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(CHANNEL_ID, "Omi BLE", NotificationManager.IMPORTANCE_LOW)
+        channel.setSound(null, null)
+        channel.enableVibration(false)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
@@ -832,6 +834,8 @@ class OmiBleForegroundService : Service() {
             .setContentText(text)
             .setSmallIcon(applicationInfo.icon)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
             .setContentIntent(pi)
             .build()
     }
