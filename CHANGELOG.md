@@ -1,5 +1,11 @@
 # Changelog
 
+### Ghost bin sheet and debug UI polish (0.16.1)
+
+- **Ghost bin sheet no longer shows a raw "Reason" debug line.** The `Reason: … (voice_prob max …)` subtext has been removed — the description and expiry line are sufficient context for deciding whether to recover.
+- **"Recover (listen to decide)" renamed to "Recover to Recording"** for clarity.
+- **"Reset to zero" button in the SD Write Drops panel now spans the full width** and its style (border radius, padding, font weight) matches the other action buttons in the debug tools page.
+
 ### Ghost entry labels and AAD noise-discard fixes (0.16.0)
 
 - **"Silenced by VAD" no longer appears when hardware AAD is in use.** The speech-minimum check (`tooShortSpeech`) was not gated on the Silero session being active, so recordings could be marked as noise even when the app had no speech detector running and was relying entirely on the firmware's AAD. The check is now skipped when `_session == null`.
