@@ -200,7 +200,8 @@ class VadAudioProcessor {
     OrtSession? session;
     if (settings.vadEnabled) {
       try {
-        session = await OnnxRuntime().createSessionFromAsset('assets/models/silero_vad.onnx');
+        session = await OnnxRuntime()
+            .createSessionFromAsset('assets/models/silero_vad.onnx', options: await buildSileroSessionOptions());
         Logger.debug('VadAudioProcessor: Silero session — inputs=${session.inputNames} outputs=${session.outputNames}');
       } catch (e) {
         Logger.error('VadAudioProcessor: Failed to load Silero VAD model, AAD mode active: $e');
@@ -209,6 +210,50 @@ class VadAudioProcessor {
     Logger.debug(
         'VadAudioProcessor: init — ${session != null ? 'Silero VAD loaded' : 'AAD mode${settings.vadEnabled ? ' (model unavailable)' : ''}'}');
     return VadAudioProcessor._(outputDir: outputDir, decoder: decoder, session: session, settings: settings);
+  }
+
+  /// Tuned ONNX session options for the Silero VAD graph, shared by every
+  /// session-creation site (main isolate + background isolate).
+  ///
+  /// Silero is a tiny recurrent model invoked once per 512-sample / 32 ms
+  /// window — ~112k inferences per recorded hour. The per-call cost is fixed
+  /// overhead plus small sequential compute, not parallelisable work, so:
+  ///   - interOpNumThreads = 1: the graph is a single sequential chain;
+  ///     inter-op threads only add thread-pool sync overhead.
+  ///   - intraOpNumThreads = 1: for a model this small the fork/join cost of a
+  ///     multi-thread intra-op region exceeds the compute it saves. (This is
+  ///     the one knob worth A/B-profiling per device if save time regresses.)
+  ///   - XNNPACK when present: faster ARM CPU kernels for the conv/matmul ops,
+  ///     deterministic, with CPU fallback. Queried at runtime because the
+  ///     shipped ORT build may not bundle it.
+  // VAD ONNX tuning knobs — consts so they can be A/B'd by rebuilding and
+  // re-reading the provider/timing log. The `run` ms in the timing summary is
+  // the dial to watch when changing these. See NOTES.md "VAD perf".
+  static const int _vadIntraOpThreads = 1; // A/B done: 2 gave no real compute win (thermal confound) — see NOTES
+  static const int _vadInterOpThreads = 1;
+
+  static Future<OrtSessionOptions> buildSileroSessionOptions() async {
+    List<OrtProvider>? providers;
+    List<OrtProvider> available = const [];
+    try {
+      available = await OnnxRuntime().getAvailableProviders();
+      if (available.contains(OrtProvider.XNNPACK)) {
+        providers = const [OrtProvider.XNNPACK, OrtProvider.CPU];
+      }
+    } catch (_) {
+      // Provider probe failed — leave providers null so ORT uses its default.
+    }
+    // One-time line per session: confirms whether XNNPACK was actually
+    // available (else we silently ran default CPU) and records the thread
+    // config so each test's log is self-documenting.
+    Logger.debug('VadAudioProcessor: ORT providers available=$available '
+        'requested=${providers ?? "(ORT default CPU)"} '
+        'intraOp=$_vadIntraOpThreads interOp=$_vadInterOpThreads');
+    return OrtSessionOptions(
+      intraOpNumThreads: _vadIntraOpThreads,
+      interOpNumThreads: _vadInterOpThreads,
+      providers: providers,
+    );
   }
 
   /// Creates a processor from pre-captured settings — safe to call in a background isolate.
@@ -372,6 +417,22 @@ class VadAudioProcessor {
 
   bool get isCapturing => (_currentRefs.isNotEmpty && _speechFrameCount > 0) || _forcedByMarker;
 
+  // VAD timing instrumentation (debug-log only; gated by the dev-logs pref via
+  // Logger.debug). Accumulates wall-clock across each inference's three awaited
+  // platform-channel steps and emits an average every _vadTimingLogInterval
+  // runs. `create` and `read` do ~zero native compute, so their time is a proxy
+  // for the per-call channel-hop floor; `run` is that hop plus the actual ONNX
+  // compute. If create+read ≈ run, the platform channel dominates (→ a native
+  // batch runner, lever #2, is the real win); if run ≫ create+read, compute
+  // dominates (→ XNNPACK/quantisation matter more). Flip the const to false to
+  // compile the Stopwatch out entirely.
+  static const bool _vadTimingEnabled = true;
+  static const int _vadTimingLogInterval = 2000; // ~64 s of audio per summary
+  int _vadRunCount = 0;
+  int _vadCreateUs = 0;
+  int _vadRunUs = 0;
+  int _vadReadUs = 0;
+
   Future<bool> _runVad(Float32List samples512) async {
     final session = _session;
     if (session == null) {
@@ -391,7 +452,12 @@ class VadAudioProcessor {
     _cachedStateValue ??= await OrtValue.fromList(Float32List(2 * 1 * 128), [2, 1, 128]);
 
     // Only the input tensor is transient — allocate once per call.
+    final sw = _vadTimingEnabled ? (Stopwatch()..start()) : null;
     final inputTensor = await OrtValue.fromList(_windowedInputBuffer, [1, _vadContextSamples + _vadWindowSamples]);
+    if (sw != null) {
+      _vadCreateUs += sw.elapsedMicroseconds;
+      sw.reset();
+    }
 
     final inputs = <String, OrtValue>{
       'input': inputTensor,
@@ -402,8 +468,23 @@ class VadAudioProcessor {
     Map<String, OrtValue>? outputs;
     try {
       outputs = await session.run(inputs);
+      if (sw != null) {
+        _vadRunUs += sw.elapsedMicroseconds;
+        sw.reset();
+      }
       // Silero v5+ ONNX outputs: 'output' (prob), 'stateN' (recurrent state).
       final prob = ((await outputs['output']!.asFlattenedList()).cast<double>())[0];
+      if (sw != null) {
+        _vadReadUs += sw.elapsedMicroseconds;
+        if (++_vadRunCount % _vadTimingLogInterval == 0) {
+          final n = _vadRunCount;
+          Logger.debug('VadAudioProcessor: VAD per-inference avg over $n runs — '
+              'create ${(_vadCreateUs / n / 1000).toStringAsFixed(3)}ms, '
+              'run ${(_vadRunUs / n / 1000).toStringAsFixed(3)}ms, '
+              'read ${(_vadReadUs / n / 1000).toStringAsFixed(3)}ms '
+              '(channel floor ≈ create+read ${((_vadCreateUs + _vadReadUs) / n / 1000).toStringAsFixed(3)}ms)');
+        }
+      }
       // Swap state OrtValues: adopt the output, dispose the old input.
       // Keeps the LSTM state native-side; removes the 256-float Dart copy.
       final prevState = _cachedStateValue;
