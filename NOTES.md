@@ -6,7 +6,7 @@ Running log of investigated bugs, deferred decisions, and findings that don't fi
 
 ## VAD perf: timing diagnostics + native batch-runner plan
 
-**Status:** session options shipped (0.16.7) · timing instrumentation shipped · **first measurement in (2026-06-02): ~50/50 channel/compute, see below.** Next: confirm XNNPACK engaged + A/B threads (cheap) before committing to the native batch runner.
+**Status:** session options shipped (0.16.7) · timing instrumentation shipped · **investigation complete (2026-06-02): ~50/50 channel/compute; the compute half is dispatch-bound and unreducible (quantization structurally impossible; threads/XNNPACK flat). the native batch runner is the sole lever (~2× ceiling), now **deferred — full buildable spec in `IDEAS.md` → "VAD Native Batch Runner".**
 
 ### What I'm measuring (create / run / read)
 
@@ -47,35 +47,30 @@ create 0.84ms · run 2.75ms · read 0.62ms → ~4.2ms / inference
 
 1. **Confirm XNNPACK engaged.** Added a per-session log line (`ORT providers available=… requested=…`). If XNNPACK isn't in `available`, the options silently ran default CPU and the "XNNPACK" win never happened — fixing or accepting that is free.
 2. **A/B `_vadIntraOpThreads`** (1 / 2 / 4) — pinning to 1 may leave multi-core compute on the table. Watch the `run` ms.
-3. **Try an int8-quantized `silero_vad.onnx`** — could roughly halve compute for a model swap, no code change.
+3. **Try an int8-quantized `silero_vad.onnx`** — investigated and **ruled out** (structurally impossible — see "Compute half is dispatch-bound" below).
 
-Only after the compute half is minimised does the native batch runner's channel-half win become the clear next lever. Endgame (quantised compute ~1 ms native + batched ~0 channel) could take ~4.2 ms → ~1 ms on the biggest chunk of processing.
+All three are now resolved: XNNPACK confirmed engaged, threads flat, quantization impossible. **The compute half (~2.1 ms) is fixed for this model on this runtime**, so the native batch runner's channel-half win is the **sole remaining lever** — ceiling ~2× (~4.2 ms → ~2.2 ms on the biggest chunk of processing).
 
 **Experiment log:**
 
 - **XNNPACK: confirmed engaged** (2026-06-02). `available=[CPU, NNAPI, XNNPACK] requested=[XNNPACK, CPU]` — the 2.1 ms compute was already on XNNPACK, not a CPU fallback. NNAPI is also available but not worth chasing for a recurrent LSTM (per-call delegation × 112k + numeric drift). So the high compute is inherent to fp32 Silero on this device, not a misconfig.
-- **intraOp A/B — DONE: no real benefit** (2026-06-02). intraOp=2 `run` dropped 2.75 → ~1.52 ms, BUT `create` (0.84→0.55) and `read` (0.62→0.29) dropped proportionally — and threads can't touch those pure-channel ops. So the ~45% was **environmental (thermal/load: the 2.75 baseline was a 165 s sustained run → throttling; the 1.52 run was a quieter 52 s reprocess).** Load-normalized ratio `run/(create+read)`: **1.88 (intraOp=1) vs ~1.82 (intraOp=2) — flat.** ⇒ XNNPACK kernels for this tiny model are already thread-bound; **threads are a dead end.** Reverted to `intraOp=1` (resource-minimal). **Quantization is the only remaining compute lever.**
+- **intraOp A/B — DONE: no real benefit** (2026-06-02). intraOp=2 `run` dropped 2.75 → ~1.52 ms, BUT `create` (0.84→0.55) and `read` (0.62→0.29) dropped proportionally — and threads can't touch those pure-channel ops. So the ~45% was **environmental (thermal/load: the 2.75 baseline was a 165 s sustained run → throttling; the 1.52 run was a quieter 52 s reprocess).** Load-normalized ratio `run/(create+read)`: **1.88 (intraOp=1) vs ~1.82 (intraOp=2) — flat.** ⇒ XNNPACK kernels for this tiny model are already thread-bound; **threads are a dead end.** Reverted to `intraOp=1` (resource-minimal).
 - **Lesson:** absolute create/run/read ms is load-confounded (thermal throttling scales all three together). Use the `run/(create+read)` ratio for clean compute comparisons across runs.
 
-### Native batch runner (lever #2b) — implementation idea
+### Compute half is dispatch-bound — quantization is structurally impossible (2026-06-02)
 
-Goal: collapse the per-window channel round-trips **without reimplementing any VAD decision logic**.
+Cracked open `silero_vad.onnx` with onnxruntime + onnx (Python). The compute half (~2.1 ms) is **not** heavy matmul — it's **op-dispatch overhead across ~800 tiny nodes per inference**, which kills every compute lever at once:
 
-Today: Dart loops over 512-sample windows; per window it does create + run + read (3 channel hops) and threads the LSTM state by swapping OrtValues in Dart → ~340k hops/hour.
+- **Op census (recursing into the `If` subgraphs):** 12 Conv + 4 LSTM + 10 Relu + 2 Sigmoid, wrapped in **25 nested `If` nodes**, with **341 `Constant` nodes** and hundreds of shape ops (60 Slice, 46 Unsqueeze, 26 Concat, 20 each Shape/Gather/Cast…). The STFT front-end is built from primitives, not one op. Every node is a separate ORT kernel dispatch, so per-window cost tracks *dispatch count*, not FLOPs. That's exactly why XNNPACK and threads moved nothing — there is no big parallel matmul to accelerate.
+- **`quantize_dynamic` (QInt8) is a no-op here.** It only quantizes MatMul/Conv weights that are **top-level graph initializers** — but this model reports **0 initializers**: every weight is a `Constant` node buried inside the nested `If` branches, which the quantizer does not recurse into. Result: identical op histogram and the file got *larger* (2.33 MB → 2.38 MB). Nothing was quantized. The one heavy recurrent op, **LSTM, is not dynamically quantizable in ORT** regardless. Silero ships no official int8 model. (The top-level `If` exists only to switch the 8 k / 16 k path within one file.)
+- **fp16 considered, not pursued.** `convert_float_to_float16` *does* recurse into subgraphs (unlike the quantizer) so it would convert the weights, but ORT's CPU/XNNPACK EPs lack fp16 Conv/LSTM kernels for this op mix → they wrap each op in Cast→fp32→Cast. Expected neutral-to-regression on ARM; not worth a build/test cycle.
+- **Only way to cut compute = fewer nodes = a structurally simpler / distilled VAD.** Out of scope (retraining).
 
-2b keeps all decision/boundary/state-reset logic in Dart; only the inference handoff changes:
+**Conclusion: the ~2.1 ms compute is fixed for this model on this runtime. The native batch runner (channel half) is the sole lever — ~2× ceiling, identical math, zero accuracy risk.** Tooling lives in `~/AppData/Roaming/Python/Python314/site-packages` (onnxruntime 1.26 + onnx 1.21 + sympy); throwaway scripts in `%TEMP%/vadquant`.
 
-- Dart accumulates N consecutive windows' inputs (N × 576 floats) for a contiguous run of audio frames.
-- One new native method `runRecurrentBatch(inputs[N][576], initialState)` loops `session.run` N times **native-side**, threading `stateN → state` internally, and returns `[N probs]` (plus the final state) in a single response.
-- Dart consumes the N probs exactly as it consumes single probs today — split logic, markers, min-duration, `_currentMaxVoiceProb`, context buffer all unchanged.
+### Native batch runner (lever #2b) — DEFERRED, full spec in IDEAS.md
 
-Constraints:
-
-- **Batch only within a contiguous audio run.** The Dart loop resets Silero state at control frames (session-end `0xFFFFFFFC`, gap / VAD-resume `0xFFFFFFFD`, inter-file splits). Flush the batch at each of those boundaries so a batched inference never runs past a point where Dart would have reset state. Audio runs are conversation-length, so the win still lands.
-- **Context buffer.** Each window's input is `[trailing 64 of prev window | 512 new]`. Dart already maintains `_vadContext`; simplest is to keep building the 576-wide inputs in Dart (native just runs them).
-- **Needs native work.** `flutter_onnxruntime`'s `run` is one-shot and won't thread recurrent state across a batch, so this is a fork/extension of the package (add the batch method to the Kotlin + Swift plugins) or a thin custom ONNX method channel alongside it. Either way the Dart state machine is untouched — that's the whole point vs the full-native port (2a), which would dual-maintain the boundary logic in Kotlin + Swift.
-
-Expected win: ~N× fewer channel crossings (e.g. N=64 → ~340k hops/hr down to ~5k). **Only worth building if the log data shows `run ≈ create + read`.**
+The channel half is the sole remaining lever (~2× on VAD ≈ ~37 % off processing, identical math). It's a real cross-language build (self-contained `VadBatchRunner` channel + ORT dep on both platforms + a two-pass refactor of `processSegmentFile`) whose payoff is **backlog-only** — invisible on frequent incremental syncs. Decision (2026-06-02): **deferred.** The complete buildable design — contract, native template, the deferred-verdict refactor, staging, relevant files, trade-off — lives in `IDEAS.md` → "VAD Native Batch Runner". Revisit if post-sync backlog grind becomes a real pain point.
 
 ---
 
