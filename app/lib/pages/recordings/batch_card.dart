@@ -323,11 +323,6 @@ Future<void> showDiscardSheet(
           ),
           const SizedBox(height: 6),
           Text(
-            'Reason: ${d.reason}  (voice_prob max ${d.maxVoiceProb.toStringAsFixed(3)})',
-            style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-          ),
-          const SizedBox(height: 2),
-          Text(
             'Raw audio retained until ${fmtAbs(d.expiresAt.toLocal())}',
             style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
           ),
@@ -341,7 +336,7 @@ Future<void> showDiscardSheet(
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
               icon: const FaIcon(FontAwesomeIcons.rotateLeft, size: 14),
-              label: const Text('Recover (listen to decide)'),
+              label: const Text('Recover to Recording'),
               onPressed: () async {
                 Navigator.of(sheetCtx).pop();
                 await onRecover(d);
