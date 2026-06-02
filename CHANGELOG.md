@@ -1,5 +1,12 @@
 # Changelog
 
+### Ghost entry labels and AAD noise-discard fixes (0.16.0)
+
+- **"Silenced by VAD" no longer appears when hardware AAD is in use.** The speech-minimum check (`tooShortSpeech`) was not gated on the Silero session being active, so recordings could be marked as noise even when the app had no speech detector running and was relying entirely on the firmware's AAD. The check is now skipped when `_session == null`.
+- **Speech frame count is now accurate in AAD mode.** When Silero is disabled, every Opus frame is speech by definition — but the processor was only setting `isSpeech = true` on frames that happened to complete a 512-sample VAD window (~12.5% of frames), severely undercounting `speechMs`. The frame loop now initialises `isSpeech = true` in AAD mode and skips the PCM buffer accumulation entirely.
+- **Trailing-silence ghost entries are no longer shown.** `silence_trimmed` records (the quiet runout trimmed off the end of a saved recording) appeared as separate ghost entries even though the speech portion was already kept. They are now filtered at load time; the records remain on disk for bin-recovery tracking.
+- **Ghost entry labels are clearer.** "Silenced by VAD" → **"below minimum speech"** (Silero detected less speech than the *Minimum Speech Required* setting); "too short" is now split into **"no speech detected"** (entire buffer was silence) and **"below minimum length"** (recording shorter than the *Short Recordings* filter).
+
 ### Sync banner and transfer speed fixes (0.15.10)
 
 - **The sync banner no longer shows a stale segment count at startup.** The count was read from WALs persisted on disk from the previous session before the device was queried, so the banner would flash the wrong number (e.g. "4 segments") immediately on sync start. The count is now left at zero until `getMissingWals` completes and the first real progress callback arrives from the device — the banner shows "Scanning device…" in the interim.

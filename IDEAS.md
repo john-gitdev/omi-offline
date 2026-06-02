@@ -1,54 +1,5 @@
 # Ideas
 
-## ACTIVE
-
-### Marker Pipeline: Test Coverage
-
-**File:** `app/test/unit/recordings_manager_test.dart` (exists; doesn't yet cover the marker pipeline)
-
-The marker pipeline now has roughly fifteen interacting fixes (`vad_audio_processor.dart` orphan emission, `recordings_manager.dart` re-anchor / atomic-write / dedup / migration, firmware atomic session ID, UI long-press affordance). It's currently verified only by reading the code. The right next investment is a synthetic-input test harness so regressions land in CI instead of in the wild.
-
-### What to cover
-
-1. **`VadAudioProcessor.processSegmentFile` against synthetic .bin frames**
-   - Build a `Uint8List` containing: a `0xFFFFFFFB` header, N Opus frames (or 4-byte length-prefixed dummy payloads if Opus decode is hard to stub), a `0xFFFFFFFE` marker at frame N/2, more frames, end.
-   - Assert `_pendingEdlData` (via `consumePendingEdlData`) emits `{filename, markerMs, offsetMs}` with the expected offsetMs == (N/2 * 20).
-   - Variants: marker at offset 0 → fresh recording; marker after a 0xFFFFFFFD VAD-resume → recalibration; marker with bad UTC (< 2000-01-01) → fall back to audio time; marker with UTC drifting > 60 s from audio time → keep audio time (B8).
-   - Edge cases: marker followed by zero audio frames → orphan emit; marker → noise → marker → flush → exactly two orphans; encoder-null path (`_saveRecording` returns null) → orphans emitted not silently dropped (A1).
-
-2. **`RecordingsManager._writeMarkerEdl` collision policy**
-   - Pre-seed disk with an EDL having `userSaved: true` and custom crops; call `_writeMarkerEdl` with different segmentFilename; assert the EDL was rewritten in place with new segmentFilename but unchanged crops/userSaved.
-   - Pre-seed disk with a default-crop EDL; call `_writeMarkerEdl` with different filename; assert the EDL was overwritten in place (no `_1.edl` produced — B4/D1).
-   - Pre-seed disk with a corrupt (non-JSON) EDL; assert `_writeMarkerEdl` overwrites it cleanly.
-
-3. **`RecordingsManager._reanchorMarkerEdls`**
-   - Pre-seed an EDL with `segmentFilename = next.wav`, `userSaved=false`, `cropStart=0`, `cropEnd=10000`.
-   - Call `_reanchorMarkerEdls(from='next.wav', to='draft.wav', offsetShiftMs=300000, newDurationMs=400000, folders=[dir])`.
-   - Assert: segmentFilename rewritten to `draft.wav`; markerOffsetMs shifted by 300000; cropStart=0, cropEnd=400000 (default-crop reset, NOT shifted, NEW6/E5).
-   - Pre-seed a user-saved EDL (`userSaved=true`, `cropStart=2000`, `cropEnd=8000`); assert the shift applies and clamps to newDurationMs.
-   - Cross-folder: pass `folders=[dirA, dirB]`, drop a target EDL in `dirB`; assert it's rewritten.
-
-4. **`RecordingsManager.getMarkerConversations` dedup**
-   - Pre-seed two EDLs with the same markerMs and same segmentFilename → expect one MarkerConversation (segment-dedup).
-   - Pre-seed two EDLs with the same markerMs and different segmentFilenames → expect canonical = userSaved-first / non-pending / basename-asc (A4/D8).
-   - Pre-seed a legacy `marker_<ms>_1.edl` file → expect both to surface as distinct entries (transitional support).
-
-5. **`RecordingsManager` stitch failure paths**
-   - `_stitchOgg` / `_stitchWav` with a missing `.meta` for the draft → expect `_finalizeDraft` called and `nextFile` left in place (D3).
-   - `_reanchorMarkerEdls` returning false → expect `nextFile.delete()` skipped, audio stitched, EDL untouched (D2).
-
-### Why deferred to a separate session
-- Needs to think through what an "encoder-null" stub looks like — `_saveRecordingCore` reaches into platform channels (`AacEncoder.startEncoder`) that need to be mocked. Probably easiest with a fake decoder/encoder injected via constructor.
-- The fakes for `Directory`/`File` would let tests run on every dart-test invocation without filesystem dependencies; not strictly required if a `tmp_<test>` directory pattern is acceptable.
-- Want a focused PR that doesn't entangle with logic changes — easier to review one big test suite against a frozen pipeline.
-
-### Relevant files
-- `app/lib/services/vad_audio_processor.dart` — entry point: `processSegmentFile`
-- `app/lib/services/recordings_manager.dart` — entry point: `getMarkerConversations`, `_writeMarkerEdl`, `_reanchorMarkerEdls`
-- `app/test/unit/recordings_manager_test.dart` — existing test scaffold to extend
-
----
-
 ## DEFERRED
 
 ## Apple Watch Integration [minor] [Deferred]
