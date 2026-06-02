@@ -1,5 +1,15 @@
 # Changelog
 
+### Fix: discarded audio no longer reprocessed every sync (0.16.10)
+
+- **Audio that VAD already discarded as noise is no longer re-decoded on every sync.** A date-key mismatch (raw-segment batches are keyed by epoch seconds misread as milliseconds, so they land in a 1970 bucket, while discard records are filed under the real date) left the reprocess-skip filter empty — so previously-discarded audio re-ran the full VAD pass each cycle, wasting battery and inflating the "~N min of audio to process" banner with audio that never produces a recording. The skip filter now reads the complete persisted discard set, and the banner estimate matches what will actually be processed. Adjustment Mode still keeps all bins for reprocessing, and Recover still brings a discarded day back.
+- **Raw audio segments now group under their real date instead of January 1970.** The bin-filename timestamp (epoch seconds) was being read as milliseconds, so every segment was bucketed into 1970 and split from the same day's recordings in the batch list. Fixed at the source, so a day's raw segments, recordings, and discards share one batch — which also makes the reprocess-skip above correct by construction rather than by workaround.
+
+### Faster VAD processing + tuned ONNX session (0.16.9)
+
+- **Silero VAD now runs with tuned ONNX Runtime session options.** Both session-creation paths (foreground and the background processing isolate) now apply tuned threading and request the XNNPACK CPU execution provider when the device's ONNX build offers it, with automatic CPU fallback. Silero is a tiny recurrent model invoked ~112k times per recorded hour, so removing thread-pool overhead and using faster ARM CPU kernels speeds the decode/VAD pass with no change to VAD decisions.
+- **Added opt-in VAD timing diagnostics.** With "Save Diagnostic Logs to File" enabled, the processor logs average per-inference timing (tensor create / inference run / result read) every ~64 s of audio, plus a one-time line recording which ONNX execution provider (XNNPACK vs CPU) and thread config the session actually used — together used to determine whether the platform-channel round-trip or the ONNX compute is the bottleneck. No effect when diagnostic logging is off.
+
 ### Faster recording save + WAV header fix (0.16.6)
 
 - **Recording save is faster across all formats (WAV, M4A, OGG).** The WAV path no longer writes PCM to a temporary `.raw` file and copies it back to add the header — it counts samples up front, writes the header first, and streams PCM straight to the final file, eliminating ~2× the file size in disk I/O on long recordings. Silence-gap waveform computation is now O(buckets) instead of O(samples) (a 2-minute gap dropped from ~1.9M loop iterations to constant time), and redundant event-loop yields were removed from all three save paths.
