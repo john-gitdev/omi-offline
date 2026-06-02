@@ -1,5 +1,9 @@
 # Changelog
 
+### Forget Device button in Debug Tools (0.17.2)
+
+- **Added "Forget Device" to Debug Tools.** Clears the stored Bluetooth pairing so the app can rediscover the device fresh — without needing to uninstall. Use this if the device is visible but refuses to connect (e.g. after a firmware update wiped bonding keys). Placed at the bottom of Debug Tools, below Delete Problematic EDLs.
+
 ### Fix: OTA no longer wipes SD card or forces BLE re-pair (0.17.1)
 
 - **Firmware OTA no longer wipes BLE bonding keys or app settings.** The MCUmgr DFU was configured with `eraseAppSettings=true`, which wiped the NVS settings partition before every update. This deleted BLE bonds (requiring a re-pair on iOS after every flash) and deleted the stored firmware version string — causing the firmware's own version-change SD wipe to fire on every boot post-OTA, even when reflashing the same version. Setting `eraseAppSettings=false` restores correct behaviour: bonds survive OTA, and the SD wipe only triggers when the firmware version actually changes.
