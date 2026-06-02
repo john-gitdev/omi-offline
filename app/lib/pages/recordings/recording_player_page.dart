@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -10,6 +9,7 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart' show RecordingsController, UploadStatus;
 import 'package:omi/widgets/dialog.dart';
+import 'package:omi/pages/recordings/waveform_utils.dart';
 
 class ConversationPlayerPage extends StatefulWidget {
   final Conversation conversation;
@@ -76,7 +76,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           final amplitudes = <double>[];
           for (int i = 0; i < barCount; i++) {
             final peak = bd.getUint16(8 + i * 2, Endian.little);
-            amplitudes.add(peak / 65535.0);
+            amplitudes.add(logScale(peak / 65535.0));
           }
           return amplitudes;
         }
@@ -103,7 +103,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           final abs = pcm[j].abs();
           if (abs > maxAbs) maxAbs = abs;
         }
-        amplitudes.add(maxAbs / 32768.0);
+        amplitudes.add(logScale(maxAbs / 32768.0));
       }
       return amplitudes;
     } catch (_) {
