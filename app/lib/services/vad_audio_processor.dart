@@ -736,7 +736,8 @@ class VadAudioProcessor {
               // Gap exceeds threshold — flush current recording, start new conversation.
               await _flushPartialWindow();
               final speechMs = _speechFrameCount * frameDurationMs;
-              final bool tooShortSpeech = _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+              final bool tooShortSpeech =
+                  _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
               if (_currentRefs.isNotEmpty) {
                 if (tooShortSpeech) {
@@ -902,7 +903,8 @@ class VadAudioProcessor {
           Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
           await _flushPartialWindow();
           final speechMs = _speechFrameCount * frameDurationMs;
-          final bool tooShortSpeech = _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+          final bool tooShortSpeech =
+              _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
           if (!tooShortSpeech) {
             // capEnded=true: VAD cut here because the recording hit the max-duration cap,
@@ -1383,14 +1385,10 @@ class VadAudioProcessor {
           batchBuffer.add(silenceBytes);
           totalSamples += silenceSamples;
 
-          // Waveform for silence
-          for (int s = 0; s < silenceSamples; s++) {
-            currentWindowSamples++;
-            if (currentWindowSamples >= windowSize) {
-              dynamicPeaks.add(0.0);
-              currentWindowSamples = 0;
-            }
-          }
+          // Waveform for silence — O(buckets) not O(samples).
+          final totalNow = currentWindowSamples + silenceSamples;
+          dynamicPeaks.addAll(List.filled(totalNow ~/ windowSize, 0.0));
+          currentWindowSamples = totalNow % windowSize;
           batchFrameCount += (ms / frameDurationMs).ceil();
           if (batchFrameCount >= batchFrames) await flushBatch();
           continue;
@@ -1398,12 +1396,13 @@ class VadAudioProcessor {
 
         final ref = item as FrameRef;
         totalFrameRefs++;
-        if (i % 50 == 0) await Future.delayed(Duration.zero);
+        // Yield every 500 frames instead of 50 — readAsBytes() already yields on
+        // file transitions; the finer cadence is pure overhead in a dedicated isolate.
+        if (i % 500 == 0) await Future.delayed(Duration.zero);
 
         if (ref.segmentFile.path != currentFilePath) {
           currentFileBytes = await ref.segmentFile.readAsBytes();
           currentFilePath = ref.segmentFile.path;
-          await Future.delayed(Duration.zero);
         }
 
         if (currentFileBytes == null) {
@@ -1444,13 +1443,11 @@ class VadAudioProcessor {
         batchFrameCount++;
 
         if (batchFrameCount >= batchFrames) {
-          await flushBatch();
-          await Future.delayed(Duration.zero);
+          await flushBatch(); // encodeBuffer's MethodChannel round-trip already yields
         }
       }
 
       await flushBatch();
-      await Future.delayed(Duration.zero);
 
       if (currentWindowSamples > 0) {
         dynamicPeaks.add(currentWindowMax);
@@ -1598,23 +1595,20 @@ class VadAudioProcessor {
             }
           }
 
-          // Still need to update waveform metadata for silence
-          for (int s = 0; s < durationSamples; s++) {
-            currentWindowSamples++;
-            if (currentWindowSamples >= windowSize) {
-              dynamicPeaks.add(0.0);
-              currentWindowSamples = 0;
-            }
-          }
+          // Waveform metadata for silence — O(buckets) not O(samples).
+          final totalNow = currentWindowSamples + durationSamples;
+          dynamicPeaks.addAll(List.filled(totalNow ~/ windowSize, 0.0));
+          currentWindowSamples = totalNow % windowSize;
           totalSamples += durationSamples;
         } else {
           final ref = item as FrameRef;
-          if (i % 50 == 0) await Future.delayed(Duration.zero);
+          // Yield every 500 frames instead of 50 — readAsBytes() already yields on
+          // file transitions; the finer cadence is pure overhead in a dedicated isolate.
+          if (i % 500 == 0) await Future.delayed(Duration.zero);
 
           if (ref.segmentFile.path != currentFilePath) {
             currentFileBytes = await ref.segmentFile.readAsBytes();
             currentFilePath = ref.segmentFile.path;
-            await Future.delayed(Duration.zero);
           }
 
           if (currentFileBytes == null) continue;
@@ -1784,9 +1778,6 @@ class VadAudioProcessor {
   Future<String?> _saveWav(List<Object> refs, String dateFolderPath, int timestamp,
       {String prefix = 'recording', String suffix = '', bool capEnded = false}) async {
     final wavPath = '$dateFolderPath/${prefix}_$timestamp$suffix.wav';
-    final rawPath = '$dateFolderPath/${prefix}_$timestamp$suffix.raw';
-    final rawFile = File(rawPath);
-    final sink = rawFile.openWrite();
 
     const waveformBuckets = 200;
     const windowSize = 800;
@@ -1801,6 +1792,22 @@ class VadAudioProcessor {
     int skippedDecodeNull = 0;
     int skippedDecodeEmpty = 0;
 
+    // Pre-count samples so the WAV header can be written first, eliminating the
+    // two-pass raw→WAV copy (saves 2× file-size of disk I/O). Each Opus frame at
+    // 16 kHz / 20 ms decodes to exactly 320 samples — fixed by codec config.
+    int estimatedSamples = 0;
+    for (final item in refs) {
+      if (item is Duration) {
+        estimatedSamples += (item.inMilliseconds * sampleRate) ~/ 1000;
+      } else {
+        estimatedSamples += frameDurationMs * sampleRate ~/ 1000; // 320
+      }
+    }
+
+    final wavFile = File('$wavPath.tmp');
+    final sink = wavFile.openWrite();
+    sink.add(_generateWavHeader(estimatedSamples * 2, sampleRate, 1));
+
     try {
       String? currentFilePath;
       Uint8List? currentFileBytes;
@@ -1811,27 +1818,24 @@ class VadAudioProcessor {
         if (item is Duration) {
           final ms = item.inMilliseconds;
           final silenceSamples = (ms * sampleRate) ~/ 1000;
-          final silenceBytes = Uint8List(silenceSamples * 2); // 16-bit mono
-          sink.add(silenceBytes);
+          sink.add(Uint8List(silenceSamples * 2)); // 16-bit mono zeros
           totalSamples += silenceSamples;
-          for (int s = 0; s < silenceSamples; s++) {
-            currentWindowSamples++;
-            if (currentWindowSamples >= windowSize) {
-              dynamicPeaks.add(0.0);
-              currentWindowSamples = 0;
-            }
-          }
+          // Replace per-sample loop with arithmetic — O(buckets) not O(samples).
+          final totalNow = currentWindowSamples + silenceSamples;
+          dynamicPeaks.addAll(List.filled(totalNow ~/ windowSize, 0.0));
+          currentWindowSamples = totalNow % windowSize;
           continue;
         }
 
         final ref = item as FrameRef;
         totalFrameRefs++;
-        if (i % 50 == 0) await Future.delayed(Duration.zero);
+        // Yield every 500 frames instead of 50 — readAsBytes() already yields on
+        // file transitions; the finer cadence is pure overhead in a dedicated isolate.
+        if (i % 500 == 0) await Future.delayed(Duration.zero);
 
         if (ref.segmentFile.path != currentFilePath) {
           currentFileBytes = await ref.segmentFile.readAsBytes();
           currentFilePath = ref.segmentFile.path;
-          await Future.delayed(Duration.zero);
         }
 
         if (currentFileBytes == null) {
@@ -1873,19 +1877,28 @@ class VadAudioProcessor {
       await sink.flush();
       await sink.close();
 
-      // Assemble final WAV with header + raw PCM stream
-      final wavFile = File('$wavPath.tmp');
-      final wavSink = wavFile.openWrite();
-      try {
-        final header = _generateWavHeader(totalSamples * 2, sampleRate, 1);
-        wavSink.add(header);
-        await wavSink.addStream(rawFile.openRead());
-        await wavSink.flush();
-      } finally {
-        await wavSink.close();
+      // The header was written from a pre-count (320 samples/frame, no drops).
+      // Dropped frames (readFail/decodeNull/decodeEmpty) or a frame that decodes
+      // to ≠320 samples make the estimate diverge from the bytes actually written,
+      // which would corrupt the WAV (data chunk over/under-declared). Patch the two
+      // size fields with the real total. Skipped entirely in the common no-drop case.
+      if (totalSamples != estimatedSamples) {
+        final raf = await wavFile.open(mode: FileMode.append); // O_RDWR, no truncate
+        try {
+          final actualPcmBytes = totalSamples * 2;
+          final patch = ByteData(4);
+          patch.setUint32(0, 36 + actualPcmBytes, Endian.little); // RIFF chunk size @4
+          await raf.setPosition(4);
+          await raf.writeFrom(patch.buffer.asUint8List());
+          patch.setUint32(0, actualPcmBytes, Endian.little); // data chunk size @40
+          await raf.setPosition(40);
+          await raf.writeFrom(patch.buffer.asUint8List());
+        } finally {
+          await raf.close();
+        }
       }
 
-      await rawFile.delete();
+      if (currentWindowSamples > 0) dynamicPeaks.add(currentWindowMax);
 
       await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
           prefix: prefix, extension: 'wav', suffix: suffix, capEnded: capEnded);
@@ -1906,7 +1919,7 @@ class VadAudioProcessor {
       return wavPath;
     } catch (e) {
       Logger.error('VadAudioProcessor: _saveWav failed: $e');
-      if (await rawFile.exists()) await rawFile.delete();
+      if (await wavFile.exists()) await wavFile.delete();
       return null;
     }
   }
