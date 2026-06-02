@@ -4,6 +4,115 @@ Running log of investigated bugs, deferred decisions, and findings that don't fi
 
 ---
 
+## VAD perf: timing diagnostics + native batch-runner plan
+
+**Status:** session options shipped (0.16.7) · timing instrumentation shipped · **first measurement in (2026-06-02): ~50/50 channel/compute, see below.** Next: confirm XNNPACK engaged + A/B threads (cheap) before committing to the native batch runner.
+
+### What I'm measuring (create / run / read)
+
+`_runVad` (`app/lib/services/vad_audio_processor.dart`) emits this every 2000 inferences (~64 s of audio) when **Save Diagnostic Logs to File** is on:
+
+```
+VadAudioProcessor: VAD per-inference avg over 2000 runs — create 0.082ms, run 0.140ms, read 0.071ms (channel floor ≈ create+read 0.153ms)
+```
+
+Each inference crosses the Dart↔native platform channel 3× on the critical path:
+
+- **create** — `OrtValue.fromList` marshals the 576-float input window to native and builds the tensor. ~Zero native compute → a proxy for the pure channel-hop floor.
+- **run** — `session.run`: the same channel hop **plus** the actual Silero ONNX math.
+- **read** — `asFlattenedList` fetches the single output prob back across the channel. ~Zero native compute → also pure channel-hop cost.
+
+**Decision rule:**
+
+- `run ≈ create + read` → **the platform channel dominates, compute is nearly free.** → Build the native batch runner (below). XNNPACK/threads barely matter.
+- `run ≫ create + read` → **ONNX compute dominates.** → Native port won't help much; look at a quantized/smaller Silero, or chase XNNPACK gains.
+
+Silero runs ~112,500× per recorded hour (one 512-sample / 32 ms window each), so whichever term dominates is multiplied by that. Also sanity-check the totals against overall processing wall-time to confirm VAD is actually the bottleneck (vs Opus decode / AAC encode / disk I/O).
+
+**To collect:** enable "Save Diagnostic Logs to File" **before** starting a sync/process — the isolate captures the pref at launch (`recordings_manager.dart:1363`) — run a real recording through, then **Share Logs**.
+
+### Measured (2026-06-02) — ~50/50 channel/compute, VAD ≈ 75% of the run
+
+First on-device run (12 segments, ~16 min of recorded audio over a ~2 h span, ~30k inferences, 165 s total processing):
+
+```
+create 0.84ms · run 2.75ms · read 0.62ms → ~4.2ms / inference
+```
+
+- **Channel ≈ 2.0 ms/inf** (create 0.84 + read 0.62 + run's own hop ~0.6).
+- **ONNX compute ≈ 2.1 ms/inf** (run 2.75 − one hop).
+- VAD inference ≈ 30k × 4.2 ms ≈ **126 s of the 165 s run (~75%)** — the dominant processing cost.
+
+**Verdict: NOT channel-dominated — it's ~50/50.** So the native batch runner removes only the channel half → caps at ~2× on VAD (~60 s). The compute half is equally large and 2.1 ms is suspiciously high for Silero v5, so chase the cheap compute wins **first**:
+
+1. **Confirm XNNPACK engaged.** Added a per-session log line (`ORT providers available=… requested=…`). If XNNPACK isn't in `available`, the options silently ran default CPU and the "XNNPACK" win never happened — fixing or accepting that is free.
+2. **A/B `_vadIntraOpThreads`** (1 / 2 / 4) — pinning to 1 may leave multi-core compute on the table. Watch the `run` ms.
+3. **Try an int8-quantized `silero_vad.onnx`** — could roughly halve compute for a model swap, no code change.
+
+Only after the compute half is minimised does the native batch runner's channel-half win become the clear next lever. Endgame (quantised compute ~1 ms native + batched ~0 channel) could take ~4.2 ms → ~1 ms on the biggest chunk of processing.
+
+**Experiment log:**
+
+- **XNNPACK: confirmed engaged** (2026-06-02). `available=[CPU, NNAPI, XNNPACK] requested=[XNNPACK, CPU]` — the 2.1 ms compute was already on XNNPACK, not a CPU fallback. NNAPI is also available but not worth chasing for a recurrent LSTM (per-call delegation × 112k + numeric drift). So the high compute is inherent to fp32 Silero on this device, not a misconfig.
+- **intraOp A/B — DONE: no real benefit** (2026-06-02). intraOp=2 `run` dropped 2.75 → ~1.52 ms, BUT `create` (0.84→0.55) and `read` (0.62→0.29) dropped proportionally — and threads can't touch those pure-channel ops. So the ~45% was **environmental (thermal/load: the 2.75 baseline was a 165 s sustained run → throttling; the 1.52 run was a quieter 52 s reprocess).** Load-normalized ratio `run/(create+read)`: **1.88 (intraOp=1) vs ~1.82 (intraOp=2) — flat.** ⇒ XNNPACK kernels for this tiny model are already thread-bound; **threads are a dead end.** Reverted to `intraOp=1` (resource-minimal). **Quantization is the only remaining compute lever.**
+- **Lesson:** absolute create/run/read ms is load-confounded (thermal throttling scales all three together). Use the `run/(create+read)` ratio for clean compute comparisons across runs.
+
+### Native batch runner (lever #2b) — implementation idea
+
+Goal: collapse the per-window channel round-trips **without reimplementing any VAD decision logic**.
+
+Today: Dart loops over 512-sample windows; per window it does create + run + read (3 channel hops) and threads the LSTM state by swapping OrtValues in Dart → ~340k hops/hour.
+
+2b keeps all decision/boundary/state-reset logic in Dart; only the inference handoff changes:
+
+- Dart accumulates N consecutive windows' inputs (N × 576 floats) for a contiguous run of audio frames.
+- One new native method `runRecurrentBatch(inputs[N][576], initialState)` loops `session.run` N times **native-side**, threading `stateN → state` internally, and returns `[N probs]` (plus the final state) in a single response.
+- Dart consumes the N probs exactly as it consumes single probs today — split logic, markers, min-duration, `_currentMaxVoiceProb`, context buffer all unchanged.
+
+Constraints:
+
+- **Batch only within a contiguous audio run.** The Dart loop resets Silero state at control frames (session-end `0xFFFFFFFC`, gap / VAD-resume `0xFFFFFFFD`, inter-file splits). Flush the batch at each of those boundaries so a batched inference never runs past a point where Dart would have reset state. Audio runs are conversation-length, so the win still lands.
+- **Context buffer.** Each window's input is `[trailing 64 of prev window | 512 new]`. Dart already maintains `_vadContext`; simplest is to keep building the 576-wide inputs in Dart (native just runs them).
+- **Needs native work.** `flutter_onnxruntime`'s `run` is one-shot and won't thread recurrent state across a batch, so this is a fork/extension of the package (add the batch method to the Kotlin + Swift plugins) or a thin custom ONNX method channel alongside it. Either way the Dart state machine is untouched — that's the whole point vs the full-native port (2a), which would dual-maintain the boundary logic in Kotlin + Swift.
+
+Expected win: ~N× fewer channel crossings (e.g. N=64 → ~340k hops/hr down to ~5k). **Only worth building if the log data shows `run ≈ create + read`.**
+
+---
+
+## Bug: discarded bins reprocessed every sync cycle — FIXED (2026-06-02)
+
+**Symptom:** after sync the UI shows "22 min / 14 min of audio to process" but creates no new entry, and old bins re-run VAD every cycle. Surfaced while testing with no speech (adjustment mode off) — so every bin is noise, maximally visible.
+
+**The machinery that *should* prevent this (pre-existing, and it's correct):** when VAD discards a conversation as noise/too-short, it persists a discard record to `recordings/<localDate>/discards.jsonl` and `processAll` strips any bin with a discard record from the next run (the bins linger on disk for the 48 h recovery window, then the sweep deletes them). So a discarded bin should NOT re-run VAD.
+
+**Why it failed (the actual root cause):** the strip set was derived only from the *handed-in* batches' discards (`processAll`: `batches.expand((b) => b.discards)`), and that set came up empty because of a **date-key mismatch**:
+
+- Raw-segment batches are keyed by `DateTime.fromMillisecondsSinceEpoch(ts)` at `recordings_manager.dart:967` — but `ts` is the bin filename's epoch **seconds** (e.g. `1780375808`). Treated as ms, every UTC-stamped bin lands in a **1970** batch.
+- Discard records are filed under the conversation's real **local date** (2026-06-02).
+- So the bin's batch (1970, has rawSegments) and its discard record's batch (2026, no rawSegments) never coincide, and callers pre-filter with `.where((b) => b.rawSegments.isNotEmpty)` — dropping the 2026 discard-only batch before `processAll` sees it. Strip set empty ⇒ every discarded bin re-runs VAD forever, and the byte-based "minutes to process" estimate (computed straight off `rawSegments`) re-counts them.
+
+Confirmed in the log: the 07:20 run reprocessed 12 bins from 04:50–06:44 already discarded in the 06:39 run; `pruneConsumedBins` deleted only the 4 bins covered by the real 07:14–07:18 speech recordings.
+
+**Fix (shipped):** new `RecordingsManager.discardedRelBinPaths()` reads the **full** persisted discard set (all `discards.jsonl`), AM-gated, mirroring `getDiscardsForDate`'s `silence_trimmed` skip. Used by both `processAll`'s strip and the three post-sync estimate sites in `recordings_controller.dart` (`_isProcessableBin`), so reprocessing stops and the displayed minutes match what's actually processed. Robust to the mis-dating without touching batch identity. Recover/Delete/sweep still remove the record → bin re-enters; Adjustment Mode still keeps all bins.
+
+**Root mis-dating (`:967`) — also FIXED.** The seconds-as-ms read is corrected to `_dateStringFromMillis(ts * 1000)` (the canonical local-date helper, with the `kMinValidEpoch` 946684800 threshold; uptime/unparseable names still fall back to mtime). Raw bins now group under their real date alongside same-day recordings/discards. Regression test added: `getBatches groups epoch-second bin filenames under the real date, not 1970`.
+
+- **Non-AM (normal) processing is unchanged:** `processAllCompletedSessions` only filters by `finalizedRecordings` *in* AM, and `processAll` combines all batches into one stream regardless of date — so the regrouping changes only UI batch labelling and the now-working batch co-location, not what's processed or the estimate total.
+- **AM interaction (an improvement, not a regression):** with correct dates, a day that already has recordings joins the recording-bearing batch, so the background auto-processor skips it in AM — previously it re-ran the phantom 1970 batch every cycle. Explicit reprocess / AM-cleanup paths are unaffected.
+
+**Windows test failures — FIXED.** The 6 `recordings_manager_test.dart` failures were two separate issues:
+
+- **Path separators (5 tests):** `pruneConsumedBins` parsed the bin basename via `path.split('/')`, and `deleteAllRawSegments` compared `/`-built protected paths against the host-separated `entity.path` — both broke on `\` temp paths. Fixed with `p.basename` and `p.normalize` (imported `package:path`). No on-device change — Android paths are `/`, where these are identities.
+- **Stale coalescing test (1):** it fed a `silence_trimmed` record and expected it merged, but `getDiscardsForDate` intentionally drops `silence_trimmed` (trailing silence of a saved recording — added in the same coalesce feature commit). Corrected the test's record reason to a non-dropped one.
+
+`recordings_manager_test.dart` is now 49/49. Full suite went `+170 -8` → `+177 -2`.
+
+**Remaining 2 failures — also FIXED.** They were *not* wal/sync (those were just the tests *running* when the failure count printed) — both were in `vad_audio_processor_test.dart` (`consecutive in-stream silence splits…`, `real consecutive processor discards coalesce…`), failing deterministically (in isolation too), not from ordering. Cause: the 0.16.0 AAD fix (`isSpeech = _session == null`, commit f8005a0ab) made null-session frames count as *speech*, so these silence-split tests — which build the processor via `fromSettings` with no session — got 0 discards instead of 2. Fixed by handing them a non-null `OrtSession.fromMap` placeholder (never invoked — the host's null decoder skips `_runVad`) plus a `flutter_onnxruntime` channel mock so the placeholder's `close()` is a no-op.
+
+**Full suite is now green: `+179`, 0 failures** (baseline was `+170 -8`).
+
+---
+
 ## Firmware: LED Behavior
 
 ### Boot Sequence
