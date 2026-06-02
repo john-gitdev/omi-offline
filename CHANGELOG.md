@@ -1,5 +1,11 @@
 # Changelog
 
+### BLE stability and notification fixes (0.16.2)
+
+- **SD Write Drops polling no longer disconnects the device during file transfer.** The 2-second drop-counter poll (`19b10062`) was issuing a GATT characteristic read concurrently with the notification stream from an active file download. On Android this causes GATT Error 133 and a connection drop mid-sync. The poll now skips when the storage lock is held (`conn.isStorageBusy`), so the read only fires in the window between transfers.
+- **The foreground notification now updates immediately when the device connects.** Previously the Android `OmiBleForegroundService` wrote "Connecting…" once at `onCreate` and never updated it, so the notification stayed stuck at "Connecting…" even after the device was shown as connected in the app UI. The native service now flips to "Connected" when `fireDeviceReady` is called (unless a Dart-owned sync/processing notification is active), and back to "Connecting…" when a reconnect attempt begins — both changes are gated on Dart not having claimed the notification.
+- **WAL save log spam removed.** "Successfully saved X WALs to file" was emitted on every throttled persist tick (~once per second during sync), flooding the log. Removed; the surrounding `getMissingWals` and `deleting synced WAL` lines are sufficient.
+
 ### Ghost bin sheet and debug UI polish (0.16.1)
 
 - **Ghost bin sheet no longer shows a raw "Reason" debug line.** The `Reason: … (voice_prob max …)` subtext has been removed — the description and expiry line are sufficient context for deciding whether to recover.
