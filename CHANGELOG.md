@@ -1,5 +1,10 @@
 # Changelog
 
+### Charging LED respects stealth mode; DFU no longer drops connection (0.17.0 / fw oo-1.9.2)
+
+- **Charging no longer permanently disables stealth mode.** Plugging in the charger still forces the LED on so you can see the charging indicator, but unplugging now restores whichever state the device was in before — stealth stays stealth, LED-on stays LED-on.
+- **Firmware OTA update no longer disconnects mid-transfer.** The app was cancelling its keep-alive timer when starting a DFU, but the MCUmgr SMP protocol uses a different GATT service than the Omi storage characteristic — so the firmware's 30 s idle-disconnect timer was never being reset during the transfer. The keep-alive now continues running throughout DFU, preventing mid-flash disconnects.
+
 ### Waveform display now shows dynamic range (0.16.11)
 
 - **Waveform bars now reflect subtle level changes instead of appearing as a solid rectangle.** Loud or steady recordings previously rendered as a flat block because amplitudes were mapped linearly. Waveform values are now converted to dBFS with a −40 dB floor so quiet passages and level variations are perceptually visible in both the recording player and the marker player.
