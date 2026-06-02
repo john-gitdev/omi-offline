@@ -1,5 +1,9 @@
 # Changelog
 
+### SD Write Drops status subtext during sync (0.16.5)
+
+- **SD Write Drops panel now shows "Waiting for sync to complete…" instead of "Reading drop counters…" when a file transfer is in progress.** The drop-counter poll is intentionally skipped during active storage operations to avoid GATT conflicts, but the UI previously showed the generic loading text regardless — making it look like a slow read rather than a deliberate wait.
+
 ### Native storage keep-alive — fix 30s idle disconnect during file reads (0.16.4)
 
 - **File transfers no longer time out with "Stream closed without EOT" on large files.** The firmware disconnects after 30 s of receiving no write command ("idle disconnect"). The Dart-layer keep-alive was skipped whenever a storage operation was in flight (`isStorageBusy`) — so any file read longer than 30 s would hit the firmware's idle timer mid-transfer. The fix moves the keep-alive to the native Android service: `OmiBleManager.startStorageKeepAlive()` sends `0x32` with `WRITE_TYPE_NO_RESPONSE` every 15 s, bypassing the GATT command queue entirely so it never stalls an in-flight read. The Dart keep-alive is unchanged (still serves as a liveness probe when storage is not busy).
