@@ -26,7 +26,7 @@ LOG_MODULE_REGISTER(button, CONFIG_LOG_DEFAULT_LEVEL);
 
 extern bool is_off;
 volatile bool is_muted = false;
-volatile bool is_led_enabled = true;
+volatile bool is_led_enabled = false;
 volatile uint8_t marker_flash_count = 0;
 volatile marker_flash_color_t marker_flash_color = MARKER_FLASH_WHITE;
 
