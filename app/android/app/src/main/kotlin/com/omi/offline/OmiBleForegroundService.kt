@@ -165,6 +165,7 @@ class OmiBleForegroundService : Service() {
 
             startStabilityTimer(addr)
             bleManager.startRssiKeepAlive(addr)
+            bleManager.startStorageKeepAlive(addr)
         }
 
         override fun onGattDisconnected(address: String, gattHash: Int, status: Int) {
