@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
+import 'package:omi/gen/pigeon_communicator.g.dart';
+import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/recordings_manager.dart';
@@ -461,6 +463,49 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
+  Future<void> _forgetDevice() async {
+    Logger.debug('DebugTools: Forget Device tapped');
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        'Forget Device',
+        'This clears the stored Bluetooth pairing so the app can rediscover the device fresh. Use this if the device is visible but refuses to connect (e.g. after a firmware update wiped bonding keys). You will need to reconnect afterwards.',
+        confirmText: 'Forget',
+      ),
+    );
+    if (confirm != true) return;
+
+    final prefs = SharedPreferencesUtil();
+    final deviceId = prefs.btDevice.id;
+
+    final provider = Provider.of<DeviceProvider>(context, listen: false);
+
+    ServiceManager.instance().wal.getSyncs().cancelSync();
+    ServiceManager.instance().wal.getSyncs().setDevice(null);
+
+    if (deviceId.isNotEmpty) {
+      await ServiceManager.instance().device.forgetDevice(deviceId);
+      try {
+        await BleHostApi().unmanageDevice(deviceId);
+      } catch (_) {}
+    }
+
+    await prefs.btDeviceSet(BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0));
+    prefs.deviceName = '';
+
+    provider.setIsConnected(false);
+    await provider.setConnectedDevice(null);
+    provider.updateConnectingStatus(false);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Device forgotten — scan to reconnect')),
+    );
+  }
+
   Future<void> _cancelSync() async {
     Logger.debug('DebugTools: Cancel Download tapped');
     ServiceManager.instance().wal.getSyncs().cancelSync();
@@ -825,6 +870,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   color: Colors.redAccent,
                   onTap: _deleteProblematicEdls,
                 ),
+                const SizedBox(height: 12),
+                _DebugButton(
+                  label: 'Forget Device',
+                  description:
+                      'Clears the stored Bluetooth pairing so the app can rediscover the device fresh. Use if the device refuses to connect after a firmware update.',
+                  icon: FontAwesomeIcons.linkSlash,
+                  color: Colors.orangeAccent,
+                  onTap: _forgetDevice,
+                ),
               ],
             ],
           ),
@@ -937,8 +991,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               padding: const EdgeInsets.symmetric(vertical: 12),
               minimumSize: const Size(double.infinity, 0),
             ),
-            child: const Text('Reset to zero',
-                style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+            child: const Text('Reset to zero', style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
