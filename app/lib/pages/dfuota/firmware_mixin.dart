@@ -161,7 +161,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     final bytes = await file.readAsBytes();
     const configuration = mcumgr.FirmwareUpgradeConfiguration(
       estimatedSwapTime: Duration(seconds: 0),
-      eraseAppSettings: true,
+      eraseAppSettings: false,
       pipelineDepth: 1,
     );
 
