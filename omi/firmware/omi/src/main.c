@@ -136,10 +136,16 @@ void set_led_state()
         return;
     }
 
-    // Force LEDs ON if charging starts
-    if (is_charging && !is_led_enabled) {
+    // Track charging transitions to save/restore LED state
+    static bool prev_is_charging = false;
+    static bool led_state_before_charging = false;
+    if (is_charging && !prev_is_charging) {
+        led_state_before_charging = is_led_enabled;
         is_led_enabled = true;
+    } else if (!is_charging && prev_is_charging) {
+        is_led_enabled = led_state_before_charging;
     }
+    prev_is_charging = is_charging;
 
     // Priority 1: Marker Flash (Transient, overrides stealth)
     if (marker_flash_count > 0) {

@@ -923,7 +923,10 @@ class DeviceProvider extends ChangeNotifier
     _resumeReconnectDebounce?.cancel();
     _pauseDisconnectTimer?.cancel();
     _backgroundSyncTimer?.cancel();
-    _foregroundKeepAliveTimer?.cancel();
+    // Keep _foregroundKeepAliveTimer running: DFU uses the SMP service, not the
+    // Omi storage characteristic, so transport_mark_activity() never fires during
+    // the transfer. Without the keep-alive the firmware's 30 s idle-disconnect
+    // triggers mid-DFU and kills the connection.
 
     final walSync = ServiceManager.instance().wal.getSyncs();
     if (walSync.isSyncing) {
