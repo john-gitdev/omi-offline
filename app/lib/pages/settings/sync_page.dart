@@ -478,6 +478,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     try {
       final conn = await ServiceManager.instance().device.ensureConnection(dev.id);
       if (conn == null) return;
+      // Skip during active file transfer — a GATT read racing with the notification
+      // stream causes Error 133 on Android and drops the connection.
+      if (conn.isStorageBusy) return;
       final stats = await conn.getDropStats();
       if (!mounted) return;
       if (stats == null) {
