@@ -40,6 +40,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   DeviceDropStats? _dropBaseline;
   bool _dropsUnsupported = false;
   bool _dropsReading = false;
+  bool _dropsWaitingSync = false;
   // True once we've attempted to restore the persisted baseline this polling session.
   bool _baselineRestored = false;
 
@@ -77,6 +78,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     _dropStats = null;
     _dropBaseline = null;
     _dropsUnsupported = false;
+    _dropsWaitingSync = false;
     _baselineRestored = false;
   }
 
@@ -480,7 +482,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       if (conn == null) return;
       // Skip during active file transfer — a GATT read racing with the notification
       // stream causes Error 133 on Android and drops the connection.
-      if (conn.isStorageBusy) return;
+      if (conn.isStorageBusy) {
+        if (!_dropsWaitingSync) setState(() => _dropsWaitingSync = true);
+        return;
+      }
+      if (_dropsWaitingSync) setState(() => _dropsWaitingSync = false);
       final stats = await conn.getDropStats();
       if (!mounted) return;
       if (stats == null) {
@@ -870,11 +876,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
     final stats = _dropStats;
     if (stats == null) {
-      return const Row(
+      final waitLabel = _dropsWaitingSync ? 'Waiting for sync to complete…' : 'Reading drop counters…';
+      return Row(
         children: [
-          FaIcon(FontAwesomeIcons.circleNotch, size: 13, color: Colors.white38),
-          SizedBox(width: 8),
-          Text('Reading drop counters…', style: TextStyle(color: Colors.white38, fontSize: 12)),
+          const FaIcon(FontAwesomeIcons.circleNotch, size: 13, color: Colors.white38),
+          const SizedBox(width: 8),
+          Text(waitLabel, style: const TextStyle(color: Colors.white38, fontSize: 12)),
         ],
       );
     }
