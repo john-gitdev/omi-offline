@@ -425,7 +425,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
           reloadBatchesSilently().then((_) async {
             _pendingProcessingTransition = false;
             if (_isDisposed) return;
-            final processable = _batches.expand((b) => b.rawSegments).toList();
+            final discarded = await RecordingsManager.discardedRelBinPaths();
+            final processable =
+                _batches.expand((b) => b.rawSegments).where((f) => _isProcessableBin(f, discarded)).toList();
             final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
             final totalBytes = lengths.fold(0, (s, len) => s + len);
             if (_isDisposed) return;
@@ -449,7 +451,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
             reloadBatchesSilently().then((_) async {
               _pendingProcessingTransition = false;
               if (_isDisposed) return;
-              final processable = _batches.expand((b) => b.rawSegments).toList();
+              final discarded = await RecordingsManager.discardedRelBinPaths();
+              final processable =
+                  _batches.expand((b) => b.rawSegments).where((f) => _isProcessableBin(f, discarded)).toList();
               final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
               final totalBytes = lengths.fold(0, (s, len) => s + len);
               if (_isDisposed) return;
@@ -797,6 +801,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _isUserTriggered = false;
   }
 
+  /// True unless [f] is a raw bin that already has a discard record (and so is
+  /// not awaiting processing). Mirrors processAll's strip so the displayed
+  /// "minutes to process" matches what will actually be processed. [discarded]
+  /// comes from [RecordingsManager.discardedRelBinPaths] (empty in Adjustment
+  /// Mode).
+  static bool _isProcessableBin(File f, Set<String> discarded) {
+    final parts = f.path.split('/raw_segments/');
+    return parts.length != 2 || !discarded.contains(parts.last);
+  }
+
   Future<void> _runProcessing() async {
     final int gen = _pipelineGeneration;
     _lastActiveStage = 'processing';
@@ -819,7 +833,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     final bool backgroundMode = !_isForcePipeline;
 
-    final allRaw = activeBatches.expand((b) => b.rawSegments).toList();
+    final discarded = await RecordingsManager.discardedRelBinPaths();
+    final allRaw = activeBatches.expand((b) => b.rawSegments).where((f) => _isProcessableBin(f, discarded)).toList();
     final totalBytes = allRaw.fold(0, (sum, f) {
       try {
         return sum + f.lengthSync();
