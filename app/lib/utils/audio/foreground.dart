@@ -111,11 +111,17 @@ class ForegroundUtil {
     _isStarting = true;
 
     try {
-      // Stop first if already running — Android 14+ lets users dismiss foreground
-      // service notifications; updateService() on a dismissed service doesn't
-      // repost it, but stopping then starting guarantees a fresh notification.
       if (await FlutterForegroundTask.isRunningService) {
-        await FlutterForegroundTask.stopService();
+        // Service already running: update in place. updateService() reposts the
+        // notification under the same id (bringing it back if the user swiped it
+        // away on Android 14+) and — unlike stopService()+startService() — is NOT
+        // subject to the Android 12+ "start FGS from background" restriction,
+        // which would throw and leave us with no foreground service during a
+        // background sync.
+        return await FlutterForegroundTask.updateService(
+          notificationTitle: title,
+          notificationText: text,
+        );
       }
       final result = await FlutterForegroundTask.startService(
         notificationTitle: title,
