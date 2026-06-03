@@ -2,6 +2,14 @@
 
 ## App
 
+### 0.18.7
+
+- **Fix: Reprocess Day now correctly identifies sessions from filenames.** The legacy identification logic (used for older recordings without precise bin-mapping) was incorrectly trying to parse session IDs from folder names. Since folders were updated to use timestamps, this check failed, preventing recordings from being cleared or deleted. The system now extracts IDs from the `.bin` filenames, restoring full "Reprocess Day" functionality.
+- **Fix: Reprocess Day UI now reliably shows a blank slate before processing starts.** The previously implemented `endOfFrame` yield was occasionally too fast for the Android rendering engine to paint the empty list before heavy disk I/O blocked the main thread. A 50ms delay has been added to ensure the "optimistic delete" is always visible to the user.
+- **Fix: Android 14+ foreground notification returns if swiped away.** Android 14 allows users to dismiss ongoing foreground notifications. The app now handles the dismissal intent by immediately re-posting the notification, ensuring the sync/processing service remains protected from OS termination.
+- **Fix: Real-time WAL sync speed updates.** The sync speed calculation was moved from the "segment boundary" callback to the packet-level progress callback. KB/s values in the UI now update smoothly at ~50Hz instead of jumping in large bursts at the end of each multi-megabyte file.
+- **New: Adjustment Mode Banner.** Added a persistent UI banner when Adjustment Mode is active to remind the user that all raw audio is being displayed and that sync-time estimates include already-processed data.
+
 ### 0.18.6
 
 - **Fix: Reprocess Day now correctly identifies sessions from folder names.** The identification logic previously looked at bin filenames (timestamps), causing a mismatch with the session IDs stored in recordings. The system now extracts IDs from the parent session folder, ensuring that recordings with backing audio are correctly identified for surgical deletion.
