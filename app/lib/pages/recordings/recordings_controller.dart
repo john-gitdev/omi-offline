@@ -874,6 +874,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     WakelockPlus.enable();
     await ForegroundUtil.startForegroundTask(text: 'Processing recordings — preparing...');
+    _updateForegroundProgress(); // overwrite "preparing..." with the actual minutes now that totalMinutes is known
     try {
       await _manager.processAll(
         processableBatches,
