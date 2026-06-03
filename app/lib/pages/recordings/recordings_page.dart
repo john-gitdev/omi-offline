@@ -298,6 +298,52 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
   }
 
+  Future<void> _handleAdjustmentModeBannerTap() async {
+    if (_controller.spState != SyncProcessState.idle) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Wait for the current operation to finish first.')),
+      );
+      return;
+    }
+    final hasBins = _controller.batches.any((b) => b.rawSegments.isNotEmpty);
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF1C1C1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Turn off Adjustment Mode?', style: TextStyle(color: Colors.white)),
+        content: Text(
+          hasBins
+              ? 'All raw bins will be reprocessed with your current VAD settings. Any recording backed by a bin will be replaced; recordings without a bin backup are kept as-is.'
+              : 'Adjustment mode will be turned off. The list will return to showing finalized recordings only.',
+          style: const TextStyle(color: Colors.white70, fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(true),
+            child: Text(
+              hasBins ? 'Turn Off & Reprocess' : 'Turn Off',
+              style: const TextStyle(color: Colors.deepPurpleAccent),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+    _prefs.adjustmentMode = false;
+    unawaited(RecordingsManager.runRecoverySweep());
+    setState(() {});
+    if (hasBins) {
+      unawaited(_controller.runAdjustmentCleanup());
+    } else {
+      RecordingsManager.notifyRecordingsChanged();
+    }
+  }
+
   Future<void> _runAdjustmentCleanup() async {
     if (_controller.spState != SyncProcessState.idle) return;
     final daysWithBins = _controller.batches.where((b) => b.rawSegments.isNotEmpty).toList();
@@ -843,15 +889,21 @@ class _RecordingsPageState extends State<RecordingsPage> {
                             final visibleBatches = minSeconds > 0
                                 ? switch (_filterMode) {
                                     RecordingFilterMode.visible => controller.batches
-                                        .where(
-                                            (b) => b.finalizedRecordings.any((c) => c.duration.inSeconds >= minSeconds))
+                                        .where((b) =>
+                                            b.rawSegments.isNotEmpty ||
+                                            b.finalizedRecordings.any((c) => c.duration.inSeconds >= minSeconds))
                                         .toList(),
                                     RecordingFilterMode.hidden => controller.batches
-                                        .where(
-                                            (b) => b.finalizedRecordings.any((c) => c.duration.inSeconds < minSeconds))
+                                        .where((b) =>
+                                            b.rawSegments.isNotEmpty ||
+                                            b.finalizedRecordings.any((c) => c.duration.inSeconds < minSeconds))
                                         .toList(),
-                                    RecordingFilterMode.all =>
-                                      controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList(),
+                                    RecordingFilterMode.all => controller.batches
+                                        .where((b) =>
+                                            b.rawSegments.isNotEmpty ||
+                                            b.finalizedRecordings.isNotEmpty ||
+                                            b.discards.isNotEmpty)
+                                        .toList(),
                                   }
                                 : controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
                             final unknownRecordings =
@@ -975,6 +1027,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                           },
                         ),
                 ),
+                if (_prefs.adjustmentMode)
+                  AdjustmentModeBanner(onTap: _handleAdjustmentModeBannerTap),
               ],
             ),
           );

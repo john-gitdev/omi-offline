@@ -2,8 +2,20 @@
 
 ## App
 
+### 0.18.6
+
+- **Fix: Reprocess Day now correctly identifies sessions from folder names.** The identification logic previously looked at bin filenames (timestamps), causing a mismatch with the session IDs stored in recordings. The system now extracts IDs from the parent session folder, ensuring that recordings with backing audio are correctly identified for surgical deletion.
+- **Hardened Reprocess Logic with Precision Bin-Mapping.** Recordings now store the exact list of raw bins used (`relativeBins`) in their `.meta` sidecar. The "Reprocess Day" flow uses this metadata to verify that 100% of the required audio is present on disk before allowing a deletion or UI clear, protecting against audio loss while maintaining backward compatibility for older recordings.
+- **Improved Auto-Upload Protection via Toggle-Restore & Time-Gating.** 
+    - Auto-upload settings (HeyPocket and Omi) are now automatically saved and disabled when entering Adjustment Mode, and restored upon exit.
+    - Enabling an auto-upload toggle now refreshes a "Start Time" gate (added for Omi to match HeyPocket), ensuring the app only syncs recordings created after the toggle was flipped.
+    - Reprocessed recordings (which have older timestamps) are thus automatically skipped by the auto-upload loop, allowing the app to safely clear old integration flags during `reprocessDay` for a clean UI without risking duplicate uploads.
+- **Fix: Reprocessed days stay visible in the list while processing.** The `visibleBatches` filter and `BatchCard` rendering now account for days that are empty but contain raw audio to be processed. The day card remains in the list as a "blank slate" with a progress bar, rather than vanishing until the first recording is finished.
+- **New: Real-time "ghost row" updates during processing.** The UI now triggers a refresh whenever a "discard" (noise/silence) segment is identified. Ghost rows pop into the list immediately as they are finished, providing continuous visual feedback during long processing runs.
+
 ### 0.18.5
 
+- **Fix: sync/process foreground notification now updates every 10 minutes instead of every 1–2 seconds.** The Android status-bar notification during sync and processing was being reposted on every UI tick (1–2 s throttle), causing unnecessary CPU wake-ups and battery drain in the background. Progress ticks are now throttled to a 10-minute interval; state transitions (starting a sync, switching from sync to processing, etc.) still post immediately so the notification always reflects the current phase.
 - **Fix: Reprocess Day no longer deletes bins shared between a ghost record and a valid conversation.** Firmware writes ~5-minute bin files that routinely span multiple conversation chunks. A noise chunk discarded by SileroVAD would list the whole bin in its ghost record's `relativeBins` (without the `excludeBins` guard that `silence_trimmed` applies), so the same bin was referenced by both the valid recording and the ghost. `deleteDay(onlyReprocessable: true)` was calling `removeDiscardRecord(..., deleteBins: true)` unconditionally, deleting those shared bins and making subsequent Reprocess Day runs progressively lose more audio until all bins were gone and only "Delete Day" remained. Fixed by passing `deleteBins: !onlyReprocessable` — ghost record jsonl entries are still cleared (so grey ghost rows disappear) but their bin files are preserved for the next `processAll` run to re-evaluate with current VAD settings.
 - **Fix: Reprocess Day now clears the conversation list immediately on confirmation.** Previously the old recordings stayed visible until the async delete and disk reload completed. The controller now optimistically zeros out the day's conversations in the displayed batch list the moment the user confirms, so the card shows a blank slate before any I/O begins.
 

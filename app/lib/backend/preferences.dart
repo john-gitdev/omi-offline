@@ -30,10 +30,28 @@ class SharedPreferencesUtil {
   bool get forceSyncSkipConfirm => getBool('force_sync_skip_confirm', defaultValue: false);
   set forceSyncSkipConfirm(bool value) => saveBool('force_sync_skip_confirm', value);
 
+  bool get sileroVadSkipConfirm => getBool('silero_vad_skip_confirm', defaultValue: false);
+  set sileroVadSkipConfirm(bool value) => saveBool('silero_vad_skip_confirm', value);
+
   // When enabled, raw .bin segments are preserved after processing so days can
   // be reprocessed with different VAD settings via the Reprocess Day button.
   bool get adjustmentMode => getBool('adjustmentMode', defaultValue: false);
-  set adjustmentMode(bool value) => saveBool('adjustmentMode', value);
+  set adjustmentMode(bool value) {
+    if (value == adjustmentMode) return;
+    if (value) {
+      // Turning ON: Save current toggles
+      saveBool('hp_auto_pre_adj', heypocketAutoUpload);
+      saveBool('omi_auto_pre_adj', omiAutoUpload);
+      heypocketAutoUpload = false;
+      omiAutoUpload = false;
+    } else {
+      // Turning OFF: Restore toggles
+      // This will automatically trigger the 'Now' timestamp update in the setters below
+      heypocketAutoUpload = getBool('hp_auto_pre_adj', defaultValue: false);
+      omiAutoUpload = getBool('omi_auto_pre_adj', defaultValue: false);
+    }
+    saveBool('adjustmentMode', value);
+  }
 
   // When true, uploads to integrations are permitted even when adjustmentMode is ON.
   // This is a debug setting; normally uploads are paused during adjustment.
@@ -92,7 +110,7 @@ class SharedPreferencesUtil {
 
   // Per-mode recording settings snapshots. Default to the active pref so existing
   // users see their current settings the first time they open each mode.
-  bool get autoModeVadEnabled => getBool('auto_vadEnabled', defaultValue: true);
+  bool get autoModeVadEnabled => getBool('auto_vadEnabled', defaultValue: false);
   set autoModeVadEnabled(bool v) => saveBool('auto_vadEnabled', v);
   double get autoModeVadSpeechThreshold => getDouble('auto_vadSpeechThreshold', defaultValue: 0.5);
   set autoModeVadSpeechThreshold(double v) => saveDouble('auto_vadSpeechThreshold', v);
@@ -164,7 +182,14 @@ class SharedPreferencesUtil {
 
   // Whether recordings are automatically uploaded after processing. Requires omiEnabled.
   bool get omiAutoUpload => getBool('omiAutoUpload', defaultValue: false);
-  set omiAutoUpload(bool v) => saveBool('omiAutoUpload', v);
+  set omiAutoUpload(bool v) {
+    saveBool('omiAutoUpload', v);
+    if (v) omiAutoUploadAt = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  // Epoch ms when auto-upload was last enabled — used to limit auto-upload to new recordings only.
+  int get omiAutoUploadAt => getInt('omiAutoUploadAt', defaultValue: 0);
+  set omiAutoUploadAt(int v) => saveInt('omiAutoUploadAt', v);
 
   // Short-lived JWT — refreshed automatically; stored in regular prefs.
   // omiIdToken is stored in secure storage as it is a sensitive credential.
@@ -241,7 +266,10 @@ class SharedPreferencesUtil {
 
   // Whether recordings are automatically uploaded after processing. Requires heypocketEnabled.
   bool get heypocketAutoUpload => getBool('heypocketAutoUpload', defaultValue: false);
-  set heypocketAutoUpload(bool v) => saveBool('heypocketAutoUpload', v);
+  set heypocketAutoUpload(bool v) {
+    saveBool('heypocketAutoUpload', v);
+    if (v) heypocketKeySetAt = DateTime.now().millisecondsSinceEpoch;
+  }
 
   List<String> get heypocketUploadedFiles => getStringList('heypocketUploadedFiles');
   set heypocketUploadedFiles(List<String> v) => saveStringList('heypocketUploadedFiles', v);

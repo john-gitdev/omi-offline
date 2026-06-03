@@ -430,7 +430,9 @@ class BatchCard extends StatelessWidget {
             RecordingFilterMode.all => [...batch.discards],
           }
         : [...batch.discards];
-    if (filtered.isEmpty && discards.isEmpty) return const SizedBox.shrink();
+    if (filtered.isEmpty && discards.isEmpty && (!adjustmentMode || batch.rawSegments.isEmpty)) {
+      return const SizedBox.shrink();
+    }
 
     // Time-sorted (newest first) merge of recordings and ghosts.
     final items = <_Row>[

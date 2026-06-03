@@ -38,6 +38,7 @@ class Conversation {
   // Defaults to true so that old recordings whose .meta predates the flag are treated
   // conservatively (no aggressive pruning past rec_end).
   final bool capEnded;
+  final List<String> relativeBins;
 
   const Conversation({
     required this.file,
@@ -49,6 +50,7 @@ class Conversation {
     this.passthrough = false,
     this.forceSynced = false,
     this.capEnded = true,
+    this.relativeBins = const [],
   });
 
   DateTime get endTime => startTime.add(duration);
@@ -122,6 +124,7 @@ class Conversation {
           // Default true so recordings whose .meta predates the capEnded byte are treated
           // conservatively by pruneConsumedBins (no aggressive prune past rec_end).
           bool capEnded = true;
+          List<String> relativeBins = const [];
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
@@ -140,6 +143,17 @@ class Conversation {
               if (metaBytes.length > flagOffset + 2) {
                 capEnded = (metaBytes[flagOffset + 2] & 0x01) != 0;
               }
+
+              final binsOffset = flagOffset + 3;
+              if (metaBytes.length >= binsOffset + 4) {
+                final binsLen = bd.getUint32(binsOffset, Endian.little);
+                if (metaBytes.length >= binsOffset + 4 + binsLen) {
+                  try {
+                    final binsJson = utf8.decode(metaBytes.sublist(binsOffset + 4, binsOffset + 4 + binsLen));
+                    relativeBins = (jsonDecode(binsJson) as List).cast<String>();
+                  } catch (_) {}
+                }
+              }
             }
           }
           // Fall back to filename (without extension) as upload key for recordings
@@ -155,6 +169,7 @@ class Conversation {
             passthrough: passthrough,
             forceSynced: forceSynced,
             capEnded: capEnded,
+            relativeBins: relativeBins,
           );
         }
       } catch (_) {
@@ -1451,6 +1466,7 @@ class RecordingsManager {
                     discardProtectedPaths.add('${directory.path}/raw_segments/$rel');
                   }
                 }
+                onRecordingFinalized?.call();
               case 'move':
                 await moveTempFilesToLive();
               case 'delete_segments':
@@ -2627,8 +2643,9 @@ class RecordingsManager {
 
     final availableSessionIds = batch.rawSegments
         .map((f) {
-          final name = f.path.split('/').last.split('.').first;
-          return int.tryParse(name.split('_').first);
+          final folderName = f.parent.path.split('/').last;
+          final idStr = folderName.replaceFirst('unknown_', '').replaceFirst('session_', '');
+          return folderName.startsWith('session_') ? int.tryParse(idStr, radix: 16) : int.tryParse(idStr);
         })
         .whereType<int>()
         .toSet();
@@ -2677,10 +2694,21 @@ class RecordingsManager {
     final allToProcess = [...batch.finalizedRecordings, ...batch.draftRecordings];
     final dirEntities = await recordingsDir.list().toList();
     final edlFiles = dirEntities.whereType<File>().where((f) => f.path.endsWith('.edl')).toList();
+    final rawRelPaths = batch.rawSegments.map((f) => f.path.split('/raw_segments/').last).toSet();
+
     int deletedCount = 0;
     final filenamesToDelete = <String>{};
     for (final conv in allToProcess) {
-      if (conv.sessionId != null && availableSessionIds.contains(conv.sessionId)) {
+      bool canReprocess = false;
+      if (conv.relativeBins.isNotEmpty) {
+        // Precision check: all bins must be present
+        canReprocess = conv.relativeBins.every((rel) => rawRelPaths.contains(rel));
+      } else if (conv.sessionId != null && availableSessionIds.contains(conv.sessionId)) {
+        // Fallback for older recordings
+        canReprocess = true;
+      }
+
+      if (canReprocess) {
         final audioFilename = conv.file.path.split('/').last;
         filenamesToDelete.add(audioFilename);
         if (await conv.file.exists()) await conv.file.delete();
