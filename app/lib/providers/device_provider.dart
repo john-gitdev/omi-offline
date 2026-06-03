@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
+import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
@@ -645,6 +647,12 @@ class DeviceProvider extends ChangeNotifier
   void _startBackgroundSyncTimer() {
     _backgroundSyncTimer?.cancel();
     final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
+    // Keep WorkManager in sync with the Dart timer interval so both fire on
+    // the same schedule. WorkManager is the fallback when the process is alive
+    // but the foreground service was killed by an OEM battery optimizer.
+    if (Platform.isAndroid) {
+      unawaited(BleHostApi().rescheduleBackgroundSync(interval));
+    }
     if (interval <= 0) {
       nextSyncTime = null;
       notifyListeners();
