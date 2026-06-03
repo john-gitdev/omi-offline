@@ -25,20 +25,6 @@ The platform layer (watchOS app, iOS AppDelegate, Pigeon-generated Swift/Dart co
 - `app/ios/Runner/RecorderHostApiImpl.swift` - host API implementation, already functional
 - `app/ios/omiWatchApp/` - watchOS app, already functional
 
-## Firmware AAD: VAD Sensitivity Presets [Deferred]
-
-Brainstormed three sensitivity presets for the hardware AAD threshold, adjustable via a new BLE characteristic (same pattern as mic gain — `settings.c` + `transport.c` + `aad.c`).
-
-| Preset | Threshold | Debounce | Rationale |
-|--------|-----------|----------|-----------|
-| High sensitivity | 250 (~-42 dBFS) | 4 frames (80ms) | Current default. Extra debounce compensates for low threshold catching noise. |
-| Medium (balanced) | 500 (~-36 dBFS) | 3 frames (60ms) | Balanced start latency vs false triggers. |
-| Low (noise-resistant) | 1000 (~-30 dBFS) | 2 frames (40ms) | Higher threshold rejects noise, so fewer debounce frames needed. |
-
-Hold time (`CONFIG_OMI_VAD_HOLD_MS = 10000`) could also vary per preset — longer hold at high sensitivity (quiet speech trails off slowly), shorter at low sensitivity (trust the threshold drop).
-
-**Decision: deferred.** Risk of missing audio outweighs the benefit. No real user complaints driving this. Battery drain from AAD is less impactful than BLE/SD/codec — and hold time is a bigger battery lever than threshold anyway. Revisit if noise-environment complaints surface.
-
 ## Background Sync: Migrate from Dart Timer to WorkManager [major] [Deferred]
 
 Make scheduled background sync survive process death / Doze, instead of relying on a main-isolate Dart timer that Android can freeze or kill.
