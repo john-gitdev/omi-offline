@@ -47,6 +47,7 @@
 		<string>com.omi.offline.daily-summary</string>
 		<string>dev.flutter.background.refresh</string>
 		<string>com.pravera.flutter_foreground_task.refresh</string>
+		<string>com.omi.offline.sync</string>
 	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
