@@ -721,6 +721,7 @@ class DeviceProvider extends ChangeNotifier
 
       try {
         WakelockPlus.enable();
+        if (Platform.isAndroid) BleHostApi().acquireProcessingWakeLock();
         // Keep the firmware from idle-dropping the link mid-sync. Without this a
         // single >30s file read (large stitched/draft recordings) sends no
         // command for the firmware's 30s idle window and dies as "Stream closed
@@ -776,6 +777,7 @@ class DeviceProvider extends ChangeNotifier
         notifyListeners();
       } finally {
         WakelockPlus.disable();
+        if (Platform.isAndroid) BleHostApi().releaseProcessingWakeLock();
         // The keep-alive only covers the sync itself in the background; in the
         // foreground the connect/resume keep-alive owns it, so leave it running.
         if (!_isAppInForeground) _stopForegroundKeepAlive();
