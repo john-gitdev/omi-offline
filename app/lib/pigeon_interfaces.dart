@@ -105,6 +105,11 @@ abstract class BleHostApi {
   @SwiftFunction('disconnectPeripheral(uuid:)')
   void disconnectPeripheral(String uuid);
 
+  /// (Android only) Reschedule the WorkManager periodic background sync with
+  /// the given interval. Pass 0 or negative to cancel. iOS no-op.
+  @SwiftFunction('rescheduleBackgroundSync(intervalMinutes:)')
+  void rescheduleBackgroundSync(int intervalMinutes);
+
   @async
   @SwiftFunction('requestBond(uuid:)')
   bool requestBond(String uuid);
