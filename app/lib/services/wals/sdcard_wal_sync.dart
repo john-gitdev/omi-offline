@@ -3,6 +3,8 @@ import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:omi/gen/pigeon_communicator.g.dart';
+
 import 'package:collection/collection.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/wal_file_manager.dart';
@@ -421,6 +423,9 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     Function(int offset)? onProgress,
     int? overrideFileNum,
   }) async {
+    if (Platform.isAndroid) {
+      return await _readStorageBytesToFileLocked_native(connection, wal, callback, onProgress: onProgress, overrideFileNum: overrideFileNum);
+    }
     int fileNum = overrideFileNum ?? wal.fileNum;
     int offset = wal.walOffset;
     int timerStart = wal.timerStart;
@@ -653,6 +658,93 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       await _storageStream?.cancel();
       _storageStream = null;
     }
+  }
+
+  // Android-only: receives BLE packets natively (binder thread → file), polls
+  // the output file size at 1 Hz for WAL offset tracking, and calls [callback]
+  // once on completion. iOS uses the existing stream path above.
+  Future _readStorageBytesToFileLocked_native(
+    DeviceConnection connection,
+    Wal wal,
+    Function(File f, int offset, int timerStart, {String? subFolder}) callback, {
+    Function(int offset)? onProgress,
+    int? overrideFileNum,
+  }) async {
+    final fileNum = overrideFileNum ?? wal.fileNum;
+    final offset = wal.walOffset;
+    final timerStart = wal.timerStart;
+
+    if (_isCancelled) throw Exception("Cancelled");
+
+    final String subFolderPrefix =
+        (timerStart < 946684800) ? 'session_${wal.sessionId}' : timerStart.toString();
+
+    final directory = await getApplicationDocumentsDirectory();
+    final folderPath = '${directory.path}/raw_segments/$subFolderPrefix';
+    await Directory(folderPath).create(recursive: true);
+    final outputPath = '$folderPath/${timerStart}_${wal.sessionId ?? 0}.bin';
+    final outputFile = File(outputPath);
+
+    // Truncate-on-resume: same guard as the stream path.
+    if (offset > 0 && await outputFile.exists()) {
+      try {
+        final actualSize = await outputFile.length();
+        if (actualSize > offset) {
+          final raf = await outputFile.open(mode: FileMode.append);
+          try {
+            await raf.truncate(offset);
+          } finally {
+            await raf.close();
+          }
+          Logger.debug('SDCardWalSync: Truncated $outputPath from $actualSize to $offset bytes (resume reconciliation)');
+        }
+      } catch (e) {
+        Logger.error('SDCardWalSync: truncate-on-resume failed for $outputPath: $e');
+      }
+    }
+
+    // _activeTransferCompleter is not used for the native path; cancellation is
+    // handled by _isCancelled + poll timer calling stopStorageSync → firmware
+    // stops sending → native inactivity timeout fires → downloadStorageFile throws.
+    _activeTransferCompleter = null;
+
+    final hostApi = BleHostApi();
+    Timer? pollTimer;
+    int lastPolledSize = offset;
+
+    pollTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_isCancelled) {
+        pollTimer?.cancel();
+        connection.stopStorageSync().catchError((_) => false);
+        return;
+      }
+      try {
+        final currentSize = outputFile.existsSync() ? outputFile.lengthSync() : lastPolledSize;
+        if (currentSize > lastPolledSize) {
+          lastPolledSize = currentSize;
+          _lastSegmentBoundaryOffset = currentSize;
+          onProgress?.call(currentSize);
+        }
+      } catch (_) {}
+    });
+
+    try {
+      await hostApi.downloadStorageFile(
+        _device!.id,
+        fileNum,
+        offset,
+        timerStart,
+        outputPath,
+      );
+    } finally {
+      pollTimer.cancel();
+      await connection.stopStorageSync();
+    }
+
+    final finalSize = outputFile.existsSync() ? await outputFile.length() : offset;
+    _lastSegmentBoundaryOffset = finalSize;
+    onProgress?.call(finalSize);
+    await callback(outputFile, finalSize, timerStart, subFolder: subFolderPrefix);
   }
 
   void _completeCancelIfPending() {
