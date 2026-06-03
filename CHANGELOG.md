@@ -1,5 +1,11 @@
 # Changelog
 
+### Fix: background processing no longer kills itself mid-run (0.17.9)
+
+- **Fix: processing stall watchdog no longer stops the foreground service on a false trigger.** Android can suspend background isolate threads while the main UI thread stays alive, causing the heartbeat to stop even mid-active-segment. The watchdog was then calling `stopForegroundTask()`, removing the OS protection that keeps the process alive, after which Android killed the now-unprotected process. The foreground service is now preserved on processing stalls so the process survives and restarts cleanly. The service is only stopped on sync stalls, where there is nothing to protect.
+- **Fix: processing stall timeout extended from 3 minutes to 10 minutes.** Thermal throttling after a long initial run can slow per-segment processing 5×, pushing individual segments beyond the old 3-minute window even when the isolate is healthy. 10 minutes gives ample headroom while still bounding a genuine native deadlock.
+- **Fix: checkpoint resumes correctly after a process kill followed by new syncs.** After Android kills the app mid-processing, the checkpoint was always discarded on restart because new segments had been downloaded and old ones deleted, shifting every index. The checkpoint now uses the last completed segment's timestamp as the boundary: the first current segment with a later timestamp becomes the resume point. In a typical scenario (kill at segment 29/48, restart with 4 new segments and several deletions), the second run skips the already-processed segments instead of reprocessing the entire backlog from scratch.
+
 ### Android: WorkManager background sync (0.17.8)
 
 - **Android: background sync now fires reliably even when the foreground service is killed by OEM battery managers.** A WorkManager `PeriodicWorkRequest` is registered whenever the sync interval is set and re-armed on every app start. When it fires, if the Flutter engine is alive it delivers `onBackgroundSyncRequested` to Dart so the normal connect-and-sync pipeline runs. If the process was killed entirely, sync is deferred silently to the next app open (sync-on-open handles it).
