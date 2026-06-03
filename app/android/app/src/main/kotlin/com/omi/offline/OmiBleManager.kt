@@ -96,6 +96,8 @@ class OmiBleManager private constructor(private val application: Application) {
     private var bondTimeoutRunnable: Runnable? = null
     private var bondingAddress: String? = null
 
+    val activeDownloads = ConcurrentHashMap<String, StorageDownloadSession>()
+
     private val bondStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
@@ -472,6 +474,7 @@ class OmiBleManager private constructor(private val application: Application) {
         // with a clean command pipeline.
         gattQueue.clear()
         isProcessingCommand = false
+        activeDownloads.remove(addr)?.complete(Result.failure(Exception("Stream closed without EOT")))
     }
 
     private fun createGattCallback() = object : BluetoothGattCallback() {
@@ -546,5 +549,163 @@ class OmiBleManager private constructor(private val application: Application) {
             completeCommand()
         }
         override fun onDescriptorWrite(gatt: BluetoothGatt, desc: BluetoothGattDescriptor, status: Int) { completeCommand() }
+    }
+
+    // ── Native storage file download ──
+    //
+    // Receives BLE notifications directly on the binder thread, bypassing the
+    // mainHandler.post → platform channel path that throttles in Android background.
+
+    fun downloadStorageFile(
+        address: String,
+        fileIndex: Int,
+        offset: Long,
+        timerStart: Long,
+        outputPath: String,
+        callback: (Result<Unit>) -> Unit
+    ) {
+        val addr = address.uppercase()
+        val gatt = connectedGatts[addr]
+        if (gatt == null) {
+            callback(Result.failure(Exception("Not connected")))
+            return
+        }
+        val characteristic = gatt.getService(STORAGE_SERVICE_UUID)?.getCharacteristic(STORAGE_CHAR_UUID)
+        if (characteristic == null) {
+            callback(Result.failure(Exception("Storage characteristic not found")))
+            return
+        }
+
+        // Subscribe to notifications so the binder-thread callback fires.
+        // Goes through the GATT queue so it completes before CMD_READ_FILE.
+        subscribeCharacteristic(addr, STORAGE_SERVICE_UUID.toString(), STORAGE_CHAR_UUID.toString())
+
+        // Register session BEFORE enqueuing CMD_READ_FILE so the start-ACK (0x03 0x00)
+        // is never missed if the write callback and the notification race.
+        val session = StorageDownloadSession(addr, offset, outputPath, callback)
+        activeDownloads[addr] = session
+
+        // Build CMD_READ_FILE: [0x11, fileIndex, offset 4B LE, timerStart 4B LE]
+        val cmd = ByteArray(10)
+        cmd[0] = 0x11.toByte()
+        cmd[1] = fileIndex.toByte()
+        cmd[2] = (offset and 0xFF).toByte()
+        cmd[3] = ((offset shr 8) and 0xFF).toByte()
+        cmd[4] = ((offset shr 16) and 0xFF).toByte()
+        cmd[5] = ((offset shr 24) and 0xFF).toByte()
+        cmd[6] = (timerStart and 0xFF).toByte()
+        cmd[7] = ((timerStart shr 8) and 0xFF).toByte()
+        cmd[8] = ((timerStart shr 16) and 0xFF).toByte()
+        cmd[9] = ((timerStart shr 24) and 0xFF).toByte()
+
+        val writeType = if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        else
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+
+        enqueueCommand {
+            val success = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(characteristic, cmd, writeType) == android.bluetooth.BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                characteristic.value = cmd
+                @Suppress("DEPRECATION")
+                characteristic.writeType = writeType
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(characteristic)
+            }
+            if (!success) {
+                activeDownloads.remove(addr)
+                session.complete(Result.failure(Exception("Could not start SD card read")))
+            }
+            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) completeCommand()
+        }
+    }
+
+    inner class StorageDownloadSession(
+        private val address: String,
+        startOffset: Long,
+        outputPath: String,
+        private val callback: (Result<Unit>) -> Unit
+    ) {
+        private var expectedOffset = startOffset
+        private val fos: java.io.FileOutputStream
+        private val completed = java.util.concurrent.atomic.AtomicBoolean(false)
+        private var hasReceivedStartAck = false
+
+        // Inactivity timeout: 15 s reset on each packet
+        private val timeoutRunnable = Runnable {
+            activeDownloads.remove(address)
+            complete(Result.failure(Exception("Transfer stalled: 15s inactivity timeout")))
+        }
+
+        init {
+            val file = java.io.File(outputPath)
+            file.parentFile?.mkdirs()
+            fos = java.io.FileOutputStream(file, startOffset > 0)
+            mainHandler.postDelayed(timeoutRunnable, 15_000L)
+        }
+
+        fun onPacket(value: ByteArray) {
+            if (completed.get() || value.isEmpty()) return
+
+            // Reset inactivity watchdog on every received packet
+            mainHandler.removeCallbacks(timeoutRunnable)
+            mainHandler.postDelayed(timeoutRunnable, 15_000L)
+
+            when (value[0].toInt() and 0xFF) {
+                0x03 -> { // ACK
+                    if (value.size >= 2) {
+                        val code = value[1].toInt() and 0xFF
+                        if (code == 0) hasReceivedStartAck = true
+                        else {
+                            activeDownloads.remove(address)
+                            complete(Result.failure(Exception("Error ACK: $code")))
+                        }
+                    }
+                }
+                0x01 -> { // DATA
+                    if (!hasReceivedStartAck || value.size < 5) return
+                    val incoming = (value[1].toLong() and 0xFF) or
+                        ((value[2].toLong() and 0xFF) shl 8) or
+                        ((value[3].toLong() and 0xFF) shl 16) or
+                        ((value[4].toLong() and 0xFF) shl 24)
+                    val payload = value.copyOfRange(5, value.size)
+                    when {
+                        incoming > expectedOffset -> {
+                            activeDownloads.remove(address)
+                            complete(Result.failure(Exception("Protocol gap: incoming=$incoming expected=$expectedOffset")))
+                        }
+                        incoming < expectedOffset -> {
+                            val skip = (expectedOffset - incoming).toInt()
+                            if (skip < payload.size) {
+                                val tail = payload.copyOfRange(skip, payload.size)
+                                try { fos.write(tail) } catch (e: Exception) { activeDownloads.remove(address); complete(Result.failure(e)) }
+                                expectedOffset += tail.size
+                            }
+                        }
+                        else -> {
+                            try { fos.write(payload) } catch (e: Exception) { activeDownloads.remove(address); complete(Result.failure(e)) }
+                            expectedOffset += payload.size
+                        }
+                    }
+                }
+                0x02 -> { // EOT — transfer complete
+                    activeDownloads.remove(address)
+                    try { fos.flush(); fos.close() } catch (_: Exception) {}
+                    mainHandler.removeCallbacks(timeoutRunnable)
+                    if (completed.compareAndSet(false, true)) {
+                        mainHandler.post { callback(Result.success(Unit)) }
+                    }
+                }
+            }
+        }
+
+        fun complete(result: Result<Unit>) {
+            if (!completed.compareAndSet(false, true)) return
+            mainHandler.removeCallbacks(timeoutRunnable)
+            try { fos.close() } catch (_: Exception) {}
+            mainHandler.post { callback(result) }
+        }
     }
 }
