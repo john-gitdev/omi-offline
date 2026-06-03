@@ -27,6 +27,10 @@ abstract class IDeviceService {
 
   /// Fully tear down connection + transport for a device being forgotten/unpaired.
   Future<void> forgetDevice(String deviceId);
+
+  /// Returns the GATT physical-connect future for the current connection if it
+  /// matches [deviceId], null otherwise. See [DeviceTransport.gattConnectFuture].
+  Future<void>? getGattConnectFuture(String deviceId);
 }
 
 enum DeviceServiceStatus { init, ready, scanning, stop }
@@ -156,7 +160,8 @@ class DeviceService implements IDeviceService {
 
     if (_connection != null) {
       try {
-        await _connection!.connect(onConnectionStateChanged: onDeviceConnectionStateChanged, requiresBond: requiresBond);
+        await _connection!
+            .connect(onConnectionStateChanged: onDeviceConnectionStateChanged, requiresBond: requiresBond);
       } catch (e) {
         Logger.debug('[DeviceService] Connection attempt failed for $id: $e');
         rethrow;
@@ -211,7 +216,8 @@ class DeviceService implements IDeviceService {
 
   void onDeviceConnectionStateChanged(String deviceId, DeviceConnectionState state, {bool isManual = false}) {
     Logger.debug("device connection state changed...$deviceId...$state (isManual: $isManual)");
-    DebugLogManager.logEvent('device_connection_state', {'device_id': deviceId, 'state': state.name, 'is_manual': isManual});
+    DebugLogManager.logEvent(
+        'device_connection_state', {'device_id': deviceId, 'state': state.name, 'is_manual': isManual});
     for (var s in _subscriptions.values) {
       s.onDeviceConnectionStateChanged(deviceId, state, isManual: isManual);
     }
@@ -293,6 +299,12 @@ class DeviceService implements IDeviceService {
       await _connection?.disconnect(isManual: isManual);
       _connection = null;
     }
+  }
+
+  @override
+  Future<void>? getGattConnectFuture(String deviceId) {
+    if (_connection?.device.id != deviceId) return null;
+    return _connection!.gattConnectFuture;
   }
 
   @override
