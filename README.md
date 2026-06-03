@@ -2,13 +2,13 @@
 
 A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
 
-**Current versions:** App `0.17.0` · Firmware `oo-1.9.2`
+**Current versions:** App `0.18.7` · Firmware `oo-1.9.2`
 
 ---
 
 ## What it does
 
-The nRF5340 wearable captures audio continuously via PDM microphones, encodes it as Opus (16 kHz mono, 20 ms frames), and writes it to an SD card. The Flutter app connects over BLE, pulls files via a resumable WAL protocol, then runs Silero VAD locally to segment speech into dated `.m4a` recordings. Everything runs on-device.
+The nRF5340 wearable captures audio continuously via PDM microphones, encodes it as Opus (16 kHz mono, 20 ms frames), and writes it to an SD card. The Flutter app connects over BLE, pulls files via a resumable WAL protocol, then segments the audio into dated recordings — splitting on firmware activity timestamps (AAD, the default) or, optionally, by running Silero VAD locally on the phone. Recordings are saved as WAV by default (M4A and OGG optional). Everything runs on-device.
 
 ---
 
@@ -16,13 +16,14 @@ The nRF5340 wearable captures audio continuously via PDM microphones, encodes it
 
 - **100% offline.** No cloud API, no internet check. Data never leaves the device unless you explicitly upload it.
 - **Resumable BLE sync (WAL).** Per-file byte-offset bookmarks survive disconnects. Sync resumes exactly where it stopped.
-- **Silero VAD on-device.** ONNX Runtime executes Silero VAD v6.2.1 locally on the phone to strip silence and segment speech. Runs in a background isolate so platform threads stay unblocked.
-- **Two recording modes.** Automatic (VAD-driven, hands-free) and Manual (explicit double-tap start/stop on the hardware button).
+- **AAD (firmware activity detection) by default.** Automatic mode splits on the firmware's audio-activity timestamps and treats all captured audio as speech — no on-phone model. This is the default: it processes faster and uses less battery than Silero.
+- **Silero VAD on-device (opt-in).** ONNX Runtime can run Silero VAD v6.2.1 locally on the phone to strip silence and segment speech. Disabled by default in Automatic mode; enabling it shows a one-time battery/processing-time warning. Runs in a background isolate so platform threads stay unblocked.
+- **Two recording modes.** Automatic (hands-free; AAD by default, Silero optional) and Manual (explicit double-tap start/stop on the hardware button).
 - **Verified Markers.** A double-tap drops a timestamped bookmark stored inline within the audio stream. During processing, the app parses these events with sub-frame precision to build high-precision EDL sidecars for the resulting recordings.
-- **Adjustment Mode.** Re-run VAD on already-downloaded segments without touching the device — tweak sensitivity and reprocess offline.
-- **Discard recovery (ghost rows).** Audio that VAD dropped (silenced as noise, or too short) is surfaced as a greyed-out "ghost" row in the recordings list. Source bins are protected for a 48 h window so you can recover a clip with a lower threshold or delete it.
-- **AAD (All-As-Detected).** Disable Silero entirely and treat all audio as speech, splitting only on firmware timestamps.
-- **Background battery saving.** The app always disconnects BLE when backgrounded (after a ~30 s grace window to survive quick screen-off/on) and reconnects only when a sync is due. The firmware records to SD card regardless of phone connectivity.
+- **Adjustment Mode.** Re-run processing on already-downloaded segments without touching the device — tweak sensitivity and reprocess offline. A persistent banner reminds you it is active, and auto-upload integrations are paused (and restored on exit) so reprocessed clips aren't re-uploaded.
+- **Reprocess Day with precision bin-mapping.** Each recording records the exact raw bins it was built from (`relativeBins` in its `.meta` sidecar). Reprocess Day verifies all required audio is on disk before clearing or deleting, so reprocessing never loses audio and never deletes bins shared with a still-valid recording.
+- **Discard recovery (ghost rows).** Audio that processing dropped (silenced as noise, or too short) is surfaced as a greyed-out "ghost" row in the recordings list, appearing in real time as each discard is identified. Source bins are protected for a 48 h window so you can recover a clip with a lower threshold or delete it.
+- **Background battery saving.** The app always disconnects BLE when backgrounded (after a ~30 s grace window to survive quick screen-off/on) and reconnects only when a sync is due. The firmware records to SD card regardless of phone connectivity. A `PARTIAL_WAKE_LOCK` is held over the background sync+process run so Android doesn't downclock the processing isolate when the screen is off.
 - **Processing resume from checkpoint.** If processing is interrupted (background kill, BLE drop, cancel), the next run restores the exact Silero LSTM recurrent state from a checkpoint file and picks up from the last completed segment — no re-decoding from scratch.
 - **Integrations.** Optional upload to HeyPocket or Omi after processing.
 
@@ -37,9 +38,9 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
                                            |
                               Flutter app (raw .bin on phone)
                                            |
-                           Silero VAD (ONNX, phone-local)
+                      AAD timestamps (default) or Silero VAD (opt-in)
                                            |
-                        recordings/<YYYY-MM-DD>/recording_<ms>.m4a
+                        recordings/<YYYY-MM-DD>/recording_<ms>.wav
 ```
 
 ### Firmware (Zephyr RTOS, nRF5340)
@@ -61,7 +62,8 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
 - **VAD processor (`VadAudioProcessor`).** Runs in a fresh isolate. Stateless across runs — uncut segments stay on disk and are re-processed next cycle. Silero LSTM state is kept as a live native tensor between inference calls (no Dart-layer copy), reducing per-call allocations from ~6 objects to ~1. End-of-run always flushes as a `_draft` file; finalization only on a confirmed silence or cap boundary.
 - **Processing checkpoint.** After each completed segment, the processor writes `vad_checkpoint.json` containing the full VAD state. Interrupted runs restore from this snapshot so processing resumes at the last completed segment with identical Silero recurrent state.
 - **Background disconnect.** Always disconnects BLE on backgrounding (after ~30 s grace). A native Android keep-alive (`0x32`, `WRITE_NO_RESPONSE`, every 15 s) prevents firmware idle-disconnect during long file reads without blocking the GATT command queue.
-- **Recordings manager.** Parses finalized `.m4a` files from `recordings/` for UI binding. Marker EDL sidecars live alongside their recordings.
+- **Foreground-service resilience.** The sync/processing notification updates in place (rather than stop/restart) to avoid the Android 12+ "start foreground service from background" restriction, and re-posts itself if swiped away on Android 14+. Recording Settings also surfaces a warning card when the app is not exempt from battery optimization, with a one-tap Fix that opens the system exemption prompt.
+- **Recordings manager.** Parses finalized recordings (`.wav` by default; `.m4a`/`.ogg` if configured) from `recordings/` for UI binding. Each recording carries a `.meta` sidecar listing the raw bins it was built from (`relativeBins`); marker EDL sidecars live alongside their recordings.
 
 ---
 
@@ -78,9 +80,11 @@ Double-tap the button to start; double-tap again to stop. The LED flashes green 
 
 ### Automatic
 
-The device monitors audio continuously. Silero VAD segments speech from silence; the LED stays off until audio above the AAD threshold wakes the mic pipeline (yellow = recording). Double-tap drops a white-flash marker.
+The device monitors audio continuously. The LED stays off until audio above the AAD threshold wakes the mic pipeline (yellow = recording). Double-tap drops a white-flash marker.
 
-- Split on: `vadSplitSeconds` of continuous silence (default 2 min), or `vadMaxConversationMinutes` cap (default 60 min).
+- **AAD is the default** (since 0.18.0): the app treats every captured frame as speech and splits only on the firmware's activity timestamps. No on-phone model runs.
+- **Silero VAD is opt-in.** Enabling it (in Recording Settings) shows a one-time warning that Silero uses more battery and takes longer to process. When on, it segments speech from silence and splits on `vadSplitSeconds` of continuous silence (default 2 min).
+- Either way, the `vadMaxConversationMinutes` cap (default 60 min) forces a split without silence.
 - Recordings accumulate across sync cycles — partial in-progress recordings are re-processed each run.
 
 ---
@@ -154,7 +158,7 @@ File indices are cache positions (0-based, rebuilt after every LIST and every de
 
 | Setting | Pref key | Default | Notes |
 |---------|----------|---------|-------|
-| VAD enabled | `vadEnabled` | true | Off = AAD mode, split on firmware timestamps only |
+| VAD enabled (Automatic mode) | `auto_vadEnabled` | false | On = run Silero; off (default) = AAD, split on firmware timestamps only. Enabling prompts a one-time battery warning. |
 | Speech sensitivity | `vadSpeechThreshold` | 0.5 | Silero cutoff (0–1). Lower = more sensitive. |
 | Silence to split | `vadSplitSeconds` | 120 s | Silence duration triggering a new recording |
 | Min length | `filterMinDurationSeconds` | 0 s | Recordings shorter than this are discarded |
@@ -165,7 +169,8 @@ File indices are cache positions (0-based, rebuilt after every LIST and every de
 
 | Setting | Pref key | Default | Notes |
 |---------|----------|---------|-------|
-| Adjustment Mode | `adjustmentMode` | false | Keep raw segments for offline reprocessing |
+| Recording format | `audioSaveFormat` | wav | Output container: `wav` (PCM, default), `m4a`, or `ogg` |
+| Adjustment Mode | `adjustmentMode` | false | Keep raw segments for offline reprocessing; pauses auto-upload while on |
 | Keep recordings for | `keepRecordingsDays` | -1 | -1 = forever, 0 = delete immediately after upload |
 
 ---
@@ -263,7 +268,7 @@ See [`NOMENCLATURE.md`](NOMENCLATURE.md) for the full glossary. Key terms:
 | DeviceSession | Continuous hardware stream from boot to disconnect; identified by UTC start timestamp |
 | Marker | Double-tap event — timestamped bookmark written by firmware as `0xFE` frame type |
 | WAL | Byte-offset sync state tracking download progress per segment |
-| Recording | Finalized `.m4a` audio file on disk |
+| Recording | Finalized audio file on disk (WAV by default; M4A/OGG optional) |
 | Conversation | Recording + timestamps, the local UI entity |
 
 ---
