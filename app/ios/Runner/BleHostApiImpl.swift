@@ -87,4 +87,9 @@ final class BleHostApiImpl: BleHostApi {
         // No-op on iOS — state restoration handles background reconnection
         completion(.success(""))
     }
+
+    func downloadStorageFile(peripheralUuid: String, fileIndex: Int64, offset: Int64, timerStart: Int64, outputPath: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        // Android-only — iOS uses the existing BLE notification stream path
+        completion(.failure(PigeonError(code: "unimplemented", message: "iOS uses stream path", details: nil)))
+    }
 }

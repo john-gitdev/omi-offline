@@ -665,6 +665,8 @@ protocol BleHostApi {
   /// Returns the associated device address on success, empty string on failure/cancel.
   /// On iOS, returns empty string (state restoration handles background reconnection).
   func requestCompanionDeviceAssociation(deviceAddress: String, completion: @escaping (Result<String, Error>) -> Void)
+  /// (Android only) Download a storage file natively. iOS returns 'unimplemented'.
+  func downloadStorageFile(peripheralUuid: String, fileIndex: Int64, offset: Int64, timerStart: Int64, outputPath: String, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -903,6 +905,27 @@ class BleHostApiSetup {
       }
     } else {
       requestCompanionDeviceAssociationChannel.setMessageHandler(nil)
+    }
+    let downloadStorageFileChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.downloadStorageFile\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      downloadStorageFileChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let peripheralUuidArg = args[0] as! String
+        let fileIndexArg = args[1] as! Int64
+        let offsetArg = args[2] as! Int64
+        let timerStartArg = args[3] as! Int64
+        let outputPathArg = args[4] as! String
+        api.downloadStorageFile(peripheralUuid: peripheralUuidArg, fileIndex: fileIndexArg, offset: offsetArg, timerStart: timerStartArg, outputPath: outputPathArg) { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      downloadStorageFileChannel.setMessageHandler(nil)
     }
   }
 }

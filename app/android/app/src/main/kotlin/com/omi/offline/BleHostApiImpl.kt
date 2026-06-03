@@ -102,6 +102,17 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
         return cm.getMacAddresses().isNotEmpty()
     }
 
+    override fun downloadStorageFile(
+        peripheralUuid: String,
+        fileIndex: Long,
+        offset: Long,
+        timerStart: Long,
+        outputPath: String,
+        callback: (Result<Unit>) -> Unit
+    ) {
+        bleManager.downloadStorageFile(peripheralUuid, fileIndex.toInt(), offset, timerStart, outputPath, callback)
+    }
+
     override fun requestCompanionDeviceAssociation(deviceAddress: String, callback: (Result<String>) -> Unit) {
         Log.i(TAG, "requestCompanionDeviceAssociation: $deviceAddress")
 

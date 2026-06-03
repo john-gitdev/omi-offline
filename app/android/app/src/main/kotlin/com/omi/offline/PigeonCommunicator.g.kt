@@ -636,6 +636,7 @@ interface BleHostApi {
    * On iOS, returns empty string (state restoration handles background reconnection).
    */
   fun requestCompanionDeviceAssociation(deviceAddress: String, callback: (Result<String>) -> Unit)
+  fun downloadStorageFile(peripheralUuid: String, fileIndex: Long, offset: Long, timerStart: Long, outputPath: String, callback: (Result<Unit>) -> Unit)
 
   companion object {
     /** The codec used by BleHostApi. */
@@ -900,6 +901,29 @@ interface BleHostApi {
               } else {
                 val data = result.getOrNull()
                 reply.reply(PigeonCommunicatorPigeonUtils.wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.downloadStorageFile$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val peripheralUuidArg = args[0] as String
+            val fileIndexArg = args[1] as Long
+            val offsetArg = args[2] as Long
+            val timerStartArg = args[3] as Long
+            val outputPathArg = args[4] as String
+            api.downloadStorageFile(peripheralUuidArg, fileIndexArg, offsetArg, timerStartArg, outputPathArg) { result: Result<Unit> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(PigeonCommunicatorPigeonUtils.wrapError(error))
+              } else {
+                reply.reply(PigeonCommunicatorPigeonUtils.wrapResult(null))
               }
             }
           }
