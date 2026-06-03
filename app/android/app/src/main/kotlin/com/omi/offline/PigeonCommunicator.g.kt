@@ -612,6 +612,8 @@ interface BleHostApi {
   fun stopScan()
   fun manageDevice(uuid: String, requiresBond: Boolean)
   fun unmanageDevice(uuid: String)
+  fun disconnectPeripheral(uuid: String)
+  fun rescheduleBackgroundSync(intervalMinutes: Long)
   fun requestBond(uuid: String, callback: (Result<Boolean>) -> Unit)
   fun readCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, callback: (Result<ByteArray>) -> Unit)
   fun writeCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, data: ByteArray, callback: (Result<Unit>) -> Unit)
@@ -702,6 +704,42 @@ interface BleHostApi {
             val uuidArg = args[0] as String
             val wrapped: List<Any?> = try {
               api.unmanageDevice(uuidArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.disconnectPeripheral$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val uuidArg = args[0] as String
+            val wrapped: List<Any?> = try {
+              api.disconnectPeripheral(uuidArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.rescheduleBackgroundSync$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val intervalMinutesArg = args[0].let { if (it is Int) it.toLong() else it as Long }
+            val wrapped: List<Any?> = try {
+              api.rescheduleBackgroundSync(intervalMinutesArg)
               listOf(null)
             } catch (exception: Throwable) {
               PigeonCommunicatorPigeonUtils.wrapError(exception)
