@@ -9,6 +9,8 @@
 - **Fix: Android 14+ foreground notification returns if swiped away.** Android 14 allows users to dismiss ongoing foreground notifications. The app now handles the dismissal intent by immediately re-posting the notification, ensuring the sync/processing service remains protected from OS termination.
 - **Fix: Real-time WAL sync speed updates.** The sync speed calculation was moved from the "segment boundary" callback to the packet-level progress callback. KB/s values in the UI now update smoothly at ~50Hz instead of jumping in large bursts at the end of each multi-megabyte file.
 - **New: Adjustment Mode Banner.** Added a persistent UI banner when Adjustment Mode is active to remind the user that all raw audio is being displayed and that sync-time estimates include already-processed data.
+- **Fix: Foreground service no longer risks dropping during background sync.** The sync/processing notification now updates in place instead of stopping and restarting the foreground service. Restarting could hit the Android 12+ "start foreground service from background" restriction and leave the app with no foreground service mid-sync; updating in place still re-posts the notification if it was swiped away on Android 14+.
+- **VAD recording is now opt-in.** Auto-mode VAD defaults to off; it must be enabled by the user (with a confirmation prompt) rather than running by default.
 
 ### 0.18.6
 
