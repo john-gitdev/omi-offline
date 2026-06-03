@@ -1324,12 +1324,24 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await _prefs.removeUploadedFromHeypocket(keys);
     await _prefs.removeOmiSynced(_binPathsForConversations(reprocessable.toList()));
 
+    // Optimistically clear this day's recordings immediately so the user sees a
+    // blank slate the moment they confirm — before any disk I/O completes.
+    _batches = _batches.map((b) {
+      if (b.dateString != batch.dateString) return b;
+      return Batch(
+        dateString: b.dateString,
+        date: b.date,
+        rawSegments: b.rawSegments,
+        draftRecordings: const [],
+        finalizedRecordings: const [],
+        discards: const [],
+      );
+    }).toList();
+    notifyListeners();
+    await WidgetsBinding.instance.endOfFrame;
+
     await RecordingsManager.reprocessDay(batch);
     await _loadBatches();
-    // Wait for the rendering pipeline to complete a full frame so all three
-    // filter tabs (Main / Hidden / All) visually reflect the wiped state before
-    // the processing progress bar appears. Future.delayed(Duration.zero) only
-    // posts to the event queue and does not guarantee a frame has been rendered.
     await WidgetsBinding.instance.endOfFrame;
 
     final freshBatch = _batches
