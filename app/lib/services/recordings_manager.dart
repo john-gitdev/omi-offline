@@ -1314,24 +1314,56 @@ class RecordingsManager {
             final savedPaths = (data['paths'] as List).cast<String>();
             final lastIndex = data['lastIndex'] as int;
             final currentPaths = allSegments.map((f) => f.path).toList();
-            bool valid = lastIndex >= 0 && lastIndex + 1 < currentPaths.length;
-            if (valid) {
+
+            // Fast path: segment list identical up to lastIndex — full state restore.
+            bool exactMatch = lastIndex >= 0 && lastIndex + 1 < currentPaths.length;
+            if (exactMatch) {
               for (int k = 0; k <= lastIndex && k < savedPaths.length && k < currentPaths.length; k++) {
                 if (currentPaths[k] != savedPaths[k]) {
-                  valid = false;
+                  exactMatch = false;
                   break;
                 }
               }
             }
-            if (valid) {
+
+            if (exactMatch) {
               checkpointState = data['state'] as Map<String, dynamic>?;
               checkpointResumeIndex = lastIndex + 1;
               checkpointPendingDeletes = (data['pendingDeletes'] as List?)?.cast<String>() ?? [];
               Logger.debug(
                   'RecordingsManager: Resuming from checkpoint — skipping $checkpointResumeIndex/${currentPaths.length} segments.');
             } else {
-              Logger.debug('RecordingsManager: Checkpoint segment list changed — starting fresh.');
-              await checkpointFile.delete();
+              // Segment list shifted: new downloads were added or processed segments
+              // were deleted from disk between runs. Find the first segment whose
+              // timestamp is strictly later than the last completed segment so we
+              // skip already-processed bins without requiring index alignment.
+              // VAD state cannot be safely restored (preceding paths changed) but
+              // the draft files on disk bridge the conversation gap.
+              final lastCompletedPath = lastIndex >= 0 && lastIndex < savedPaths.length ? savedPaths[lastIndex] : null;
+              final lastCompletedTs = lastCompletedPath != null
+                  ? (int.tryParse(lastCompletedPath.split('/').last.split('_').first) ?? 0)
+                  : 0;
+
+              if (lastCompletedTs > 946684800) {
+                // Epoch-seconds threshold avoids matching uptime-tick filenames.
+                final resumeIdx = currentPaths.indexWhere((p) {
+                  final ts = int.tryParse(p.split('/').last.split('_').first) ?? 0;
+                  return ts > lastCompletedTs;
+                });
+                if (resumeIdx >= 0) {
+                  checkpointResumeIndex = resumeIdx;
+                  checkpointState = null; // fresh VAD state — drafts on disk bridge the gap
+                  checkpointPendingDeletes = (data['pendingDeletes'] as List?)?.cast<String>() ?? [];
+                  Logger.debug(
+                      'RecordingsManager: Checkpoint shifted — resuming at $resumeIdx/${currentPaths.length} (ts>$lastCompletedTs), fresh state.');
+                } else {
+                  Logger.debug('RecordingsManager: Checkpoint segment list changed — starting fresh.');
+                  await checkpointFile.delete();
+                }
+              } else {
+                Logger.debug('RecordingsManager: Checkpoint segment list changed — starting fresh.');
+                await checkpointFile.delete();
+              }
             }
           }
         } catch (e) {
@@ -2459,9 +2491,7 @@ class RecordingsManager {
     await pruneConsumedBins();
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
-    final activeBatches = batches
-        .where((b) => b.rawSegments.isNotEmpty || b.draftRecordings.isNotEmpty)
-        .toList();
+    final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty || b.draftRecordings.isNotEmpty).toList();
     if (activeBatches.isEmpty) return;
     try {
       await manager.processAll(
@@ -3222,7 +3252,8 @@ class RecordingsManager {
     final covered = <String>{};
     for (final bin in candidates) {
       final folderName = p.basename(bin.parent.path);
-      if (folderName.startsWith('session_') || folderName.startsWith('unknown_') || folderName.startsWith('.')) continue;
+      if (folderName.startsWith('session_') || folderName.startsWith('unknown_') || folderName.startsWith('.'))
+        continue;
       final binName = p.basename(bin.path);
       final parts = binName.split('.').first.split('_');
       if (parts.isEmpty) continue;
