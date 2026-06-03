@@ -2616,13 +2616,13 @@ class RecordingsManager {
       '${directory.path}/recordings/${batch.dateString}',
     );
 
-    // Drop any discard records for this day and their protected bins so the
-    // ghosts disappear immediately rather than surviving until the next sweep.
-    // The full directory delete below would handle discards.jsonl in the
-    // !onlyReprocessable path, but the raw_segments bins live elsewhere and
-    // need explicit cleanup either way.
+    // Drop discard records for this day. In the full-delete path, also delete
+    // the referenced raw bins so they can't resurrect deleted recordings on the
+    // next sync. In the reprocess path, keep the bins — ghost-record bins often
+    // share a firmware file (typically 5 min) with a valid conversation, and
+    // deleting them destroys audio that the next processAll run needs.
     for (final d in batch.discards) {
-      await removeDiscardRecord(d, deleteBins: true);
+      await removeDiscardRecord(d, deleteBins: !onlyReprocessable);
     }
 
     final availableSessionIds = batch.rawSegments
