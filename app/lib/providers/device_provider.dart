@@ -142,6 +142,7 @@ class DeviceProvider extends ChangeNotifier
     ServiceManager.instance().device.subscribe(this, this);
     ServiceManager.instance().wal.subscribe(this, this);
     FlutterForegroundTask.addTaskDataCallback(_onForegroundTaskData);
+    BleBridge.instance.backgroundSyncRequestedCallback = _onBackgroundSyncRequested;
     BleBridge.instance.bluetoothStateChangedCallback = (state) {
       Logger.debug('Bluetooth state changed: $state');
       if (state == 'on') {
@@ -173,6 +174,16 @@ class DeviceProvider extends ChangeNotifier
       }
     }
     _startBackgroundSyncTimer();
+  }
+
+  void _onBackgroundSyncRequested() {
+    Logger.debug('[BLE] _onBackgroundSyncRequested: OS scheduler fired (fg=$_isAppInForeground connected=$isConnected)');
+    if (isConnected) {
+      _doBackgroundSync();
+    } else {
+      _pendingBackgroundSync = true;
+      scanAndConnectToDevice();
+    }
   }
 
   void _onForegroundTaskData(Object data) {
