@@ -4,6 +4,7 @@ import UserNotifications
 import WatchConnectivity
 import AVFoundation
 import Speech
+import BackgroundTasks
 
 extension FlutterError: Error {}
 
@@ -128,7 +129,46 @@ extension FlutterError: Error {}
       UNUserNotificationCenter.current().delegate = self as? UNUserNotificationCenterDelegate
     }
 
+    // Background sync BGProcessingTask — fires when iOS has spare capacity and
+    // a sync interval has elapsed. Calls onBackgroundSyncRequested() so Dart's
+    // DeviceProvider handles the sync exactly as a Dart timer tick would.
+    if #available(iOS 13.0, *) {
+      BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.omi.offline.sync", using: nil) { task in
+        self.handleBackgroundSync(task: task as! BGProcessingTask)
+      }
+    }
+
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  @available(iOS 13.0, *)
+  private func handleBackgroundSync(task: BGProcessingTask) {
+    scheduleBackgroundSync() // re-arm for next interval before doing any work
+    task.expirationHandler = { task.setTaskCompleted(success: false) }
+    guard let api = OmiBleManager.shared.flutterApi else {
+      task.setTaskCompleted(success: false)
+      return
+    }
+    api.onBackgroundSyncRequested { _ in task.setTaskCompleted(success: true) }
+  }
+
+  @available(iOS 13.0, *)
+  private func scheduleBackgroundSync() {
+    let prefs = UserDefaults.standard
+    let intervalMinutes = prefs.integer(forKey: "flutter.backgroundSyncIntervalMinutes")
+    guard intervalMinutes > 0 else { return }
+    let request = BGProcessingTaskRequest(identifier: "com.omi.offline.sync")
+    request.requiresNetworkConnectivity = false
+    request.requiresExternalPower = false
+    request.earliestBeginDate = Date(timeIntervalSinceNow: Double(intervalMinutes) * 60)
+    try? BGTaskScheduler.shared.submit(request)
+  }
+
+  override func applicationDidEnterBackground(_ application: UIApplication) {
+    if #available(iOS 13.0, *) {
+      scheduleBackgroundSync()
+    }
+    super.applicationDidEnterBackground(application)
   }
 
   private func handleMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
