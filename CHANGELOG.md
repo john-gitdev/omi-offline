@@ -1,5 +1,20 @@
 # Changelog
 
+### Fix: CPU wake-lock prevents Android from throttling background VAD processing (0.18.2)
+
+- **Fix: Android no longer throttles the VAD processing isolate when the screen goes off.** Added a `PARTIAL_WAKE_LOCK` around the background sync+process cycle. Without it, Android's CPU governor downclocks the Dart isolate's thread scheduling when the screen turns off, spiking the per-inference platform-channel latency from ~1 ms to ~10 ms and slowing processing 3–5×. The WakeLock is acquired at the start of `_doBackgroundSync` and released unconditionally in `finally`, holding for the full BLE sync + VAD processing run.
+
+### Fix: Adjustment Mode reprocess and banner corrections (0.18.1)
+
+- **Fix: Adjustment Mode cleanup now reprocesses all bins, not just unprocessed days.** Previously "Turn Off & Reprocess" only ran processing on days with no existing recordings, skipping days that had already been processed. Now every batch with a backing bin is deleted and reprocessed. Recordings without a bin backup are preserved in all cases.
+- **Fix: banner copy clarified.** The subtitle now states that minutes-to-process counts all bins including those already processed. The confirmation dialog explains exactly which recordings will be replaced vs. kept.
+
+### Recording settings improvements (0.18.0)
+
+- **Adjustment Mode banner:** A persistent orange banner now appears at the bottom of the Conversations screen while Adjustment Mode is on, indicating that all recordings are shown (not just processed ones). Tap the banner to turn off Adjustment Mode and process all remaining raw audio with current settings in one step.
+- **Reprocess Day shows blank before reprocessing:** Tapping Reprocess Day now deletes the day's processed recordings and refreshes the list to show a blank state before reprocessing begins, making it clear the old recordings were removed.
+- **Voice Activity Detection defaults to off:** In Automatic Recording Mode, VAD is now disabled by default. Enabling it shows a one-time warning that Silero VAD uses more battery and takes longer to process than the default AAD mode, with a "Don't show again" option.
+
 ### Fix: foreground service hardened against OEM battery killers (0.17.10)
 
 - **Fix: foreground service type now includes `dataSync` alongside `connectedDevice`.** `connectedDevice` alone loses its justification once the BLE device disconnects mid-processing, giving Samsung/Xiaomi/OPPO battery managers a reason to kill the service. Adding `dataSync` declares a legitimate long-running data task that stays valid regardless of BLE state.
