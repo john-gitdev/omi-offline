@@ -72,11 +72,14 @@ class ForegroundUtil {
       FlutterForegroundTask.init(
         androidNotificationOptions: AndroidNotificationOptions(
           id: 2002,
-          channelId: 'omi_sync_channel',
+          // v2 channel: DEFAULT importance so OEM battery killers (Samsung, Xiaomi, etc.)
+          // treat this as an active-work notification rather than a silent one they can kill.
+          // Channel importance cannot be changed after creation — new ID forces recreation.
+          channelId: 'omi_sync_channel_v2',
           channelName: 'Omi Sync',
           channelDescription: 'Shown while syncing or processing recordings.',
-          channelImportance: NotificationChannelImportance.LOW,
-          priority: NotificationPriority.LOW,
+          channelImportance: NotificationChannelImportance.DEFAULT,
+          priority: NotificationPriority.DEFAULT,
           onlyAlertOnce: true,
         ),
         iosNotificationOptions: const IOSNotificationOptions(
