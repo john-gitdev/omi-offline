@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/providers/device_provider.dart';
@@ -56,6 +58,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
   late bool _adjustmentMode;
 
   bool _isDirty = false;
+  bool _isIgnoringBatteryOptimizations = true;
 
   @override
   void initState() {
@@ -78,6 +81,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     _manualMode = SharedPreferencesUtil().manualMode;
     _loadModeFields(_manualMode);
     _adjustmentMode = SharedPreferencesUtil().adjustmentMode;
+    if (Platform.isAndroid) _checkBatteryOptimization();
   }
 
   @override
@@ -132,6 +136,11 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
 
   void _markDirty() {
     if (!_isDirty) setState(() => _isDirty = true);
+  }
+
+  Future<void> _checkBatteryOptimization() async {
+    final v = await FlutterForegroundTask.isIgnoringBatteryOptimizations;
+    if (mounted) setState(() => _isIgnoringBatteryOptimizations = v);
   }
 
   Future<void> _handleCleanUp() async {
@@ -283,6 +292,15 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Battery optimization warning — only shown on Android when not exempt
+                  if (Platform.isAndroid && !_isIgnoringBatteryOptimizations) ...[
+                    _BatteryOptimizationCard(onFix: () async {
+                      await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+                      await Future<void>.delayed(const Duration(milliseconds: 500));
+                      _checkBatteryOptimization();
+                    }),
+                    const SizedBox(height: 20),
+                  ],
                   // Automatic Mode toggle — requires device connection to change
                   AnimatedBuilder(
                     animation: _flashAnimation,
@@ -358,7 +376,71 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                           style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                         ),
                         value: _vadEnabled,
-                        onChanged: (value) {
+                        onChanged: (value) async {
+                          if (value) {
+                            final skipConfirm = SharedPreferencesUtil().sileroVadSkipConfirm;
+                            if (!skipConfirm) {
+                              bool doNotShowAgain = false;
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => StatefulBuilder(
+                                  builder: (ctx, setDialogState) => AlertDialog(
+                                    backgroundColor: const Color(0xFF1C1C1E),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                    title: const Text(
+                                      'Enable Voice Activity Detection?',
+                                      style: TextStyle(color: Colors.white),
+                                    ),
+                                    content: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        const Text(
+                                          'Silero VAD classifies each audio frame as speech or silence. It uses more battery and takes longer to process than the default AAD mode.',
+                                          style: TextStyle(color: Colors.white70, fontSize: 14),
+                                        ),
+                                        const SizedBox(height: 16),
+                                        GestureDetector(
+                                          onTap: () => setDialogState(() => doNotShowAgain = !doNotShowAgain),
+                                          child: Row(
+                                            children: [
+                                              SizedBox(
+                                                width: 20,
+                                                height: 20,
+                                                child: Checkbox(
+                                                  value: doNotShowAgain,
+                                                  onChanged: (v) => setDialogState(() => doNotShowAgain = v ?? false),
+                                                  activeColor: Colors.deepPurpleAccent,
+                                                  side: const BorderSide(color: Colors.grey),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              const Text(
+                                                "Don't show again",
+                                                style: TextStyle(color: Colors.grey, fontSize: 13),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.of(ctx).pop(false),
+                                        child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                                      ),
+                                      TextButton(
+                                        onPressed: () => Navigator.of(ctx).pop(true),
+                                        child: const Text('Yes', style: TextStyle(color: Colors.deepPurpleAccent)),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                              if (confirm != true) return;
+                              if (doNotShowAgain) SharedPreferencesUtil().sileroVadSkipConfirm = true;
+                            }
+                          }
                           setState(() => _vadEnabled = value);
                           _markDirty();
                         },
@@ -771,6 +853,63 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
             },
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _BatteryOptimizationCard extends StatelessWidget {
+  final VoidCallback onFix;
+  const _BatteryOptimizationCard({required this.onFix});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: Colors.red.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.red.withOpacity(0.35)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(top: 2),
+            child: Icon(Icons.battery_alert, color: Colors.redAccent, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Background processing may be killed',
+                  style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w600, fontSize: 13),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  'Battery optimization is active. Android can stop processing when the screen turns off. '
+                  'Tap Fix, then select "Don\'t optimize" to allow background operation.',
+                  style: TextStyle(color: Colors.red.shade300, fontSize: 12, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          TextButton(
+            onPressed: onFix,
+            style: TextButton.styleFrom(
+              backgroundColor: Colors.redAccent.withOpacity(0.18),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child:
+                const Text('Fix', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w700, fontSize: 13)),
+          ),
+        ],
       ),
     );
   }
