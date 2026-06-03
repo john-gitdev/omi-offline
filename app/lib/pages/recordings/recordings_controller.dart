@@ -821,9 +821,30 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     _transitionTo(SyncProcessState.processing);
 
-    final activeBatches = _batches.where((b) => b.rawSegments.isNotEmpty).toList();
-    final hasDrafts = _batches.any((b) => b.draftRecordings.isNotEmpty);
-    final hasMarkers = _batches.any((b) => b.markerTimestamps.isNotEmpty);
+    // In adjustment mode, bins are preserved so skip the ones already covered by
+    // a recording — no need to re-decode audio that already has an output file.
+    // Bins remain on disk for Reprocess Day; we just exclude them from this VAD run.
+    final Set<String> coveredBins = SharedPreferencesUtil().adjustmentMode
+        ? await RecordingsManager.coveredBinPaths(_batches.expand((b) => b.rawSegments).toList())
+        : const {};
+    final processableBatches = coveredBins.isEmpty
+        ? _batches
+        : _batches.map((b) {
+            final filtered = b.rawSegments.where((f) => !coveredBins.contains(f.path)).toList();
+            if (filtered.length == b.rawSegments.length) return b;
+            return Batch(
+              dateString: b.dateString,
+              date: b.date,
+              rawSegments: filtered,
+              draftRecordings: b.draftRecordings,
+              finalizedRecordings: b.finalizedRecordings,
+              markerTimestamps: b.markerTimestamps,
+              discards: b.discards,
+            );
+          }).toList();
+    final activeBatches = processableBatches.where((b) => b.rawSegments.isNotEmpty).toList();
+    final hasDrafts = processableBatches.any((b) => b.draftRecordings.isNotEmpty);
+    final hasMarkers = processableBatches.any((b) => b.markerTimestamps.isNotEmpty);
 
     if (activeBatches.isEmpty && !(_isForcePipeline && hasDrafts) && !hasMarkers) {
       _prefs.lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
@@ -854,7 +875,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await ForegroundUtil.startForegroundTask(text: 'Processing recordings — preparing...');
     try {
       await _manager.processAll(
-        _batches,
+        processableBatches,
         (_, __) {}, // global progress listener handles this
         backgroundMode: backgroundMode,
         finalizeDrafts: _isForcePipeline,
