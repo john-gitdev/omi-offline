@@ -1,6 +1,8 @@
 package com.omi.offline
 
 import android.app.Activity
+import android.content.Context
+import android.os.PowerManager
 import android.util.Log
 
 /**
@@ -20,6 +22,7 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
 
     private var companionManager: OmiCompanionManager? = null
     private var companionAssociationCallback: ((Result<String>) -> Unit)? = null
+    private var processingWakeLock: PowerManager.WakeLock? = null
 
     fun initCompanionManager(activity: Activity) {
         companionManager = OmiCompanionManager(activity, getActivity)
@@ -134,6 +137,19 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
 
         companionAssociationCallback = callback
         cm.associate(deviceAddress = deviceAddress)
+    }
+
+    override fun acquireProcessingWakeLock() {
+        if (processingWakeLock?.isHeld == true) return
+        val ctx = getActivity()?.applicationContext ?: return
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+        processingWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "omi:VadProcessing")
+            .also { it.acquire(30 * 60 * 1000L) }
+    }
+
+    override fun releaseProcessingWakeLock() {
+        processingWakeLock?.let { if (it.isHeld) it.release() }
+        processingWakeLock = null
     }
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): String? {
