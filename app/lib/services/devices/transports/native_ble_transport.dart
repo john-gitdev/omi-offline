@@ -35,6 +35,12 @@ class NativeBleTransport extends DeviceTransport {
 
   Completer<List<BleService>>? _deviceReadyCompleter;
 
+  /// Completes when the GATT physical link is up (before service discovery).
+  Completer<void>? _gattConnectedCompleter;
+
+  @override
+  Future<void>? get gattConnectFuture => _gattConnectedCompleter?.future;
+
   DeviceTransportState _state = DeviceTransportState.disconnected;
   DateTime? _lastConnectedAt;
 
@@ -59,12 +65,14 @@ class NativeBleTransport extends DeviceTransport {
   Future<void> connect({bool requiresBond = false}) async {
     if (_state == DeviceTransportState.connected) return;
     if (_state == DeviceTransportState.connecting && _deviceReadyCompleter != null) {
+      Logger.debug('[NativeBleTransport] $_peripheralUuid: already connecting, joining existing attempt');
       try {
         await _deviceReadyCompleter!.future;
       } catch (_) {}
       return;
     }
 
+    Logger.debug('[NativeBleTransport] $_peripheralUuid: starting fresh connect (requiresBond=$requiresBond)');
     _updateState(DeviceTransportState.connecting);
 
     _deviceReadyCompleter = Completer<List<BleService>>();
@@ -72,10 +80,13 @@ class NativeBleTransport extends DeviceTransport {
     // is failed before someone is actively awaiting it (or if multiple people await it).
     _deviceReadyCompleter!.future.catchError((_) => <BleService>[]);
 
+    _gattConnectedCompleter = Completer<void>();
+    _gattConnectedCompleter!.future.catchError((_) {});
+
     try {
       await _hostApi.manageDevice(_peripheralUuid, requiresBond);
     } catch (e) {
-      Logger.debug('[NativeBleTransport] manageDevice failed: $e');
+      Logger.debug('[NativeBleTransport] $_peripheralUuid: manageDevice failed: $e');
       final completer = _deviceReadyCompleter;
       _deviceReadyCompleter = null;
       if (completer != null && !completer.isCompleted) {
@@ -89,15 +100,20 @@ class NativeBleTransport extends DeviceTransport {
       rethrow;
     }
 
+    Logger.debug('[NativeBleTransport] $_peripheralUuid: manageDevice sent, waiting for device-ready (30s timeout)');
+    final t0 = DateTime.now();
     try {
       _services = await _deviceReadyCompleter!.future.timeout(
         const Duration(seconds: 30),
         onTimeout: () => throw TimeoutException('Device ready timeout after 30s'),
       );
       _deviceReadyCompleter = null;
+      final ms = DateTime.now().difference(t0).inMilliseconds;
+      Logger.debug('[NativeBleTransport] $_peripheralUuid: device ready after ${ms}ms (${_services.length} services)');
       _updateState(DeviceTransportState.connected);
     } catch (e) {
-      Logger.debug('[NativeBleTransport] connect failed: $e');
+      final ms = DateTime.now().difference(t0).inMilliseconds;
+      Logger.debug('[NativeBleTransport] $_peripheralUuid: connect failed after ${ms}ms: $e');
       final completer = _deviceReadyCompleter;
       _deviceReadyCompleter = null;
       if (completer != null && !completer.isCompleted) {
@@ -131,7 +147,11 @@ class NativeBleTransport extends DeviceTransport {
     _closeAllStreams();
     _services = [];
 
-    // Fail any pending connect completer
+    // Fail any pending completers
+    if (_gattConnectedCompleter != null && !_gattConnectedCompleter!.isCompleted) {
+      _gattConnectedCompleter!.completeError(Exception('Disconnected'));
+    }
+    _gattConnectedCompleter = null;
     if (_deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted) {
       _deviceReadyCompleter!.completeError(Exception('Disconnected'));
       _deviceReadyCompleter = null;
@@ -303,15 +323,27 @@ class NativeBleTransport extends DeviceTransport {
       // Physical BLE connection established.
       // We don't update state to .connected yet; we wait for _handleDeviceReady
       // to confirm services are discovered and the device is fully usable.
+      Logger.debug('[NativeBleTransport] $_peripheralUuid: GATT physical connected — waiting for services+MTU');
+      if (_gattConnectedCompleter != null && !_gattConnectedCompleter!.isCompleted) {
+        _gattConnectedCompleter!.complete();
+      }
       return;
     }
 
     // Ignore transient GATT status errors during connection phase to allow native retry to work.
     final bool isConnecting = _deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted;
     if (isConnecting && error != null && (error.contains('133') || error.contains('-1'))) {
-      Logger.debug('[NativeBleTransport] Ignoring transient GATT error during connect: $error');
+      Logger.debug(
+          '[NativeBleTransport] $_peripheralUuid: ignoring transient GATT error during connect (native will retry): $error');
       return;
     }
+    Logger.debug(
+        '[NativeBleTransport] $_peripheralUuid: disconnected (error=$error isConnecting=$isConnecting state=$_state)');
+
+    if (_gattConnectedCompleter != null && !_gattConnectedCompleter!.isCompleted) {
+      _gattConnectedCompleter!.completeError(error ?? 'disconnected');
+    }
+    _gattConnectedCompleter = null;
 
     // Remember active subscriptions before closing streams
     _activeSubscriptionKeys.clear();
@@ -330,10 +362,12 @@ class NativeBleTransport extends DeviceTransport {
   void _handleDeviceReady(List<BleService> services) {
     _services = services;
     if (_deviceReadyCompleter != null && !_deviceReadyCompleter!.isCompleted) {
-      // Initial connection
+      Logger.debug(
+          '[NativeBleTransport] $_peripheralUuid: device ready (initial connect path, ${services.length} services)');
       _deviceReadyCompleter!.complete(services);
     } else {
-      // Auto-reconnect from native — re-subscribe to characteristics
+      Logger.debug(
+          '[NativeBleTransport] $_peripheralUuid: device ready (auto-reconnect path, ${services.length} services)');
       _resubscribeAfterReconnect(services);
     }
     _updateState(DeviceTransportState.connected);
