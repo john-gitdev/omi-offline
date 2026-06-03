@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -95,7 +95,8 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
       final bytes = meta.readAsBytesSync();
       if (bytes.length < 408) return List.filled(200, 0.05);
       final bd = ByteData.sublistView(bytes);
-      return List.generate(200, (i) => logScale(bd.getUint16(8 + i * 2, Endian.little) / 65535.0));
+      final raw = List.generate(200, (i) => bd.getUint16(8 + i * 2, Endian.little) / 65535.0);
+      return normalizeAmplitudes(raw);
     } catch (_) {
       return List.filled(200, 0.05);
     }
@@ -407,231 +408,231 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                   ),
                 )
               : _loadingAudio
-              ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
-              : Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 24),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      // Time range label (live — updates during crop drag)
-                      Text(
-                        _liveTimeRangeLabel,
-                        style: TextStyle(color: Colors.grey.shade400, fontSize: 14),
-                      ),
-                      const SizedBox(height: 32),
-
-                      // Waveform
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 40),
-                        child: SizedBox(
-                          height: 100,
-                          child: _loadingWaveform
-                              ? const Center(
-                                  child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
-                              : LayoutBuilder(
-                                  builder: (ctx, constraints) {
-                                    final width = constraints.maxWidth;
-                                    final tMs = _totalDuration.inMilliseconds.toDouble();
-                                    return GestureDetector(
-                                      onTapDown: (d) {
-                                        if (tMs == 0) return;
-                                        final r = (d.localPosition.dx / width).clamp(0.0, 1.0);
-                                        _player.seek(Duration(milliseconds: (r * tMs).round()));
-                                      },
-                                      onHorizontalDragStart: (d) {
-                                        if (tMs == 0) return;
-                                        final x = d.localPosition.dx;
-                                        if (_isCropMode) {
-                                          final vsX = (_cropStart.inMilliseconds / tMs) * width;
-                                          final veX = (_cropEnd.inMilliseconds / tMs) * width;
-                                          if ((x - vsX).abs() < _kHandleHitSlop) {
-                                            setState(() => _dragMode = _DragMode.left);
-                                          } else if ((x - veX).abs() < _kHandleHitSlop) {
-                                            setState(() => _dragMode = _DragMode.right);
-                                          } else {
-                                            setState(() => _dragMode = _DragMode.seek);
-                                          }
-                                        } else {
-                                          setState(() => _dragMode = _DragMode.seek);
-                                        }
-                                      },
-                                      onHorizontalDragUpdate: (d) {
-                                        if (tMs == 0) return;
-                                        final r = (d.localPosition.dx / width).clamp(0.0, 1.0);
-                                        final ms = (r * tMs).round();
-                                        if (_dragMode == _DragMode.left) {
-                                          final newStart = Duration(milliseconds: ms);
-                                          const minWindow = Duration(seconds: 5);
-                                          if (newStart >= Duration.zero && newStart < _cropEnd - minWindow) {
-                                            setState(() => _cropStart = newStart);
-                                          }
-                                        } else if (_dragMode == _DragMode.right) {
-                                          final newEnd = Duration(milliseconds: ms);
-                                          const minWindow = Duration(seconds: 5);
-                                          if (newEnd <= _totalDuration && newEnd > _cropStart + minWindow) {
-                                            setState(() => _cropEnd = newEnd);
-                                          }
-                                        } else {
-                                          _player.seek(Duration(milliseconds: ms));
-                                        }
-                                      },
-                                      onHorizontalDragEnd: (_) async {
-                                        if (_dragMode == _DragMode.left || _dragMode == _DragMode.right) {
-                                          if (_position < _cropStart || _position > _cropEnd) {
-                                            await _player.seek(_cropStart);
-                                          }
-                                        }
-                                        if (mounted) setState(() => _dragMode = _DragMode.none);
-                                      },
-                                      child: CustomPaint(
-                                        painter: _MarkerWaveformPainter(
-                                          amplitudes: _waveform,
-                                          progress: progressRatio,
-                                          visibleStartRatio: visibleStartRatio,
-                                          visibleEndRatio: visibleEndRatio,
-                                          markerRatio: markerOffsetRatio,
-                                          activeDragMode: _dragMode,
-                                          isCropMode: _isCropMode,
-                                        ),
-                                        size: Size(width, 100),
-                                      ),
-                                    );
-                                  },
-                                ),
-                        ),
-                      ),
-
-                      const SizedBox(height: 12),
-
-                      // Time labels
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(_fmt(_position), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                            Text(_fmt(_totalDuration), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-
-                      // Progress slider
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        child: SliderTheme(
-                          data: SliderTheme.of(context).copyWith(
-                            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                            trackHeight: 3,
-                            overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                            activeTrackColor: Colors.deepPurpleAccent,
-                            inactiveTrackColor: Colors.grey.shade800,
-                            thumbColor: Colors.deepPurpleAccent,
-                            overlayColor: Colors.deepPurpleAccent.withValues(alpha: 0.2),
-                          ),
-                          child: Slider(
-                            value: progressRatio,
-                            onChanged: (v) {
-                              _player.seek(Duration(milliseconds: (v * totalMs).round()));
-                            },
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-
-                      // Transport controls
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                  ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
+                  : Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          _SeekBtn(
-                              icon: FontAwesomeIcons.rotateLeft,
-                              seconds: 30,
-                              isForward: false,
-                              onTap: () => _seekRelative(-30)),
-                          const SizedBox(width: 40),
-                          Semantics(
-                            button: true,
-                            label: _isPlaying ? 'Pause' : 'Play',
-                            child: Tooltip(
-                              message: _isPlaying ? 'Pause' : 'Play',
-                              child: Material(
-                                color: Colors.deepPurpleAccent,
-                                shape: const CircleBorder(),
-                                clipBehavior: Clip.antiAlias,
-                                child: InkWell(
-                                  onTap: _togglePlay,
-                                  child: SizedBox(
-                                    width: 72,
-                                    height: 72,
-                                    child: Center(
-                                      child: FaIcon(
-                                        _isPlaying ? FontAwesomeIcons.pause : FontAwesomeIcons.play,
-                                        color: Colors.white,
-                                        size: 26,
+                          // Time range label (live — updates during crop drag)
+                          Text(
+                            _liveTimeRangeLabel,
+                            style: TextStyle(color: Colors.grey.shade400, fontSize: 14),
+                          ),
+                          const SizedBox(height: 32),
+
+                          // Waveform
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 40),
+                            child: SizedBox(
+                              height: 100,
+                              child: _loadingWaveform
+                                  ? const Center(
+                                      child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
+                                  : LayoutBuilder(
+                                      builder: (ctx, constraints) {
+                                        final width = constraints.maxWidth;
+                                        final tMs = _totalDuration.inMilliseconds.toDouble();
+                                        return GestureDetector(
+                                          onTapDown: (d) {
+                                            if (tMs == 0) return;
+                                            final r = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                                            _player.seek(Duration(milliseconds: (r * tMs).round()));
+                                          },
+                                          onHorizontalDragStart: (d) {
+                                            if (tMs == 0) return;
+                                            final x = d.localPosition.dx;
+                                            if (_isCropMode) {
+                                              final vsX = (_cropStart.inMilliseconds / tMs) * width;
+                                              final veX = (_cropEnd.inMilliseconds / tMs) * width;
+                                              if ((x - vsX).abs() < _kHandleHitSlop) {
+                                                setState(() => _dragMode = _DragMode.left);
+                                              } else if ((x - veX).abs() < _kHandleHitSlop) {
+                                                setState(() => _dragMode = _DragMode.right);
+                                              } else {
+                                                setState(() => _dragMode = _DragMode.seek);
+                                              }
+                                            } else {
+                                              setState(() => _dragMode = _DragMode.seek);
+                                            }
+                                          },
+                                          onHorizontalDragUpdate: (d) {
+                                            if (tMs == 0) return;
+                                            final r = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                                            final ms = (r * tMs).round();
+                                            if (_dragMode == _DragMode.left) {
+                                              final newStart = Duration(milliseconds: ms);
+                                              const minWindow = Duration(seconds: 5);
+                                              if (newStart >= Duration.zero && newStart < _cropEnd - minWindow) {
+                                                setState(() => _cropStart = newStart);
+                                              }
+                                            } else if (_dragMode == _DragMode.right) {
+                                              final newEnd = Duration(milliseconds: ms);
+                                              const minWindow = Duration(seconds: 5);
+                                              if (newEnd <= _totalDuration && newEnd > _cropStart + minWindow) {
+                                                setState(() => _cropEnd = newEnd);
+                                              }
+                                            } else {
+                                              _player.seek(Duration(milliseconds: ms));
+                                            }
+                                          },
+                                          onHorizontalDragEnd: (_) async {
+                                            if (_dragMode == _DragMode.left || _dragMode == _DragMode.right) {
+                                              if (_position < _cropStart || _position > _cropEnd) {
+                                                await _player.seek(_cropStart);
+                                              }
+                                            }
+                                            if (mounted) setState(() => _dragMode = _DragMode.none);
+                                          },
+                                          child: CustomPaint(
+                                            painter: _MarkerWaveformPainter(
+                                              amplitudes: _waveform,
+                                              progress: progressRatio,
+                                              visibleStartRatio: visibleStartRatio,
+                                              visibleEndRatio: visibleEndRatio,
+                                              markerRatio: markerOffsetRatio,
+                                              activeDragMode: _dragMode,
+                                              isCropMode: _isCropMode,
+                                            ),
+                                            size: Size(width, 100),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                            ),
+                          ),
+
+                          const SizedBox(height: 12),
+
+                          // Time labels
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 24),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(_fmt(_position), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                                Text(_fmt(_totalDuration), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+
+                          // Progress slider
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            child: SliderTheme(
+                              data: SliderTheme.of(context).copyWith(
+                                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                                trackHeight: 3,
+                                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                                activeTrackColor: Colors.deepPurpleAccent,
+                                inactiveTrackColor: Colors.grey.shade800,
+                                thumbColor: Colors.deepPurpleAccent,
+                                overlayColor: Colors.deepPurpleAccent.withValues(alpha: 0.2),
+                              ),
+                              child: Slider(
+                                value: progressRatio,
+                                onChanged: (v) {
+                                  _player.seek(Duration(milliseconds: (v * totalMs).round()));
+                                },
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+
+                          // Transport controls
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              _SeekBtn(
+                                  icon: FontAwesomeIcons.rotateLeft,
+                                  seconds: 30,
+                                  isForward: false,
+                                  onTap: () => _seekRelative(-30)),
+                              const SizedBox(width: 40),
+                              Semantics(
+                                button: true,
+                                label: _isPlaying ? 'Pause' : 'Play',
+                                child: Tooltip(
+                                  message: _isPlaying ? 'Pause' : 'Play',
+                                  child: Material(
+                                    color: Colors.deepPurpleAccent,
+                                    shape: const CircleBorder(),
+                                    clipBehavior: Clip.antiAlias,
+                                    child: InkWell(
+                                      onTap: _togglePlay,
+                                      child: SizedBox(
+                                        width: 72,
+                                        height: 72,
+                                        child: Center(
+                                          child: FaIcon(
+                                            _isPlaying ? FontAwesomeIcons.pause : FontAwesomeIcons.play,
+                                            color: Colors.white,
+                                            size: 26,
+                                          ),
+                                        ),
                                       ),
                                     ),
                                   ),
                                 ),
                               ),
-                            ),
+                              const SizedBox(width: 40),
+                              _SeekBtn(
+                                  icon: FontAwesomeIcons.rotateRight,
+                                  seconds: 30,
+                                  isForward: true,
+                                  onTap: () => _seekRelative(30)),
+                            ],
                           ),
-                          const SizedBox(width: 40),
-                          _SeekBtn(
-                              icon: FontAwesomeIcons.rotateRight,
-                              seconds: 30,
-                              isForward: true,
-                              onTap: () => _seekRelative(30)),
+                          const SizedBox(height: 24),
+
+                          // Speed selector
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [1.0, 1.5, 2.0].map((s) {
+                              final selected = _speed == s;
+                              final labelText = s == 1.0
+                                  ? '1×'
+                                  : s == 1.5
+                                      ? '1.5×'
+                                      : '2×';
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 6),
+                                child: Semantics(
+                                  button: true,
+                                  label: 'Playback speed $labelText',
+                                  child: Tooltip(
+                                    message: 'Set playback speed to $labelText',
+                                    child: Material(
+                                      color: selected ? Colors.deepPurpleAccent : const Color(0xFF2C2C2E),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      clipBehavior: Clip.antiAlias,
+                                      child: InkWell(
+                                        onTap: () => _setSpeed(s),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                          child: Text(
+                                            labelText,
+                                            style: TextStyle(
+                                              color: selected ? Colors.white : Colors.grey.shade400,
+                                              fontSize: 13,
+                                              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                          const SizedBox(height: 32),
                         ],
                       ),
-                      const SizedBox(height: 24),
-
-                      // Speed selector
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [1.0, 1.5, 2.0].map((s) {
-                          final selected = _speed == s;
-                          final labelText = s == 1.0
-                              ? '1×'
-                              : s == 1.5
-                                  ? '1.5×'
-                                  : '2×';
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 6),
-                            child: Semantics(
-                              button: true,
-                              label: 'Playback speed $labelText',
-                              child: Tooltip(
-                                message: 'Set playback speed to $labelText',
-                                child: Material(
-                                  color: selected ? Colors.deepPurpleAccent : const Color(0xFF2C2C2E),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
-                                  clipBehavior: Clip.antiAlias,
-                                  child: InkWell(
-                                    onTap: () => _setSpeed(s),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                                      child: Text(
-                                        labelText,
-                                        style: TextStyle(
-                                          color: selected ? Colors.white : Colors.grey.shade400,
-                                          fontSize: 13,
-                                          fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-                      const SizedBox(height: 32),
-                    ],
-                  ),
-                ),
+                    ),
         ),
       ),
     );
