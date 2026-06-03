@@ -62,7 +62,7 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
 
         Log.d(TAG, "doWork: sync due for device=$deviceId")
 
-        if (!OmiBleManager.isInitialized) OmiBleManager.initialize(ctx)
+        if (!OmiBleManager.isInitialized) OmiBleManager.initialize(ctx as android.app.Application)
         val flutterApi = OmiBleManager.instance.flutterApi
 
         return if (flutterApi != null) {
