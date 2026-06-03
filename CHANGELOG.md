@@ -1,5 +1,9 @@
 # Changelog
 
+### Android: WorkManager background sync (0.17.8)
+
+- **Android: background sync now fires reliably even when the foreground service is killed by OEM battery managers.** A WorkManager `PeriodicWorkRequest` is registered whenever the sync interval is set and re-armed on every app start. When it fires, if the Flutter engine is alive it delivers `onBackgroundSyncRequested` to Dart so the normal connect-and-sync pipeline runs. If the process was killed entirely, sync is deferred silently to the next app open (sync-on-open handles it).
+
 ### Background sync reliability (0.17.7)
 
 - **Android: sync and processing now survive swiping the app away.** The foreground service that keeps the Dart isolate alive during sync and VAD processing no longer carries `stopWithTask`, so dismissing the app from the task switcher mid-run no longer kills it. The service still self-cleans when processing finishes.
