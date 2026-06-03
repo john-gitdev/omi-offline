@@ -2418,12 +2418,27 @@ class RecordingsManager {
     await pruneConsumedBins();
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
-    final activeBatches = batches
-        .where((b) => b.rawSegments.isNotEmpty)
-        .where(
-          (b) => !SharedPreferencesUtil().adjustmentMode || b.finalizedRecordings.isEmpty,
-        )
-        .toList();
+    // In adjustment mode, bins are preserved so covered bins must be filtered out
+    // before the VAD run — otherwise old bins re-run and waste compute.
+    final Set<String> covered = SharedPreferencesUtil().adjustmentMode
+        ? await coveredBinPaths(batches.expand((b) => b.rawSegments).toList())
+        : const {};
+    final processableBatches = covered.isEmpty
+        ? batches
+        : batches.map((b) {
+            final filtered = b.rawSegments.where((f) => !covered.contains(f.path)).toList();
+            if (filtered.length == b.rawSegments.length) return b;
+            return Batch(
+              dateString: b.dateString,
+              date: b.date,
+              rawSegments: filtered,
+              draftRecordings: b.draftRecordings,
+              finalizedRecordings: b.finalizedRecordings,
+              markerTimestamps: b.markerTimestamps,
+              discards: b.discards,
+            );
+          }).toList();
+    final activeBatches = processableBatches.where((b) => b.rawSegments.isNotEmpty).toList();
     if (activeBatches.isEmpty) return;
     try {
       await manager.processAll(activeBatches, (_, __) {}, backgroundMode: true);
@@ -2446,9 +2461,6 @@ class RecordingsManager {
     final batches = await manager.getBatches();
     final activeBatches = batches
         .where((b) => b.rawSegments.isNotEmpty || b.draftRecordings.isNotEmpty)
-        .where(
-          (b) => !SharedPreferencesUtil().adjustmentMode || b.finalizedRecordings.isEmpty,
-        )
         .toList();
     if (activeBatches.isEmpty) return;
     try {
@@ -3147,6 +3159,95 @@ class RecordingsManager {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Coverage helpers — shared by pruneConsumedBins (normal mode, deletes) and
+  // coveredBinPaths (adjustment mode, read-only filter before the VAD run).
+  // ---------------------------------------------------------------------------
+
+  /// Builds merged `[startMs, endMs]` coverage intervals from every recording
+  /// (finalized + drafts) on disk. See [pruneConsumedBins] for the coverage rule.
+  static Future<List<List<int>>> _buildMergedCoverageIntervals() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final recordingsDir = Directory('${directory.path}/recordings');
+    if (!await recordingsDir.exists()) return [];
+
+    const int leftSlackMs = 10 * 60 * 1000;
+    final int silenceSlackMs = SharedPreferencesUtil().vadSplitSeconds * 1000;
+
+    final List<List<int>> intervals = [];
+    await for (final dayFolder in recordingsDir.list()) {
+      if (dayFolder is! Directory) continue;
+      await for (final entity in dayFolder.list()) {
+        if (entity is! File) continue;
+        final path = entity.path;
+        if (!(path.endsWith('.wav') || path.endsWith('.m4a') || path.endsWith('.ogg'))) continue;
+        if (path.endsWith('.tmp.m4a') || path.contains('.tmp.')) continue;
+        final conv = Conversation.fromFile(entity);
+        if (conv.isUnknown) continue;
+        final recStartMs = conv.startTime.millisecondsSinceEpoch;
+        if (recStartMs <= 0) continue;
+        final recEndMs = recStartMs + conv.duration.inMilliseconds;
+        final rightEdge = conv.capEnded ? recEndMs : recEndMs + silenceSlackMs;
+        intervals.add([recStartMs - leftSlackMs, rightEdge]);
+      }
+    }
+    if (intervals.isEmpty) return [];
+
+    intervals.sort((a, b) => a[0].compareTo(b[0]));
+    final List<List<int>> merged = [intervals.first];
+    for (int i = 1; i < intervals.length; i++) {
+      final last = merged.last;
+      final cur = intervals[i];
+      if (cur[0] <= last[1]) {
+        if (cur[1] > last[1]) last[1] = cur[1];
+      } else {
+        merged.add(cur);
+      }
+    }
+    return merged;
+  }
+
+  /// Returns the subset of [candidates] whose `[binStart, binEnd]` is fully
+  /// covered by an existing recording. Does not delete anything — used in
+  /// Adjustment Mode to skip bins that already have a recording without removing
+  /// them from disk (so Reprocess Day can still use them).
+  static Future<Set<String>> coveredBinPaths(List<File> candidates) async {
+    if (candidates.isEmpty) return const {};
+    final merged = await _buildMergedCoverageIntervals();
+    if (merged.isEmpty) return const {};
+
+    const double opusBytesPerMs = 4050 / 1000;
+    const int binHeaderBytes = 36;
+
+    final covered = <String>{};
+    for (final bin in candidates) {
+      final folderName = p.basename(bin.parent.path);
+      if (folderName.startsWith('session_') || folderName.startsWith('unknown_') || folderName.startsWith('.')) continue;
+      final binName = p.basename(bin.path);
+      final parts = binName.split('.').first.split('_');
+      if (parts.isEmpty) continue;
+      final timerStart = int.tryParse(parts.first);
+      if (timerStart == null || timerStart < 946684800) continue;
+      int binSize;
+      try {
+        binSize = await bin.length();
+      } catch (_) {
+        continue;
+      }
+      if (binSize <= binHeaderBytes) continue;
+      final binStartMs = timerStart * 1000;
+      final binDurationMs = (((binSize - binHeaderBytes) / opusBytesPerMs)).ceil();
+      final binEndMs = binStartMs + binDurationMs;
+      for (final iv in merged) {
+        if (binStartMs >= iv[0] && binEndMs <= iv[1]) {
+          covered.add(bin.path);
+          break;
+        }
+      }
+    }
+    return covered;
+  }
+
   /// Deletes raw .bin segments whose wall-clock window is already fully covered
   /// by an existing recording. Idempotency guard against the mid-processing kill
   /// path where VAD wrote a `recording_<ts>.wav` but the app was killed (e.g. by
@@ -3174,72 +3275,25 @@ class RecordingsManager {
   /// coverage interval. Bins that extend past the right edge are preserved
   /// (this covers the cap-end case for the user's hour-long meeting recordings).
   ///
-  /// No-op when Adjustment Mode is on — that mode's contract is "keep ALL bins
-  /// for arbitrary reprocessing," which this pruner would violate.
+  /// No-op when Adjustment Mode is on — bins are preserved for Reprocess Day;
+  /// use [coveredBinPaths] to skip them without deleting.
   ///
   /// Returns the number of bins deleted.
   static Future<int> pruneConsumedBins() async {
     if (SharedPreferencesUtil().adjustmentMode) return 0;
     final directory = await getApplicationDocumentsDirectory();
-    final recordingsDir = Directory('${directory.path}/recordings');
     final rawDir = Directory('${directory.path}/raw_segments');
     if (!await rawDir.exists()) return 0;
-    if (!await recordingsDir.exists()) return 0;
 
-    // Firmware rotates SD files at most every FILE_ROTATION_INTERVAL_MS (10 min)
-    // — that's the upper bound on how much "leading slack" a bin can have before
-    // the recording's first-speech timestamp.
-    const int leftSlackMs = 10 * 60 * 1000;
-    // Silence-ended recordings observed at least vadSplitSeconds of silence
-    // past rec_end. Default 120s; honor user override.
-    final int silenceSlackMs = SharedPreferencesUtil().vadSplitSeconds * 1000;
+    final merged = await _buildMergedCoverageIntervals();
+    if (merged.isEmpty) return 0;
+
     // Opus on SD averages 81 B/frame × 50 fps. Used to derive bin duration
     // from file size (sufficient for overlap math — exact frame walk is overkill).
     const double opusBytesPerMs = 4050 / 1000;
     // Bin file metadata header: 0xFFFFFFFB marker + 4-byte length + 28-byte payload.
     const int binHeaderBytes = 36;
 
-    // Pass 1: collect every coverage interval across every day folder.
-    final List<List<int>> intervals = []; // each entry: [startMs, endMs]
-    await for (final dayFolder in recordingsDir.list()) {
-      if (dayFolder is! Directory) continue;
-      await for (final entity in dayFolder.list()) {
-        if (entity is! File) continue;
-        final path = entity.path;
-        // Audio file types we recognize as a "recording" — drafts included.
-        if (!(path.endsWith('.wav') || path.endsWith('.m4a') || path.endsWith('.ogg'))) {
-          continue;
-        }
-        if (path.endsWith('.tmp.m4a') || path.contains('.tmp.')) continue;
-        final conv = Conversation.fromFile(entity);
-        if (conv.isUnknown) continue; // no reliable wall-clock anchor
-        final recStartMs = conv.startTime.millisecondsSinceEpoch;
-        if (recStartMs <= 0) continue;
-        final recEndMs = recStartMs + conv.duration.inMilliseconds;
-        final rightEdge = conv.capEnded ? recEndMs : recEndMs + silenceSlackMs;
-        intervals.add([recStartMs - leftSlackMs, rightEdge]);
-      }
-    }
-    if (intervals.isEmpty) return 0;
-
-    // Pass 2: sort by start, then sweep-merge overlapping intervals.
-    // A bin that straddles two adjacent recordings' coverage windows must land
-    // inside the merged region to be recognized as fully consumed.
-    intervals.sort((a, b) => a[0].compareTo(b[0]));
-    final List<List<int>> merged = [intervals.first];
-    for (int i = 1; i < intervals.length; i++) {
-      final last = merged.last;
-      final cur = intervals[i];
-      if (cur[0] <= last[1]) {
-        if (cur[1] > last[1]) last[1] = cur[1];
-      } else {
-        merged.add(cur);
-      }
-    }
-
-    // Pass 3: walk every bin, check if its derived [binStart, binEnd] is fully
-    // inside any one merged interval. If yes, it's a leftover from a prior VAD
-    // pass that died before delete_segments ran — delete it.
     int deletedCount = 0;
     final touchedFolders = <Directory>{};
     await for (final folder in rawDir.list()) {
