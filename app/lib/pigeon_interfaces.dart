@@ -136,6 +136,20 @@ abstract class BleHostApi {
   @async
   @SwiftFunction('requestCompanionDeviceAssociation(deviceAddress:)')
   String requestCompanionDeviceAssociation(String deviceAddress);
+
+  /// (Android only) Download a storage file natively, bypassing the per-packet
+  /// platform-channel dispatch that throttles in background. Accumulates BLE
+  /// notifications on the binder thread and writes directly to [outputPath].
+  /// iOS throws 'unimplemented' — callers must check Platform.isAndroid.
+  @async
+  @SwiftFunction('downloadStorageFile(peripheralUuid:fileIndex:offset:timerStart:outputPath:)')
+  void downloadStorageFile(
+    String peripheralUuid,
+    int fileIndex,
+    int offset,
+    int timerStart,
+    String outputPath,
+  );
 }
 
 @FlutterApi()
