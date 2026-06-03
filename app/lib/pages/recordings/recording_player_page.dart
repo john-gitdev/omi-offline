@@ -77,9 +77,9 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           final amplitudes = <double>[];
           for (int i = 0; i < barCount; i++) {
             final peak = bd.getUint16(8 + i * 2, Endian.little);
-            amplitudes.add(logScale(peak / 65535.0));
+            amplitudes.add(peak / 65535.0);
           }
-          return amplitudes;
+          return normalizeAmplitudes(amplitudes);
         }
       }
 
@@ -104,9 +104,9 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           final abs = pcm[j].abs();
           if (abs > maxAbs) maxAbs = abs;
         }
-        amplitudes.add(logScale(maxAbs / 32768.0));
+        amplitudes.add(maxAbs / 32768.0);
       }
-      return amplitudes;
+      return normalizeAmplitudes(amplitudes);
     } catch (_) {
       return [];
     }
