@@ -1131,6 +1131,8 @@ class DeviceProvider extends ChangeNotifier
   Future<void> _finishDeviceSetup(BtDevice device) async {
     if (_disposed || connectedDevice?.id != device.id) return;
 
+    unawaited(ForegroundUtil.requestPermissions());
+
     await initiateBleBatteryListener();
     await updateBatteryLevel();
     await updateChargingState();
