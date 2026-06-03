@@ -211,3 +211,4 @@ The **decision logic is unchanged**; the **control flow is not** — this is a g
 
 ### Why deferred
 The payoff is **backlog-only** (above) — invisible to a user who syncs frequently — and the cost is a cross-language surface (new ORT dependency on both platforms + a refactor of the core VAD loop that can only be validated on-device). The compute half is already proven unreducible, so this is the *last* VAD-perf lever, not a stepping stone. Revisit if the post-sync processing grind on large backlogs becomes a real complaint. The cheap, reversible session-options win (XNNPACK + thread pinning) already shipped in 0.16.x.
+
