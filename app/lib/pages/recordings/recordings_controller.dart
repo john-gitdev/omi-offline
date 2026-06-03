@@ -1318,9 +1318,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // Surgical identification: only remove recordings that belong to a
     // session for which we still have raw data (and thus will be deleted by reprocessDay).
     final availableSessionIds = batch.rawSegments.map((f) {
-      final folderName = f.parent.path.split('/').last;
-      final idStr = folderName.replaceFirst('unknown_', '').replaceFirst('session_', '');
-      return folderName.startsWith('session_') ? int.tryParse(idStr, radix: 16) : int.tryParse(idStr);
+      final filename = f.path.split(RegExp(r'[/\\]')).last;
+      final parts = filename.split('_');
+      if (parts.length >= 2) {
+        return int.tryParse(parts[1].split('.').first);
+      }
+      return null;
     }).whereType<int>().toSet();
     final rawRelPaths = batch.rawSegments.map((f) => f.path.split('/raw_segments/').last).toSet();
 
@@ -1344,11 +1347,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       );
     }).toList();
     notifyListeners();
-    await WidgetsBinding.instance.endOfFrame;
+    await Future<void>.delayed(const Duration(milliseconds: 50));
 
     await RecordingsManager.reprocessDay(batch);
     await _loadBatches();
-    await WidgetsBinding.instance.endOfFrame;
+    await Future<void>.delayed(const Duration(milliseconds: 50));
 
     final freshBatch = _batches
         .where(

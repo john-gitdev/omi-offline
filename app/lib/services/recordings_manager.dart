@@ -150,7 +150,7 @@ class Conversation {
                 if (metaBytes.length >= binsOffset + 4 + binsLen) {
                   try {
                     final binsJson = utf8.decode(metaBytes.sublist(binsOffset + 4, binsOffset + 4 + binsLen));
-                    relativeBins = (jsonDecode(binsJson) as List).cast<String>();
+                    relativeBins = (jsonDecode(binsJson) as List).cast<String>().map((p) => p.split('/raw_segments/').last).toList();
                   } catch (_) {}
                 }
               }
@@ -951,8 +951,8 @@ class RecordingsManager {
         final aIdStr = aName.replaceFirst('unknown_', '').replaceFirst('session_', '');
         final bIdStr = bName.replaceFirst('unknown_', '').replaceFirst('session_', '');
 
-        final aId = aName.startsWith('session_') ? int.tryParse(aIdStr, radix: 16) : int.tryParse(aIdStr);
-        final bId = bName.startsWith('session_') ? int.tryParse(bIdStr, radix: 16) : int.tryParse(bIdStr);
+        final aId = aName.startsWith('session_') ? int.tryParse(aIdStr) : int.tryParse(aIdStr);
+        final bId = bName.startsWith('session_') ? int.tryParse(bIdStr) : int.tryParse(bIdStr);
 
         return (aId ?? 0).compareTo(bId ?? 0);
       });
@@ -2643,9 +2643,12 @@ class RecordingsManager {
 
     final availableSessionIds = batch.rawSegments
         .map((f) {
-          final folderName = f.parent.path.split('/').last;
-          final idStr = folderName.replaceFirst('unknown_', '').replaceFirst('session_', '');
-          return folderName.startsWith('session_') ? int.tryParse(idStr, radix: 16) : int.tryParse(idStr);
+          final filename = f.path.split('/').last;
+          final parts = filename.split('_');
+          if (parts.length >= 2) {
+            return int.tryParse(parts[1].split('.').first);
+          }
+          return null;
         })
         .whereType<int>()
         .toSet();
