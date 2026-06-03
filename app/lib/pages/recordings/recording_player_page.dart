@@ -76,9 +76,9 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           final amplitudes = <double>[];
           for (int i = 0; i < barCount; i++) {
             final peak = bd.getUint16(8 + i * 2, Endian.little);
-            amplitudes.add(_logScale(peak / 65535.0));
+            amplitudes.add(peak / 65535.0);
           }
-          return amplitudes;
+          return _normalizeAmplitudes(amplitudes);
         }
       }
 
@@ -103,9 +103,9 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           final abs = pcm[j].abs();
           if (abs > maxAbs) maxAbs = abs;
         }
-        amplitudes.add(_logScale(maxAbs / 32768.0));
+        amplitudes.add(maxAbs / 32768.0);
       }
-      return amplitudes;
+      return _normalizeAmplitudes(amplitudes);
     } catch (_) {
       return [];
     }
@@ -507,11 +507,14 @@ class _SeekButton extends StatelessWidget {
   }
 }
 
-double _logScale(double x) {
-  const floorDb = -40.0;
-  if (x <= 0) return 0.0;
-  final db = 20.0 * log(x) / log(10);
-  return ((db - floorDb) / (-floorDb)).clamp(0.0, 1.0);
+List<double> _normalizeAmplitudes(List<double> amps) {
+  if (amps.length < 4) return amps;
+  final sorted = [...amps]..sort();
+  final p5 = sorted[(sorted.length * 0.05).floor()];
+  final p95 = sorted[(sorted.length * 0.95).floor()];
+  final range = p95 - p5;
+  if (range < 0.02) return amps;
+  return amps.map((a) => ((a - p5) / range).clamp(0.0, 1.0)).toList();
 }
 
 class _WaveformPainter extends CustomPainter {
