@@ -165,12 +165,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   // 10s timeout, so force-clearing here is safe — a re-wedge surfaces as a
   // bounded error on the next sync, not a silent hang.
   static const _stoppingStallTimeout = Duration(seconds: 12);
-  // processing: the decode isolate emits a progress tick after each ~5-min
-  // segment (tens of seconds apart on-device), so this is set well clear of a
-  // healthy slow decode while still bounding a wedged isolate. Gated on
-  // !_isTranscoding below, since the final m4a transcode legitimately pins
-  // progress for a stretch with no ticks.
-  static const _processingStallTimeout = Duration(minutes: 3);
+  // processing: the decode isolate emits heartbeats every 20s while active, but
+  // Android can suspend background isolate threads independently of the main
+  // thread — leaving polls running with no heartbeats arriving for several
+  // minutes. Thermal throttling can also slow per-segment processing 5× (>100s
+  // per 3 MB segment). 10 minutes gives ample headroom for both; a genuine
+  // native deadlock still gets caught well within a user-visible delay.
+  static const _processingStallTimeout = Duration(minutes: 10);
 
   AppLifecycleState? _lastLifecycleState;
 
@@ -1081,7 +1082,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _processingProgress = 0.0;
     _totalMinutes = 0;
     _releaseWakelock();
-    unawaited(ForegroundUtil.stopForegroundTask());
+    // Keep the foreground service running on a processing-stall recovery so the
+    // OS protection stays in place. If the isolate was merely OS-throttled, the
+    // process would otherwise be killed the moment the notification disappears,
+    // turning a recoverable stall into a full process kill. Sync-stall recovery
+    // always stops the service (no ongoing work to protect).
+    if (!serviceIsProcessing || serviceIsSyncing) {
+      unawaited(ForegroundUtil.stopForegroundTask());
+    }
     _transitionTo(SyncProcessState.idle);
     unawaited(reloadBatchesSilently());
   }
