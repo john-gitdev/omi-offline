@@ -1236,44 +1236,70 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     _lastActiveStage = 'processing';
     _transitionTo(SyncProcessState.processing);
-
-    final unprocessed = daysWithBins.where((b) => b.finalizedRecordings.isEmpty).toList();
-    if (unprocessed.isNotEmpty) {
-      final totalBytes = unprocessed.expand((b) => b.rawSegments).fold(0, (sum, f) {
-        try {
-          return sum + f.lengthSync();
-        } catch (_) {
-          return sum;
-        }
-      });
-
-      _totalMinutes = totalBytes / 252000.0;
-      _minutesRemaining = _totalMinutes;
-      _processingProgress = 0.0;
-      notifyListeners();
-
-      WakelockPlus.enable();
-      await ForegroundUtil.startForegroundTask(text: 'Cleaning up recordings...');
-      try {
-        await _manager.processAll(unprocessed, (_, __) {}, backgroundMode: false);
-      } catch (e) {
-        _releaseWakelock();
-        await ForegroundUtil.stopForegroundTask();
-        _transitionToError('processing', e.toString());
-        return;
-      }
-      _releaseWakelock();
-      await ForegroundUtil.stopForegroundTask();
-    }
-
-    await RecordingsManager.deleteAllRawSegments();
-    _prefs.adjustmentModeWasEnabled = false;
-
-    _minutesRemaining = 0;
-    _lastCompletedStage = 'processing';
     notifyListeners();
 
-    _persistProgress();
+    // For every day that has bins, delete only the recordings that have a
+    // backing bin (onlyReprocessable). Recordings without a bin are preserved.
+    for (final batch in daysWithBins) {
+      final availableSessionIds = batch.rawSegments
+          .map((f) {
+            final name = f.path.split('/').last.split('.').first;
+            return int.tryParse(name.split('_').first);
+          })
+          .whereType<int>()
+          .toSet();
+      final reprocessable =
+          batch.finalizedRecordings.where((c) => c.sessionId != null && availableSessionIds.contains(c.sessionId));
+      final keys = reprocessable.map((c) => c.uploadKey).whereType<String>().toSet();
+      await _prefs.removeUploadedFromHeypocket(keys);
+      await _prefs.removeOmiSynced(_binPathsForConversations(reprocessable.toList()));
+      await _manager.deleteDay(batch, onlyReprocessable: true);
+    }
+    RecordingsManager.notifyRecordingsChanged();
+    await _loadBatches();
+    await Future<void>.delayed(Duration.zero); // let blank state render
+
+    final freshBatches = _batches.where((b) => b.rawSegments.isNotEmpty).toList();
+    if (freshBatches.isEmpty) {
+      _prefs.adjustmentModeWasEnabled = false;
+      await reloadBatchesSilently();
+      await _finishSuccess();
+      return;
+    }
+
+    final totalBytes = freshBatches.expand((b) => b.rawSegments).fold(0, (sum, f) {
+      try {
+        return sum + f.lengthSync();
+      } catch (_) {
+        return sum;
+      }
+    });
+
+    _totalMinutes = totalBytes / 252000.0;
+    _minutesRemaining = _totalMinutes;
+    _processingProgress = 0.0;
+    notifyListeners();
+
+    WakelockPlus.enable();
+    await ForegroundUtil.startForegroundTask(text: 'Reprocessing all days...');
+    try {
+      await _manager.processAll(
+        freshBatches,
+        (_, __) {},
+        backgroundMode: false,
+        onRecordingFinalized: () {
+          unawaited(reloadBatchesSilently());
+        },
+      );
+    } catch (e) {
+      _releaseWakelock();
+      await ForegroundUtil.stopForegroundTask();
+      _transitionToError('processing', e.toString());
+      return;
+    }
+    _releaseWakelock();
+    await ForegroundUtil.stopForegroundTask();
+    _prefs.adjustmentModeWasEnabled = false;
     await reloadBatchesSilently();
     await _finishSuccess();
   }
@@ -1300,6 +1326,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     await RecordingsManager.reprocessDay(batch);
     await _loadBatches();
+    // Wait for the rendering pipeline to complete a full frame so all three
+    // filter tabs (Main / Hidden / All) visually reflect the wiped state before
+    // the processing progress bar appears. Future.delayed(Duration.zero) only
+    // posts to the event queue and does not guarantee a frame has been rendered.
+    await WidgetsBinding.instance.endOfFrame;
 
     final freshBatch = _batches
         .where(
