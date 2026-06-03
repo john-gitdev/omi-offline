@@ -45,7 +45,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.FOREGROUND_BLUETOOTH_SCAN" />
 
-    <!-- Add android:stopWithTask option only when necessary. -->
     <application
         android:name=".MyApp"
         android:icon="@mipmap/ic_launcher"
@@ -58,7 +57,7 @@
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice"
-            android:stopWithTask="true" />
+            android:stopWithTask="false" />
         <!-- Native BLE Services -->
         <service
             android:name=".OmiBleForegroundService"
