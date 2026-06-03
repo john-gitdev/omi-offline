@@ -86,6 +86,24 @@ Cracked open `silero_vad.onnx` with onnxruntime + onnx (Python). The compute hal
 
 **Conclusion: the ~2.1 ms compute is fixed for this model on this runtime. The native batch runner (channel half) is the sole lever — ~2× ceiling, identical math, zero accuracy risk.** Tooling lives in `~/AppData/Roaming/Python/Python314/site-packages` (onnxruntime 1.26 + onnx 1.21 + sympy); throwaway scripts in `%TEMP%/vadquant`.
 
+### Android CPU throttle spike — FIXED (0.18.2, 2026-06-03)
+
+**Symptom (observed in production logs, 2026-06-03):** the `create` cost spiked from ~0.64 ms to ~9.55 ms mid-run at ~6k inferences, with no change in the ONNX `run` time:
+
+```
+4000 runs:  create 0.643ms · run 1.365ms · read 0.476ms  → channel floor 1.119ms
+6000 runs:  create 9.551ms · run 1.680ms · read 0.547ms  → channel floor 10.098ms  ← spike
+8000 runs:  create 7.405ms · run 1.868ms · read 0.581ms  → channel floor 7.986ms
+50000 runs: create 3.238ms · run 2.913ms · read 0.764ms  → channel floor 4.002ms
+```
+
+The spike correlates with the device screen going off / BLE disconnecting. The `create` step (`OrtValue.fromList`) does ~zero native compute; it's a pure platform-channel round-trip. When Android's CPU governor downclocks the background isolate's thread priority (screen-off / no `PARTIAL_WAKE_LOCK`), every channel hop waits longer in the OS scheduler. `run` barely moved because the ONNX compute is pinned to a native thread that wasn't throttled the same way.
+
+**Fix:** acquire `PowerManager.PARTIAL_WAKE_LOCK` (`"omi:VadProcessing"`) at the start of `_doBackgroundSync` (alongside `WakelockPlus.enable()`) and release in `finally`. The 30-minute safety timeout ensures the lock is never permanently leaked on a crash.  
+**Files:** `pigeon_interfaces.dart` + `BleHostApiImpl.kt` + `BleHostApiImpl.swift` (no-op stub) + `device_provider.dart`.
+
+**Why `WakelockPlus` alone doesn't fix it:** `WakelockPlus` uses `WindowManager.FLAG_KEEP_SCREEN_ON`, which prevents the display from dimming. `PARTIAL_WAKE_LOCK` targets the CPU governor — it is what tells Android to keep the CPU clocked and the thread scheduler running at normal priority even with the screen off.
+
 ### Native batch runner (lever #2b) — DEFERRED, full spec in IDEAS.md
 
 The channel half is the sole remaining lever (~2× on VAD ≈ ~37 % off processing, identical math). It's a real cross-language build (self-contained `VadBatchRunner` channel + ORT dep on both platforms + a two-pass refactor of `processSegmentFile`) whose payoff is **backlog-only** — invisible on frequent incremental syncs. Decision (2026-06-02): **deferred.** The complete buildable design — contract, native template, the deferred-verdict refactor, staging, relevant files, trade-off — lives in `IDEAS.md` → "VAD Native Batch Runner". Revisit if post-sync backlog grind becomes a real pain point.
