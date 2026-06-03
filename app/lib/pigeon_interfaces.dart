@@ -170,4 +170,9 @@ abstract class BleFlutterApi {
   );
 
   void onStateRestored(List<String> peripheralUuids);
+
+  /// Called by native (iOS BGProcessingTask / Android WorkManager) when a
+  /// background sync should be triggered. Equivalent to a timer-fired sync tick
+  /// but sourced from the OS scheduler instead of the Dart timer.
+  void onBackgroundSyncRequested();
 }
