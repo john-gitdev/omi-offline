@@ -647,6 +647,8 @@ protocol BleHostApi {
   func stopScan() throws
   func manageDevice(uuid: String, requiresBond: Bool) throws
   func unmanageDevice(uuid: String) throws
+  func disconnectPeripheral(uuid: String) throws
+  func rescheduleBackgroundSync(intervalMinutes: Int64) throws
   func requestBond(uuid: String, completion: @escaping (Result<Bool, Error>) -> Void)
   func readCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, completion: @escaping (Result<FlutterStandardTypedData, Error>) -> Void)
   func writeCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, data: FlutterStandardTypedData, completion: @escaping (Result<Void, Error>) -> Void)
@@ -730,6 +732,36 @@ class BleHostApiSetup {
       }
     } else {
       unmanageDeviceChannel.setMessageHandler(nil)
+    }
+    let disconnectPeripheralChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.disconnectPeripheral\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      disconnectPeripheralChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let uuidArg = args[0] as! String
+        do {
+          try api.disconnectPeripheral(uuid: uuidArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      disconnectPeripheralChannel.setMessageHandler(nil)
+    }
+    let rescheduleBackgroundSyncChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.rescheduleBackgroundSync\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      rescheduleBackgroundSyncChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let intervalMinutesArg = args[0] is Int64 ? args[0] as! Int64 : Int64(args[0] as! Int32)
+        do {
+          try api.rescheduleBackgroundSync(intervalMinutes: intervalMinutesArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      rescheduleBackgroundSyncChannel.setMessageHandler(nil)
     }
     let requestBondChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.requestBond\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
