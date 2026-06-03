@@ -1,5 +1,9 @@
 # Changelog
 
+### Fix: waveform bars no longer appear as a solid block on loud recordings (0.18.4)
+
+- **Fix: waveform display now uses percentile normalization instead of fixed log scaling.** Consistently-loud recordings mapped nearly every bar to near-maximum height, making the waveform look like a solid block. The waveform is now normalized per-recording using the 5th–95th percentile of its own amplitude data, so relative variation is always visible regardless of absolute recording level. A guard prevents flat or silence-only recordings from being amplified into fake variation.
+
 ### Battery optimization warning + reprocess day refresh (0.18.3)
 
 - **New: Recording Settings shows a warning when battery optimization is active.** A red card appears at the top of Recording Settings when Android has not exempted the app from battery optimization. Tapping Fix opens the system prompt ("Don't optimize") so background processing is no longer killed by the OS when the screen turns off. The card disappears automatically once the exemption is granted.
