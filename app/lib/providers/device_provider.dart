@@ -133,6 +133,7 @@ class DeviceProvider extends ChangeNotifier
     // Correctly initialize foreground state for cases where app starts in background.
     final state = WidgetsBinding.instance.lifecycleState;
     _isAppInForeground = state == null || state == AppLifecycleState.resumed;
+    Logger.debug('[BLE] DeviceProvider init: lifecycleState=$state _isAppInForeground=$_isAppInForeground');
 
     // Seed from last known value so battery indicator isn't grey on launch.
     final saved = SharedPreferencesUtil().lastBatteryLevel;
@@ -438,30 +439,58 @@ class DeviceProvider extends ChangeNotifier
     var device = await _getConnectedDevice();
     if (device != null) return device;
     final pairedDeviceId = SharedPreferencesUtil().btDevice.id;
-    if (pairedDeviceId.isNotEmpty) {
-      // Fast path: direct connect-by-MAC. On OnePlus and similar OEMs where the
-      // device is still system-cached, native OmiBleManager.connectGatt picks
-      // autoConnect=false and reattaches in <1s. Even when not cached, a direct
-      // connectGatt(autoConnect=false) to a known MAC is faster than a 10s scan.
-      // Timeout is 5s (not 10s): when the device is asleep / not advertising
-      // (e.g. after an app update, which kills the warm native reconnect state),
-      // this attempt can't succeed anyway, so a long wait here is pure dead time
-      // before the fallback scan even starts. 5s still covers a cached fast
-      // reattach with margin. See NOTES.md "App: BLE Connection Latency Levers".
+    if (pairedDeviceId.isEmpty) return null;
+
+    final t0 = DateTime.now();
+    Logger.debug('[BLE] _scanConnectDevice: starting connect to $pairedDeviceId');
+
+    // Kick off native connect. This holds the Dart mutex internally until the
+    // device is fully ready (services + MTU). We don't await it here — instead
+    // we race the GATT physical-connect signal against a 5s probe timeout to
+    // decide whether a BLE scan is needed in parallel.
+    final connectFuture = ServiceManager.instance().device.ensureConnection(pairedDeviceId, force: true);
+
+    // Wait up to 5s for the GATT physical link to come up (radio ↔ firmware,
+    // before service discovery). If it fires, the device IS reachable — just
+    // a slow pipeline. If it doesn't fire in 5s the device is probably asleep
+    // or out of range: start a BLE scan in parallel so the radio is actively
+    // looking while native retries in the background.
+    // The BLE scan portion of discover() doesn't need the Dart mutex and runs
+    // concurrently; only discover's final ensureConnection blocks on the mutex.
+    final gattFuture = ServiceManager.instance().device.getGattConnectFuture(pairedDeviceId);
+    bool gattConnected = false;
+    if (gattFuture != null) {
       try {
-        await ServiceManager.instance()
-            .device
-            .ensureConnection(pairedDeviceId, force: true)
-            .timeout(const Duration(seconds: 5));
-        await Future.delayed(const Duration(seconds: 1));
-        device = await _getConnectedDevice();
-        if (device != null) return device;
-      } catch (_) {}
+        await gattFuture.timeout(const Duration(seconds: 5));
+        gattConnected = true;
+        Logger.debug(
+            '[BLE] _scanConnectDevice: GATT link up at ${DateTime.now().difference(t0).inMilliseconds}ms — device in range, waiting for pipeline');
+      } catch (_) {
+        Logger.debug('[BLE] _scanConnectDevice: no GATT in 5s — starting BLE scan in parallel');
+      }
+    } else {
+      gattConnected = isConnected;
     }
-    // Fallback: full scan when direct connect failed (device out of range,
-    // bond lost, or MAC changed).
-    await ServiceManager.instance().device.discover(desirableDeviceId: pairedDeviceId, timeout: 10);
+
+    if (!gattConnected) {
+      unawaited(ServiceManager.instance().device.discover(desirableDeviceId: pairedDeviceId, timeout: 10));
+    }
+
+    // Wait for device fully ready (services + MTU). 25s outer timeout prevents
+    // parking forever; the underlying Dart completer has its own 30s backstop.
+    try {
+      await connectFuture.timeout(const Duration(seconds: 25));
+      final elapsed = DateTime.now().difference(t0).inMilliseconds;
+      Logger.debug('[BLE] _scanConnectDevice: device ready after ${elapsed}ms');
+      device = await _getConnectedDevice();
+      if (device != null) return device;
+    } catch (e) {
+      Logger.debug(
+          '[BLE] _scanConnectDevice: timed out/failed after ${DateTime.now().difference(t0).inMilliseconds}ms ($e)');
+    }
+
     await Future.delayed(const Duration(seconds: 2));
+    Logger.debug('[BLE] _scanConnectDevice: returning connectedDevice=${connectedDevice?.id}');
     return connectedDevice;
   }
 
@@ -1188,9 +1217,15 @@ class DeviceProvider extends ChangeNotifier
 
   void _handleDeviceConnected(String deviceId) async {
     _consecutiveAccidentalDisconnects = 0;
+    Logger.debug(
+        '[BLE] _handleDeviceConnected: $deviceId (fg=$_isAppInForeground pendingBgSync=$_pendingBackgroundSync pendingResume=$_pendingSyncResume)');
     try {
       var connection = await ServiceManager.instance().device.ensureConnection(deviceId);
-      if (connection == null) return;
+      if (connection == null) {
+        Logger.warning(
+            '[BLE] _handleDeviceConnected: ensureConnection returned null for $deviceId — state mismatch or device already disconnected');
+        return;
+      }
       // Defense in depth: if a foreground-initiated scan completed after the
       // user backgrounded the app, drop the connection — the device is meant to
       // stay disconnected in the background. Background syncs (timer /
@@ -1201,12 +1236,14 @@ class DeviceProvider extends ChangeNotifier
           !_pendingSyncResume &&
           !isFirmwareUpdateInProgress &&
           !_isOnFirmwareUpdatePage) {
-        Logger.debug('App backgrounded: dropping background-completed connection');
+        Logger.debug('[BLE] _handleDeviceConnected: dropping — app is backgrounded and no sync was pending');
         unawaited(ServiceManager.instance().device.disconnectDevice(isManual: true));
         return;
       }
+      Logger.debug('[BLE] _handleDeviceConnected: proceeding to setup for ${connection.device.id}');
       _onDeviceConnected(connection.device);
     } catch (e) {
+      Logger.error('[BLE] _handleDeviceConnected: exception: $e');
       updateConnectingStatus(false);
     }
   }
