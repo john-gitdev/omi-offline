@@ -156,6 +156,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   // callback (including the per-file fileDone tick that fires after each
   // delete) so a slow delete cycle never false-triggers.
   DateTime _lastProgressAt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastNotificationUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _notificationUpdateInterval = Duration(minutes: 10);
   // syncing: per-packet progress fires ~50 Hz during a healthy transfer; the
   // only no-signal windows are list/delete/settle gaps (seconds). 60s of total
   // silence means the transfer is genuinely dead.
@@ -191,7 +193,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     if (!force && now.difference(_lastUiUpdate).inMilliseconds < throttleMs) return;
     _lastUiUpdate = now;
-    _updateForegroundProgress();
+    _updateForegroundProgress(force: force);
     notifyListeners();
   }
 
@@ -249,13 +251,18 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
   }
 
-  void _updateForegroundProgress() {
+  void _updateForegroundProgress({bool force = false}) {
+    if (_spState != SyncProcessState.syncing && _spState != SyncProcessState.processing) return;
+    final now = DateTime.now();
+    if (!force && now.difference(_lastNotificationUpdate) < _notificationUpdateInterval) return;
+    _lastNotificationUpdate = now;
+
     if (_spState == SyncProcessState.syncing) {
       final percent = _totalCount > 0 ? (_syncedCount / _totalCount * 100).toStringAsFixed(0) : '0';
       ForegroundUtil.updateNotification(
         text: 'Syncing recordings — $_syncedCount of $_totalCount segments ($percent%)',
       );
-    } else if (_spState == SyncProcessState.processing) {
+    } else {
       final String text;
       if (_isTranscoding) {
         text = 'Processing recordings — Converting to ${_prefs.audioSaveFormat}';
@@ -511,6 +518,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         newState == SyncProcessState.stopping ||
         newState == SyncProcessState.processing) {
       _lastProgressAt = DateTime.now();
+      _lastNotificationUpdate = DateTime.fromMillisecondsSinceEpoch(0); // force immediate notification on phase entry
     }
     _throttledUpdate(force: true);
 
@@ -874,7 +882,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     WakelockPlus.enable();
     await ForegroundUtil.startForegroundTask(text: 'Processing recordings — preparing...');
-    _updateForegroundProgress(); // overwrite "preparing..." with the actual minutes now that totalMinutes is known
+    _updateForegroundProgress(force: true); // overwrite "preparing..." with the actual minutes now that totalMinutes is known
     try {
       await _manager.processAll(
         processableBatches,
@@ -1307,24 +1315,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   Future<void> reprocessDay(Batch batch) async {
     if (_spState != SyncProcessState.idle) return;
 
-    // Surgical flag cleanup: only remove flags for recordings that belong to a
+    // Surgical identification: only remove recordings that belong to a
     // session for which we still have raw data (and thus will be deleted by reprocessDay).
-    final availableSessionIds = batch.rawSegments
-        .map((f) {
-          final name = f.path.split('/').last.split('.').first;
-          return int.tryParse(name.split('_').first);
-        })
-        .whereType<int>()
-        .toSet();
+    final availableSessionIds = batch.rawSegments.map((f) {
+      final folderName = f.parent.path.split('/').last;
+      final idStr = folderName.replaceFirst('unknown_', '').replaceFirst('session_', '');
+      return folderName.startsWith('session_') ? int.tryParse(idStr, radix: 16) : int.tryParse(idStr);
+    }).whereType<int>().toSet();
+    final rawRelPaths = batch.rawSegments.map((f) => f.path.split('/raw_segments/').last).toSet();
 
-    final reprocessable =
-        batch.finalizedRecordings.where((c) => c.sessionId != null && availableSessionIds.contains(c.sessionId));
-
-    final keys = reprocessable.map((c) => c.uploadKey).whereType<String>().toSet();
-    await _prefs.removeUploadedFromHeypocket(keys);
-    await _prefs.removeOmiSynced(_binPathsForConversations(reprocessable.toList()));
-
-    // Optimistically clear this day's recordings immediately so the user sees a
+    // Optimistically clear this day's reprocessable recordings immediately so the user sees a
     // blank slate the moment they confirm — before any disk I/O completes.
     _batches = _batches.map((b) {
       if (b.dateString != batch.dateString) return b;
@@ -1333,7 +1333,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         date: b.date,
         rawSegments: b.rawSegments,
         draftRecordings: const [],
-        finalizedRecordings: const [],
+        // ONLY clear recordings that have backing bins (Precision Check > Legacy Fallback)
+        finalizedRecordings: b.finalizedRecordings.where((c) {
+          if (c.relativeBins.isNotEmpty) {
+            return !c.relativeBins.every((rel) => rawRelPaths.contains(rel));
+          }
+          return !availableSessionIds.contains(c.sessionId);
+        }).toList(),
         discards: const [],
       );
     }).toList();
@@ -1606,10 +1612,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) return;
     if (!_prefs.omiEnabled || _prefs.omiRefreshToken.isEmpty || !_prefs.omiAutoUpload) return;
     final minDuration = _prefs.filterMinDurationSeconds;
+    final autoSyncAt = _prefs.omiAutoUploadAt;
+    final autoSyncTime = autoSyncAt > 0 ? DateTime.fromMillisecondsSinceEpoch(autoSyncAt) : null;
 
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
         if (conversation.passthrough) continue;
+        if (autoSyncTime != null && conversation.startTime.isBefore(autoSyncTime)) continue;
         if (conversation.duration.inSeconds < minDuration) continue;
         final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
         final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';

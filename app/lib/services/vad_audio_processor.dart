@@ -1624,6 +1624,20 @@ class VadAudioProcessor {
     metaOut.add(0); // passthrough
     metaOut.add(0); // forceSynced
     metaOut.add(capEnded ? 1 : 0); // capEnded
+
+    // Append relative bins used for this recording (binary length + JSON)
+    final relativeBins = refs
+        .whereType<FrameRef>()
+        .map((r) => r.segmentFile.path.split('/raw_segments/').last)
+        .toSet()
+        .toList()
+      ..sort();
+    final binsJson = jsonEncode(relativeBins);
+    final binsBytes = utf8.encode(binsJson);
+    final binsLen = ByteData(4)..setUint32(0, binsBytes.length, Endian.little);
+    metaOut.addAll(binsLen.buffer.asUint8List());
+    metaOut.addAll(binsBytes);
+
     await File(metaPath).writeAsBytes(metaOut);
   }
 
