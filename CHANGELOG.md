@@ -1,5 +1,23 @@
 # Changelog
 
+### Android: SD card transfers now bypass Dart in background (0.17.6)
+
+- **BLE storage transfers on Android now run entirely in native code.** SD card file downloads previously routed each BLE packet through the main handler → platform channel → Dart callback at ~50 Hz, which Android throttles heavily when the app is backgrounded. The new path (`downloadStorageFile` via Pigeon) receives BLE notifications directly on the binder thread in Kotlin, writes bytes to the output file natively, and signals Dart only on completion. Dart polls the output file size at 1 Hz for WAL progress tracking. iOS is unchanged and continues to use the existing Dart stream path.
+
+### Fix: adjustment mode no longer reprocesses already-recorded bins on sync (0.17.5)
+
+- **Adjustment Mode sync now skips bins already covered by an existing recording.** Previously, every sync in Adjustment Mode would re-decode and re-run the VAD on all preserved raw bins — including bins that already produced a recording — wasting significant compute and time. The sync paths (normal sync, force sync, background auto-process) now compute which bins are fully covered by existing recordings (same timestamp-overlap math as the normal-mode bin pruner) and skip them. Bins remain on disk for Reprocess Day; only the VAD input is filtered.
+- **Only Reprocess Day and the debug Force Process reprocess bins that already have a recording.** Reprocess Day deletes the day's recordings first so all bins re-run with current VAD settings. The debug Force Process bypasses the coverage filter entirely. All other sync paths in Adjustment Mode process only genuinely new bins.
+
+### Tighter Bluetooth connectivity (0.17.4)
+
+- **Faster connection when device is in range but BLE stack is slow.** A 5 s timeout was firing before the full GATT + service-discovery + MTU pipeline could finish (6–12 s on some phones), causing the app to fall back to a 10 s BLE scan it didn't need. The app now uses the GATT physical-connect event (radio link up, before services) as the decision point: if the device physically connects within 5 s, the app waits for the full pipeline without scanning; if not, it starts a BLE scan in parallel while native keeps retrying. The result is no dead time for out-of-range devices and no unnecessary scan for slow-but-reachable ones.
+- **More diagnostic logging throughout the connection path.** Logs now show GATT physical connect timing, device-ready timing, when the background drop-guard fires, and when `ensureConnection` returns unexpectedly null — making intermittent failures easier to diagnose from a log capture.
+
+### Fix: processing notification no longer lingers after sync completes (0.17.3)
+
+- **"Processing recordings" notification now clears reliably when done.** The BLE foreground service and the sync/processing foreground service were sharing Android notification ID 2001. When the sync service stopped, Android would re-post the BLE service's notification using stale cached text — leaving "Processing recordings — < 1 min of audio to process" visible even after processing finished. The two services now use separate notification IDs and channels (`omi_ble_channel` / `omi_sync_channel`), so each owns its notification independently and there is no cross-service interference.
+
 ### Forget Device button in Debug Tools (0.17.2)
 
 - **Added "Forget Device" to Debug Tools.** Clears the stored Bluetooth pairing so the app can rediscover the device fresh — without needing to uninstall. Use this if the device is visible but refuses to connect (e.g. after a firmware update wiped bonding keys). Placed at the bottom of Debug Tools, below Delete Problematic EDLs.
