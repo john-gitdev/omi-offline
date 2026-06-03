@@ -40,17 +40,6 @@ class OmiBleForegroundService : Service() {
         private const val PREFS_NAME = "ble_config"
         private const val PREFS_KEY = "managed_device"
         private const val PREFS_USER_DISCONNECTED = "user_disconnected"
-
-        // Notification 2001 / channel omi_ble_channel is shared with the Dart
-        // flutter_foreground_task (last-writer-wins). Dart mirrors its current
-        // notification title/text into the legacy "FlutterSharedPreferences"
-        // store (keys prefixed "flutter.") so this service's mandatory
-        // startForeground() in onCreate can reuse the live sync/processing text
-        // instead of clobbering it with the "Connecting..." fallback below.
-        // Keys must stay in sync with ForegroundUtil (_notif*PrefKey).
-        private const val FLUTTER_PREFS = "FlutterSharedPreferences"
-        private const val PREFS_NOTIF_TITLE = "flutter.omi_notification_title"
-        private const val PREFS_NOTIF_TEXT = "flutter.omi_notification_text"
         private const val DEFAULT_NOTIF_TITLE = "Omi Offline"
         private const val DEFAULT_NOTIF_TEXT = "Connecting..."
         @Volatile
@@ -207,6 +196,15 @@ class OmiBleForegroundService : Service() {
         }
 
         override fun onCharacteristicChanged(address: String, serviceUuid: String, charUuid: String, value: ByteArray) {
+            // Storage data characteristic: route to active native download session on the
+            // binder thread — zero main-thread dispatch, which is the bottleneck in background.
+            if (charUuid == "30295781-4301-eabd-2904-2849adfeae43") {
+                val session = bleManager.activeDownloads[address.uppercase()]
+                if (session != null) {
+                    session.onPacket(value)
+                    return
+                }
+            }
             bleManager.mainHandler.post {
                 bleManager.flutterApi?.onCharacteristicValueUpdated(address, serviceUuid, charUuid, value) {}
             }
@@ -258,8 +256,6 @@ class OmiBleForegroundService : Service() {
             Log.w(TAG, "fireDeviceReady: $addr disconnected during pipeline, skipping")
             return
         }
-        // Dart owns the notification when it has persisted sync/processing text; otherwise
-        // update the notification to "Connected" so it doesn't stay stuck at "Connecting...".
         updateNativeNotification("Connected")
         bleManager.mainHandler.post {
             bleManager.flutterApi?.onDeviceReady(addr, services) {}
@@ -316,7 +312,10 @@ class OmiBleForegroundService : Service() {
             // and spawn a duplicate connect on top of an in-flight one.
             synchronized(syncLock) {
                 if (bond && !existing.requiresBond) existing.requiresBond = true
-                if (existing.currentGattHash != null || existing.pendingReconnect != null) return
+                if (existing.currentGattHash != null || existing.pendingReconnect != null) {
+                    Log.d(TAG, "manageDevice($addr): skipping — gattHash=${existing.currentGattHash} pendingReconnect=${existing.pendingReconnect != null} (native already handling it)")
+                    return
+                }
                 triggerReconnection(addr, "re-manage")
             }
             return
@@ -385,9 +384,8 @@ class OmiBleForegroundService : Service() {
             val timeoutMs = if (autoConnect) CONNECTION_TIMEOUT_MS else 15_000L
 
             Log.i(TAG, "connectToDevice($source): $addr (autoConnect=$autoConnect, timeout=${timeoutMs}ms)")
-            // Flip back to "Connecting..." when retrying after a disconnect so the notification
-            // doesn't stay stuck at "Connected". Skip for the initial manageDevice call since
-            // onCreate already set "Connecting..." from lastDartNotification().
+            // Flip back to "Connecting..." when retrying after a disconnect.
+            // Skip for the initial manageDevice call since onCreate already set "Connecting...".
             if (source != "manageDevice") updateNativeNotification(DEFAULT_NOTIF_TEXT)
             val gatt = try {
                 bleManager.connectGatt(addr, autoConnect = autoConnect)
@@ -690,23 +688,11 @@ class OmiBleForegroundService : Service() {
 
         // Call startForeground in onCreate to satisfy the OS requirement as early as possible.
         // Android 14+ requires providing the service type.
-        //
-        // This service shares notification id 2001 / channel omi_ble_channel with the Dart
-        // flutter_foreground_task (last-writer-wins), and onCreate's startForeground is the only
-        // place this service ever writes the notification. To avoid clobbering Dart-owned
-        // sync/processing progress (or the idle sync-countdown) when the service spins up mid-sync,
-        // reuse the last title/text Dart mirrored into SharedPreferences; fall back to "Connecting..."
-        // when nothing is mirrored (Dart clears it on stopForegroundTask). After this, connection
-        // state stays Dart-owned — see device_provider._showIdleNotification / _syncOwnsNotification.
-        val (notifTitle, notifText) = lastDartNotification()
+        val notif = buildNotification(DEFAULT_NOTIF_TITLE, DEFAULT_NOTIF_TEXT)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                buildNotification(notifTitle, notifText),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-            )
+            startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } else {
-            startForeground(NOTIFICATION_ID, buildNotification(notifTitle, notifText))
+            startForeground(NOTIFICATION_ID, notif)
         }
 
         registerReceiver(
@@ -779,43 +765,13 @@ class OmiBleForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     // ── Notification ──
-    //
-    // Dart owns the notification (id 2001, channel omi_ble_channel) whenever it has persisted
-    // sync/processing text into FLUTTER_PREFS. When the prefs are empty Dart has released
-    // control, and this service takes over: "Connecting..." while establishing and "Connected"
-    // once ready. updateNativeNotification() enforces this hand-off.
 
-    // Update notification 2001 only when Dart has not persisted custom text (i.e. no active
-    // sync/processing run owns the notification). Returns without writing if Dart owns it.
     private fun updateNativeNotification(text: String) {
         try {
-            val dartText = getSharedPreferences(FLUTTER_PREFS, MODE_PRIVATE)
-                .getString(PREFS_NOTIF_TEXT, null)
-            if (!dartText.isNullOrEmpty()) return
             getSystemService(NotificationManager::class.java)
                 ?.notify(NOTIFICATION_ID, buildNotification(DEFAULT_NOTIF_TITLE, text))
         } catch (e: Exception) {
             Log.w(TAG, "updateNativeNotification failed: ${e.message}")
-        }
-    }
-
-    // Last notification title/text Dart mirrored into SharedPreferences, or the
-    // "Connecting..." fallback when nothing is set (cleared on stopForegroundTask).
-    // Same-process read of the legacy shared_preferences store, so the value Dart
-    // committed before onCreate is visible here.
-    private fun lastDartNotification(): Pair<String, String> {
-        return try {
-            val prefs = getSharedPreferences(FLUTTER_PREFS, MODE_PRIVATE)
-            val text = prefs.getString(PREFS_NOTIF_TEXT, null)
-            if (text.isNullOrEmpty()) {
-                DEFAULT_NOTIF_TITLE to DEFAULT_NOTIF_TEXT
-            } else {
-                val title = prefs.getString(PREFS_NOTIF_TITLE, null)
-                (title?.takeIf { it.isNotEmpty() } ?: DEFAULT_NOTIF_TITLE) to text
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "lastDartNotification read failed: ${e.message}")
-            DEFAULT_NOTIF_TITLE to DEFAULT_NOTIF_TEXT
         }
     }
 
