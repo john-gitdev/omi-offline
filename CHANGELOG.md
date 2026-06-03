@@ -1,5 +1,10 @@
 # Changelog
 
+### Battery optimization warning + reprocess day refresh (0.18.3)
+
+- **New: Recording Settings shows a warning when battery optimization is active.** A red card appears at the top of Recording Settings when Android has not exempted the app from battery optimization. Tapping Fix opens the system prompt ("Don't optimize") so background processing is no longer killed by the OS when the screen turns off. The card disappears automatically once the exemption is granted.
+- **Fix: Reprocess Day now fully refreshes all three filter tabs before processing starts.** The previous `Future.delayed(Duration.zero)` posted to the event queue but did not guarantee the Flutter rendering pipeline had completed a frame, so the Main / Hidden / All tabs could still show stale recordings when the progress bar appeared. Replaced with `WidgetsBinding.instance.endOfFrame`, which waits for an actual render.
+
 ### Fix: CPU wake-lock prevents Android from throttling background VAD processing (0.18.2)
 
 - **Fix: Android no longer throttles the VAD processing isolate when the screen goes off.** Added a `PARTIAL_WAKE_LOCK` around the background sync+process cycle. Without it, Android's CPU governor downclocks the Dart isolate's thread scheduling when the screen turns off, spiking the per-inference platform-channel latency from ~1 ms to ~10 ms and slowing processing 3–5×. The WakeLock is acquired at the start of `_doBackgroundSync` and released unconditionally in `finally`, holding for the full BLE sync + VAD processing run.
