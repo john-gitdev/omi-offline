@@ -42,6 +42,7 @@ class OmiBleForegroundService : Service() {
         private const val PREFS_USER_DISCONNECTED = "user_disconnected"
         private const val DEFAULT_NOTIF_TITLE = "Omi Offline"
         private const val DEFAULT_NOTIF_TEXT = "Connecting..."
+        private const val ACTION_NOTIFICATION_DISMISSED = "com.omi.offline.NOTIFICATION_DISMISSED"
         @Volatile
         var instance: OmiBleForegroundService? = null
             private set
@@ -129,6 +130,25 @@ class OmiBleForegroundService : Service() {
     private var isBluetoothEnabled = true
     private val syncLock = Any()
     private val bleManager get() = OmiBleManager.instance
+    private var currentNotificationText = DEFAULT_NOTIF_TEXT
+
+    private val notificationDismissedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != ACTION_NOTIFICATION_DISMISSED) return
+            // User swiped away the foreground notification — repost it so it returns
+            // on the next connection-state update (Android 14+ allows dismissing ongoing notifs).
+            try {
+                val notif = buildNotification(DEFAULT_NOTIF_TITLE, currentNotificationText)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+                } else {
+                    startForeground(NOTIFICATION_ID, notif)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to repost notification after dismiss: ${e.message}")
+            }
+        }
+    }
 
     // ── Connection listener — receives GATT events from OmiBleManager ──
 
@@ -705,6 +725,11 @@ class OmiBleForegroundService : Service() {
             IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
             RECEIVER_NOT_EXPORTED
         )
+        registerReceiver(
+            notificationDismissedReceiver,
+            IntentFilter(ACTION_NOTIFICATION_DISMISSED),
+            RECEIVER_NOT_EXPORTED
+        )
         bleManager.connectionListener = connectionListener
         Log.d(TAG, "Service created and promoted to foreground")
 
@@ -753,6 +778,7 @@ class OmiBleForegroundService : Service() {
 
         try { unregisterReceiver(bluetoothReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(bondStateReceiver) } catch (_: Exception) {}
+        try { unregisterReceiver(notificationDismissedReceiver) } catch (_: Exception) {}
 
         // Clear the re-entry guard after a short delay so any in-flight Dart callbacks
         // (e.g. onPeripheralDisconnected → manageDevice) that arrive during teardown
@@ -767,6 +793,7 @@ class OmiBleForegroundService : Service() {
     // ── Notification ──
 
     private fun updateNativeNotification(text: String) {
+        currentNotificationText = text
         try {
             getSystemService(NotificationManager::class.java)
                 ?.notify(NOTIFICATION_ID, buildNotification(DEFAULT_NOTIF_TITLE, text))
@@ -785,6 +812,11 @@ class OmiBleForegroundService : Service() {
     private fun buildNotification(title: String, text: String): Notification {
         val intent = packageManager.getLaunchIntentForPackage(packageName)
         val pi = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+        val deletePi = PendingIntent.getBroadcast(
+            this, 0,
+            Intent(ACTION_NOTIFICATION_DISMISSED).setPackage(packageName),
+            PendingIntent.FLAG_IMMUTABLE
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
@@ -793,6 +825,7 @@ class OmiBleForegroundService : Service() {
             .setOnlyAlertOnce(true)
             .setSilent(true)
             .setContentIntent(pi)
+            .setDeleteIntent(deletePi)
             .build()
     }
 }

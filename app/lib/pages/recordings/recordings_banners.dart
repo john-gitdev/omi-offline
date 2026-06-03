@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
 
+
 class StorageWarningBanner extends StatelessWidget {
   final int percentage;
   const StorageWarningBanner({super.key, required this.percentage});
@@ -124,6 +125,56 @@ class AccumulatingBanner extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class AdjustmentModeBanner extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const AdjustmentModeBanner({super.key, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: 'Adjustment mode active — tap to turn off',
+      child: Material(
+        color: Colors.orange.withValues(alpha: 0.10),
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+            decoration: BoxDecoration(
+              border: Border(top: BorderSide(color: Colors.orange.withValues(alpha: 0.3), width: 1)),
+            ),
+            child: Row(
+              children: [
+                const FaIcon(FontAwesomeIcons.screwdriverWrench, color: Colors.orange, size: 14),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Adjustment Mode On · All recordings shown',
+                        style: TextStyle(color: Colors.orange, fontWeight: FontWeight.w600, fontSize: 13),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Minutes-to-process counts all bins, including those already processed. Tap to turn off.',
+                        style: TextStyle(color: Colors.orange.shade300, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(Icons.chevron_right, color: Colors.orange.withValues(alpha: 0.6), size: 18),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
