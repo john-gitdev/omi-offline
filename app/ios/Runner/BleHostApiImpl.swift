@@ -96,4 +96,12 @@ final class BleHostApiImpl: BleHostApi {
         // Android-only — iOS uses the existing BLE notification stream path
         completion(.failure(PigeonError(code: "unimplemented", message: "iOS uses stream path", details: nil)))
     }
+
+    func acquireProcessingWakeLock() throws {
+        // Android-only — no-op on iOS
+    }
+
+    func releaseProcessingWakeLock() throws {
+        // Android-only — no-op on iOS
+    }
 }
