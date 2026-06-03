@@ -5,6 +5,7 @@
 - **Android: sync and processing now survive swiping the app away.** The foreground service that keeps the Dart isolate alive during sync and VAD processing no longer carries `stopWithTask`, so dismissing the app from the task switcher mid-run no longer kills it. The service still self-cleans when processing finishes.
 - **Android: battery optimization exemption is now requested at first device connect.** On OEM devices with aggressive battery managers (MIUI, ColorOS, OnePlus), the system exemption dialog now appears the first time a device pairs. This is the primary protection against those devices killing the foreground service mid-sync.
 - **iOS: BGProcessingTask registered for background sync.** A `BGProcessingTask` (`com.omi.offline.sync`) is registered on launch and scheduled whenever the app backgrounds. When iOS fires it, it calls the same sync path as the Dart timer tick — allowing periodic syncs to run even after the app has been in the background for an extended period.
+- **Fix: build failure from missing `disconnectPeripheral` in Pigeon spec.** The method was implemented in both native layers and called from Dart, but was never declared in `pigeon_interfaces.dart`. A Pigeon regeneration during 0.17.6 silently dropped it from the generated Dart file, causing an Android build failure.
 
 ### Android: SD card transfers now bypass Dart in background (0.17.6)
 
