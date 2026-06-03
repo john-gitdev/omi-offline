@@ -158,6 +158,17 @@ abstract class BleHostApi {
     int timerStart,
     String outputPath,
   );
+
+  /// (Android only) Acquire a CPU partial wake-lock so the OS does not throttle
+  /// the processing isolate during VAD inference. Call before processAll; release
+  /// in finally. iOS no-op.
+  @SwiftFunction('acquireProcessingWakeLock()')
+  void acquireProcessingWakeLock();
+
+  /// (Android only) Release the CPU partial wake-lock acquired by
+  /// [acquireProcessingWakeLock]. iOS no-op.
+  @SwiftFunction('releaseProcessingWakeLock()')
+  void releaseProcessingWakeLock();
 }
 
 @FlutterApi()
