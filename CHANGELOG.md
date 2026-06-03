@@ -3,7 +3,7 @@
 ### Fix: foreground service hardened against OEM battery killers (0.17.10)
 
 - **Fix: foreground service type now includes `dataSync` alongside `connectedDevice`.** `connectedDevice` alone loses its justification once the BLE device disconnects mid-processing, giving Samsung/Xiaomi/OPPO battery managers a reason to kill the service. Adding `dataSync` declares a legitimate long-running data task that stays valid regardless of BLE state.
-- **Fix: notification channel upgraded from LOW to DEFAULT importance.** OEM battery optimisers specifically target foreground services whose notification channel is LOW-importance as kill candidates. DEFAULT places the channel in a protected tier. `onlyAlertOnce: true` is preserved so only the first appearance makes a sound. A new channel ID (`omi_sync_channel_v2`) is used because Android locks channel importance after creation.
+- **Fix: notification channel upgraded from LOW to DEFAULT importance.** OEM battery optimisers specifically target foreground services whose notification channel is LOW-importance as kill candidates. DEFAULT places the channel in a protected tier. `onlyAlertOnce: true` is preserved so only the first appearance makes a sound.
 
 ### Fix: background processing no longer kills itself mid-run (0.17.9)
 
