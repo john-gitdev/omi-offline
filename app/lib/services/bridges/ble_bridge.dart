@@ -30,6 +30,7 @@ class BleBridge implements BleFlutterApi {
   void Function(String state)? bluetoothStateChangedCallback;
   void Function(BlePeripheral peripheral)? peripheralDiscoveredCallback;
   void Function(List<String> peripheralUuids)? stateRestoredCallback;
+  void Function()? backgroundSyncRequestedCallback;
 
   void registerPeripheral({
     required String peripheralUuid,
@@ -98,5 +99,11 @@ class BleBridge implements BleFlutterApi {
   void onStateRestored(List<String> peripheralUuids) {
     Logger.debug('BleBridge: State restored for ${peripheralUuids.length} peripherals');
     stateRestoredCallback?.call(peripheralUuids);
+  }
+
+  @override
+  void onBackgroundSyncRequested() {
+    Logger.debug('BleBridge: Background sync requested by OS scheduler');
+    backgroundSyncRequestedCallback?.call();
   }
 }
