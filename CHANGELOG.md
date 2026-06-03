@@ -1,5 +1,11 @@
 # Changelog
 
+### Background sync reliability (0.17.7)
+
+- **Android: sync and processing now survive swiping the app away.** The foreground service that keeps the Dart isolate alive during sync and VAD processing no longer carries `stopWithTask`, so dismissing the app from the task switcher mid-run no longer kills it. The service still self-cleans when processing finishes.
+- **Android: battery optimization exemption is now requested at first device connect.** On OEM devices with aggressive battery managers (MIUI, ColorOS, OnePlus), the system exemption dialog now appears the first time a device pairs. This is the primary protection against those devices killing the foreground service mid-sync.
+- **iOS: BGProcessingTask registered for background sync.** A `BGProcessingTask` (`com.omi.offline.sync`) is registered on launch and scheduled whenever the app backgrounds. When iOS fires it, it calls the same sync path as the Dart timer tick — allowing periodic syncs to run even after the app has been in the background for an extended period.
+
 ### Android: SD card transfers now bypass Dart in background (0.17.6)
 
 - **BLE storage transfers on Android now run entirely in native code.** SD card file downloads previously routed each BLE packet through the main handler → platform channel → Dart callback at ~50 Hz, which Android throttles heavily when the app is backgrounded. The new path (`downloadStorageFile` via Pigeon) receives BLE notifications directly on the binder thread in Kotlin, writes bytes to the output file natively, and signals Dart only on completion. Dart polls the output file size at 1 Hz for WAL progress tracking. iOS is unchanged and continues to use the existing Dart stream path.
