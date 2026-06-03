@@ -150,3 +150,36 @@ The **decision logic is unchanged**; the **control flow is not** — this is a g
 ### Why deferred
 The payoff is **backlog-only** (above) — invisible to a user who syncs frequently — and the cost is a cross-language surface (new ORT dependency on both platforms + a refactor of the core VAD loop that can only be validated on-device). The compute half is already proven unreducible, so this is the *last* VAD-perf lever, not a stepping stone. Revisit if the post-sync processing grind on large backlogs becomes a real complaint. The cheap, reversible session-options win (XNNPACK + thread pinning) already shipped in 0.16.x.
 
+## Bulletproof Background Persistence: Wake, Work, Sleep [major] [Deferred]
+
+Make background syncs and VAD processing extremely reliable on Android 12-14 by using WorkManager, DATA_SYNC foreground services, and native WakeLocks, overcoming aggressive battery optimization without draining power when idle.
+
+### Problem Statement
+Android’s "Doze Mode" and "App Standby" aggressively suspend Dart isolates when the phone is stationary or locked. The current `Timer.periodic` implementation in `DeviceProvider.dart` and `flutter_foreground_task` without `foregroundServiceType` is unreliable for background sync. This leads to missed syncs and stalled VAD processing that only resumes when the user manually opens the app.
+
+### Architecture: The "Wake, Work, Sleep" Pipeline
+To respect battery life while ensuring reliable processing, the app should be elastic—staying awake only when work is being done and sleeping otherwise.
+
+1. **The "Wake" (WorkManager):** Replace the Dart `Timer` with `WorkManager`. It registers a task with the Android `JobScheduler` that survives process death and fires during Doze maintenance windows.
+2. **The "Work" (DATA_SYNC Foreground Service):** Update `ForegroundUtil.dart` to declare `foregroundServiceType: ForegroundServiceType.DATA_SYNC`. This grants the app a "Background Execution" license from the OS during the sync, a strict requirement for Android 14+.
+3. **The "Coffee" (Native WakeLock):** Implement a native `PowerManager.PARTIAL_WAKE_LOCK` accessed via Pigeon (`acquireWakeLock` / `releaseWakeLock`). This forces the CPU to stay awake and run at full speed during heavy ONNX/Silero VAD inference.
+4. **The "Sleep" (Clean Shutdown):** Wrap the `RecordingsManager.processAll` loop in a `try/finally` block to release the WakeLock and stop the Foreground Service (`ForegroundUtil.stopForegroundTask()`) immediately when the queue is empty.
+
+### iOS Compatibility & Stubbing Strategy
+This is an **Android-First** optimization to fix Android-specific throttling. A separate iOS branch is NOT needed.
+- **Dart Guards:** Wrap new native calls with `if (Platform.isAndroid) { ... }` so iOS never attempts to invoke Android-only power management.
+- **Native Stubs (Swift):** When new methods like `acquireWakeLock()` are added to `pigeon_interfaces.dart`, the Pigeon generator requires them to be implemented in Swift. Add empty stubs to `app/ios/Runner/BleHostApiImpl.swift` (e.g., `func acquireWakeLock() throws { }`) so the iOS build remains 100% valid and compilable. Treat iOS as a "ghost" platform that safely ignores these optimizations.
+
+### Implementation Tasks
+- [ ] Add `workmanager` plugin to `pubspec.yaml` and configure `callbackDispatcher` in `main.dart` to trigger background syncs.
+- [ ] Update `ForegroundUtil.init` in `foreground.dart` to include `foregroundServiceType: ForegroundServiceType.DATA_SYNC`.
+- [ ] Add `isIgnoringBatteryOptimizations`, `requestIgnoreBatteryOptimizations`, `acquireWakeLock`, and `releaseWakeLock` to `BleHostApi` in `pigeon_interfaces.dart`. Run `flutter pub run pigeon`.
+- [ ] Implement the `PowerManager` logic for battery optimization checks and `PARTIAL_WAKE_LOCK` in `BleHostApiImpl.kt`.
+- [ ] Implement empty stubs for these methods in `BleHostApiImpl.swift`.
+- [ ] Add a "Background Persistence" toggle in `app_settings_page.dart` to let users manually request exemption from battery optimizations.
+- [ ] Update `RecordingsManager.processAll` to acquire the WakeLock at the start and release it + stop the foreground task in a `finally` block.
+
+### Test Strategy
+- **Airplane Table Test:** Set sync interval to 15 mins. Lock the phone and leave it stationary for 45 minutes. Verify via logs that three distinct "Wake, Work, Sleep" cycles occurred.
+- **ADB Force Idle Test:** Run `adb shell dumpsys deviceidle force-idle` via PC. Verify the `WorkManager` still fires and the `WakeLock` keeps VAD processing speed high.
+- **Target SDK 34 Test:** Confirm the app does not crash when the background sync starts (verifies correct `foregroundServiceType` configuration).
