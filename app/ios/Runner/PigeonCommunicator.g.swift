@@ -648,6 +648,8 @@ protocol BleHostApi {
   func manageDevice(uuid: String, requiresBond: Bool) throws
   func unmanageDevice(uuid: String) throws
   func disconnectPeripheral(uuid: String) throws
+  /// (Android only) Reschedule the WorkManager periodic background sync with
+  /// the given interval. Pass 0 or negative to cancel. iOS no-op.
   func rescheduleBackgroundSync(intervalMinutes: Int64) throws
   func requestBond(uuid: String, completion: @escaping (Result<Bool, Error>) -> Void)
   func readCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, completion: @escaping (Result<FlutterStandardTypedData, Error>) -> Void)
@@ -665,6 +667,13 @@ protocol BleHostApi {
   /// notifications on the binder thread and writes directly to [outputPath].
   /// iOS throws 'unimplemented' — callers must check Platform.isAndroid.
   func downloadStorageFile(peripheralUuid: String, fileIndex: Int64, offset: Int64, timerStart: Int64, outputPath: String, completion: @escaping (Result<Void, Error>) -> Void)
+  /// (Android only) Acquire a CPU partial wake-lock so the OS does not throttle
+  /// the processing isolate during VAD inference. Call before processAll; release
+  /// in finally. iOS no-op.
+  func acquireProcessingWakeLock() throws
+  /// (Android only) Release the CPU partial wake-lock acquired by
+  /// [acquireProcessingWakeLock]. iOS no-op.
+  func releaseProcessingWakeLock() throws
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -748,11 +757,13 @@ class BleHostApiSetup {
     } else {
       disconnectPeripheralChannel.setMessageHandler(nil)
     }
+    /// (Android only) Reschedule the WorkManager periodic background sync with
+    /// the given interval. Pass 0 or negative to cancel. iOS no-op.
     let rescheduleBackgroundSyncChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.rescheduleBackgroundSync\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
       rescheduleBackgroundSyncChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
-        let intervalMinutesArg = args[0] is Int64 ? args[0] as! Int64 : Int64(args[0] as! Int32)
+        let intervalMinutesArg = args[0] as! Int64
         do {
           try api.rescheduleBackgroundSync(intervalMinutes: intervalMinutesArg)
           reply(wrapResult(nil))
@@ -938,6 +949,37 @@ class BleHostApiSetup {
     } else {
       downloadStorageFileChannel.setMessageHandler(nil)
     }
+    /// (Android only) Acquire a CPU partial wake-lock so the OS does not throttle
+    /// the processing isolate during VAD inference. Call before processAll; release
+    /// in finally. iOS no-op.
+    let acquireProcessingWakeLockChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.acquireProcessingWakeLock\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      acquireProcessingWakeLockChannel.setMessageHandler { _, reply in
+        do {
+          try api.acquireProcessingWakeLock()
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      acquireProcessingWakeLockChannel.setMessageHandler(nil)
+    }
+    /// (Android only) Release the CPU partial wake-lock acquired by
+    /// [acquireProcessingWakeLock]. iOS no-op.
+    let releaseProcessingWakeLockChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.releaseProcessingWakeLock\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      releaseProcessingWakeLockChannel.setMessageHandler { _, reply in
+        do {
+          try api.releaseProcessingWakeLock()
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      releaseProcessingWakeLockChannel.setMessageHandler(nil)
+    }
   }
 }
 /// Generated protocol from Pigeon that represents Flutter messages that can be called from Swift.
@@ -948,6 +990,9 @@ protocol BleFlutterApiProtocol {
   func onPeripheralDisconnected(peripheralUuid peripheralUuidArg: String, error errorArg: String?, completion: @escaping (Result<Void, PigeonError>) -> Void)
   func onCharacteristicValueUpdated(peripheralUuid peripheralUuidArg: String, serviceUuid serviceUuidArg: String, characteristicUuid characteristicUuidArg: String, value valueArg: FlutterStandardTypedData, completion: @escaping (Result<Void, PigeonError>) -> Void)
   func onStateRestored(peripheralUuids peripheralUuidsArg: [String], completion: @escaping (Result<Void, PigeonError>) -> Void)
+  /// Called by native (iOS BGProcessingTask / Android WorkManager) when a
+  /// background sync should be triggered. Equivalent to a timer-fired sync tick
+  /// but sourced from the OS scheduler instead of the Dart timer.
   func onBackgroundSyncRequested(completion: @escaping (Result<Void, PigeonError>) -> Void)
 }
 class BleFlutterApi: BleFlutterApiProtocol {
@@ -1050,10 +1095,10 @@ class BleFlutterApi: BleFlutterApiProtocol {
       }
     }
   }
-  func onBackgroundSyncRequested(completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onBackgroundSyncRequested\(messageChannelSuffix)"
+  func onStateRestored(peripheralUuids peripheralUuidsArg: [String], completion: @escaping (Result<Void, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onStateRestored\(messageChannelSuffix)"
     let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage(nil) { response in
+    channel.sendMessage([peripheralUuidsArg] as [Any?]) { response in
       guard let listResponse = response as? [Any?] else {
         completion(.failure(createConnectionError(withChannelName: channelName)))
         return
@@ -1068,10 +1113,13 @@ class BleFlutterApi: BleFlutterApiProtocol {
       }
     }
   }
-  func onStateRestored(peripheralUuids peripheralUuidsArg: [String], completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onStateRestored\(messageChannelSuffix)"
+  /// Called by native (iOS BGProcessingTask / Android WorkManager) when a
+  /// background sync should be triggered. Equivalent to a timer-fired sync tick
+  /// but sourced from the OS scheduler instead of the Dart timer.
+  func onBackgroundSyncRequested(completion: @escaping (Result<Void, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onBackgroundSyncRequested\(messageChannelSuffix)"
     let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([peripheralUuidsArg] as [Any?]) { response in
+    channel.sendMessage(nil) { response in
       guard let listResponse = response as? [Any?] else {
         completion(.failure(createConnectionError(withChannelName: channelName)))
         return

@@ -881,14 +881,14 @@ class BleHostApi {
     }
   }
 
-  Future<void> rescheduleBackgroundSync(int intervalMinutes) async {
-    final String pigeonVar_channelName = 'dev.flutter.pigeon.omi_pigeon.BleHostApi.rescheduleBackgroundSync$pigeonVar_messageChannelSuffix';
+  Future<void> unmanageDevice(String uuid) async {
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.omi_pigeon.BleHostApi.unmanageDevice$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
     );
-    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[intervalMinutes]);
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[uuid]);
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_sendFuture as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -927,14 +927,16 @@ class BleHostApi {
     }
   }
 
-  Future<void> unmanageDevice(String uuid) async {
-    final String pigeonVar_channelName = 'dev.flutter.pigeon.omi_pigeon.BleHostApi.unmanageDevice$pigeonVar_messageChannelSuffix';
+  /// (Android only) Reschedule the WorkManager periodic background sync with
+  /// the given interval. Pass 0 or negative to cancel. iOS no-op.
+  Future<void> rescheduleBackgroundSync(int intervalMinutes) async {
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.omi_pigeon.BleHostApi.rescheduleBackgroundSync$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
     );
-    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[uuid]);
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[intervalMinutes]);
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_sendFuture as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1215,6 +1217,57 @@ class BleHostApi {
       return;
     }
   }
+
+  /// (Android only) Acquire a CPU partial wake-lock so the OS does not throttle
+  /// the processing isolate during VAD inference. Call before processAll; release
+  /// in finally. iOS no-op.
+  Future<void> acquireProcessingWakeLock() async {
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.omi_pigeon.BleHostApi.acquireProcessingWakeLock$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final List<Object?>? pigeonVar_replyList =
+        await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  /// (Android only) Release the CPU partial wake-lock acquired by
+  /// [acquireProcessingWakeLock]. iOS no-op.
+  Future<void> releaseProcessingWakeLock() async {
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.omi_pigeon.BleHostApi.releaseProcessingWakeLock$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final List<Object?>? pigeonVar_replyList =
+        await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
 }
 
 abstract class BleFlutterApi {
@@ -1232,6 +1285,9 @@ abstract class BleFlutterApi {
 
   void onStateRestored(List<String> peripheralUuids);
 
+  /// Called by native (iOS BGProcessingTask / Android WorkManager) when a
+  /// background sync should be triggered. Equivalent to a timer-fired sync tick
+  /// but sourced from the OS scheduler instead of the Dart timer.
   void onBackgroundSyncRequested();
 
   static void setUp(BleFlutterApi? api, {BinaryMessenger? binaryMessenger, String messageChannelSuffix = '',}) {
@@ -1376,25 +1432,6 @@ abstract class BleFlutterApi {
     }
     {
       final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
-          'dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onBackgroundSyncRequested$messageChannelSuffix', pigeonChannelCodec,
-          binaryMessenger: binaryMessenger);
-      if (api == null) {
-        pigeonVar_channel.setMessageHandler(null);
-      } else {
-        pigeonVar_channel.setMessageHandler((Object? message) async {
-          try {
-            api.onBackgroundSyncRequested();
-            return wrapResponse(empty: true);
-          } on PlatformException catch (e) {
-            return wrapResponse(error: e);
-          }          catch (e) {
-            return wrapResponse(error: PlatformException(code: 'error', message: e.toString()));
-          }
-        });
-      }
-    }
-    {
-      final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
           'dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onStateRestored$messageChannelSuffix', pigeonChannelCodec,
           binaryMessenger: binaryMessenger);
       if (api == null) {
@@ -1409,6 +1446,25 @@ abstract class BleFlutterApi {
               'Argument for dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onStateRestored was null, expected non-null List<String>.');
           try {
             api.onStateRestored(arg_peripheralUuids!);
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          }          catch (e) {
+            return wrapResponse(error: PlatformException(code: 'error', message: e.toString()));
+          }
+        });
+      }
+    }
+    {
+      final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
+          'dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onBackgroundSyncRequested$messageChannelSuffix', pigeonChannelCodec,
+          binaryMessenger: binaryMessenger);
+      if (api == null) {
+        pigeonVar_channel.setMessageHandler(null);
+      } else {
+        pigeonVar_channel.setMessageHandler((Object? message) async {
+          try {
+            api.onBackgroundSyncRequested();
             return wrapResponse(empty: true);
           } on PlatformException catch (e) {
             return wrapResponse(error: e);

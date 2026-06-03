@@ -613,6 +613,10 @@ interface BleHostApi {
   fun manageDevice(uuid: String, requiresBond: Boolean)
   fun unmanageDevice(uuid: String)
   fun disconnectPeripheral(uuid: String)
+  /**
+   * (Android only) Reschedule the WorkManager periodic background sync with
+   * the given interval. Pass 0 or negative to cancel. iOS no-op.
+   */
   fun rescheduleBackgroundSync(intervalMinutes: Long)
   fun requestBond(uuid: String, callback: (Result<Boolean>) -> Unit)
   fun readCharacteristic(peripheralUuid: String, serviceUuid: String, characteristicUuid: String, callback: (Result<ByteArray>) -> Unit)
@@ -632,6 +636,17 @@ interface BleHostApi {
    * iOS throws 'unimplemented' — callers must check Platform.isAndroid.
    */
   fun downloadStorageFile(peripheralUuid: String, fileIndex: Long, offset: Long, timerStart: Long, outputPath: String, callback: (Result<Unit>) -> Unit)
+  /**
+   * (Android only) Acquire a CPU partial wake-lock so the OS does not throttle
+   * the processing isolate during VAD inference. Call before processAll; release
+   * in finally. iOS no-op.
+   */
+  fun acquireProcessingWakeLock()
+  /**
+   * (Android only) Release the CPU partial wake-lock acquired by
+   * [acquireProcessingWakeLock]. iOS no-op.
+   */
+  fun releaseProcessingWakeLock()
 
   companion object {
     /** The codec used by BleHostApi. */
@@ -737,7 +752,7 @@ interface BleHostApi {
         if (api != null) {
           channel.setMessageHandler { message, reply ->
             val args = message as List<Any?>
-            val intervalMinutesArg = args[0].let { if (it is Int) it.toLong() else it as Long }
+            val intervalMinutesArg = args[0] as Long
             val wrapped: List<Any?> = try {
               api.rescheduleBackgroundSync(intervalMinutesArg)
               listOf(null)
@@ -944,6 +959,38 @@ interface BleHostApi {
           channel.setMessageHandler(null)
         }
       }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.acquireProcessingWakeLock$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              api.acquireProcessingWakeLock()
+              listOf(null)
+            } catch (exception: Throwable) {
+              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.releaseProcessingWakeLock$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              api.releaseProcessingWakeLock()
+              listOf(null)
+            } catch (exception: Throwable) {
+              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
     }
   }
 }
@@ -1040,12 +1087,12 @@ class BleFlutterApi(private val binaryMessenger: BinaryMessenger, private val me
       } 
     }
   }
-  fun onBackgroundSyncRequested(callback: (Result<Unit>) -> Unit)
+  fun onStateRestored(peripheralUuidsArg: List<String>, callback: (Result<Unit>) -> Unit)
 {
     val separatedMessageChannelSuffix = if (messageChannelSuffix.isNotEmpty()) ".$messageChannelSuffix" else ""
-    val channelName = "dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onBackgroundSyncRequested$separatedMessageChannelSuffix"
+    val channelName = "dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onStateRestored$separatedMessageChannelSuffix"
     val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
-    channel.send(null) {
+    channel.send(listOf(peripheralUuidsArg)) {
       if (it is List<*>) {
         if (it.size > 1) {
           callback(Result.failure(FlutterError(it[0] as String, it[1] as String, it[2] as String?)))
@@ -1054,15 +1101,20 @@ class BleFlutterApi(private val binaryMessenger: BinaryMessenger, private val me
         }
       } else {
         callback(Result.failure(PigeonCommunicatorPigeonUtils.createConnectionError(channelName)))
-      }
+      } 
     }
   }
-  fun onStateRestored(peripheralUuidsArg: List<String>, callback: (Result<Unit>) -> Unit)
+  /**
+   * Called by native (iOS BGProcessingTask / Android WorkManager) when a
+   * background sync should be triggered. Equivalent to a timer-fired sync tick
+   * but sourced from the OS scheduler instead of the Dart timer.
+   */
+  fun onBackgroundSyncRequested(callback: (Result<Unit>) -> Unit)
 {
     val separatedMessageChannelSuffix = if (messageChannelSuffix.isNotEmpty()) ".$messageChannelSuffix" else ""
-    val channelName = "dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onStateRestored$separatedMessageChannelSuffix"
+    val channelName = "dev.flutter.pigeon.omi_pigeon.BleFlutterApi.onBackgroundSyncRequested$separatedMessageChannelSuffix"
     val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
-    channel.send(listOf(peripheralUuidsArg)) {
+    channel.send(null) {
       if (it is List<*>) {
         if (it.size > 1) {
           callback(Result.failure(FlutterError(it[0] as String, it[1] as String, it[2] as String?)))
