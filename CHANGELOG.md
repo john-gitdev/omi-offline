@@ -2,9 +2,13 @@
 
 ## App
 
-### 0.18.4
+### 0.18.5
 
 - **Fix: Reprocess Day no longer deletes bins shared between a ghost record and a valid conversation.** Firmware writes ~5-minute bin files that routinely span multiple conversation chunks. A noise chunk discarded by SileroVAD would list the whole bin in its ghost record's `relativeBins` (without the `excludeBins` guard that `silence_trimmed` applies), so the same bin was referenced by both the valid recording and the ghost. `deleteDay(onlyReprocessable: true)` was calling `removeDiscardRecord(..., deleteBins: true)` unconditionally, deleting those shared bins and making subsequent Reprocess Day runs progressively lose more audio until all bins were gone and only "Delete Day" remained. Fixed by passing `deleteBins: !onlyReprocessable` — ghost record jsonl entries are still cleared (so grey ghost rows disappear) but their bin files are preserved for the next `processAll` run to re-evaluate with current VAD settings.
+- **Fix: Reprocess Day now clears the conversation list immediately on confirmation.** Previously the old recordings stayed visible until the async delete and disk reload completed. The controller now optimistically zeros out the day's conversations in the displayed batch list the moment the user confirms, so the card shows a blank slate before any I/O begins.
+
+### 0.18.4
+
 - **Fix: both foreground service notifications return after being swiped away.** Android 14+ lets users dismiss foreground service notifications even when marked ongoing. (1) The BLE connection notification now attaches a `deleteIntent` broadcast; when swiped, the service immediately reposts it via `startForeground()`. (2) The sync/process notification now always stops and restarts the foreground task at the beginning of each pipeline run, guaranteeing a fresh notification post rather than a silent update to a notification that was already dismissed.
 - **Fix: waveform display now uses percentile normalization instead of fixed log scaling.** Consistently-loud recordings mapped nearly every bar to near-maximum height, making the waveform look like a solid block. The waveform is now normalized per-recording using the 5th–95th percentile of its own amplitude data, so relative variation is always visible regardless of absolute recording level. A guard prevents flat or silence-only recordings from being amplified into fake variation.
 
