@@ -882,7 +882,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     WakelockPlus.enable();
     await ForegroundUtil.startForegroundTask(text: 'Processing recordings — preparing...');
-    _updateForegroundProgress(force: true); // overwrite "preparing..." with the actual minutes now that totalMinutes is known
+    _updateForegroundProgress(
+        force: true); // overwrite "preparing..." with the actual minutes now that totalMinutes is known
     try {
       await _manager.processAll(
         processableBatches,
@@ -1317,14 +1318,18 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     // Surgical identification: only remove recordings that belong to a
     // session for which we still have raw data (and thus will be deleted by reprocessDay).
-    final availableSessionIds = batch.rawSegments.map((f) {
-      final filename = f.path.split(RegExp(r'[/\\]')).last;
-      final parts = filename.split('_');
-      if (parts.length >= 2) {
-        return int.tryParse(parts[1].split('.').first);
-      }
-      return null;
-    }).whereType<int>().toSet();
+    final availableSessionIds = batch.rawSegments
+        .map((f) {
+          // Mobile-only app: paths always use '/' separators on Android and iOS.
+          final filename = f.path.split('/').last;
+          final parts = filename.split('_');
+          if (parts.length >= 2) {
+            return int.tryParse(parts[1].split('.').first);
+          }
+          return null;
+        })
+        .whereType<int>()
+        .toSet();
     final rawRelPaths = batch.rawSegments.map((f) => f.path.split('/raw_segments/').last).toSet();
 
     // Optimistically clear this day's reprocessable recordings immediately so the user sees a
