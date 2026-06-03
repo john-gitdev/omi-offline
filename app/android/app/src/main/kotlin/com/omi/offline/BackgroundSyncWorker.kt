@@ -1,11 +1,6 @@
 package com.omi.offline
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -22,8 +17,6 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
     companion object {
         private const val TAG = "OmiBle.BgSync"
         private const val TASK_NAME = "omi.backgroundSync"
-        private const val NOTIF_ID = 3001
-        private const val NOTIF_CHANNEL_ID = "omi_bg_sync_channel"
 
         fun schedule(context: Context, intervalMinutes: Int) {
             val wm = WorkManager.getInstance(context.applicationContext)
@@ -91,33 +84,10 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
                 Result.retry()
             }
         } else {
-            // Flutter engine is not running (process was killed) — post a notification
-            // so the user knows recordings are waiting and can open the app to sync.
-            Log.d(TAG, "doWork: Flutter engine not running — posting sync notification")
-            postSyncNotification(ctx)
+            // Flutter engine is not running (process was killed). Sync-on-open
+            // will handle it the next time the user opens the app.
+            Log.d(TAG, "doWork: Flutter engine not running — sync deferred to next app open")
             Result.success()
         }
-    }
-
-    private fun postSyncNotification(context: Context) {
-        val nm = context.getSystemService(NotificationManager::class.java) ?: return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(
-                NotificationChannel(NOTIF_CHANNEL_ID, "Omi Background Sync", NotificationManager.IMPORTANCE_LOW)
-            )
-        }
-        val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return
-        val pi = PendingIntent.getActivity(
-            context, 0, launchIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val notif = NotificationCompat.Builder(context, NOTIF_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_popup_sync)
-            .setContentTitle("Omi Offline")
-            .setContentText("Recordings ready to sync — tap to open")
-            .setContentIntent(pi)
-            .setAutoCancel(true)
-            .build()
-        nm.notify(NOTIF_ID, notif)
     }
 }
