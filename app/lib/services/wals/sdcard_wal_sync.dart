@@ -885,11 +885,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               wal,
               (File file, int offset, int timerStart, {String? subFolder}) async {
                 if (_isCancelled) throw Exception("Cancelled");
-                _updateSpeed(offset - lastOffset);
-                lastOffset = offset;
                 listener.onWalUpdated();
               },
               onProgress: (offset) {
+                _updateSpeed(offset - lastOffset);
+                lastOffset = offset;
                 wal.walOffset = offset;
                 // Throttle persistence to ~1 Hz. onProgress fires per BLE packet
                 // (~50/sec); without throttling this floods disk and logs with
@@ -1076,11 +1076,11 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             wal,
             (File file, int offset, int timerStart, {String? subFolder}) async {
               if (_isCancelled) throw Exception("Cancelled");
-              _updateSpeed(offset - lastOffset);
-              lastOffset = offset;
               listener.onWalUpdated();
             },
             onProgress: (offset) {
+              _updateSpeed(offset - lastOffset);
+              lastOffset = offset;
               wal.walOffset = offset;
               final double progressPercent =
                   (wal.storageTotalBytes > initialOffset)
