@@ -27,6 +27,7 @@ mkdir -p "$RELEASES_DIR"
 
 cd "$APP_DIR"
 flutter clean
+(cd android && ./gradlew clean)
 flutter build apk --flavor dev
 
 SRC_APK="$APP_DIR/build/app/outputs/flutter-apk/app-dev-release.apk"
