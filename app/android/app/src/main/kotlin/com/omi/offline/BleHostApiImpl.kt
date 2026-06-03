@@ -58,6 +58,11 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
         bleManager.disconnectGatt(uuid)
     }
 
+    override fun rescheduleBackgroundSync(intervalMinutes: Long) {
+        val ctx = getActivity()?.applicationContext ?: return
+        BackgroundSyncWorker.schedule(ctx, intervalMinutes.toInt())
+    }
+
     override fun requestBond(uuid: String, callback: (Result<Boolean>) -> Unit) {
         bleManager.requestBond(uuid, callback)
     }
