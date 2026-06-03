@@ -102,6 +102,9 @@ abstract class BleHostApi {
   @SwiftFunction('unmanageDevice(uuid:)')
   void unmanageDevice(String uuid);
 
+  @SwiftFunction('disconnectPeripheral(uuid:)')
+  void disconnectPeripheral(String uuid);
+
   @async
   @SwiftFunction('requestBond(uuid:)')
   bool requestBond(String uuid);
