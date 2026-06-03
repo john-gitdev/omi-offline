@@ -150,7 +150,10 @@ class Conversation {
                 if (metaBytes.length >= binsOffset + 4 + binsLen) {
                   try {
                     final binsJson = utf8.decode(metaBytes.sublist(binsOffset + 4, binsOffset + 4 + binsLen));
-                    relativeBins = (jsonDecode(binsJson) as List).cast<String>().map((p) => p.split('/raw_segments/').last).toList();
+                    relativeBins = (jsonDecode(binsJson) as List)
+                        .cast<String>()
+                        .map((p) => p.split('/raw_segments/').last)
+                        .toList();
                   } catch (_) {}
                 }
               }
@@ -951,8 +954,9 @@ class RecordingsManager {
         final aIdStr = aName.replaceFirst('unknown_', '').replaceFirst('session_', '');
         final bIdStr = bName.replaceFirst('unknown_', '').replaceFirst('session_', '');
 
-        final aId = aName.startsWith('session_') ? int.tryParse(aIdStr) : int.tryParse(aIdStr);
-        final bId = bName.startsWith('session_') ? int.tryParse(bIdStr) : int.tryParse(bIdStr);
+        // Folder ids are decimal (session_<sessionId>, unknown_<n>, or a raw timestamp).
+        final aId = int.tryParse(aIdStr);
+        final bId = int.tryParse(bIdStr);
 
         return (aId ?? 0).compareTo(bId ?? 0);
       });
