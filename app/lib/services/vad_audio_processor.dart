@@ -1537,7 +1537,8 @@ class VadAudioProcessor {
       if (!hasEncodedAnyFrames) {
         Logger.debug('VadAudioProcessor: No frames encoded — discarding empty segment.');
         final emptyFile = File(m4aPath);
-        if (await emptyFile.exists()) await emptyFile.delete();
+        // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+        try { await emptyFile.delete(); } on FileSystemException {}
         return null;
       }
 
@@ -1546,7 +1547,8 @@ class VadAudioProcessor {
       Logger.error('VadAudioProcessor: AAC encoding failed, falling back to WAV: $e');
       final corruptFile = File('${dateFolder.path}/${prefix}_$timestamp$suffix.m4a');
       try {
-        if (await corruptFile.exists()) await corruptFile.delete();
+        // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+        try { await corruptFile.delete(); } on FileSystemException {}
       } catch (_) {}
       return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix, capEnded: capEnded);
     }
@@ -1763,7 +1765,8 @@ class VadAudioProcessor {
       return oggPath;
     } catch (e) {
       Logger.error('VadAudioProcessor: _saveOgg failed: $e');
-      if (!renamed && await oggFile.exists()) await oggFile.delete();
+      // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+      if (!renamed) try { await oggFile.delete(); } on FileSystemException {}
       return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
     }
   }
@@ -2014,7 +2017,8 @@ class VadAudioProcessor {
       return wavPath;
     } catch (e) {
       Logger.error('VadAudioProcessor: _saveWav failed: $e');
-      if (await wavFile.exists()) await wavFile.delete();
+      // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+      try { await wavFile.delete(); } on FileSystemException {}
       return null;
     }
   }

@@ -62,6 +62,9 @@ int globalCurrentFileNum = -1;
 int globalWriteCount = 0;
 
 class MockDeviceConnection implements DeviceConnection {
+  @override
+  Future<void>? get gattConnectFuture => null;
+
   final StreamController<List<int>> _controller = StreamController<List<int>>.broadcast();
   final _writeWaiters = <MapEntry<int, Completer<void>>>[];
   int _writesDone = 0;

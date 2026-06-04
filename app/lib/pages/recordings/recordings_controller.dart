@@ -1580,7 +1580,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
 
       // Delete the processed audio file.
-      if (await conversation.file.exists()) await conversation.file.delete();
+      // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+      try { await conversation.file.delete(); } on FileSystemException {}
 
       // Delete any EDL (marker) files whose segmentFilename points to this recording.
       // Markers are meaningless without playable audio; leaving them causes the

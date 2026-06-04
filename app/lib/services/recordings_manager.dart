@@ -1517,16 +1517,19 @@ class RecordingsManager {
                 receivePort.close();
                 // Checkpoint preserved on cancel so the next run can resume from it.
                 if (!wasCancelled) {
+                  // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
                   try {
-                    if (await checkpointFile.exists()) await checkpointFile.delete();
+                    await checkpointFile.delete();
                   } catch (_) {}
                 }
               case 'error':
                 isolateDone = true;
                 receivePort.close();
+                // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
                 try {
-                  if (await checkpointFile.exists()) await checkpointFile.delete();
+                  await checkpointFile.delete();
                 } catch (_) {}
+
                 throw Exception(msg['message']);
             }
           }
@@ -1732,7 +1735,10 @@ class RecordingsManager {
       if (currentExt == 'wav' && targetExt == 'm4a') {
         // Transcode from WAV to M4A
         finalAudioPath = path.replaceAll('_draft.wav', '.m4a');
-        if (await File(finalAudioPath).exists()) await File(finalAudioPath).delete();
+        // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+        try {
+          await File(finalAudioPath).delete();
+        } on FileSystemException {}
 
         final success = await _transcodeWavToM4a(file, finalAudioPath);
         if (success) {
@@ -1740,12 +1746,18 @@ class RecordingsManager {
           transcoded = true;
         } else {
           finalAudioPath = path.replaceAll('_draft.', '.');
-          if (await File(finalAudioPath).exists()) await File(finalAudioPath).delete();
+          // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+          try {
+            await File(finalAudioPath).delete();
+          } on FileSystemException {}
           await file.rename(finalAudioPath);
         }
       } else {
         finalAudioPath = path.replaceAll('_draft.', '.');
-        if (await File(finalAudioPath).exists()) await File(finalAudioPath).delete();
+        // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+        try {
+          await File(finalAudioPath).delete();
+        } on FileSystemException {}
         await file.rename(finalAudioPath);
       }
 
@@ -1797,7 +1809,10 @@ class RecordingsManager {
           outBytes = builder.takeBytes();
         }
 
-        if (await File(newMetaPath).exists()) await File(newMetaPath).delete();
+        // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+        try {
+          await File(newMetaPath).delete();
+        } on FileSystemException {}
         await File(newMetaPath).writeAsBytes(outBytes);
         await File(metaPath).delete();
       }
@@ -1958,7 +1973,10 @@ class RecordingsManager {
     // Delete next
     await nextFile.delete();
     final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.ogg$'), '.meta'));
-    if (await nextMeta.exists()) await nextMeta.delete();
+    // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+    try {
+      await nextMeta.delete();
+    } on FileSystemException {}
 
     return true;
   }
@@ -2018,7 +2036,10 @@ class RecordingsManager {
     // Delete next
     await nextFile.delete();
     final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.wav$'), '.meta'));
-    if (await nextMeta.exists()) await nextMeta.delete();
+    // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+    try {
+      await nextMeta.delete();
+    } on FileSystemException {}
 
     return true;
   }
@@ -2718,15 +2739,24 @@ class RecordingsManager {
       if (canReprocess) {
         final audioFilename = conv.file.path.split('/').last;
         filenamesToDelete.add(audioFilename);
-        if (await conv.file.exists()) await conv.file.delete();
+        // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+        try {
+          await conv.file.delete();
+        } on FileSystemException {}
         final metaFile = File('${conv.file.path.substring(0, conv.file.path.lastIndexOf('.'))}.meta');
-        if (await metaFile.exists()) await metaFile.delete();
+        // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+        try {
+          await metaFile.delete();
+        } on FileSystemException {}
 
         // Also delete any raw .bin files that might have been moved into the
         // recordings folder (some pipelines do this for portability).
         final ts = conv.file.path.split('/').last.split('_').last.split('.').first;
         final recordingsBin = File('${conv.file.parent.path}/recording_fs320_$ts.bin');
-        if (await recordingsBin.exists()) await recordingsBin.delete();
+        // Performance: Avoid dual I/O by dropping await exists() check. Delete throws if missing.
+        try {
+          await recordingsBin.delete();
+        } on FileSystemException {}
 
         deletedCount++;
       }
