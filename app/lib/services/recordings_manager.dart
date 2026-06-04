@@ -2470,11 +2470,11 @@ class RecordingsManager {
     await pruneConsumedBins();
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
-    // In adjustment mode, bins are preserved so covered bins must be filtered out
-    // before the VAD run — otherwise old bins re-run and waste compute.
-    final Set<String> covered = SharedPreferencesUtil().adjustmentMode
-        ? await coveredBinPaths(batches.expand((b) => b.rawSegments).toList())
-        : const {};
+    // Always-on idempotency guard: skip bins already fully covered by an existing
+    // recording so a re-VAD can't mint a near-duplicate. Cheap here — pruneConsumedBins
+    // (above) already deleted covered bins on the normal path, so the set is usually
+    // empty; in Adjustment Mode (bins preserved) it filters them out of the VAD run.
+    final Set<String> covered = await coveredBinPaths(batches.expand((b) => b.rawSegments).toList());
     final processableBatches = covered.isEmpty
         ? batches
         : batches.map((b) {
