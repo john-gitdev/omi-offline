@@ -130,7 +130,12 @@ class OmiBleForegroundService : Service() {
     private var isBluetoothEnabled = true
     private val syncLock = Any()
     private val bleManager get() = OmiBleManager.instance
+    private var currentNotificationTitle = DEFAULT_NOTIF_TITLE
     private var currentNotificationText = DEFAULT_NOTIF_TEXT
+    // True while auto-sync is scheduled. Suppresses transient "Connecting…"/"Connected"
+    // text updates so the "Next sync at…" label stays stable through the brief
+    // connect→sync→disconnect cycle.
+    private var syncTimerActive = false
 
     private val notificationDismissedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -138,7 +143,7 @@ class OmiBleForegroundService : Service() {
             // User swiped away the foreground notification — repost it so it returns
             // on the next connection-state update (Android 14+ allows dismissing ongoing notifs).
             try {
-                val notif = buildNotification(DEFAULT_NOTIF_TITLE, currentNotificationText)
+                val notif = buildNotification(currentNotificationTitle, currentNotificationText)
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                     startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
                 } else {
@@ -276,7 +281,7 @@ class OmiBleForegroundService : Service() {
             Log.w(TAG, "fireDeviceReady: $addr disconnected during pipeline, skipping")
             return
         }
-        updateNativeNotification("Connected")
+        if (!syncTimerActive) updateNativeNotification("Connected")
         bleManager.mainHandler.post {
             bleManager.flutterApi?.onDeviceReady(addr, services) {}
         }
@@ -406,7 +411,7 @@ class OmiBleForegroundService : Service() {
             Log.i(TAG, "connectToDevice($source): $addr (autoConnect=$autoConnect, timeout=${timeoutMs}ms)")
             // Flip back to "Connecting..." when retrying after a disconnect.
             // Skip for the initial manageDevice call since onCreate already set "Connecting...".
-            if (source != "manageDevice") updateNativeNotification(DEFAULT_NOTIF_TEXT)
+            if (source != "manageDevice" && !syncTimerActive) updateNativeNotification(DEFAULT_NOTIF_TEXT)
             val gatt = try {
                 bleManager.connectGatt(addr, autoConnect = autoConnect)
             } catch (e: SecurityException) {
@@ -792,11 +797,21 @@ class OmiBleForegroundService : Service() {
 
     // ── Notification ──
 
-    private fun updateNativeNotification(text: String) {
+    fun setNextSyncTime(timestampMs: Long) {
+        syncTimerActive = timestampMs > 0
+    }
+
+    fun setDeviceBattery(level: Int, timestampMs: Long) {
+        val timeFmt = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
+        updateNativeNotification(text = "$level% · ${timeFmt.format(java.util.Date(timestampMs))}")
+    }
+
+    private fun updateNativeNotification(text: String, title: String = DEFAULT_NOTIF_TITLE) {
+        currentNotificationTitle = title
         currentNotificationText = text
         try {
             getSystemService(NotificationManager::class.java)
-                ?.notify(NOTIFICATION_ID, buildNotification(DEFAULT_NOTIF_TITLE, text))
+                ?.notify(NOTIFICATION_ID, buildNotification(title, text))
         } catch (e: Exception) {
             Log.w(TAG, "updateNativeNotification failed: ${e.message}")
         }

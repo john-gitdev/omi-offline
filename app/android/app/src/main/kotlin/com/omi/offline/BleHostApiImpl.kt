@@ -152,6 +152,14 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
         processingWakeLock = null
     }
 
+    override fun setNextSyncTime(timestampMs: Long) {
+        OmiBleForegroundService.instance?.setNextSyncTime(timestampMs)
+    }
+
+    override fun setDeviceBattery(level: Long, timestampMs: Long) {
+        OmiBleForegroundService.instance?.setDeviceBattery(level.toInt(), timestampMs)
+    }
+
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): String? {
         val address = companionManager?.onActivityResult(requestCode, resultCode, data)
         val cb = companionAssociationCallback
