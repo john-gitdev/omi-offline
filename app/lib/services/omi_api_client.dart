@@ -203,20 +203,33 @@ class OmiApiClient {
     final output = BytesBuilder();
 
     int offset = 0;
+    int frameCount = 0;
+    int skippedMarkers = 0;
+    bool desynced = false;
     while (offset + 4 <= bytes.length) {
       final frameLength = byteData.getUint32(offset, Endian.little);
 
       if (frameLength == 0 || frameLength == 0xFFFFFFFF) { offset += 4; continue; }
-      if (frameLength == 0xFFFFFFFB) { offset += 36; continue; }
-      if (frameLength == 0xFFFFFFFE) { offset += 20; continue; }
-      if (frameLength == 0xFFFFFFFD) { offset += 16; continue; }
-      if (frameLength > 0xFFFF00) { offset += 4; continue; }
+      if (frameLength == 0xFFFFFFFB) { offset += 36; skippedMarkers++; continue; }
+      if (frameLength == 0xFFFFFFFE) { offset += 20; skippedMarkers++; continue; }
+      if (frameLength == 0xFFFFFFFD) { offset += 16; skippedMarkers++; continue; }
+      if (frameLength > 0xFFFF00) { offset += 4; skippedMarkers++; continue; }
 
-      if (offset + 4 + frameLength > bytes.length) break;
+      if (offset + 4 + frameLength > bytes.length) { desynced = true; break; }
 
       output.add(Uint8List.sublistView(bytes, offset, offset + 4 + frameLength));
       offset += 4 + frameLength;
+      frameCount++;
     }
+
+    // Each Opus frame is 20 ms (fs320 @ 16 kHz), so duration ≈ frames × 20 ms.
+    final estMs = frameCount * 20;
+    Logger.debug(
+      'OmiApiClient: _readOpusFrames ${binFile.uri.pathSegments.last}: '
+      '$frameCount frames (~${(estMs / 60000).toStringAsFixed(1)} min), '
+      'markers skipped: $skippedMarkers, trailing bytes after last frame: ${bytes.length - offset}'
+      '${desynced ? ' [DESYNC: stopped early at offset $offset of ${bytes.length}]' : ''}',
+    );
 
     return output.takeBytes();
   }
@@ -334,10 +347,29 @@ class OmiApiClient {
 
         if (res.statusCode == 200) {
           final json = jsonDecode(res.body) as Map<String, dynamic>;
-          final segments = (json['transcript_segments'] as List?)?.length ?? 0;
+          final segs = (json['transcript_segments'] as List?) ?? const [];
           final title = (json['structured'] as Map?)?['title'] ?? 'No Title';
           final discarded = json['discarded'] == true;
-          Logger.debug('OmiApiClient: Trace result for $id: "$title", segments: $segments, discarded: $discarded');
+
+          // Span the transcript actually covers. Each segment has `start`/`end`
+          // in seconds; min(start)..max(end) tells us whether the cloud stopped
+          // early (genuine truncation) or scattered speech across the full file.
+          double? firstStart;
+          double? lastEnd;
+          for (final s in segs) {
+            if (s is! Map) continue;
+            final start = (s['start'] as num?)?.toDouble();
+            final end = (s['end'] as num?)?.toDouble();
+            if (start != null && (firstStart == null || start < firstStart)) firstStart = start;
+            if (end != null && (lastEnd == null || end > lastEnd)) lastEnd = end;
+          }
+          final spanStr = (firstStart != null && lastEnd != null)
+              ? 'span ${(firstStart / 60).toStringAsFixed(1)}–${(lastEnd / 60).toStringAsFixed(1)} min'
+              : 'span unknown';
+          Logger.debug(
+            'OmiApiClient: Trace result for $id: "$title", segments: ${segs.length}, '
+            '$spanStr, discarded: $discarded',
+          );
         } else {
           Logger.error('OmiApiClient: Trace failed for $id (HTTP ${res.statusCode})');
         }
