@@ -674,6 +674,14 @@ protocol BleHostApi {
   /// (Android only) Release the CPU partial wake-lock acquired by
   /// [acquireProcessingWakeLock]. iOS no-op.
   func releaseProcessingWakeLock() throws
+  /// (Android only) Push the next-sync epoch-ms to OmiBleForegroundService so it
+  /// can display a native Chronometer countdown without Dart involvement.
+  /// Pass 0 to clear (e.g. Manual Only mode). iOS no-op.
+  func setNextSyncTime(timestampMs: Int64) throws
+  /// (Android only) Push the device battery level and the epoch-ms when it was
+  /// read to OmiBleForegroundService so ID 2001 shows "78% · 3:45 PM".
+  /// Call whenever a battery reading is obtained. iOS no-op.
+  func setDeviceBattery(level: Int64, timestampMs: Int64) throws
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -979,6 +987,43 @@ class BleHostApiSetup {
       }
     } else {
       releaseProcessingWakeLockChannel.setMessageHandler(nil)
+    }
+    /// (Android only) Push the next-sync epoch-ms to OmiBleForegroundService so it
+    /// can display a native Chronometer countdown without Dart involvement.
+    /// Pass 0 to clear (e.g. Manual Only mode). iOS no-op.
+    let setNextSyncTimeChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.setNextSyncTime\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setNextSyncTimeChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let timestampMsArg = args[0] as! Int64
+        do {
+          try api.setNextSyncTime(timestampMs: timestampMsArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      setNextSyncTimeChannel.setMessageHandler(nil)
+    }
+    /// (Android only) Push the device battery level and the epoch-ms when it was
+    /// read to OmiBleForegroundService so ID 2001 shows "78% · 3:45 PM".
+    /// Call whenever a battery reading is obtained. iOS no-op.
+    let setDeviceBatteryChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.setDeviceBattery\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setDeviceBatteryChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let levelArg = args[0] as! Int64
+        let timestampMsArg = args[1] as! Int64
+        do {
+          try api.setDeviceBattery(level: levelArg, timestampMs: timestampMsArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      setDeviceBatteryChannel.setMessageHandler(nil)
     }
   }
 }

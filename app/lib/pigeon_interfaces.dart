@@ -169,6 +169,18 @@ abstract class BleHostApi {
   /// [acquireProcessingWakeLock]. iOS no-op.
   @SwiftFunction('releaseProcessingWakeLock()')
   void releaseProcessingWakeLock();
+
+  /// (Android only) Push the next-sync epoch-ms to OmiBleForegroundService so it
+  /// can display a native Chronometer countdown without Dart involvement.
+  /// Pass 0 to clear (e.g. Manual Only mode). iOS no-op.
+  @SwiftFunction('setNextSyncTime(timestampMs:)')
+  void setNextSyncTime(int timestampMs);
+
+  /// (Android only) Push the device battery level and the epoch-ms when it was
+  /// read to OmiBleForegroundService so ID 2001 shows "78% · 3:45 PM".
+  /// Call whenever a battery reading is obtained. iOS no-op.
+  @SwiftFunction('setDeviceBattery(level:timestampMs:)')
+  void setDeviceBattery(int level, int timestampMs);
 }
 
 @FlutterApi()

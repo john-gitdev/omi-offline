@@ -647,6 +647,18 @@ interface BleHostApi {
    * [acquireProcessingWakeLock]. iOS no-op.
    */
   fun releaseProcessingWakeLock()
+  /**
+   * (Android only) Push the next-sync epoch-ms to OmiBleForegroundService so it
+   * can display a native Chronometer countdown without Dart involvement.
+   * Pass 0 to clear (e.g. Manual Only mode). iOS no-op.
+   */
+  fun setNextSyncTime(timestampMs: Long)
+  /**
+   * (Android only) Push the device battery level and the epoch-ms when it was
+   * read to OmiBleForegroundService so ID 2001 shows "78% · 3:45 PM".
+   * Call whenever a battery reading is obtained. iOS no-op.
+   */
+  fun setDeviceBattery(level: Long, timestampMs: Long)
 
   companion object {
     /** The codec used by BleHostApi. */
@@ -981,6 +993,43 @@ interface BleHostApi {
           channel.setMessageHandler { _, reply ->
             val wrapped: List<Any?> = try {
               api.releaseProcessingWakeLock()
+              listOf(null)
+            } catch (exception: Throwable) {
+              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.setNextSyncTime$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val timestampMsArg = args[0] as Long
+            val wrapped: List<Any?> = try {
+              api.setNextSyncTime(timestampMsArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.setDeviceBattery$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val levelArg = args[0] as Long
+            val timestampMsArg = args[1] as Long
+            val wrapped: List<Any?> = try {
+              api.setDeviceBattery(levelArg, timestampMsArg)
               listOf(null)
             } catch (exception: Throwable) {
               PigeonCommunicatorPigeonUtils.wrapError(exception)
