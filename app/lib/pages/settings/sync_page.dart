@@ -651,6 +651,30 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               ),
               const SizedBox(height: 12),
               SwitchListTile(
+                title: const Text('Adjustment Mode',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+                subtitle: const Text(
+                    'Keeps raw audio on disk after processing so each day can be reprocessed from scratch. For tweaking VAD settings.',
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
+                value: SharedPreferencesUtil().adjustmentMode,
+                onChanged: (val) {
+                  final prefs = SharedPreferencesUtil();
+                  prefs.adjustmentMode = val;
+                  if (val) {
+                    prefs.adjustmentModeWasEnabled = true;
+                  } else {
+                    // On disable, reap any discard records that have already aged
+                    // out so stale bins aren't carried forward.
+                    unawaited(RecordingsManager.runRecoverySweep());
+                  }
+                  RecordingsManager.notifyRecordingsChanged();
+                  setState(() {});
+                },
+                activeColor: Colors.amber,
+                contentPadding: EdgeInsets.zero,
+              ),
+              const SizedBox(height: 12),
+              SwitchListTile(
                 title: const Text('Allow Upload During Adjustment',
                     style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
                 subtitle: const Text('Integrations will remain active even when Adjustment Mode is enabled.',
