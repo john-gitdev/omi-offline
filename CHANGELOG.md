@@ -2,6 +2,11 @@
 
 ## App
 
+### 0.18.8
+
+- **Fix: sync-timer notification no longer shows a stale countdown.** Previously the "Next sync in ~N min" text was recomputed and pushed from Dart every ~60 s via the `flutter_foreground_task` heartbeat. When Android's battery optimizer suspended the main isolate, the text would freeze — showing "27 minutes ago" in the notification timestamp while still reading "~29 min". The persistent `flutter_foreground_task` notification (ID 2002, `START_STICKY`) now shows the absolute scheduled time ("Next sync at 3:45 PM") and cycles to sync/processing progress during active runs, then back to the new scheduled time after. Text is never stale by more than one sync interval.
+- **New: BLE service notification (ID 2001) shows device battery level and last-connected time.** The always-on `OmiBleForegroundService` notification now shows "78% · 3:45 PM" — the last known battery level and the time it was read (which coincides with the last device connection and sync). Updated on every battery reading via a new `setDeviceBattery` Pigeon call. Useful at a glance when the device is disconnected between syncs.
+
 ### 0.18.7
 
 - **Fix: Reprocess Day now correctly identifies sessions from filenames.** The legacy identification logic (used for older recordings without precise bin-mapping) was incorrectly trying to parse session IDs from folder names. Since folders were updated to use timestamps, this check failed, preventing recordings from being cleared or deleted. The system now extracts IDs from the `.bin` filenames, restoring full "Reprocess Day" functionality.

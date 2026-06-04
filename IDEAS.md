@@ -1,5 +1,41 @@
 # Ideas
 
+## ACTIVE
+
+## Notification Consolidation: Silence ID 2001, ID 2002 is the User Notification [minor] [Active]
+
+Make ID 2002 (`FlutterForegroundTask`, `START_STICKY`) the sole user-visible notification, cycling: "Next sync at H:MM PM" → sync/processing % → "Next sync at H:MM PM". Demote ID 2001 (`OmiBleForegroundService`, `START_NOT_STICKY`) to a silent BLE-management service with a minimal notification that doesn't appear in the status bar header.
+
+### Why ID 2002, not ID 2001
+
+`flutter_foreground_task` returns `START_STICKY` (verified in `ForegroundService.kt:178`) when `stopWithTask=false`. If the OS kills the process, Android automatically restarts ID 2002 — the notification stays visible and the user can tap it to relaunch the full app. `OmiBleForegroundService` returns `START_NOT_STICKY`; its notification silently vanishes on process kill. ID 2002 is therefore the more resilient surface for the user-facing status.
+
+### What's done (0.18.8)
+
+- **ID 2001** shows "Next sync at H:MM PM" via `setNextSyncTime()` Pigeon call (suppresses transient "Connecting…"/"Connected" flashes with `syncTimerActive` flag). Updated on every `_startBackgroundSyncTimer()` call.
+- **ID 2002** now also shows "Next sync at H:MM PM" in idle state (replaced static "Auto-sync active"). Cycles to sync/processing % during active runs, then back to the time after `_doBackgroundSync()` finishes. Both notifications show the same time — ID 2002 via Dart, ID 2001 via native Kotlin.
+
+### Remaining work: silence ID 2001's text
+
+ID 2001 still formats and posts "Next sync at H:MM PM" redundantly with ID 2002. Since lowering notification channel importance risks OEM battery-manager kills (LOW → DEFAULT was required for ID 2002 in 0.17 for exactly this reason, and MIN is lower than LOW), channel importance must stay at `IMPORTANCE_LOW`. The remaining cleanup is just to simplify `setNextSyncTime()` to stop formatting the time string, since the content is redundant with ID 2002:
+
+```kotlin
+fun setNextSyncTime(timestampMs: Long) {
+    syncTimerActive = timestampMs > 0
+    // ID 2001 text is not user-facing; no update needed
+}
+```
+
+This removes the redundant string format and `updateNativeNotification` call from `setNextSyncTime` — ID 2001's text stays at whatever it last showed ("Omi Offline / Connecting…" on start, "Connected" in manual mode on connect). The `syncTimerActive` flag still suppresses transient BLE-state flashes during background syncs.
+
+### No-race guarantee
+ID 2001 and ID 2002 write to separate notification IDs and separate `NotificationChannel`s. No shared state, no race.
+
+### Files affected
+- `app/android/app/src/main/kotlin/com/omi/offline/OmiBleForegroundService.kt` — `IMPORTANCE_MIN` channel, simplify `setNextSyncTime`
+
+---
+
 ## DEFERRED
 
 ## Apple Watch Integration [minor] [Deferred]
