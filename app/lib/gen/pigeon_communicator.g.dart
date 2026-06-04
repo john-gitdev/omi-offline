@@ -1268,6 +1268,58 @@ class BleHostApi {
       return;
     }
   }
+
+  /// (Android only) Push the next-sync epoch-ms to OmiBleForegroundService so it
+  /// can display a native Chronometer countdown without Dart involvement.
+  /// Pass 0 to clear (e.g. Manual Only mode). iOS no-op.
+  Future<void> setNextSyncTime(int timestampMs) async {
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.omi_pigeon.BleHostApi.setNextSyncTime$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[timestampMs]);
+    final List<Object?>? pigeonVar_replyList =
+        await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  /// (Android only) Push the device battery level and the epoch-ms when it was
+  /// read to OmiBleForegroundService so ID 2001 shows "78% · 3:45 PM".
+  /// Call whenever a battery reading is obtained. iOS no-op.
+  Future<void> setDeviceBattery(int level, int timestampMs) async {
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.omi_pigeon.BleHostApi.setDeviceBattery$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[level, timestampMs]);
+    final List<Object?>? pigeonVar_replyList =
+        await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
 }
 
 abstract class BleFlutterApi {
