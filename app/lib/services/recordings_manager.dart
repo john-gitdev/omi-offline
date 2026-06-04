@@ -1955,7 +1955,8 @@ class RecordingsManager {
       return true;
     }
 
-    // Delete next
+    // Delete next (and merge Omi bin so the upload sends the full recording)
+    await _stitchBinIfPresent(draftFile, nextFile);
     await nextFile.delete();
     final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.ogg$'), '.meta'));
     if (await nextMeta.exists()) await nextMeta.delete();
@@ -2015,12 +2016,37 @@ class RecordingsManager {
       return true;
     }
 
-    // Delete next
+    // Delete next (and merge Omi bin so the upload sends the full recording)
+    await _stitchBinIfPresent(draftFile, nextFile);
     await nextFile.delete();
     final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.wav$'), '.meta'));
     if (await nextMeta.exists()) await nextMeta.delete();
 
     return true;
+  }
+
+  /// Appends [nextFile]'s raw Opus bin to [draftFile]'s bin, then deletes the next bin.
+  /// No-op if either bin is absent (Omi disabled, or first run predates this fix).
+  Future<void> _stitchBinIfPresent(File draftFile, File nextFile) async {
+    final draftTs = _extractTimestamp(draftFile.path);
+    final nextTs = _extractTimestamp(nextFile.path);
+    if (draftTs == 0 || nextTs == 0) return;
+
+    final draftBin = File('${draftFile.parent.path}/recording_fs320_$draftTs.bin');
+    final nextBin = File('${nextFile.parent.path}/recording_fs320_$nextTs.bin');
+
+    if (!await nextBin.exists() || !await draftBin.exists()) return;
+
+    try {
+      final nextBytes = await nextBin.readAsBytes();
+      final sink = await draftBin.open(mode: FileMode.append);
+      await sink.writeFrom(nextBytes);
+      await sink.close();
+      await nextBin.delete();
+      Logger.debug('RecordingsManager: Stitched Omi bin $draftTs ← $nextTs (+${nextBytes.length} B)');
+    } catch (e) {
+      Logger.error('RecordingsManager: _stitchBinIfPresent failed: $e');
+    }
   }
 
   /// Reads the `.meta` sidecar's 4-byte LE duration (offset 4). Returns null
