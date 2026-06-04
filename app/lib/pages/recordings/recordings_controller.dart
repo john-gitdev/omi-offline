@@ -830,12 +830,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     _transitionTo(SyncProcessState.processing);
 
-    // In adjustment mode, bins are preserved so skip the ones already covered by
-    // a recording — no need to re-decode audio that already has an output file.
-    // Bins remain on disk for Reprocess Day; we just exclude them from this VAD run.
-    final Set<String> coveredBins = SharedPreferencesUtil().adjustmentMode
-        ? await RecordingsManager.coveredBinPaths(_batches.expand((b) => b.rawSegments).toList())
-        : const {};
+    // Always-on idempotency guard — skip bins already covered by a recording so we
+    // don't re-decode audio that already has an output file (and can't duplicate it).
+    // Usually empty on the normal path; in Adjustment Mode the preserved bins are
+    // excluded from this VAD run but remain on disk for Reprocess Day.
+    final Set<String> coveredBins =
+        await RecordingsManager.coveredBinPaths(_batches.expand((b) => b.rawSegments).toList());
     final processableBatches = coveredBins.isEmpty
         ? _batches
         : _batches.map((b) {
