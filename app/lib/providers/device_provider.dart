@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:intl/intl.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
@@ -210,12 +212,13 @@ class DeviceProvider extends ChangeNotifier
           final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
           if (interval > 0) {
             nextSyncTime = DateTime.now().add(Duration(minutes: interval));
+            if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(nextSyncTime!.millisecondsSinceEpoch));
             notifyListeners();
           }
         } else {
-          // Not due yet — refresh the countdown subtext on the persistent
-          // notification. Skip while a sync/process is running; that flow owns
-          // the notification and shows its own progress.
+          // Not due yet — refresh the idle notification so ID 2002 reflects the
+          // current next-sync time (or connection state in manual-only mode).
+          // Skip while a sync/process is running; that flow owns the notification.
           if (!_syncOwnsNotification) {
             unawaited(_showIdleNotification());
           }
@@ -294,6 +297,7 @@ class DeviceProvider extends ChangeNotifier
       if (currentLevel != -1) {
         batteryLevel = currentLevel;
         SharedPreferencesUtil().lastBatteryLevel = currentLevel;
+        _pushBatteryToNative(currentLevel);
         notifyListeners();
       }
     }
@@ -328,6 +332,7 @@ class DeviceProvider extends ChangeNotifier
         if (batteryLevel != value) {
           batteryLevel = value;
           SharedPreferencesUtil().lastBatteryLevel = value;
+          _pushBatteryToNative(value);
           if (batteryLevel < 20 && !_hasLowBatteryAlerted) {
             _hasLowBatteryAlerted = true;
           } else if (batteryLevel >= 20) {
@@ -625,21 +630,23 @@ class DeviceProvider extends ChangeNotifier
   /// no-ops when the service isn't running.
   Future<void> _showIdleNotification({bool start = false}) async {
     final next = nextSyncTime;
-    final String title;
+    final String title = ForegroundUtil.defaultTitle;
     final String text;
     if (next == null) {
-      title = ForegroundUtil.defaultTitle;
       text = isConnected ? 'Omi is Connected' : (isConnecting ? 'Connecting...' : 'Omi is Disconnected');
     } else {
-      final mins = next.difference(DateTime.now()).inMinutes;
-      title = 'Omi Offline Sync Timer';
-      text = mins <= 0 ? 'Syncing soon...' : 'Next sync in ~$mins min';
+      text = 'Next sync at ${DateFormat('h:mm a').format(next)}';
     }
     if (start && !await ForegroundUtil.isRunningService) {
       await ForegroundUtil.startForegroundTask(title: title, text: text);
     } else {
       await ForegroundUtil.updateNotification(title: title, text: text);
     }
+  }
+
+  void _pushBatteryToNative(int level) {
+    if (!Platform.isAndroid) return;
+    unawaited(BleHostApi().setDeviceBattery(level, DateTime.now().millisecondsSinceEpoch));
   }
 
   void restartBackgroundSyncTimer() => _startBackgroundSyncTimer();
@@ -655,15 +662,18 @@ class DeviceProvider extends ChangeNotifier
     }
     if (interval <= 0) {
       nextSyncTime = null;
+      if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(0));
       notifyListeners();
       return; // Manual only
     }
     nextSyncTime = DateTime.now().add(Duration(minutes: interval));
+    if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(nextSyncTime!.millisecondsSinceEpoch));
     notifyListeners();
 
     _backgroundSyncTimer = Timer.periodic(Duration(minutes: interval), (_) async {
       if (_disposed) return;
       nextSyncTime = DateTime.now().add(Duration(minutes: interval));
+      if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(nextSyncTime!.millisecondsSinceEpoch));
       notifyListeners();
 
       if (!isConnected) {
