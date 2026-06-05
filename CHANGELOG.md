@@ -5,7 +5,7 @@
 ### 0.19.0
 
 - **Fix: background sync now fires on time even when Android freezes the Dart isolate.** Previously, if the OS suspended the Flutter runtime (despite the foreground service being alive), the scheduled sync timer and heartbeat both stopped firing — the notification would show a stale "Next sync at X:XX" with no sync occurring until the user opened the app. A native `AlarmManager` exact alarm (`setExactAndAllowWhileIdle`) is now armed whenever Dart sets the next sync time. When the alarm fires, it delivers the sync request natively, bypassing the frozen Dart layer. The alarm re-arms itself from shared prefs so it survives repeated Dart freezes without requiring Dart to reschedule.
-- **Overhauled notification layout.** The sync notification now uses title + subtext consistently: idle shows "Next sync at X:XX PM" / "Last sync completed at X:XX PM · 85%"; active phases show "Syncing recordings" / "45% complete" and "Processing recordings" / "67% complete". The native BLE notification (always-on) shows connection state only (Connected / Connecting / Disconnected) — battery is surfaced in the sync notification instead.
+- **Overhauled notification layout.** The sync notification now uses title + subtext consistently: idle shows "Next sync at X:XX PM" / "Last sync completed at X:XX PM · 85%"; active phases show "Syncing recordings" / "45% complete" and "Processing recordings" / "67% complete". Progress updates every 5 seconds in both foreground and background. The native BLE notification (always-on) shows connection state only (Connected / Connecting / Disconnected).
 
 ### 0.18
 
