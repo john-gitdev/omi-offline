@@ -210,20 +210,24 @@ PCB: mainboard (v1.2) + charger board (v1.0) + FPC (v1.0). Enclosure: CNC alumin
 omi-offline/
 ├── app/                    # Flutter mobile app
 │   ├── lib/
+│   │   ├── backend/        # Preferences, BT device schema
+│   │   ├── gen/            # Pigeon-generated platform channel code
 │   │   ├── pages/          # UI screens (recordings, settings, DFU/OTA)
 │   │   ├── providers/      # DeviceProvider (ChangeNotifier, drives all UI)
 │   │   ├── services/
 │   │   │   ├── devices/    # BLE connection, OmiConnection, DeviceService
 │   │   │   ├── wals/       # SDCardWalSyncImpl, WalService
 │   │   │   ├── audio/      # Opus decode, audio pipeline
-│   │   │   ├── bridges/    # Native platform bridges
+│   │   │   ├── bridges/    # Native platform bridges (Apple Watch)
 │   │   │   ├── recordings_manager.dart
 │   │   │   └── vad_audio_processor.dart
+│   │   ├── utils/
 │   │   └── widgets/
 │   ├── test/unit/
 │   ├── integration_test/
 │   └── assets/
 │       ├── models/         # Silero VAD ONNX model
+│       ├── images/
 │       └── fonts/
 ├── omi/
 │   ├── firmware/           # Zephyr RTOS firmware (nRF5340)
@@ -232,10 +236,11 @@ omi-offline/
 │   └── hardware/consumer/  # PCB design files
 ├── releases/               # Built APKs
 ├── screenshots/
+├── test-data/
 ├── CHANGELOG.md
-├── NOTES.md                # Engineering notes and findings
-├── IDEAS.md                # Backlog / future ideas
-└── CLAUDE.md               # AI assistant instructions
+├── NOTES.md
+├── IDEAS.md
+└── CLAUDE.md
 ```
 
 ---
