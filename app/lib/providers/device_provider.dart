@@ -629,19 +629,22 @@ class DeviceProvider extends ChangeNotifier
   /// Safe to call from the foreground — [ForegroundUtil.updateNotification]
   /// no-ops when the service isn't running.
   Future<void> _showIdleNotification({bool start = false}) async {
-    final String title = ForegroundUtil.defaultTitle;
-    final String text;
     final prefs = SharedPreferencesUtil();
     final lastMs = prefs.lastSyncCompletedMs;
     final lastBattery = prefs.lastBatteryLevel;
-    final String lastSyncText;
+    final next = nextSyncTime;
+
+    final String title = next != null
+        ? 'Next sync at ${DateFormat('h:mm a').format(next)}'
+        : ForegroundUtil.defaultTitle;
+
+    final String text;
     if (lastMs > 0) {
       final time = DateFormat('h:mm a').format(DateTime.fromMillisecondsSinceEpoch(lastMs));
-      lastSyncText = lastBattery >= 0 ? 'Last synced $time · $lastBattery%' : 'Last synced $time';
+      text = lastBattery >= 0 ? 'Last sync completed at $time · $lastBattery%' : 'Last sync completed at $time';
     } else {
-      lastSyncText = isConnected ? 'Omi is Connected' : (isConnecting ? 'Connecting...' : 'Omi is Disconnected');
+      text = isConnected ? 'Omi is Connected' : (isConnecting ? 'Connecting...' : 'Omi is Disconnected');
     }
-    text = lastSyncText;
     if (start && !await ForegroundUtil.isRunningService) {
       await ForegroundUtil.startForegroundTask(title: title, text: text);
     } else {
