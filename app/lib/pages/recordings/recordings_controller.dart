@@ -277,7 +277,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final total = syncs.estimatedTotalSegments;
     final synced = (percentage * total).round();
     final pct = '${(percentage * 100).toInt()}%';
-    return total > 0 ? '$synced of $total segments ($pct)' : '$pct complete';
+    return total > 0 ? '$synced of $total segments ($pct)' : 'Preparing...';
   }
 
   static String processingNotificationText() {
