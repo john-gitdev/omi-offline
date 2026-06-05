@@ -1358,6 +1358,10 @@ class _BackgroundSyncProgress implements IWalSyncProgressListener {
 
   @override
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
+    // In foreground the recordings_controller is the global WAL progress listener
+    // and owns the notification — defer to it to avoid flip-flopping.
+    final state = WidgetsBinding.instance.lifecycleState;
+    if (state == null || state == AppLifecycleState.resumed) return;
     final now = DateTime.now();
     if (now.difference(_lastNotif) < const Duration(seconds: 5)) return;
     _lastNotif = now;
