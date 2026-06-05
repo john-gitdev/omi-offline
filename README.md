@@ -37,8 +37,6 @@ The nRF5340 wearable captures audio continuously via PDM microphones, encodes it
 - **Silero VAD on-device (opt-in).** ONNX Runtime can run Silero VAD v6.2.1 locally on the phone to strip silence and segment speech. Disabled by default in Automatic mode; enabling it shows a one-time battery/processing-time warning. Runs in a background isolate so platform threads stay unblocked.
 - **Two recording modes.** Automatic (hands-free; AAD by default, Silero optional) and Manual (explicit double-tap start/stop on the hardware button).
 - **Verified Markers.** A double-tap drops a timestamped bookmark stored inline within the audio stream. During processing, the app parses these events with sub-frame precision to build high-precision EDL sidecars for the resulting recordings.
-- **Adjustment Mode.** Re-run processing on already-downloaded segments without touching the device — tweak sensitivity and reprocess offline. A persistent banner reminds you it is active, and auto-upload integrations are paused (and restored on exit) so reprocessed clips aren't re-uploaded.
-- **Reprocess Day with precision bin-mapping.** Each recording records the exact raw bins it was built from (`relativeBins` in its `.meta` sidecar). Reprocess Day verifies all required audio is on disk before clearing or deleting, so reprocessing never loses audio and never deletes bins shared with a still-valid recording.
 - **Discard recovery (ghost rows).** Audio that processing dropped (silenced as noise, or too short) is surfaced as a greyed-out "ghost" row in the recordings list, appearing in real time as each discard is identified. Source bins are protected for a 48 h window so you can recover a clip with a lower threshold or delete it.
 - **Background battery saving.** The app always disconnects BLE when backgrounded (after a ~30 s grace window to survive quick screen-off/on) and reconnects only when a sync is due. The firmware records to SD card regardless of phone connectivity. A `PARTIAL_WAKE_LOCK` is held over the background sync+process run so Android doesn't downclock the processing isolate when the screen is off.
 - **Processing resume from checkpoint.** If processing is interrupted (background kill, BLE drop, cancel), the next run restores the exact Silero LSTM recurrent state from a checkpoint file and picks up from the last completed segment — no re-decoding from scratch.
@@ -86,7 +84,7 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
 
 ## Recording Modes
 
-### Manual (default since 0.14.0)
+### Manual (default)
 
 Double-tap the button to start; double-tap again to stop. The LED flashes green on start and red on stop, then stays yellow while recording.
 
@@ -99,7 +97,7 @@ Double-tap the button to start; double-tap again to stop. The LED flashes green 
 
 The device monitors audio continuously. The LED stays off until audio above the AAD threshold wakes the mic pipeline (yellow = recording). Double-tap drops a white-flash marker.
 
-- **AAD is the default** (since 0.18.0): the app treats every captured frame as speech and splits only on the firmware's activity timestamps. No on-phone model runs.
+- **AAD is the default:** the app treats every captured frame as speech and splits only on the firmware's activity timestamps. No on-phone model runs.
 - **Silero VAD is opt-in.** Enabling it (in Recording Settings) shows a one-time warning that Silero uses more battery and takes longer to process. When on, it segments speech from silence and splits on `vadSplitSeconds` of continuous silence (default 2 min).
 - Either way, the `vadMaxConversationMinutes` cap (default 60 min) forces a split without silence.
 - Recordings accumulate across sync cycles — partial in-progress recordings are re-processed each run.
@@ -187,7 +185,6 @@ File indices are cache positions (0-based, rebuilt after every LIST and every de
 | Setting | Pref key | Default | Notes |
 |---------|----------|---------|-------|
 | Recording format | `audioSaveFormat` | wav | Output container: `wav` (PCM, default), `m4a`, or `ogg` |
-| Adjustment Mode | `adjustmentMode` | false | Keep raw segments for offline reprocessing; pauses auto-upload while on. Toggle is in Debug Tools. |
 | Keep recordings for | `keepRecordingsDays` | -1 | -1 = forever, 0 = delete immediately after upload |
 
 ---
@@ -197,7 +194,6 @@ File indices are cache positions (0-based, rebuilt after every LIST and every de
 | Component | Part | Spec |
 |-----------|------|------|
 | SoC | nRF5340-CLAA | Dual-core Bluetooth LE |
-| Wi-Fi | nRF7002-CEAA-R7 | Wi-Fi 6 |
 | Microphones | MMICT5838-00-012 x2 | TDK top-port PDM |
 | NAND Flash | CSNP4GCR01-DPW | 512 MB |
 | IMU | LSM6DS3TR-C | 6-axis accel/gyro |
@@ -214,63 +210,34 @@ PCB: mainboard (v1.2) + charger board (v1.0) + FPC (v1.0). Enclosure: CNC alumin
 omi-offline/
 ├── app/                    # Flutter mobile app
 │   ├── lib/
-│   │   ├── pages/          # UI screens (recordings, settings, device)
+│   │   ├── pages/          # UI screens (recordings, settings, DFU/OTA)
 │   │   ├── providers/      # DeviceProvider (ChangeNotifier, drives all UI)
-│   │   └── services/
-│   │       ├── devices/    # BLE connection, OmiConnection, DeviceService
-│   │       ├── wals/       # SDCardWalSyncImpl, WalService
-│   │       └── vad_audio_processor.dart
-│   └── test/
+│   │   ├── services/
+│   │   │   ├── devices/    # BLE connection, OmiConnection, DeviceService
+│   │   │   ├── wals/       # SDCardWalSyncImpl, WalService
+│   │   │   ├── audio/      # Opus decode, audio pipeline
+│   │   │   ├── bridges/    # Native platform bridges
+│   │   │   ├── recordings_manager.dart
+│   │   │   └── vad_audio_processor.dart
+│   │   └── widgets/
+│   ├── test/unit/
+│   ├── integration_test/
+│   └── assets/
+│       ├── models/         # Silero VAD ONNX model
+│       └── fonts/
 ├── omi/
-│   └── firmware/
-│       └── omi/src/        # Zephyr C source (main.c, sd_card.c, aad.c, mic.c, led.c, battery.c, …)
+│   ├── firmware/           # Zephyr RTOS firmware (nRF5340)
+│   │   ├── omi/src/        # C source (main.c, sd_card.c, aad.c, mic.c, led.c, …)
+│   │   └── boards/
+│   └── hardware/consumer/  # PCB design files
+├── releases/               # Built APKs
+├── screenshots/
+├── CHANGELOG.md
 ├── NOMENCLATURE.md         # Canonical project glossary
 ├── NOTES.md                # Engineering notes and findings
 ├── IDEAS.md                # Backlog / future ideas
 └── CLAUDE.md               # AI assistant instructions
 ```
-
----
-
-## Development
-
-### App
-
-```bash
-# First-time setup (installs deps, runs pod install on iOS, then launches the app)
-cd app && bash setup.sh ios     # or android
-
-# Subsequent runs (workspace already exists)
-cd app && flutter run --flavor dev
-
-# Test
-cd app && bash test.sh
-
-# Format
-dart format --line-length 120 <files>
-```
-
-### Firmware
-
-Requires nRF Connect SDK 2.9.0 via `nrfutil toolchain-manager`. Full setup in [`omi/firmware/BUILD_AND_OTA_FLASH.md`](omi/firmware/BUILD_AND_OTA_FLASH.md).
-
-```bash
-# Launch the SDK environment (run from omi/firmware/omi/)
-nrfutil toolchain-manager launch --ncs-version v2.9.0 --shell
-
-# Build using the CMake preset
-cmake --preset OMI
-cmake --build build/omi
-# CMakePresets.json sets board (omi/nrf5340/cpuapp), conf file (omi.conf),
-# and build dir (build/omi) — no extra flags needed.
-
-# Package for OTA: reads version from omi.conf, stamps version.txt into the zip
-# so the app can display the firmware version string.
-./package_firmware.sh
-# Output: build/omi/dfu_application_release.zip
-```
-
-Flash via **nRF Connect for Mobile**: connect to the device, go to DFU tab, select `dfu_application_release.zip`.
 
 ---
 
