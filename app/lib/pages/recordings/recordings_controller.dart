@@ -56,7 +56,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   double _minutesRemaining = -1.0;
   double get minutesRemaining => _minutesRemaining;
 
-  double _syncPercentage = 0.0;
+
   double _processingProgress = 0.0;
   double get processingProgress => _processingProgress;
 
@@ -262,7 +262,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_spState == SyncProcessState.syncing) {
       ForegroundUtil.updateNotification(
         title: 'Syncing recordings',
-        text: syncingNotificationText(_syncPercentage),
+        text: syncingNotificationText(_syncedCount, _totalCount),
       );
     } else {
       ForegroundUtil.updateNotification(
@@ -272,12 +272,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
   }
 
-  static String syncingNotificationText(double percentage) {
-    final syncs = ServiceManager.instance().wal.getSyncs();
-    final total = syncs.estimatedTotalSegments;
-    final synced = (percentage * total).round();
-    final pct = '${(percentage * 100).toInt()}%';
-    return total > 0 ? '$synced of $total segments ($pct)' : 'Preparing...';
+  static String syncingNotificationText(int synced, int total) {
+    if (total == 0) return 'Preparing...';
+    final pct = '${(total > 0 ? (synced / total * 100) : 0).toInt()}%';
+    return '$synced of $total segments ($pct)';
   }
 
   static String processingNotificationText() {
@@ -593,7 +591,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       );
     }
 
-    _syncPercentage = percentage;
     if (_totalCount > 0) {
       _syncedCount = (percentage * _totalCount).round().clamp(0, _totalCount);
     } else {

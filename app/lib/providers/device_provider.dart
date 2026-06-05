@@ -1360,6 +1360,7 @@ class DeviceProvider extends ChangeNotifier
 
 class _BackgroundSyncProgress implements IWalSyncProgressListener {
   DateTime _lastNotif = DateTime.fromMillisecondsSinceEpoch(0);
+  int _totalCount = 0;
 
   @override
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
@@ -1370,9 +1371,12 @@ class _BackgroundSyncProgress implements IWalSyncProgressListener {
     final now = DateTime.now();
     if (now.difference(_lastNotif) < const Duration(seconds: 5)) return;
     _lastNotif = now;
+    final estimated = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
+    if (estimated > _totalCount) _totalCount = estimated;
+    final synced = (percentage * _totalCount).round().clamp(0, _totalCount);
     ForegroundUtil.updateNotification(
       title: 'Syncing recordings',
-      text: RecordingsController.syncingNotificationText(percentage),
+      text: RecordingsController.syncingNotificationText(synced, _totalCount),
     );
   }
 }
