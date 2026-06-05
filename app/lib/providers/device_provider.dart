@@ -1359,7 +1359,7 @@ class _BackgroundSyncProgress implements IWalSyncProgressListener {
   @override
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
     final now = DateTime.now();
-    if (now.difference(_lastNotif) < const Duration(seconds: 30)) return;
+    if (now.difference(_lastNotif) < const Duration(seconds: 5)) return;
     _lastNotif = now;
     ForegroundUtil.updateNotification(
       title: 'Syncing recordings',
