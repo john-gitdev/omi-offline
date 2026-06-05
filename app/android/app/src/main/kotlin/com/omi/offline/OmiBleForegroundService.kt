@@ -803,7 +803,8 @@ class OmiBleForegroundService : Service() {
     }
 
     fun setDeviceBattery(level: Int, timestampMs: Long) {
-        updateNativeNotification(text = "$level%")
+        // Battery info is surfaced in the flutter_foreground_task notification;
+        // the native notification stays on connection state only.
     }
 
     private fun updateNativeNotification(text: String, title: String = DEFAULT_NOTIF_TITLE) {
