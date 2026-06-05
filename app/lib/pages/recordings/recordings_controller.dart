@@ -157,7 +157,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   // delete) so a slow delete cycle never false-triggers.
   DateTime _lastProgressAt = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastNotificationUpdate = DateTime.fromMillisecondsSinceEpoch(0);
-  static const _notificationUpdateIntervalBackground = Duration(minutes: 10);
+  static const _notificationUpdateIntervalBackground = Duration(seconds: 30);
   static const _notificationUpdateIntervalForeground = Duration(seconds: 5);
   // syncing: per-packet progress fires ~50 Hz during a healthy transfer; the
   // only no-signal windows are list/delete/settle gaps (seconds). 60s of total
