@@ -632,10 +632,13 @@ class DeviceProvider extends ChangeNotifier
     final next = nextSyncTime;
     final String title = ForegroundUtil.defaultTitle;
     final String text;
+    final lastMs = SharedPreferencesUtil().lastSyncCompletedMs;
+    final lastSyncSuffix =
+        lastMs > 0 ? ' · Last synced ${DateFormat('h:mm a').format(DateTime.fromMillisecondsSinceEpoch(lastMs))}' : '';
     if (next == null) {
       text = isConnected ? 'Omi is Connected' : (isConnecting ? 'Connecting...' : 'Omi is Disconnected');
     } else {
-      text = 'Next sync at ${DateFormat('h:mm a').format(next)}';
+      text = 'Next sync at ${DateFormat('h:mm a').format(next)}$lastSyncSuffix';
     }
     if (start && !await ForegroundUtil.isRunningService) {
       await ForegroundUtil.startForegroundTask(title: title, text: text);
