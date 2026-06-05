@@ -8,13 +8,9 @@ A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable proj
 
 ## Screenshots
 
-| Conversation Page | Recording Modes | VAD Option |
-|:-:|:-:|:-:|
-| ![Conversation Page](screenshots/Conversation%20Page.jpg) | ![Recording Modes](screenshots/Recording%20Modes.jpg) | ![VAD Option](screenshots/VAD%20Option.jpg) |
-
-| Device Settings | Integrations |
-|:-:|:-:|
-| ![Device Settings](screenshots/Device%20Settings.jpg) | ![Integrations](screenshots/Integrations.jpg) |
+| Conversation Page | Recording Modes | VAD Option | Device Settings | Integrations |
+|:-:|:-:|:-:|:-:|:-:|
+| <img src="screenshots/Conversation%20Page.jpg" width="180"> | <img src="screenshots/Recording%20Modes.jpg" width="180"> | <img src="screenshots/VAD%20Option.jpg" width="180"> | <img src="screenshots/Device%20Settings.jpg" width="180"> | <img src="screenshots/Integrations.jpg" width="180"> |
 
 ---
 
