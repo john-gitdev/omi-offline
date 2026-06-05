@@ -799,11 +799,11 @@ class OmiBleForegroundService : Service() {
 
     fun setNextSyncTime(timestampMs: Long) {
         syncTimerActive = timestampMs > 0
+        SyncAlarmReceiver.schedule(this, timestampMs)
     }
 
     fun setDeviceBattery(level: Int, timestampMs: Long) {
-        val timeFmt = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
-        updateNativeNotification(text = "$level% · ${timeFmt.format(java.util.Date(timestampMs))}")
+        updateNativeNotification(text = "$level%")
     }
 
     private fun updateNativeNotification(text: String, title: String = DEFAULT_NOTIF_TITLE) {
