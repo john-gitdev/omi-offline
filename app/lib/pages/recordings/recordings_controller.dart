@@ -889,6 +889,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     _totalMinutes = totalMin;
     _minutesRemaining = totalMin;
+    // Keep the static in lockstep with the instance: the notification text
+    // (processingNotificationText) reads RecordingsManager.minutesRemaining,
+    // while the card reads the instance _minutesRemaining. _runProcessing's
+    // estimate filters out covered/discarded bins, so without this the
+    // notification would keep showing the earlier inflated (_poll-set) value
+    // until the first progress tick — card and notification visibly disagree.
+    RecordingsManager.minutesRemaining = totalMin;
     _processingProgress = 0.0;
     notifyListeners();
     _persistProgress();
@@ -1139,7 +1146,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         }
 
         _isLoading = false;
-        final acc = _computeAccumulated(_batches);
+        final acc = _computeAccumulated(_batches, await RecordingsManager.discardedRelBinPaths());
         _toProcessMinutes = acc.toProcessMinutes;
         _draftMinutes = acc.draftMinutes;
         _unprocessedBinCount = acc.unprocessedBins;
@@ -1172,7 +1179,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
           _markerConversations = await _manager.getMarkerConversations();
         }
 
-        final acc = _computeAccumulated(_batches);
+        final acc = _computeAccumulated(_batches, await RecordingsManager.discardedRelBinPaths());
         _toProcessMinutes = acc.toProcessMinutes;
         _draftMinutes = acc.draftMinutes;
         _unprocessedBinCount = acc.unprocessedBins;
@@ -1809,14 +1816,21 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   /// progress" while real, decodable audio sat on disk. processAll excludes only
   /// discarded bins, so the banner now matches it.
   ///
+  /// [discardedRelBins] MUST be the global persisted set from
+  /// [RecordingsManager.discardedRelBinPaths] — NOT a per-batch derivation from
+  /// `batch.discards`. A discard record is filed under its conversation's
+  /// local-date folder, which routinely differs from the bin's own raw-segment
+  /// batch; a per-batch set therefore drops cross-date records, so the banner
+  /// keeps counting a bin that processAll already strips — surfacing "~N min to
+  /// process" that never produces a recording (process/Force Process both report
+  /// "complete" with nothing new). Passing the same global set processAll uses
+  /// keeps the two in lockstep.
+  ///
   /// The banner shows "to process" whenever any raw audio is waiting and only
   /// falls back to the draft figure otherwise, so the two are reported
   /// separately rather than summed (no double-count to reconcile).
-  ({double toProcessMinutes, double draftMinutes, int unprocessedBins}) _computeAccumulated(List<Batch> batches) {
-    // Bins that VAD has already examined and rejected (still on disk for the
-    // recovery window). They are no longer "waiting to process", so exclude them.
-    final discardedRelBins = batches.expand((b) => b.discards).expand((d) => d.relativeBins).toSet();
-
+  ({double toProcessMinutes, double draftMinutes, int unprocessedBins}) _computeAccumulated(
+      List<Batch> batches, Set<String> discardedRelBins) {
     int rawBytes = 0;
     int unprocessedBins = 0;
     for (final f in batches.expand((b) => b.rawSegments)) {
