@@ -260,20 +260,21 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_spState == SyncProcessState.syncing) {
       final percent = _totalCount > 0 ? (_syncedCount / _totalCount * 100).toStringAsFixed(0) : '0';
       ForegroundUtil.updateNotification(
-        text: 'Syncing recordings — $_syncedCount of $_totalCount segments ($percent%)',
+        title: 'Syncing recordings',
+        text: '$_syncedCount of $_totalCount segments ($percent%)',
       );
     } else {
       final String text;
       if (_isTranscoding) {
-        text = 'Processing recordings — Converting to ${_prefs.audioSaveFormat}';
+        text = 'Converting to ${_prefs.audioSaveFormat}';
       } else if (_totalMinutes == 0 || _minutesRemaining < 0) {
-        text = 'Processing recordings — Calculating…';
+        text = 'Calculating…';
       } else if (_minutesRemaining >= 1) {
-        text = 'Processing recordings — ~${_minutesRemaining.ceil()} min of audio to process';
+        text = '~${_minutesRemaining.ceil()} min of audio to process';
       } else {
-        text = 'Processing recordings — < 1 min of audio to process';
+        text = '< 1 min of audio to process';
       }
-      ForegroundUtil.updateNotification(text: text);
+      ForegroundUtil.updateNotification(title: 'Processing recordings', text: text);
     }
   }
 
@@ -663,9 +664,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _persistProgress();
     WakelockPlus.enable();
     if (!await ForegroundUtil.isRunningService) {
-      await ForegroundUtil.startForegroundTask(text: 'Syncing recordings — preparing...');
+      await ForegroundUtil.startForegroundTask(title: 'Syncing recordings', text: 'Preparing...');
     } else {
-      await ForegroundUtil.updateNotification(text: 'Syncing recordings — preparing...');
+      await ForegroundUtil.updateNotification(title: 'Syncing recordings', text: 'Preparing...');
     }
 
     SyncLocalFilesResponse? result;
@@ -762,9 +763,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _persistProgress();
     WakelockPlus.enable();
     if (!await ForegroundUtil.isRunningService) {
-      await ForegroundUtil.startForegroundTask(text: 'Syncing recordings — preparing...');
+      await ForegroundUtil.startForegroundTask(title: 'Syncing recordings', text: 'Preparing...');
     } else {
-      await ForegroundUtil.updateNotification(text: 'Syncing recordings — preparing...');
+      await ForegroundUtil.updateNotification(title: 'Syncing recordings', text: 'Preparing...');
     }
 
     try {
@@ -881,7 +882,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _persistProgress();
 
     WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask(text: 'Processing recordings — preparing...');
+    await ForegroundUtil.startForegroundTask(title: 'Processing recordings', text: 'Preparing...');
     _updateForegroundProgress(
         force: true); // overwrite "preparing..." with the actual minutes now that totalMinutes is known
     try {
@@ -1290,7 +1291,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
 
     WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask(text: 'Reprocessing all days...');
+    await ForegroundUtil.startForegroundTask(title: 'Processing recordings', text: 'Reprocessing all days...');
     try {
       await _manager.processAll(
         freshBatches,
@@ -1381,7 +1382,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
 
     WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask(text: 'Reprocessing day...');
+    await ForegroundUtil.startForegroundTask(title: 'Processing recordings', text: 'Reprocessing day...');
     try {
       await _manager.processAll(
         freshBatch,
