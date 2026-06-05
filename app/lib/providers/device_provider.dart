@@ -1365,9 +1365,12 @@ class _BackgroundSyncProgress implements IWalSyncProgressListener {
     final now = DateTime.now();
     if (now.difference(_lastNotif) < const Duration(seconds: 5)) return;
     _lastNotif = now;
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    final total = syncs.estimatedTotalSegments;
+    final synced = (percentage * total).round();
     ForegroundUtil.updateNotification(
       title: 'Syncing recordings',
-      text: '${(percentage * 100).toInt()}% complete',
+      text: total > 0 ? '$synced of $total segments (${(percentage * 100).toInt()}%)' : '${(percentage * 100).toInt()}% complete',
     );
   }
 }
