@@ -2,38 +2,6 @@
 
 ## ACTIVE
 
-## Notification Consolidation: Silence ID 2001, ID 2002 is the User Notification [minor] [Active]
-
-Make ID 2002 (`FlutterForegroundTask`, `START_STICKY`) the sole user-visible notification, cycling: "Next sync at H:MM PM" → sync/processing % → "Next sync at H:MM PM". Demote ID 2001 (`OmiBleForegroundService`, `START_NOT_STICKY`) to a silent BLE-management service with a minimal notification that doesn't appear in the status bar header.
-
-### Why ID 2002, not ID 2001
-
-`flutter_foreground_task` returns `START_STICKY` (verified in `ForegroundService.kt:178`) when `stopWithTask=false`. If the OS kills the process, Android automatically restarts ID 2002 — the notification stays visible and the user can tap it to relaunch the full app. `OmiBleForegroundService` returns `START_NOT_STICKY`; its notification silently vanishes on process kill. ID 2002 is therefore the more resilient surface for the user-facing status.
-
-### What's done (0.18.8)
-
-- **ID 2001** shows "Next sync at H:MM PM" via `setNextSyncTime()` Pigeon call (suppresses transient "Connecting…"/"Connected" flashes with `syncTimerActive` flag). Updated on every `_startBackgroundSyncTimer()` call.
-- **ID 2002** now also shows "Next sync at H:MM PM" in idle state (replaced static "Auto-sync active"). Cycles to sync/processing % during active runs, then back to the time after `_doBackgroundSync()` finishes. Both notifications show the same time — ID 2002 via Dart, ID 2001 via native Kotlin.
-
-### Remaining work: silence ID 2001's text
-
-ID 2001 still formats and posts "Next sync at H:MM PM" redundantly with ID 2002. Since lowering notification channel importance risks OEM battery-manager kills (LOW → DEFAULT was required for ID 2002 in 0.17 for exactly this reason, and MIN is lower than LOW), channel importance must stay at `IMPORTANCE_LOW`. The remaining cleanup is just to simplify `setNextSyncTime()` to stop formatting the time string, since the content is redundant with ID 2002:
-
-```kotlin
-fun setNextSyncTime(timestampMs: Long) {
-    syncTimerActive = timestampMs > 0
-    // ID 2001 text is not user-facing; no update needed
-}
-```
-
-This removes the redundant string format and `updateNativeNotification` call from `setNextSyncTime` — ID 2001's text stays at whatever it last showed ("Omi Offline / Connecting…" on start, "Connected" in manual mode on connect). The `syncTimerActive` flag still suppresses transient BLE-state flashes during background syncs.
-
-### No-race guarantee
-ID 2001 and ID 2002 write to separate notification IDs and separate `NotificationChannel`s. No shared state, no race.
-
-### Files affected
-- `app/android/app/src/main/kotlin/com/omi/offline/OmiBleForegroundService.kt` — `IMPORTANCE_MIN` channel, simplify `setNextSyncTime`
-
 ---
 
 ## DEFERRED
@@ -61,57 +29,6 @@ The platform layer (watchOS app, iOS AppDelegate, Pigeon-generated Swift/Dart co
 - `app/ios/Runner/RecorderHostApiImpl.swift` - host API implementation, already functional
 - `app/ios/omiWatchApp/` - watchOS app, already functional
 
-## Background Sync: Migrate from Dart Timer to WorkManager [major] [Deferred]
-
-Make scheduled background sync survive process death / Doze, instead of relying on a main-isolate Dart timer that Android can freeze or kill.
-
-### Current state (what this replaces)
-Two main-isolate mechanisms drive background sync, both in `DeviceProvider`:
-- `_backgroundSyncTimer` — a `Timer.periodic(interval)` set in `_startBackgroundSyncTimer()`; on fire it resets `nextSyncTime`, reconnects if needed, and calls `_doBackgroundSync()`.
-- The `flutter_foreground_task` heartbeat — `ForegroundTaskEventAction.repeat(5 min)` (`foreground.dart`) fires `onRepeatEvent` in the task isolate → `sendDataToMain('heartbeat')` → `_onForegroundTaskData` in the main isolate → if `nextSyncTime` elapsed, triggers the sync.
-
-Both only fire while the app process is alive. The foreground service + `allowWakeLock` + battery-opt exemption keep it alive on many devices, but Doze and OEM battery managers can freeze/kill it, so background sync is **best-effort**. Sync-on-open (added 0.14.7, `onAppResumed`) is the reliable backstop. WorkManager is Android's deferrable-but-**guaranteed-eventually** scheduler: it persists across process death and reboots and fires in Doze maintenance windows, trading punctuality (min period 15 min, may fire late) for reliability.
-
-### The hard part — read before estimating
-- The `workmanager` Flutter plugin runs its callback in a **fresh background isolate** (`callbackDispatcher` / `executeTask`), NOT the main isolate. The entire pipeline — `ServiceManager`, `DeviceProvider`, BLE transport, `WalService`, `RecordingsManager` — lives in the main isolate. A WM task **cannot** just call `DeviceProvider._doBackgroundSync()`.
-- Platform channels (Pigeon `BleHostApi`/`BleFlutterApi`, `SharedPreferences`, opus) must be re-bound in the WM isolate via `BackgroundIsolateBinaryMessenger.ensureInitialized(rootIsolateToken)`. The native BLE layer (`OmiBleManager` / `OmiBleForegroundService`) is a **process-level singleton** and delivers GATT callbacks to whichever isolate last registered `BleFlutterApi` — so the main and WM isolates must never both own BLE at the same time.
-
-### Refactor prerequisite (do first — benefits either approach)
-Extract the body of `DeviceProvider._doBackgroundSync()` into a UI-free `BackgroundSyncRunner.run()` (e.g. `app/lib/services/background_sync_runner.dart`):
-- It already only touches `ServiceManager`, `RecordingsManager`, `ForegroundUtil`, `WakelockPlus` — the only UI coupling is the `notifyListeners()` / `lastSyncError` / `nextSyncTime` writes. Replace those with a returned result object.
-- `_doBackgroundSync()` becomes a thin wrapper that calls the runner and copies the result into its observable fields.
-- Preserve the `_backgroundSyncActive` re-entrancy guard semantics in the runner (the wakelock is a global bool, not ref-counted — two concurrent runs corrupt it).
-- Result: the same sync is callable from the main isolate (today) and the WM isolate (Approach A).
-
-### Approach A — WM runs a headless sync in its own isolate (recommended target; true process-death resilience)
-1. Add `workmanager` dep. In `main()` call `Workmanager().initialize(callbackDispatcher)` and register a periodic task. Re-register on the settings-save path that today calls `restartBackgroundSyncTimer()` (`app_settings_page.dart:_saveSettings`). Map interval: 15 min → 1:1 (WM floor), 30/60 → multiples or self-rescheduling one-off `registerOneOffTask` with `initialDelay` for punctuality; "Manual Only" (`-1`) → `cancelByUniqueName`.
-2. `callbackDispatcher` (top-level, `@pragma('vm:entry-point')`):
-   - `BackgroundIsolateBinaryMessenger.ensureInitialized(token)` (capture `RootIsolateToken.instance` at registration, pass via `inputData`).
-   - `initOpus(...)`, `SharedPreferencesUtil.init()`, `BleFlutterApi.setUp(BleBridge.instance)`, `ServiceManager.init()` + `start()`.
-   - `manageDevice(boundId)` via the native FG service, await `onDeviceReady`, then `BackgroundSyncRunner.run()`.
-   - Disconnect (maximize-battery), return `Future.value(true)`.
-3. Mutual exclusion: if the app is foregrounded (main isolate owns BLE), the WM task must no-op — gate on a shared flag (prefs key / lock file) set by `onAppResumed`/`onAppPaused`, and let the main-isolate path win.
-
-### Approach B — WM as a wakeup that defers to the existing main-isolate path (smaller, weaker guarantee)
-WM periodic task just (re)starts native `OmiBleForegroundService` for the bound device + the `flutter_foreground_task` service, bringing the machinery up; the existing `_pendingBackgroundSync` → `_onDeviceConnected` → `_doBackgroundSync()` path then runs in the main isolate. Reuses everything, but mostly duplicates what the foreground service already does, so the reliability gain over today is marginal. Use only as a stepping stone.
-
-### Gotchas to preserve
-- WAL transfer is **resumable**, so a WM task killed mid-sync is safe — it resumes next fire (the truncate-on-resume guard bounds re-fetch).
-- `nextSyncTime` is UI state for the App Settings "Next sync at…" row and the "Omi Offline Sync Timer" notification. With WM owning scheduling, either derive it from the registered period or drop the live countdown when the process is asleep (the FG-service notification only exists while the process is alive anyway).
-- Keep requesting the battery-opt exemption (`ForegroundUtil.requestPermissions`).
-- **Scope to Android.** iOS WorkManager → `BGTaskScheduler` is even less punctual, and the notification/FG path is already Android-only (iOS `showNotification: false`).
-
-### Relevant files
-- `app/lib/providers/device_provider.dart` — `_startBackgroundSyncTimer`, `_backgroundSyncTimer`, `nextSyncTime`, `_onForegroundTaskData` (heartbeat), `_doBackgroundSync` (body to extract).
-- `app/lib/utils/audio/foreground.dart` — `flutter_foreground_task` setup + the `onRepeatEvent` heartbeat WM would replace/augment.
-- `app/lib/main.dart` — where to call `Workmanager().initialize`.
-- `app/lib/pages/settings/app_settings_page.dart` — `_saveSettings` (`restartBackgroundSyncTimer()`); mirror for WM (re)registration; the "Next sync at…" consumer.
-- `app/lib/services/services.dart` — `ServiceManager.init/start` to re-run in the WM isolate (Approach A).
-- `app/lib/services/bridges/ble_bridge.dart` — `BleFlutterApi.setUp` binding; must be re-bound in the WM isolate.
-- `app/android/app/src/main/kotlin/com/omi/offline/OmiBleForegroundService.kt` — native BLE owner; Approach B (re)starts it from WM.
-
-### Why deferred
-Large and cross-cutting (Dart + native + isolate lifecycle), and the 0.14.7 sync-on-open fix already covers the dominant case (open app → syncs when due). WorkManager only buys the "phone in pocket for hours, app killed" window, against real complexity and the isolate/BLE-ownership hazards above. Revisit if users report missed overnight syncs despite sync-on-open.
 
 ## VAD Native Batch Runner: collapse per-window Silero channel round-trips [major] [Deferred]
 
@@ -185,37 +102,3 @@ The **decision logic is unchanged**; the **control flow is not** — this is a g
 
 ### Why deferred
 The payoff is **backlog-only** (above) — invisible to a user who syncs frequently — and the cost is a cross-language surface (new ORT dependency on both platforms + a refactor of the core VAD loop that can only be validated on-device). The compute half is already proven unreducible, so this is the *last* VAD-perf lever, not a stepping stone. Revisit if the post-sync processing grind on large backlogs becomes a real complaint. The cheap, reversible session-options win (XNNPACK + thread pinning) already shipped in 0.16.x.
-
-## Bulletproof Background Persistence: Wake, Work, Sleep [major] [Deferred]
-
-Make background syncs and VAD processing extremely reliable on Android 12-14 by using WorkManager, DATA_SYNC foreground services, and native WakeLocks, overcoming aggressive battery optimization without draining power when idle.
-
-### Problem Statement
-Android’s "Doze Mode" and "App Standby" aggressively suspend Dart isolates when the phone is stationary or locked. The current `Timer.periodic` implementation in `DeviceProvider.dart` and `flutter_foreground_task` without `foregroundServiceType` is unreliable for background sync. This leads to missed syncs and stalled VAD processing that only resumes when the user manually opens the app.
-
-### Architecture: The "Wake, Work, Sleep" Pipeline
-To respect battery life while ensuring reliable processing, the app should be elastic—staying awake only when work is being done and sleeping otherwise.
-
-1. **The "Wake" (WorkManager):** Replace the Dart `Timer` with `WorkManager`. It registers a task with the Android `JobScheduler` that survives process death and fires during Doze maintenance windows.
-2. **The "Work" (DATA_SYNC Foreground Service):** Update `ForegroundUtil.dart` to declare `foregroundServiceType: ForegroundServiceType.DATA_SYNC`. This grants the app a "Background Execution" license from the OS during the sync, a strict requirement for Android 14+.
-3. **The "Coffee" (Native WakeLock):** Implement a native `PowerManager.PARTIAL_WAKE_LOCK` accessed via Pigeon (`acquireWakeLock` / `releaseWakeLock`). This forces the CPU to stay awake and run at full speed during heavy ONNX/Silero VAD inference.
-4. **The "Sleep" (Clean Shutdown):** Wrap the `RecordingsManager.processAll` loop in a `try/finally` block to release the WakeLock and stop the Foreground Service (`ForegroundUtil.stopForegroundTask()`) immediately when the queue is empty.
-
-### iOS Compatibility & Stubbing Strategy
-This is an **Android-First** optimization to fix Android-specific throttling. A separate iOS branch is NOT needed.
-- **Dart Guards:** Wrap new native calls with `if (Platform.isAndroid) { ... }` so iOS never attempts to invoke Android-only power management.
-- **Native Stubs (Swift):** When new methods like `acquireWakeLock()` are added to `pigeon_interfaces.dart`, the Pigeon generator requires them to be implemented in Swift. Add empty stubs to `app/ios/Runner/BleHostApiImpl.swift` (e.g., `func acquireWakeLock() throws { }`) so the iOS build remains 100% valid and compilable. Treat iOS as a "ghost" platform that safely ignores these optimizations.
-
-### Implementation Tasks
-- [ ] Add `workmanager` plugin to `pubspec.yaml` and configure `callbackDispatcher` in `main.dart` to trigger background syncs.
-- [ ] Update `ForegroundUtil.init` in `foreground.dart` to include `foregroundServiceType: ForegroundServiceType.DATA_SYNC`.
-- [ ] Add `isIgnoringBatteryOptimizations`, `requestIgnoreBatteryOptimizations`, `acquireWakeLock`, and `releaseWakeLock` to `BleHostApi` in `pigeon_interfaces.dart`. Run `flutter pub run pigeon`.
-- [ ] Implement the `PowerManager` logic for battery optimization checks and `PARTIAL_WAKE_LOCK` in `BleHostApiImpl.kt`.
-- [ ] Implement empty stubs for these methods in `BleHostApiImpl.swift`.
-- [ ] Add a "Background Persistence" toggle in `app_settings_page.dart` to let users manually request exemption from battery optimizations.
-- [ ] Update `RecordingsManager.processAll` to acquire the WakeLock at the start and release it + stop the foreground task in a `finally` block.
-
-### Test Strategy
-- **Airplane Table Test:** Set sync interval to 15 mins. Lock the phone and leave it stationary for 45 minutes. Verify via logs that three distinct "Wake, Work, Sleep" cycles occurred.
-- **ADB Force Idle Test:** Run `adb shell dumpsys deviceidle force-idle` via PC. Verify the `WorkManager` still fires and the `WakeLock` keeps VAD processing speed high.
-- **Target SDK 34 Test:** Confirm the app does not crash when the background sync starts (verifies correct `foregroundServiceType` configuration).

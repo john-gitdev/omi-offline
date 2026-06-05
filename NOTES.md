@@ -1,6 +1,6 @@
 # Notes
 
-Running log of investigated bugs, deferred decisions, and findings that don't fit TODO or README.
+Running log of investigated bugs, deferred decisions, and findings that don't fit IDEAS or README.
 
 ---
 
