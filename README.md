@@ -233,27 +233,10 @@ omi-offline/
 ├── releases/               # Built APKs
 ├── screenshots/
 ├── CHANGELOG.md
-├── NOMENCLATURE.md         # Canonical project glossary
 ├── NOTES.md                # Engineering notes and findings
 ├── IDEAS.md                # Backlog / future ideas
 └── CLAUDE.md               # AI assistant instructions
 ```
-
----
-
-## Nomenclature
-
-See [`NOMENCLATURE.md`](NOMENCLATURE.md) for the full glossary. Key terms:
-
-| Term | Definition |
-|------|-----------|
-| Frame | Single Opus unit (~20 ms) |
-| Segment | A `.bin` file containing frames |
-| DeviceSession | Continuous hardware stream from boot to disconnect; identified by UTC start timestamp |
-| Marker | Double-tap event — timestamped bookmark written by firmware as `0xFE` frame type |
-| WAL | Byte-offset sync state tracking download progress per segment |
-| Recording | Finalized audio file on disk (WAV by default; M4A/OGG optional) |
-| Conversation | Recording + timestamps, the local UI entity |
 
 ---
 
