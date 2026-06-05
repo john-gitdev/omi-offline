@@ -157,7 +157,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   // delete) so a slow delete cycle never false-triggers.
   DateTime _lastProgressAt = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastNotificationUpdate = DateTime.fromMillisecondsSinceEpoch(0);
-  static const _notificationUpdateInterval = Duration(minutes: 10);
+  static const _notificationUpdateIntervalBackground = Duration(minutes: 10);
+  static const _notificationUpdateIntervalForeground = Duration(seconds: 5);
   // syncing: per-packet progress fires ~50 Hz during a healthy transfer; the
   // only no-signal windows are list/delete/settle gaps (seconds). 60s of total
   // silence means the transfer is genuinely dead.
@@ -254,7 +255,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   void _updateForegroundProgress({bool force = false}) {
     if (_spState != SyncProcessState.syncing && _spState != SyncProcessState.processing) return;
     final now = DateTime.now();
-    if (!force && now.difference(_lastNotificationUpdate) < _notificationUpdateInterval) return;
+    final state = WidgetsBinding.instance.lifecycleState;
+    final isFg = state == null || state == AppLifecycleState.resumed;
+    final interval = isFg ? _notificationUpdateIntervalForeground : _notificationUpdateIntervalBackground;
+    if (!force && now.difference(_lastNotificationUpdate) < interval) return;
     _lastNotificationUpdate = now;
 
     if (_spState == SyncProcessState.syncing) {
