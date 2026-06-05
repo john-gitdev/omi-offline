@@ -1,0 +1,12 @@
+--- app/test/unit/backend/schema/bt_device/bt_device_test.dart
++++ app/test/unit/backend/schema/bt_device/bt_device_test.dart
+@@ -19,6 +19,9 @@
+   int get mtu => _mtu;
+
+   @override
++  Future<void>? get gattConnectFuture => null;
++
++  @override
+   Future<void> connect() async {
+     _state = DeviceState.connected;
+   }

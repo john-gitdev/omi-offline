@@ -2672,9 +2672,8 @@ class RecordingsManager {
     // next sync. In the reprocess path, keep the bins — ghost-record bins often
     // share a firmware file (typically 5 min) with a valid conversation, and
     // deleting them destroys audio that the next processAll run needs.
-    for (final d in batch.discards) {
-      await removeDiscardRecord(d, deleteBins: !onlyReprocessable);
-    }
+    // ⚡ Bolt: Execute I/O-bound removeDiscardRecord deletions concurrently.
+    await Future.wait(batch.discards.map((d) => removeDiscardRecord(d, deleteBins: !onlyReprocessable)));
 
     final availableSessionIds = batch.rawSegments
         .map((f) {
@@ -2694,22 +2693,35 @@ class RecordingsManager {
       // the recordings the user just deleted.
       final touchedSessionDirs = <Directory>{};
       int deletedBins = 0;
-      for (final bin in batch.rawSegments) {
+
+      // ⚡ Bolt: Execute raw segment deletions concurrently and drop the exists() probe for fail-soft delete.
+      final deleteResults = await Future.wait(batch.rawSegments.map((bin) async {
         try {
-          if (await bin.exists()) {
-            await bin.delete();
-            deletedBins++;
-          }
-          touchedSessionDirs.add(bin.parent);
+          await bin.delete();
+          return bin.parent;
+        } on FileSystemException catch (_) {
+          // If the file didn't exist, FileSystemException is thrown (fail-soft).
+          // We still want to check the parent dir later, but don't count it as deleted.
+          return bin.parent;
         } catch (e) {
           Logger.error('RecordingsManager: deleteDay failed to delete bin ${bin.path}: $e');
+          return null;
+        }
+      }));
+
+      for (final parent in deleteResults) {
+        if (parent != null) {
+          deletedBins++;
+          touchedSessionDirs.add(parent);
         }
       }
-      for (final dir in touchedSessionDirs) {
+
+      // ⚡ Bolt: Execute parent directory cleanup concurrently.
+      await Future.wait(touchedSessionDirs.map((dir) async {
         try {
           if (await dir.exists() && await dir.list().isEmpty) await dir.delete();
         } catch (_) {}
-      }
+      }));
       if (deletedBins > 0) {
         Logger.debug(
           'RecordingsManager: Deleted $deletedBins raw bins for ${batch.dateString}',

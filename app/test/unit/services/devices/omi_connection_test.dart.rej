@@ -1,0 +1,12 @@
+--- app/test/unit/services/devices/omi_connection_test.dart
++++ app/test/unit/services/devices/omi_connection_test.dart
+@@ -32,6 +32,9 @@
+   set state(DeviceState s) => _state = s;
+
+   @override
++  Future<void>? get gattConnectFuture => null;
++
++  @override
+   Future<void> connect() async {
+     _state = DeviceState.connected;
+   }

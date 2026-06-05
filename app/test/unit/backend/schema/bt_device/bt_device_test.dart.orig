@@ -13,9 +13,6 @@ class MockDeviceTransport implements DeviceTransport {
   Future<void> connect({bool requiresBond = false}) async {}
 
   @override
-  Future<void>? get gattConnectFuture => null;
-
-  @override
   Future<void> disconnect() async {}
 
   @override

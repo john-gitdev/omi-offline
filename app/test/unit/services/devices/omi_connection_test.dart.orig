@@ -75,9 +75,6 @@ class MockDeviceTransport implements DeviceTransport {
   Future<void> writeCharacteristic(String serviceUuid, String characteristicUuid, List<int> data) async {}
 
   @override
-  Future<void>? get gattConnectFuture => null;
-
-  @override
   Stream<DeviceTransportState> get connectionStateStream => const Stream.empty();
 
   @override
