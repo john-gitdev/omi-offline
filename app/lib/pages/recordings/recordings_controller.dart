@@ -285,7 +285,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (progress >= 1.0) return 'Finishing...';
     final pct = '${(progress * 100).toInt()}%';
     final mins = RecordingsManager.minutesRemaining;
-    if (mins < 0) return 'Calculating… ($pct)';
+    if (mins < 0) return progress == 0.0 ? 'Preparing...' : 'Calculating… ($pct)';
     if (mins >= 1) return '~${mins.ceil()} min of audio to process ($pct)';
     return '< 1 min of audio to process ($pct)';
   }
