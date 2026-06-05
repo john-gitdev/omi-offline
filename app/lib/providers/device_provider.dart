@@ -14,6 +14,7 @@ import 'package:omi/services/bridges/ble_bridge.dart';
 import 'package:omi/services/devices.dart';
 import 'package:omi/services/devices/device_crash_log.dart';
 import 'package:omi/services/devices/storage_file.dart';
+import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
@@ -593,10 +594,9 @@ class DeviceProvider extends ChangeNotifier
   /// [RecordingsController] owns the notification in time-remaining format.
   void _onProcessingProgress() {
     if (!_isAppInForeground && RecordingsManager.isProcessingAny) {
-      final progress = RecordingsManager.processingProgress.value;
       ForegroundUtil.updateNotification(
         title: 'Processing recordings',
-        text: progress < 1.0 ? '${(progress * 100).toInt()}% complete' : 'Finishing...',
+        text: RecordingsController.processingNotificationText(),
       );
     }
   }

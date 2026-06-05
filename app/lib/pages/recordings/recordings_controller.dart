@@ -246,6 +246,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_spState == SyncProcessState.processing) {
       if (_totalMinutes > 0) {
         _minutesRemaining = (_totalMinutes * (1.0 - progress)).clamp(0.0, _totalMinutes);
+        RecordingsManager.minutesRemaining = _minutesRemaining;
       }
       _throttledUpdate();
     }
@@ -261,15 +262,24 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       final percent = _totalCount > 0 ? (_syncedCount / _totalCount * 100).toStringAsFixed(0) : '0';
       ForegroundUtil.updateNotification(
         title: 'Syncing recordings',
-        text: '$percent% complete',
+        text: '$_syncedCount of $_totalCount segments ($percent%)',
       );
     } else {
-      final progress = RecordingsManager.processingProgress.value;
       ForegroundUtil.updateNotification(
         title: 'Processing recordings',
-        text: progress < 1.0 ? '${(progress * 100).toInt()}% complete' : 'Finishing...',
+        text: processingNotificationText(),
       );
     }
+  }
+
+  static String processingNotificationText() {
+    final progress = RecordingsManager.processingProgress.value;
+    if (progress >= 1.0) return 'Finishing...';
+    final pct = '${(progress * 100).toInt()}%';
+    final mins = RecordingsManager.minutesRemaining;
+    if (mins < 0) return 'Calculating… ($pct)';
+    if (mins >= 1) return '~${mins.ceil()} min of audio to process ($pct)';
+    return '< 1 min of audio to process ($pct)';
   }
 
   void _onRecordingsChanged() {
@@ -441,6 +451,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
             _totalMinutes = totalBytes / 252000.0;
             _minutesRemaining =
                 (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
+            RecordingsManager.minutesRemaining = _minutesRemaining;
             _processingProgress = RecordingsManager.processingProgress.value;
             _throttledUpdate(force: true);
           }),
@@ -466,6 +477,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               _totalMinutes = totalBytes / 252000.0;
               _minutesRemaining =
                   (_totalMinutes * (1.0 - RecordingsManager.processingProgress.value)).clamp(0.0, _totalMinutes);
+              RecordingsManager.minutesRemaining = _minutesRemaining;
               _processingProgress = RecordingsManager.processingProgress.value;
               _syncedCount = 0;
               _syncSpeed = 0.0;
@@ -485,6 +497,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (!serviceIsProcessing && _spState == SyncProcessState.processing) {
         _spState = SyncProcessState.idle;
         _minutesRemaining = 0;
+        RecordingsManager.minutesRemaining = -1.0;
         _processingProgress = 0.0;
         _totalMinutes = 0;
         _throttledUpdate(force: true);
