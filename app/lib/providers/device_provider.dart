@@ -591,9 +591,14 @@ class DeviceProvider extends ChangeNotifier
   /// [RecordingsManager.processingProgress] whenever the app is backgrounded so
   /// the notification stays live even if [RecordingsController] is disposed.
   /// Gated on [_isAppInForeground] so it is silent when the app is open and
+  DateTime _lastProcessingNotif = DateTime.fromMillisecondsSinceEpoch(0);
+
   /// [RecordingsController] owns the notification in time-remaining format.
   void _onProcessingProgress() {
     if (!_isAppInForeground && RecordingsManager.isProcessingAny) {
+      final now = DateTime.now();
+      if (now.difference(_lastProcessingNotif) < const Duration(seconds: 5)) return;
+      _lastProcessingNotif = now;
       ForegroundUtil.updateNotification(
         title: 'Processing recordings',
         text: RecordingsController.processingNotificationText(),
