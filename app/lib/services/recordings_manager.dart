@@ -3278,6 +3278,7 @@ class RecordingsManager {
         final path = entity.path;
         if (!(path.endsWith('.wav') || path.endsWith('.m4a') || path.endsWith('.ogg'))) continue;
         if (path.endsWith('.tmp.m4a') || path.contains('.tmp.')) continue;
+        if (path.contains('_draft.')) continue; // drafts are open — continuation bins must not be absorbed
         final conv = Conversation.fromFile(entity);
         if (conv.isUnknown) continue;
         final recStartMs = conv.startTime.millisecondsSinceEpoch;
