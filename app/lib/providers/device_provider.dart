@@ -595,9 +595,8 @@ class DeviceProvider extends ChangeNotifier
     if (!_isAppInForeground && RecordingsManager.isProcessingAny) {
       final progress = RecordingsManager.processingProgress.value;
       ForegroundUtil.updateNotification(
-        text: progress < 1.0
-            ? 'Processing recordings — ${(progress * 100).toInt()}% complete'
-            : 'Processing recordings — finishing...',
+        title: 'Processing recordings',
+        text: progress < 1.0 ? '${(progress * 100).toInt()}% complete' : 'Finishing...',
       );
     }
   }
@@ -748,9 +747,9 @@ class DeviceProvider extends ChangeNotifier
         // _startForegroundKeepAlive.
         _startForegroundKeepAlive();
         if (!await ForegroundUtil.isRunningService) {
-          await ForegroundUtil.startForegroundTask(text: 'Syncing recordings — preparing...');
+          await ForegroundUtil.startForegroundTask(title: 'Syncing recordings', text: 'Preparing...');
         } else {
-          await ForegroundUtil.updateNotification(text: 'Syncing recordings — preparing...');
+          await ForegroundUtil.updateNotification(title: 'Syncing recordings', text: 'Preparing...');
         }
         // A setup-phase failure in this first sync (no connection, storage full,
         // or any early abort that throws) must NOT skip processing — bins that
@@ -768,7 +767,7 @@ class DeviceProvider extends ChangeNotifier
           notifyListeners();
         }
 
-        await ForegroundUtil.updateNotification(text: 'Processing recordings — preparing...');
+        await ForegroundUtil.updateNotification(title: 'Processing recordings', text: 'Preparing...');
         // Remove-before-add: onAppPaused may already hold a registration, and
         // ChangeNotifier allows duplicates that each fire separately.
         RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
@@ -785,7 +784,7 @@ class DeviceProvider extends ChangeNotifier
         // so the next timer tick / app open retries promptly instead of waiting
         // a full interval — anything left on disk was already processed above.
         if (firstSyncOk && isConnected) {
-          await ForegroundUtil.updateNotification(text: 'Syncing recordings — finalizing...');
+          await ForegroundUtil.updateNotification(title: 'Syncing recordings', text: 'Finalizing...');
           await walSync.syncAll(progress: _BackgroundSyncProgress());
           SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
         }
@@ -1358,7 +1357,8 @@ class _BackgroundSyncProgress implements IWalSyncProgressListener {
   @override
   void onWalSyncedProgress(double percentage, {double? speedKBps, SyncPhase? phase}) {
     ForegroundUtil.updateNotification(
-      text: 'Syncing recordings — ${(percentage * 100).toInt()}% complete',
+      title: 'Syncing recordings',
+      text: '${(percentage * 100).toInt()}% complete',
     );
   }
 }
