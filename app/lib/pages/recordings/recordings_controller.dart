@@ -261,20 +261,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       final percent = _totalCount > 0 ? (_syncedCount / _totalCount * 100).toStringAsFixed(0) : '0';
       ForegroundUtil.updateNotification(
         title: 'Syncing recordings',
-        text: '$_syncedCount of $_totalCount segments ($percent%)',
+        text: '$percent% complete',
       );
     } else {
-      final String text;
-      if (_isTranscoding) {
-        text = 'Converting to ${_prefs.audioSaveFormat}';
-      } else if (_totalMinutes == 0 || _minutesRemaining < 0) {
-        text = 'Calculating…';
-      } else if (_minutesRemaining >= 1) {
-        text = '~${_minutesRemaining.ceil()} min of audio to process';
-      } else {
-        text = '< 1 min of audio to process';
-      }
-      ForegroundUtil.updateNotification(title: 'Processing recordings', text: text);
+      final progress = RecordingsManager.processingProgress.value;
+      ForegroundUtil.updateNotification(
+        title: 'Processing recordings',
+        text: progress < 1.0 ? '${(progress * 100).toInt()}% complete' : 'Finishing...',
+      );
     }
   }
 
