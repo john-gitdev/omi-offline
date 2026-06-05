@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.19.1
+
+- **Fix: "Audio to Process" banner no longer gets stuck after a background sync that downloads a continuation bin.** If a new bin arrived on the device while the previous processing run was finishing its draft flush, the next pipeline would mark that bin as already "covered" by the open draft's coverage interval (draft end + 120 s VAD-split slack), skip processing, call it done, and leave the bin sitting on disk — so the banner reappeared on every reload. Draft files are now excluded from coverage-interval computation; only finalized recordings gate the idempotency filter.
+
 ### 0.19.0
 
 - **Fix: background sync now fires on time even when Android freezes the Dart isolate.** Previously, if the OS suspended the Flutter runtime (despite the foreground service being alive), the scheduled sync timer and heartbeat both stopped firing — the notification would show a stale "Next sync at X:XX" with no sync occurring until the user opened the app. A native `AlarmManager` exact alarm (`setExactAndAllowWhileIdle`) is now armed whenever Dart sets the next sync time. When the alarm fires, it delivers the sync request natively, bypassing the frozen Dart layer. The alarm re-arms itself from shared prefs so it survives repeated Dart freezes without requiring Dart to reschedule.
