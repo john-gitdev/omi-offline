@@ -53,7 +53,7 @@ Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures a
 - Foreground sends a periodic keep-alive (`0x32` to `storageDataStreamCharacteristicUuid`) to keep the firmware from idle-disconnecting. Dead connections are force-dropped after consecutive keep-alive failures.
 
 **Audio pipeline** (`services/`):
-- `SDCardWalSyncImpl` saves downloaded segments to `raw_segments/<subFolder>/<timerStart>_<sessionId>.bin`. `<subFolder>` is the wall-clock day (post-time-sync) or `session_<sessionId>` for pre-time-sync bins (uptime ticks only — surfaced under the "Unorganized" UI section). Inline-frame types in the bin stream:
+- `SDCardWalSyncImpl` saves downloaded segments to `raw_segments/<timerStart>/<timerStart>_<sessionId>.bin`, where `<timerStart>` is the firmware-assigned UTC epoch seconds (as a decimal string). Pre-time-sync files (timerStart < 946684800) land in `raw_segments/session_<sessionId>/` instead and appear in the UI under "Unorganized". Inline-frame types in the bin stream:
   - `0xFFFFFFFB` metadata header (36 B: 4-byte tag + 4-byte length + 28-byte payload), peeked at offset 0
   - `0xFFFFFFFC` session-end marker (20 B), written by firmware on manual-mode stop
   - `0xFFFFFFFD` VAD-resume timestamp (16 B), written when AAD wakes after silence
@@ -78,6 +78,15 @@ Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures a
 - `WalFileManager.saveWals` / `loadWals` are serialized via a `Mutex` so a concurrent multi-device sync can't have one device's `saveWals` observe a mid-truncate empty file and drop another device's WALs.
 - During fast-path sync, `onProgress` fires per BLE packet (~50 Hz). Persist calls are throttled to ~1 Hz; state-transition saves (deletion, transfer failure, end-of-sync) still persist immediately. The truncate-on-resume guard at the start of `_readStorageBytesToFileLocked` bounds re-fetch on crash to one persist-window of bytes.
 
+**Storage layout** (relative to `getApplicationDocumentsDirectory()`):
+- `raw_segments/{timerStart}/{timerStart}_{sessionId}.bin` — one folder per segment, named by UTC epoch-seconds `timerStart`. Pre-time-sync → `raw_segments/session_{sessionId}/`.
+- `recordings/{yyyy-mm-dd}/recording_{startMs}.wav` (or `.m4a` / `.ogg`) — finalized recording; date is **local** calendar date.
+- `recordings/{yyyy-mm-dd}/recording_{startMs}_draft.wav` — in-progress flush (always `.wav` — M4A can't be stitched); not surfaced in UI.
+- `recordings/{yyyy-mm-dd}/unknown_{startMs}.wav` — recording with derived/uncertain timestamp (time-sync unavailable).
+- `recordings/{yyyy-mm-dd}/recording_{startMs}.meta` — binary sidecar: `totalSamples` u32, `durationMs` u32, 200×u16 waveform, `sessionId` u32, `startUptime` u32, upload key, passthrough/forceSynced/capEnded flags, JSON relative-bin list.
+- `recordings/{yyyy-mm-dd}/marker_{markerMs}.edl` — JSON marker sidecar: `markerTimestampMs`, `segmentFilename`, `markerOffsetMs`, `cropStartMs`, `cropEndMs`, `userSaved`. Orphan markers have empty `segmentFilename`.
+- `recordings/{yyyy-mm-dd}/discards.jsonl` — one line per VAD-dropped stretch; surfaced as ghost rows in the UI.
+
 ### Hardware (`omi/hardware/consumer/`)
 
 Omi Consumer — open-source AI wearable. PCB: mainboard (v1.2) + charger board (v1.0) + FPC (v1.0).
@@ -100,6 +109,18 @@ Enclosure: CNC aluminium covers (Case A/B), PC+ABS injection-moulded shell, SLA 
 Zephyr RTOS on nRF5340. Key threads: mic capture → codec ring buffer → Opus encode → BLE notify / SD card write.
 
 **Opus config**: 16 kHz mono, VBR, complexity 5, 20 ms frames.
+
+**C ↔ Dart name mapping** (wire format unchanged — byte offsets define the protocol):
+
+| Firmware (C) | Source file | Dart equivalent |
+|---|---|---|
+| File timestamp from `CMD_LIST_FILES` | — | `timerStart` (WAL key + folder name) |
+| `device_session_id` (`atomic_t` u32) | `transport.c/h`, `main.c` | `wal.sessionId` / `deviceSessionId` |
+| `write_marker_to_storage()` | `transport.c/h`, `button.c` | button-tap `Marker`; header `0xFFFFFFFE` + 16 B payload: `utc_time_ms` (u64), `uptime_ms` (u32), `device_session_id` (u32) |
+| `write_session_end_marker_to_storage()` | `transport.c/h`, `aad.c` | manual-mode stop boundary; header `0xFFFFFFFC` + same 16 B payload |
+| `write_custom_packet_to_storage(0xFFFFFFFD, …)` | `aad.c` | AAD VAD-resume timestamp; same 16 B payload |
+| `marker_flash_count` (`volatile uint8_t`) | `button.c/h`, `main.c` | *(no Dart equivalent)* — drives LED flash on double-tap |
+| `PACKET_EOT` = `0x02` | `storage.c` | end-of-transfer signal; consumed by `SDCardWalSyncImpl`, not stored |
 
 ### BLE Protocol
 
