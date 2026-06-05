@@ -56,7 +56,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   double _minutesRemaining = -1.0;
   double get minutesRemaining => _minutesRemaining;
 
-
   double _processingProgress = 0.0;
   double get processingProgress => _processingProgress;
 
@@ -931,7 +930,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
 
     _releaseWakelock();
-    await ForegroundUtil.stopForegroundTask();
 
     _minutesRemaining = 0;
     _lastCompletedStage = 'processing';
@@ -1034,11 +1032,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _persistProgress();
     _transitionTo(SyncProcessState.idle);
     _loadBatches();
+    unawaited(ForegroundUtil.stopForegroundTask());
   }
 
   Future<void> _finishSuccess() async {
     _isForcePipeline = false;
     _transitionTo(SyncProcessState.successUi);
+    unawaited(ForegroundUtil.updateNotification(
+      title: 'Conversations ready',
+      text: 'Sync and processing complete',
+    ));
     await Future.delayed(const Duration(milliseconds: 10000));
     if (_isDisposed || _spState != SyncProcessState.successUi) return;
 
@@ -1321,7 +1324,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       return;
     }
     _releaseWakelock();
-    await ForegroundUtil.stopForegroundTask();
     _prefs.adjustmentModeWasEnabled = false;
     await reloadBatchesSilently();
     await _finishSuccess();
@@ -1412,7 +1414,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       return;
     }
     _releaseWakelock();
-    await ForegroundUtil.stopForegroundTask();
     await reloadBatchesSilently();
     await _finishSuccess();
   }
