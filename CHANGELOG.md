@@ -2,13 +2,16 @@
 
 ## App
 
-### 0.18.8
+### 0.19.0
+
+- **Fix: background sync now fires on time even when Android freezes the Dart isolate.** Previously, if the OS suspended the Flutter runtime (despite the foreground service being alive), the scheduled sync timer and heartbeat both stopped firing — the notification would show a stale "Next sync at X:XX" with no sync occurring until the user opened the app. A native `AlarmManager` exact alarm (`setExactAndAllowWhileIdle`) is now armed whenever Dart sets the next sync time. When the alarm fires, it delivers the sync request natively, bypassing the frozen Dart layer. The alarm re-arms itself from shared prefs so it survives repeated Dart freezes without requiring Dart to reschedule.
+- **Fix: idle notification now shows last sync time.** The "Next sync at X:XX PM" notification text now appends "· Last synced X:XX PM" so a frozen or stale Dart isolate is immediately visible — the next-sync time will be in the past while the last-synced time shows how long ago the last successful sync ran.
+- **Fix: BLE notification no longer shows redundant timestamp.** The connected-device notification (battery %) was showing the time of the last battery reading, which disappears when the device disconnects. Removed; the idle notification's "Last synced" timestamp now serves this purpose persistently.
+
+### 0.18
 
 - **Fix: sync-timer notification no longer shows a stale countdown.** Previously the "Next sync in ~N min" text was recomputed and pushed from Dart every ~60 s via the `flutter_foreground_task` heartbeat. When Android's battery optimizer suspended the main isolate, the text would freeze — showing "27 minutes ago" in the notification timestamp while still reading "~29 min". The persistent `flutter_foreground_task` notification (ID 2002, `START_STICKY`) now shows the absolute scheduled time ("Next sync at 3:45 PM") and cycles to sync/processing progress during active runs, then back to the new scheduled time after. Text is never stale by more than one sync interval.
 - **New: BLE service notification (ID 2001) shows device battery level and last-connected time.** The always-on `OmiBleForegroundService` notification now shows "78% · 3:45 PM" — the last known battery level and the time it was read (which coincides with the last device connection and sync). Updated on every battery reading via a new `setDeviceBattery` Pigeon call. Useful at a glance when the device is disconnected between syncs.
-
-### 0.18.7
-
 - **Fix: Reprocess Day now correctly identifies sessions from filenames.** The legacy identification logic (used for older recordings without precise bin-mapping) was incorrectly trying to parse session IDs from folder names. Since folders were updated to use timestamps, this check failed, preventing recordings from being cleared or deleted. The system now extracts IDs from the `.bin` filenames, restoring full "Reprocess Day" functionality.
 - **Fix: Reprocess Day UI now reliably shows a blank slate before processing starts.** The previously implemented `endOfFrame` yield was occasionally too fast for the Android rendering engine to paint the empty list before heavy disk I/O blocked the main thread. A 50ms delay has been added to ensure the "optimistic delete" is always visible to the user.
 - **Fix: Android 14+ foreground notification returns if swiped away.** Android 14 allows users to dismiss ongoing foreground notifications. The app now handles the dismissal intent by immediately re-posting the notification, ensuring the sync/processing service remains protected from OS termination.
@@ -16,9 +19,6 @@
 - **New: Adjustment Mode Banner.** Added a persistent UI banner when Adjustment Mode is active to remind the user that all raw audio is being displayed and that sync-time estimates include already-processed data.
 - **Fix: Foreground service no longer risks dropping during background sync.** The sync/processing notification now updates in place instead of stopping and restarting the foreground service. Restarting could hit the Android 12+ "start foreground service from background" restriction and leave the app with no foreground service mid-sync; updating in place still re-posts the notification if it was swiped away on Android 14+.
 - **VAD recording is now opt-in.** Auto-mode VAD defaults to off; it must be enabled by the user (with a confirmation prompt) rather than running by default.
-
-### 0.18.6
-
 - **Fix: Reprocess Day now correctly identifies sessions from folder names.** The identification logic previously looked at bin filenames (timestamps), causing a mismatch with the session IDs stored in recordings. The system now extracts IDs from the parent session folder, ensuring that recordings with backing audio are correctly identified for surgical deletion.
 - **Hardened Reprocess Logic with Precision Bin-Mapping.** Recordings now store the exact list of raw bins used (`relativeBins`) in their `.meta` sidecar. The "Reprocess Day" flow uses this metadata to verify that 100% of the required audio is present on disk before allowing a deletion or UI clear, protecting against audio loss while maintaining backward compatibility for older recordings.
 - **Improved Auto-Upload Protection via Toggle-Restore & Time-Gating.** 
@@ -27,34 +27,16 @@
     - Reprocessed recordings (which have older timestamps) are thus automatically skipped by the auto-upload loop, allowing the app to safely clear old integration flags during `reprocessDay` for a clean UI without risking duplicate uploads.
 - **Fix: Reprocessed days stay visible in the list while processing.** The `visibleBatches` filter and `BatchCard` rendering now account for days that are empty but contain raw audio to be processed. The day card remains in the list as a "blank slate" with a progress bar, rather than vanishing until the first recording is finished.
 - **New: Real-time "ghost row" updates during processing.** The UI now triggers a refresh whenever a "discard" (noise/silence) segment is identified. Ghost rows pop into the list immediately as they are finished, providing continuous visual feedback during long processing runs.
-
-### 0.18.5
-
 - **Fix: sync/process foreground notification now updates every 10 minutes instead of every 1–2 seconds.** The Android status-bar notification during sync and processing was being reposted on every UI tick (1–2 s throttle), causing unnecessary CPU wake-ups and battery drain in the background. Progress ticks are now throttled to a 10-minute interval; state transitions (starting a sync, switching from sync to processing, etc.) still post immediately so the notification always reflects the current phase.
 - **Fix: Reprocess Day no longer deletes bins shared between a ghost record and a valid conversation.** Firmware writes ~5-minute bin files that routinely span multiple conversation chunks. A noise chunk discarded by SileroVAD would list the whole bin in its ghost record's `relativeBins` (without the `excludeBins` guard that `silence_trimmed` applies), so the same bin was referenced by both the valid recording and the ghost. `deleteDay(onlyReprocessable: true)` was calling `removeDiscardRecord(..., deleteBins: true)` unconditionally, deleting those shared bins and making subsequent Reprocess Day runs progressively lose more audio until all bins were gone and only "Delete Day" remained. Fixed by passing `deleteBins: !onlyReprocessable` — ghost record jsonl entries are still cleared (so grey ghost rows disappear) but their bin files are preserved for the next `processAll` run to re-evaluate with current VAD settings.
 - **Fix: Reprocess Day now clears the conversation list immediately on confirmation.** Previously the old recordings stayed visible until the async delete and disk reload completed. The controller now optimistically zeros out the day's conversations in the displayed batch list the moment the user confirms, so the card shows a blank slate before any I/O begins.
-
-### 0.18.4
-
 - **Fix: both foreground service notifications return after being swiped away.** Android 14+ lets users dismiss foreground service notifications even when marked ongoing. (1) The BLE connection notification now attaches a `deleteIntent` broadcast; when swiped, the service immediately reposts it via `startForeground()`. (2) The sync/process notification now always stops and restarts the foreground task at the beginning of each pipeline run, guaranteeing a fresh notification post rather than a silent update to a notification that was already dismissed.
 - **Fix: waveform display now uses percentile normalization instead of fixed log scaling.** Consistently-loud recordings mapped nearly every bar to near-maximum height, making the waveform look like a solid block. The waveform is now normalized per-recording using the 5th–95th percentile of its own amplitude data, so relative variation is always visible regardless of absolute recording level. A guard prevents flat or silence-only recordings from being amplified into fake variation.
-
-### 0.18.3
-
 - **New: Recording Settings shows a warning when battery optimization is active.** A red card appears at the top of Recording Settings when Android has not exempted the app from battery optimization. Tapping Fix opens the system prompt ("Don't optimize") so background processing is no longer killed by the OS when the screen turns off. The card disappears automatically once the exemption is granted.
 - **Fix: Reprocess Day now fully refreshes all three filter tabs before processing starts.** The previous `Future.delayed(Duration.zero)` posted to the event queue but did not guarantee the Flutter rendering pipeline had completed a frame, so the Main / Hidden / All tabs could still show stale recordings when the progress bar appeared. Replaced with `WidgetsBinding.instance.endOfFrame`, which waits for an actual render.
-
-### 0.18.2
-
 - **Fix: Android no longer throttles the VAD processing isolate when the screen goes off.** Added a `PARTIAL_WAKE_LOCK` around the background sync+process cycle. Without it, Android's CPU governor downclocks the Dart isolate's thread scheduling when the screen turns off, spiking the per-inference platform-channel latency from ~1 ms to ~10 ms and slowing processing 3–5×. The WakeLock is acquired at the start of `_doBackgroundSync` and released unconditionally in `finally`, holding for the full BLE sync + VAD processing run.
-
-### 0.18.1
-
 - **Fix: Adjustment Mode cleanup now reprocesses all bins, not just unprocessed days.** Previously "Turn Off & Reprocess" only ran processing on days with no existing recordings, skipping days that had already been processed. Now every batch with a backing bin is deleted and reprocessed. Recordings without a bin backup are preserved in all cases.
 - **Fix: banner copy clarified.** The subtitle now states that minutes-to-process counts all bins including those already processed. The confirmation dialog explains exactly which recordings will be replaced vs. kept.
-
-### 0.18.0
-
 - **Adjustment Mode banner:** A persistent orange banner now appears at the bottom of the Conversations screen while Adjustment Mode is on, indicating that all recordings are shown (not just processed ones). Tap the banner to turn off Adjustment Mode and process all remaining raw audio with current settings in one step.
 - **Reprocess Day shows blank before reprocessing:** Tapping Reprocess Day now deletes the day's processed recordings and refreshes the list to show a blank state before reprocessing begins, making it clear the old recordings were removed.
 - **Voice Activity Detection defaults to off:** In Automatic Recording Mode, VAD is now disabled by default. Enabling it shows a one-time warning that Silero VAD uses more battery and takes longer to process than the default AAD mode, with a "Don't show again" option.
