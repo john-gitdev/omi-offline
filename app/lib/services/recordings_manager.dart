@@ -805,6 +805,11 @@ class RecordingsManager {
   /// Global progress of the current processing task (0.0 to 1.0).
   static final ValueNotifier<double> processingProgress = ValueNotifier(0.0);
 
+  /// Minutes of audio remaining to process. Updated by RecordingsController;
+  /// -1 means unknown (calculating). Read by notification paths in both
+  /// foreground and background to show consistent progress text.
+  static double minutesRemaining = -1.0;
+
   /// Bumped on each isolate liveness heartbeat — emitted while the decode/save
   /// loops are actively advancing, so it ticks even within a single long
   /// segment or a multi-hour stitched-recording save where the per-segment
