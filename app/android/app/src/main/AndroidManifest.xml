@@ -36,6 +36,7 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
 
     <!-- In the permission part of your manifest, these permission are needed if you target Android 14 phones -->
@@ -65,6 +66,14 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <receiver
+            android:name=".SyncAlarmReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.omi.offline.SYNC_ALARM" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".BleCompanionService"
