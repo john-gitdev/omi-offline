@@ -180,8 +180,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
       );
       return;
     }
-    final anyIntegrationEnabled = (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
-        (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty);
+    final anyIntegrationEnabled = PassthroughIntegration.hasAnyConfigured(_prefs);
     if (!anyIntegrationEnabled || _isUploading) return;
 
     final alreadyUploaded = widget.controller.isUploaded(widget.conversation);
@@ -215,8 +214,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   }
 
   Widget _buildUploadAction() {
-    final anyIntegrationEnabled = (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
-        (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty);
+    final anyIntegrationEnabled = PassthroughIntegration.hasAnyConfigured(_prefs);
     if (!anyIntegrationEnabled) return const SizedBox.shrink();
 
     final uploadKey = widget.conversation.uploadKey;

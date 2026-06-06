@@ -5,6 +5,9 @@
 ### 0.19.3
 
 - **Performance: Android Native VAD Batch Runner.** Processing large backlogs is now significantly faster and more power efficient on Android. The app now keeps the ORT session, the recurrent LSTM state, and the context window entirely within a background native Kotlin thread, and evaluates VAD across a batch of acoustic frames in a single platform-channel invocation rather than incurring thousands of synchronous FFI crossings per minute of audio. iOS and non-Android platforms fall back seamlessly to the standard per-window evaluation while preserving bit-identical VAD decisions.
+- **Added "Upload on Wifi Only" toggle.** New setting in App Settings allows restricting cloud uploads (Omi, HeyPocket, etc.) to WiFi connections only, preserving mobile data. The toggle is automatically disabled if no integrations are configured.
+- **Refactored Generic Integration Architecture.** Centralized all cloud integration logic into a extensible strategy pattern. This allows adding new integrations by updating a single file while automatically inheriting WiFi controls, status tracking, and background sync logic.
+- **Improved Observability.** Moved high-level upload logging into service-specific clients for clearer, non-redundant debugging information.
 
 ### 0.19.2
 
