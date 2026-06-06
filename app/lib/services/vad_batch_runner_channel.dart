@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:omi/utils/logger.dart';
@@ -14,6 +15,12 @@ import 'package:omi/utils/logger.dart';
 /// the caller falls back to the per-window `_runVad` path unchanged.
 class VadBatchRunnerChannel {
   static const _channel = MethodChannel('com.omi.offline/vadBatchRunner');
+
+  /// If provided, this instance lives in a background isolate and will bounce
+  /// method channel requests to the main isolate via this port.
+  final SendPort? isolateSendPort;
+
+  VadBatchRunnerChannel({this.isolateSendPort});
 
   /// True when the native batch runner is available and initialised.
   bool _initialised = false;
@@ -31,7 +38,19 @@ class VadBatchRunnerChannel {
   Future<void> init(String modelPath) async {
     if (!Platform.isAndroid) return;
     try {
-      await _channel.invokeMethod('init', {'modelPath': modelPath});
+      if (isolateSendPort != null) {
+        final replyPort = ReceivePort();
+        isolateSendPort!.send({
+          'type': 'vad_batch_init',
+          'modelPath': modelPath,
+          'replyPort': replyPort.sendPort,
+        });
+        final response = await replyPort.first;
+        replyPort.close();
+        if (response != 'ok') throw Exception(response);
+      } else {
+        await _channel.invokeMethod('init', {'modelPath': modelPath});
+      }
       _initialised = true;
       Logger.debug('VadBatchRunnerChannel: init OK — native batch runner available');
     } on MissingPluginException {
@@ -51,10 +70,25 @@ class VadBatchRunnerChannel {
   ///
   /// Throws on error (caller should fall back to per-window path).
   Future<Float32List> runVadBatch(Float32List samples, {bool resetStateFirst = false}) async {
-    final result = await _channel.invokeMethod<Float32List>('runVadBatch', {
-      'samples': samples,
-      'resetStateFirst': resetStateFirst,
-    });
+    final Float32List? result;
+    if (isolateSendPort != null) {
+      final replyPort = ReceivePort();
+      isolateSendPort!.send({
+        'type': 'vad_batch_run',
+        'samples': samples,
+        'resetStateFirst': resetStateFirst,
+        'replyPort': replyPort.sendPort,
+      });
+      final response = await replyPort.first;
+      replyPort.close();
+      if (response is String) throw Exception(response);
+      result = response as Float32List?;
+    } else {
+      result = await _channel.invokeMethod<Float32List>('runVadBatch', {
+        'samples': samples,
+        'resetStateFirst': resetStateFirst,
+      });
+    }
     return result ?? Float32List(0);
   }
 
@@ -64,7 +98,11 @@ class VadBatchRunnerChannel {
     if (!_initialised) return;
     _initialised = false;
     try {
-      await _channel.invokeMethod('dispose');
+      if (isolateSendPort != null) {
+        isolateSendPort!.send({'type': 'vad_batch_dispose'});
+      } else {
+        await _channel.invokeMethod('dispose');
+      }
       Logger.debug('VadBatchRunnerChannel: disposed');
     } catch (e) {
       Logger.error('VadBatchRunnerChannel: dispose error ($e)');

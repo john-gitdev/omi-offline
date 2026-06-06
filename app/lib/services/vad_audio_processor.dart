@@ -1425,14 +1425,13 @@ class VadAudioProcessor {
       // or resets state); no outer loop to `continue` from here.
     }
 
-    // Clear batch buffers for the next batch boundary.
-    _batchDeferredFrames.clear();
-    _batchWindows.clear();
-    _batchWindowFrameIndices.clear();
-
     return segmentSpeechFrames;
     } finally {
       _isReplayingBatch = false;
+      // Clear batch buffers for the next batch boundary.
+      _batchDeferredFrames.clear();
+      _batchWindows.clear();
+      _batchWindowFrameIndices.clear();
     }
   }
 

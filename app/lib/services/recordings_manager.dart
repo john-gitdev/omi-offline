@@ -593,7 +593,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
   // Initialise the native VAD batch runner (Android-only). Uses the same
   // materialized model file that the ORT session was loaded from. On non-Android
   // platforms, init is a no-op and available stays false.
-  final batchRunner = VadBatchRunnerChannel();
+  final batchRunner = VadBatchRunnerChannel(isolateSendPort: params.sendPort);
   if (params.settings.vadEnabled && params.sileroModelPath != null && session != null) {
     await batchRunner.init(params.sileroModelPath!);
   }
@@ -1411,6 +1411,7 @@ class RecordingsManager {
         try {
           final receivePort = ReceivePort();
           final exitPort = ReceivePort();
+          final mainBatchRunner = VadBatchRunnerChannel();
           bool isolateDone = false;
 
           final startTime = DateTime.now();
@@ -1460,6 +1461,25 @@ class RecordingsManager {
                 if (_cancelRequested) {
                   _activeIsolateControlPort?.send('cancel');
                 }
+              case 'vad_batch_init':
+                try {
+                  await mainBatchRunner.init(msg['modelPath'] as String);
+                  (msg['replyPort'] as SendPort).send('ok');
+                } catch (e) {
+                  (msg['replyPort'] as SendPort).send(e.toString());
+                }
+              case 'vad_batch_run':
+                try {
+                  final result = await mainBatchRunner.runVadBatch(
+                    msg['samples'] as Float32List,
+                    resetStateFirst: msg['resetStateFirst'] as bool,
+                  );
+                  (msg['replyPort'] as SendPort).send(result);
+                } catch (e) {
+                  (msg['replyPort'] as SendPort).send(e.toString());
+                }
+              case 'vad_batch_dispose':
+                await mainBatchRunner.dispose();
               case 'heartbeat':
                 // Liveness from the decode/save loops — re-anchors the stall
                 // watchdog so a slow-but-progressing run isn't killed as a wedge.
