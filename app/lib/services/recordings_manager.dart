@@ -14,6 +14,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/services/vad_audio_processor.dart';
+import 'package:omi/services/vad_batch_runner_channel.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/time_utils.dart';
@@ -589,6 +590,14 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     }
   }
 
+  // Initialise the native VAD batch runner (Android-only). Uses the same
+  // materialized model file that the ORT session was loaded from. On non-Android
+  // platforms, init is a no-op and available stays false.
+  final batchRunner = VadBatchRunnerChannel();
+  if (params.settings.vadEnabled && params.sileroModelPath != null && session != null) {
+    await batchRunner.init(params.sileroModelPath!);
+  }
+
   // Liveness: VadAudioProcessor bumps this counter from inside its decode/save
   // loops, so it advances even within a single long segment or save. The timer
   // below forwards a 'heartbeat' to the main isolate only when the count
@@ -607,6 +616,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     // fires and force-kills the isolate, which crashes the app from inside an
     // ONNX/Opus FFI call.
     isCancelled: () => cancelled,
+    batchRunner: batchRunner,
   );
 
   int lastSeenLivenessTick = -1;
@@ -787,6 +797,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     params.sendPort.send({'type': 'error', 'message': '$e\n$st'});
   } finally {
     heartbeatTimer.cancel();
+    await batchRunner.dispose();
     processor.destroy();
     controlPort.close();
   }
