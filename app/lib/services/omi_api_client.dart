@@ -169,7 +169,13 @@ class OmiApiClient {
       if (jobId != null) return await _pollJob(usedUrl, jobId, pollAfterMs);
     }
 
-    return _parseSyncResult(res.statusCode, responseBody);
+    final result = _parseSyncResult(res.statusCode, responseBody);
+    if (result.success) {
+      Logger.debug('Omi Cloud: upload success');
+    } else {
+      Logger.error('Omi Cloud: upload failed: ${result.status}');
+    }
+    return result;
   }
 
   static String _deviceMacForFilename() {
@@ -439,10 +445,6 @@ class OmiSyncException implements Exception {
   final String message;
   final bool isAuthError;
   const OmiSyncException(this.message, {this.isAuthError = false});
-  @override
-  String toString() => 'OmiSyncException: $message';
-}
-his.message, {this.isAuthError = false});
   @override
   String toString() => 'OmiSyncException: $message';
 }

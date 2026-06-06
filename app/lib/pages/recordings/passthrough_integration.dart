@@ -4,7 +4,6 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/heypocket_service.dart';
 import 'package:omi/services/omi_api_client.dart';
-import 'package:omi/utils/logger.dart';
 
 abstract class PassthroughIntegration {
   String get name;
