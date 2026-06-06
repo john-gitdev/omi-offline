@@ -1483,7 +1483,16 @@ class RecordingsManager {
                   (msg['replyPort'] as SendPort).send(e.toString());
                 }
               case 'vad_batch_dispose':
-                await mainBatchRunner.dispose();
+                try {
+                  await mainBatchRunner.dispose();
+                  if (msg['replyPort'] != null) {
+                    (msg['replyPort'] as SendPort).send('ok');
+                  }
+                } catch (e) {
+                  if (msg['replyPort'] != null) {
+                    (msg['replyPort'] as SendPort).send(e.toString());
+                  }
+                }
               case 'heartbeat':
                 // Liveness from the decode/save loops — re-anchors the stall
                 // watchdog so a slow-but-progressing run isn't killed as a wedge.

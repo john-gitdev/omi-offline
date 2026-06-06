@@ -99,7 +99,14 @@ class VadBatchRunnerChannel {
     _initialised = false;
     try {
       if (isolateSendPort != null) {
-        isolateSendPort!.send({'type': 'vad_batch_dispose'});
+        final replyPort = ReceivePort();
+        isolateSendPort!.send({
+          'type': 'vad_batch_dispose',
+          'replyPort': replyPort.sendPort,
+        });
+        final response = await replyPort.first;
+        replyPort.close();
+        if (response != 'ok') throw Exception(response.toString());
       } else {
         await _channel.invokeMethod('dispose');
       }
