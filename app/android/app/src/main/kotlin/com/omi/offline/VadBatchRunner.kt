@@ -107,19 +107,20 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
         doDispose() // clean up any prior session
 
         env = OrtEnvironment.getEnvironment()
-        val opts = SessionOptions()
         var usingXnnpack = false
-        try {
-            // XNNPACK when available — faster ARM kernels, deterministic.
-            opts.addXnnpack(java.util.Collections.emptyMap())
-            usingXnnpack = true
-        } catch (_: Exception) {
-            // XNNPACK not bundled — fall back to default CPU EP.
-        }
-        opts.setIntraOpNumThreads(1)
-        opts.setInterOpNumThreads(1)
+        SessionOptions().use { opts ->
+            try {
+                // XNNPACK when available — faster ARM kernels, deterministic.
+                opts.addXnnpack(java.util.Collections.emptyMap())
+                usingXnnpack = true
+            } catch (_: Exception) {
+                // XNNPACK not bundled — fall back to default CPU EP.
+            }
+            opts.setIntraOpNumThreads(1)
+            opts.setInterOpNumThreads(1)
 
-        session = env!!.createSession(modelPath, opts)
+            session = env!!.createSession(modelPath, opts)
+        }
 
         // Zero-initialise rolling state and context.
         state.fill(0f)

@@ -1408,10 +1408,10 @@ class RecordingsManager {
           } catch (_) {}
         }
 
+        final mainBatchRunner = VadBatchRunnerChannel();
         try {
           final receivePort = ReceivePort();
           final exitPort = ReceivePort();
-          final mainBatchRunner = VadBatchRunnerChannel();
           bool isolateDone = false;
 
           final startTime = DateTime.now();
@@ -1576,9 +1576,11 @@ class RecordingsManager {
           await Future.delayed(const Duration(milliseconds: 200));
           if (await tempDir.exists()) await tempDir.delete(recursive: true);
         } catch (e) {
-          _activeIsolateControlPort = null;
           Logger.error("RecordingsManager: Combined processing failed: $e");
           rethrow;
+        } finally {
+          _activeIsolateControlPort = null;
+          await mainBatchRunner.dispose();
         }
 
         // Clean up any device-session folders that are now empty after progressive deletion.
