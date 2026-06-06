@@ -756,17 +756,16 @@ class DeviceProvider extends ChangeNotifier
         } else {
           await ForegroundUtil.updateNotification(title: 'Syncing recordings', text: 'Preparing...');
         }
-        // A setup-phase failure in this first sync (no connection, storage full,
+        // A setup-phase failure in this sync (no connection, storage full,
         // or any early abort that throws) must NOT skip processing — bins that
         // already reached disk should still be decoded, mirroring how the
         // foreground pipeline auto-processes on disconnect. A transfer-phase
         // disconnect doesn't throw (syncAll returns partial and falls through),
         // so this inner catch only covers the early-abort cases.
-        bool firstSyncOk = true;
         try {
           await walSync.syncAll(progress: _BackgroundSyncProgress());
+          SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
         } catch (e) {
-          firstSyncOk = false;
           lastSyncError = e.toString();
           lastSyncErrorTime = DateTime.now();
           notifyListeners();
@@ -782,17 +781,6 @@ class DeviceProvider extends ChangeNotifier
         // its own errors, so it runs whether or not the sync above succeeded.
         await RecordingsManager.processAllCompletedSessions();
         RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
-
-        // Finalizing re-sync (captures firmware files created during processing)
-        // and the completion stamp only apply to a clean cycle. If the first
-        // sync failed or the link dropped, skip both and leave the cycle "due"
-        // so the next timer tick / app open retries promptly instead of waiting
-        // a full interval — anything left on disk was already processed above.
-        if (firstSyncOk && isConnected) {
-          await ForegroundUtil.updateNotification(title: 'Syncing recordings', text: 'Finalizing...');
-          await walSync.syncAll(progress: _BackgroundSyncProgress());
-          SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
-        }
       } catch (e) {
         lastSyncError = e.toString();
         lastSyncErrorTime = DateTime.now();
@@ -812,13 +800,13 @@ class DeviceProvider extends ChangeNotifier
           unawaited(_showIdleNotification());
         }
 
-        // Disconnect after the full sync+process cycle (both syncAll calls) so
-        // that new firmware files created during processing are also captured
-        // before we drop the connection. Always disconnect — even if segments
-        // remain there is no point holding the link, because the keep-alive has
-        // stopped and the firmware idle-drops it within ~30s with nothing to
-        // reconnect it in the background. Any leftover segments are picked up by
-        // the next scheduled sync (or on app open/resume when one is due).
+        // Disconnect after the full sync+process cycle so that new firmware files
+        // created during processing are also captured before we drop the
+        // connection. Always disconnect — even if segments remain there is no
+        // point holding the link, because the keep-alive has stopped and the
+        // firmware idle-drops it within ~30s with nothing to reconnect it in the
+        // background. Any leftover segments are picked up by the next scheduled
+        // sync (or on app open/resume when one is due).
         if (!_isAppInForeground && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage && isConnected) {
           Logger.debug('Background sync done: disconnecting device.');
           ServiceManager.instance().device.disconnectDevice(isManual: true);
