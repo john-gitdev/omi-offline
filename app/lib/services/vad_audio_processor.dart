@@ -96,7 +96,7 @@ class VadAudioProcessor {
 
   // --- Two-pass batch buffers (Android batch runner path) ---
   // Accumulated 512-sample windows for the next runVadBatch call.
-  final List<double> _batchWindows = [];
+  final List<Float32List> _batchWindows = [];
   // For each window in _batchWindows, the index into _batchDeferredFrames of
   // the audio frame during which this window completed. Used in Pass 2 to map
   // window probs back to the frame that triggered them.
@@ -961,7 +961,9 @@ class VadAudioProcessor {
               if (_pcmBufferLen == _vadWindowSamples) {
                 if (_useBatchRunner) {
                   // TWO-PASS: collect window into batch buffer; defer VAD to Pass 2.
-                  _batchWindows.addAll(Float32List.sublistView(_pcmBuffer, 0, _vadWindowSamples));
+                  final windowCopy = Float32List(_vadWindowSamples);
+                  windowCopy.setAll(0, Float32List.sublistView(_pcmBuffer, 0, _vadWindowSamples));
+                  _batchWindows.add(windowCopy);
                   _batchWindowFrameIndices.add(_batchDeferredFrames.length);
                 } else {
                   // SINGLE-PASS (fallback): run VAD inline per window.
@@ -1174,7 +1176,7 @@ class VadAudioProcessor {
     // Reset VAD model state so the next conversation starts with a clean LSTM.
     // Not resetting these contaminates the first few VAD decisions of the new
     // conversation with the previous conversation's recurrent state.
-    _pcmBufferLen = 0;
+    if (!_isReplayingBatch) _pcmBufferLen = 0;
     // ignore: unawaited_futures, discarded_futures
     _cachedStateValue?.dispose();
     _cachedStateValue = null;
@@ -1324,7 +1326,7 @@ class VadAudioProcessor {
       _lastSpeechRefCount = 0;
       _lastSpeechChunkMs = 0;
       _recordingStartTime = cutTime;
-      _pcmBufferLen = 0;
+      if (!_isReplayingBatch) _pcmBufferLen = 0;
       // ignore: unawaited_futures, discarded_futures
       _cachedStateValue?.dispose();
       _cachedStateValue = null;
@@ -1361,7 +1363,12 @@ class VadAudioProcessor {
     if (!aadMode && _batchWindows.isNotEmpty && _batchRunner != null && _batchRunner!.available) {
       try {
         final stopwatch = Stopwatch()..start();
-        final samples = Float32List.fromList(_batchWindows);
+        final samples = Float32List(_batchWindows.length * _vadWindowSamples);
+        int offset = 0;
+        for (final w in _batchWindows) {
+          samples.setAll(offset, w);
+          offset += _vadWindowSamples;
+        }
         final probs = await _batchRunner!.runVadBatch(samples, resetStateFirst: _batchResetPending);
         stopwatch.stop();
         Logger.debug(
