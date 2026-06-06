@@ -989,6 +989,7 @@ class VadAudioProcessor {
             ? vadResumeTime.add(Duration(milliseconds: (frameIndex - vadResumeFrameIndex) * frameDurationMs))
             : segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
         lastFrameWallTime = frameTime;
+        if (_currentFrameUptimeMs != null) _currentFrameUptimeMs = _currentFrameUptimeMs! + frameDurationMs;
 
         if (_useBatchRunner) {
           // TWO-PASS: defer verdict — accumulate frame metadata for Pass 2 replay.
@@ -1284,7 +1285,6 @@ class VadAudioProcessor {
       _lastSpeechRefCount = _currentRefs.length;
       _lastSpeechChunkMs = _currentChunkDurationMs;
     }
-    if (_currentFrameUptimeMs != null) _currentFrameUptimeMs = _currentFrameUptimeMs! + frameDurationMs;
 
     // Anchor a fresh conversation to THIS frame's wall-clock time. After an
     // in-stream silence split, _splitOnSilence resets _recordingStartTime to
