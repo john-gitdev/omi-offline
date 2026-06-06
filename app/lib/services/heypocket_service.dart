@@ -53,6 +53,7 @@ class HeyPocketService {
   ///   1. POST /public/recordings/upload-url → extract upload_url from response data
   ///   2. PUT presigned URL streaming file bytes
   static Future<void> uploadRecording(String apiKey, Conversation rec) async {
+    Logger.debug('HeyPocket: starting upload for ${p.basename(rec.file.path)}');
     try {
       final contentType = _mimeType(rec.file.path);
 
@@ -101,13 +102,18 @@ class HeyPocketService {
       if (streamedRes.statusCode != 200 && streamedRes.statusCode != 204) {
         throw HeyPocketException(streamedRes.statusCode, _errorMessage(streamedRes.statusCode));
       }
-    } on HeyPocketException {
+      Logger.debug('HeyPocket: upload success for ${p.basename(rec.file.path)}');
+    } on HeyPocketException catch (e) {
+      Logger.error('HeyPocket: upload failed (code ${e.statusCode}): ${e.message}');
       rethrow;
     } on TimeoutException {
+      Logger.error('HeyPocket: upload timed out');
       throw HeyPocketException(0, 'Connection timed out — check your network');
     } on SocketException {
+      Logger.error('HeyPocket: no network connection for upload');
       throw HeyPocketException(0, 'No network connection');
     } catch (e) {
+      Logger.error('HeyPocket: upload failed: $e');
       throw HeyPocketException(0, 'Upload failed');
     }
   }
@@ -116,6 +122,18 @@ class HeyPocketService {
         400 => 'Bad request — check file format',
         401 => 'Unauthorized — check your API key',
         _ => 'HeyPocket server error — try again later',
+      };
+}
+
+class HeyPocketException implements Exception {
+  final int statusCode;
+  final String message;
+  const HeyPocketException(this.statusCode, this.message);
+
+  @override
+  String toString() => 'HeyPocketException($statusCode): $message';
+}
+later',
       };
 }
 
