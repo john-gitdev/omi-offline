@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.19.2
+
+- **Simplified background sync pipeline.** Removed the redundant second "finalizing" sync that occurred after processing. The sync completion timestamp is now updated immediately after the primary data retrieval, ensuring the auto-sync timer is refreshed even during long processing runs. This prevents confusing behavior where audio recorded during processing was downloaded but left unprocessed until the next manual or scheduled sync.
+
 ### 0.19.1
 
 - **Fix: "Audio to Process" banner no longer gets stuck after a background sync that downloads a continuation bin.** If a new bin arrived on the device while the previous processing run was finishing its draft flush, the next pipeline would mark that bin as already "covered" by the open draft's coverage interval (draft end + 120 s VAD-split slack), skip processing, call it done, and leave the bin sitting on disk — so the banner reappeared on every reload. Draft files are now excluded from coverage-interval computation; only finalized recordings gate the idempotency filter.
