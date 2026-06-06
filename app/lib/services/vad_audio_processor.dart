@@ -1213,7 +1213,14 @@ class VadAudioProcessor {
   /// any [_resetState] call or inline state reset. Is a no-op when the buffer
   /// is empty or no Silero session is loaded (AAD mode).
   Future<void> _flushPartialWindow() async {
-    if (_session == null || _pcmBufferLen == 0 || _isReplayingBatch) return;
+    if (_pcmBufferLen == 0 || _isReplayingBatch) return;
+
+    if (_session == null) {
+      _lastSpeechRefCount = _currentRefs.length;
+      _lastSpeechChunkMs = _currentChunkDurationMs;
+      return;
+    }
+
     final padded = Float32List(_vadWindowSamples);
     padded.setRange(0, _pcmBufferLen, _pcmBuffer);
     // Remainder is already zero — Float32List default.
