@@ -20,6 +20,7 @@ class MainActivity : FlutterActivity() {
     private val encoderExecutor = Executors.newSingleThreadExecutor()
 
     private var bleHostApiImpl: BleHostApiImpl? = null
+    private var vadBatchRunner: VadBatchRunner? = null
 
     companion object {
         var isFlutterAlive = false
@@ -95,6 +96,9 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // Register VAD batch runner channel (Android-only; iOS stays on per-window fallback).
+        vadBatchRunner = VadBatchRunner(flutterEngine.dartExecutor.binaryMessenger)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -107,6 +111,8 @@ class MainActivity : FlutterActivity() {
         // The service handles disconnecting all managed devices in onDestroy.
         if (isFinishing) {
             OmiBleManager.isFlutterAlive = false
+            vadBatchRunner?.destroy()
+            vadBatchRunner = null
             OmiBleForegroundService.stopService(this)
         }
         super.onDestroy()

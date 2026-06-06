@@ -145,4 +145,5 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.0.0-alpha3'
     implementation 'io.intercom.android:intercom-sdk:latest.release'
     implementation 'androidx.work:work-runtime-ktx:2.9.1'
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.22.0'
 }
