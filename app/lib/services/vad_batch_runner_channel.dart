@@ -96,7 +96,6 @@ class VadBatchRunnerChannel {
   /// Safe to call multiple times or when not initialised.
   Future<void> dispose() async {
     if (!_initialised) return;
-    _initialised = false;
     try {
       if (isolateSendPort != null) {
         final replyPort = ReceivePort();
@@ -113,6 +112,8 @@ class VadBatchRunnerChannel {
       Logger.debug('VadBatchRunnerChannel: disposed');
     } catch (e) {
       Logger.error('VadBatchRunnerChannel: dispose error ($e)');
+    } finally {
+      _initialised = false;
     }
   }
 }
