@@ -1020,7 +1020,7 @@ class VadAudioProcessor {
       }
 
       // TWO-PASS: flush any remaining batch at segment end.
-      if (_useBatchRunner && _batchDeferredFrames.isNotEmpty) {
+      if (_batchDeferredFrames.isNotEmpty) {
         segmentSpeechFrames =
             await _flushVadBatch(savedFiles: savedFiles, segmentSpeechFrames: segmentSpeechFrames);
       }
@@ -1348,11 +1348,12 @@ class VadAudioProcessor {
   }) async {
     if (_batchDeferredFrames.isEmpty) return segmentSpeechFrames;
 
-    // Build a set mapping each deferred-frame index → whether any VAD window
-    // that completed during that frame detected speech.
-    final frameSpeechFlags = List<bool>.filled(_batchDeferredFrames.length, false);
+    // If the model was disabled (e.g. from a prior ML failure), AAD mode is active.
+    // Treat all deferred frames as speech to avoid data loss.
+    final bool aadMode = _session == null;
+    final frameSpeechFlags = List<bool>.filled(_batchDeferredFrames.length, aadMode);
 
-    if (_batchWindows.isNotEmpty && _batchRunner != null && _batchRunner!.available) {
+    if (!aadMode && _batchWindows.isNotEmpty && _batchRunner != null && _batchRunner!.available) {
       try {
         final stopwatch = Stopwatch()..start();
         final samples = Float32List.fromList(_batchWindows);
