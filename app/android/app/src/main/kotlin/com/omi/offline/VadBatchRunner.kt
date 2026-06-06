@@ -6,6 +6,7 @@ import ai.onnxruntime.OrtSession
 import ai.onnxruntime.OrtSession.SessionOptions
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Log
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -62,6 +63,7 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
                         doInit(modelPath)
                         Handler(android.os.Looper.getMainLooper()).post { result.success(null) }
                     } catch (e: Exception) {
+                        Log.e("VadBatchRunner", "init failed", e)
                         Handler(android.os.Looper.getMainLooper()).post {
                             result.error("INIT_ERROR", e.message, null)
                         }
@@ -77,6 +79,7 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
                         val probs = doRunBatch(samples, resetStateFirst)
                         Handler(android.os.Looper.getMainLooper()).post { result.success(probs) }
                     } catch (e: Exception) {
+                        Log.e("VadBatchRunner", "runVadBatch failed", e)
                         Handler(android.os.Looper.getMainLooper()).post {
                             result.error("RUN_ERROR", e.message, null)
                         }
@@ -89,6 +92,7 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
                         doDispose()
                         Handler(android.os.Looper.getMainLooper()).post { result.success(null) }
                     } catch (e: Exception) {
+                        Log.e("VadBatchRunner", "dispose failed", e)
                         Handler(android.os.Looper.getMainLooper()).post {
                             result.error("DISPOSE_ERROR", e.message, null)
                         }
@@ -104,9 +108,11 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
 
         env = OrtEnvironment.getEnvironment()
         val opts = SessionOptions()
+        var usingXnnpack = false
         try {
             // XNNPACK when available — faster ARM kernels, deterministic.
             opts.addXnnpack(java.util.Collections.emptyMap())
+            usingXnnpack = true
         } catch (_: Exception) {
             // XNNPACK not bundled — fall back to default CPU EP.
         }
@@ -118,6 +124,8 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
         // Zero-initialise rolling state and context.
         state.fill(0f)
         context.fill(0f)
+        
+        Log.d("VadBatchRunner", "Initialized OrtSession. XNNPACK: $usingXnnpack")
     }
 
     private fun doRunBatch(samples: FloatArray, resetStateFirst: Boolean): FloatArray {
@@ -128,6 +136,7 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
         if (n == 0) return FloatArray(0)
 
         if (resetStateFirst) {
+            Log.d("VadBatchRunner", "Resetting state and context for new batch")
             state.fill(0f)
             context.fill(0f)
         }
@@ -203,6 +212,7 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
         // Don't close env — OrtEnvironment is a process-wide singleton.
         state.fill(0f)
         context.fill(0f)
+        Log.d("VadBatchRunner", "Disposed OrtSession")
     }
 
     fun destroy() {
