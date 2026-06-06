@@ -163,10 +163,9 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
                     FloatBuffer.wrap(inputBuf),
                     longArrayOf(1, INPUT_SIZE.toLong())
                 )
-                val stateCopy = state.copyOf()
                 val stateTensor = OnnxTensor.createTensor(
                     ortEnv,
-                    FloatBuffer.wrap(stateCopy),
+                    FloatBuffer.wrap(state),
                     longArrayOf(2, 1, STATE_DIM.toLong())
                 )
 
