@@ -1214,7 +1214,11 @@ class VadAudioProcessor {
           isSpeech = probs[0] > _speechThreshold;
         }
       } catch (e) {
-        Logger.error('VadAudioProcessor: _flushPartialWindow batch runner failed ($e)');
+        Logger.error('VadAudioProcessor: _flushPartialWindow batch runner failed ($e) — disabling model, AAD mode active');
+        _session = null;
+        // ignore: unawaited_futures, discarded_futures
+        _batchRunner?.dispose();
+        isSpeech = true;
       }
     } else {
       isSpeech = await _runVad(padded);
@@ -1367,7 +1371,14 @@ class VadAudioProcessor {
           }
         }
       } catch (e) {
-        Logger.error('VadAudioProcessor: batch runner failed ($e) — treating batch as silence');
+        Logger.error('VadAudioProcessor: batch runner failed ($e) — disabling model, AAD mode active');
+        _session = null;
+        // ignore: unawaited_futures, discarded_futures
+        _batchRunner?.dispose();
+        // Treat current batch as speech to avoid data loss
+        for (int i = 0; i < frameSpeechFlags.length; i++) {
+          frameSpeechFlags[i] = true;
+        }
       }
     }
 
