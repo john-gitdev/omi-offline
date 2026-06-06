@@ -45,7 +45,7 @@ class VadBatchRunnerChannel {
           'modelPath': modelPath,
           'replyPort': replyPort.sendPort,
         });
-        final response = await replyPort.first;
+        final response = await replyPort.first.timeout(const Duration(seconds: 10));
         replyPort.close();
         if (response != 'ok') throw Exception(response);
       } else {
@@ -79,7 +79,7 @@ class VadBatchRunnerChannel {
         'resetStateFirst': resetStateFirst,
         'replyPort': replyPort.sendPort,
       });
-      final response = await replyPort.first;
+      final response = await replyPort.first.timeout(const Duration(seconds: 10));
       replyPort.close();
       if (response is String) throw Exception(response);
       result = response as Float32List?;
@@ -103,7 +103,7 @@ class VadBatchRunnerChannel {
           'type': 'vad_batch_dispose',
           'replyPort': replyPort.sendPort,
         });
-        final response = await replyPort.first;
+        final response = await replyPort.first.timeout(const Duration(seconds: 10));
         replyPort.close();
         if (response != 'ok') throw Exception(response.toString());
       } else {
