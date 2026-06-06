@@ -1187,12 +1187,12 @@ class VadAudioProcessor {
     // conversation with the previous conversation's recurrent state.
     if (!_isReplayingBatch) {
       _pcmBufferLen = 0;
-      // ignore: unawaited_futures, discarded_futures
-      _cachedStateValue?.dispose();
-      _cachedStateValue = null;
-      _vadContext.fillRange(0, _vadContextSamples, 0.0);
-      _batchResetPending = true;
     }
+    // ignore: unawaited_futures, discarded_futures
+    _cachedStateValue?.dispose();
+    _cachedStateValue = null;
+    _vadContext.fillRange(0, _vadContextSamples, 0.0);
+    _batchResetPending = true;
     // Defensive clear: callers that discard MUST call _emitOrphanMarkers()
     // before _resetState() — otherwise the tap is lost silently. Anything
     // still in _pendingMarkers here is a bug in the caller; we wipe it so it
@@ -1339,12 +1339,12 @@ class VadAudioProcessor {
       _recordingStartTime = cutTime;
       if (!_isReplayingBatch) {
         _pcmBufferLen = 0;
-        // ignore: unawaited_futures, discarded_futures
-        _cachedStateValue?.dispose();
-        _cachedStateValue = null;
-        _vadContext.fillRange(0, _vadContextSamples, 0.0);
-        _batchResetPending = true;
       }
+      // ignore: unawaited_futures, discarded_futures
+      _cachedStateValue?.dispose();
+      _cachedStateValue = null;
+      _vadContext.fillRange(0, _vadContextSamples, 0.0);
+      _batchResetPending = true;
     }
 
     return _VadVerdictResult(segmentSpeechFrames: segmentSpeechFrames, splitFired: splitFired);

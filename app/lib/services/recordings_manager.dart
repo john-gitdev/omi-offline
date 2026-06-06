@@ -1464,7 +1464,11 @@ class RecordingsManager {
               case 'vad_batch_init':
                 try {
                   await mainBatchRunner.init(msg['modelPath'] as String);
-                  (msg['replyPort'] as SendPort).send('ok');
+                  if (mainBatchRunner.available) {
+                    (msg['replyPort'] as SendPort).send('ok');
+                  } else {
+                    (msg['replyPort'] as SendPort).send('plugin_missing');
+                  }
                 } catch (e) {
                   (msg['replyPort'] as SendPort).send(e.toString());
                 }
