@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/services/frame_ref.dart';
+import 'package:omi/services/vad_batch_runner_channel.dart';
 import 'package:omi/utils/logger.dart';
 
 /// Thrown from inside [VadAudioProcessor]'s decode loop when the caller-supplied
@@ -68,6 +69,9 @@ class ProcessingSettings {
 }
 
 class VadAudioProcessor {
+  // Native batch runner (Android-only); null when unavailable (iOS/desktop/tests).
+  final VadBatchRunnerChannel? _batchRunner;
+
   // Silero VAD session + persistent native state (reset on gap detection)
   OrtSession? _session;
   // Silero v5+ recurrent state kept as a live OrtValue so the LSTM weights
@@ -89,6 +93,20 @@ class VadAudioProcessor {
   // _vadWindowSamples is sufficient; the extra headroom is defensive only.
   final Float32List _pcmBuffer = Float32List(_vadWindowSamples * 2);
   int _pcmBufferLen = 0;
+
+  // --- Two-pass batch buffers (Android batch runner path) ---
+  // Accumulated 512-sample windows for the next runVadBatch call.
+  final List<Float32List> _batchWindows = [];
+  // For each window in _batchWindows, the index into _batchDeferredFrames of
+  // the audio frame during which this window completed. Used in Pass 2 to map
+  // window probs back to the frame that triggered them.
+  final List<int> _batchWindowFrameIndices = [];
+  // Deferred per-frame metadata accumulated in Pass 1. Replayed in Pass 2
+  // after runVadBatch returns the probabilities.
+  final List<_DeferredFrame> _batchDeferredFrames = [];
+  // True when the native batch runner's LSTM state must be zeroed before the
+  // next runVadBatch call (set at every conversation boundary / state reset).
+  bool _batchResetPending = true;
 
   // Opus decoder
   final SimpleOpusDecoder? _decoder;
@@ -266,13 +284,15 @@ class VadAudioProcessor {
     SimpleOpusDecoder? decoder,
     void Function()? onLiveness,
     bool Function()? isCancelled,
+    VadBatchRunnerChannel? batchRunner,
   }) : this._(
             outputDir: outputDir,
             decoder: decoder,
             session: session,
             settings: settings,
             onLiveness: onLiveness,
-            isCancelled: isCancelled);
+            isCancelled: isCancelled,
+            batchRunner: batchRunner);
 
   VadAudioProcessor._(
       {String? outputDir,
@@ -280,8 +300,10 @@ class VadAudioProcessor {
       OrtSession? session,
       required ProcessingSettings settings,
       void Function()? onLiveness,
-      bool Function()? isCancelled})
+      bool Function()? isCancelled,
+      VadBatchRunnerChannel? batchRunner})
       : _session = session,
+        _batchRunner = batchRunner,
         _onLiveness = onLiveness,
         _isCancelled = isCancelled,
         _decoder = decoder ??
@@ -299,12 +321,15 @@ class VadAudioProcessor {
         _audioSaveFormat = settings.audioSaveFormat,
         _omiEnabled = settings.omiEnabled;
 
-  void destroy() {
+  /// Whether the native batch runner is available for this processor instance.
+  /// When true, processSegmentFile uses the two-pass batched VAD path.
+  bool get _useBatchRunner => _batchRunner != null && _batchRunner!.available && _session != null;
+
+  Future<void> destroy() async {
     _decoder?.destroy();
     final s = _session;
     _session = null;
-    // ignore: unawaited_futures, discarded_futures
-    s?.close();
+    await s?.close();
     // ignore: unawaited_futures, discarded_futures
     _cachedStateValue?.dispose();
     _cachedStateValue = null;
@@ -603,10 +628,16 @@ class VadAudioProcessor {
             'sessionChanged=$sessionChanged, gapMs=$gapMs (threshold=${_silenceDurationToSplitMs - _firmwareVadHoldMs}ms effective), '
             'lastEnd=${_lastSegmentEndTime?.toUtc()} segmentStart=${segmentStartTime.toUtc()} — flushing.',
           );
+          // TWO-PASS: flush any deferred batch before the inter-file split.
+          if (_useBatchRunner && _batchDeferredFrames.isNotEmpty) {
+            segmentSpeechFrames =
+                await _flushVadBatch(savedFiles: savedFiles, segmentSpeechFrames: segmentSpeechFrames);
+          }
           await _flushPartialWindow();
           _cachedStateValue?.dispose();
           _cachedStateValue = null;
           _vadContext.fillRange(0, _vadContextSamples, 0.0);
+          _batchResetPending = true;
           _pcmBufferLen = 0;
           final filePath = await flushRemaining();
           if (filePath != null) savedFiles.add(filePath);
@@ -755,6 +786,11 @@ class VadAudioProcessor {
         // signal — no EDL bookmark is emitted.
         if (frameLength == 0xFFFFFFFC) {
           if (offset + 20 <= fileLength) {
+            // TWO-PASS: flush any deferred batch before finalizing.
+            if (_useBatchRunner && _batchDeferredFrames.isNotEmpty) {
+              segmentSpeechFrames =
+                  await _flushVadBatch(savedFiles: savedFiles, segmentSpeechFrames: segmentSpeechFrames);
+            }
             Logger.debug(
                 'VadAudioProcessor: Session-end marker at $lastFrameWallTime — finalizing recording (refs=${_currentRefs.length}).');
             if (_currentRefs.isNotEmpty) {
@@ -771,6 +807,7 @@ class VadAudioProcessor {
             _cachedStateValue?.dispose();
             _cachedStateValue = null;
             _vadContext.fillRange(0, _vadContextSamples, 0.0);
+            _batchResetPending = true;
           }
           offset += 20;
           continue;
@@ -815,6 +852,11 @@ class VadAudioProcessor {
 
             if (gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump) {
               // Gap exceeds threshold — flush current recording, start new conversation.
+              // TWO-PASS: flush any deferred batch before the split decision.
+              if (_useBatchRunner && _batchDeferredFrames.isNotEmpty) {
+                segmentSpeechFrames =
+                    await _flushVadBatch(savedFiles: savedFiles, segmentSpeechFrames: segmentSpeechFrames);
+              }
               await _flushPartialWindow();
               final speechMs = _speechFrameCount * frameDurationMs;
               final bool tooShortSpeech =
@@ -857,6 +899,7 @@ class VadAudioProcessor {
               _cachedStateValue?.dispose();
               _cachedStateValue = null;
               _vadContext.fillRange(0, _vadContextSamples, 0.0);
+              _batchResetPending = true;
               Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
             } else {
               // Gap within threshold or clock jump — stitch, padding with silence so playback reflects real timing.
@@ -915,10 +958,19 @@ class VadAudioProcessor {
               // samples the decoder returned, so an oversized frame can never
               // overrun the fixed buffer.
               if (_pcmBufferLen == _vadWindowSamples) {
-                // Zero-copy view: _runVad copies it into its pre-allocated input
-                // buffer synchronously before any await, so resetting the length
-                // below is safe even though the view aliases _pcmBuffer.
-                if (await _runVad(Float32List.sublistView(_pcmBuffer, 0, _vadWindowSamples))) isSpeech = true;
+                if (_useBatchRunner) {
+                  // TWO-PASS: collect window into batch buffer; defer VAD to Pass 2.
+                  final windowCopy = Float32List(_vadWindowSamples);
+                  windowCopy.setAll(0, Float32List.sublistView(_pcmBuffer, 0, _vadWindowSamples));
+                  _batchWindows.add(windowCopy);
+                  _batchWindowFrameIndices.add(_batchDeferredFrames.length);
+                } else {
+                  // SINGLE-PASS (fallback): run VAD inline per window.
+                  // Zero-copy view: _runVad copies it into its pre-allocated input
+                  // buffer synchronously before any await, so resetting the length
+                  // below is safe even though the view aliases _pcmBuffer.
+                  if (await _runVad(Float32List.sublistView(_pcmBuffer, 0, _vadWindowSamples))) isSpeech = true;
+                }
                 _pcmBufferLen = 0;
               }
             }
@@ -931,100 +983,57 @@ class VadAudioProcessor {
         }
 
         final frameRef = FrameRef(segmentFile: segmentFile, byteOffset: offset, frameLength: frameLength);
-        if (isSpeech) {
-          _speechFrameCount++;
-          segmentSpeechFrames++;
-          _silenceRunMs = 0;
-        } else {
-          _silenceRunMs += frameDurationMs;
-        }
-        _currentRefs.add(frameRef);
-        _currentChunkDurationMs += frameDurationMs;
-        if (isSpeech) {
-          // High-water mark of the conversation's last speech, used to trim the
-          // trailing silence off the saved recording on an in-stream split.
-          _lastSpeechRefCount = _currentRefs.length;
-          _lastSpeechChunkMs = _currentChunkDurationMs;
-        }
-        if (_currentFrameUptimeMs != null) _currentFrameUptimeMs = _currentFrameUptimeMs! + frameDurationMs;
 
         // Compute accurate wall-clock time for this frame using VAD-resume anchor if available.
         final frameTime = (vadResumeTime != null && vadResumeFrameIndex != null)
             ? vadResumeTime.add(Duration(milliseconds: (frameIndex - vadResumeFrameIndex) * frameDurationMs))
             : segmentStartTime.add(Duration(milliseconds: frameIndex * frameDurationMs));
         lastFrameWallTime = frameTime;
+        if (_currentFrameUptimeMs != null) _currentFrameUptimeMs = _currentFrameUptimeMs! + frameDurationMs;
 
-        // Anchor a fresh conversation to THIS frame's wall-clock time. After an
-        // in-stream silence split, _splitOnSilence resets _recordingStartTime to
-        // null mid-file; anchoring to segmentStartTime / vadResumeTime here would
-        // back-date the new conversation to the start of the file (or the resume
-        // point), stacking it on top of the chunk just split off and producing
-        // overlapping records with identical timestamps. frameTime is the correct
-        // per-frame wall clock and advances monotonically across splits.
-        if (_recordingStartTime == null) {
-          _recordingStartTime = frameTime;
-        }
+        if (_useBatchRunner) {
+          // TWO-PASS: defer verdict — accumulate frame metadata for Pass 2 replay.
+          _batchDeferredFrames.add(_DeferredFrame(
+            ref: frameRef,
+            frameTime: frameTime,
+            markerProtected: isSpeech, // includes AAD-mode and marker-protected speech
+          ));
 
-        // App-side silence split. The firmware only emits a 0xFFFFFFFD gap once
-        // its own AAD has gone quiet long enough; in a continuous-audio
-        // environment that gap may never reach the split threshold, so the
-        // whole stream stitches into one unbounded conversation that never
-        // finalizes. Independently cut here once the Silero VAD has seen
-        // _silenceDurationToSplitMs of continuous non-speech.
-        if (_silenceRunMs >= _silenceDurationToSplitMs) {
-          await _splitOnSilence(savedFiles);
-          offset += 4 + ((frameLength + 3) & ~3);
-          frameIndex++;
-          totalFrameCount++;
-          continue;
-        }
-
-        // Max conversation duration cap (0 / disabled by default).
-        if (_currentChunkDurationMs >= _maxChunkMs) {
-          Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
-          await _flushPartialWindow();
-          final speechMs = _speechFrameCount * frameDurationMs;
-          final bool tooShortSpeech =
-              _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
-
-          if (!tooShortSpeech) {
-            // capEnded=true: VAD cut here because the recording hit the max-duration cap,
-            // not because of silence. The pruneConsumedBins guard reads this flag from
-            // .meta so it knows NOT to delete bins whose wall-clock extends past rec_end
-            // (those bins may contain the post-cap continuation of the conversation).
-            final filePath = await _saveRecording(_currentRefs, _recordingStartTime!, capEnded: true);
-            // Encoder failure path: preserve queued taps as orphans.
-            if (filePath == null) _emitOrphanMarkers();
-            if (filePath != null) savedFiles.add(filePath);
-          } else {
-            final rec = _buildDiscardRecord('noise_max_duration');
-            if (rec != null) _pendingDiscards.add(rec);
-            _emitOrphanMarkers();
-            Logger.debug('VadAudioProcessor: Discarding noise conversation during max-duration cut.');
+          // DYNAMIC BATCH LIMIT: Flush early to prevent MethodChannel OOMs on 
+          // continuous background noise (limit to 120s of audio / 6000 frames per batch).
+          if (_batchDeferredFrames.length >= 6000) {
+            segmentSpeechFrames = await _flushVadBatch(
+              savedFiles: savedFiles,
+              segmentSpeechFrames: segmentSpeechFrames,
+            );
           }
-          final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
-
-          final bool newConversationProtected =
-              _markerProtectedUntilMs != null && cutTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
-          _forcedByMarker = newConversationProtected;
-
-          _currentRefs = [];
-          _speechFrameCount = 0;
-          _currentChunkDurationMs = 0;
-          _silenceRunMs = 0;
-          _lastSpeechRefCount = 0;
-          _lastSpeechChunkMs = 0;
-          _recordingStartTime = cutTime;
-          _pcmBufferLen = 0;
-          // ignore: unawaited_futures, discarded_futures
-          _cachedStateValue?.dispose();
-          _cachedStateValue = null;
-          _vadContext.fillRange(0, _vadContextSamples, 0.0);
+        } else {
+          // SINGLE-PASS: apply verdict inline (original path).
+          final verdictResult = await _applyVadVerdict(
+            isSpeech: isSpeech,
+            frameRef: frameRef,
+            frameTime: frameTime,
+            savedFiles: savedFiles,
+            segmentSpeechFrames: segmentSpeechFrames,
+          );
+          segmentSpeechFrames = verdictResult.segmentSpeechFrames;
+          if (verdictResult.splitFired) {
+            offset += 4 + ((frameLength + 3) & ~3);
+            frameIndex++;
+            totalFrameCount++;
+            continue;
+          }
         }
 
         offset += 4 + ((frameLength + 3) & ~3); // advance past 4-byte-aligned frame (matches SD card wire format)
         frameIndex++;
         totalFrameCount++;
+      }
+
+      // TWO-PASS: flush any remaining batch at segment end.
+      if (_batchDeferredFrames.isNotEmpty) {
+        segmentSpeechFrames =
+            await _flushVadBatch(savedFiles: savedFiles, segmentSpeechFrames: segmentSpeechFrames);
       }
 
       _lastSegmentEndTime = lastFrameWallTime.add(const Duration(milliseconds: frameDurationMs));
@@ -1181,6 +1190,7 @@ class VadAudioProcessor {
     _cachedStateValue?.dispose();
     _cachedStateValue = null;
     _vadContext.fillRange(0, _vadContextSamples, 0.0);
+    _batchResetPending = true;
     // Defensive clear: callers that discard MUST call _emitOrphanMarkers()
     // before _resetState() — otherwise the tap is lost silently. Anything
     // still in _pendingMarkers here is a bug in the caller; we wipe it so it
@@ -1201,13 +1211,245 @@ class VadAudioProcessor {
   /// any [_resetState] call or inline state reset. Is a no-op when the buffer
   /// is empty or no Silero session is loaded (AAD mode).
   Future<void> _flushPartialWindow() async {
-    if (_session == null || _pcmBufferLen == 0) return;
+    if (_pcmBufferLen == 0) return;
+
+    // During batch replay the native runner's LSTM state has already advanced
+    // past this point — we can't evaluate with the correct recurrent context.
+    // Conservatively treat partial window as speech so silence-split trims at
+    // the last full-window speech boundary rather than over-trimming.
+    if (_isReplayingBatch) {
+      _lastSpeechRefCount = _currentRefs.length;
+      _lastSpeechChunkMs = _currentChunkDurationMs;
+      return;
+    }
+
+    if (_session == null) {
+      _lastSpeechRefCount = _currentRefs.length;
+      _lastSpeechChunkMs = _currentChunkDurationMs;
+      return;
+    }
+
     final padded = Float32List(_vadWindowSamples);
     padded.setRange(0, _pcmBufferLen, _pcmBuffer);
     // Remainder is already zero — Float32List default.
-    if (await _runVad(padded)) {
+    bool isSpeech = false;
+    if (_useBatchRunner) {
+      try {
+        final probs = await _batchRunner!.runVadBatch(padded, resetStateFirst: _batchResetPending);
+        _batchResetPending = false;
+        if (probs.isNotEmpty) {
+          if (probs[0] > _currentMaxVoiceProb) _currentMaxVoiceProb = probs[0];
+          isSpeech = probs[0] > _speechThreshold;
+        }
+      } catch (e) {
+        Logger.error('VadAudioProcessor: _flushPartialWindow batch runner failed ($e) — disabling model, AAD mode active');
+        final s = _session;
+        _session = null;
+        await s?.close();
+        // ignore: unawaited_futures, discarded_futures
+        _batchRunner?.dispose();
+        isSpeech = true;
+      }
+    } else {
+      isSpeech = await _runVad(padded);
+    }
+
+    if (isSpeech) {
       _lastSpeechRefCount = _currentRefs.length;
       _lastSpeechChunkMs = _currentChunkDurationMs;
+    }
+  }
+
+  /// Unified verdict application — the single place where per-frame speech /
+  /// silence tracking, silence-split, max-cap, and high-water-mark logic lives.
+  ///
+  /// Called inline by the single-pass fallback path (iOS / desktop / tests) and
+  /// in the Pass-2 replay loop by the batched Android path. Both paths supply
+  /// the same inputs; only *when* the VAD probability was computed differs.
+  ///
+  /// Returns [_VadVerdictResult] so the caller can update local counters and
+  /// react to splits (the single-pass path needs to `continue` the while loop).
+  Future<_VadVerdictResult> _applyVadVerdict({
+    required bool isSpeech,
+    required FrameRef frameRef,
+    required DateTime frameTime,
+    required List<String> savedFiles,
+    required int segmentSpeechFrames,
+  }) async {
+    bool splitFired = false;
+
+    if (isSpeech) {
+      _speechFrameCount++;
+      segmentSpeechFrames++;
+      _silenceRunMs = 0;
+    } else {
+      _silenceRunMs += frameDurationMs;
+    }
+    _currentRefs.add(frameRef);
+    _currentChunkDurationMs += frameDurationMs;
+    if (isSpeech) {
+      // High-water mark of the conversation's last speech, used to trim the
+      // trailing silence off the saved recording on an in-stream split.
+      _lastSpeechRefCount = _currentRefs.length;
+      _lastSpeechChunkMs = _currentChunkDurationMs;
+    }
+
+    // Anchor a fresh conversation to THIS frame's wall-clock time. After an
+    // in-stream silence split, _splitOnSilence resets _recordingStartTime to
+    // null mid-file; anchoring to segmentStartTime / vadResumeTime here would
+    // back-date the new conversation to the start of the file (or the resume
+    // point), stacking it on top of the chunk just split off and producing
+    // overlapping records with identical timestamps. frameTime is the correct
+    // per-frame wall clock and advances monotonically across splits.
+    if (_recordingStartTime == null) {
+      _recordingStartTime = frameTime;
+    }
+
+    // App-side silence split. The firmware only emits a 0xFFFFFFFD gap once
+    // its own AAD has gone quiet long enough; in a continuous-audio
+    // environment that gap may never reach the split threshold, so the
+    // whole stream stitches into one unbounded conversation that never
+    // finalizes. Independently cut here once the Silero VAD has seen
+    // _silenceDurationToSplitMs of continuous non-speech.
+    if (_silenceRunMs >= _silenceDurationToSplitMs) {
+      await _splitOnSilence(savedFiles);
+      splitFired = true;
+      return _VadVerdictResult(segmentSpeechFrames: segmentSpeechFrames, splitFired: splitFired);
+    }
+
+    // Max conversation duration cap (0 / disabled by default).
+    if (_currentChunkDurationMs >= _maxChunkMs) {
+      Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
+      await _flushPartialWindow();
+      final speechMs = _speechFrameCount * frameDurationMs;
+      final bool tooShortSpeech =
+          _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+
+      if (!tooShortSpeech) {
+        // capEnded=true: VAD cut here because the recording hit the max-duration cap,
+        // not because of silence. The pruneConsumedBins guard reads this flag from
+        // .meta so it knows NOT to delete bins whose wall-clock extends past rec_end
+        // (those bins may contain the post-cap continuation of the conversation).
+        final filePath = await _saveRecording(_currentRefs, _recordingStartTime!, capEnded: true);
+        // Encoder failure path: preserve queued taps as orphans.
+        if (filePath == null) _emitOrphanMarkers();
+        if (filePath != null) savedFiles.add(filePath);
+      } else {
+        final rec = _buildDiscardRecord('noise_max_duration');
+        if (rec != null) _pendingDiscards.add(rec);
+        _emitOrphanMarkers();
+        Logger.debug('VadAudioProcessor: Discarding noise conversation during max-duration cut.');
+      }
+      final cutTime = _recordingStartTime!.add(Duration(milliseconds: _currentChunkDurationMs));
+
+      final bool newConversationProtected =
+          _markerProtectedUntilMs != null && cutTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
+      _forcedByMarker = newConversationProtected;
+
+      _currentRefs = [];
+      _speechFrameCount = 0;
+      _currentChunkDurationMs = 0;
+      _silenceRunMs = 0;
+      _lastSpeechRefCount = 0;
+      _lastSpeechChunkMs = 0;
+      _recordingStartTime = cutTime;
+      if (!_isReplayingBatch) {
+        _pcmBufferLen = 0;
+      }
+      // ignore: unawaited_futures, discarded_futures
+      _cachedStateValue?.dispose();
+      _cachedStateValue = null;
+      _vadContext.fillRange(0, _vadContextSamples, 0.0);
+      _batchResetPending = true;
+    }
+
+    return _VadVerdictResult(segmentSpeechFrames: segmentSpeechFrames, splitFired: splitFired);
+  }
+
+  bool _isReplayingBatch = false;
+
+  /// Pass 2 of the batched VAD path: sends all accumulated windows to the
+  /// native batch runner in one call, then replays the returned probabilities
+  /// against the deferred frame metadata via [_applyVadVerdict].
+  ///
+  /// Called at segment-end and at every state-reset boundary (session-end,
+  /// VAD-resume gap split, inter-file split) so a batch never spans a
+  /// conversation boundary.
+  Future<int> _flushVadBatch({
+    required List<String> savedFiles,
+    required int segmentSpeechFrames,
+  }) async {
+    if (_batchDeferredFrames.isEmpty) return segmentSpeechFrames;
+
+    _isReplayingBatch = true;
+    try {
+
+    // If the model was disabled (e.g. from a prior ML failure), AAD mode is active.
+    // Treat all deferred frames as speech to avoid data loss.
+    final bool aadMode = _session == null;
+    final frameSpeechFlags = List<bool>.filled(_batchDeferredFrames.length, aadMode);
+
+    if (!aadMode && _batchWindows.isNotEmpty && _batchRunner != null && _batchRunner!.available) {
+      try {
+        final stopwatch = Stopwatch()..start();
+        final samples = Float32List(_batchWindows.length * _vadWindowSamples);
+        int offset = 0;
+        for (final w in _batchWindows) {
+          samples.setAll(offset, w);
+          offset += _vadWindowSamples;
+        }
+        final probs = await _batchRunner!.runVadBatch(samples, resetStateFirst: _batchResetPending);
+        stopwatch.stop();
+        Logger.debug(
+            'VadAudioProcessor: batch runner evaluated ${probs.length} windows (${samples.length} samples) in ${stopwatch.elapsedMilliseconds}ms.');
+        
+        _batchResetPending = false;
+        // Map each window's prob back to the frame that triggered it.
+        for (int w = 0; w < probs.length && w < _batchWindowFrameIndices.length; w++) {
+          final prob = probs[w];
+          if (prob > _currentMaxVoiceProb) _currentMaxVoiceProb = prob;
+          if (prob > _speechThreshold) {
+            frameSpeechFlags[_batchWindowFrameIndices[w]] = true;
+          }
+        }
+      } catch (e) {
+        Logger.error('VadAudioProcessor: batch runner failed ($e) — disabling model, AAD mode active');
+        final s = _session;
+        _session = null;
+        await s?.close();
+        // ignore: unawaited_futures, discarded_futures
+        _batchRunner?.dispose();
+        // Treat current batch as speech to avoid data loss
+        for (int i = 0; i < frameSpeechFlags.length; i++) {
+          frameSpeechFlags[i] = true;
+        }
+      }
+    }
+
+    // Replay verdicts in frame order through the shared _applyVadVerdict.
+    for (int f = 0; f < _batchDeferredFrames.length; f++) {
+      final df = _batchDeferredFrames[f];
+      // isSpeech = marker-protected (set during Pass 1) OR VAD detected speech
+      final isSpeech = df.markerProtected || frameSpeechFlags[f];
+      final verdictResult = await _applyVadVerdict(
+        isSpeech: isSpeech,
+        frameRef: df.ref,
+        frameTime: df.frameTime,
+        savedFiles: savedFiles,
+        segmentSpeechFrames: segmentSpeechFrames,
+      );
+      segmentSpeechFrames = verdictResult.segmentSpeechFrames;
+      // splitFired is handled inside _applyVadVerdict (calls _splitOnSilence
+      // or resets state); no outer loop to `continue` from here.
+    }
+
+    return segmentSpeechFrames;
+    } finally {
+      _isReplayingBatch = false;
+      // Clear batch buffers for the next batch boundary.
+      _batchDeferredFrames.clear();
+      _batchWindows.clear();
+      _batchWindowFrameIndices.clear();
     }
   }
 
@@ -2048,4 +2290,33 @@ class VadAudioProcessor {
     header.setUint32(40, pcmBytes, Endian.little);
     return header.buffer.asUint8List();
   }
+}
+
+/// Per-frame metadata accumulated during Pass 1 of the batched VAD path.
+/// Replayed in Pass 2 after [runVadBatch] returns the window probabilities.
+class _DeferredFrame {
+  final FrameRef ref;
+  final DateTime frameTime;
+  /// True if this frame was already determined to be speech during Pass 1
+  /// (AAD mode or marker protection). VAD speech from the batch is OR'd in
+  /// during Pass 2.
+  final bool markerProtected;
+
+  const _DeferredFrame({
+    required this.ref,
+    required this.frameTime,
+    required this.markerProtected,
+  });
+}
+
+/// Result from [_applyVadVerdict] so the caller can update local counters
+/// and react to splits.
+class _VadVerdictResult {
+  final int segmentSpeechFrames;
+  final bool splitFired;
+
+  const _VadVerdictResult({
+    required this.segmentSpeechFrames,
+    required this.splitFired,
+  });
 }

@@ -14,6 +14,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/audio/aac_encoder.dart';
 import 'package:omi/services/vad_audio_processor.dart';
+import 'package:omi/services/vad_batch_runner_channel.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/time_utils.dart';
@@ -589,6 +590,14 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     }
   }
 
+  // Initialise the native VAD batch runner (Android-only). Uses the same
+  // materialized model file that the ORT session was loaded from. On non-Android
+  // platforms, init is a no-op and available stays false.
+  final batchRunner = VadBatchRunnerChannel(isolateSendPort: params.sendPort);
+  if (params.settings.vadEnabled && params.sileroModelPath != null && session != null) {
+    await batchRunner.init(params.sileroModelPath!);
+  }
+
   // Liveness: VadAudioProcessor bumps this counter from inside its decode/save
   // loops, so it advances even within a single long segment or save. The timer
   // below forwards a 'heartbeat' to the main isolate only when the count
@@ -607,6 +616,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     // fires and force-kills the isolate, which crashes the app from inside an
     // ONNX/Opus FFI call.
     isCancelled: () => cancelled,
+    batchRunner: batchRunner,
   );
 
   int lastSeenLivenessTick = -1;
@@ -787,7 +797,8 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
     params.sendPort.send({'type': 'error', 'message': '$e\n$st'});
   } finally {
     heartbeatTimer.cancel();
-    processor.destroy();
+    await batchRunner.dispose();
+    await processor.destroy();
     controlPort.close();
   }
 }
@@ -1397,6 +1408,7 @@ class RecordingsManager {
           } catch (_) {}
         }
 
+        final mainBatchRunner = VadBatchRunnerChannel();
         try {
           final receivePort = ReceivePort();
           final exitPort = ReceivePort();
@@ -1448,6 +1460,38 @@ class RecordingsManager {
                 // Forward a pending cancel if the user already called cancelProcessing().
                 if (_cancelRequested) {
                   _activeIsolateControlPort?.send('cancel');
+                }
+              case 'vad_batch_init':
+                try {
+                  await mainBatchRunner.init(msg['modelPath'] as String);
+                  if (mainBatchRunner.available) {
+                    (msg['replyPort'] as SendPort).send('ok');
+                  } else {
+                    (msg['replyPort'] as SendPort).send('plugin_missing');
+                  }
+                } catch (e) {
+                  (msg['replyPort'] as SendPort).send(e.toString());
+                }
+              case 'vad_batch_run':
+                try {
+                  final result = await mainBatchRunner.runVadBatch(
+                    msg['samples'] as Float32List,
+                    resetStateFirst: msg['resetStateFirst'] as bool,
+                  );
+                  (msg['replyPort'] as SendPort).send(result);
+                } catch (e) {
+                  (msg['replyPort'] as SendPort).send(e.toString());
+                }
+              case 'vad_batch_dispose':
+                try {
+                  await mainBatchRunner.dispose();
+                  if (msg['replyPort'] != null) {
+                    (msg['replyPort'] as SendPort).send('ok');
+                  }
+                } catch (e) {
+                  if (msg['replyPort'] != null) {
+                    (msg['replyPort'] as SendPort).send(e.toString());
+                  }
                 }
               case 'heartbeat':
                 // Liveness from the decode/save loops — re-anchors the stall
@@ -1541,9 +1585,11 @@ class RecordingsManager {
           await Future.delayed(const Duration(milliseconds: 200));
           if (await tempDir.exists()) await tempDir.delete(recursive: true);
         } catch (e) {
-          _activeIsolateControlPort = null;
           Logger.error("RecordingsManager: Combined processing failed: $e");
           rethrow;
+        } finally {
+          _activeIsolateControlPort = null;
+          await mainBatchRunner.dispose();
         }
 
         // Clean up any device-session folders that are now empty after progressive deletion.
