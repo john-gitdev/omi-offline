@@ -325,12 +325,11 @@ class VadAudioProcessor {
   /// When true, processSegmentFile uses the two-pass batched VAD path.
   bool get _useBatchRunner => _batchRunner != null && _batchRunner!.available && _session != null;
 
-  void destroy() {
+  Future<void> destroy() async {
     _decoder?.destroy();
     final s = _session;
     _session = null;
-    // ignore: unawaited_futures, discarded_futures
-    s?.close();
+    await s?.close();
     // ignore: unawaited_futures, discarded_futures
     _cachedStateValue?.dispose();
     _cachedStateValue = null;
@@ -1237,8 +1236,7 @@ class VadAudioProcessor {
         Logger.error('VadAudioProcessor: _flushPartialWindow batch runner failed ($e) — disabling model, AAD mode active');
         final s = _session;
         _session = null;
-        // ignore: unawaited_futures, discarded_futures
-        s?.close();
+        await s?.close();
         // ignore: unawaited_futures, discarded_futures
         _batchRunner?.dispose();
         isSpeech = true;
@@ -1410,8 +1408,7 @@ class VadAudioProcessor {
         Logger.error('VadAudioProcessor: batch runner failed ($e) — disabling model, AAD mode active');
         final s = _session;
         _session = null;
-        // ignore: unawaited_futures, discarded_futures
-        s?.close();
+        await s?.close();
         // ignore: unawaited_futures, discarded_futures
         _batchRunner?.dispose();
         // Treat current batch as speech to avoid data loss

@@ -798,7 +798,7 @@ Future<void> _processingIsolateEntry(_IsolateParams params) async {
   } finally {
     heartbeatTimer.cancel();
     await batchRunner.dispose();
-    processor.destroy();
+    await processor.destroy();
     controlPort.close();
   }
 }
