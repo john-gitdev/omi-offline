@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.19.3
+
+- **Performance: Android Native VAD Batch Runner.** Processing large backlogs is now significantly faster and more power efficient on Android. The app now keeps the ORT session, the recurrent LSTM state, and the context window entirely within a background native Kotlin thread, and evaluates VAD across a batch of acoustic frames in a single platform-channel invocation rather than incurring thousands of synchronous FFI crossings per minute of audio. iOS and non-Android platforms fall back seamlessly to the standard per-window evaluation while preserving bit-identical VAD decisions.
+
 ### 0.19.2
 
 - **Simplified background sync pipeline.** Removed the redundant second "finalizing" sync that occurred after processing. The sync completion timestamp is now updated immediately after the primary data retrieval, ensuring the auto-sync timer is refreshed even during long processing runs. This prevents confusing behavior where audio recorded during processing was downloaded but left unprocessed until the next manual or scheduled sync.
