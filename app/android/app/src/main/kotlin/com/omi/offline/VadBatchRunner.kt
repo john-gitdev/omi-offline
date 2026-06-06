@@ -42,6 +42,7 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
 
     private var env: OrtEnvironment? = null
     private var session: OrtSession? = null
+    private var sessionOptions: SessionOptions? = null
 
     // Rolling LSTM state — [2, 1, 128] float32. Null → zero-initialised.
     private var state: FloatArray = FloatArray(2 * 1 * STATE_DIM)
@@ -108,19 +109,19 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
 
         env = OrtEnvironment.getEnvironment()
         var usingXnnpack = false
-        SessionOptions().use { opts ->
-            try {
-                // XNNPACK when available — faster ARM kernels, deterministic.
-                opts.addXnnpack(java.util.Collections.emptyMap())
-                usingXnnpack = true
-            } catch (_: Exception) {
-                // XNNPACK not bundled — fall back to default CPU EP.
-            }
-            opts.setIntraOpNumThreads(1)
-            opts.setInterOpNumThreads(1)
-
-            session = env!!.createSession(modelPath, opts)
+        val opts = SessionOptions()
+        sessionOptions = opts
+        try {
+            // XNNPACK when available — faster ARM kernels, deterministic.
+            opts.addXnnpack(java.util.Collections.emptyMap())
+            usingXnnpack = true
+        } catch (_: Exception) {
+            // XNNPACK not bundled — fall back to default CPU EP.
         }
+        opts.setIntraOpNumThreads(1)
+        opts.setInterOpNumThreads(1)
+
+        session = env!!.createSession(modelPath, opts)
 
         // Zero-initialise rolling state and context.
         state.fill(0f)
@@ -208,6 +209,8 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
     private fun doDispose() {
         try { session?.close() } catch (_: Exception) {}
         session = null
+        try { sessionOptions?.close() } catch (_: Exception) {}
+        sessionOptions = null
         // Don't close env — OrtEnvironment is a process-wide singleton.
         state.fill(0f)
         context.fill(0f)
