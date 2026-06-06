@@ -1350,8 +1350,13 @@ class VadAudioProcessor {
 
     if (_batchWindows.isNotEmpty && _batchRunner != null && _batchRunner!.available) {
       try {
+        final stopwatch = Stopwatch()..start();
         final samples = Float32List.fromList(_batchWindows);
         final probs = await _batchRunner!.runVadBatch(samples, resetStateFirst: _batchResetPending);
+        stopwatch.stop();
+        Logger.debug(
+            'VadAudioProcessor: batch runner evaluated ${probs.length} windows (${samples.length} samples) in ${stopwatch.elapsedMilliseconds}ms.');
+        
         _batchResetPending = false;
         // Map each window's prob back to the frame that triggered it.
         for (int w = 0; w < probs.length && w < _batchWindowFrameIndices.length; w++) {
