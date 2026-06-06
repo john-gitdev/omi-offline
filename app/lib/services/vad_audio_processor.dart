@@ -1185,9 +1185,7 @@ class VadAudioProcessor {
     // Reset VAD model state so the next conversation starts with a clean LSTM.
     // Not resetting these contaminates the first few VAD decisions of the new
     // conversation with the previous conversation's recurrent state.
-    if (!_isReplayingBatch) {
-      _pcmBufferLen = 0;
-    }
+    _pcmBufferLen = 0;
     // ignore: unawaited_futures, discarded_futures
     _cachedStateValue?.dispose();
     _cachedStateValue = null;
