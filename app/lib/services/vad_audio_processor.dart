@@ -998,6 +998,15 @@ class VadAudioProcessor {
             frameTime: frameTime,
             markerProtected: isSpeech, // includes AAD-mode and marker-protected speech
           ));
+
+          // DYNAMIC BATCH LIMIT: Flush early to prevent MethodChannel OOMs on 
+          // continuous background noise (limit to 120s of audio / 6000 frames per batch).
+          if (_batchDeferredFrames.length >= 6000) {
+            segmentSpeechFrames = await _flushVadBatch(
+              savedFiles: savedFiles,
+              segmentSpeechFrames: segmentSpeechFrames,
+            );
+          }
         } else {
           // SINGLE-PASS: apply verdict inline (original path).
           final verdictResult = await _applyVadVerdict(
