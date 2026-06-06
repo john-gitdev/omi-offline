@@ -123,6 +123,7 @@ class OmiApiClient {
       return null;
     }
 
+    Logger.debug('Omi Cloud: starting upload for ${binFiles.length} file(s)');
     await refreshTokenIfNeeded();
     final token = await SharedPreferencesUtil().omiIdToken;
     if (token.isEmpty) throw const OmiSyncException('No Omi ID token available');
@@ -438,6 +439,10 @@ class OmiSyncException implements Exception {
   final String message;
   final bool isAuthError;
   const OmiSyncException(this.message, {this.isAuthError = false});
+  @override
+  String toString() => 'OmiSyncException: $message';
+}
+his.message, {this.isAuthError = false});
   @override
   String toString() => 'OmiSyncException: $message';
 }

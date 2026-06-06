@@ -661,3 +661,65 @@ Where reconnect time goes, and the knobs that control each stage. Motivated by t
 
 ### Rule of thumb
 Levers 1+3 attack *fixed dead-time waits* (safe, bounded downside). Levers 2+4 attack *sequential/serial structure and native timing* (bigger wins, real regression risk on slow OEM BLE stacks — measure on-device before shipping).
+
+---
+
+## App: Adding a New Integration (Generic Architecture)
+
+The app uses a generic `PassthroughIntegration` architecture to handle uploads and synchronization. Adding a new integration requires zero changes to the UI or `RecordingsController`.
+
+### 1. Create a Subclass in `passthrough_integration.dart`
+Create a new class that implements `PassthroughIntegration`.
+
+```dart
+class NewServicePassthroughIntegration implements PassthroughIntegration {
+  final SharedPreferencesUtil _prefs;
+  NewServicePassthroughIntegration(this._prefs);
+
+  @override
+  String get name => 'New Service';
+
+  @override
+  bool isEnabled(Conversation c) {
+    // Check if the service is enabled in settings AND configured (e.g. API key present)
+    // AND any conversation-specific rules (e.g. date gates).
+    return _prefs.newServiceEnabled && isConfigured;
+  }
+
+  @override
+  bool get isConfigured => _prefs.newServiceEnabled && _prefs.newServiceApiKey.isNotEmpty;
+
+  @override
+  bool get isAutoUploadEnabled => _prefs.newServiceAutoUpload;
+
+  @override
+  bool hasDelivered(Conversation c) => _prefs.isUploadedToNewService(c.id);
+
+  @override
+  bool isFailed(Conversation c) => _prefs.getAutoUploadRetries(c.id) >= 3;
+
+  @override
+  Future<void> upload(Conversation c) async {
+    // Implement the actual upload logic here (e.g. calling NewService.upload(c)).
+    // Must call _prefs.markUploadedToNewService(c.id) on success.
+  }
+}
+```
+
+### 2. Register the Integration
+Add your new class to the static `getIntegrations` list in `PassthroughIntegration`:
+
+```dart
+static List<PassthroughIntegration> getIntegrations(SharedPreferencesUtil prefs) => [
+      HeyPocketPassthroughIntegration(prefs),
+      OmiPassthroughIntegration(prefs),
+      NewServicePassthroughIntegration(prefs), // Add here
+    ];
+```
+
+### 3. Benefits of this Architecture
+- **WiFi Control**: Your new integration automatically respects the "Upload on Wifi Only" toggle in App Settings.
+- **UI Icons**: The `UploadIconButton` in `BatchCard` and `RecordingPlayerPage` will automatically include your integration when calculating sync status (Partial/All/Failed).
+- **Auto-Upload**: The `tryAutoUploadAll` loop in `RecordingsController` will automatically pick up your integration and attempt background syncs.
+- **Passthrough Mode**: If "Delete After Upload" is enabled, your integration will correctly block local file deletion until it confirms delivery via `hasDelivered`.
+- **Validation**: The WiFi toggle will correctly detect that an integration is configured, allowing the user to turn it on.

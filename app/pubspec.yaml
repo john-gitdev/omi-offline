@@ -59,6 +59,7 @@ dependencies:
   ffmpeg_kit_flutter_new: ^4.1.0
 
   pigeon: any
+  connectivity_plus: ^7.1.1
 dependency_overrides:
   js: ^0.7.1
   uuid: ^4.4.0

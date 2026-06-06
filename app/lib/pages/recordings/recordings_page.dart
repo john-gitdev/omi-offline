@@ -12,6 +12,7 @@ import 'package:omi/pages/settings/settings_drawer.dart';
 import 'package:omi/pages/settings/find_devices_page.dart';
 import 'package:omi/pages/settings/device_settings.dart';
 import 'package:omi/pages/recordings/marker_conversation_player_page.dart';
+import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
 import 'package:omi/pages/recordings/recordings_banners.dart';
 import 'package:omi/pages/recordings/sync_process_card.dart';
@@ -991,9 +992,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           );
                                         }
                                         final batchIndex = index - 1;
-                                        final anyIntegrationEnabled =
-                                            (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) ||
-                                                (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty);
+                                        final anyIntegrationEnabled = PassthroughIntegration.hasAnyConfigured(_prefs);
                                         return BatchCard(
                                           batch: visibleBatches[batchIndex],
                                           markerMap: markerMap,

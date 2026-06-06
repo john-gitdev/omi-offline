@@ -174,6 +174,10 @@ class SharedPreferencesUtil {
   bool get passthroughMode => keepRecordingsDays == 0;
   set passthroughMode(bool v) => keepRecordingsDays = v ? 0 : -1;
 
+  // When enabled, uploads to integrations are restricted to WiFi connections only.
+  bool get uploadOnWifiOnly => getBool('uploadOnWifiOnly', defaultValue: false);
+  set uploadOnWifiOnly(bool v) => saveBool('uploadOnWifiOnly', v);
+
   //--------------------------- Omi Server Sync --------------------------//
 
   // Whether the Omi integration is active (controls bin generation, upload button, passthrough gating).
