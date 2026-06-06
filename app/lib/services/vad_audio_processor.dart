@@ -1200,7 +1200,7 @@ class VadAudioProcessor {
   /// any [_resetState] call or inline state reset. Is a no-op when the buffer
   /// is empty or no Silero session is loaded (AAD mode).
   Future<void> _flushPartialWindow() async {
-    if (_session == null || _pcmBufferLen == 0) return;
+    if (_session == null || _pcmBufferLen == 0 || _isReplayingBatch) return;
     final padded = Float32List(_vadWindowSamples);
     padded.setRange(0, _pcmBufferLen, _pcmBuffer);
     // Remainder is already zero — Float32List default.
@@ -1335,6 +1335,8 @@ class VadAudioProcessor {
     return _VadVerdictResult(segmentSpeechFrames: segmentSpeechFrames, splitFired: splitFired);
   }
 
+  bool _isReplayingBatch = false;
+
   /// Pass 2 of the batched VAD path: sends all accumulated windows to the
   /// native batch runner in one call, then replays the returned probabilities
   /// against the deferred frame metadata via [_applyVadVerdict].
@@ -1347,6 +1349,9 @@ class VadAudioProcessor {
     required int segmentSpeechFrames,
   }) async {
     if (_batchDeferredFrames.isEmpty) return segmentSpeechFrames;
+
+    _isReplayingBatch = true;
+    try {
 
     // If the model was disabled (e.g. from a prior ML failure), AAD mode is active.
     // Treat all deferred frames as speech to avoid data loss.
@@ -1401,11 +1406,14 @@ class VadAudioProcessor {
     }
 
     // Clear batch buffers for the next batch boundary.
+    _batchDeferredFrames.clear();
     _batchWindows.clear();
     _batchWindowFrameIndices.clear();
-    _batchDeferredFrames.clear();
 
     return segmentSpeechFrames;
+    } finally {
+      _isReplayingBatch = false;
+    }
   }
 
   /// Emits any queued button-tap markers as standalone EDL entries with no

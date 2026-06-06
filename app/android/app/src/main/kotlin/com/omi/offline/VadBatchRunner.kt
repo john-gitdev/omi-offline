@@ -173,21 +173,19 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
                         "state" to stateTensor,
                         "sr" to srTensor
                     )
-                    val outputs = sess.run(inputs)
+                    sess.run(inputs).use { outputs ->
+                        // Read output probability.
+                        val outputTensor = outputs.get("output")?.get() as? OnnxTensor
+                        if (outputTensor != null) {
+                            probs[i] = outputTensor.floatBuffer.get(0)
+                        }
 
-                    // Read output probability.
-                    val outputTensor = outputs.get("output")?.get() as? OnnxTensor
-                    if (outputTensor != null) {
-                        probs[i] = outputTensor.floatBuffer.get(0)
+                        // Adopt stateN as the new state for the next iteration.
+                        val stateNTensor = outputs.get("stateN")?.get() as? OnnxTensor
+                        if (stateNTensor != null) {
+                            stateNTensor.floatBuffer.get(state)
+                        }
                     }
-
-                    // Adopt stateN as the new state for the next iteration.
-                    val stateNTensor = outputs.get("stateN")?.get() as? OnnxTensor
-                    if (stateNTensor != null) {
-                        stateNTensor.floatBuffer.get(state)
-                    }
-
-                    outputs.close()
                 } finally {
                     inputTensor.close()
                     stateTensor.close()
