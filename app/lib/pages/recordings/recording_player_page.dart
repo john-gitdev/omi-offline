@@ -7,6 +7,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart' show RecordingsController, UploadStatus;
 import 'package:omi/widgets/dialog.dart';

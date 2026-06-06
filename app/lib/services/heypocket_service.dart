@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/utils/logger.dart';
 import 'package:path/path.dart' as p;
 
 class HeyPocketService {
@@ -122,18 +123,6 @@ class HeyPocketService {
         400 => 'Bad request — check file format',
         401 => 'Unauthorized — check your API key',
         _ => 'HeyPocket server error — try again later',
-      };
-}
-
-class HeyPocketException implements Exception {
-  final int statusCode;
-  final String message;
-  const HeyPocketException(this.statusCode, this.message);
-
-  @override
-  String toString() => 'HeyPocketException($statusCode): $message';
-}
-later',
       };
 }
 

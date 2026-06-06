@@ -146,6 +146,9 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   BtDevice get device => throw UnimplementedError();
   @override
+  Future<void>? get gattConnectFuture => null;
+
+  @override
   DeviceConnectionState get status => DeviceConnectionState.connected;
   @override
   Future<void> connect({void Function(String deviceId, DeviceConnectionState state)? onConnectionStateChanged, bool requiresBond = false}) async {}
