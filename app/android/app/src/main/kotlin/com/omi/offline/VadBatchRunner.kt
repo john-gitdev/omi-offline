@@ -215,7 +215,9 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
 
     fun destroy() {
         channel.setMethodCallHandler(null)
-        doDispose()
-        workerThread.quitSafely()
+        workerHandler.post {
+            doDispose()
+            workerThread.quitSafely()
+        }
     }
 }
