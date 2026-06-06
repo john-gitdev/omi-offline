@@ -1211,7 +1211,17 @@ class VadAudioProcessor {
   /// any [_resetState] call or inline state reset. Is a no-op when the buffer
   /// is empty or no Silero session is loaded (AAD mode).
   Future<void> _flushPartialWindow() async {
-    if (_pcmBufferLen == 0 || _isReplayingBatch) return;
+    if (_pcmBufferLen == 0) return;
+
+    // During batch replay the native runner's LSTM state has already advanced
+    // past this point — we can't evaluate with the correct recurrent context.
+    // Conservatively treat partial window as speech so silence-split trims at
+    // the last full-window speech boundary rather than over-trimming.
+    if (_isReplayingBatch) {
+      _lastSpeechRefCount = _currentRefs.length;
+      _lastSpeechChunkMs = _currentChunkDurationMs;
+      return;
+    }
 
     if (_session == null) {
       _lastSpeechRefCount = _currentRefs.length;

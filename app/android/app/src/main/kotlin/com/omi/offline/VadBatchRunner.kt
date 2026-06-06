@@ -163,9 +163,10 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
                     FloatBuffer.wrap(inputBuf),
                     longArrayOf(1, INPUT_SIZE.toLong())
                 )
+                val stateCopy = state.copyOf()
                 val stateTensor = OnnxTensor.createTensor(
                     ortEnv,
-                    FloatBuffer.wrap(state),
+                    FloatBuffer.wrap(stateCopy),
                     longArrayOf(2, 1, STATE_DIM.toLong())
                 )
 
@@ -177,13 +178,13 @@ class VadBatchRunner(messenger: BinaryMessenger) : MethodChannel.MethodCallHandl
                     )
                     sess.run(inputs).use { outputs ->
                         // Read output probability.
-                        val outputTensor = outputs.get("output")?.get() as? OnnxTensor
+                        val outputTensor = outputs.get("output")?.orElse(null) as? OnnxTensor
                         if (outputTensor != null) {
                             probs[i] = outputTensor.floatBuffer.get(0)
                         }
 
                         // Adopt stateN as the new state for the next iteration.
-                        val stateNTensor = outputs.get("stateN")?.get() as? OnnxTensor
+                        val stateNTensor = outputs.get("stateN")?.orElse(null) as? OnnxTensor
                         if (stateNTensor != null) {
                             stateNTensor.floatBuffer.get(state)
                         }
