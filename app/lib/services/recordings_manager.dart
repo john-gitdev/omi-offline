@@ -3278,13 +3278,13 @@ class RecordingsManager {
         final path = entity.path;
         if (!(path.endsWith('.wav') || path.endsWith('.m4a') || path.endsWith('.ogg'))) continue;
         if (path.endsWith('.tmp.m4a') || path.contains('.tmp.')) continue;
-        if (path.contains('_draft.')) continue; // drafts are open — continuation bins must not be absorbed
+        final isDraft = path.contains('_draft.');
         final conv = Conversation.fromFile(entity);
         if (conv.isUnknown) continue;
         final recStartMs = conv.startTime.millisecondsSinceEpoch;
         if (recStartMs <= 0) continue;
         final recEndMs = recStartMs + conv.duration.inMilliseconds;
-        final rightEdge = conv.capEnded ? recEndMs : recEndMs + silenceSlackMs;
+        final rightEdge = (conv.capEnded || isDraft) ? recEndMs : recEndMs + silenceSlackMs;
         intervals.add([recStartMs - leftSlackMs, rightEdge]);
       }
     }
