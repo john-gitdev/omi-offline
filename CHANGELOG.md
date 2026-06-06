@@ -2,6 +2,12 @@
 
 ## App
 
+### 0.19.3
+
+- **Added "Upload on Wifi Only" toggle.** New setting in App Settings allows restricting cloud uploads (Omi, HeyPocket, etc.) to WiFi connections only, preserving mobile data. The toggle is automatically disabled if no integrations are configured.
+- **Refactored Generic Integration Architecture.** Centralized all cloud integration logic into a extensible strategy pattern. This allows adding new integrations by updating a single file while automatically inheriting WiFi controls, status tracking, and background sync logic.
+- **Improved Observability.** Moved high-level upload logging into service-specific clients for clearer, non-redundant debugging information.
+
 ### 0.19.2
 
 - **Simplified background sync pipeline.** Removed the redundant second "finalizing" sync that occurred after processing. The sync completion timestamp is now updated immediately after the primary data retrieval, ensuring the auto-sync timer is refreshed even during long processing runs. This prevents confusing behavior where audio recorded during processing was downloaded but left unprocessed until the next manual or scheduled sync.

@@ -12,8 +12,9 @@ import 'package:omi/services/omi_api_client.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
-import 'package:omi/pages/recordings/recordings_types.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:omi/pages/recordings/passthrough_integration.dart';
+import 'package:omi/pages/recordings/recordings_types.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:omi/utils/audio/foreground.dart';
 
@@ -29,11 +30,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   final RecordingsManager _manager = RecordingsManager();
   final _prefs = SharedPreferencesUtil();
 
-  late final List<PassthroughIntegration> _integrations = [
-    HeyPocketPassthroughIntegration(_prefs),
-    OmiPassthroughIntegration(_prefs),
-    // Add new integrations here.
-  ];
+  late final List<PassthroughIntegration> _integrations = PassthroughIntegration.getIntegrations(_prefs);
 
   List<Batch> _batches = [];
   List<Batch> get batches => _batches;
@@ -94,10 +91,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   final Set<String> _uploadingFiles = {};
   Set<String> get uploadingFiles => _uploadingFiles;
 
-  int _autoUploadActive = 0;
   String _lastHpKey = '';
 
-  final Set<String> _syncingBinFiles = {};
+  final Set<String> _syncingKeys = {};
 
   String? _pendingSnackMessage;
   String? consumePendingSnack() {
@@ -518,7 +514,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (currentKey != _lastHpKey) {
       _lastHpKey = currentKey;
       _throttledUpdate(force: true);
-      if (currentKey.isNotEmpty) tryAutoUploadNext();
+      if (currentKey.isNotEmpty) tryAutoUploadAll();
     }
   }
 
@@ -1152,8 +1148,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _unprocessedBinCount = acc.unprocessedBins;
         _checkCleanupFlag();
         notifyListeners();
-        tryAutoUploadNext();
-        tryAutoSyncNext();
+        tryAutoUploadAll();
       }
     } catch (e) {
       Logger.error('RecordingsController: Failed to load batches: $e');
@@ -1498,65 +1493,72 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   String _dateString(DateTime t) =>
       '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
 
-  void tryAutoUploadNext() {
+  void tryAutoUploadAll() async {
     if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) return;
-    if (!_prefs.heypocketEnabled || _prefs.heypocketApiKey.isEmpty || !_prefs.heypocketAutoUpload) return;
-    final apiKey = _prefs.heypocketApiKey;
-    final keySetAt = _prefs.heypocketKeySetAt;
-    final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
+
+    if (_prefs.uploadOnWifiOnly) {
+      final connectivity = await Connectivity().checkConnectivity();
+      if (!connectivity.contains(ConnectivityResult.wifi)) return;
+    }
+
     final minDuration = _prefs.filterMinDurationSeconds;
+    final isPassthrough = _prefs.passthroughMode;
 
     for (final batch in _batches) {
       for (final conversation in batch.finalizedRecordings) {
-        if (_autoUploadActive >= 3) continue;
         if (conversation.passthrough) continue;
-        if (keySetTime != null && conversation.startTime.isBefore(keySetTime)) continue;
         if (conversation.duration.inSeconds < minDuration) continue;
-        final uploadKey = conversation.uploadKey;
-        if (uploadKey == null) continue;
-        if (_prefs.isUploadedToHeypocket(uploadKey)) continue;
-        if (_prefs.getAutoUploadRetries(uploadKey) >= 3) continue;
-        if (_uploadingFiles.contains(uploadKey)) continue;
         if (conversation.duration == Duration.zero || conversation.fileSizeBytes == 0) continue;
 
-        _uploadingFiles.add(uploadKey);
-        _autoUploadActive++;
+        for (final integration in _integrations) {
+          if (!integration.isAutoUploadEnabled || !integration.isEnabled(conversation)) continue;
+          if (integration.hasDelivered(conversation)) continue;
 
-        final isPassthrough = _prefs.passthroughMode;
-        unawaited(
-          HeyPocketService.uploadRecording(apiKey, conversation).then((_) async {
-            await _prefs.markUploadedToHeypocket(uploadKey);
-            await _prefs.clearAutoUploadRetry(uploadKey);
-            if (isPassthrough) await _convertToPassthrough(conversation);
-          }).catchError((e) {
-            if (e is HeyPocketException && e.statusCode == 401) {
-              _prefs.heypocketEnabled = false;
-              _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
-            } else {
-              unawaited(_prefs.incrementAutoUploadRetry(uploadKey));
-            }
-            Logger.error('HeyPocket auto-upload failed: $e');
-          }).whenComplete(() {
-            _uploadingFiles.remove(uploadKey);
-            _autoUploadActive--;
-            if (!_isDisposed) {
-              notifyListeners();
-              WidgetsBinding.instance.addPostFrameCallback(
-                (_) => tryAutoUploadNext(),
-              );
-            }
-          }),
-        );
+          final integrationKey = '${integration.name}_${conversation.file.path}';
+          if (_syncingKeys.contains(integrationKey)) continue;
+
+          // Check concurrency limit for this integration
+          final activeCount = _syncingKeys.where((k) => k.startsWith('${integration.name}_')).length;
+          if (activeCount >= integration.concurrencyLimit) continue;
+
+          // Retry logic (Generic)
+          final retryKey = integration.getRetryKey(conversation);
+          if (_prefs.getAutoUploadRetries(retryKey) >= 3) continue;
+
+          _syncingKeys.add(integrationKey);
+          unawaited(
+            integration.upload(conversation).then((_) async {
+              if (isPassthrough) await _convertToPassthrough(conversation);
+            }).catchError((e) {
+              unawaited(_prefs.incrementAutoUploadRetry(retryKey));
+              if (e is HeyPocketException && e.statusCode == 401) {
+                _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
+              } else if (e is OmiSyncException && e.isAuthError) {
+                _pendingSnackMessage = 'Omi sync: credentials invalid — update them in Integrations';
+              }
+            }).whenComplete(() {
+              _syncingKeys.remove(integrationKey);
+              if (!_isDisposed) {
+                notifyListeners();
+                WidgetsBinding.instance.addPostFrameCallback((_) => tryAutoUploadAll());
+              }
+            }),
+          );
+          
+          // If this integration is strictly sequential (limit 1), stop the pass 
+          // to ensure we don't start other conversations for it until this one finishes.
+          if (integration.concurrencyLimit == 1) return;
+        }
       }
     }
     if (!_isDisposed) notifyListeners();
   }
 
-  Future<bool> _allIntegrationsDelivered(Conversation c, File binFile) async {
+  Future<bool> _allIntegrationsDelivered(Conversation c) async {
     for (final integration in _integrations) {
       if (integration.isEnabled(c)) {
-        if (!await integration.hasDelivered(c, binFile)) {
-          Logger.debug('Passthrough blocked by ${integration.runtimeType}');
+        if (!integration.hasDelivered(c)) {
+          Logger.debug('Passthrough blocked by ${integration.name}');
           return false;
         }
       }
@@ -1582,10 +1584,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         return;
       }
 
-      final ts = audioFileName.split('_').last.split('.').first;
-      final binFile = File('$fileDir/recording_fs320_$ts.bin');
-
-      if (!await _allIntegrationsDelivered(conversation, binFile)) return;
+      if (!await _allIntegrationsDelivered(conversation)) return;
 
       // All enabled integrations have confirmed — safe to stamp and delete.
       final bytes = await metaFile.readAsBytes();
@@ -1628,72 +1627,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   void cancelPendingOmiUploads() {
-    final count = _syncingBinFiles.length;
-    _syncingBinFiles.clear();
+    final count = _syncingKeys.where((k) => k.startsWith('Omi Cloud_')).length;
+    _syncingKeys.removeWhere((k) => k.startsWith('Omi Cloud_'));
     Logger.debug('RecordingsController: Omi Cloud disabled — cleared $count in-progress sync(s)');
   }
 
   void cancelPendingHeyPocketUploads() {
-    final count = _autoUploadActive;
+    final count = _syncingKeys.where((k) => k.startsWith('HeyPocket_')).length;
     Logger.debug('RecordingsController: HeyPocket disabled — $count auto-upload(s) will drain and stop');
-  }
-
-  void tryAutoSyncNext() {
-    if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) return;
-    if (!_prefs.omiEnabled || _prefs.omiRefreshToken.isEmpty || !_prefs.omiAutoUpload) return;
-    final minDuration = _prefs.filterMinDurationSeconds;
-    final autoSyncAt = _prefs.omiAutoUploadAt;
-    final autoSyncTime = autoSyncAt > 0 ? DateTime.fromMillisecondsSinceEpoch(autoSyncAt) : null;
-
-    for (final batch in _batches) {
-      for (final conversation in batch.finalizedRecordings) {
-        if (conversation.passthrough) continue;
-        if (autoSyncTime != null && conversation.startTime.isBefore(autoSyncTime)) continue;
-        if (conversation.duration.inSeconds < minDuration) continue;
-        final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
-        final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
-        if (_prefs.isOmiSynced(binPath)) continue;
-        if (_prefs.getAutoUploadRetries(binPath) >= 3) continue;
-        if (_syncingBinFiles.contains(binPath)) continue;
-        final binFile = File(binPath);
-        if (!binFile.existsSync()) {
-          Logger.debug('OmiAutoSync: bin missing for ${conversation.file.path.split('/').last}');
-          continue;
-        }
-
-        Logger.debug('OmiAutoSync: uploading $binPath (${binFile.lengthSync()} bytes)');
-        _syncingBinFiles.add(binPath);
-        final isPassthrough = _prefs.passthroughMode;
-        unawaited(
-          OmiApiClient.syncLocalFiles([binFile]).then((result) async {
-            if (result != null && result.success) {
-              Logger.debug('OmiAutoSync: marked synced $binPath');
-              await _prefs.markOmiSynced(binPath);
-              await _prefs.clearAutoUploadRetry(binPath);
-              if (isPassthrough) await _convertToPassthrough(conversation);
-              unawaited(OmiApiClient.traceSyncResult(result));
-            } else {
-              Logger.error('OmiAutoSync: result success=false for $binPath: ${result?.status}');
-              unawaited(_prefs.incrementAutoUploadRetry(binPath));
-            }
-          }).catchError((e) {
-            if (e is OmiSyncException && e.isAuthError) {
-              _prefs.omiEnabled = false;
-              _pendingSnackMessage = 'Omi sync: credentials invalid — update them in Integrations';
-            } else {
-              unawaited(_prefs.incrementAutoUploadRetry(binPath));
-            }
-            Logger.error('Omi sync failed for $binPath: $e');
-          }).whenComplete(() {
-            _syncingBinFiles.remove(binPath);
-            if (!_isDisposed) {
-              WidgetsBinding.instance.addPostFrameCallback((_) => tryAutoSyncNext());
-            }
-          }),
-        );
-        return; // one at a time
-      }
-    }
   }
 
   Future<List<UploadFailure>> uploadConversation(Conversation conversation, {bool force = false}) async {
@@ -1710,49 +1651,21 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final List<UploadFailure> failures = [];
 
     try {
-      final List<Future<void>> uploads = [];
-
-      // HeyPocket
-      if (_prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty) {
-        if (force || !_prefs.isUploadedToHeypocket(uploadKey)) {
-          uploads.add(HeyPocketService.uploadRecording(_prefs.heypocketApiKey, conversation).then((_) {
-            unawaited(_prefs.clearAutoUploadRetry(uploadKey));
-            return _prefs.markUploadedToHeypocket(uploadKey);
-          }).catchError((e) {
-            Logger.error('HeyPocket manual upload failed: $e');
-            failures.add(UploadFailure('HeyPocket', e));
-          }));
+      if (_prefs.uploadOnWifiOnly) {
+        final connectivity = await Connectivity().checkConnectivity();
+        if (!connectivity.contains(ConnectivityResult.wifi)) {
+          throw Exception('WiFi required for upload — connect to WiFi or disable "Upload on Wifi Only" in App Settings');
         }
       }
 
-      // Omi Cloud
-      if (_prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty) {
-        final ts = conversation.file.path.split('/').last.split('_').last.split('.').first;
-        final binPath = '${conversation.file.parent.path}/recording_fs320_$ts.bin';
-        final binFile = File(binPath);
-        final binExists = binFile.existsSync();
-        final alreadySynced = _prefs.isOmiSynced(binPath);
-        Logger.debug(
-          'OmiUpload: binPath=$binPath exists=$binExists alreadySynced=$alreadySynced force=$force',
-        );
-        if (binExists && (force || !alreadySynced)) {
-          Logger.debug('OmiUpload: starting upload (${binFile.lengthSync()} bytes)');
-          uploads.add(OmiApiClient.syncLocalFiles([binFile]).then((result) async {
-            if (result != null && result.success) {
-              Logger.debug('OmiUpload: success, marking synced');
-              await _prefs.clearAutoUploadRetry(binPath);
-              await _prefs.markOmiSynced(binPath);
-              unawaited(OmiApiClient.traceSyncResult(result));
-            } else {
-              throw Exception('Omi upload failed: ${result?.status}');
-            }
-          }).catchError((e) {
-            Logger.error('Omi manual sync failed for $binPath: $e');
-            failures.add(UploadFailure('Omi Cloud', e));
-          }));
-        } else if (!binExists) {
-          Logger.error('OmiUpload: bin file missing — nothing to upload for ${conversation.file.path}');
-          failures.add(UploadFailure('Omi Cloud', Exception('Binary file not found: $binPath')));
+      final List<Future<void>> uploads = [];
+      for (final integration in _integrations) {
+        if (integration.isEnabled(conversation)) {
+          if (force || !integration.hasDelivered(conversation)) {
+            uploads.add(integration.upload(conversation).catchError((e) {
+              failures.add(UploadFailure(integration.name, e));
+            }));
+          }
         }
       }
 
@@ -1771,25 +1684,24 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   UploadStatus uploadStatus(Conversation c) {
-    final ts = c.file.path.split('/').last.split('_').last.split('.').first;
-    final binPath = '${c.file.parent.path}/recording_fs320_$ts.bin';
+    if (!PassthroughIntegration.hasAnyConfigured(_prefs)) return UploadStatus.none;
 
-    final hpEnabled = _prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty && c.uploadKey != null;
-    final omiEnabled = _prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty;
+    final active = _integrations.where((i) => i.isEnabled(c)).toList();
+    if (active.isEmpty) return UploadStatus.none;
 
-    if (!hpEnabled && !omiEnabled) return UploadStatus.none;
+    int doneCnt = 0;
+    bool failed = false;
 
-    final hpDone = hpEnabled && _prefs.isUploadedToHeypocket(c.uploadKey!);
-    final omiDone = omiEnabled && _prefs.isOmiSynced(binPath);
-    final doneCnt = (hpDone ? 1 : 0) + (omiDone ? 1 : 0);
-    final enabledCnt = (hpEnabled ? 1 : 0) + (omiEnabled ? 1 : 0);
+    for (final integration in active) {
+      if (integration.hasDelivered(c)) {
+        doneCnt++;
+      } else if (integration.isFailed(c)) {
+        failed = true;
+      }
+    }
 
-    if (doneCnt == enabledCnt) return UploadStatus.all;
-
-    final hpFailed = hpEnabled && !hpDone && _prefs.getAutoUploadRetries(c.uploadKey!) >= 3;
-    final omiFailed = omiEnabled && !omiDone && _prefs.getAutoUploadRetries(binPath) >= 3;
-    if (hpFailed || omiFailed) return UploadStatus.failed;
-
+    if (doneCnt == active.length) return UploadStatus.all;
+    if (failed) return UploadStatus.failed;
     if (doneCnt == 0) return UploadStatus.none;
     return UploadStatus.partial;
   }

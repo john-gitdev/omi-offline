@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:omi/backend/preferences.dart';
+import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
 
@@ -20,6 +21,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
   late bool _use24HourTime;
   late String _audioSaveFormat;
   late int _keepRecordingsDays;
+  late bool _uploadOnWifiOnly;
 
   bool _isDirty = false;
 
@@ -30,6 +32,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     _use24HourTime = SharedPreferencesUtil().use24HourTime;
     _audioSaveFormat = SharedPreferencesUtil().audioSaveFormat;
     _keepRecordingsDays = SharedPreferencesUtil().keepRecordingsDays;
+    _uploadOnWifiOnly = SharedPreferencesUtil().uploadOnWifiOnly;
   }
 
   void _markDirty() {
@@ -45,6 +48,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     prefs.use24HourTime = _use24HourTime;
     prefs.audioSaveFormat = _audioSaveFormat;
     prefs.keepRecordingsDays = _keepRecordingsDays;
+    prefs.uploadOnWifiOnly = _uploadOnWifiOnly;
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -347,6 +351,40 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Upload on Wifi Only
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Upload on Wifi Only',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  subtitle: Text(
+                    'Restrict recording uploads to WiFi connections only (saves mobile data).',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                  ),
+                  value: _uploadOnWifiOnly,
+                  onChanged: (value) {
+                    if (value && !PassthroughIntegration.hasAnyConfigured(SharedPreferencesUtil())) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('There are no integrations enabled'),
+                          backgroundColor: Colors.redAccent,
+                        ),
+                      );
+                      return;
+                    }
+                    setState(() => _uploadOnWifiOnly = value);
+                    _markDirty();
+                  },
+                  activeColor: Colors.deepPurpleAccent,
                 ),
               ),
               const SizedBox(height: 24),
