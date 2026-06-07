@@ -2,7 +2,7 @@
 
 ## App
 
-### 0.0.1
+### 0.19.9
 
 - **Improved: Ghost Notification Visibility.**
     - Systems-discarded "ghost" audio segments are now always visible in the recordings list, even when short-recording filters are disabled.
