@@ -2,13 +2,31 @@
 
 ## App
 
+### 0.0.1
+
+- **Improved: Ghost Notification Visibility.**
+    - Systems-discarded "ghost" audio segments are now always visible in the recordings list, even when short-recording filters are disabled.
+    - Unified the short-recording behavior to always "Hide" rather than "Delete", ensuring that all captured audio remains recoverable through the ghost row interface.
+    - Ghost recordings now follow the same duration-based tab filtering (Main / Hidden / All) as valid recordings.
+- **Simplified: Recording Settings.**
+    - Removed the "Action for Short Recordings" setting. The app now defaults to hiding short recordings from the main list while keeping them on the device for recovery.
+    - Filter tabs (Main / Hidden / All) now only appear when a duration filter is active (`Short Recordings > 0`), keeping the UI clean for users who prefer no filtering.
+- **Refactored: Simplified Backend.**
+    - Completely removed the `discardShortRecordings` preference and simplified the VAD processing pipeline. Audio is never permanently deleted based on duration.
+
+### 0.19.8
+
+- **Fix: Repaired corrupted `recordings_controller.dart`.** Removed syntax-breaking duplicate code and fragment garbage at the end of the file that prevented compilation.
+- **Fix: Resolved background notification persistence.**
+    - **Hand-off to Idle Notification**: Fixed a bug where background syncs would stop the foreground service after the "Conversations ready" message, causing the notification to disappear. The notification now seamlessly transitions to the "Next sync" countdown, ensuring the service remains active.
+    - **Lifecycle Awareness**: The foreground service is no longer prematurely stopped when a success or processing pass completes while the app is in the background.
+
 ### 0.19.7
 
 - **Fix: Resolved syncing notification regressions.**
     - **Harmonized segment counts**: Foreground and background syncs now both use `estimatedTotalSegments`, ensuring consistent progress reporting (e.g., "1 of 5") instead of using the total device history.
     - **Instant notifications**: Moved the foreground service start to the very beginning of the pipeline. The notification now appears instantly (showing "Preparing...") instead of being delayed by heavy disk operations.
     - **Synchronized processing estimates**: The notification now immediately reflects the same filtered "minutes to process" estimate as the app banner, preventing confusing mismatches during the first few seconds of processing.
-    - **Improved background completion**: Background syncs now show the "Conversations ready" message for 10 seconds after finishing, matching the foreground experience.
 - **Improved Observability: Live BLE connection status.** Removed the guard that suppressed connection updates during sync intervals. The native BLE notification (ID 2001) now reflects the live "Connected" or "Connecting..." status in real-time.
 
 ### 0.19.6

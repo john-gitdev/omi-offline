@@ -35,7 +35,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
   late int _vadMaxConversationMinutes;
   late int _filterMinDurationSeconds;
   late int _vadMinSpeechSeconds;
-  late bool _discardShortRecordings;
 
   static const List<int> _kShortRecordingOptions = [0, 10, 30, 60, 120, 300, 600, 1800];
   static const List<(String, double)> _kSpeechSensitivityOptions = [
@@ -101,7 +100,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
       // case the session-end marker fails to land (e.g. SD queue full).
       _vadSplitSeconds = 0;
       _filterMinDurationSeconds = 0;
-      _discardShortRecordings = false;
       _vadMaxConversationMinutes = p.manualModeVadMaxConversationMinutes;
     } else {
       _vadEnabled = p.autoModeVadEnabled;
@@ -109,7 +107,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
       _vadMinSpeechSeconds = p.autoModeVadMinSpeechSeconds;
       _vadSplitSeconds = p.autoModeVadSplitSeconds;
       _filterMinDurationSeconds = p.autoModeFilterMinDurationSeconds;
-      _discardShortRecordings = p.autoModeDiscardShortRecordings;
       _vadMaxConversationMinutes = p.autoModeVadMaxConversationMinutes;
     }
   }
@@ -125,7 +122,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
       p.autoModeVadMinSpeechSeconds = _vadMinSpeechSeconds;
       p.autoModeVadSplitSeconds = _vadSplitSeconds;
       p.autoModeFilterMinDurationSeconds = _filterMinDurationSeconds;
-      p.autoModeDiscardShortRecordings = _discardShortRecordings;
       p.autoModeVadMaxConversationMinutes = _vadMaxConversationMinutes;
     }
   }
@@ -193,7 +189,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     prefs.vadSplitSeconds = _vadSplitSeconds;
     prefs.vadMaxConversationMinutes = _vadMaxConversationMinutes;
     prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
-    prefs.discardShortRecordings = _discardShortRecordings;
     _saveModeSnapshot(_manualMode);
 
     if (mounted) setState(() => _isDirty = false);
@@ -637,94 +632,12 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                           Text(
                             _filterMinDurationSeconds == 0
                                 ? 'All recordings are kept and shown regardless of length.'
-                                : _discardShortRecordings
-                                    ? 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are permanently deleted during processing.'
-                                    : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the main list and skipped by integrations.',
+                                : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the main list and skipped by integrations.',
                             style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                           ),
                         ],
                       ),
                     ),
-                  if (!_manualMode) const SizedBox(height: 16),
-
-                  if (!_manualMode && _filterMinDurationSeconds > 0) ...[
-                    // Action for Short Recordings
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1C1C1E),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.white.withOpacity(0.05)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text(
-                                'Action for Short Recordings',
-                                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                              ),
-                              DropdownButton<bool>(
-                                value: _discardShortRecordings,
-                                dropdownColor: const Color(0xFF2C2C2E),
-                                icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                                underline: const SizedBox(),
-                                style: const TextStyle(
-                                    color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
-                                items: const [
-                                  DropdownMenuItem(
-                                    value: false,
-                                    child: Text('Hide'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: true,
-                                    child: Text('Delete'),
-                                  ),
-                                ],
-                                onChanged: (value) {
-                                  if (value != null) {
-                                    setState(() => _discardShortRecordings = value);
-                                    _markDirty();
-                                  }
-                                },
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            _discardShortRecordings
-                                ? 'Short recordings will be permanently deleted and cannot be recovered.'
-                                : 'Short recordings will be hidden from the main list but remain on the device.',
-                            style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                          ),
-                          if (_discardShortRecordings && widget.onCountShortRecordings != null) ...[
-                            const SizedBox(height: 16),
-                            GestureDetector(
-                              onTap: _handleCleanUp,
-                              child: Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.symmetric(vertical: 12),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF2C2C2E),
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
-                                ),
-                                child: Center(
-                                  child: Text(
-                                    'Clean up existing short recordings',
-                                    style: TextStyle(
-                                        color: Colors.redAccent.shade100, fontSize: 14, fontWeight: FontWeight.w500),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
                   if (!_manualMode) const SizedBox(height: 16),
 
                   // Maximum Conversation Length

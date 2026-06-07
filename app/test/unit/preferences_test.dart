@@ -132,10 +132,6 @@ void main() {
       prefsUtil.filterMinDurationSeconds = 60;
       expect(prefsUtil.filterMinDurationSeconds, 60);
 
-      expect(prefsUtil.discardShortRecordings, false);
-      prefsUtil.discardShortRecordings = true;
-      expect(prefsUtil.discardShortRecordings, true);
-
       expect(prefsUtil.vadMaxConversationMinutes, 60);
       prefsUtil.vadMaxConversationMinutes = 90;
       expect(prefsUtil.vadMaxConversationMinutes, 90);

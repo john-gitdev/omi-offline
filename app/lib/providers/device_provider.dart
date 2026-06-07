@@ -610,7 +610,10 @@ class DeviceProvider extends ChangeNotifier
   /// shows its own live progress). Idle-notification writers must check this
   /// before touching the notification so they don't clobber that progress.
   bool get _syncOwnsNotification =>
-      ServiceManager.instance().wal.getSyncs().isSyncing || RecordingsManager.isProcessingAny || _backgroundSyncActive;
+      ServiceManager.instance().wal.getSyncs().isSyncing ||
+      RecordingsManager.isProcessingAny ||
+      RecordingsManager.isSuccessNotificationActive.value ||
+      _backgroundSyncActive;
 
   /// The single source of truth for the persistent background notification when
   /// no sync/process is running.
@@ -797,11 +800,13 @@ class DeviceProvider extends ChangeNotifier
         // (no error). If the app comes to foreground, ForegroundUtil.stopForegroundTask
         // will still clean up naturally.
         if (lastSyncError == null && !RecordingsManager.isProcessingAny) {
+          RecordingsManager.isSuccessNotificationActive.value = true;
           unawaited(ForegroundUtil.updateNotification(
             title: 'Conversations ready',
             text: 'Sync and processing complete',
           ));
           await Future.delayed(const Duration(seconds: 10));
+          RecordingsManager.isSuccessNotificationActive.value = false;
         }
 
         // Only release the foreground service (and wake lock) when the app is
@@ -838,6 +843,9 @@ class DeviceProvider extends ChangeNotifier
     // ChangeNotifier allows duplicates that each fire separately.
     RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
     RecordingsManager.processingProgress.addListener(_onProcessingProgress);
+    RecordingsManager.isSuccessNotificationActive.removeListener(_onSuccessNotificationChanged);
+    RecordingsManager.isSuccessNotificationActive.addListener(_onSuccessNotificationChanged);
+
     _reconnectionTimer?.cancel();
     // Cancel any pending 1-second reconnect armed by a recent accidental
     // disconnect — otherwise it fires after we transition to background and
@@ -891,6 +899,12 @@ class DeviceProvider extends ChangeNotifier
     ServiceManager.instance().device.disconnectDevice(isManual: true);
   }
 
+  void _onSuccessNotificationChanged() {
+    if (!_isAppInForeground && !RecordingsManager.isSuccessNotificationActive.value && !_syncOwnsNotification) {
+      unawaited(_showIdleNotification());
+    }
+  }
+
   bool _shouldSyncNow() {
     // One timer governs everything: opening the app syncs only once the auto-sync
     // interval has elapsed since the last sync — the same threshold the background
@@ -917,7 +931,9 @@ class DeviceProvider extends ChangeNotifier
     // process mid-decode — which freezes the progress notification and later
     // makes the stall watchdog misread the wake-up time-jump as a wedge and
     // force-kill a healthy run, restarting the whole backlog.
-    if (!walSync.isSyncing && !RecordingsManager.isProcessingAny) {
+    if (!walSync.isSyncing &&
+        !RecordingsManager.isProcessingAny &&
+        !RecordingsManager.isSuccessNotificationActive.value) {
       ForegroundUtil.stopForegroundTask();
     }
 

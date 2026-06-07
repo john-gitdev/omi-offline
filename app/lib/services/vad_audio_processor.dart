@@ -32,7 +32,6 @@ class ProcessingSettings {
   final int silenceDurationToSplitMs;
   final int minDurationMs;
   final int minSpeechMs;
-  final bool discardShort;
   final int maxChunkMs;
   final String deviceId; // used to generate upload key in .meta sidecar
   final String audioSaveFormat;
@@ -44,7 +43,6 @@ class ProcessingSettings {
     required this.silenceDurationToSplitMs,
     required this.minDurationMs,
     required this.minSpeechMs,
-    required this.discardShort,
     required this.maxChunkMs,
     required this.deviceId,
     required this.audioSaveFormat,
@@ -59,7 +57,6 @@ class ProcessingSettings {
       silenceDurationToSplitMs: p.vadSplitSeconds * 1000,
       minDurationMs: p.filterMinDurationSeconds * 1000,
       minSpeechMs: p.vadMinSpeechSeconds * 1000,
-      discardShort: p.discardShortRecordings,
       maxChunkMs: p.vadMaxConversationMinutes == 0 ? 0x7FFFFFFFFFFFFFFF : p.vadMaxConversationMinutes * 60 * 1000,
       deviceId: p.btDevice.id,
       audioSaveFormat: p.audioSaveFormat,
@@ -196,7 +193,6 @@ class VadAudioProcessor {
   final int _silenceDurationToSplitMs;
   final int _minDurationMs;
   final int _minSpeechMs;
-  final bool _discardShort;
   final int _maxChunkMs;
   final String _deviceId;
   final String _audioSaveFormat;
@@ -315,7 +311,6 @@ class VadAudioProcessor {
         _silenceDurationToSplitMs = settings.silenceDurationToSplitMs,
         _minDurationMs = settings.minDurationMs,
         _minSpeechMs = settings.minSpeechMs,
-        _discardShort = settings.discardShort,
         _maxChunkMs = settings.maxChunkMs,
         _deviceId = settings.deviceId,
         _audioSaveFormat = settings.audioSaveFormat,
@@ -1117,9 +1112,7 @@ class VadAudioProcessor {
     final speechMs = _speechFrameCount * frameDurationMs;
     final bool tooShortSpeech = _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
-    if (_currentRefs.isEmpty ||
-        (_discardShort && _currentChunkDurationMs < _minDurationMs && !_forcedByMarker) ||
-        tooShortSpeech) {
+    if (_currentRefs.isEmpty || tooShortSpeech) {
       discardGuardFiredOnLastFlush = _currentRefs.isNotEmpty;
       if (_currentRefs.isNotEmpty) {
         final reason = tooShortSpeech

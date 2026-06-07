@@ -921,7 +921,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     } catch (e) {
       if (gen != _pipelineGeneration) return; // watchdog already recovered
       _releaseWakelock();
-      await ForegroundUtil.stopForegroundTask();
+      if (_isAppForeground()) {
+        await ForegroundUtil.stopForegroundTask();
+      }
       if (_spState == SyncProcessState.stopping) {
         _transitionTo(SyncProcessState.idle);
         unawaited(reloadBatchesSilently());
@@ -934,7 +936,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     if (_spState == SyncProcessState.stopping) {
       _releaseWakelock();
-      await ForegroundUtil.stopForegroundTask();
+      if (_isAppForeground()) {
+        await ForegroundUtil.stopForegroundTask();
+      }
       _transitionTo(SyncProcessState.idle);
       unawaited(reloadBatchesSilently());
       return;
@@ -972,7 +976,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _isUserTriggered = false;
     _isForcePipeline = false;
     _releaseWakelock();
-    await ForegroundUtil.stopForegroundTask();
+    if (_isAppForeground()) {
+      await ForegroundUtil.stopForegroundTask();
+    }
     _transitionTo(SyncProcessState.idle);
     unawaited(reloadBatchesSilently());
   }
@@ -1011,7 +1017,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (!hasBins && !hasMarkers) {
       _isUserTriggered = false;
       _releaseWakelock();
-      await ForegroundUtil.stopForegroundTask();
+      if (_isAppForeground()) {
+        await ForegroundUtil.stopForegroundTask();
+      }
       if (errorIfEmpty != null) {
         _transitionToError('syncing', errorIfEmpty);
       } else {
@@ -1044,20 +1052,29 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _persistProgress();
     _transitionTo(SyncProcessState.idle);
     _loadBatches();
-    unawaited(ForegroundUtil.stopForegroundTask());
+    if (_isAppForeground()) {
+      unawaited(ForegroundUtil.stopForegroundTask());
+    }
   }
 
   Future<void> _finishSuccess() async {
     _isForcePipeline = false;
     _transitionTo(SyncProcessState.successUi);
+    RecordingsManager.isSuccessNotificationActive.value = true;
     unawaited(ForegroundUtil.updateNotification(
       title: 'Conversations ready',
       text: 'Sync and processing complete',
     ));
     await Future.delayed(const Duration(milliseconds: 10000));
+    RecordingsManager.isSuccessNotificationActive.value = false;
     if (_isDisposed || _spState != SyncProcessState.successUi) return;
 
     dismissSuccess();
+  }
+
+  bool _isAppForeground() {
+    final state = WidgetsBinding.instance.lifecycleState;
+    return state == null || state == AppLifecycleState.resumed;
   }
 
   /// [processDownloaded] only applies when cancelling during the syncing phase:
@@ -1475,7 +1492,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       silenceDurationToSplitMs: 0x7FFFFFFF,
       minDurationMs: 0,
       minSpeechMs: 0,
-      discardShort: false,
       maxChunkMs: 0x7FFFFFFFFFFFFFFF,
       deviceId: _prefs.btDevice.id,
       audioSaveFormat: _prefs.audioSaveFormat,
@@ -1750,26 +1766,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     int unprocessedBinsCount = 0;
     for (final f in batches.expand((b) => b.rawSegments)) {
       if (!_isProcessableBin(f, discardedRelBins, coveredBins)) continue;
-
-      try {
-        rawBytes += f.lengthSync();
-        unprocessedBinsCount++;
-      } catch (_) {}
-    }
-
-    int draftMs = 0;
-    for (final c in batches.expand((b) => b.draftRecordings)) {
-      draftMs += c.duration.inMilliseconds;
-    }
-
-    return (
-      toProcessMinutes: rawBytes / 252000.0,
-      draftMinutes: draftMs / 60000.0,
-      unprocessedBins: unprocessedBinsCount,
-    );
-  }
-}
-s, coveredBins)) continue;
 
       try {
         rawBytes += f.lengthSync();
