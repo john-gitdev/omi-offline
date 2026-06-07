@@ -1180,6 +1180,8 @@ class RecordingsManager {
           return sum;
         }
       });
+      minutesRemaining = rawTotalBytes / 252000.0;
+      processingProgress.value = 0.0;
       if (rawTotalBytes > 50 * 1024 * 1024) {
         try {
           final probe = File('${directory.path}/.disk_probe');

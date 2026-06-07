@@ -792,6 +792,18 @@ class DeviceProvider extends ChangeNotifier
         // foreground the connect/resume keep-alive owns it, so leave it running.
         if (!_isAppInForeground) _stopForegroundKeepAlive();
         RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
+
+        // Success state: show "Conversations ready" for 10s if we finished normally
+        // (no error). If the app comes to foreground, ForegroundUtil.stopForegroundTask
+        // will still clean up naturally.
+        if (lastSyncError == null && !RecordingsManager.isProcessingAny) {
+          unawaited(ForegroundUtil.updateNotification(
+            title: 'Conversations ready',
+            text: 'Sync and processing complete',
+          ));
+          await Future.delayed(const Duration(seconds: 10));
+        }
+
         // Only release the foreground service (and wake lock) when the app is
         // visible. In background we keep it alive so the next timer tick fires.
         if (_isAppInForeground) {

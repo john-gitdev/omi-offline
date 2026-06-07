@@ -281,7 +281,7 @@ class OmiBleForegroundService : Service() {
             Log.w(TAG, "fireDeviceReady: $addr disconnected during pipeline, skipping")
             return
         }
-        if (!syncTimerActive) updateNativeNotification("Connected")
+        updateNativeNotification("Connected")
         bleManager.mainHandler.post {
             bleManager.flutterApi?.onDeviceReady(addr, services) {}
         }
@@ -411,7 +411,7 @@ class OmiBleForegroundService : Service() {
             Log.i(TAG, "connectToDevice($source): $addr (autoConnect=$autoConnect, timeout=${timeoutMs}ms)")
             // Flip back to "Connecting..." when retrying after a disconnect.
             // Skip for the initial manageDevice call since onCreate already set "Connecting...".
-            if (source != "manageDevice" && !syncTimerActive) updateNativeNotification(DEFAULT_NOTIF_TEXT)
+            if (source != "manageDevice") updateNativeNotification(DEFAULT_NOTIF_TEXT)
             val gatt = try {
                 bleManager.connectGatt(addr, autoConnect = autoConnect)
             } catch (e: SecurityException) {
