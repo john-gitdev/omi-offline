@@ -438,11 +438,18 @@ class _RecordingsPageState extends State<RecordingsPage> {
       if (confirm != true) return;
     }
 
-    final failures = await _controller.uploadConversation(conversation, force: alreadyUploaded);
-    if (!mounted) return;
-    for (final failure in failures) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
+    try {
+      final failures = await _controller.uploadConversation(conversation, force: alreadyUploaded);
+      if (!mounted) return;
+      for (final failure in failures) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
+      }
+    } catch (e) {
+      Logger.error('Manual upload failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+      }
     }
   }
 

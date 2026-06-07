@@ -2,6 +2,11 @@
 
 ## App
 
+### 0.19.5
+
+- **Fix: Manual upload now shows a snackbar error when WiFi is required.** Previously, clicking the upload button while on cellular data with "Upload on Wifi Only" enabled would fail silently. The UI now catches the exception and displays the specific "WiFi required" message to the user.
+- **Improved Observability: Manual upload failures are now recorded in Debug Tools.** Errors during the manual upload flow (including WiFi restrictions and integration failures) are now passed to the `Logger.error` system so they appear in the in-app log viewer and persistent log files.
+
 ### 0.19.4
 
 - **Performance: Android Native VAD Batch Runner.** Processing large backlogs is now significantly faster and more power efficient on Android. The app now keeps the ORT session, the recurrent LSTM state, and the context window entirely within a background native Kotlin thread, and evaluates VAD across a batch of acoustic frames in a single platform-channel invocation rather than incurring thousands of synchronous FFI crossings per minute of audio. iOS and non-Android platforms fall back seamlessly to the standard per-window evaluation while preserving bit-identical VAD decisions.

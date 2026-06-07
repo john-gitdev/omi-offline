@@ -209,6 +209,11 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
             .showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
       }
       setState(() {});
+    } catch (e) {
+      Logger.error('Player upload failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+      }
     } finally {
       if (mounted) setState(() => _isUploading = false);
     }
