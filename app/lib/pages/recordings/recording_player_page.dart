@@ -10,6 +10,7 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart' show RecordingsController, UploadStatus;
+import 'package:omi/utils/logger.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:omi/pages/recordings/waveform_utils.dart';
 

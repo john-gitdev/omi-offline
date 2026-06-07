@@ -81,9 +81,6 @@ class MockDeviceTransport implements DeviceTransport {
   Stream<DeviceTransportState> get connectionStateStream => const Stream.empty();
 
   @override
-  Future<void>? get gattConnectFuture => null;
-
-  @override
   Future<void> dispose() async {}
 }
 

@@ -21,6 +21,7 @@ import 'package:omi/pages/recordings/recording_player_page.dart';
 import 'package:omi/pages/recordings/marker_day_card.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/pages/settings/offline_audio_settings_page.dart';
+import 'package:omi/utils/logger.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:omi/widgets/battery_status_indicator.dart';
 
