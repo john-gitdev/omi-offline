@@ -47,7 +47,6 @@ File _makeBinFile(Directory dir, int frameCount, {String name = 'test.bin'}) {
 
 ProcessingSettings _settings({
   required int minDurationMs,
-  required bool discardShort,
   int silenceDurationToSplitMs = 120000,
   int minSpeechMs = 0,
   int maxChunkMs = 3600000,
@@ -58,7 +57,6 @@ ProcessingSettings _settings({
     silenceDurationToSplitMs: silenceDurationToSplitMs,
     minDurationMs: minDurationMs,
     minSpeechMs: minSpeechMs,
-    discardShort: discardShort,
     maxChunkMs: maxChunkMs,
     deviceId: 'test-device',
     audioSaveFormat: 'm4a',
@@ -130,7 +128,7 @@ void main() {
       // decoder, frames are silence (decoder returns null → _runVad skipped).
       final batchRunner = UnavailableBatchRunner();
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
         batchRunner: batchRunner, // passed but unavailable
         // session: null → AAD mode: all frames are speech
@@ -148,7 +146,7 @@ void main() {
 
     test('null batch runner uses single-pass (original path)', () async {
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
         // batchRunner: null (default) — per-window fallback
       );
@@ -172,8 +170,6 @@ void main() {
       final processor = VadAudioProcessor.fromSettings(
         settings: _settings(
           minDurationMs: 0,
-          discardShort: false,
-          // Split after 2s of silence (100 frames × 20ms = 2000ms)
           silenceDurationToSplitMs: 2000,
         ),
         outputDir: tempDir.path,
@@ -200,7 +196,7 @@ void main() {
 
     test('AAD mode with unavailable batch runner accumulates all frames', () async {
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
         batchRunner: UnavailableBatchRunner(),
         // session: null → AAD mode
@@ -229,7 +225,6 @@ void main() {
       final processor = VadAudioProcessor.fromSettings(
         settings: _settings(
           minDurationMs: 0,
-          discardShort: false,
           silenceDurationToSplitMs: 2000, // 100 frames × 20ms
         ),
         outputDir: tempDir.path,
@@ -256,7 +251,6 @@ void main() {
       final processor = VadAudioProcessor.fromSettings(
         settings: _settings(
           minDurationMs: 0,
-          discardShort: false,
           silenceDurationToSplitMs: 2000, // 100 frames × 20ms
         ),
         outputDir: tempDir.path,
@@ -286,7 +280,7 @@ void main() {
       // This simulates what happens after a batch runner error disables the
       // model: _session is set to null and all frames become speech.
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
         session: null, // AAD mode
       );
@@ -314,7 +308,7 @@ void main() {
       // - null session (AAD): all frames = speech
       // - fake session + null decoder: all frames = silence (decoder returns null)
       final aadProcessor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
         session: null,
       );
@@ -324,7 +318,7 @@ void main() {
       );
 
       final vadProcessor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
         session: _fakeSession(),
       );
@@ -354,13 +348,13 @@ void main() {
       // produces consistent results regardless of whether a batch runner
       // is passed (unavailable → single-pass fallback).
       final withBatch = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
         batchRunner: UnavailableBatchRunner(),
       );
 
       final withoutBatch = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
       );
 
@@ -387,7 +381,6 @@ void main() {
       final processor = VadAudioProcessor.fromSettings(
         settings: _settings(
           minDurationMs: 0,
-          discardShort: false,
           maxChunkMs: 1000, // 50 frames × 20ms = 1000ms cap
         ),
         outputDir: tempDir.path,

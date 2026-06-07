@@ -746,7 +746,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     ],
                   ),
                 ),
-                if (!_showMarkersOnly && _prefs.filterMinDurationSeconds > 0 && !_prefs.discardShortRecordings)
+                if (!_showMarkersOnly && _prefs.filterMinDurationSeconds > 0)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                     child: Row(
@@ -900,12 +900,14 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                     RecordingFilterMode.visible => controller.batches
                                         .where((b) =>
                                             b.rawSegments.isNotEmpty ||
-                                            b.finalizedRecordings.any((c) => c.duration.inSeconds >= minSeconds))
+                                            b.finalizedRecordings.any((c) => c.duration.inSeconds >= minSeconds) ||
+                                            b.discards.any((d) => d.duration.inSeconds >= minSeconds))
                                         .toList(),
                                     RecordingFilterMode.hidden => controller.batches
                                         .where((b) =>
                                             b.rawSegments.isNotEmpty ||
-                                            b.finalizedRecordings.any((c) => c.duration.inSeconds < minSeconds))
+                                            b.finalizedRecordings.any((c) => c.duration.inSeconds < minSeconds) ||
+                                            b.discards.any((d) => d.duration.inSeconds < minSeconds))
                                         .toList(),
                                     RecordingFilterMode.all => controller.batches
                                         .where((b) =>
@@ -914,7 +916,12 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                             b.discards.isNotEmpty)
                                         .toList(),
                                   }
-                                : controller.batches.where((b) => b.finalizedRecordings.isNotEmpty).toList();
+                                : controller.batches
+                                    .where((b) =>
+                                        b.rawSegments.isNotEmpty ||
+                                        b.finalizedRecordings.isNotEmpty ||
+                                        b.discards.isNotEmpty)
+                                    .toList();
                             final unknownRecordings =
                                 visibleBatches.expand((b) => b.finalizedRecordings).where((c) => c.isUnknown).toList();
                             return RefreshIndicator(

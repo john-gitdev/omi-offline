@@ -88,7 +88,6 @@ class SharedPreferencesUtil {
   set vadSplitSeconds(int v) => saveInt('vadSplitSeconds', v);
 
   // Minimum wall-clock duration (seconds) threshold for short-recording handling.
-  // What happens to recordings below this is controlled by discardShortRecordings.
   // 0 = no filtering.
   int get filterMinDurationSeconds => getInt('filterMinDurationSeconds', defaultValue: 0);
   set filterMinDurationSeconds(int v) => saveInt('filterMinDurationSeconds', v);
@@ -97,12 +96,6 @@ class SharedPreferencesUtil {
   // Options: 0 (off), 3, 10, 30.
   int get vadMinSpeechSeconds => getInt('vadMinSpeechSeconds', defaultValue: 3);
   set vadMinSpeechSeconds(int v) => saveInt('vadMinSpeechSeconds', v);
-
-  // When true, recordings shorter than filterMinDurationSeconds are permanently
-  // discarded during processing. When false, they are saved but hidden from the
-  // list and skipped by integrations.
-  bool get discardShortRecordings => getBool('discardShortRecordings', defaultValue: false);
-  set discardShortRecordings(bool v) => saveBool('discardShortRecordings', v);
 
   // Maximum continuous conversation length (minutes) before forcing a cut.
   int get vadMaxConversationMinutes => getInt('vadMaxConversationMinutes', defaultValue: 60);
@@ -120,8 +113,6 @@ class SharedPreferencesUtil {
   set autoModeVadSplitSeconds(int v) => saveInt('auto_vadSplitSeconds', v);
   int get autoModeFilterMinDurationSeconds => getInt('auto_filterMinDurationSeconds', defaultValue: 0);
   set autoModeFilterMinDurationSeconds(int v) => saveInt('auto_filterMinDurationSeconds', v);
-  bool get autoModeDiscardShortRecordings => getBool('auto_discardShortRecordings', defaultValue: false);
-  set autoModeDiscardShortRecordings(bool v) => saveBool('auto_discardShortRecordings', v);
   int get autoModeVadMaxConversationMinutes => getInt('auto_vadMaxConversationMinutes', defaultValue: 0);
   set autoModeVadMaxConversationMinutes(int v) => saveInt('auto_vadMaxConversationMinutes', v);
 

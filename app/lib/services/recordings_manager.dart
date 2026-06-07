@@ -831,6 +831,11 @@ class RecordingsManager {
   /// True when a WAV file is being transcoded to M4A.
   static final ValueNotifier<bool> isTranscoding = ValueNotifier(false);
 
+  /// True when the "Conversations ready" success notification is being displayed.
+  /// Used to prevent the background idle-notification heartbeat from clobbering
+  /// the success message before its 10s display window elapses.
+  static final ValueNotifier<bool> isSuccessNotificationActive = ValueNotifier(false);
+
   static bool _cancelRequested = false;
   static SendPort? _activeIsolateControlPort;
   static Isolate? _activeIsolate;

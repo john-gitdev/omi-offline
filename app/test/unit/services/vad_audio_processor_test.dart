@@ -115,14 +115,13 @@ File _makeBinFileWithVadResume(
   return f;
 }
 
-ProcessingSettings _settings({required int minDurationMs, required bool discardShort}) {
+ProcessingSettings _settings({int minDurationMs = 0}) {
   return ProcessingSettings(
     vadEnabled: true,
     speechThreshold: 0.5,
     silenceDurationToSplitMs: 120000,
     minDurationMs: minDurationMs,
     minSpeechMs: 0,
-    discardShort: discardShort,
     maxChunkMs: 3600000,
     deviceId: 'test-device',
     audioSaveFormat: 'm4a',
@@ -274,20 +273,20 @@ void main() {
   group('short recording threshold (discardShort / keep)', () {
     // Each dummy frame = 20 ms. 10 frames = 200 ms, 300 frames = 6000 ms.
 
-    test('discardShort=true fires guard when duration is below threshold', () async {
+    test('does not fire guard when duration is below threshold (now always kept)', () async {
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 5000, discardShort: true),
+        settings: _settings(minDurationMs: 5000),
         outputDir: tempDir.path,
       );
       await processor.processSegmentFile(_makeBinFile(tempDir, 10, name: 'a.bin'), DateTime.now());
       await processor.flushRemaining();
-      expect(processor.discardGuardFiredOnLastFlush, isTrue);
+      expect(processor.discardGuardFiredOnLastFlush, isFalse);
       processor.destroy();
     });
 
     test('discardShort=false does not fire guard when duration is below threshold', () async {
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 5000, discardShort: false),
+        settings: _settings(minDurationMs: 5000),
         outputDir: tempDir.path,
       );
       await processor.processSegmentFile(_makeBinFile(tempDir, 10, name: 'b.bin'), DateTime.now());
@@ -299,7 +298,7 @@ void main() {
     test('discardShort=true does not fire guard when duration meets threshold', () async {
       // 300 frames = 6000 ms >= 5000 ms threshold
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 5000, discardShort: true),
+        settings: _settings(minDurationMs: 5000),
         outputDir: tempDir.path,
       );
       await processor.processSegmentFile(_makeBinFile(tempDir, 300, name: 'c.bin'), DateTime.now());
@@ -310,7 +309,7 @@ void main() {
 
     test('discardShort=true does not fire guard when threshold is 0 (Off)', () async {
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: true),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
       );
       await processor.processSegmentFile(_makeBinFile(tempDir, 10, name: 'd.bin'), DateTime.now());
@@ -321,7 +320,7 @@ void main() {
 
     test('gaps under 10 seconds are stitched without padding', () async {
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
       );
 
@@ -356,7 +355,7 @@ void main() {
       // the current frame's wall clock — so every chunk in a long ambient-noise stream got
       // the SAME start timestamp and the discards stacked on top of each other in the UI.
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
         session: _fakeSession(),
       );
@@ -389,7 +388,7 @@ void main() {
       // merge tolerance. The synthetic recordings_manager test checks the merge
       // logic; this checks that genuine discards actually feed into it as one row.
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
         session: _fakeSession(),
       );
@@ -418,7 +417,7 @@ void main() {
 
     test('gaps over 10 seconds but under threshold are padded', () async {
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
       );
 
@@ -448,7 +447,7 @@ void main() {
 
     test('clock sync jumps (uptime gap < 5s) are NOT padded even if > 10s', () async {
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
       );
 
@@ -477,7 +476,7 @@ void main() {
 
     test('IMU Bridge: stitches audio across reboots using IMU tick delta', () async {
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
       );
 
@@ -528,7 +527,7 @@ void main() {
 
     test('AAD Padding: pads offline gaps with digital silence using VAD resume marker', () async {
       final processor = VadAudioProcessor.fromSettings(
-        settings: _settings(minDurationMs: 0, discardShort: false),
+        settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
       );
 
@@ -565,7 +564,7 @@ void main() {
     group('High-Precision Timestamp Pipeline', () {
       test('RTC Sync Jitter: handles small negative gaps gracefully', () async {
         final processor = VadAudioProcessor.fromSettings(
-          settings: _settings(minDurationMs: 0, discardShort: false),
+          settings: _settings(minDurationMs: 0),
           outputDir: tempDir.path,
         );
 
@@ -605,7 +604,7 @@ void main() {
 
       test('IMU Tick Rollover: handles 24-bit rollover correctly', () async {
         final processor = VadAudioProcessor.fromSettings(
-          settings: _settings(minDurationMs: 0, discardShort: false),
+          settings: _settings(minDurationMs: 0),
           outputDir: tempDir.path,
         );
 
@@ -653,7 +652,6 @@ void main() {
           silenceDurationToSplitMs: 120000,
           minDurationMs: 0,
           minSpeechMs: 0,
-          discardShort: false,
           maxChunkMs: 0x7FFFFFFFFFFFFFFF,
           deviceId: '',
           audioSaveFormat: 'wav',
