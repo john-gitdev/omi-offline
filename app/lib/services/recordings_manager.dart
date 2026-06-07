@@ -1134,7 +1134,11 @@ class RecordingsManager {
     // naturally re-enters the processing set. Uses the global persisted set
     // (see [discardedRelBinPaths]) so this strip and the "minutes to process"
     // estimate never disagree.
-    final discardedRelBins = await discardedRelBinPaths();
+    //
+    // Only strip in background mode when no settings override is provided.
+    // Manual runs (Process button, Reprocess Day, Recover Discard) honor the
+    // explicit set of bins provided.
+    final discardedRelBins = (backgroundMode && settingsOverride == null) ? await discardedRelBinPaths() : const <String>{};
     if (discardedRelBins.isNotEmpty) {
       batches = batches.map((b) {
         final filtered = b.rawSegments.where((f) {
@@ -1409,6 +1413,7 @@ class RecordingsManager {
         }
 
         final mainBatchRunner = VadBatchRunnerChannel();
+        bool success = false;
         try {
           final receivePort = ReceivePort();
           final exitPort = ReceivePort();
@@ -1562,6 +1567,7 @@ class RecordingsManager {
                 onProgress(progress, eta);
               case 'done':
                 isolateDone = true;
+                success = true;
                 final wasCancelled = msg['cancelled'] as bool? ?? false;
                 receivePort.close();
                 // Checkpoint preserved on cancel so the next run can resume from it.
@@ -1581,6 +1587,10 @@ class RecordingsManager {
           }
 
           _activeIsolateControlPort = null;
+
+          if (!success) {
+            throw Exception('Isolate died prematurely without reporting completion.');
+          }
 
           await Future.delayed(const Duration(milliseconds: 200));
           if (await tempDir.exists()) await tempDir.delete(recursive: true);
