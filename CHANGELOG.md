@@ -2,6 +2,14 @@
 
 ## App
 
+### 0.19.6
+
+- **Fix: "Recover to Recording" now correctly bypasses discard filters.** Previously, trying to recover a ghost recording would fail because the system filtered out bins already marked as discards. The pipeline now respects settings overrides to ensure targeted recovery of raw audio.
+- **Fix: Resolved "sticky" processing banner.** Synchronized the UI's "Audio to Process" calculation with the actual pipeline filtering. The banner now correctly accounts for "covered" bins (audio already in recordings), preventing it from getting stuck on lingering raw data.
+- **Improved Robustness: Automatic bin pruning after manual processing.** Added a mandatory cleanup step after manual processing runs to delete raw bins that have been successfully finalized or covered.
+- **Improved Robustness: Hardened processing isolate.** The processing pipeline now requires a explicit completion handshake, ensuring that isolate crashes or watchdog kills do not lead to premature deletion of raw source audio.
+- **Documentation: Updated project memory and comments to reflect WAV as the default audio format.**
+
 ### 0.19.5
 
 - **Fix: Manual upload now shows a snackbar error when WiFi is required.** Previously, clicking the upload button while on cellular data with "Upload on Wifi Only" enabled would fail silently. The UI now catches the exception and displays the specific "WiFi required" message to the user.

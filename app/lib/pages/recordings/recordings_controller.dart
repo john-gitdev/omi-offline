@@ -440,8 +440,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
             _pendingProcessingTransition = false;
             if (_isDisposed) return;
             final discarded = await RecordingsManager.discardedRelBinPaths();
+            final covered = await RecordingsManager.coveredBinPaths(_batches.expand((b) => b.rawSegments).toList());
             final processable =
-                _batches.expand((b) => b.rawSegments).where((f) => _isProcessableBin(f, discarded)).toList();
+                _batches.expand((b) => b.rawSegments).where((f) => _isProcessableBin(f, discarded, covered)).toList();
             final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
             final totalBytes = lengths.fold(0, (s, len) => s + len);
             if (_isDisposed) return;
@@ -467,8 +468,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               _pendingProcessingTransition = false;
               if (_isDisposed) return;
               final discarded = await RecordingsManager.discardedRelBinPaths();
+              final covered = await RecordingsManager.coveredBinPaths(_batches.expand((b) => b.rawSegments).toList());
               final processable =
-                  _batches.expand((b) => b.rawSegments).where((f) => _isProcessableBin(f, discarded)).toList();
+                  _batches.expand((b) => b.rawSegments).where((f) => _isProcessableBin(f, discarded, covered)).toList();
               final lengths = await Future.wait(processable.map((f) => f.length().catchError((_) => 0)));
               final totalBytes = lengths.fold(0, (s, len) => s + len);
               if (_isDisposed) return;
@@ -819,12 +821,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _isUserTriggered = false;
   }
 
-  /// True unless [f] is a raw bin that already has a discard record (and so is
-  /// not awaiting processing). Mirrors processAll's strip so the displayed
-  /// "minutes to process" matches what will actually be processed. [discarded]
-  /// comes from [RecordingsManager.discardedRelBinPaths] (empty in Adjustment
-  /// Mode).
-  static bool _isProcessableBin(File f, Set<String> discarded) {
+  /// True unless [f] is a raw bin that already has a discard record or (if
+  /// [covered] is provided) is already covered by an existing recording.
+  /// Mirrors the pipeline's filters so the displayed "minutes to process" and
+  /// processing promotions match what will actually be processed.
+  static bool _isProcessableBin(File f, Set<String> discarded, [Set<String>? covered]) {
+    if (covered != null && covered.contains(f.path)) return false;
     final parts = f.path.split('/raw_segments/');
     return parts.length != 2 || !discarded.contains(parts.last);
   }
@@ -839,27 +841,27 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     _transitionTo(SyncProcessState.processing);
 
-    // Always-on idempotency guard — skip bins already covered by a recording so we
-    // don't re-decode audio that already has an output file (and can't duplicate it).
-    // Usually empty on the normal path; in Adjustment Mode the preserved bins are
-    // excluded from this VAD run but remain on disk for Reprocess Day.
-    final Set<String> coveredBins =
-        await RecordingsManager.coveredBinPaths(_batches.expand((b) => b.rawSegments).toList());
-    final processableBatches = coveredBins.isEmpty
-        ? _batches
-        : _batches.map((b) {
-            final filtered = b.rawSegments.where((f) => !coveredBins.contains(f.path)).toList();
-            if (filtered.length == b.rawSegments.length) return b;
-            return Batch(
-              dateString: b.dateString,
-              date: b.date,
-              rawSegments: filtered,
-              draftRecordings: b.draftRecordings,
-              finalizedRecordings: b.finalizedRecordings,
-              markerTimestamps: b.markerTimestamps,
-              discards: b.discards,
-            );
-          }).toList();
+    final allBins = _batches.expand((b) => b.rawSegments).toList();
+    // Always-on idempotency guard: skip bins already covered by a recording so we
+    // don't re-decode audio that already has an output file (and can't duplicate
+    // it).
+    final Set<String> coveredBins = await RecordingsManager.coveredBinPaths(allBins);
+    final discardedBins = await RecordingsManager.discardedRelBinPaths();
+
+    final processableBatches = _batches.map((b) {
+      final filtered = b.rawSegments.where((f) => _isProcessableBin(f, discardedBins, coveredBins)).toList();
+      if (filtered.length == b.rawSegments.length) return b;
+      return Batch(
+        dateString: b.dateString,
+        date: b.date,
+        rawSegments: filtered,
+        draftRecordings: b.draftRecordings,
+        finalizedRecordings: b.finalizedRecordings,
+        markerTimestamps: b.markerTimestamps,
+        discards: b.discards,
+      );
+    }).toList();
+
     final activeBatches = processableBatches.where((b) => b.rawSegments.isNotEmpty).toList();
     final hasDrafts = processableBatches.any((b) => b.draftRecordings.isNotEmpty);
     final hasMarkers = processableBatches.any((b) => b.markerTimestamps.isNotEmpty);
@@ -872,8 +874,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     final bool backgroundMode = !_isForcePipeline;
 
-    final discarded = await RecordingsManager.discardedRelBinPaths();
-    final allRaw = activeBatches.expand((b) => b.rawSegments).where((f) => _isProcessableBin(f, discarded)).toList();
+    final allRaw = activeBatches.expand((b) => b.rawSegments).toList();
     final totalBytes = allRaw.fold(0, (sum, f) {
       try {
         return sum + f.lengthSync();
@@ -939,6 +940,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
 
     _persistProgress();
+    await RecordingsManager.pruneConsumedBins();
     await reloadBatchesSilently();
     _prefs.lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
     await _finishSuccess();
@@ -1142,7 +1144,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         }
 
         _isLoading = false;
-        final acc = _computeAccumulated(_batches, await RecordingsManager.discardedRelBinPaths());
+        final rawSegments = _batches.expand((b) => b.rawSegments).toList();
+        final acc = _computeAccumulated(
+          _batches,
+          await RecordingsManager.discardedRelBinPaths(),
+          await RecordingsManager.coveredBinPaths(rawSegments),
+        );
         _toProcessMinutes = acc.toProcessMinutes;
         _draftMinutes = acc.draftMinutes;
         _unprocessedBinCount = acc.unprocessedBins;
@@ -1174,7 +1181,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
           _markerConversations = await _manager.getMarkerConversations();
         }
 
-        final acc = _computeAccumulated(_batches, await RecordingsManager.discardedRelBinPaths());
+        final rawSegments = _batches.expand((b) => b.rawSegments).toList();
+        final acc = _computeAccumulated(
+          _batches,
+          await RecordingsManager.discardedRelBinPaths(),
+          await RecordingsManager.coveredBinPaths(rawSegments),
+        );
         _toProcessMinutes = acc.toProcessMinutes;
         _draftMinutes = acc.draftMinutes;
         _unprocessedBinCount = acc.unprocessedBins;
@@ -1421,9 +1433,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   /// Re-runs processing on the bins referenced by [d] with VAD bypassed so
-  /// every frame is kept as one m4a. On success the discard record is
-  /// removed and the recording appears in the day card; the user opens it
-  /// in the player to decide whether it's worth keeping.
+  /// every frame is kept as one audio file (WAV by default). On success the
+  /// discard record is removed and the recording appears in the day card; the
+  /// user opens it in the player to decide whether it's worth keeping.
   Future<void> recoverDiscard(DiscardRecord d) async {
     if (_spState != SyncProcessState.idle) return;
     if (RecordingsManager.isProcessingAny) return;
@@ -1719,39 +1731,22 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   ///  - [draftMinutes]: duration already folded into open draft recordings.
   ///
   /// The "to process" set mirrors exactly what [RecordingsManager.processAll]
-  /// will decode: every raw bin on disk EXCEPT those VAD already rejected (kept
-  /// on disk for the 48 h recovery window). It deliberately does NOT exclude
-  /// bins by finalized-session id — a single firmware session routinely splits
-  /// into a finalized recording PLUS a still-open `_draft` whose source bins are
-  /// kept on disk. Those kept bins carry the finalized recording's session id,
-  /// so the old exclusion hid them and the banner fell back to "Conversation in
-  /// progress" while real, decodable audio sat on disk. processAll excludes only
-  /// discarded bins, so the banner now matches it.
+  /// will decode: every raw bin on disk EXCEPT those VAD already rejected
+  /// (discarded) and those already covered by an existing recording.
   ///
   /// [discardedRelBins] MUST be the global persisted set from
-  /// [RecordingsManager.discardedRelBinPaths] — NOT a per-batch derivation from
-  /// `batch.discards`. A discard record is filed under its conversation's
-  /// local-date folder, which routinely differs from the bin's own raw-segment
-  /// batch; a per-batch set therefore drops cross-date records, so the banner
-  /// keeps counting a bin that processAll already strips — surfacing "~N min to
-  /// process" that never produces a recording (process/Force Process both report
-  /// "complete" with nothing new). Passing the same global set processAll uses
-  /// keeps the two in lockstep.
-  ///
-  /// The banner shows "to process" whenever any raw audio is waiting and only
-  /// falls back to the draft figure otherwise, so the two are reported
-  /// separately rather than summed (no double-count to reconcile).
+  /// [RecordingsManager.discardedRelBinPaths]. [coveredBins] are those identified
+  /// by [RecordingsManager.coveredBinPaths].
   ({double toProcessMinutes, double draftMinutes, int unprocessedBins}) _computeAccumulated(
-      List<Batch> batches, Set<String> discardedRelBins) {
+      List<Batch> batches, Set<String> discardedRelBins, Set<String> coveredBins) {
     int rawBytes = 0;
-    int unprocessedBins = 0;
+    int unprocessedBinsCount = 0;
     for (final f in batches.expand((b) => b.rawSegments)) {
-      final pathParts = f.path.split('/raw_segments/');
-      if (pathParts.length == 2 && discardedRelBins.contains(pathParts.last)) continue;
+      if (!_isProcessableBin(f, discardedRelBins, coveredBins)) continue;
 
       try {
         rawBytes += f.lengthSync();
-        unprocessedBins++;
+        unprocessedBinsCount++;
       } catch (_) {}
     }
 
@@ -1763,7 +1758,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     return (
       toProcessMinutes: rawBytes / 252000.0,
       draftMinutes: draftMs / 60000.0,
-      unprocessedBins: unprocessedBins,
+      unprocessedBins: unprocessedBinsCount,
     );
   }
 }
