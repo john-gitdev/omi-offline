@@ -148,8 +148,6 @@ class MockDeviceConnection implements DeviceConnection {
   DeviceTransport get transport => throw UnimplementedError();
   @override
   BtDevice get device => throw UnimplementedError();
-  @override
-  Future<void>? get gattConnectFuture => null;
 
   @override
   DeviceConnectionState get status => DeviceConnectionState.connected;
