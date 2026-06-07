@@ -2,6 +2,15 @@
 
 ## App
 
+### 0.19.7
+
+- **Fix: Resolved syncing notification regressions.**
+    - **Harmonized segment counts**: Foreground and background syncs now both use `estimatedTotalSegments`, ensuring consistent progress reporting (e.g., "1 of 5") instead of using the total device history.
+    - **Instant notifications**: Moved the foreground service start to the very beginning of the pipeline. The notification now appears instantly (showing "Preparing...") instead of being delayed by heavy disk operations.
+    - **Synchronized processing estimates**: The notification now immediately reflects the same filtered "minutes to process" estimate as the app banner, preventing confusing mismatches during the first few seconds of processing.
+    - **Improved background completion**: Background syncs now show the "Conversations ready" message for 10 seconds after finishing, matching the foreground experience.
+- **Improved Observability: Live BLE connection status.** Removed the guard that suppressed connection updates during sync intervals. The native BLE notification (ID 2001) now reflects the live "Connected" or "Connecting..." status in real-time.
+
 ### 0.19.6
 
 - **Fix: "Recover to Recording" now correctly bypasses discard filters.** Previously, trying to recover a ghost recording would fail because the system filtered out bins already marked as discards. The pipeline now respects settings overrides to ensure targeted recovery of raw audio.

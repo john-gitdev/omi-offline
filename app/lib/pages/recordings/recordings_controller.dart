@@ -580,7 +580,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _lastProgressAt = DateTime.now();
     _syncSpeed = speedKBps ?? 0.0;
 
-    final currentEstimated = ServiceManager.instance().wal.getSyncs().recordingsCount;
+    final currentEstimated = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
     if (currentEstimated > _totalCount) {
       _totalCount = currentEstimated;
       Logger.debug(
@@ -669,15 +669,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _syncSpeed = 0.0;
     _transitionTo(SyncProcessState.syncing);
 
-    final syncs = ServiceManager.instance().wal.getSyncs();
-    notifyListeners();
-    _persistProgress();
     WakelockPlus.enable();
     if (!await ForegroundUtil.isRunningService) {
       await ForegroundUtil.startForegroundTask(title: 'Syncing recordings', text: 'Preparing...');
     } else {
       await ForegroundUtil.updateNotification(title: 'Syncing recordings', text: 'Preparing...');
     }
+
+    final syncs = ServiceManager.instance().wal.getSyncs();
+    notifyListeners();
+    _persistProgress();
 
     SyncLocalFilesResponse? result;
     try {
@@ -765,18 +766,19 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     _transitionTo(SyncProcessState.syncing);
 
-    await Future.delayed(const Duration(seconds: 1));
-
-    Logger.debug('RecordingsController: _runPipeline start');
-
-    notifyListeners();
-    _persistProgress();
     WakelockPlus.enable();
     if (!await ForegroundUtil.isRunningService) {
       await ForegroundUtil.startForegroundTask(title: 'Syncing recordings', text: 'Preparing...');
     } else {
       await ForegroundUtil.updateNotification(title: 'Syncing recordings', text: 'Preparing...');
     }
+
+    await Future.delayed(const Duration(seconds: 1));
+
+    Logger.debug('RecordingsController: _runPipeline start');
+
+    notifyListeners();
+    _persistProgress();
 
     try {
       final result = await syncs.syncAll(progress: this);
@@ -841,6 +843,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     _transitionTo(SyncProcessState.processing);
 
+    WakelockPlus.enable();
+    if (!await ForegroundUtil.isRunningService) {
+      await ForegroundUtil.startForegroundTask(title: 'Processing recordings', text: 'Preparing...');
+    } else {
+      await ForegroundUtil.updateNotification(title: 'Processing recordings', text: 'Preparing...');
+    }
+
     final allBins = _batches.expand((b) => b.rawSegments).toList();
     // Always-on idempotency guard: skip bins already covered by a recording so we
     // don't re-decode audio that already has an output file (and can't duplicate
@@ -897,8 +906,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     notifyListeners();
     _persistProgress();
 
-    WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask(title: 'Processing recordings', text: 'Preparing...');
     _updateForegroundProgress(
         force: true); // overwrite "preparing..." with the actual minutes now that totalMinutes is known
     try {
@@ -1743,6 +1750,26 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     int unprocessedBinsCount = 0;
     for (final f in batches.expand((b) => b.rawSegments)) {
       if (!_isProcessableBin(f, discardedRelBins, coveredBins)) continue;
+
+      try {
+        rawBytes += f.lengthSync();
+        unprocessedBinsCount++;
+      } catch (_) {}
+    }
+
+    int draftMs = 0;
+    for (final c in batches.expand((b) => b.draftRecordings)) {
+      draftMs += c.duration.inMilliseconds;
+    }
+
+    return (
+      toProcessMinutes: rawBytes / 252000.0,
+      draftMinutes: draftMs / 60000.0,
+      unprocessedBins: unprocessedBinsCount,
+    );
+  }
+}
+s, coveredBins)) continue;
 
       try {
         rawBytes += f.lengthSync();
