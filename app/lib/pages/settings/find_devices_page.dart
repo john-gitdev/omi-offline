@@ -28,11 +28,14 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     _startScan();
   }
 
-  Future<void> _startScan() async {
+  Future<void> _startScan({bool userInitiated = false}) async {
     if (_isScanning) return;
 
     if (ServiceManager.instance().device.status == DeviceServiceStatus.scanning) {
-      if (mounted) {
+      // Only surface the "already scanning" notice for an explicit Scan/Refresh
+      // tap. Automatic scans (page open, post-forget rescan) silently defer to
+      // the running background scan instead of flashing a snackbar.
+      if (userInitiated && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('A background scan is already running. Please wait.')),
         );
@@ -97,8 +100,9 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
 
   Future<void> _connectToDevice(BtDevice device) async {
     final deviceService = ServiceManager.instance().device;
-    if (TargetPlatform.android == Theme.of(context).platform &&
-        !deviceService.hasCompanionDeviceAssociation()) {
+    final isAndroid = TargetPlatform.android == Theme.of(context).platform;
+    if (isAndroid && !(await deviceService.hasCompanionDeviceAssociation())) {
+      if (!mounted) return;
       bool? confirm = await showDialog<bool>(
         context: context,
         builder: (c) => getDialog(
@@ -129,6 +133,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     }
 
     // Show connecting indicator
+    if (!mounted) return;
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -216,6 +221,16 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     final isServiceScanning = ServiceManager.instance().device.status == DeviceServiceStatus.scanning;
     final isScanning = _isScanning || isServiceScanning;
 
+    // The page only populates _discoveredDevices from its own _startScan, but a
+    // background scan (Reset Connection / periodicConnect) populates the service
+    // list instead. Merge both — deduped by id — so background-scan results are
+    // shown rather than leaving the page on "No devices found" after one runs.
+    final mergedById = <String, BtDevice>{
+      for (final d in ServiceManager.instance().device.devices) d.id: d,
+      for (final d in _discoveredDevices) d.id: d,
+    };
+    final displayDevices = mergedById.values.toList();
+
     // Gate on the stored pairing (source of truth, also what _forgetDevice reads),
     // not provider.pairedDevice — that field is null at cold start and only hydrates
     // after a successful connect or a disconnect transition, so a provider gate would
@@ -243,7 +258,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
           else if (isBluetoothEnabled)
             IconButton(
               icon: const Icon(Icons.refresh, color: Colors.white),
-              onPressed: _startScan,
+              onPressed: () => _startScan(userInitiated: true),
               tooltip: 'Refresh devices',
             ),
         ],
@@ -270,13 +285,13 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                       ],
                     ),
                   )
-                : isScanning && _discoveredDevices.isEmpty
+                : isScanning && displayDevices.isEmpty
                     ? const Center(
                         child: CircularProgressIndicator(
                           color: Colors.deepPurpleAccent,
                         ),
                       )
-                    : _discoveredDevices.isEmpty
+                    : displayDevices.isEmpty
                         ? Center(
                             child: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
@@ -294,7 +309,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                                 ),
                                 const SizedBox(height: 32),
                                 ElevatedButton(
-                                  onPressed: _startScan,
+                                  onPressed: () => _startScan(userInitiated: true),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: Colors.deepPurpleAccent,
                                     foregroundColor: Colors.white,
@@ -306,9 +321,9 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                           )
                         : ListView.builder(
                         padding: const EdgeInsets.all(16),
-                        itemCount: _discoveredDevices.length,
+                        itemCount: displayDevices.length,
                         itemBuilder: (context, index) {
-                          final device = _discoveredDevices[index];
+                          final device = displayDevices[index];
                           return Card(
                             color: const Color(0xFF1C1C1E),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
