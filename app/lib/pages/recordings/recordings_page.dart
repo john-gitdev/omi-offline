@@ -300,99 +300,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
   }
 
-  Future<void> _handleAdjustmentModeBannerTap() async {
-    if (_controller.spState != SyncProcessState.idle) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Wait for the current operation to finish first.')),
-      );
-      return;
-    }
-    final hasBins = _controller.batches.any((b) => b.rawSegments.isNotEmpty);
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        backgroundColor: const Color(0xFF1C1C1E),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Turn off Adjustment Mode?', style: TextStyle(color: Colors.white)),
-        content: Text(
-          hasBins
-              ? 'All raw bins will be reprocessed with your current VAD settings. Any recording backed by a bin will be replaced; recordings without a bin backup are kept as-is.'
-              : 'Adjustment mode will be turned off. The list will return to showing finalized recordings only.',
-          style: const TextStyle(color: Colors.white70, fontSize: 14),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(c).pop(false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(c).pop(true),
-            child: Text(
-              hasBins ? 'Turn Off & Reprocess' : 'Turn Off',
-              style: const TextStyle(color: Colors.deepPurpleAccent),
-            ),
-          ),
-        ],
-      ),
-    );
-    if (confirm != true || !mounted) return;
-    _prefs.adjustmentMode = false;
-    unawaited(RecordingsManager.runRecoverySweep());
-    setState(() {});
-    if (hasBins) {
-      unawaited(_controller.runAdjustmentCleanup());
-    } else {
-      RecordingsManager.notifyRecordingsChanged();
-    }
-  }
-
-  Future<void> _runAdjustmentCleanup() async {
-    if (_controller.spState != SyncProcessState.idle) return;
-    final daysWithBins = _controller.batches.where((b) => b.rawSegments.isNotEmpty).toList();
-    if (daysWithBins.isEmpty) return;
-
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (c) => getDialog(
-        c,
-        () => Navigator.of(c).pop(false),
-        () => Navigator.of(c).pop(true),
-        'Clean up raw audio?',
-        'Raw audio files from ${daysWithBins.length} ${daysWithBins.length == 1 ? 'day' : 'days'} are still on disk. '
-            'Unprocessed days will be processed first, then all raw files will be permanently deleted. '
-            'This cannot be undone.',
-        confirmText: 'Process & Delete',
-      ),
-    );
-    if (confirm != true) return;
-    unawaited(_controller.runAdjustmentCleanup());
-  }
-
-  Future<void> _reprocessDay(Batch batch) async {
-    final messenger = ScaffoldMessenger.of(context);
-    if (_controller.spState != SyncProcessState.idle && _controller.spState != SyncProcessState.error) return;
-    bool? confirm = await showDialog<bool>(
-      context: context,
-      builder: (c) => getDialog(
-        c,
-        () => Navigator.of(c).pop(false),
-        () => Navigator.of(c).pop(true),
-        'Reprocess Day',
-        'This will delete all processed recordings for ${batch.dateString} and reprocess from raw audio using your current VAD settings.',
-        confirmText: 'Reprocess',
-      ),
-    );
-    if (confirm != true) return;
-    try {
-      await _controller.reprocessDay(batch);
-    } catch (e) {
-      if (mounted)
-        messenger.showSnackBar(
-          SnackBar(content: Text('Error reprocessing day: $e')),
-        );
-    }
-  }
-
   Future<void> _exportAll(Batch batch, List<Conversation> conversations) async {
     if (conversations.isEmpty) return;
     final files = conversations.map((r) => XFile(r.file.path)).toList();
@@ -402,14 +309,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
   }
 
   Future<void> _handleUploadTap(Conversation conversation) async {
-    if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Uploads paused — turn off Adjustment Mode first'),
-        ),
-      );
-      return;
-    }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -838,13 +737,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     );
                   },
                 ),
-                AdjustmentCleanupBanner(
-                  adjustmentMode: _prefs.adjustmentMode,
-                  adjustmentModeWasEnabled: _prefs.adjustmentModeWasEnabled,
-                  spState: controller.spState,
-                  pendingDays: controller.batches.where((b) => b.rawSegments.isNotEmpty).length,
-                  onTap: _runAdjustmentCleanup,
-                ),
                 Expanded(
                   child: controller.isLoading
                       ? const Center(
@@ -1009,7 +901,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                         return BatchCard(
                                           batch: visibleBatches[batchIndex],
                                           markerMap: markerMap,
-                                          adjustmentMode: _prefs.adjustmentMode,
                                           anyIntegrationEnabled: anyIntegrationEnabled,
                                           filterMode: _filterMode,
                                           uploadStatus: controller.uploadStatus,
@@ -1025,9 +916,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                             visibleBatches[batchIndex],
                                             toDelete,
                                           ),
-                                          onReprocessDay: () => _reprocessDay(
-                                            visibleBatches[batchIndex],
-                                          ),
                                           onDeleteConversation: _deleteConversation,
                                           onDeleteMarkerConversation: _deleteMarkerConversation,
                                           onRecoverDiscard: controller.recoverDiscard,
@@ -1039,8 +927,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
                           },
                         ),
                 ),
-                if (_prefs.adjustmentMode)
-                  AdjustmentModeBanner(onTap: _handleAdjustmentModeBannerTap),
               ],
             ),
           );

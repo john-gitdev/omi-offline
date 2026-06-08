@@ -116,14 +116,6 @@ void main() {
       prefsUtil.forceSyncSkipConfirm = true;
       expect(prefsUtil.forceSyncSkipConfirm, true);
 
-      expect(prefsUtil.adjustmentMode, false);
-      prefsUtil.adjustmentMode = true;
-      expect(prefsUtil.adjustmentMode, true);
-
-      expect(prefsUtil.adjustmentModeWasEnabled, false);
-      prefsUtil.adjustmentModeWasEnabled = true;
-      expect(prefsUtil.adjustmentModeWasEnabled, true);
-
       expect(prefsUtil.vadSplitSeconds, 120);
       prefsUtil.vadSplitSeconds = 60;
       expect(prefsUtil.vadSplitSeconds, 60);
