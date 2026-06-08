@@ -171,6 +171,15 @@ abstract class DeviceConnection {
     return 0;
   }
 
+  /// Re-anchors the firmware clock by writing the current UTC epoch.
+  /// Safe to call repeatedly — needed on every (re)connect because a native
+  /// auto-reconnect after a firmware reboot bypasses [connect], so the device
+  /// would otherwise keep a reset clock and mis-stamp new recordings.
+  Future<bool> syncTime() async {
+    if (await isConnected()) return performSyncDeviceTime();
+    return false;
+  }
+
   Future<void> setLedDimRatio(int ratio) async {
     if (await isConnected()) await performSetLedDimRatio(ratio);
   }
