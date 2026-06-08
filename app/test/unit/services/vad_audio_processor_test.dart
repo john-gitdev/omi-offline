@@ -270,8 +270,11 @@ void main() {
     expect(savedPath, isNull, reason: 'Empty segment is discarded, returning null');
   });
 
-  group('short recording threshold (discardShort / keep)', () {
+  group('short recording threshold (always kept; filter only hides)', () {
     // Each dummy frame = 20 ms. 10 frames = 200 ms, 300 frames = 6000 ms.
+    // discardShortRecordings was removed: the duration guard never permanently
+    // drops audio anymore — short recordings are saved and merely filtered from
+    // the list. These tests assert the guard stays quiet across thresholds.
 
     test('does not fire guard when duration is below threshold (now always kept)', () async {
       final processor = VadAudioProcessor.fromSettings(
@@ -281,10 +284,10 @@ void main() {
       await processor.processSegmentFile(_makeBinFile(tempDir, 10, name: 'a.bin'), DateTime.now());
       await processor.flushRemaining();
       expect(processor.discardGuardFiredOnLastFlush, isFalse);
-      processor.destroy();
+      await processor.destroy();
     });
 
-    test('discardShort=false does not fire guard when duration is below threshold', () async {
+    test('does not fire guard when duration is below threshold (second file)', () async {
       final processor = VadAudioProcessor.fromSettings(
         settings: _settings(minDurationMs: 5000),
         outputDir: tempDir.path,
@@ -292,10 +295,10 @@ void main() {
       await processor.processSegmentFile(_makeBinFile(tempDir, 10, name: 'b.bin'), DateTime.now());
       await processor.flushRemaining();
       expect(processor.discardGuardFiredOnLastFlush, isFalse);
-      processor.destroy();
+      await processor.destroy();
     });
 
-    test('discardShort=true does not fire guard when duration meets threshold', () async {
+    test('does not fire guard when duration meets threshold', () async {
       // 300 frames = 6000 ms >= 5000 ms threshold
       final processor = VadAudioProcessor.fromSettings(
         settings: _settings(minDurationMs: 5000),
@@ -304,10 +307,10 @@ void main() {
       await processor.processSegmentFile(_makeBinFile(tempDir, 300, name: 'c.bin'), DateTime.now());
       await processor.flushRemaining();
       expect(processor.discardGuardFiredOnLastFlush, isFalse);
-      processor.destroy();
+      await processor.destroy();
     });
 
-    test('discardShort=true does not fire guard when threshold is 0 (Off)', () async {
+    test('does not fire guard when threshold is 0 (Off)', () async {
       final processor = VadAudioProcessor.fromSettings(
         settings: _settings(minDurationMs: 0),
         outputDir: tempDir.path,
@@ -315,7 +318,7 @@ void main() {
       await processor.processSegmentFile(_makeBinFile(tempDir, 10, name: 'd.bin'), DateTime.now());
       await processor.flushRemaining();
       expect(processor.discardGuardFiredOnLastFlush, isFalse);
-      processor.destroy();
+      await processor.destroy();
     });
 
     test('gaps under 10 seconds are stitched without padding', () async {
@@ -346,7 +349,7 @@ void main() {
       // Expected duration: 100ms (file1) + 100ms (file2) = 200ms
       // (Gap is 5s < 10s, so no padding even if uptime matches)
       expect(processor.currentChunkDurationMs, 200);
-      processor.destroy();
+      await processor.destroy();
     });
 
     test('consecutive in-stream silence splits advance the timeline (no overlapping discards)', () async {
@@ -379,7 +382,7 @@ void main() {
       // The second chunk must start AFTER the first ends, not back-dated to the file start.
       expect(secondStart, greaterThan(firstStart), reason: 'second chunk must not reuse the file-start timestamp');
       expect(secondStart, greaterThanOrEqualTo(firstEnd), reason: 'chunks must not overlap');
-      processor.destroy();
+      await processor.destroy();
     });
 
     test('real consecutive processor discards coalesce to one entry via getDiscardsForDate', () async {
@@ -412,7 +415,7 @@ void main() {
       expect(merged.length, 1, reason: 'two abutting processor discards must collapse to a single UI entry');
       expect(merged.first.startTime.millisecondsSinceEpoch, discards[0]['startMs']);
       expect(merged.first.endTime.millisecondsSinceEpoch, discards[1]['endMs']);
-      processor.destroy();
+      await processor.destroy();
     });
 
     test('gaps over 10 seconds but under threshold are padded', () async {
@@ -442,7 +445,7 @@ void main() {
 
       // Expected duration: 100ms (file1) + 100ms (file2) + 15000ms (padding) = 15200ms
       expect(processor.currentChunkDurationMs, 15200);
-      processor.destroy();
+      await processor.destroy();
     });
 
     test('clock sync jumps (uptime gap < 5s) are NOT padded even if > 10s', () async {
@@ -471,7 +474,7 @@ void main() {
 
       // Expected duration: 100ms (file1) + 100ms (file2) = 200ms (No padding!)
       expect(processor.currentChunkDurationMs, 200);
-      processor.destroy();
+      await processor.destroy();
     });
 
     test('IMU Bridge: stitches audio across reboots using IMU tick delta', () async {
@@ -522,7 +525,7 @@ void main() {
       // It should insert gap padding.
       // Expected: 100 (file1) + 15000 (padding) + 100 (file2) = 15200 ms
       expect(processor.currentChunkDurationMs, 15200);
-      processor.destroy();
+      await processor.destroy();
     });
 
     test('AAD Padding: pads offline gaps with digital silence using VAD resume marker', () async {
@@ -558,7 +561,7 @@ void main() {
       // + 1000 ms (framesAfter)
       // = 7000 ms
       expect(processor.currentChunkDurationMs, 7000);
-      processor.destroy();
+      await processor.destroy();
     });
 
     group('High-Precision Timestamp Pipeline', () {
@@ -599,7 +602,7 @@ void main() {
 
         // Duration: 200ms (file1) + 0ms (jitter) + 100ms (jitter.bin) = 300ms
         expect(processor.currentChunkDurationMs, 300);
-        processor.destroy();
+        await processor.destroy();
       });
 
       test('IMU Tick Rollover: handles 24-bit rollover correctly', () async {
@@ -637,7 +640,7 @@ void main() {
         // Stitching should occur because gap matches IMU delta
         expect(processor.currentSessionId, 1); // Stayed in session 1 due to bridge
         expect(processor.currentChunkDurationMs >= 3376 + 100, true);
-        processor.destroy();
+        await processor.destroy();
       });
     });
   });
@@ -707,7 +710,7 @@ void main() {
       await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
       await proc.flushRemaining(isDraft: true);
       final edls = proc.consumePendingEdlData();
-      proc.destroy();
+      await proc.destroy();
 
       expect(edls.length, 1);
       expect(edls[0]['offsetMs'], 200);
@@ -721,7 +724,7 @@ void main() {
       await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
       await proc.flushRemaining(isDraft: true);
       final edls = proc.consumePendingEdlData();
-      proc.destroy();
+      await proc.destroy();
 
       expect(edls.length, 1);
       expect(edls[0]['offsetMs'], 0);
@@ -736,7 +739,7 @@ void main() {
       await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
       await proc.flushRemaining(isDraft: true);
       final edls = proc.consumePendingEdlData();
-      proc.destroy();
+      await proc.destroy();
 
       // markerUtcMs = 0 → falls back to lastFrameWallTime = kBase + 4*20.
       expect(edls.length, 1);
@@ -754,7 +757,7 @@ void main() {
       await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
       await proc.flushRemaining(isDraft: true);
       final edls = proc.consumePendingEdlData();
-      proc.destroy();
+      await proc.destroy();
 
       expect(edls.length, 1);
       // Audio wall time used — NOT the drifted RTC.
@@ -769,7 +772,7 @@ void main() {
       await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
       await proc.flushRemaining(isDraft: true);
       final edls = proc.consumePendingEdlData();
-      proc.destroy();
+      await proc.destroy();
 
       expect(edls.length, 1);
       expect(edls[0]['filename'], '');
@@ -816,7 +819,7 @@ void main() {
       final saved = await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
       // flushRemaining should have nothing left (session-end already saved the recording)
       final flushed = await proc.flushRemaining();
-      proc.destroy();
+      await proc.destroy();
 
       // The 10-frame recording should be saved by the session-end marker path.
       expect(saved.length, 1, reason: 'session-end should produce one finalized recording');
@@ -868,7 +871,7 @@ void main() {
         await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
         await proc.flushRemaining(isDraft: true);
         final edls = proc.consumePendingEdlData();
-        proc.destroy();
+        await proc.destroy();
 
         // Should only be one EDL because the split was blocked by protection
         expect(edls.length, 1, reason: 'Split should be blocked by marker protection window');
@@ -917,7 +920,7 @@ void main() {
         final saved = await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
         await proc.flushRemaining(isDraft: true);
         final edls = proc.consumePendingEdlData();
-        proc.destroy();
+        await proc.destroy();
 
         // Split should occur because we are outside the 50s protection window
         // One saved file from the split, and one remaining EDL for the new session
@@ -969,7 +972,7 @@ void main() {
         await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
         await proc.flushRemaining(isDraft: true);
         final edls = proc.consumePendingEdlData();
-        proc.destroy();
+        await proc.destroy();
 
         // Because marker UTC was 0, it should fallback to audio wall time (kBase + 100000).
         // The VAD resume at kBase + 130000 is within 50000ms of that, so it should not split.
