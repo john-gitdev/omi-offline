@@ -26,7 +26,7 @@
     - Hardened the `processAll` audio pipeline to gracefully reset internal states (`processingProgress` and `minutesRemaining`) back to idle instead of locking the UI when isolates die or throw unhandled exceptions.
     - Standardized test coverage for `TimeoutException` and `SocketException` paths across cloud integration clients (Omi and HeyPocket), verifying they present user-friendly fallback behavior.
 
-### 0.19.11
+### 0.19
 
 - **Added: AAD/VAD designation in recording list.**
     - Added a processing mode indicator (AAD or VAD) next to the recording size in the recordings list and player pages, making it easy to see which recordings were processed with Silero VAD.
@@ -39,9 +39,6 @@
     - Fixed a race condition where the VAD-resume signal (waking the device after silence) would ignore the marker protection window and trigger an immediate split.
     - Improved Marker protection robustness by anchoring the 50s window to the raw hardware RTC (Real-Time Clock) instead of the drifted audio timeline.
     - Added a wall-clock fallback for marker protection on devices that haven't yet performed their first time-sync.
-
-### 0.19.10
-
 - **Improved: Ghost-aware Stitching Timeline.**
     - Upgraded the recordings stitcher to include `DiscardRecord`s (ghosts) in its chronological timeline. The app now correctly identifies when a conversation has ended by tracking cumulative non-speech duration (silence gaps + ghost records) against the user's "Silence to Split" threshold.
     - Fixed a bug where conversations would stay stuck "In Progress" indefinitely because the stitcher was "blind" to subsequent noise-only events.
@@ -50,9 +47,6 @@
 - **Improved: Stitching Robustness.**
     - Optimized `_mergeMeta` to safely handle stitching gaps and ghost segments, ensuring accurate duration and peak data preservation even when no subsequent speech file is present.
     - Fixed a "Finalization Race" that could lead to back-to-back recordings being permanently split into separate files.
-
-### 0.19.9
-
 - **Improved: Ghost Notification Visibility.**
     - Systems-discarded "ghost" audio segments are now always visible in the recordings list, even when short-recording filters are disabled.
     - Unified the short-recording behavior to always "Hide" rather than "Delete", ensuring that all captured audio remains recoverable through the ghost row interface.
@@ -62,57 +56,31 @@
     - Filter tabs (Main / Hidden / All) now only appear when a duration filter is active (`Short Recordings > 0`), keeping the UI clean for users who prefer no filtering.
 - **Refactored: Simplified Backend.**
     - Completely removed the `discardShortRecordings` preference and simplified the VAD processing pipeline. Audio is never permanently deleted based on duration.
-
-### 0.19.8
-
 - **Fix: Repaired corrupted `recordings_controller.dart`.** Removed syntax-breaking duplicate code and fragment garbage at the end of the file that prevented compilation.
 - **Fix: Resolved background notification persistence.**
     - **Hand-off to Idle Notification**: Fixed a bug where background syncs would stop the foreground service after the "Conversations ready" message, causing the notification to disappear. The notification now seamlessly transitions to the "Next sync" countdown, ensuring the service remains active.
     - **Lifecycle Awareness**: The foreground service is no longer prematurely stopped when a success or processing pass completes while the app is in the background.
-
-### 0.19.7
-
 - **Fix: Resolved syncing notification regressions.**
     - **Harmonized segment counts**: Foreground and background syncs now both use `estimatedTotalSegments`, ensuring consistent progress reporting (e.g., "1 of 5") instead of using the total device history.
     - **Instant notifications**: Moved the foreground service start to the very beginning of the pipeline. The notification now appears instantly (showing "Preparing...") instead of being delayed by heavy disk operations.
     - **Synchronized processing estimates**: The notification now immediately reflects the same filtered "minutes to process" estimate as the app banner, preventing confusing mismatches during the first few seconds of processing.
 - **Improved Observability: Live BLE connection status.** Removed the guard that suppressed connection updates during sync intervals. The native BLE notification (ID 2001) now reflects the live "Connected" or "Connecting..." status in real-time.
-
-### 0.19.6
-
 - **Fix: "Recover to Recording" now correctly bypasses discard filters.** Previously, trying to recover a ghost recording would fail because the system filtered out bins already marked as discards. The pipeline now respects settings overrides to ensure targeted recovery of raw audio.
 - **Fix: Resolved "sticky" processing banner.** Synchronized the UI's "Audio to Process" calculation with the actual pipeline filtering. The banner now correctly accounts for "covered" bins (audio already in recordings), preventing it from getting stuck on lingering raw data.
 - **Improved Robustness: Automatic bin pruning after manual processing.** Added a mandatory cleanup step after manual processing runs to delete raw bins that have been successfully finalized or covered.
 - **Improved Robustness: Hardened processing isolate.** The processing pipeline now requires a explicit completion handshake, ensuring that isolate crashes or watchdog kills do not lead to premature deletion of raw source audio.
 - **Documentation: Updated project memory and comments to reflect WAV as the default audio format.**
-
-### 0.19.5
-
 - **Fix: Manual upload now shows a snackbar error when WiFi is required.** Previously, clicking the upload button while on cellular data with "Upload on Wifi Only" enabled would fail silently. The UI now catches the exception and displays the specific "WiFi required" message to the user.
 - **Improved Observability: Manual upload failures are now recorded in Debug Tools.** Errors during the manual upload flow (including WiFi restrictions and integration failures) are now passed to the `Logger.error` system so they appear in the in-app log viewer and persistent log files.
-
-### 0.19.4
-
 - **Performance: Android Native VAD Batch Runner.** Processing large backlogs is now significantly faster and more power efficient on Android. The app now keeps the ORT session, the recurrent LSTM state, and the context window entirely within a background native Kotlin thread, and evaluates VAD across a batch of acoustic frames in a single platform-channel invocation rather than incurring thousands of synchronous FFI crossings per minute of audio. iOS and non-Android platforms fall back seamlessly to the standard per-window evaluation while preserving bit-identical VAD decisions.
-
-### 0.19.3
-
 - **Added "Upload on Wifi Only" toggle.** New setting in App Settings allows restricting cloud uploads (Omi, HeyPocket, etc.) to WiFi connections only, preserving mobile data. The toggle is automatically disabled if no integrations are configured.
 - **Refactored Generic Integration Architecture.** Centralized all cloud integration logic into a extensible strategy pattern. This allows adding new integrations by updating a single file while automatically inheriting WiFi controls, status tracking, and background sync logic.
 - **Improved Observability.** Moved high-level upload logging into service-specific clients for clearer, non-redundant debugging information.
-
-### 0.19.2
-
 - **Simplified background sync pipeline.** Removed the redundant second "finalizing" sync that occurred after processing. The sync completion timestamp is now updated immediately after the primary data retrieval, ensuring the auto-sync timer is refreshed even during long processing runs. This prevents confusing behavior where audio recorded during processing was downloaded but left unprocessed until the next manual or scheduled sync.
-
-### 0.19.1
-
 - **Fix: "Audio to Process" banner no longer gets stuck after a background sync that downloads a continuation bin.** If a new bin arrived on the device while the previous processing run was finishing its draft flush, the next pipeline would mark that bin as already "covered" by the open draft's coverage interval (draft end + 120 s VAD-split slack), skip processing, call it done, and leave the bin sitting on disk — so the banner reappeared on every reload. Draft files are now excluded from coverage-interval computation; only finalized recordings gate the idempotency filter.
-
-### 0.19.0
-
 - **Fix: background sync now fires on time even when Android freezes the Dart isolate.** Previously, if the OS suspended the Flutter runtime (despite the foreground service being alive), the scheduled sync timer and heartbeat both stopped firing — the notification would show a stale "Next sync at X:XX" with no sync occurring until the user opened the app. A native `AlarmManager` exact alarm (`setExactAndAllowWhileIdle`) is now armed whenever Dart sets the next sync time. When the alarm fires, it delivers the sync request natively, bypassing the frozen Dart layer. The alarm re-arms itself from shared prefs so it survives repeated Dart freezes without requiring Dart to reschedule.
 - **Overhauled notification layout.** The sync notification now uses title + subtext consistently: idle shows "Next sync at X:XX PM" / "Last sync completed at X:XX PM · 85%"; active phases show "Syncing recordings" / "45% complete" and "Processing recordings" / "67% complete". Progress updates every 5 seconds in both foreground and background. The native BLE notification (always-on) shows connection state only (Connected / Connecting / Disconnected).
+
 
 ### 0.18
 
