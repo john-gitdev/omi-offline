@@ -2,6 +2,24 @@
 
 ## App
 
+### 0.19.11
+
+- **Fix: Resolved back-to-back recording splits on marker tap.**
+    - Fixed a race condition where the VAD-resume signal (waking the device after silence) would ignore the marker protection window and trigger an immediate split.
+    - Improved Marker protection robustness by anchoring the 50s window to the raw hardware RTC (Real-Time Clock) instead of the drifted audio timeline.
+    - Added a wall-clock fallback for marker protection on devices that haven't yet performed their first time-sync.
+
+### 0.19.10
+
+- **Improved: Ghost-aware Stitching Timeline.**
+    - Upgraded the recordings stitcher to include `DiscardRecord`s (ghosts) in its chronological timeline. The app now correctly identifies when a conversation has ended by tracking cumulative non-speech duration (silence gaps + ghost records) against the user's "Silence to Split" threshold.
+    - Fixed a bug where conversations would stay stuck "In Progress" indefinitely because the stitcher was "blind" to subsequent noise-only events.
+- **Improved: Full-Fidelity Audio Preservation.**
+    - Intermediate ghost recordings that fall within the split threshold are now automatically "healed" into the main recording. The app re-decodes the raw audio from these discarded segments and preserves them in the conversation file, ensuring that contextual background noise (like a cough or door slam) is not lost.
+- **Improved: Stitching Robustness.**
+    - Optimized `_mergeMeta` to safely handle stitching gaps and ghost segments, ensuring accurate duration and peak data preservation even when no subsequent speech file is present.
+    - Fixed a "Finalization Race" that could lead to back-to-back recordings being permanently split into separate files.
+
 ### 0.19.9
 
 - **Improved: Ghost Notification Visibility.**
