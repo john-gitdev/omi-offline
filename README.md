@@ -1,88 +1,99 @@
 # Omi Offline
 
-A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
+<div align="center">
+  <img src="screenshots/hero-banner.jpg" alt="Omi Hero Banner" width="100%" />
+</div>
 
-**Current versions:** App `0.19.0` · Firmware `oo-1.9.2`
+<div align="center">
+  <h3>The ultimate open-source offline wearable for capturing your life.</h3>
+  <p>
+    <b>Omi Offline</b> captures your life's audio completely offline, using hardware-accelerated machine learning to process, filter, and organize your conversations without a cloud subscription.
+  </p>
+</div>
 
----
+<div align="center">
 
-## Screenshots
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Platform: Android | iOS](https://img.shields.io/badge/Platform-Android%20%7C%20iOS-green.svg)]()
+[![Hardware: nRF5340](https://img.shields.io/badge/Hardware-nRF5340-orange.svg)]()
 
-<table>
-<tr>
-<td align="center" width="33%"><img src="screenshots/Conversation%20Page.jpg" width="260"><br><sub>Conversation Page</sub></td>
-<td align="center" width="33%"><img src="screenshots/Recording%20Modes.jpg" width="260"><br><sub>Recording Modes</sub></td>
-<td align="center" width="33%"><img src="screenshots/VAD%20Option.jpg" width="260"><br><sub>VAD Option</sub></td>
-</tr>
-<tr>
-<td align="center" width="33%"><img src="screenshots/Device%20Settings.jpg" width="260"><br><sub>Device Settings</sub></td>
-<td align="center" width="33%"><img src="screenshots/Integrations.jpg" width="260"><br><sub>Integrations</sub></td>
-<td width="33%"></td>
-</tr>
-</table>
+</div>
 
 ---
 
-## What it does
+## 📖 Overview
 
-The nRF5340 wearable captures audio continuously via PDM microphones, encodes it as Opus (16 kHz mono, 20 ms frames), and writes it to an SD card. The Flutter app connects over BLE, pulls files via a resumable WAL protocol, then segments the audio into dated recordings — splitting on firmware activity timestamps (AAD, the default) or, optionally, by running Silero VAD locally on the phone. Recordings are saved as WAV by default (M4A and OGG optional). Everything runs on-device.
+Omi Offline is a fork of [BasedHardware/omi](https://github.com/BasedHardware/omi), designed specifically for privacy-conscious users. **We removed all cloud sync, OAuth, remote transcription, and memory backend features.** Instead, the Omi hardware captures audio directly to its onboard eMMC storage, and your smartphone uses a native, highly-optimized Voice Activity Detection (VAD) engine to process and segment that audio entirely offline.
 
----
+You own your hardware, and you own your data.
 
-## Key Features
+## ✨ Key Features
 
-- **100% offline.** No cloud API, no internet check. Data never leaves the device unless you explicitly upload it.
-- **Resumable BLE sync (WAL).** Per-file byte-offset bookmarks survive disconnects. Sync resumes exactly where it stopped.
-- **AAD (firmware activity detection) by default.** Automatic mode splits on the firmware's audio-activity timestamps and treats all captured audio as speech — no on-phone model. This is the default: it processes faster and uses less battery than Silero.
-- **Silero VAD on-device (opt-in).** ONNX Runtime can run Silero VAD v6.2.1 locally on the phone to strip silence and segment speech. Disabled by default in Automatic mode; enabling it shows a one-time battery/processing-time warning. Runs in a background isolate so platform threads stay unblocked.
-- **Two recording modes.** Automatic (hands-free; AAD by default, Silero optional) and Manual (explicit double-tap start/stop on the hardware button).
-- **Verified Markers.** A double-tap drops a timestamped bookmark stored inline within the audio stream. During processing, the app parses these events with sub-frame precision to build high-precision EDL sidecars for the resulting recordings.
-- **Discard recovery (ghost rows).** Audio that processing dropped (silenced as noise, or too short) is surfaced as a greyed-out "ghost" row in the recordings list, appearing in real time as each discard is identified. Source bins are protected for a 48 h window so you can recover a clip with a lower threshold or delete it.
-- **Background battery saving.** The app always disconnects BLE when backgrounded (after a ~30 s grace window to survive quick screen-off/on) and reconnects only when a sync is due. The firmware records to SD card regardless of phone connectivity. A `PARTIAL_WAKE_LOCK` is held over the background sync+process run so Android doesn't downclock the processing isolate when the screen is off.
-- **Processing resume from checkpoint.** If processing is interrupted (background kill, BLE drop, cancel), the next run restores the exact Silero LSTM recurrent state from a checkpoint file and picks up from the last completed segment — no re-decoding from scratch.
-- **Integrations.** Optional upload to HeyPocket or Omi after processing.
+- **100% Offline Processing:** Audio is stored locally on the device (eMMC) and synced via BLE to your phone.
+- **On-Device Machine Learning (Silero VAD):** Uses a highly optimized Native VAD Batch Runner for Android to process audio and filter out silence without draining your phone's battery.
+- **Intelligent Audio Activity Detection (AAD):** Hardware-level acoustic gating ensures the mic pipeline sleeps when it's quiet, saving battery.
+- **Customizable Recording Modes:** Choose between Manual (marker-based) or Automatic (continuous monitoring) modes.
+- **Background Resilience:** Robust BLE syncing works in the background and gracefully handles Android's Doze mode.
+- **Flexible Export:** Export your conversations in WAV (PCM), M4A (AAC), or OGG (Opus) formats.
+- **Data Integrations:** Seamlessly upload finalized audio to third-party integrations like HeyPocket.
+- **No Subscriptions, No Cloud:** Your recordings never leave your phone unless you explicitly upload them.
 
 ---
 
-## Architecture
+## 📸 Screenshots
 
+<div align="center">
+  <table style="border: none;">
+    <tr>
+      <td align="center"><img src="screenshots/Conversation Page.jpg" width="260px" alt="Conversation Page" /></td>
+      <td align="center"><img src="screenshots/Recording Modes.jpg" width="260px" alt="Recording Modes" /></td>
+      <td align="center"><img src="screenshots/VAD Option.jpg" width="260px" alt="VAD Options" /></td>
+    </tr>
+    <tr>
+      <td align="center"><img src="screenshots/Device Settings.jpg" width="260px" alt="Device Settings" /></td>
+      <td align="center"><img src="screenshots/Integrations.jpg" width="260px" alt="Integrations" /></td>
+      <td align="center"></td>
+    </tr>
+  </table>
+</div>
+
+---
+
+## 🏗️ Architecture
+
+Omi uses an offline-first architecture prioritizing battery life and data sovereignty.
+
+```mermaid
+graph TD
+    subgraph Hardware [Omi Wearable (nRF5340)]
+        Mic[Microphones] --> AAD[Hardware AAD Gate]
+        AAD --> Opus[Opus Encoder]
+        Opus --> eMMC[(eMMC Storage)]
+        eMMC -.-> |BLE Sync| BLE[Bluetooth LE]
+    end
+
+    subgraph Phone [Smartphone (App)]
+        BLE_App[BLE Receiver] --> WAL[WAL Sync (Raw Bins)]
+        WAL --> VAD[Native VAD Batch Runner]
+        VAD --> File_Sys[(Finalized Recordings)]
+        File_Sys --> UI[Recordings UI]
+        File_Sys --> Export[M4A / WAV / OGG]
+    end
+
+    BLE --> BLE_App
 ```
-PDM mics → Opus encoder (firmware) → SD card (.bin segments)
-                                           |
-                              BLE GATT (WAL, ACK-gated)
-                                           |
-                              Flutter app (raw .bin on phone)
-                                           |
-                      AAD timestamps (default) or Silero VAD (opt-in)
-                                           |
-                        recordings/<YYYY-MM-DD>/recording_<ms>.wav
-```
 
-### Firmware (Zephyr RTOS, nRF5340)
+### The Pipeline
 
-- **Audio:** PDM at 16 kHz → Opus VBR, complexity 5, 20 ms frames (codec ID `20`: 80 B/frame, 50 fps).
-- **Storage:** LittleFS on SD card. Copy-on-write metadata and journaling means the filesystem stays consistent through sudden power loss.
-- **SD write pipeline:** Frames queue into `sd_msgq` (depth 100). Worker batches 100 frames per LittleFS write, fsyncs every 60 s. SPI bus is power-gated between operations (`sd_io_low_power`).
-- **Time sync:** On BLE connect the app writes UTC as a little-endian `u32` to characteristic `0x0031`. The firmware renames any `TMP_` files and anchors recording timestamps to real wall time.
-- **LED:** Defaults to off (stealth) after the boot-sequence flash (white breathe → solid white → fade). Triple-tap to enable the LED; triple-tap again to return to stealth.
-- **Button:** Interrupt-driven (no 25 Hz polling). GPIO callback wakes the FSM only on press.
-- **Battery ADC:** 60 s when connected, 5 min when disconnected.
-
-### App (Flutter)
-
-- **Native BLE bridge.** Pigeon-generated code calls the platform's native iOS/Android Bluetooth stack directly, bypassing Dart BLE library limitations.
-- **Connection serialization.** `DeviceService.ensureConnection()` uses a `Mutex` so N concurrent callers (battery, storage, WAL sync) share one attempt.
-- **Background lifecycle.** Pressing Back minimizes the app (keeps the BLE foreground service running); swiping from Recents still stops it. The app disconnects BLE ~30 s after going to background and reconnects on the auto-sync schedule or on app open.
-- **WAL sync (`SDCardWalSyncImpl`).** Saves segments to `raw_segments/<timerStart>/<timerStart>_<sessionId>.bin`, where `timerStart` is the firmware-assigned UTC epoch seconds and `sessionId` is the 32-bit DeviceSession ID (or `0` if unknown). Pre-time-sync files land in a `raw_segments/session_<sessionId>/` fallback folder shown in the UI under "Unorganized".
-- **VAD processor (`VadAudioProcessor`).** Runs in a fresh isolate. Stateless across runs — uncut segments stay on disk and are re-processed next cycle. Silero LSTM state is kept as a live native tensor between inference calls (no Dart-layer copy), reducing per-call allocations from ~6 objects to ~1. End-of-run always flushes as a `_draft` file; finalization only on a confirmed silence or cap boundary.
-- **Processing checkpoint.** After each completed segment, the processor writes `vad_checkpoint.json` containing the full VAD state. Interrupted runs restore from this snapshot so processing resumes at the last completed segment with identical Silero recurrent state.
-- **Background disconnect.** Always disconnects BLE on backgrounding (after ~30 s grace). A native Android keep-alive (`0x32`, `WRITE_NO_RESPONSE`, every 15 s) prevents firmware idle-disconnect during long file reads without blocking the GATT command queue.
-- **Foreground-service resilience.** The sync/processing notification updates in place (rather than stop/restart) to avoid the Android 12+ "start foreground service from background" restriction, and re-posts itself if swiped away on Android 14+. Recording Settings also surfaces a warning card when the app is not exempt from battery optimization, with a one-tap Fix that opens the system exemption prompt. A native `AlarmManager` exact alarm (`setExactAndAllowWhileIdle`) is armed whenever the next sync time is set; if Android freezes the Dart isolate, the alarm fires natively and delivers the sync request without Dart. The always-on BLE notification (ID 2001) shows last-known battery level and last-connected time; the sync/process notification (ID 2002) uses a title + subtext layout ("Syncing recordings" / "45% complete") with 5 s update intervals in both foreground and background.
-- **Recordings manager.** Parses finalized recordings (`.wav` by default; `.m4a`/`.ogg` if configured) from `recordings/` for UI binding. Each recording carries a `.meta` sidecar listing the raw bins it was built from (`relativeBins`); marker EDL sidecars live alongside their recordings.
+1. **Capture:** The hardware monitors audio. In Automatic mode, the AAD threshold ensures it only records when noise is present. In Manual mode, the user double-taps to drop a marker.
+2. **Storage:** Audio is compressed with Opus and saved to the onboard eMMC.
+3. **Sync:** The phone connects via BLE and securely downloads the raw audio bins.
+4. **Processing (VAD):** The **Native VAD Batch Runner** processes the audio using the Silero ONNX model. It intelligently identifies speech, trims silence, and finalizes segments into listenable files.
+5. **UI & Export:** The finalized recordings are displayed in the app, marked with `AAD` or `VAD` processing tags, and can be retained or automatically uploaded based on user settings (e.g., "Upload on Wifi Only").
 
 ---
 
-## Recording Modes
+## 🛠️ Recording Modes
 
 ### Manual (default)
 
@@ -104,7 +115,7 @@ The device monitors audio continuously. The LED stays off until audio above the 
 
 ---
 
-## LED State Machine
+## 💡 LED State Machine
 
 Priority order (highest wins):
 
@@ -138,7 +149,32 @@ Priority order (highest wins):
 
 ---
 
-## BLE Sync Protocol
+## ⚙️ Settings Reference
+
+### App Settings
+
+| Setting | Notes |
+|---------|-------|
+| Auto Sync Interval | Frequency of background BLE syncing. |
+| Upload on Wifi Only | If enabled, integrations (like HeyPocket) will only upload when connected to Wi-Fi. |
+| Save File Format | Output container: `wav` (PCM, default), `m4a`, or `ogg`. |
+| Short Recordings | Filter out or Hide short recordings (applicable in both modes). |
+| Keep recordings for | Retention policy (e.g., -1 = forever, 0 = delete immediately after upload). |
+| Time Format | 12-hour or 24-hour time formatting in UI. |
+
+### Recording Settings
+
+| Setting | Default | Notes |
+|---------|---------|-------|
+| VAD enabled (Automatic mode) | false | On = run Silero; off (default) = AAD, split on firmware timestamps only. |
+| Speech sensitivity | 0.5 | Silero cutoff (0–1). Lower = more sensitive. |
+| Silence to split | 120 s | Silence duration triggering a new recording. |
+| Max length | 60 min | Hard cap; forces a split even without silence. |
+| AAD threshold | 250 | Firmware audio-activity gate; mode-specific overrides persisted separately. |
+
+---
+
+## 🔌 BLE Sync Protocol
 
 All Omi services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`.
 
@@ -167,29 +203,7 @@ File indices are cache positions (0-based, rebuilt after every LIST and every de
 
 ---
 
-## Settings Reference
-
-### Recording Settings
-
-| Setting | Pref key | Default | Notes |
-|---------|----------|---------|-------|
-| VAD enabled (Automatic mode) | `auto_vadEnabled` | false | On = run Silero; off (default) = AAD, split on firmware timestamps only. Enabling prompts a one-time battery warning. |
-| Speech sensitivity | `vadSpeechThreshold` | 0.5 | Silero cutoff (0–1). Lower = more sensitive. |
-| Silence to split | `vadSplitSeconds` | 120 s | Silence duration triggering a new recording |
-| Min length | `filterMinDurationSeconds` | 0 s | Recordings shorter than this are discarded |
-| Max length | `vadMaxConversationMinutes` | 60 min | Hard cap; forces a split even without silence |
-| AAD threshold | `autoVadThreshold` | 250 | Firmware audio-activity gate; mode-specific overrides persisted separately |
-
-### App Settings
-
-| Setting | Pref key | Default | Notes |
-|---------|----------|---------|-------|
-| Recording format | `audioSaveFormat` | wav | Output container: `wav` (PCM, default), `m4a`, or `ogg` |
-| Keep recordings for | `keepRecordingsDays` | -1 | -1 = forever, 0 = delete immediately after upload |
-
----
-
-## Hardware
+## 🧰 Hardware
 
 | Component | Part | Spec |
 |-----------|------|------|
@@ -204,9 +218,9 @@ PCB: mainboard (v1.2) + charger board (v1.0) + FPC (v1.0). Enclosure: CNC alumin
 
 ---
 
-## Repository Structure
+## 📁 Repository Structure
 
-```
+```text
 omi-offline/
 ├── app/                    # Flutter mobile app
 │   ├── lib/
@@ -220,11 +234,13 @@ omi-offline/
 │   │   │   ├── audio/      # Opus decode, audio pipeline
 │   │   │   ├── bridges/    # Native platform bridges (Apple Watch)
 │   │   │   ├── recordings_manager.dart
-│   │   │   └── vad_audio_processor.dart
+│   │   │   ├── vad_audio_processor.dart
+│   │   │   ├── vad_batch_runner_channel.dart # Native VAD bridge
 │   │   ├── utils/
 │   │   └── widgets/
+│   ├── android/
+│   │   └── app/src/main/kotlin/com/omi/offline/VadBatchRunner.kt # Native VAD
 │   ├── test/unit/
-│   ├── integration_test/
 │   └── assets/
 │       ├── models/         # Silero VAD ONNX model
 │       ├── images/
@@ -236,21 +252,62 @@ omi-offline/
 │   └── hardware/consumer/  # PCB design files
 ├── releases/               # Built APKs
 ├── screenshots/
-├── test-data/
 ├── CHANGELOG.md
-├── NOTES.md
-├── IDEAS.md
 └── CLAUDE.md
 ```
 
 ---
 
-## Recent Changes
+## 🚀 Recent Changes
 
-See [CHANGELOG.md](CHANGELOG.md) for the per-version history.
+See [CHANGELOG.md](CHANGELOG.md) for the complete per-version history. Recent major updates include:
+
+- **Native VAD Optimization:** A new high-performance Native VAD Batch Runner for Android, drastically reducing memory leaks and improving processing speed.
+- **Workflow & UI Improvements:** Relocated "Forget Device" to the discovery page, reorganized App Settings (including "Upload on Wifi Only" and Short Recordings filters), and added `AAD`/`VAD` processing indicators.
+- **Sync Resilience:** Increased test coverage and hardened the audio pipeline against application crashes, unexpected hardware disconnections, and partial downloads.
 
 ---
 
-## Upstream
+## 🍴 Upstream
 
 This is a fork of [BasedHardware/omi](https://github.com/BasedHardware/omi). The fork has diverged substantially — the entire cloud sync, OAuth, transcription, and memory backend has been removed in favour of the offline pipeline described above. Only the Opus codec, BLE characteristic UUIDs, and the nRF5340 board files remain compatible.
+
+---
+
+## 💻 Installation
+
+### Mobile App (Flutter)
+1. Install [Flutter](https://flutter.dev/docs/get-started/install) (sdk >=3.0.0 <4.0.0).
+2. Install Android Studio or Xcode for your target platform.
+3. Clone the repository and navigate to the `app/` directory.
+4. Run `flutter pub get` to install dependencies.
+5. Build and run on a physical device: `flutter run --release`. (The app relies heavily on BLE and native ONNX runtime, so simulators may not fully support all features).
+
+### Firmware (Zephyr RTOS)
+1. Set up the [nRF Connect SDK](https://developer.nordicsemi.com/nRF_Connect_SDK/doc/latest/nrf/getting_started.html).
+2. Navigate to `omi/firmware/`.
+3. Follow the build instructions detailed in `omi/firmware/readme.md` to compile for the nRF5340 board.
+4. Flash the compiled firmware onto the Omi device via SWD/J-Link or DFU over BLE.
+
+---
+
+## 🛠️ Development Workflow
+- All mobile app development occurs in the `app/` directory.
+- Test coverage for critical sync logic and VAD batch processing is maintained in `app/test/unit/`.
+- Ensure you run `flutter test` before submitting changes to the Flutter app.
+- For firmware development, changes reside in `omi/firmware/omi/src/`. Maintainers handle over-the-air (OTA) updates for consumer hardware via standard Nordic DFU.
+
+---
+
+## ⚠️ Troubleshooting
+
+- **No audio after sync:** Check that the hardware AAD threshold isn't too high. In Automatic mode, absolute silence is not recorded to save battery. Ensure the VAD model didn't incorrectly classify your speech as silence (you can lower the `vadSpeechThreshold` in Settings).
+- **Device refuses to connect:** Try using the "Forget Device" option in the "Find Devices" page, then restart your phone's Bluetooth.
+- **Sync stalls or freezes:** If you encounter `SocketException` or timeout errors during sync, try placing the device closer to your phone. The app will automatically resume from the last completed segment on the next cycle.
+- **Excessive battery drain on phone:** Ensure Silero VAD is either disabled (relying purely on hardware AAD) or that your Android OS is allowing the `VadBatchRunner` to execute natively without excessive background restrictions.
+
+---
+
+## 🚧 Known Limitations
+- The app relies on the mobile OS allowing background execution for BLE and native processing. If Android's battery optimizer strictly kills the background isolate, the sync process might be delayed until the phone is unlocked, though the Exact Alarm mechanism aims to mitigate this.
+- Time synchronization (`0030`/`0031`) relies on the phone's clock. If the wearable reboots and is not connected to a phone, timestamps on files may reset to 0 until the next connection.
