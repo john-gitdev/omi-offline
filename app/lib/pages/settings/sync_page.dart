@@ -692,6 +692,65 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 const SizedBox(height: 12),
                 _buildDropStatsSection(),
               ],
+              const SizedBox(height: 12),
+              SwitchListTile(
+                title: const Text('Adjustment Mode',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+                subtitle: const Text('Copies all raw bins into an isolated folder for safe reprocessing.',
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
+                value: SharedPreferencesUtil().adjustmentMode,
+                onChanged: (val) async {
+                  SharedPreferencesUtil().adjustmentMode = val;
+                  setState(() {});
+                  if (val) {
+                    await RecordingsManager.processAllCompletedSessions(finalizeDrafts: true);
+                  } else {
+                    final directory = await getApplicationDocumentsDirectory();
+                    final adjDir = Directory('${directory.path}/adjustment_mode_segments');
+                    if (await adjDir.exists()) {
+                      await adjDir.delete(recursive: true);
+                    }
+                  }
+                },
+                activeColor: Colors.amber,
+                contentPadding: EdgeInsets.zero,
+              ),
+              if (SharedPreferencesUtil().adjustmentMode) ...[
+                const SizedBox(height: 12),
+                Center(
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      setState(() { _statusMessage = 'Copying adjustment bins...'; });
+                      final directory = await getApplicationDocumentsDirectory();
+                      final adjDir = Directory('${directory.path}/adjustment_mode_segments');
+                      final rawDir = Directory('${directory.path}/raw_segments');
+                      if (await adjDir.exists()) {
+                        await for (final file in adjDir.list(recursive: true)) {
+                          if (file is File) {
+                            final relPath = file.path.substring(adjDir.path.length + 1);
+                            final destPath = '${rawDir.path}/$relPath';
+                            final destFile = File(destPath);
+                            if (!await destFile.parent.exists()) {
+                              await destFile.parent.create(recursive: true);
+                            }
+                            await file.copy(destPath);
+                          }
+                        }
+                        setState(() { _statusMessage = 'Adjustment bins copied to raw_segments'; });
+                      } else {
+                        setState(() { _statusMessage = 'No adjustment bins found.'; });
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.deepPurpleAccent,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+                    ),
+                    child: const Text('Copy Bins for Reprocessing',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
               const SizedBox(height: 24),
               const Divider(color: Color(0xFF2C2C2E), height: 1),
               const SizedBox(height: 24),
