@@ -9,6 +9,8 @@
     - Simplified the underlying sync storage model. Unprocessed raw bins are now strictly and unconditionally pruned by the 48-hour recovery sweep, freeing up disk space more aggressively and reliably.
     - Removed 'Surgical Delete' restrictions from day-wipes, leading to a more robust, full-delete standard behavior.
     - Discarded complex state management and UI wrappers built to gate processing/uploads during Adjustment Mode.
+- **Fix: Prevent empty day cards from rendering.**
+    - Fixed a bug introduced during the Adjustment Mode removal that caused empty UI cards to render for days that only contained unprocessed raw audio segments.
 
 ### 0.19.11
 

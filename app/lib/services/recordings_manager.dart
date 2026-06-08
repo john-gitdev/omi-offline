@@ -1166,7 +1166,7 @@ class RecordingsManager {
     // estimate never disagree.
     //
     // Only strip in background mode when no settings override is provided.
-    // Manual runs (Process button, Reprocess Day, Recover Discard) honor the
+    // Manual runs (Process button, Recover Discard) honor the
     // explicit set of bins provided.
     final discardedRelBins = (backgroundMode && settingsOverride == null) ? await discardedRelBinPaths() : const <String>{};
     if (discardedRelBins.isNotEmpty) {
@@ -2901,8 +2901,7 @@ class RecordingsManager {
   }
 
   /// Deletes processed recordings (.m4a/.wav/.meta/.bin) for a day.
-  /// If [onlyReprocessable] is true, only recordings with matching raw segments
-  /// in the raw_segments/ directory are deleted.
+
   /// Safe to call while nothing is playing.
   Future<void> deleteDay(Batch batch) async {
     final directory = await getApplicationDocumentsDirectory();
@@ -3167,8 +3166,6 @@ class RecordingsManager {
   /// `silence_trimmed` is excluded — recording-adjacent trailing silence,
   /// pruned elsewhere, not a reprocess guard.
   ///
-  /// Empty in Adjustment Mode, whose contract is "keep ALL bins for arbitrary
-  /// reprocessing" — the same carve-out [pruneConsumedBins] makes.
   static Future<Set<String>> discardedRelBinPaths() async {
     final out = <String>{};
     for (final group in await _readAllDiscardRecords()) {
