@@ -1198,6 +1198,14 @@ class DeviceProvider extends ChangeNotifier
 
     unawaited(ForegroundUtil.requestPermissions());
 
+    // Re-anchor the firmware clock on every connected transition, not just the
+    // Dart-initiated connect path. A native auto-reconnect (e.g. after a
+    // firmware reboot/crash) re-establishes the link without calling
+    // OmiDeviceConnection.connect(), so without this the device would keep a
+    // reset clock and mis-stamp new recordings.
+    final timeSyncConn = await ServiceManager.instance().device.ensureConnection(device.id);
+    await timeSyncConn?.syncTime();
+
     await initiateBleBatteryListener();
     await updateBatteryLevel();
     await updateChargingState();
