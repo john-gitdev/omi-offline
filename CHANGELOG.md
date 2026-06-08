@@ -2,6 +2,12 @@
 
 ## App
 
+### 0.20.3
+
+- **Improved: Device Discovery and Connectivity.**
+    - Relocated "Forget Device" functionality from Debug Tools to the "Find Omi Devices" page for better accessibility when resolving connection issues.
+    - Added "Forget Device" button under "Scan Again" when no devices are found during discovery.
+
 ### 0.20.2
 
 - **Improved: Debug Tools and App Settings UI.**

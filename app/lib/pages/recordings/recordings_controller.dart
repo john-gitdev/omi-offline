@@ -1231,22 +1231,22 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await deleteConversations([conversation]);
   }
 
-  Future<void> deleteDiscards(List<DiscardRecord> discards) async {
+  Future<void> deleteDiscards(List<DiscardRecord> discards, {bool reload = true}) async {
     if (discards.isEmpty) return;
     for (final d in discards) {
       await RecordingsManager.removeDiscardRecord(d, deleteBins: true);
     }
-    await _loadBatches();
+    if (reload) await _loadBatches();
   }
 
-  Future<void> deleteConversations(List<Conversation> conversations) async {
+  Future<void> deleteConversations(List<Conversation> conversations, {bool reload = true}) async {
     if (conversations.isEmpty) return;
     final keys = conversations.map((c) => c.uploadKey).whereType<String>().toSet();
     await _prefs.removeUploadedFromHeypocket(keys);
     await _prefs.removeOmiSynced(_binPathsForConversations(conversations));
     final touchedSessionIds = conversations.map((c) => c.sessionId).whereType<int>().toSet();
     await RecordingsManager.deleteConversations(conversations);
-    await _loadBatches();
+    if (reload) await _loadBatches();
     // If a session has no remaining finalized/draft recording, its raw bins
     // would silently reprocess on the next sync and resurrect what we just
     // deleted. Wipe them, bypassing the 48h discard hold.
@@ -1259,18 +1259,30 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       final orphaned = touchedSessionIds.difference(liveSessionIds);
       if (orphaned.isNotEmpty) {
         await RecordingsManager.deleteBinsForSessions(orphaned);
-        await _loadBatches();
+        if (reload) await _loadBatches();
       }
     }
   }
 
-  int countShortRecordings(int minSeconds) =>
-      _batches.expand((b) => b.finalizedRecordings).where((c) => c.duration.inSeconds < minSeconds).length;
+  int countShortRecordings(int minSeconds) {
+    final finalized =
+        _batches.expand((b) => b.finalizedRecordings).where((c) => c.duration.inSeconds < minSeconds).length;
+    final discards = _batches.expand((b) => b.discards).where((d) => d.duration.inSeconds < minSeconds).length;
+    return finalized + discards;
+  }
 
   Future<void> deleteShortRecordings(int minSeconds) async {
-    final toDelete =
+    final finalizedToDelete =
         _batches.expand((b) => b.finalizedRecordings).where((c) => c.duration.inSeconds < minSeconds).toList();
-    await deleteConversations(toDelete);
+    final discardsToDelete =
+        _batches.expand((b) => b.discards).where((d) => d.duration.inSeconds < minSeconds).toList();
+
+    if (finalizedToDelete.isEmpty && discardsToDelete.isEmpty) return;
+
+    // Delete both sets, but only reload once at the very end.
+    await deleteConversations(finalizedToDelete, reload: false);
+    await deleteDiscards(discardsToDelete, reload: false);
+    await _loadBatches();
   }
 
   Future<void> deleteMarkerConversation(MarkerConversation mc) async {
