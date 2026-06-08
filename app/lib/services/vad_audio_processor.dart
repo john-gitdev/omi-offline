@@ -1075,18 +1075,10 @@ class VadAudioProcessor {
   Future<void> _splitOnSilence(List<String> savedFiles) async {
     await _flushPartialWindow();
     if (_speechFrameCount > 0 && _lastSpeechRefCount > 0 && _lastSpeechRefCount <= _currentRefs.length) {
-      final savedRefs = _currentRefs.sublist(0, _lastSpeechRefCount);
-      final trailingSilence = _currentRefs.sublist(_lastSpeechRefCount);
-      final savedBins = _binsOf(savedRefs);
-      final silenceStart = _recordingStartTime!.add(Duration(milliseconds: _lastSpeechChunkMs));
-      final trailingMs = _currentChunkDurationMs - _lastSpeechChunkMs;
-
-      // Present only the speech portion to the save/discard + marker bookkeeping
-      // (both read _currentRefs / _currentChunkDurationMs), so the trailing
-      // silence is trimmed off the recording and the EDL durations stay honest.
-      _currentRefs = savedRefs;
-      _currentChunkDurationMs = _lastSpeechChunkMs;
-
+      // CHANGED (June 2026): We no longer trim the trailing silence off the end
+      // of the recording. The entire buffer, including the silence that triggered
+      // the split, is now saved as part of the conversation. Consequently, we
+      // no longer generate the 'silence_trimmed' discard record.
       final speechMs = _speechFrameCount * frameDurationMs;
       final tooShort = _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
       if (tooShort) {
@@ -1095,19 +1087,14 @@ class VadAudioProcessor {
         _emitOrphanMarkers();
         Logger.debug('VadAudioProcessor: Silence split — discarding ${speechMs}ms low-speech chunk.');
       } else {
-        final filePath = await _saveRecording(savedRefs, _recordingStartTime!);
+        final filePath = await _saveRecording(_currentRefs, _recordingStartTime!);
         if (filePath == null) {
           _emitOrphanMarkers();
         } else {
           savedFiles.add(filePath);
         }
-        Logger.debug('VadAudioProcessor: Silence split — saved ${_lastSpeechChunkMs}ms speech, '
-            'trimmed ${trailingMs}ms trailing silence.');
+        Logger.debug('VadAudioProcessor: Silence split — saved ${_currentChunkDurationMs}ms recording (including trailing silence).');
       }
-
-      final silenceDiscard =
-          _buildDiscardRecordFor(trailingSilence, silenceStart, trailingMs, 'silence_trimmed', excludeBins: savedBins);
-      if (silenceDiscard != null) _pendingDiscards.add(silenceDiscard);
     } else {
       // No speech yet — the whole buffer is silence. Trash it (bins recoverable).
       final rec = _buildDiscardRecord('silence_only');
