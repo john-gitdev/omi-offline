@@ -180,6 +180,9 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
   Widget build(BuildContext context) {
     final provider = context.watch<DeviceProvider>();
     final isBluetoothEnabled = provider.isBluetoothEnabled;
+    final isServiceScanning = ServiceManager.instance().device.status == DeviceServiceStatus.scanning;
+    final isScanning = _isScanning || isServiceScanning;
+
     // Gate on the stored pairing (source of truth, also what _forgetDevice reads),
     // not provider.pairedDevice — that field is null at cold start and only hydrates
     // after a successful connect or a disconnect transition, so a provider gate would
@@ -193,7 +196,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
         backgroundColor: const Color(0xFF0D0D0D),
         title: const Text('Find Omi Devices', style: TextStyle(color: Colors.white)),
         actions: [
-          if (_isScanning)
+          if (isScanning)
             const Center(
               child: Padding(
                 padding: EdgeInsets.only(right: 16.0),
@@ -234,35 +237,41 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                       ],
                     ),
                   )
-                : _discoveredDevices.isEmpty && !_isScanning
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            FaIcon(FontAwesomeIcons.bluetooth, size: 64, color: Colors.grey.shade800),
-                            const SizedBox(height: 24),
-                            const Text(
-                              'No Omi devices found nearby.',
-                              style: TextStyle(color: Colors.grey, fontSize: 16),
-                            ),
-                            const SizedBox(height: 8),
-                            const Text(
-                              'Make sure your Omi is turned on.',
-                              style: TextStyle(color: Colors.grey, fontSize: 14),
-                            ),
-                            const SizedBox(height: 32),
-                            ElevatedButton(
-                              onPressed: _startScan,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.deepPurpleAccent,
-                                foregroundColor: Colors.white,
-                              ),
-                              child: const Text('Scan Again'),
-                            ),
-                          ],
+                : isScanning && _discoveredDevices.isEmpty
+                    ? const Center(
+                        child: CircularProgressIndicator(
+                          color: Colors.deepPurpleAccent,
                         ),
                       )
-                    : ListView.builder(
+                    : _discoveredDevices.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                FaIcon(FontAwesomeIcons.bluetooth, size: 64, color: Colors.grey.shade800),
+                                const SizedBox(height: 24),
+                                const Text(
+                                  'No Omi devices found nearby.',
+                                  style: TextStyle(color: Colors.grey, fontSize: 16),
+                                ),
+                                const SizedBox(height: 8),
+                                const Text(
+                                  'Make sure your Omi is turned on.',
+                                  style: TextStyle(color: Colors.grey, fontSize: 14),
+                                ),
+                                const SizedBox(height: 32),
+                                ElevatedButton(
+                                  onPressed: _startScan,
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.deepPurpleAccent,
+                                    foregroundColor: Colors.white,
+                                  ),
+                                  child: const Text('Scan Again'),
+                                ),
+                              ],
+                            ),
+                          )
+                        : ListView.builder(
                         padding: const EdgeInsets.all(16),
                         itemCount: _discoveredDevices.length,
                         itemBuilder: (context, index) {

@@ -1377,7 +1377,9 @@ class DeviceProvider extends ChangeNotifier
   void onDevices(List<BtDevice> devices) async {}
 
   @override
-  void onStatusChanged(DeviceServiceStatus status) {}
+  void onStatusChanged(DeviceServiceStatus status) {
+    notifyListeners();
+  }
 }
 
 class _BackgroundSyncProgress implements IWalSyncProgressListener {
