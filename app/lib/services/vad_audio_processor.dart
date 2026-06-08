@@ -1234,13 +1234,12 @@ class VadAudioProcessor {
           isSpeech = probs[0] > _speechThreshold;
         }
       } catch (e) {
-        Logger.error('VadAudioProcessor: _flushPartialWindow batch runner failed ($e) — disabling model, AAD mode active');
-        final s = _session;
-        _session = null;
-        await s?.close();
-        // ignore: unawaited_futures, discarded_futures
-        _batchRunner?.dispose();
-        isSpeech = true;
+        // Per-window fallback (see _flushVadBatch): score this single padded window
+        // through the independent Dart _session instead of disabling VAD for the
+        // rest of the run. This is exactly what the single-pass path does below.
+        Logger.error('VadAudioProcessor: _flushPartialWindow batch runner failed ($e) — per-window fallback');
+        isSpeech = await _runVad(padded);
+        _batchResetPending = true;
       }
     } else {
       isSpeech = await _runVad(padded);
@@ -1405,20 +1404,42 @@ class VadAudioProcessor {
           }
         }
       } catch (e) {
-        Logger.error('VadAudioProcessor: batch runner failed ($e) — disabling model, AAD mode active');
-        final s = _session;
-        _session = null;
-        await s?.close();
-        // ignore: unawaited_futures, discarded_futures
-        _batchRunner?.dispose();
-        // Treat current batch as speech to avoid data loss
-        for (int i = 0; i < frameSpeechFlags.length; i++) {
-          frameSpeechFlags[i] = true;
+        // The native batch channel failed (e.g. a transient timeout or channel
+        // hiccup). Rather than disabling VAD for the rest of the run, fall back to
+        // per-window inference for THIS batch only and keep the runner + session
+        // alive for subsequent batches. _runVad scores through the Dart-side
+        // _session, which is independent of the native batch channel; it tracks
+        // _currentMaxVoiceProb and, if that session is *also* broken, nulls itself
+        // and returns true (AAD) — so the keep-everything safety net is preserved
+        // for the both-broken worst case. _runVad re-inits its LSTM state lazily
+        // (cold-start) and then carries it window-to-window like single-pass mode.
+        Logger.error('VadAudioProcessor: batch runner failed ($e) — per-window fallback for this batch');
+        for (int w = 0; w < _batchWindows.length && w < _batchWindowFrameIndices.length; w++) {
+          if (await _runVad(_batchWindows[w])) {
+            frameSpeechFlags[_batchWindowFrameIndices[w]] = true;
+          }
         }
+        // The native runner (if it recovers next batch) never saw this batch's
+        // audio, so force a clean state reset rather than letting it resume from
+        // stale state — a bounded cold-start beats content-dependent drift.
+        _batchResetPending = true;
       }
     }
 
     // Replay verdicts in frame order through the shared _applyVadVerdict.
+    //
+    // KNOWN DIVERGENCE FROM THE SINGLE-PASS PATH (intentional, accepted):
+    // the whole batch was scored by the native runner in one continuous-state
+    // pass, so if a verdict below fires an in-batch boundary (silence-split or
+    // max-cap), the frames *after* that boundary in this same batch were already
+    // scored with the pre-boundary LSTM state — the single-pass path would have
+    // zeroed the state at the cut. Effect is sub-100 ms: a silence-split only
+    // fires after _silenceDurationToSplitMs of quiet, so the carried-over state
+    // is silence-saturated, and only the first ~1-3 windows of the next
+    // conversation are slightly under-scored before Silero re-converges. A kept
+    // conversation needs _minSpeechMs (default 3 s) anyway, so those boundary
+    // frames don't change the outcome. _batchResetPending is set true at the
+    // boundary so the *next* runVadBatch call correctly starts from zeroed state.
     for (int f = 0; f < _batchDeferredFrames.length; f++) {
       final df = _batchDeferredFrames[f];
       // isSpeech = marker-protected (set during Pass 1) OR VAD detected speech
