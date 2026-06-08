@@ -68,7 +68,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Delete short recordings?', style: TextStyle(color: Colors.white)),
         content: Text(
-          'This will permanently delete $count recording${count == 1 ? '' : 's'} shorter than ${_formatShortDuration(_filterMinDurationSeconds)}. This cannot be undone.',
+          'This will permanently delete $count short recording${count == 1 ? '' : 's'} and "ghost" records shorter than ${_formatShortDuration(_filterMinDurationSeconds)}. This cannot be undone.',
           style: const TextStyle(color: Colors.white70, fontSize: 14),
         ),
         actions: [
@@ -257,7 +257,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
               ),
               const SizedBox(height: 16),
 
-              // Time Format
+              // Upload on Wifi Only
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -266,15 +266,24 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                 ),
                 child: SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('24-Hour Time',
+                  title: const Text('Upload on Wifi Only',
                       style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
                   subtitle: Text(
-                    _use24HourTime ? 'Times shown in 24-hour format.' : 'Times shown in AM/PM format.',
+                    'Restrict recording uploads to WiFi connections only (saves mobile data).',
                     style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                   ),
-                  value: _use24HourTime,
+                  value: _uploadOnWifiOnly,
                   onChanged: (value) {
-                    setState(() => _use24HourTime = value);
+                    if (value && !PassthroughIntegration.hasAnyConfigured(SharedPreferencesUtil())) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('There are no integrations enabled'),
+                          backgroundColor: Colors.redAccent,
+                        ),
+                      );
+                      return;
+                    }
+                    setState(() => _uploadOnWifiOnly = value);
                     _markDirty();
                   },
                   activeColor: Colors.deepPurpleAccent,
@@ -329,6 +338,77 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                               : 'WAV provides uncompressed, lossless PCM audio but results in very large file sizes.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Short Recordings
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Short Recordings',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        DropdownButton<int>(
+                          value: _filterMinDurationSeconds,
+                          dropdownColor: const Color(0xFF2C2C2E),
+                          icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                          underline: const SizedBox(),
+                          style: TextStyle(
+                            color: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade500,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          items: _kShortRecordingOptions.map((sec) {
+                            return DropdownMenuItem(
+                              value: sec,
+                              child: Text(_formatShortDuration(sec)),
+                            );
+                          }).toList(),
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => _filterMinDurationSeconds = value);
+                              _markDirty();
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _filterMinDurationSeconds == 0
+                          ? 'All recordings are kept and shown regardless of length.'
+                          : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the main list and skipped by integrations.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                    if (_filterMinDurationSeconds > 0) ...[
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: _handleCleanUp,
+                          icon: const FaIcon(FontAwesomeIcons.trashCan, size: 14),
+                          label: const Text('Clean Up Short Recordings'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.redAccent,
+                            side: BorderSide(color: Colors.redAccent.withOpacity(0.5)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -411,7 +491,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
               ),
               const SizedBox(height: 16),
 
-              // Upload on Wifi Only
+              // Time Format
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -420,98 +500,18 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                 ),
                 child: SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('Upload on Wifi Only',
+                  title: const Text('24-Hour Time',
                       style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
                   subtitle: Text(
-                    'Restrict recording uploads to WiFi connections only (saves mobile data).',
+                    _use24HourTime ? 'Times shown in 24-hour format.' : 'Times shown in AM/PM format.',
                     style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                   ),
-                  value: _uploadOnWifiOnly,
+                  value: _use24HourTime,
                   onChanged: (value) {
-                    if (value && !PassthroughIntegration.hasAnyConfigured(SharedPreferencesUtil())) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('There are no integrations enabled'),
-                          backgroundColor: Colors.redAccent,
-                        ),
-                      );
-                      return;
-                    }
-                    setState(() => _uploadOnWifiOnly = value);
+                    setState(() => _use24HourTime = value);
                     _markDirty();
                   },
                   activeColor: Colors.deepPurpleAccent,
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // Short Recordings
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Short Recordings',
-                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                        ),
-                        DropdownButton<int>(
-                          value: _filterMinDurationSeconds,
-                          dropdownColor: const Color(0xFF2C2C2E),
-                          icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                          underline: const SizedBox(),
-                          style: TextStyle(
-                            color: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade500,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w500,
-                          ),
-                          items: _kShortRecordingOptions.map((sec) {
-                            return DropdownMenuItem(
-                              value: sec,
-                              child: Text(_formatShortDuration(sec)),
-                            );
-                          }).toList(),
-                          onChanged: (value) {
-                            if (value != null) {
-                              setState(() => _filterMinDurationSeconds = value);
-                              _markDirty();
-                            }
-                          },
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _filterMinDurationSeconds == 0
-                          ? 'All recordings are kept and shown regardless of length.'
-                          : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the main list and skipped by integrations.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                    ),
-                    if (_filterMinDurationSeconds > 0) ...[
-                      const SizedBox(height: 16),
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
-                          onPressed: _handleCleanUp,
-                          icon: const FaIcon(FontAwesomeIcons.trashCan, size: 14),
-                          label: const Text('Clean Up Short Recordings'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.redAccent,
-                            side: BorderSide(color: Colors.redAccent.withOpacity(0.5)),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
                 ),
               ),
               const SizedBox(height: 24),

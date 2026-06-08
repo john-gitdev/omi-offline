@@ -414,49 +414,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
-  Future<void> _forgetDevice() async {
-    Logger.debug('DebugTools: Forget Device tapped');
-    bool? confirm = await showDialog<bool>(
-      context: context,
-      builder: (c) => getDialog(
-        context,
-        () => Navigator.of(context).pop(false),
-        () => Navigator.of(context).pop(true),
-        'Forget Device',
-        'This clears the stored Bluetooth pairing so the app can rediscover the device fresh. Use this if the device is visible but refuses to connect (e.g. after a firmware update wiped bonding keys). You will need to reconnect afterwards.',
-        confirmText: 'Forget',
-      ),
-    );
-    if (confirm != true) return;
-
-    final prefs = SharedPreferencesUtil();
-    final deviceId = prefs.btDevice.id;
-
-    final provider = Provider.of<DeviceProvider>(context, listen: false);
-
-    ServiceManager.instance().wal.getSyncs().cancelSync();
-    ServiceManager.instance().wal.getSyncs().setDevice(null);
-
-    if (deviceId.isNotEmpty) {
-      await ServiceManager.instance().device.forgetDevice(deviceId);
-      try {
-        await BleHostApi().unmanageDevice(deviceId);
-      } catch (_) {}
-    }
-
-    await prefs.btDeviceSet(BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0));
-    prefs.deviceName = '';
-
-    provider.setIsConnected(false);
-    await provider.setConnectedDevice(null);
-    provider.updateConnectingStatus(false);
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Device forgotten — scan to reconnect')),
-    );
-  }
-
   Future<void> _cancelSync() async {
     Logger.debug('DebugTools: Cancel Download tapped');
     ServiceManager.instance().wal.getSyncs().cancelSync();
@@ -884,15 +841,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllConversations,
-                ),
-                const SizedBox(height: 12),
-                _DebugButton(
-                  label: 'Forget Device',
-                  description:
-                      'Clears the stored Bluetooth pairing so the app can rediscover the device fresh. Use if the device refuses to connect after a firmware update.',
-                  icon: FontAwesomeIcons.linkSlash,
-                  color: Colors.orangeAccent,
-                  onTap: _forgetDevice,
                 ),
               ],
             ],
