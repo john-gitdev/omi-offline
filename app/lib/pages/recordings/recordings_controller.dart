@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
@@ -683,6 +684,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     SyncLocalFilesResponse? result;
     try {
       result = await syncs.rotateAndSync(progress: this);
+      _prefs.lastSyncPartial = result?.isPartial ?? false;
     } catch (e) {
       if (gen != _pipelineGeneration) return; // watchdog already recovered
       if (_spState == SyncProcessState.stopping) {
@@ -782,6 +784,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     try {
       final result = await syncs.syncAll(progress: this);
+      _prefs.lastSyncPartial = result?.isPartial ?? false;
       if (result == null) {
         Logger.debug('RecordingsController: syncAll returned null (no new segments)');
       }
@@ -1010,6 +1013,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _syncedCount = _totalCount;
     _lastCompletedStage = 'syncing';
     _prefs.saveString(_kSpLastCompleted, 'syncing');
+    _prefs.lastSyncPartial = true;
     await reloadBatchesSilently();
 
     final hasBins = _batches.any((b) => b.rawSegments.isNotEmpty);
@@ -1379,10 +1383,18 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
 
   void tryAutoUploadAll() async {
-
+    // Fire-and-forget (callers don't await), so any throw here would become an
+    // unhandled async error. Guard the connectivity probe and, when wifi-only is
+    // on, fail closed: if we can't confirm wifi, skip the pass rather than upload
+    // over cellular.
     if (_prefs.uploadOnWifiOnly) {
-      final connectivity = await Connectivity().checkConnectivity();
-      if (!connectivity.contains(ConnectivityResult.wifi)) return;
+      try {
+        final connectivity = await Connectivity().checkConnectivity();
+        if (!connectivity.contains(ConnectivityResult.wifi)) return;
+      } catch (e) {
+        Logger.error('tryAutoUploadAll: connectivity check failed ($e) — skipping wifi-gated upload');
+        return;
+      }
     }
 
     final minDuration = _prefs.filterMinDurationSeconds;
@@ -1428,10 +1440,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               }
             }),
           );
-          
-          // If this integration is strictly sequential (limit 1), stop the pass 
-          // to ensure we don't start other conversations for it until this one finishes.
-          if (integration.concurrencyLimit == 1) return;
+
+          // No early-out here: the per-integration `activeCount >= concurrencyLimit`
+          // check above already caps a sequential integration (e.g. Omi, limit 1) at
+          // one in-flight upload — the key was just added, so the next conversation's
+          // attempt for the same integration is skipped. Returning here instead would
+          // also abandon the rest of this pass for higher-concurrency integrations
+          // (e.g. HeyPocket, limit 3), throttling them to ~1 upload per cycle.
         }
       }
     }
@@ -1471,17 +1486,29 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (!await _allIntegrationsDelivered(conversation)) return;
 
       // All enabled integrations have confirmed — safe to stamp and delete.
+      // The passthrough flag lives at flagOffset = 417 + keyLen (byte [0] of the
+      // flag block), NOT at EOF. A finalized .meta has more bytes after it
+      // (forceSynced/capEnded/isSilero + the bins-JSON tail), so appending a byte
+      // would land past the bins JSON where no reader looks — the flag would stay 0
+      // and fromMetaOnly() would drop the (now audio-less) recording entirely.
+      // Set it in place; only extend when a degenerate short meta lacks the slot.
       final bytes = await metaFile.readAsBytes();
-      bool alreadyPassthrough = false;
       if (bytes.length >= 417) {
         final keyLen = bytes[416];
         final flagOffset = 417 + keyLen;
-        if (bytes.length > flagOffset) {
-          alreadyPassthrough = (bytes[flagOffset] & 0x01) != 0;
+        final alreadyPassthrough = flagOffset < bytes.length && (bytes[flagOffset] & 0x01) != 0;
+        if (!alreadyPassthrough) {
+          if (flagOffset < bytes.length) {
+            final out = Uint8List.fromList(bytes);
+            out[flagOffset] |= 0x01;
+            await metaFile.writeAsBytes(out);
+          } else {
+            // Short meta with no flag slot yet — pad up to and including it.
+            final out = Uint8List(flagOffset + 1)..setRange(0, bytes.length, bytes);
+            out[flagOffset] = 0x01;
+            await metaFile.writeAsBytes(out);
+          }
         }
-      }
-      if (!alreadyPassthrough) {
-        await metaFile.writeAsBytes([...bytes, 0x01]);
       }
 
       // Delete the processed audio file.
