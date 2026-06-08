@@ -381,7 +381,7 @@ class BatchCard extends StatelessWidget {
   final void Function(Conversation) onUploadTap;
   final void Function(Conversation) onConversationTap;
   final void Function(MarkerConversation) onMarkerTap;
-  final void Function(List<Conversation>, List<DiscardRecord>) onExportAll;
+  final void Function(List<Conversation>) onExportAll;
   final void Function(List<Conversation>, List<DiscardRecord>) onDeleteDay;
   final void Function(Conversation) onDeleteConversation;
   final void Function(MarkerConversation) onDeleteMarkerConversation;
@@ -497,7 +497,7 @@ class BatchCard extends StatelessWidget {
               children: [
                 TextButton.icon(
                   key: Key('export_all_${batch.dateString}'),
-                  onPressed: () => onExportAll(filtered, discards),
+                  onPressed: () => onExportAll(filtered),
                   icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 13, color: Colors.grey.shade400),
                   label: Text('Export All', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
                 ),
