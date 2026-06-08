@@ -492,7 +492,7 @@ class DeviceProvider extends ChangeNotifier
     }
 
     if (!gattConnected) {
-      unawaited(ServiceManager.instance().device.discover(desirableDeviceId: pairedDeviceId, timeout: 10));
+      unawaited(ServiceManager.instance().device.discover(timeout: 10));
     }
 
     // Wait for device fully ready (services + MTU). 25s outer timeout prevents

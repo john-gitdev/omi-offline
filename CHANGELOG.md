@@ -10,6 +10,9 @@
     - Expanded 'Bat' to 'Battery' in the 'Next Sync' idle notification subtext for better clarity.
 - **Improved: Device Scanning Feedback.**
     - The "Scan Again" button now explicitly notifies the user if a background scan is already in progress instead of appearing to fail instantly.
+- **Fix: Bluetooth connection deadlock.**
+    - Fixed a deadlock in `DeviceService` where a background discovery attempt with a "desirable device" would block on the same mutex as the primary connection attempt, leading to the app getting stuck in a "Scanning" state indefinitely.
+    - Improved `DeviceService.discover()` resilience to ensure the scanning status is always cleared even if a connection attempt blocks or fails.
 
 ### 0.20.4
 
