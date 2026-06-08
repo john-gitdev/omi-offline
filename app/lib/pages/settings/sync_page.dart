@@ -5,8 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
-import 'package:omi/gen/pigeon_communicator.g.dart';
-import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/devices/device_drop_stats.dart';
 import 'package:omi/services/recordings_manager.dart';
@@ -488,11 +486,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     setState(() => _dropBaseline = stats);
   }
 
-  void _clearDropBaseline() {
-    unawaited(SharedPreferencesUtil().remove(_kBaselineBlocks));
-    setState(() => _dropBaseline = null);
-  }
-
   @override
   void dispose() {
     _pollTimer?.cancel();
@@ -683,16 +676,39 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
                   value: SharedPreferencesUtil().adjustmentMode,
                   onChanged: (val) async {
-                    SharedPreferencesUtil().adjustmentMode = val;
-                    setState(() {});
                     if (val) {
+                      SharedPreferencesUtil().adjustmentMode = true;
+                      setState(() {});
                       await RecordingsManager.processAllCompletedSessions();
-                    } else {
-                      final directory = await getApplicationDocumentsDirectory();
-                      final adjDir = Directory('${directory.path}/adjustment_mode_segments');
-                      if (await adjDir.exists()) {
-                        await adjDir.delete(recursive: true);
-                      }
+                      return;
+                    }
+
+                    // Turning OFF wipes the isolated copy of raw bins. Confirm
+                    // first when there's actually an archive to lose; leave the
+                    // toggle ON (driven by the pref) if the user cancels.
+                    final directory = await getApplicationDocumentsDirectory();
+                    final adjDir = Directory('${directory.path}/adjustment_mode_segments');
+                    final hasArchive = await adjDir.exists();
+                    if (hasArchive) {
+                      if (!context.mounted) return;
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        builder: (c) => getDialog(
+                          context,
+                          () => Navigator.of(context).pop(false),
+                          () => Navigator.of(context).pop(true),
+                          'Turn Off Adjustment Mode',
+                          'This deletes the isolated copy of raw bins kept for reprocessing. This cannot be undone. Continue?',
+                          confirmText: 'Turn Off',
+                        ),
+                      );
+                      if (confirm != true) return;
+                    }
+
+                    SharedPreferencesUtil().adjustmentMode = false;
+                    if (mounted) setState(() {});
+                    if (hasArchive) {
+                      await adjDir.delete(recursive: true);
                     }
                   },
                   activeColor: Colors.deepPurpleAccent,
