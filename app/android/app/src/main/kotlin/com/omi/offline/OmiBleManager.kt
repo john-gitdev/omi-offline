@@ -26,6 +26,13 @@ class OmiBleManager private constructor(private val application: Application) {
         private const val BOND_TIMEOUT_MS = 15000L
         private const val DISCOVERY_TIMEOUT_MS = 15000L
 
+        // Upper bound on a single storage-download protocol gap we will zero-pad.
+        // A legitimate gap is the span of BLE notifications dropped within one
+        // (<=5-min) bin transfer — at most a few MB. A larger value means a bad /
+        // desynced offset (firmware fault or corruption), so we fail the transfer
+        // (resume re-fetches) instead of allocating a giant zero buffer.
+        private const val MAX_PROTOCOL_GAP_BYTES = 8 * 1024 * 1024L
+
         @Volatile
         private var _instance: OmiBleManager? = null
 
@@ -673,12 +680,20 @@ class OmiBleManager private constructor(private val application: Application) {
                     val payload = value.copyOfRange(5, value.size)
                     when {
                         incoming > expectedOffset -> {
-                            val gap = (incoming - expectedOffset).toInt()
+                            val gapLong = incoming - expectedOffset
+                            if (gapLong > MAX_PROTOCOL_GAP_BYTES) {
+                                // Implausible gap — treat as a desynced/corrupt offset and fail
+                                // rather than allocating up to ~4 GB of zeros. Resume re-fetches.
+                                activeDownloads.remove(address)
+                                complete(Result.failure(Exception("Protocol gap too large: incoming=$incoming expected=$expectedOffset gap=$gapLong")))
+                                return
+                            }
+                            val gap = gapLong.toInt()
                             Log.w(TAG, "Protocol gap: incoming=$incoming expected=$expectedOffset. Padding with $gap zeros.")
                             val zeros = ByteArray(gap)
                             try { fos.write(zeros) } catch (e: Exception) { activeDownloads.remove(address); complete(Result.failure(e)); return }
                             expectedOffset += gap
-                            
+
                             try { fos.write(payload) } catch (e: Exception) { activeDownloads.remove(address); complete(Result.failure(e)) }
                             expectedOffset += payload.size
                         }
