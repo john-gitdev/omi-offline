@@ -1177,7 +1177,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _toProcessMinutes = acc.toProcessMinutes;
         _draftMinutes = acc.draftMinutes;
         _unprocessedBinCount = acc.unprocessedBins;
-        _checkCleanupFlag();
         notifyListeners();
         tryAutoUploadAll();
       }
@@ -1214,17 +1213,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _toProcessMinutes = acc.toProcessMinutes;
         _draftMinutes = acc.draftMinutes;
         _unprocessedBinCount = acc.unprocessedBins;
-        _checkCleanupFlag();
         notifyListeners();
       }
     } catch (_) {}
   }
 
-  void _checkCleanupFlag() {
-    if (!_prefs.adjustmentMode && _prefs.adjustmentModeWasEnabled && _batches.every((b) => b.rawSegments.isEmpty)) {
-      _prefs.adjustmentModeWasEnabled = false;
-    }
-  }
 
   Future<void> deleteDay(Batch batch) async {
     final keys = batch.finalizedRecordings.map((c) => c.uploadKey).whereType<String>().toSet();
@@ -1291,169 +1284,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       return true;
     }
     return false;
-  }
-
-  Future<void> runAdjustmentCleanup() async {
-    if (_spState != SyncProcessState.idle) return;
-    final daysWithBins = _batches.where((b) => b.rawSegments.isNotEmpty).toList();
-    if (daysWithBins.isEmpty) return;
-
-    _lastActiveStage = 'processing';
-    _transitionTo(SyncProcessState.processing);
-    notifyListeners();
-
-    // For every day that has bins, delete only the recordings that have a
-    // backing bin (onlyReprocessable). Recordings without a bin are preserved.
-    for (final batch in daysWithBins) {
-      final availableSessionIds = batch.rawSegments
-          .map((f) {
-            final name = f.path.split('/').last.split('.').first;
-            return int.tryParse(name.split('_').first);
-          })
-          .whereType<int>()
-          .toSet();
-      final reprocessable =
-          batch.finalizedRecordings.where((c) => c.sessionId != null && availableSessionIds.contains(c.sessionId));
-      final keys = reprocessable.map((c) => c.uploadKey).whereType<String>().toSet();
-      await _prefs.removeUploadedFromHeypocket(keys);
-      await _prefs.removeOmiSynced(_binPathsForConversations(reprocessable.toList()));
-      await _manager.deleteDay(batch, onlyReprocessable: true);
-    }
-    RecordingsManager.notifyRecordingsChanged();
-    await _loadBatches();
-    await Future<void>.delayed(Duration.zero); // let blank state render
-
-    final freshBatches = _batches.where((b) => b.rawSegments.isNotEmpty).toList();
-    if (freshBatches.isEmpty) {
-      _prefs.adjustmentModeWasEnabled = false;
-      await reloadBatchesSilently();
-      await _finishSuccess();
-      return;
-    }
-
-    final totalBytes = freshBatches.expand((b) => b.rawSegments).fold(0, (sum, f) {
-      try {
-        return sum + f.lengthSync();
-      } catch (_) {
-        return sum;
-      }
-    });
-
-    _totalMinutes = totalBytes / 252000.0;
-    _minutesRemaining = _totalMinutes;
-    _processingProgress = 0.0;
-    notifyListeners();
-
-    WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask(title: 'Processing recordings', text: 'Reprocessing all days...');
-    try {
-      await _manager.processAll(
-        freshBatches,
-        (_, __) {},
-        backgroundMode: false,
-        onRecordingFinalized: () {
-          unawaited(reloadBatchesSilently());
-        },
-      );
-    } catch (e) {
-      _releaseWakelock();
-      await ForegroundUtil.stopForegroundTask();
-      _transitionToError('processing', e.toString());
-      return;
-    }
-    _releaseWakelock();
-    _prefs.adjustmentModeWasEnabled = false;
-    await reloadBatchesSilently();
-    await _finishSuccess();
-  }
-
-  Future<void> reprocessDay(Batch batch) async {
-    if (_spState != SyncProcessState.idle) return;
-
-    // Surgical identification: only remove recordings that belong to a
-    // session for which we still have raw data (and thus will be deleted by reprocessDay).
-    final availableSessionIds = batch.rawSegments
-        .map((f) {
-          // Mobile-only app: paths always use '/' separators on Android and iOS.
-          final filename = f.path.split('/').last;
-          final parts = filename.split('_');
-          if (parts.length >= 2) {
-            return int.tryParse(parts[1].split('.').first);
-          }
-          return null;
-        })
-        .whereType<int>()
-        .toSet();
-    final rawRelPaths = batch.rawSegments.map((f) => f.path.split('/raw_segments/').last).toSet();
-
-    // Optimistically clear this day's reprocessable recordings immediately so the user sees a
-    // blank slate the moment they confirm — before any disk I/O completes.
-    _batches = _batches.map((b) {
-      if (b.dateString != batch.dateString) return b;
-      return Batch(
-        dateString: b.dateString,
-        date: b.date,
-        rawSegments: b.rawSegments,
-        draftRecordings: const [],
-        // ONLY clear recordings that have backing bins (Precision Check > Legacy Fallback)
-        finalizedRecordings: b.finalizedRecordings.where((c) {
-          if (c.relativeBins.isNotEmpty) {
-            return !c.relativeBins.every((rel) => rawRelPaths.contains(rel));
-          }
-          return !availableSessionIds.contains(c.sessionId);
-        }).toList(),
-        discards: const [],
-      );
-    }).toList();
-    notifyListeners();
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-
-    await RecordingsManager.reprocessDay(batch);
-    await _loadBatches();
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-
-    final freshBatch = _batches
-        .where(
-          (b) => b.dateString == batch.dateString && b.rawSegments.isNotEmpty,
-        )
-        .toList();
-    if (freshBatch.isEmpty) return;
-
-    final totalBytes = freshBatch.expand((b) => b.rawSegments).fold(0, (sum, f) {
-      try {
-        return sum + f.lengthSync();
-      } catch (_) {
-        return sum;
-      }
-    });
-
-    _lastActiveStage = 'processing';
-    _totalMinutes = totalBytes / 252000.0;
-    _minutesRemaining = _totalMinutes;
-    _processingProgress = 0.0;
-    _transitionTo(SyncProcessState.processing);
-    notifyListeners();
-
-    WakelockPlus.enable();
-    await ForegroundUtil.startForegroundTask(title: 'Processing recordings', text: 'Reprocessing day...');
-    try {
-      await _manager.processAll(
-        freshBatch,
-        (_, __) {}, // global progress listener handles this
-        backgroundMode: false,
-        onRecordingFinalized: () {
-          unawaited(reloadBatchesSilently());
-        },
-      );
-    } catch (e) {
-      _releaseWakelock();
-      await ForegroundUtil.stopForegroundTask();
-      _transitionToError('processing', e.toString());
-      return;
-    }
-    _releaseWakelock();
-    await reloadBatchesSilently();
-    await _finishSuccess();
   }
 
   /// Re-runs processing on the bins referenced by [d] with VAD bypassed so
@@ -1529,7 +1359,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
 
   void tryAutoUploadAll() async {
-    if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) return;
 
     if (_prefs.uploadOnWifiOnly) {
       final connectivity = await Connectivity().checkConnectivity();
@@ -1673,9 +1502,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   Future<List<UploadFailure>> uploadConversation(Conversation conversation, {bool force = false}) async {
-    if (_prefs.adjustmentMode && !_prefs.allowUploadDuringAdjustment) {
-      throw Exception('Uploads paused — turn off Adjustment Mode first');
-    }
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) throw Exception('Upload key unavailable');
     if (_uploadingFiles.contains(uploadKey)) return [];

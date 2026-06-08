@@ -33,37 +33,6 @@ class SharedPreferencesUtil {
   bool get sileroVadSkipConfirm => getBool('silero_vad_skip_confirm', defaultValue: false);
   set sileroVadSkipConfirm(bool value) => saveBool('silero_vad_skip_confirm', value);
 
-  // When enabled, raw .bin segments are preserved after processing so days can
-  // be reprocessed with different VAD settings via the Reprocess Day button.
-  bool get adjustmentMode => getBool('adjustmentMode', defaultValue: false);
-  set adjustmentMode(bool value) {
-    if (value == adjustmentMode) return;
-    if (value) {
-      // Turning ON: Save current toggles
-      saveBool('hp_auto_pre_adj', heypocketAutoUpload);
-      saveBool('omi_auto_pre_adj', omiAutoUpload);
-      heypocketAutoUpload = false;
-      omiAutoUpload = false;
-    } else {
-      // Turning OFF: Restore toggles
-      // This will automatically trigger the 'Now' timestamp update in the setters below
-      heypocketAutoUpload = getBool('hp_auto_pre_adj', defaultValue: false);
-      omiAutoUpload = getBool('omi_auto_pre_adj', defaultValue: false);
-    }
-    saveBool('adjustmentMode', value);
-  }
-
-  // When true, uploads to integrations are permitted even when adjustmentMode is ON.
-  // This is a debug setting; normally uploads are paused during adjustment.
-  bool get allowUploadDuringAdjustment => getBool('allowUploadDuringAdjustment', defaultValue: false);
-  set allowUploadDuringAdjustment(bool value) => saveBool('allowUploadDuringAdjustment', value);
-
-  // Set to true the first time adjustment mode is turned ON; cleared only after
-  // the cleanup banner's "Process & Delete" completes. Used to suppress the
-  // cleanup banner when adjustment mode has never been enabled.
-  bool get adjustmentModeWasEnabled => getBool('adjustmentModeWasEnabled', defaultValue: false);
-  set adjustmentModeWasEnabled(bool value) => saveBool('adjustmentModeWasEnabled', value);
-
   // Manual recording mode: recording is started/stopped by device double-tap.
   // When true, Silero VAD is off and the device AAD threshold is toggled between 0 and 32768.
   // Can only be toggled while the device is connected so the BLE write always lands.

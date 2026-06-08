@@ -33,9 +33,7 @@ void main() {
     PathProviderPlatform.instance = mockPathProvider;
     SharedPreferences.setMockInitialValues({});
     // Re-init so SharedPreferencesUtil._preferences picks up the fresh mock
-    // backing store. Without this, a prior test that called init() (e.g. the
-    // runRecoverySweep AM-mode case) leaves adjustmentMode=true cached in the
-    // static and pollutes every subsequent test.
+    // backing store.
     await SharedPreferencesUtil.init();
   });
 
@@ -351,26 +349,6 @@ void main() {
       expect(sharedBin.existsSync(), true,
           reason: 'bin referenced by any in-window record must survive across day files');
     });
-
-    test('skips entirely while Adjustment Mode is on', () async {
-      SharedPreferences.setMockInitialValues({'adjustmentMode': true});
-      await SharedPreferencesUtil.init();
-      final expiredStart = DateTime.now().subtract(const Duration(hours: 100)).millisecondsSinceEpoch;
-      final bin = await writeBin('session_d/very_old.bin');
-      final dateStr = _dateOf(expiredStart);
-      await writeDiscard(
-        dateStr: dateStr,
-        startMs: expiredStart,
-        endMs: expiredStart + 60000,
-        relativeBins: ['session_d/very_old.bin'],
-      );
-      final jsonl = File(p.join(tempDir.path, 'recordings', dateStr, 'discards.jsonl'));
-
-      await RecordingsManager.runRecoverySweep();
-
-      expect(bin.existsSync(), true, reason: 'AM-on must prevent any deletion');
-      expect(jsonl.existsSync(), true, reason: 'AM-on must leave jsonl intact');
-    });
   });
 
   group('removeDiscardRecord + getDiscardsForDate', () {
@@ -612,112 +590,6 @@ void main() {
     });
   });
 
-  group('deleteAllRawSegments', () {
-    String _dateOf(int millis) {
-      final dt = DateTime.fromMillisecondsSinceEpoch(millis);
-      return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
-    }
-
-    Future<File> writeBin(String relativeBin) async {
-      final path = p.join(tempDir.path, 'raw_segments', relativeBin);
-      final f = File(path);
-      await f.parent.create(recursive: true);
-      await f.writeAsBytes([0, 1, 2, 3]);
-      return f;
-    }
-
-    Future<void> writeDiscard({
-      required String dateStr,
-      required int startMs,
-      required int endMs,
-      required List<String> relativeBins,
-    }) async {
-      final dir = Directory(p.join(tempDir.path, 'recordings', dateStr));
-      await dir.create(recursive: true);
-      final file = File(p.join(dir.path, 'discards.jsonl'));
-      final rec = {
-        'startMs': startMs,
-        'endMs': endMs,
-        'reason': 'flush_noise',
-        'maxVoiceProb': 0.05,
-        'relativeBins': relativeBins,
-      };
-      await file.writeAsString('${jsonEncode(rec)}\n', mode: FileMode.append);
-    }
-
-    test('no discards: nukes everything wholesale', () async {
-      await writeBin('session_a/0.bin');
-      await writeBin('session_a/1.bin');
-      await writeBin('session_b/0.bin');
-
-      await RecordingsManager.deleteAllRawSegments();
-
-      final rawDir = Directory(p.join(tempDir.path, 'raw_segments'));
-      expect(rawDir.existsSync(), false, reason: 'with no protected bins, full delete should remove the whole tree');
-    });
-
-    test('in-window discard preserves its bins, others are deleted', () async {
-      final freshStart = DateTime.now().subtract(const Duration(hours: 1)).millisecondsSinceEpoch;
-      final protectedA = await writeBin('session_p/a.bin');
-      final protectedB = await writeBin('session_p/b.bin');
-      final unprotected = await writeBin('session_q/c.bin');
-      await writeDiscard(
-        dateStr: _dateOf(freshStart),
-        startMs: freshStart,
-        endMs: freshStart + 30000,
-        relativeBins: ['session_p/a.bin', 'session_p/b.bin'],
-      );
-
-      await RecordingsManager.deleteAllRawSegments();
-
-      expect(protectedA.existsSync(), true, reason: 'in-window protected bin must survive');
-      expect(protectedB.existsSync(), true, reason: 'in-window protected bin must survive');
-      expect(unprotected.existsSync(), false, reason: 'unprotected bin must be deleted');
-      expect(Directory(p.join(tempDir.path, 'raw_segments', 'session_q')).existsSync(), false,
-          reason: 'session folder with no surviving bins should be removed');
-      expect(Directory(p.join(tempDir.path, 'raw_segments', 'session_p')).existsSync(), true,
-          reason: 'session folder with surviving bins must remain');
-    });
-
-    test('expired discard does not protect its bins', () async {
-      final expiredStart = DateTime.now().subtract(const Duration(hours: 100)).millisecondsSinceEpoch;
-      final bin = await writeBin('session_old/x.bin');
-      await writeDiscard(
-        dateStr: _dateOf(expiredStart),
-        startMs: expiredStart,
-        endMs: expiredStart + 30000,
-        relativeBins: ['session_old/x.bin'],
-      );
-
-      await RecordingsManager.deleteAllRawSegments();
-
-      expect(bin.existsSync(), false, reason: 'expired record must not protect its bins from AM-off cleanup');
-    });
-
-    test('mixed protected + unprotected in same session folder', () async {
-      final freshStart = DateTime.now().subtract(const Duration(hours: 1)).millisecondsSinceEpoch;
-      final keep = await writeBin('session_mix/keep.bin');
-      final drop = await writeBin('session_mix/drop.bin');
-      await writeDiscard(
-        dateStr: _dateOf(freshStart),
-        startMs: freshStart,
-        endMs: freshStart + 30000,
-        relativeBins: ['session_mix/keep.bin'],
-      );
-
-      await RecordingsManager.deleteAllRawSegments();
-
-      expect(keep.existsSync(), true);
-      expect(drop.existsSync(), false);
-      expect(Directory(p.join(tempDir.path, 'raw_segments', 'session_mix')).existsSync(), true,
-          reason: 'folder must survive when any bin inside is protected');
-    });
-
-    test('missing raw_segments dir is a no-op', () async {
-      // Nothing has been written; deleteAllRawSegments must not throw.
-      await RecordingsManager.deleteAllRawSegments();
-    });
-  });
 
   group('pruneConsumedBins', () {
     // Test scaffolding — mirrors the on-disk layout the app creates:
@@ -858,23 +730,6 @@ void main() {
       expect(deleted, 1);
       expect(bin.existsSync(), false,
           reason: 'merged coverage must recognize bin as fully consumed across two recordings');
-    });
-
-    test('AM mode is a no-op', () async {
-      SharedPreferences.setMockInitialValues({'adjustmentMode': true});
-      await SharedPreferencesUtil.init();
-      final recStartMs = DateTime.utc(2026, 5, 27, 13, 0, 0).millisecondsSinceEpoch;
-      await writeRecording(startMs: recStartMs, durationMs: 4 * 60 * 1000, capEnded: false);
-      final bin = await writeBin(
-        timerStartSec: recStartMs ~/ 1000,
-        sessionId: 5,
-        durationSec: 4 * 60,
-      );
-
-      final deleted = await RecordingsManager.pruneConsumedBins();
-
-      expect(deleted, 0);
-      expect(bin.existsSync(), true, reason: 'AM mode contract: keep all bins for arbitrary reprocessing');
     });
 
     test('missing capEnded byte defaults to true (conservative)', () async {

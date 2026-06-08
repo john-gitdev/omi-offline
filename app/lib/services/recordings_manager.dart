@@ -1560,23 +1560,21 @@ class RecordingsManager {
               case 'move':
                 await moveTempFilesToLive();
               case 'delete_segments':
-                if (!SharedPreferencesUtil().adjustmentMode) {
-                  final paths = (msg['paths'] as List).cast<String>();
-                  for (final path in paths) {
-                    if (discardProtectedPaths.contains(path)) {
-                      Logger.debug(
-                        'RecordingsManager: Preserving raw segment for recovery: $path',
-                      );
-                      continue;
-                    }
-                    final f = File(path);
-                    if (await f.exists()) {
-                      Logger.debug(
-                        'RecordingsManager: Deleting raw segment: $path',
-                      );
-                      await f.delete();
-                      deletedSegmentFolders.add(f.parent.path);
-                    }
+                final paths = (msg['paths'] as List).cast<String>();
+                for (final path in paths) {
+                  if (discardProtectedPaths.contains(path)) {
+                    Logger.debug(
+                      'RecordingsManager: Preserving raw segment for recovery: $path',
+                    );
+                    continue;
+                  }
+                  final f = File(path);
+                  if (await f.exists()) {
+                    Logger.debug(
+                      'RecordingsManager: Deleting raw segment: $path',
+                    );
+                    await f.delete();
+                    deletedSegmentFolders.add(f.parent.path);
                   }
                 }
               case 'progress':
@@ -2749,7 +2747,7 @@ class RecordingsManager {
     // Always-on idempotency guard: skip bins already fully covered by an existing
     // recording so a re-VAD can't mint a near-duplicate. Cheap here — pruneConsumedBins
     // (above) already deleted covered bins on the normal path, so the set is usually
-    // empty; in Adjustment Mode (bins preserved) it filters them out of the VAD run.
+    // empty; this acts as a final safety check.
     final Set<String> covered = await coveredBinPaths(batches.expand((b) => b.rawSegments).toList());
     final processableBatches = covered.isEmpty
         ? batches
@@ -2906,7 +2904,7 @@ class RecordingsManager {
   /// If [onlyReprocessable] is true, only recordings with matching raw segments
   /// in the raw_segments/ directory are deleted.
   /// Safe to call while nothing is playing.
-  Future<void> deleteDay(Batch batch, {bool onlyReprocessable = false}) async {
+  Future<void> deleteDay(Batch batch) async {
     final directory = await getApplicationDocumentsDirectory();
     final recordingsDir = Directory(
       '${directory.path}/recordings/${batch.dateString}',
@@ -2914,132 +2912,44 @@ class RecordingsManager {
 
     // Drop discard records for this day. In the full-delete path, also delete
     // the referenced raw bins so they can't resurrect deleted recordings on the
-    // next sync. In the reprocess path, keep the bins — ghost-record bins often
-    // share a firmware file (typically 5 min) with a valid conversation, and
-    // deleting them destroys audio that the next processAll run needs.
+    // next sync.
     for (final d in batch.discards) {
-      await removeDiscardRecord(d, deleteBins: !onlyReprocessable);
+      await removeDiscardRecord(d, deleteBins: true);
     }
 
-    final availableSessionIds = batch.rawSegments
-        .map((f) {
-          final filename = f.path.split('/').last;
-          final parts = filename.split('_');
-          if (parts.length >= 2) {
-            return int.tryParse(parts[1].split('.').first);
-          }
-          return null;
-        })
-        .whereType<int>()
-        .toSet();
-
-    if (!onlyReprocessable) {
-      // Wipe the day's raw .bin segments too, bypassing the 48h discard hold.
-      // Without this, the next sync silently reprocesses them and resurrects
-      // the recordings the user just deleted.
-      final touchedSessionDirs = <Directory>{};
-      int deletedBins = 0;
-      for (final bin in batch.rawSegments) {
-        try {
-          if (await bin.exists()) {
-            await bin.delete();
-            deletedBins++;
-          }
-          touchedSessionDirs.add(bin.parent);
-        } catch (e) {
-          Logger.error('RecordingsManager: deleteDay failed to delete bin ${bin.path}: $e');
+    // Wipe the day's raw .bin segments too, bypassing the 48h discard hold.
+    // Without this, the next sync silently reprocesses them and resurrects
+    // the recordings the user just deleted.
+    final touchedSessionDirs = <Directory>{};
+    int deletedBins = 0;
+    for (final bin in batch.rawSegments) {
+      try {
+        if (await bin.exists()) {
+          await bin.delete();
+          deletedBins++;
         }
-      }
-      for (final dir in touchedSessionDirs) {
-        try {
-          if (await dir.exists() && await dir.list().isEmpty) await dir.delete();
-        } catch (_) {}
-      }
-      if (deletedBins > 0) {
-        Logger.debug(
-          'RecordingsManager: Deleted $deletedBins raw bins for ${batch.dateString}',
-        );
-      }
-
-      if (await recordingsDir.exists()) {
-        await recordingsDir.delete(recursive: true);
-        Logger.debug(
-          'RecordingsManager: Deleted processed recordings for ${batch.dateString}',
-        );
-      }
-      return;
-    }
-
-    if (!await recordingsDir.exists()) return;
-
-    // Surgical delete: only remove finalized recordings and drafts that
-    // belong to a session for which we still have raw data.
-    final allToProcess = [...batch.finalizedRecordings, ...batch.draftRecordings];
-    final dirEntities = await recordingsDir.list().toList();
-    final edlFiles = dirEntities.whereType<File>().where((f) => f.path.endsWith('.edl')).toList();
-    final rawRelPaths = batch.rawSegments.map((f) => f.path.split('/raw_segments/').last).toSet();
-
-    int deletedCount = 0;
-    final filenamesToDelete = <String>{};
-    for (final conv in allToProcess) {
-      bool canReprocess = false;
-      if (conv.relativeBins.isNotEmpty) {
-        // Precision check: all bins must be present
-        canReprocess = conv.relativeBins.every((rel) => rawRelPaths.contains(rel));
-      } else if (conv.sessionId != null && availableSessionIds.contains(conv.sessionId)) {
-        // Fallback for older recordings
-        canReprocess = true;
-      }
-
-      if (canReprocess) {
-        final audioFilename = conv.file.path.split('/').last;
-        filenamesToDelete.add(audioFilename);
-        if (await conv.file.exists()) await conv.file.delete();
-        final metaFile = File('${conv.file.path.substring(0, conv.file.path.lastIndexOf('.'))}.meta');
-        if (await metaFile.exists()) await metaFile.delete();
-
-        // Also delete any raw .bin files that might have been moved into the
-        // recordings folder (some pipelines do this for portability).
-        final ts = conv.file.path.split('/').last.split('_').last.split('.').first;
-        final recordingsBin = File('${conv.file.parent.path}/recording_fs320_$ts.bin');
-        if (await recordingsBin.exists()) await recordingsBin.delete();
-
-        deletedCount++;
+        touchedSessionDirs.add(bin.parent);
+      } catch (e) {
+        Logger.error('RecordingsManager: deleteDay failed to delete bin ${bin.path}: $e');
       }
     }
-
-    // Delete EDL files referencing any deleted recording so the re-resolver
-    // can recreate them after reprocessing. Without this, stale EDLs with a
-    // non-empty segmentFilename cause the re-resolver to skip the marker as
-    // already-resolved, leaving it permanently broken. One concurrent pass
-    // over EDLs with O(1) Set lookups replaces the old N*M sequential scan.
-    if (filenamesToDelete.isNotEmpty && edlFiles.isNotEmpty) {
-      await Future.wait(edlFiles.map((edl) async {
-        try {
-          final json = jsonDecode(await edl.readAsString()) as Map<String, dynamic>;
-          if (filenamesToDelete.contains(json['segmentFilename'])) {
-            await edl.delete();
-          }
-        } catch (_) {}
-      }));
+    for (final dir in touchedSessionDirs) {
+      try {
+        if (await dir.exists() && await dir.list().isEmpty) await dir.delete();
+      } catch (_) {}
     }
-    Logger.debug(
-      'RecordingsManager: Surgical delete for ${batch.dateString} — removed $deletedCount reprocessable recordings',
-    );
+    if (deletedBins > 0) {
+      Logger.debug(
+        'RecordingsManager: Deleted $deletedBins raw bins for ${batch.dateString}',
+      );
+    }
 
-    // If directory is now empty (or only contains orphaned files we don't know about), delete it.
-    try {
-      if (await recordingsDir.list().isEmpty) await recordingsDir.delete();
-    } catch (_) {}
-  }
-
-  /// Deletes processed recordings for [batch] so the day can be reprocessed
-  /// on the next swipe or force sync with current VAD settings.
-  static Future<void> reprocessDay(Batch batch) async {
-    if (_isProcessingAny) return;
-    final manager = RecordingsManager();
-    await manager.deleteDay(batch, onlyReprocessable: true);
-    notifyRecordingsChanged();
+    if (await recordingsDir.exists()) {
+      await recordingsDir.delete(recursive: true);
+      Logger.debug(
+        'RecordingsManager: Deleted processed recordings for ${batch.dateString}',
+      );
+    }
   }
 
   /// Batch-updates the starting timestamp for an entire hardware session.
@@ -3195,7 +3105,7 @@ class RecordingsManager {
   }
 
   /// How long to retain raw bins for a noise/short discard before the recovery
-  /// sweep reclaims them. Adjustment Mode pauses the sweep entirely.
+  /// sweep reclaims them.
   static const Duration discardRetentionWindow = Duration(hours: 48);
 
   /// Consecutive discard records whose inter-record gap is within this tolerance
@@ -3260,7 +3170,6 @@ class RecordingsManager {
   /// Empty in Adjustment Mode, whose contract is "keep ALL bins for arbitrary
   /// reprocessing" — the same carve-out [pruneConsumedBins] makes.
   static Future<Set<String>> discardedRelBinPaths() async {
-    if (SharedPreferencesUtil().adjustmentMode) return const <String>{};
     final out = <String>{};
     for (final group in await _readAllDiscardRecords()) {
       for (final rec in group.records) {
@@ -3431,12 +3340,10 @@ class RecordingsManager {
   }
 
   /// Reclaims expired discard records and their referenced bins. No-op when
-  /// Adjustment Mode is on (which keeps all bins indefinitely) or when a
   /// processing run is already in flight (to avoid racing the per-segment
   /// delete handler). Bins still claimed by any in-window record across any
   /// day's jsonl are preserved.
   static Future<void> runRecoverySweep() async {
-    if (SharedPreferencesUtil().adjustmentMode) return;
     if (_isProcessingAny) return;
     final directory = await getApplicationDocumentsDirectory();
     final cutoffMs = DateTime.now().subtract(discardRetentionWindow).millisecondsSinceEpoch;
@@ -3502,7 +3409,7 @@ class RecordingsManager {
 
   // ---------------------------------------------------------------------------
   // Coverage helpers — shared by pruneConsumedBins (normal mode, deletes) and
-  // coveredBinPaths (adjustment mode, read-only filter before the VAD run).
+  // coveredBinPaths (read-only filter before the VAD run).
   // ---------------------------------------------------------------------------
 
   /// Builds merged `[startMs, endMs]` coverage intervals from every recording
@@ -3551,8 +3458,7 @@ class RecordingsManager {
 
   /// Returns the subset of [candidates] whose `[binStart, binEnd]` is fully
   /// covered by an existing recording. Does not delete anything — used in
-  /// Adjustment Mode to skip bins that already have a recording without removing
-  /// them from disk (so Reprocess Day can still use them).
+  /// skip bins that already have a recording.
   static Future<Set<String>> coveredBinPaths(List<File> candidates) async {
     if (candidates.isEmpty) return const {};
     final merged = await _buildMergedCoverageIntervals();
@@ -3618,12 +3524,10 @@ class RecordingsManager {
   /// coverage interval. Bins that extend past the right edge are preserved
   /// (this covers the cap-end case for the user's hour-long meeting recordings).
   ///
-  /// No-op when Adjustment Mode is on — bins are preserved for Reprocess Day;
   /// use [coveredBinPaths] to skip them without deleting.
   ///
   /// Returns the number of bins deleted.
   static Future<int> pruneConsumedBins() async {
-    if (SharedPreferencesUtil().adjustmentMode) return 0;
     final directory = await getApplicationDocumentsDirectory();
     final rawDir = Directory('${directory.path}/raw_segments');
     if (!await rawDir.exists()) return 0;
@@ -3738,45 +3642,4 @@ class RecordingsManager {
     return deleted;
   }
 
-  /// Deletes raw .bin segment files and parent device-session folders, except
-  /// bins still protected by an in-window discard record. Called after
-  /// adjustment mode is turned off and any pending processing is done.
-  static Future<void> deleteAllRawSegments() async {
-    final directory = await getApplicationDocumentsDirectory();
-    final rawSegmentsDir = Directory('${directory.path}/raw_segments');
-    if (!await rawSegmentsDir.exists()) return;
-
-    // Normalise separators so the comparison holds regardless of host: the
-    // protected set is built with '/' literals while entity.path uses the
-    // platform separator (the '\' temp paths on a Windows test host would never
-    // match the '/'-built protected paths, silently deleting protected bins).
-    final protected = (await activeDiscardProtectedPaths()).map(p.normalize).toSet();
-    if (protected.isEmpty) {
-      await rawSegmentsDir.delete(recursive: true);
-      Logger.debug('RecordingsManager: Deleted all raw segments after adjustment mode exit');
-      return;
-    }
-
-    int kept = 0;
-    int deleted = 0;
-    await for (final entity in rawSegmentsDir.list(recursive: true)) {
-      if (entity is! File || !entity.path.endsWith('.bin')) continue;
-      if (protected.contains(p.normalize(entity.path))) {
-        kept++;
-        continue;
-      }
-      try {
-        await entity.delete();
-        deleted++;
-      } catch (_) {}
-    }
-    await for (final entity in rawSegmentsDir.list()) {
-      if (entity is! Directory) continue;
-      try {
-        if (await entity.list().isEmpty) await entity.delete();
-      } catch (_) {}
-    }
-    Logger.debug(
-        'RecordingsManager: AM-exit cleanup — deleted $deleted bins, preserved $kept for recovery (48h window)');
-  }
 }

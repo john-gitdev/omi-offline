@@ -11,7 +11,6 @@ class UploadIconButton extends StatelessWidget {
   final bool anyIntegrationEnabled;
   final bool isUploading;
   final UploadStatus uploadStatus;
-  final bool adjustmentMode;
   final VoidCallback? onTap;
 
   const UploadIconButton({
@@ -20,23 +19,12 @@ class UploadIconButton extends StatelessWidget {
     required this.anyIntegrationEnabled,
     required this.isUploading,
     required this.uploadStatus,
-    required this.adjustmentMode,
     this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     if (!anyIntegrationEnabled) return const SizedBox.shrink();
-
-    if (adjustmentMode && !SharedPreferencesUtil().allowUploadDuringAdjustment) {
-      return IconButton(
-        padding: const EdgeInsets.symmetric(horizontal: 6),
-        constraints: const BoxConstraints(),
-        icon: Icon(Icons.cloud_off, color: Colors.grey.shade600, size: 18),
-        tooltip: 'Uploads paused (Adjustment Mode)',
-        onPressed: null,
-      );
-    }
 
     if (conversation == null) {
       return IconButton(
@@ -369,7 +357,6 @@ Future<void> showDiscardSheet(
 class BatchCard extends StatelessWidget {
   final Batch batch;
   final Map<String, List<MarkerConversation>> markerMap;
-  final bool adjustmentMode;
   final bool anyIntegrationEnabled;
   final RecordingFilterMode filterMode;
   final UploadStatus Function(Conversation) uploadStatus;
@@ -379,7 +366,6 @@ class BatchCard extends StatelessWidget {
   final void Function(MarkerConversation) onMarkerTap;
   final void Function(List<Conversation>) onExportAll;
   final void Function(List<Conversation>) onDeleteDay;
-  final VoidCallback onReprocessDay;
   final void Function(Conversation) onDeleteConversation;
   final void Function(MarkerConversation) onDeleteMarkerConversation;
   final Future<void> Function(DiscardRecord) onRecoverDiscard;
@@ -389,7 +375,6 @@ class BatchCard extends StatelessWidget {
     super.key,
     required this.batch,
     required this.markerMap,
-    required this.adjustmentMode,
     required this.anyIntegrationEnabled,
     required this.filterMode,
     required this.uploadStatus,
@@ -399,7 +384,6 @@ class BatchCard extends StatelessWidget {
     required this.onMarkerTap,
     required this.onExportAll,
     required this.onDeleteDay,
-    required this.onReprocessDay,
     required this.onDeleteConversation,
     required this.onDeleteMarkerConversation,
     required this.onRecoverDiscard,
@@ -430,7 +414,7 @@ class BatchCard extends StatelessWidget {
             RecordingFilterMode.all => [...batch.discards],
           }
         : [...batch.discards];
-    if (filtered.isEmpty && discards.isEmpty && (!adjustmentMode || batch.rawSegments.isEmpty)) {
+    if (filtered.isEmpty && discards.isEmpty && batch.rawSegments.isEmpty) {
       return const SizedBox.shrink();
     }
 
@@ -483,7 +467,6 @@ class BatchCard extends StatelessWidget {
                   anyIntegrationEnabled: anyIntegrationEnabled,
                   isUploading: uploadKey != null && isUploading(uploadKey),
                   uploadStatus: uploadStatus(c),
-                  adjustmentMode: adjustmentMode,
                   onTap: () => onUploadTap(c),
                 ),
                 onMarkerTap: onMarkerTap,
@@ -501,20 +484,12 @@ class BatchCard extends StatelessWidget {
                   icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 13, color: Colors.grey.shade400),
                   label: Text('Export All', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
                 ),
-                if (adjustmentMode && batch.rawSegments.isNotEmpty)
-                  TextButton.icon(
-                    key: Key('reprocess_day_${batch.dateString}'),
-                    onPressed: onReprocessDay,
-                    icon: const FaIcon(FontAwesomeIcons.rotateRight, size: 13, color: Colors.deepPurpleAccent),
-                    label: const Text('Reprocess Day', style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13)),
-                  )
-                else
-                  TextButton.icon(
-                    key: Key('delete_day_${batch.dateString}'),
-                    onPressed: () => onDeleteDay(filtered),
-                    icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
-                    label: Text('Delete Day', style: TextStyle(color: Colors.red.shade400, fontSize: 13)),
-                  ),
+                TextButton.icon(
+                  key: Key('delete_day_${batch.dateString}'),
+                  onPressed: () => onDeleteDay(filtered),
+                  icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
+                  label: Text('Delete Day', style: TextStyle(color: Colors.red.shade400, fontSize: 13)),
+                ),
               ],
             ),
           ],
