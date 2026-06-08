@@ -649,7 +649,7 @@ class DeviceProvider extends ChangeNotifier
     if (lastMs > 0) {
       final time = DateFormat('h:mm a').format(DateTime.fromMillisecondsSinceEpoch(lastMs));
       final status = prefs.lastSyncPartial ? 'Partial' : 'Complete';
-      text = lastBattery >= 0 ? 'Last Sync: $status • $time • $lastBattery% Bat' : 'Last Sync: $status • $time';
+      text = lastBattery >= 0 ? 'Last Sync: $status • $time • $lastBattery% Battery' : 'Last Sync: $status • $time';
     } else {
       text = isConnected ? 'Omi is Connected' : (isConnecting ? 'Connecting...' : 'Omi is Disconnected');
     }
