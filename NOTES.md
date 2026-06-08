@@ -303,14 +303,8 @@ This section reviews the functionality of the Debug Tools present in `app/lib/pa
 - Clears the HeyPocket upload history to allow re-upload if files are re-processed.
 **Conclusion:** Matches description. `recordings` stores the `.m4a` files and EDL data, while `processing_temp` holds files currently being worked on.
 
-### 7. Delete Problematic EDLs
-**Description:** "Deletes marker EDL files with no matching recording (pending or orphaned)."
-**Implementation:**
-- Shows a confirmation dialog.
-- Calls `RecordingsManager().getMarkerConversations()` and filters for entries where `isPending` is true.
-- Deletes the `.edl` file for each problematic entry.
-- Notifies listeners via `RecordingsManager.notifyRecordingsChanged()`.
-**Conclusion:** Matches description. Cleans up orphaned marker EDL files that have no corresponding finalized recording.
+### 7. Delete Problematic EDLs [REMOVED]
+**Description:** This tool was removed on 2026-06-07 as it is no longer needed. The EDL system is now self-correcting (automated cross-midnight cleanup, in-memory deduplication, and support for orphan markers).
 
 ---
 

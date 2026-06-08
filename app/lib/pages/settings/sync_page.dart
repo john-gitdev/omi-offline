@@ -414,55 +414,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
-  Future<void> _deleteProblematicEdls() async {
-    Logger.debug('DebugTools: Delete Problematic EDLs tapped');
-    if (RecordingsManager.isProcessingAny) {
-      Logger.debug('DebugTools: Delete Problematic EDLs blocked — processing running');
-      _showProcessingSnackbar();
-      return;
-    }
-    bool? confirm = await showDialog<bool>(
-      context: context,
-      builder: (c) => getDialog(
-        context,
-        () => Navigator.of(context).pop(false),
-        () => Navigator.of(context).pop(true),
-        'Delete Problematic EDLs',
-        'This will permanently delete marker EDL files that have no matching recording (pending or orphaned). This cannot be undone. Continue?',
-        confirmText: 'Delete',
-      ),
-    );
-    if (confirm != true) {
-      Logger.debug('DebugTools: Delete Problematic EDLs cancelled by user');
-      return;
-    }
-    setState(() {
-      _statusMessage = 'Scanning for problematic EDLs...';
-    });
-    try {
-      final all = await RecordingsManager().getMarkerConversations();
-      final problematic = all.where((mc) => mc.isPending).toList();
-      Logger.debug('DebugTools: Found ${problematic.length} problematic EDL(s)');
-      for (final mc in problematic) {
-        if (await mc.edlFile.exists()) {
-          await mc.edlFile.delete();
-          Logger.debug('DebugTools: Deleted ${mc.edlFile.path}');
-        }
-      }
-
-      RecordingsManager.notifyRecordingsChanged();
-      if (!mounted) return;
-      setState(() {
-        _statusMessage =
-            problematic.isEmpty ? 'No problematic EDLs found.' : 'Deleted ${problematic.length} problematic EDL(s).';
-      });
-    } catch (e) {
-      Logger.error('DebugTools: _deleteProblematicEdls error — $e');
-      if (!mounted) return;
-      setState(() => _statusMessage = 'Delete Error: $e');
-    }
-  }
-
   Future<void> _forgetDevice() async {
     Logger.debug('DebugTools: Forget Device tapped');
     bool? confirm = await showDialog<bool>(
@@ -885,14 +836,6 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   icon: FontAwesomeIcons.trashCan,
                   color: Colors.redAccent,
                   onTap: _deleteAllConversations,
-                ),
-                const SizedBox(height: 12),
-                _DebugButton(
-                  label: 'Delete Problematic EDLs',
-                  description: 'Deletes marker EDL files with no matching recording (pending or orphaned).',
-                  icon: FontAwesomeIcons.fileCircleXmark,
-                  color: Colors.redAccent,
-                  onTap: _deleteProblematicEdls,
                 ),
                 const SizedBox(height: 12),
                 _DebugButton(
