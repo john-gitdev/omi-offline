@@ -2,6 +2,16 @@
 
 ## App
 
+### 0.20.2
+
+- **Improved: Debug Tools and App Settings UI.**
+    - Reorganized 'App Settings' page with a more logical flow: Auto Sync Interval, Upload on Wifi Only, Save File Format, Short Recordings, Retention, and Time Format.
+    - Updated Debug Tools toggles to match the visual style of App Settings (containers, typography, and accent colors).
+    - Fixed an inconsistent spacing gap in the Debug Tools menu.
+- **Improved: Short Recording Cleanup.**
+    - Enhanced 'Clean up Short Recordings' to delete "ghost" discard records (VAD-rejected audio) in addition to finalized recordings.
+    - Optimized cleanup performance by batching deletions and reducing UI reloads.
+
 ### 0.20.1
 
 - **Fixed: Delete Day with ghost recordings.**
