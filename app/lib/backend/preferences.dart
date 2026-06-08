@@ -386,6 +386,10 @@ class SharedPreferencesUtil {
 
   set lastSyncCompletedMs(int v) => saveInt('lastSyncCompletedMs', v);
 
+  bool get lastSyncPartial => getBool('lastSyncPartial', defaultValue: false);
+
+  set lastSyncPartial(bool v) => saveBool('lastSyncPartial', v);
+
   // Developer Diagnostics
   bool get devLogsToFileEnabled => getBool('devLogsToFileEnabled');
   set devLogsToFileEnabled(bool value) => saveBool('devLogsToFileEnabled', value);
