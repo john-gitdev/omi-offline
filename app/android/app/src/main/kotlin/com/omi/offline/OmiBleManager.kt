@@ -673,8 +673,14 @@ class OmiBleManager private constructor(private val application: Application) {
                     val payload = value.copyOfRange(5, value.size)
                     when {
                         incoming > expectedOffset -> {
-                            activeDownloads.remove(address)
-                            complete(Result.failure(Exception("Protocol gap: incoming=$incoming expected=$expectedOffset")))
+                            val gap = (incoming - expectedOffset).toInt()
+                            Log.w(TAG, "Protocol gap: incoming=$incoming expected=$expectedOffset. Padding with $gap zeros.")
+                            val zeros = ByteArray(gap)
+                            try { fos.write(zeros) } catch (e: Exception) { activeDownloads.remove(address); complete(Result.failure(e)); return }
+                            expectedOffset += gap
+                            
+                            try { fos.write(payload) } catch (e: Exception) { activeDownloads.remove(address); complete(Result.failure(e)) }
+                            expectedOffset += payload.size
                         }
                         incoming < expectedOffset -> {
                             val skip = (expectedOffset - incoming).toInt()
