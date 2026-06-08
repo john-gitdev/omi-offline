@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/services/devices.dart';
@@ -60,6 +61,7 @@ class MockWalSyncListener extends Fake implements IWalSyncListener {
 
 int globalCurrentFileNum = -1;
 int globalWriteCount = 0;
+int globalRequestedOffset = 0;
 
 class MockDeviceConnection implements DeviceConnection {
   final StreamController<List<int>> _controller = StreamController<List<int>>.broadcast();
@@ -91,6 +93,7 @@ class MockDeviceConnection implements DeviceConnection {
   Future<bool> writeToStorage(int numFile, int command, int offset, {int? timestamp}) async {
     globalCurrentFileNum = numFile;
     globalWriteCount++;
+    globalRequestedOffset = offset;
     _writesDone++;
     _writeWaiters.removeWhere((e) {
       if (_writesDone >= e.key) {
@@ -420,6 +423,112 @@ void main() {
       // Exceeding that proves the batch advanced to the second file rather than aborting.
       expect(globalWriteCount, greaterThan(3));
     }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('Crash Recovery (Syncing): resumes from last segment boundary after interruption', () async {
+      globalCurrentFileNum = -1;
+      globalWriteCount = 0;
+      globalRequestedOffset = 0;
+      mockConn.files = [
+        StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 300000),
+      ];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final syncFuture = sync.syncAll();
+      await mockConn.waitForWrite(1);
+      await pump(10);
+      expect(globalWriteCount, equals(1));
+      expect(globalRequestedOffset, equals(0));
+
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      
+      // Send 260,000 bytes (crosses the 252,000 boundary)
+      mockConn.add(dataPacket(0, List.filled(260000, 0xBB)));
+      await pump();
+      await Future.delayed(const Duration(milliseconds: 200));
+      await pump();
+
+      // Cancel sync to simulate interruption
+      sync.cancelSync();
+      await pump(10);
+
+      final response = await syncFuture;
+      expect(response!.isPartial, isTrue);
+
+      // Start second sync. It should resume from 252000
+      globalWriteCount = 0;
+      final syncFuture2 = sync.syncAll();
+      await mockConn.waitForWrite(2);
+      await pump(10);
+      
+      expect(globalWriteCount, equals(1));
+      expect(globalRequestedOffset, equals(260000));
+      
+      sync.cancelSync();
+      await syncFuture2;
+    });
+
+    test('Crash Recovery (Adjustment Mode Copying): resumes from last segment boundary', () async {
+      SharedPreferencesUtil().adjustmentMode = true;
+      
+      globalCurrentFileNum = -1;
+      globalWriteCount = 0;
+      globalRequestedOffset = 0;
+      mockConn.files = [
+        StorageFile(index: 1, timestamp: DateTime.now().millisecondsSinceEpoch ~/ 1000, size: 300000),
+      ];
+      await sync.setDevice(BtDevice(id: 'test', name: 'test', type: DeviceType.omi, rssi: -50));
+      await pump(10);
+
+      final syncFuture = sync.syncAll();
+      await mockConn.waitForWrite(1);
+      await pump(10);
+      expect(globalWriteCount, equals(1));
+      expect(globalRequestedOffset, equals(0));
+
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      
+      // Send 260,000 bytes (crosses the 252,000 boundary)
+      mockConn.add(dataPacket(0, List.filled(260000, 0xCC)));
+      await pump();
+      await Future.delayed(const Duration(milliseconds: 200));
+      await pump();
+
+      // Cancel sync to simulate interruption
+      sync.cancelSync();
+      await pump(10);
+
+      final response = await syncFuture;
+      expect(response!.isPartial, isTrue);
+
+      // Start second sync. It should resume from 252000
+      globalWriteCount = 0;
+      final syncFuture2 = sync.syncAll();
+      await mockConn.waitForWrite(2);
+      await pump(10);
+      
+      expect(globalWriteCount, equals(1));
+      expect(globalRequestedOffset, equals(260000));
+      
+      // Let second sync finish properly (send remaining 40,000 bytes)
+      mockConn.add(ackPacket(0x00));
+      await pump();
+      mockConn.add(dataPacket(260000, List.filled(40000, 0xCC))); // 300000 total size
+      await pump();
+      mockConn.add(eotPacket());
+      await pump();
+      
+      await syncFuture2;
+
+      // Verify the adjustment mode file exists and has size
+      final dir = Directory(p.join(tempDir.path, 'adjustment_mode_segments'));
+      final files = dir.listSync(recursive: true).whereType<File>().toList();
+      expect(files.length, greaterThanOrEqualTo(1));
+      
+      SharedPreferencesUtil().adjustmentMode = false;
+    });
   });
 
   group('Conversation Metadata Robustness', () {

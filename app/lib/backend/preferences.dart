@@ -39,6 +39,9 @@ class SharedPreferencesUtil {
   bool get manualMode => getBool('manualMode', defaultValue: true);
   set manualMode(bool v) => saveBool('manualMode', v);
 
+  bool get adjustmentMode => getBool('adjustmentMode', defaultValue: false);
+  set adjustmentMode(bool v) => saveBool('adjustmentMode', v);
+
   int get autoVadThreshold => getInt('autoVadThreshold', defaultValue: 250);
   set autoVadThreshold(int v) => saveInt('autoVadThreshold', v);
 

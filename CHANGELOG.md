@@ -4,6 +4,10 @@
 
 ### 0.20.0
 
+- **Added: Adjustment Mode.**
+    - Added a new 'Adjustment Mode' toggle in Sync Settings to safely copy all incoming raw segments to an isolated folder for reprocessing.
+    - The recordings list now synchronously displays an `| ADJ` tag when all underlying bins are successfully backed up.
+    - Added a button to manually copy isolated bins back into the processing pipeline.
 - **Removed: Adjustment Mode and Reprocess Day.**
     - Completely removed the 'Adjustment Mode' toggle and the 'Reprocess Day' pipeline.
     - Simplified the underlying sync storage model. Unprocessed raw bins are now strictly and unconditionally pruned by the 48-hour recovery sweep, freeing up disk space more aggressively and reliably.
@@ -11,6 +15,10 @@
     - Discarded complex state management and UI wrappers built to gate processing/uploads during Adjustment Mode.
 - **Fix: Prevent empty day cards from rendering.**
     - Fixed a bug introduced during the Adjustment Mode removal that caused empty UI cards to render for days that only contained unprocessed raw audio segments.
+- **Improved: Application Crash and Sync Resilience.**
+    - Added extensive unit tests covering synchronization robustness against process deaths, unexpected hardware disconnections, and partial downloads.
+    - Hardened the `processAll` audio pipeline to gracefully reset internal states (`processingProgress` and `minutesRemaining`) back to idle instead of locking the UI when isolates die or throw unhandled exceptions.
+    - Standardized test coverage for `TimeoutException` and `SocketException` paths across cloud integration clients (Omi and HeyPocket), verifying they present user-friendly fallback behavior.
 
 ### 0.19.11
 

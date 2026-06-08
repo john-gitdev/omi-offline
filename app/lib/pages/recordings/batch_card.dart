@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
@@ -150,12 +151,28 @@ class ConversationTile extends StatelessWidget {
     required this.onDeleteMarkerConversation,
   });
 
+  bool _isAdjustmentMode() {
+    if (conversation.relativeBins.isEmpty) return false;
+    try {
+      final docsPath = conversation.file.parent.parent.parent.path;
+      for (final rel in conversation.relativeBins) {
+        if (!File('$docsPath/adjustment_mode_segments/$rel').existsSync()) {
+          return false;
+        }
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final sortedMarkers = [...markers]..sort((a, b) => a.markerTime.compareTo(b.markerTime));
     final isPassthrough = conversation.passthrough;
     final subtitle =
         isPassthrough ? conversation.durationLabel : '${conversation.durationLabel}  ·  ${conversation.sizeLabel}';
+    final isAdj = _isAdjustmentMode();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -174,7 +191,7 @@ class ConversationTile extends StatelessWidget {
                       Row(
                         children: [
                           Text(
-                            conversation.timeRangeLabel,
+                            isAdj ? '${conversation.timeRangeLabel} | ADJ' : conversation.timeRangeLabel,
                             style: TextStyle(
                               color: isPassthrough ? Colors.grey.shade400 : Colors.white,
                               fontSize: 15,

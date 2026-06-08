@@ -12,6 +12,7 @@ import 'package:omi/utils/wal_file_manager.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'package:disk_space_2/disk_space_2.dart';
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/services/devices/device_connection.dart';
 import 'package:omi/services/devices/storage_file.dart';
@@ -412,6 +413,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
       rawData,
       mode: append ? FileMode.append : FileMode.write,
     );
+
+    if (SharedPreferencesUtil().adjustmentMode) {
+      try {
+        final adjFolder = Directory('${directory.path}/adjustment_mode_segments/$subFolder');
+        if (!await adjFolder.exists()) await adjFolder.create(recursive: true);
+        await file.copy('${adjFolder.path}/$fileName');
+      } catch (e) {
+        Logger.error('SDCardWalSync: failed to copy bin to adjustment_mode_segments: $e');
+      }
+    }
+
     return (file, rawData.length);
   }
 
@@ -744,6 +756,17 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     final finalSize = outputFile.existsSync() ? await outputFile.length() : offset;
     _lastSegmentBoundaryOffset = finalSize;
     onProgress?.call(finalSize);
+
+    if (SharedPreferencesUtil().adjustmentMode && outputFile.existsSync()) {
+      try {
+        final adjFolder = Directory('${directory.path}/adjustment_mode_segments/$subFolderPrefix');
+        if (!await adjFolder.exists()) await adjFolder.create(recursive: true);
+        await outputFile.copy('${adjFolder.path}/${timerStart}_${wal.sessionId ?? 0}.bin');
+      } catch (e) {
+        Logger.error('SDCardWalSync: failed to copy bin to adjustment_mode_segments: $e');
+      }
+    }
+
     await callback(outputFile, finalSize, timerStart, subFolder: subFolderPrefix);
   }
 

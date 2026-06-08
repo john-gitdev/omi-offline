@@ -822,5 +822,159 @@ void main() {
       expect(saved.length, 1, reason: 'session-end should produce one finalized recording');
       expect(flushed, isNull, reason: 'nothing remaining after session-end flush');
     });
+
+    group('Marker Protection Window', () {
+      test('VAD resume within 50s of marker tap is ignored for split', () async {
+        final builder = BytesBuilder();
+        final hdr = ByteData(36);
+        hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+        hdr.setUint32(4, 28, Endian.little);
+        hdr.setUint64(8, kBase, Endian.little);
+        hdr.setUint64(16, 0, Endian.little);
+        hdr.setUint32(24, 0, Endian.little);
+        hdr.setUint32(28, 1, Endian.little);
+        builder.add(hdr.buffer.asUint8List());
+
+        final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+        for (int i = 0; i < 10; i++) {
+          builder.add(fhdr.buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+
+        // Marker tap at kBase + 100000
+        final tapMarker = ByteData(20);
+        tapMarker.setUint32(0, 0xFFFFFFFE, Endian.little);
+        tapMarker.setUint64(4, kBase + 100000, Endian.little);
+        tapMarker.setUint32(12, 0, Endian.little);
+        tapMarker.setUint32(16, 1, Endian.little);
+        builder.add(tapMarker.buffer.asUint8List());
+
+        // VAD Resume at kBase + 130000
+        // Gap from last frame (kBase + 200) is 129.8s (exceeds 120s silence threshold)
+        // But it is within 50s of the marker UTC (100000 + 50000 = 150000 >= 130000)
+        final resumeMarker = ByteData(20);
+        resumeMarker.setUint32(0, 0xFFFFFFFD, Endian.little);
+        resumeMarker.setUint32(4, (kBase ~/ 1000) + 130, Endian.little); // vadUtcSeconds
+        resumeMarker.setUint32(8, 130000, Endian.little); // vadUptimeMs
+        builder.add(resumeMarker.buffer.asUint8List());
+
+        for (int i = 0; i < 10; i++) {
+          builder.add(fhdr.buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+
+        final file = File('${tempDir.path}/protection.bin')..writeAsBytesSync(builder.toBytes());
+        final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        await proc.flushRemaining(isDraft: true);
+        final edls = proc.consumePendingEdlData();
+        proc.destroy();
+
+        // Should only be one EDL because the split was blocked by protection
+        expect(edls.length, 1, reason: 'Split should be blocked by marker protection window');
+      });
+
+      test('VAD resume > 50s after marker tap triggers split', () async {
+        final builder = BytesBuilder();
+        final hdr = ByteData(36);
+        hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+        hdr.setUint32(4, 28, Endian.little);
+        hdr.setUint64(8, kBase, Endian.little);
+        hdr.setUint64(16, 0, Endian.little);
+        hdr.setUint32(24, 0, Endian.little);
+        hdr.setUint32(28, 1, Endian.little);
+        builder.add(hdr.buffer.asUint8List());
+
+        final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+        for (int i = 0; i < 10; i++) {
+          builder.add(fhdr.buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+
+        // Marker tap at kBase + 100000
+        final tapMarker = ByteData(20);
+        tapMarker.setUint32(0, 0xFFFFFFFE, Endian.little);
+        tapMarker.setUint64(4, kBase + 100000, Endian.little);
+        tapMarker.setUint32(12, 0, Endian.little);
+        tapMarker.setUint32(16, 1, Endian.little);
+        builder.add(tapMarker.buffer.asUint8List());
+
+        // VAD Resume at kBase + 160000
+        // > 50s from marker UTC (160000 > 150000)
+        final resumeMarker = ByteData(20);
+        resumeMarker.setUint32(0, 0xFFFFFFFD, Endian.little);
+        resumeMarker.setUint32(4, (kBase ~/ 1000) + 160, Endian.little);
+        resumeMarker.setUint32(8, 160000, Endian.little);
+        builder.add(resumeMarker.buffer.asUint8List());
+
+        for (int i = 0; i < 10; i++) {
+          builder.add(fhdr.buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+
+        final file = File('${tempDir.path}/protection_split.bin')..writeAsBytesSync(builder.toBytes());
+        final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        final saved = await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        await proc.flushRemaining(isDraft: true);
+        final edls = proc.consumePendingEdlData();
+        proc.destroy();
+
+        // Split should occur because we are outside the 50s protection window
+        // One saved file from the split, and one remaining EDL for the new session
+        expect(saved.length, 1, reason: 'First segment should be saved upon split');
+        expect(edls.length, 1, reason: 'Second segment should still be pending');
+      });
+
+      test('wall-clock fallback when marker hardware RTC is 0', () async {
+        final builder = BytesBuilder();
+        final hdr = ByteData(36);
+        hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+        hdr.setUint32(4, 28, Endian.little);
+        hdr.setUint64(8, kBase, Endian.little);
+        hdr.setUint64(16, 0, Endian.little);
+        hdr.setUint32(24, 0, Endian.little);
+        hdr.setUint32(28, 1, Endian.little);
+        builder.add(hdr.buffer.asUint8List());
+
+        final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+        // 5000 frames = 100 seconds
+        for (int i = 0; i < 5000; i++) {
+          builder.add(fhdr.buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+
+        // Audio wall time is now kBase + 100000.
+        // Marker with 0 RTC.
+        final tapMarker = ByteData(20);
+        tapMarker.setUint32(0, 0xFFFFFFFE, Endian.little);
+        tapMarker.setUint64(4, 0, Endian.little);
+        tapMarker.setUint32(12, 0, Endian.little);
+        tapMarker.setUint32(16, 1, Endian.little);
+        builder.add(tapMarker.buffer.asUint8List());
+
+        // VAD Resume at +30s from wall-clock (130s total)
+        final resumeMarker = ByteData(20);
+        resumeMarker.setUint32(0, 0xFFFFFFFD, Endian.little);
+        resumeMarker.setUint32(4, (kBase ~/ 1000) + 130, Endian.little);
+        resumeMarker.setUint32(8, 130000, Endian.little);
+        builder.add(resumeMarker.buffer.asUint8List());
+
+        for (int i = 0; i < 10; i++) {
+          builder.add(fhdr.buffer.asUint8List());
+          builder.add(List.filled(4, 0));
+        }
+
+        final file = File('${tempDir.path}/protection_fallback.bin')..writeAsBytesSync(builder.toBytes());
+        final proc = VadAudioProcessor.fromSettings(settings: markerSettings(), outputDir: tempDir.path);
+        await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+        await proc.flushRemaining(isDraft: true);
+        final edls = proc.consumePendingEdlData();
+        proc.destroy();
+
+        // Because marker UTC was 0, it should fallback to audio wall time (kBase + 100000).
+        // The VAD resume at kBase + 130000 is within 50000ms of that, so it should not split.
+        expect(edls.length, 1, reason: 'Split should be blocked by wall-clock fallback protection');
+      });
+    });
   });
 }

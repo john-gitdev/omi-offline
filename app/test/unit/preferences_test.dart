@@ -165,6 +165,10 @@ void main() {
       expect(prefsUtil.devLogsToFileEnabled, false);
       prefsUtil.devLogsToFileEnabled = true;
       expect(prefsUtil.devLogsToFileEnabled, true);
+
+      expect(prefsUtil.uploadOnWifiOnly, false);
+      prefsUtil.uploadOnWifiOnly = true;
+      expect(prefsUtil.uploadOnWifiOnly, true);
     });
 
     test('HeyPocket uploaded files management and concurrency works correctly', () async {
