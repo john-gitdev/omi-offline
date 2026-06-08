@@ -9,11 +9,17 @@
 - **Improved: Notification readability.**
     - Expanded 'Bat' to 'Battery' in the 'Next Sync' idle notification subtext for better clarity.
 - **Improved: Device Scanning Feedback.**
-    - The "Scan Again" button now explicitly notifies the user if a background scan is already in progress instead of appearing to fail instantly.
+    - The "Scan Again" button now explicitly notifies the user if a background scan is already in progress instead of appearing to fail instantly. This notice only appears on an explicit Scan/Refresh tap — automatic scans (opening the page, rescanning after forgetting a device) silently defer to the running scan.
     - Added a persistent circular progress indicator on the "Find Omi Devices" page that reflects background scans (e.g., from "Reset Connection"), ensuring the user has continuous visual feedback.
+- **Improved: Android Connectability.**
+    - Integrated Android Companion Device Manager to establish a formal OS-level association when pairing. This significantly improves connection reliability and ensures the app can always find and wake the device, even in the background.
 - **Fix: Bluetooth connection deadlock.**
     - Fixed a deadlock in `DeviceService` where a background discovery attempt with a "desirable device" would block on the same mutex as the primary connection attempt, leading to the app getting stuck in a "Scanning" state indefinitely.
     - Improved `DeviceService.discover()` resilience to ensure the scanning status is always cleared even if a connection attempt blocks or fails.
+- **Fix: Recording timestamps after auto-reconnect.**
+    - The firmware clock is now re-synced on every reconnect, not just manual connects. Previously a native auto-reconnect (e.g. after a device reboot) could leave the device with a reset clock, mis-stamping subsequent recordings.
+    - The scanning progress indicator on "Find Omi Devices" now updates reactively when a background scan starts or finishes.
+    - "Find Omi Devices" now also lists devices found by background scans, instead of showing "No devices found" right after one completes.
 
 ### 0.20.4
 
