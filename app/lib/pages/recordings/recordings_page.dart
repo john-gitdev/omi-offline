@@ -170,12 +170,19 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
   }
 
-  Future<void> _deleteDayConversations(Batch batch, List<Conversation> toDelete) async {
-    if (toDelete.isEmpty) return;
+  Future<void> _deleteDayConversations(Batch batch, List<Conversation> toDelete, List<DiscardRecord> toDeleteDiscards) async {
+    if (toDelete.isEmpty && toDeleteDiscards.isEmpty) return;
     final messenger = ScaffoldMessenger.of(context);
-    final description = _filterMode == RecordingFilterMode.all
-        ? 'all processed recordings for ${batch.dateString}'
-        : '${toDelete.length} ${_filterMode == RecordingFilterMode.hidden ? 'hidden' : 'main'} recording${toDelete.length == 1 ? '' : 's'} for ${batch.dateString}';
+
+    // If tabs are disabled OR we are in "All" mode, we are effectively
+    // deleting everything the user can see for the whole day.
+    final isFullDay = _prefs.filterMinDurationSeconds == 0 || _filterMode == RecordingFilterMode.all;
+
+    final totalCount = toDelete.length + toDeleteDiscards.length;
+    final description = isFullDay
+        ? 'everything for ${batch.dateString}'
+        : '$totalCount ${_filterMode == RecordingFilterMode.hidden ? 'hidden' : 'main'} item${totalCount == 1 ? '' : 's'} for ${batch.dateString}';
+
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (c) => getDialog(
@@ -189,16 +196,18 @@ class _RecordingsPageState extends State<RecordingsPage> {
     );
     if (confirm != true) return;
     try {
-      if (_filterMode == RecordingFilterMode.all) {
+      if (isFullDay) {
         await _controller.deleteDay(batch);
       } else {
         await _controller.deleteConversations(toDelete);
+        await _controller.deleteDiscards(toDeleteDiscards);
       }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         messenger.showSnackBar(
           SnackBar(content: Text('Error deleting day: $e')),
         );
+      }
     }
   }
 
@@ -300,7 +309,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
   }
 
-  Future<void> _exportAll(Batch batch, List<Conversation> conversations) async {
+  Future<void> _exportAll(Batch batch, List<Conversation> conversations, List<DiscardRecord> discards) async {
     if (conversations.isEmpty) return;
     final files = conversations.map((r) => XFile(r.file.path)).toList();
     await SharePlus.instance.share(
@@ -908,13 +917,15 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           onUploadTap: _handleUploadTap,
                                           onConversationTap: _openConversation,
                                           onMarkerTap: _openMarkerConversation,
-                                          onExportAll: (conversations) => _exportAll(
+                                          onExportAll: (conversations, discards) => _exportAll(
                                             visibleBatches[batchIndex],
                                             conversations,
+                                            discards,
                                           ),
-                                          onDeleteDay: (toDelete) => _deleteDayConversations(
+                                          onDeleteDay: (toDelete, toDeleteDiscards) => _deleteDayConversations(
                                             visibleBatches[batchIndex],
                                             toDelete,
+                                            toDeleteDiscards,
                                           ),
                                           onDeleteConversation: _deleteConversation,
                                           onDeleteMarkerConversation: _deleteMarkerConversation,

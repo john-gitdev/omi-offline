@@ -2,6 +2,12 @@
 
 ## App
 
+### 0.20.1
+
+- **Fixed: Delete Day with ghost recordings.**
+    - Fixed an issue where the 'Delete Day' button was inactive or non-functional if a day only contained ghost recordings (discards).
+    - Refined 'Delete Day' to handle full day deletion (including raw audio bins) when filters are disabled or 'All' view is selected.
+
 ### 0.20.0
 
 - **Added: Adjustment Mode.**

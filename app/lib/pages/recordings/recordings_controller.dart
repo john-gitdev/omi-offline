@@ -1231,6 +1231,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await deleteConversations([conversation]);
   }
 
+  Future<void> deleteDiscards(List<DiscardRecord> discards) async {
+    if (discards.isEmpty) return;
+    for (final d in discards) {
+      await RecordingsManager.removeDiscardRecord(d, deleteBins: true);
+    }
+    await _loadBatches();
+  }
+
   Future<void> deleteConversations(List<Conversation> conversations) async {
     if (conversations.isEmpty) return;
     final keys = conversations.map((c) => c.uploadKey).whereType<String>().toSet();
