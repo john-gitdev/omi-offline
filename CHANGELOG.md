@@ -2,6 +2,11 @@
 
 ## App
 
+### 0.21.0
+
+- **Improved: Notification readability.**
+    - Expanded 'Bat' to 'Battery' in the 'Next Sync' idle notification subtext for better clarity.
+
 ### 0.20.4
 
 - **Fix: SD Card Sync robustness.**
