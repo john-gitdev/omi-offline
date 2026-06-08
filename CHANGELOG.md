@@ -4,9 +4,17 @@
 
 ### 0.20.4
 
+- **Fix: SD Card Sync robustness.**
+    - The BLE manager now correctly pads dropped packets (protocol gaps) with zeros instead of failing and aborting the transfer, preventing the sync queue from getting permanently stuck on a corrupted file.
+- **Improved: Retain trailing silence in recordings.**
+    - The VAD processor no longer trims the trailing silence (the "silence to split" duration) from the end of finalized recordings. The entire buffered audio block that triggered the split is now saved within the audio file.
+    - As a result, the `silence_trimmed` discard records are no longer generated.
 - **Improved: Device Troubleshooting UI.**
     - Added a permanent, full-width "Reset Connection" button to the "Find Omi Devices" page to improve visibility and ease of access during troubleshooting.
     - Optimized the device list layout to ensure the troubleshooting button remains accessible at the bottom of the screen.
+- **Improved: Sync Notifications.**
+    - Added granular tracking for "Partial" vs "Complete" syncs.
+    - Refined the background notification format to "Last Sync: [Status] • [Time] • [Battery]% Bat" for better clarity and conciseness.
 
 ### 0.20.3
 
