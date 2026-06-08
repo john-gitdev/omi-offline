@@ -96,7 +96,10 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     );
 
     try {
-      await ServiceManager.instance().device.ensureConnection(device.id, force: true);
+      final connection = await ServiceManager.instance().device.ensureConnection(device.id, force: true);
+      if (connection == null) {
+        throw Exception('Connection timed out or device is unreachable.');
+      }
 
       // Save paired device — state transitions (setConnectedDevice, setIsConnected, WAL sync, etc.)
       // are handled by DeviceProvider._onDeviceConnected via the onDeviceConnectionStateChanged callback.

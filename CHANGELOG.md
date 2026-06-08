@@ -4,6 +4,8 @@
 
 ### 0.21.0
 
+- **Fix: False-positive "Connected" snackbar.**
+    - Fixed a bug where a Bluetooth connection timeout (e.g., during "Reset Connection") would erroneously show a success snackbar instead of an error message.
 - **Improved: Notification readability.**
     - Expanded 'Bat' to 'Battery' in the 'Next Sync' idle notification subtext for better clarity.
 
