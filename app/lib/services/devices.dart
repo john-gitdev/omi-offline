@@ -116,6 +116,7 @@ class DeviceService implements IDeviceService {
       _devices = discoveredDevices;
       onDevices(devices);
 
+      _status = DeviceServiceStatus.ready;
       if (desirableDeviceId != null && desirableDeviceId.isNotEmpty) {
         await ensureConnection(desirableDeviceId, force: true);
       }
