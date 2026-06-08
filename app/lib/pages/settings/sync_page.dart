@@ -703,7 +703,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   SharedPreferencesUtil().adjustmentMode = val;
                   setState(() {});
                   if (val) {
-                    await RecordingsManager.processAllCompletedSessions(finalizeDrafts: true);
+                    await RecordingsManager.processAllCompletedSessions();
                   } else {
                     final directory = await getApplicationDocumentsDirectory();
                     final adjDir = Directory('${directory.path}/adjustment_mode_segments');
