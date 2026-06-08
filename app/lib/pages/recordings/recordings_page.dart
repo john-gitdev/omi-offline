@@ -309,7 +309,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
   }
 
-  Future<void> _exportAll(Batch batch, List<Conversation> conversations, List<DiscardRecord> discards) async {
+  Future<void> _exportAll(Batch batch, List<Conversation> conversations) async {
     if (conversations.isEmpty) return;
     final files = conversations.map((r) => XFile(r.file.path)).toList();
     await SharePlus.instance.share(
@@ -917,10 +917,9 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           onUploadTap: _handleUploadTap,
                                           onConversationTap: _openConversation,
                                           onMarkerTap: _openMarkerConversation,
-                                          onExportAll: (conversations, discards) => _exportAll(
+                                          onExportAll: (conversations) => _exportAll(
                                             visibleBatches[batchIndex],
                                             conversations,
-                                            discards,
                                           ),
                                           onDeleteDay: (toDelete, toDeleteDiscards) => _deleteDayConversations(
                                             visibleBatches[batchIndex],
