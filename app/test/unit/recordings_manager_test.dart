@@ -165,6 +165,36 @@ void main() {
       // Allow for some small difference in time due to filesystem resolution
       expect(conversation.startTime.difference(now).inSeconds.abs() <= 1, true);
     });
+
+    test('reads isSilero flag and formats sizeLabel with AAD/VAD', () async {
+      final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
+      final markerMs = 1773223200000;
+      final m4aFile = File(p.join(recordingsDir.path, 'silero_$markerMs.m4a'))..writeAsBytesSync(Uint8List(1024));
+      final metaFile = File(p.join(recordingsDir.path, 'silero_$markerMs.meta'));
+
+      // .meta layout: bytes 0-415 header, 416 keyLen, 417+ key, flagOffset = 417 + keyLen
+      // flags: [0] passthrough, [1] forceSynced, [2] capEnded, [3] isSilero
+      const keyLen = 0;
+      const flagOffset = 417 + keyLen;
+      final metaData = ByteData(flagOffset + 4);
+      metaData.setUint32(4, 1000, Endian.little); // 1s duration
+      final metaBytes = metaData.buffer.asUint8List();
+      metaBytes[416] = keyLen;
+      metaBytes[flagOffset + 3] = 1; // isSilero = true
+      metaFile.writeAsBytesSync(metaBytes);
+
+      final conversation = await Conversation.fromFile(m4aFile);
+      expect(conversation.isSilero, true);
+      expect(conversation.sizeLabel, contains('VAD'));
+      expect(conversation.sizeLabel, contains('1 KB'));
+
+      // Test AAD (isSilero = false)
+      metaBytes[flagOffset + 3] = 0; // isSilero = false
+      metaFile.writeAsBytesSync(metaBytes);
+      final conversationAad = await Conversation.fromFile(m4aFile);
+      expect(conversationAad.isSilero, false);
+      expect(conversationAad.sizeLabel, contains('AAD'));
+    });
   });
 
   group('Marker Logic', () {

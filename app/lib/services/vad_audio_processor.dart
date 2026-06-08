@@ -1799,7 +1799,7 @@ class VadAudioProcessor {
     }
 
     await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-        prefix: prefix, extension: 'm4a', suffix: suffix, capEnded: capEnded);
+        prefix: prefix, extension: 'm4a', suffix: suffix, capEnded: capEnded, isSilero: _session != null);
 
     final totalSkipped = skippedReadFail + skippedDecodeNull + skippedDecodeEmpty;
     if (totalFrameRefs > 0 && totalSkipped * 20 > totalFrameRefs) {
@@ -1817,7 +1817,7 @@ class VadAudioProcessor {
 
   Future<void> _saveMetadata(List<Object> refs, String dateFolderPath, int timestamp, int totalSamples,
       List<double> dynamicPeaks, int waveformBuckets,
-      {required String prefix, required String extension, String suffix = '', bool capEnded = false}) async {
+      {required String prefix, required String extension, String suffix = '', bool capEnded = false, required bool isSilero}) async {
     final finalAmplitudes = List<double>.filled(waveformBuckets, 0.0);
     if (dynamicPeaks.isNotEmpty) {
       final double ratio = dynamicPeaks.length / waveformBuckets;
@@ -1871,6 +1871,7 @@ class VadAudioProcessor {
     metaOut.add(0); // passthrough
     metaOut.add(0); // forceSynced
     metaOut.add(capEnded ? 1 : 0); // capEnded
+    metaOut.add(isSilero ? 1 : 0); // isSilero
 
     // Append relative bins used for this recording (binary length + JSON)
     final relativeBins = refs
@@ -2000,7 +2001,7 @@ class VadAudioProcessor {
       await sink.close();
 
       await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-          prefix: prefix, extension: 'ogg', suffix: suffix, capEnded: capEnded);
+          prefix: prefix, extension: 'ogg', suffix: suffix, capEnded: capEnded, isSilero: _session != null);
 
       await oggFile.rename(oggPath);
       renamed = true;
@@ -2243,7 +2244,7 @@ class VadAudioProcessor {
       if (currentWindowSamples > 0) dynamicPeaks.add(currentWindowMax);
 
       await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-          prefix: prefix, extension: 'wav', suffix: suffix, capEnded: capEnded);
+          prefix: prefix, extension: 'wav', suffix: suffix, capEnded: capEnded, isSilero: _session != null);
 
       await wavFile.rename(wavPath);
 

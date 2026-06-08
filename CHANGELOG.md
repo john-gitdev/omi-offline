@@ -4,6 +4,9 @@
 
 ### 0.19.11
 
+- **Added: AAD/VAD designation in recording list.**
+    - Added a processing mode indicator (AAD or VAD) next to the recording size in the recordings list and player pages, making it easy to see which recordings were processed with Silero VAD.
+    - Updated the metadata format to persist the processing mode in `.meta` files.
 - **Fix: Resolved back-to-back recording splits on marker tap.**
     - Fixed a race condition where the VAD-resume signal (waking the device after silence) would ignore the marker protection window and trigger an immediate split.
     - Improved Marker protection robustness by anchoring the 50s window to the raw hardware RTC (Real-Time Clock) instead of the drifted audio timeline.

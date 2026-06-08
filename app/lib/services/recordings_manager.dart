@@ -39,6 +39,7 @@ class Conversation {
   // Defaults to true so that old recordings whose .meta predates the flag are treated
   // conservatively (no aggressive pruning past rec_end).
   final bool capEnded;
+  final bool? isSilero;
   final List<String> relativeBins;
 
   const Conversation({
@@ -51,6 +52,7 @@ class Conversation {
     this.passthrough = false,
     this.forceSynced = false,
     this.capEnded = true,
+    this.isSilero,
     this.relativeBins = const [],
   });
 
@@ -125,6 +127,7 @@ class Conversation {
           // Default true so recordings whose .meta predates the capEnded byte are treated
           // conservatively by pruneConsumedBins (no aggressive prune past rec_end).
           bool capEnded = true;
+          bool? isSilero;
           List<String> relativeBins = const [];
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
@@ -144,8 +147,11 @@ class Conversation {
               if (metaBytes.length > flagOffset + 2) {
                 capEnded = (metaBytes[flagOffset + 2] & 0x01) != 0;
               }
+              if (metaBytes.length > flagOffset + 3) {
+                isSilero = (metaBytes[flagOffset + 3] & 0x01) != 0;
+              }
 
-              final binsOffset = flagOffset + 3;
+              final binsOffset = flagOffset + (isSilero != null ? 4 : 3);
               if (metaBytes.length >= binsOffset + 4) {
                 final binsLen = bd.getUint32(binsOffset, Endian.little);
                 if (metaBytes.length >= binsOffset + 4 + binsLen) {
@@ -173,6 +179,7 @@ class Conversation {
             passthrough: passthrough,
             forceSynced: forceSynced,
             capEnded: capEnded,
+            isSilero: isSilero,
             relativeBins: relativeBins,
           );
         }
@@ -233,6 +240,7 @@ class Conversation {
       bool passthrough = false;
       bool forceSynced = false;
       bool capEnded = true; // see Conversation.capEnded — default conservative
+      bool? isSilero;
       if (metaBytes.length >= 417) {
         final keyLen = metaBytes[416];
         if (417 + keyLen <= metaBytes.length) {
@@ -248,6 +256,9 @@ class Conversation {
           }
           if (metaBytes.length > flagOffset + 2) {
             capEnded = (metaBytes[flagOffset + 2] & 0x01) != 0;
+          }
+          if (metaBytes.length > flagOffset + 3) {
+            isSilero = (metaBytes[flagOffset + 3] & 0x01) != 0;
           }
         }
       }
@@ -274,6 +285,7 @@ class Conversation {
         passthrough: true,
         forceSynced: forceSynced,
         capEnded: capEnded,
+        isSilero: isSilero,
       );
     } catch (_) {
       return null;
@@ -321,6 +333,7 @@ class Conversation {
           // Default true so recordings whose .meta predates the capEnded byte are treated
           // conservatively by pruneConsumedBins (no aggressive prune past rec_end).
           bool capEnded = true;
+          bool? isSilero;
           if (metaBytes.length >= 417) {
             final keyLen = metaBytes[416];
             if (417 + keyLen <= metaBytes.length) {
@@ -339,6 +352,9 @@ class Conversation {
               if (metaBytes.length > flagOffset + 2) {
                 capEnded = (metaBytes[flagOffset + 2] & 0x01) != 0;
               }
+              if (metaBytes.length > flagOffset + 3) {
+                isSilero = (metaBytes[flagOffset + 3] & 0x01) != 0;
+              }
             }
           }
           // Fall back to filename (without extension) as upload key for recordings
@@ -354,6 +370,7 @@ class Conversation {
             passthrough: passthrough,
             forceSynced: forceSynced,
             capEnded: capEnded,
+            isSilero: isSilero,
           );
         }
       } catch (_) {
@@ -397,9 +414,17 @@ class Conversation {
   String get sizeLabel {
     if (passthrough) return '';
     final bytes = fileSizeBytes;
-    if (bytes >= 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
-    return '$bytes B';
+    String size;
+    if (bytes >= 1024 * 1024) {
+      size = '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    } else if (bytes >= 1024) {
+      size = '${(bytes / 1024).toStringAsFixed(0)} KB';
+    } else {
+      size = '$bytes B';
+    }
+    if (isSilero == true) return '$size  ·  VAD';
+    if (isSilero == false) return '$size  ·  AAD';
+    return size;
   }
 }
 
@@ -1685,11 +1710,11 @@ class RecordingsManager {
       }
 
       final allEvents = [
-        ...allAudioFiles.map((f) => (audio: f, discard: null as DiscardRecord?, ts: _extractTimestamp(f.path), dur: 0)),
-        ...allDiscards.map((d) => (audio: null as File?, discard: d, ts: d.startTime.millisecondsSinceEpoch, dur: d.duration.inMilliseconds)),
+        ...allAudioFiles.map((f) => (audio: f, discard: null as DiscardRecord?, timestamp: _extractTimestamp(f.path), durationMs: 0)),
+        ...allDiscards.map((d) => (audio: null as File?, discard: d, timestamp: d.startTime.millisecondsSinceEpoch, durationMs: d.duration.inMilliseconds)),
       ];
 
-      allEvents.sort((a, b) => a.ts.compareTo(b.ts));
+      allEvents.sort((a, b) => a.timestamp.compareTo(b.timestamp));
 
       final draftFiles = allAudioFiles.where((f) => f.path.contains('_draft.')).toList();
       if (draftFiles.isEmpty) break;
@@ -1739,7 +1764,7 @@ class RecordingsManager {
 
         for (int i = currentIndex + 1; i < allEvents.length; i++) {
           final event = allEvents[i];
-          final gap = event.ts - currentPointerTs;
+          final gap = event.timestamp - currentPointerTs;
 
           if (gap < 0) continue; // safety: ignore events that somehow overlap or precede
 
@@ -1754,12 +1779,12 @@ class RecordingsManager {
             audioToStitch = event.audio;
             break;
           } else if (event.discard != null) {
-            if (accumulatedNonSpeechMs + event.dur >= thresholdMs) {
+            if (accumulatedNonSpeechMs + event.durationMs >= thresholdMs) {
               finalizeNow = true;
               break;
             }
-            accumulatedNonSpeechMs += event.dur;
-            currentPointerTs = event.ts + event.dur;
+            accumulatedNonSpeechMs += event.durationMs;
+            currentPointerTs = event.timestamp + event.durationMs;
             intermediateEvents.add(event);
           }
         }
@@ -1778,18 +1803,18 @@ class RecordingsManager {
           bool success = true;
 
           for (final inter in intermediateEvents) {
-            final gap = inter.ts - lastEndTs;
+            final gap = inter.timestamp - lastEndTs;
             final interSuccess = await _stitchDiscard(draftFile, inter.discard!, gap);
             if (!interSuccess) {
               success = false;
               break;
             }
-            lastEndTs = inter.ts + inter.dur;
+            lastEndTs = inter.timestamp + inter.durationMs;
           }
 
           if (success) {
-            final finalGap = audioToStitch.path.contains('_draft.') ? 0 : (allEvents.firstWhere((e) => e.audio == audioToStitch).ts - lastEndTs);
-            final int nextTs = allEvents.firstWhere((e) => e.audio == audioToStitch).ts;
+            final finalGap = audioToStitch.path.contains('_draft.') ? 0 : (allEvents.firstWhere((e) => e.audio == audioToStitch).timestamp - lastEndTs);
+            final int nextTs = allEvents.firstWhere((e) => e.audio == audioToStitch).timestamp;
 
             // Re-read meta since it may have been updated by _stitchDiscard
             final updatedMetaBytes = await draftMeta.readAsBytes();
@@ -1842,7 +1867,10 @@ class RecordingsManager {
       final tempAudio = File('${draftFile.parent.path}/ghost_${ghost.startTime.millisecondsSinceEpoch}.tmp.$ext');
       if (await tempAudio.exists()) await tempAudio.delete();
 
-      final decoder = SimpleOpusDecoder();
+      final decoder = SimpleOpusDecoder(
+        sampleRate: 16000,
+        channels: 1,
+      );
       try {
         if (ext == 'wav') {
           final sink = await tempAudio.open(mode: FileMode.write);
@@ -1882,8 +1910,7 @@ class RecordingsManager {
           return await _stitchSilence(draftFile, gapMs + ghost.duration.inMilliseconds);
         }
       } finally {
-        // ignore: unawaited_futures, discarded_futures
-        decoder.dispose();
+        decoder.destroy();
       }
 
       if (await tempAudio.exists() && (await tempAudio.length()) > 44) {
