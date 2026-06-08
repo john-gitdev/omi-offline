@@ -6,6 +6,7 @@
 
 - **Fix: SD Card Sync robustness.**
     - The BLE manager now correctly pads dropped packets (protocol gaps) with zeros instead of failing and aborting the transfer, preventing the sync queue from getting permanently stuck on a corrupted file.
+    - Bounded the zero-padding to 8 MB so an absurd offset from a corrupt header fails the single transfer cleanly instead of attempting a huge allocation.
 - **Improved: Retain trailing silence in recordings.**
     - The VAD processor no longer trims the trailing silence (the "silence to split" duration) from the end of finalized recordings. The entire buffered audio block that triggered the split is now saved within the audio file.
     - As a result, the `silence_trimmed` discard records are no longer generated.
@@ -15,6 +16,18 @@
 - **Improved: Sync Notifications.**
     - Added granular tracking for "Partial" vs "Complete" syncs.
     - Refined the background notification format to "Last Sync: [Status] • [Time] • [Battery]% Bat" for better clarity and conciseness.
+    - Fixed a partial background sync stamping the previous successful sync's time — the notification now shows "Partial" alongside the time the partial sync actually ran.
+- **Fix: Passthrough uploads no longer drop recordings from the list.**
+    - After a successful passthrough upload, the metadata flag is now written in place rather than appended past the end of the sidecar. Previously the flag was never actually recorded, so once the local audio was freed the recording could not be reconstructed and silently disappeared.
+- **Fix: "Reset Connection" button visibility.**
+    - The button now appears whenever a device pairing is stored — including on a fresh launch when the saved device refuses to connect, the exact case it exists for. Previously it only showed after a successful connection or a mid-session disconnect.
+- **Improved: VAD processing resilience.**
+    - A transient failure in the native VAD batch runner now falls back to per-window voice detection for just the affected batch, keeping the model active for the rest of the run instead of treating all remaining audio as speech.
+- **Improved: Auto-upload concurrency.**
+    - Background auto-upload no longer throttles multi-slot integrations (e.g. HeyPocket) down to a single concurrent transfer; the per-integration concurrency limit is now respected.
+    - The Wi-Fi-only connectivity check now fails closed if it errors, so uploads are skipped rather than proceeding on cellular.
+- **Improved: Adjustment Mode safety.**
+    - Turning off Adjustment Mode now asks for confirmation before deleting the isolated copy of raw bins (only when an archive exists).
 
 ### 0.20.3
 
