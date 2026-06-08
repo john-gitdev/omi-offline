@@ -133,7 +133,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
         confirmText: 'Forget',
       ),
     );
-    if (confirm != true) return;
+    if (confirm != true || !mounted) return;
 
     final prefs = SharedPreferencesUtil();
     final deviceId = prefs.btDevice.id;
@@ -168,7 +168,12 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
   Widget build(BuildContext context) {
     final provider = context.watch<DeviceProvider>();
     final isBluetoothEnabled = provider.isBluetoothEnabled;
-    final hasPairedDevice = provider.pairedDevice != null && provider.pairedDevice!.id.isNotEmpty;
+    // Gate on the stored pairing (source of truth, also what _forgetDevice reads),
+    // not provider.pairedDevice — that field is null at cold start and only hydrates
+    // after a successful connect or a disconnect transition, so a provider gate would
+    // hide the button in exactly the "stored device that refuses to connect" case it
+    // exists for. We still read provider above via watch() so this rebuilds on changes.
+    final hasPairedDevice = SharedPreferencesUtil().btDevice.id.isNotEmpty;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0D0D0D),
