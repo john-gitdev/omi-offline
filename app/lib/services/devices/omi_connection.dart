@@ -109,26 +109,23 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<void> _waitForStorageReady() async {
     const maxAttempts = 3;
 
+    // Best-effort wake nudge. The underlying reads swallow their errors (they
+    // return null/[] rather than throwing), so readiness is inferred from the
+    // return value, not exceptions. A null stats result is *not* treated as a
+    // hard failure: older firmware lacks the stats characteristic and always
+    // returns null, and hard-failing here would block storage sync on those
+    // devices. The real readiness gate is the subsequent storage command, which
+    // carries its own retries/timeouts. We only loop to give a momentarily-busy
+    // SD a few hundred ms to start responding; worst case is bounded (~600ms).
     for (int i = 0; i < maxAttempts; i++) {
-      try {
-        // Primary probe
-        await performGetStorageFileStats();
-        // Cache audio codec while awake
-        await performGetAudioCodec();
-        return;
-      } catch (_) {
-        try {
-          // Fallback probe (must remain lightweight)
-          await performListFiles();
-          await performGetAudioCodec();
-          return;
-        } catch (_) {
-          await Future.delayed(Duration(milliseconds: 100 * (i + 1)));
-        }
+      final stats = await performGetStorageFileStats();
+      // Cache audio codec while awake (idempotent — cached after first read).
+      await performGetAudioCodec();
+      if (stats != null) return; // SD confirmed responsive
+      if (i < maxAttempts - 1) {
+        await Future.delayed(Duration(milliseconds: 100 * (i + 1)));
       }
     }
-
-    throw Exception('SD card not ready after wake');
   }
 
   Future<void> _sleepStorage() async {
