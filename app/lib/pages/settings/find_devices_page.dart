@@ -96,6 +96,38 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
   }
 
   Future<void> _connectToDevice(BtDevice device) async {
+    final deviceService = ServiceManager.instance().device;
+    if (TargetPlatform.android == Theme.of(context).platform &&
+        !deviceService.hasCompanionDeviceAssociation()) {
+      bool? confirm = await showDialog<bool>(
+        context: context,
+        builder: (c) => getDialog(
+          context,
+          () => Navigator.of(context).pop(false),
+          () => Navigator.of(context).pop(true),
+          'Pair with Android',
+          'To ensure a reliable connection, Android requires a system pairing association. This will show a system dialog to pair with ${device.name}.',
+          confirmText: 'Pair',
+        ),
+      );
+      if (confirm == true) {
+        try {
+          final associatedAddress = await deviceService.requestCompanionDeviceAssociation(device.id);
+          if (associatedAddress.isEmpty) return; // User cancelled or failed
+        } catch (e) {
+          Logger.error('FindDevicesPage: Companion association failed: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Pairing failed: $e')),
+            );
+          }
+          return;
+        }
+      } else {
+        return;
+      }
+    }
+
     // Show connecting indicator
     showDialog(
       context: context,
