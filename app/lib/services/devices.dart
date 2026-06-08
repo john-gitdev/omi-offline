@@ -16,6 +16,8 @@ abstract class IDeviceService {
   void stop();
   Future<List<BtDevice>> discover({String? desirableDeviceId, int timeout = 5});
 
+  DeviceServiceStatus get status;
+
   Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false, bool requiresBond = false});
 
   void subscribe(IDeviceServiceSubscription subscription, Object context);
