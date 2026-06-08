@@ -166,7 +166,9 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
 
   @override
   Widget build(BuildContext context) {
-    final isBluetoothEnabled = context.watch<DeviceProvider>().isBluetoothEnabled;
+    final provider = context.watch<DeviceProvider>();
+    final isBluetoothEnabled = provider.isBluetoothEnabled;
+    final hasPairedDevice = provider.pairedDevice != null && provider.pairedDevice!.id.isNotEmpty;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0D0D0D),
@@ -193,90 +195,110 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
             ),
         ],
       ),
-      body: !isBluetoothEnabled
-          ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  FaIcon(FontAwesomeIcons.bluetooth, size: 60, color: Colors.grey.shade700),
-                  const SizedBox(height: 24),
-                  const Text(
-                    'Bluetooth is Off',
-                    style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+      body: Column(
+        children: [
+          Expanded(
+            child: !isBluetoothEnabled
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        FaIcon(FontAwesomeIcons.bluetooth, size: 60, color: Colors.grey.shade700),
+                        const SizedBox(height: 24),
+                        const Text(
+                          'Bluetooth is Off',
+                          style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Please enable Bluetooth to scan for devices',
+                          style: TextStyle(color: Colors.grey, fontSize: 16),
+                        ),
+                      ],
+                    ),
+                  )
+                : _discoveredDevices.isEmpty && !_isScanning
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            FaIcon(FontAwesomeIcons.bluetooth, size: 64, color: Colors.grey.shade800),
+                            const SizedBox(height: 24),
+                            const Text(
+                              'No Omi devices found nearby.',
+                              style: TextStyle(color: Colors.grey, fontSize: 16),
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Make sure your Omi is turned on.',
+                              style: TextStyle(color: Colors.grey, fontSize: 14),
+                            ),
+                            const SizedBox(height: 32),
+                            ElevatedButton(
+                              onPressed: _startScan,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.deepPurpleAccent,
+                                foregroundColor: Colors.white,
+                              ),
+                              child: const Text('Scan Again'),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _discoveredDevices.length,
+                        itemBuilder: (context, index) {
+                          final device = _discoveredDevices[index];
+                          return Card(
+                            color: const Color(0xFF1C1C1E),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                            margin: const EdgeInsets.only(bottom: 12),
+                            child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                              leading: const CircleAvatar(
+                                backgroundColor: Colors.deepPurpleAccent,
+                                child: FaIcon(FontAwesomeIcons.microchip, color: Colors.white, size: 18),
+                              ),
+                              title: Text(
+                                device.name,
+                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                              ),
+                              subtitle: Text(
+                                device.id,
+                                style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                              ),
+                              trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                              onTap: () => _connectToDevice(device),
+                            ),
+                          );
+                        },
+                      ),
+          ),
+          if (hasPairedDevice)
+            Padding(
+              padding: EdgeInsets.fromLTRB(16, 8, 16, MediaQuery.of(context).padding.bottom + 16),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _forgetDevice,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent.withOpacity(0.1),
+                    foregroundColor: Colors.redAccent,
+                    elevation: 0,
+                    side: const BorderSide(color: Colors.redAccent, width: 1),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(vertical: 16),
                   ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Please enable Bluetooth to scan for devices',
-                    style: TextStyle(color: Colors.grey, fontSize: 16),
+                  child: const Text(
+                    'Reset Connection',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
-                ],
+                ),
               ),
-            )
-          : _discoveredDevices.isEmpty && !_isScanning
-          ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  FaIcon(FontAwesomeIcons.bluetooth, size: 64, color: Colors.grey.shade800),
-                  const SizedBox(height: 24),
-                  const Text(
-                    'No Omi devices found nearby.',
-                    style: TextStyle(color: Colors.grey, fontSize: 16),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Make sure your Omi is turned on.',
-                    style: TextStyle(color: Colors.grey, fontSize: 14),
-                  ),
-                  const SizedBox(height: 32),
-                  ElevatedButton(
-                    onPressed: _startScan,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.deepPurpleAccent,
-                      foregroundColor: Colors.white,
-                    ),
-                    child: const Text('Scan Again'),
-                  ),
-                  const SizedBox(height: 12),
-                  TextButton(
-                    onPressed: _forgetDevice,
-                    child: const Text(
-                      'Forget Device',
-                      style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ],
-              ),
-            )
-          : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: _discoveredDevices.length,
-              itemBuilder: (context, index) {
-                final device = _discoveredDevices[index];
-                return Card(
-                  color: const Color(0xFF1C1C1E),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  margin: const EdgeInsets.only(bottom: 12),
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                    leading: const CircleAvatar(
-                      backgroundColor: Colors.deepPurpleAccent,
-                      child: FaIcon(FontAwesomeIcons.microchip, color: Colors.white, size: 18),
-                    ),
-                    title: Text(
-                      device.name,
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                    ),
-                    subtitle: Text(
-                      device.id,
-                      style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-                    ),
-                    trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-                    onTap: () => _connectToDevice(device),
-                  ),
-                );
-              },
             ),
+        ],
+      ),
     );
   }
 }
