@@ -581,7 +581,6 @@ One persistent foreground-service notification (id 2001, `omi_ble_channel`). **T
 | Foreground processing, < 1 min remaining | `RecordingsController._updateForegroundProgress` | `"Processing recordings — < 1 min of audio to process"` |
 | Foreground transcoding | `RecordingsController._updateForegroundProgress` | `"Processing recordings — Converting to m4a"` |
 | Delete recordings | `RecordingsController` | `"Cleaning up recordings..."` |
-| Force-reprocess a day | `RecordingsController` | `"Reprocessing day..."` |
 | Idle, auto-sync on | `DeviceProvider._showIdleNotification` | `"Next sync in ~N min"` / `"Syncing soon..."` |
 | Idle, Manual Only (no schedule) | `DeviceProvider._showIdleNotification` | `"Omi is Connected"` / `"Connecting..."` / `"Omi is Disconnected"` |
 

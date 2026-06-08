@@ -414,7 +414,7 @@ class BatchCard extends StatelessWidget {
             RecordingFilterMode.all => [...batch.discards],
           }
         : [...batch.discards];
-    if (filtered.isEmpty && discards.isEmpty && batch.rawSegments.isEmpty) {
+    if (filtered.isEmpty && discards.isEmpty) {
       return const SizedBox.shrink();
     }
 
