@@ -1664,8 +1664,9 @@ class RecordingsManager {
 
       final dateFolders = (await recordingsDir.list().toList()).whereType<Directory>().toList();
 
-      // Build a single chronologically-sorted list across every date folder so
-      // the "next file after a draft" lookup can cross day boundaries.
+      // Build a single chronologically-sorted list of "events" (audio files and
+      // ghost discards) across every date folder so the "next event after a
+      // draft" lookup can cross day boundaries.
       final allAudioFiles = <File>[];
       for (final folder in dateFolders) {
         final entities = (await folder.list().toList()).whereType<File>().toList();
@@ -1674,11 +1675,21 @@ class RecordingsManager {
           return (p.endsWith('.m4a') || p.endsWith('.wav') || p.endsWith('.ogg')) && !p.contains('.tmp');
         }));
       }
-      allAudioFiles.sort((a, b) {
-        final tsA = _extractTimestamp(a.path);
-        final tsB = _extractTimestamp(b.path);
-        return tsA.compareTo(tsB);
-      });
+
+      // Load all discard records across all dates to build the unified timeline.
+      final allDiscards = <DiscardRecord>[];
+      for (final folder in dateFolders) {
+        final dateStr = folder.path.split('/').last;
+        final folderDiscards = await getDiscardsForDate(dateStr);
+        allDiscards.addAll(folderDiscards);
+      }
+
+      final allEvents = [
+        ...allAudioFiles.map((f) => (audio: f, discard: null as DiscardRecord?, ts: _extractTimestamp(f.path), dur: 0)),
+        ...allDiscards.map((d) => (audio: null as File?, discard: d, ts: d.startTime.millisecondsSinceEpoch, dur: d.duration.inMilliseconds)),
+      ];
+
+      allEvents.sort((a, b) => a.ts.compareTo(b.ts));
 
       final draftFiles = allAudioFiles.where((f) => f.path.contains('_draft.')).toList();
       if (draftFiles.isEmpty) break;
@@ -1705,10 +1716,10 @@ class RecordingsManager {
         final durationMs = ByteData.sublistView(metaBytes).getUint32(4, Endian.little);
         final draftEndTs = draftTs + durationMs;
 
-        // Find the next chronological file across all folders.
-        final currentIndex = allAudioFiles.indexWhere((f) => f.path == draftFile.path);
-        if (currentIndex == -1 || currentIndex == allAudioFiles.length - 1) {
-          // No next file anywhere.
+        // Find the next chronological event across all folders.
+        final currentIndex = allEvents.indexWhere((e) => e.audio?.path == draftFile.path);
+        if (currentIndex == -1 || currentIndex == allEvents.length - 1) {
+          // No next event anywhere.
           if (finalizeAll) {
             // Manual user trigger (Force Process) always finalizes immediately.
             await _finalizeDraft(draftFile, isForceSynced: true);
@@ -1718,58 +1729,197 @@ class RecordingsManager {
           continue;
         }
 
-        final nextFile = allAudioFiles[currentIndex + 1];
-        final nextTs = _extractTimestamp(nextFile.path);
-        final nextExt = nextFile.path.split('.').last;
-        final nextMeta = File(nextFile.path.replaceAllMapped(RegExp(r'\.' + nextExt + r'$'), (_) => '.meta'));
+        // Look ahead and accumulate non-speech duration (gaps + ghosts)
+        int accumulatedNonSpeechMs = 0;
+        int currentPointerTs = draftEndTs;
+        final intermediateEvents = <({File? audio, DiscardRecord? discard, int timestamp, int durationMs})>[];
 
-        int gapMs = nextTs - draftEndTs;
+        bool finalizeNow = false;
+        File? audioToStitch;
 
-        if (gapMs >= 0 && gapMs <= thresholdMs) {
-          // Check for clock jump using hardware uptime if both have meta files
-          bool isClockJump = false;
-          if (await nextMeta.exists()) {
-            try {
-              final nextMetaBytes = await nextMeta.readAsBytes();
-              if (metaBytes.length >= 416 && nextMetaBytes.length >= 416) {
-                final draftSessionId = ByteData.sublistView(metaBytes).getUint32(408, Endian.little);
-                final nextSessionId = ByteData.sublistView(nextMetaBytes).getUint32(408, Endian.little);
-                final draftUptimeSec = ByteData.sublistView(metaBytes).getUint32(412, Endian.little);
-                final nextUptimeSec = ByteData.sublistView(nextMetaBytes).getUint32(412, Endian.little);
+        for (int i = currentIndex + 1; i < allEvents.length; i++) {
+          final event = allEvents[i];
+          final gap = event.ts - currentPointerTs;
 
-                if (draftSessionId == nextSessionId && draftUptimeSec > 0 && nextUptimeSec > draftUptimeSec) {
-                  final draftDurationMs = durationMs;
-                  final uptimeGapMs = (nextUptimeSec * 1000) - ((draftUptimeSec * 1000) + draftDurationMs);
-                  if (uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000) {
-                    isClockJump = true;
-                  }
-                }
-              }
-            } catch (_) {}
-          }
+          if (gap < 0) continue; // safety: ignore events that somehow overlap or precede
 
-          // If it's a clock jump or a very small gap (under 10s AAD tail), stitch without padding.
-          if (isClockJump || gapMs < 10000) {
-            gapMs = 0;
-          }
-
-          final crossFolder = draftFile.parent.path != nextFile.parent.path;
-          Logger.debug(
-              'RecordingsManager: Stitching draft $draftTs with next $nextTs (gap=${gapMs}ms${isClockJump ? ", CLOCK JUMP" : ""}${crossFolder ? ", CROSS-FOLDER" : ""})');
-          final success = await _performStitch(draftFile, nextFile, gapMs);
-          if (success) {
-            // After stitching, re-scan from the top — the global file list
-            // has changed (nextFile deleted, possibly in a different folder).
-            scanNeeded = true;
+          if (accumulatedNonSpeechMs + gap >= thresholdMs) {
+            finalizeNow = true;
             break;
           }
-        } else {
-          // Gap too large or next file is in the past (shouldn't happen). Finalize.
+
+          accumulatedNonSpeechMs += gap;
+
+          if (event.audio != null) {
+            audioToStitch = event.audio;
+            break;
+          } else if (event.discard != null) {
+            if (accumulatedNonSpeechMs + event.dur >= thresholdMs) {
+              finalizeNow = true;
+              break;
+            }
+            accumulatedNonSpeechMs += event.dur;
+            currentPointerTs = event.ts + event.dur;
+            intermediateEvents.add(event);
+          }
+        }
+
+        if (finalizeNow) {
+          Logger.debug(
+              'RecordingsManager: Finalizing draft $draftTs — non-speech threshold (${thresholdMs}ms) exceeded.');
           await _finalizeDraft(draftFile, isForceSynced: false);
           scanNeeded = true;
           break;
         }
+
+        if (audioToStitch != null) {
+          // Found speech within threshold! Stitch all intermediate ghosts and then the speech file.
+          int lastEndTs = draftEndTs;
+          bool success = true;
+
+          for (final inter in intermediateEvents) {
+            final gap = inter.ts - lastEndTs;
+            final interSuccess = await _stitchDiscard(draftFile, inter.discard!, gap);
+            if (!interSuccess) {
+              success = false;
+              break;
+            }
+            lastEndTs = inter.ts + inter.dur;
+          }
+
+          if (success) {
+            final finalGap = audioToStitch.path.contains('_draft.') ? 0 : (allEvents.firstWhere((e) => e.audio == audioToStitch).ts - lastEndTs);
+            final int nextTs = allEvents.firstWhere((e) => e.audio == audioToStitch).ts;
+
+            // Re-read meta since it may have been updated by _stitchDiscard
+            final updatedMetaBytes = await draftMeta.readAsBytes();
+            final updatedDurationMs = ByteData.sublistView(updatedMetaBytes).getUint32(4, Endian.little);
+            final updatedEndTs = draftTs + updatedDurationMs;
+            final gapToAudio = nextTs - updatedEndTs;
+
+            // Clock jump check
+            bool isClockJump = false;
+            final nextMeta = File(audioToStitch.path.replaceAllMapped(RegExp(r'\.' + draftExt + r'$'), (_) => '.meta'));
+            if (await nextMeta.exists()) {
+              try {
+                final nextMetaBytes = await nextMeta.readAsBytes();
+                if (updatedMetaBytes.length >= 416 && nextMetaBytes.length >= 416) {
+                  final dSid = ByteData.sublistView(updatedMetaBytes).getUint32(408, Endian.little);
+                  final nSid = ByteData.sublistView(nextMetaBytes).getUint32(408, Endian.little);
+                  final dUp = ByteData.sublistView(updatedMetaBytes).getUint32(412, Endian.little);
+                  final nUp = ByteData.sublistView(nextMetaBytes).getUint32(412, Endian.little);
+
+                  if (dSid == nSid && dUp > 0 && nUp > dUp) {
+                    final uGap = (nUp * 1000) - ((dUp * 1000) + updatedDurationMs);
+                    if (uGap.abs() < 5000 && gapToAudio.abs() > 10000) isClockJump = true;
+                  }
+                }
+              } catch (_) {}
+            }
+
+            final gapMs = (isClockJump || gapToAudio < 10000) ? 0 : gapToAudio;
+            Logger.debug('RecordingsManager: Stitching draft $draftTs with next ${audioToStitch.path.split('/').last} (gap=${gapMs}ms)');
+            final finalSuccess = await _performStitch(draftFile, audioToStitch, gapMs);
+            if (finalSuccess) {
+              scanNeeded = true;
+              break;
+            }
+          }
+        }
       }
+    }
+  }
+
+  /// Appends the audio from a [DiscardRecord] (ghost) into the [draftFile],
+  /// preceded by [gapMs] of silence.
+  Future<bool> _stitchDiscard(File draftFile, DiscardRecord ghost, int gapMs) async {
+    final ext = draftFile.path.split('.').last;
+    final directory = await getApplicationDocumentsDirectory();
+    final rawDir = Directory('${directory.path}/raw_segments');
+
+    try {
+      // 1. Re-process the ghost bins into a temporary audio file of the same format
+      final tempAudio = File('${draftFile.parent.path}/ghost_${ghost.startTime.millisecondsSinceEpoch}.tmp.$ext');
+      if (await tempAudio.exists()) await tempAudio.delete();
+
+      final decoder = SimpleOpusDecoder();
+      try {
+        if (ext == 'wav') {
+          final sink = await tempAudio.open(mode: FileMode.write);
+          // Placeholder 44-byte WAV header, fixed up later by _stitchWav/_mergeMeta
+          await sink.writeFrom(Uint8List(44));
+
+          for (final relPath in ghost.relativeBins) {
+            final bin = File('${rawDir.path}/$relPath');
+            if (!await bin.exists()) continue;
+
+            final bytes = await bin.readAsBytes();
+            final byteData = ByteData.sublistView(bytes);
+            int offset = 0;
+
+            while (offset + 4 <= bytes.length) {
+              final frameLen = byteData.getUint32(offset, Endian.little);
+              if (frameLen == 0 || frameLen == 0xFFFFFFFF) {
+                offset += 4; continue;
+              }
+              if (frameLen >= 0xFFFFFFFB) {
+                offset += (frameLen == 0xFFFFFFFB ? 36 : 20); continue;
+              }
+              if (offset + 4 + frameLen > bytes.length) break;
+
+              final opus = Uint8List.sublistView(bytes, offset + 4, offset + 4 + frameLen);
+              try {
+                final pcm = decoder.decode(input: opus);
+                if (pcm != null) await sink.writeFrom(pcm.buffer.asUint8List());
+              } catch (_) {}
+              offset += 4 + ((frameLen + 3) & ~3);
+            }
+          }
+          await sink.close();
+        } else {
+          // OGG/M4A: We don't have a high-level OGG/M4A encoder on the main isolate.
+          // Fall back to silence-only stitching for these formats to maintain timeline.
+          return await _stitchSilence(draftFile, gapMs + ghost.duration.inMilliseconds);
+        }
+      } finally {
+        // ignore: unawaited_futures, discarded_futures
+        decoder.dispose();
+      }
+
+      if (await tempAudio.exists() && (await tempAudio.length()) > 44) {
+        final success = await _performStitch(draftFile, tempAudio, gapMs);
+        if (await tempAudio.exists()) await tempAudio.delete();
+        return success;
+      } else {
+        return await _stitchSilence(draftFile, gapMs + ghost.duration.inMilliseconds);
+      }
+    } catch (e) {
+      Logger.error('RecordingsManager: Ghost stitch failed ($e) — falling back to silence');
+      return await _stitchSilence(draftFile, gapMs + ghost.duration.inMilliseconds);
+    }
+  }
+
+  Future<bool> _stitchSilence(File draftFile, int durationMs) async {
+    if (durationMs <= 0) return true;
+    final ext = draftFile.path.split('.').last;
+    if (ext != 'wav') {
+      // For compressed formats, we just update the metadata duration;
+      // chaining doesn't physically pad silence.
+      await _mergeMeta(draftFile, null, durationMs);
+      return true;
+    }
+
+    try {
+      final sink = await draftFile.open(mode: FileMode.append);
+      // 16kHz, 16-bit mono = 32000 bytes/sec
+      final silenceBytes = Uint8List((durationMs * 32).toInt());
+      await sink.writeFrom(silenceBytes);
+      await sink.close();
+      await _mergeMeta(draftFile, null, durationMs);
+      return true;
+    } catch (e) {
+      Logger.error('RecordingsManager: Silence stitch failed: $e');
+      return false;
     }
   }
 
@@ -2229,49 +2379,54 @@ class RecordingsManager {
     return header.buffer.asUint8List();
   }
 
-  Future<void> _mergeMeta(File draftFile, File nextFile, int gapMs) async {
-    final draftMeta = File(draftFile.path.replaceAll(RegExp(r'\.(ogg|wav|m4a)$'), '.meta'));
-    final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.(ogg|wav|m4a)$'), '.meta'));
-    if (!await draftMeta.exists() || !await nextMeta.exists()) return;
+  Future<void> _mergeMeta(File draftFile, File? nextFile, int gapMs) async {
+    final draftMetaPath = draftFile.path.replaceAll(RegExp(r'\.(ogg|wav|m4a)$'), '.meta');
+    final draftMetaFile = File(draftMetaPath);
+    if (!await draftMetaFile.exists()) return;
 
-    final dBytes = await draftMeta.readAsBytes();
-    final nBytes = await nextMeta.readAsBytes();
-    if (dBytes.length < 408 || nBytes.length < 408) return;
+    final dBytes = await draftMetaFile.readAsBytes();
+    if (dBytes.length < 8) return;
 
     final dMeta = ByteData.sublistView(dBytes);
-    final nMeta = ByteData.sublistView(nBytes);
-
     const sampleRate = 16000;
     final dSamples = dMeta.getUint32(0, Endian.little);
     final gapSamples = (gapMs * sampleRate) ~/ 1000;
-    final nSamples = nMeta.getUint32(0, Endian.little);
+
+    int nSamples = 0;
+    Uint8List? nBytes;
+    if (nextFile != null) {
+      final nextMetaPath = nextFile.path.replaceAll(RegExp(r'\.(ogg|wav|m4a)$'), '.meta');
+      final nextMetaFile = File(nextMetaPath);
+      if (await nextMetaFile.exists()) {
+        nBytes = await nextMetaFile.readAsBytes();
+        if (nBytes.length >= 8) {
+          nSamples = ByteData.sublistView(nBytes).getUint32(0, Endian.little);
+        }
+      }
+    }
+
     final totalSamples = dSamples + gapSamples + nSamples;
     final totalDurationMs = (totalSamples * 1000) ~/ sampleRate;
 
-    final outMeta = ByteData(416); // Corrected to 416 bytes to include SID and startUptime
-    outMeta.setUint32(0, totalSamples, Endian.little);
-    outMeta.setUint32(4, totalDurationMs, Endian.little);
+    // We reuse the existing draft meta buffer to preserve all flags, keys, and bin refs.
+    // Only the first 8 bytes (samples, duration) and potentially peaks are updated.
+    final outBytes = Uint8List.fromList(dBytes);
+    final outData = ByteData.view(outBytes.buffer);
 
-    // Merge peaks (very roughly)
-    for (int i = 0; i < 200; i++) {
-      final p1 = dMeta.getUint16(8 + i * 2, Endian.little);
-      final p2 = nMeta.getUint16(8 + i * 2, Endian.little);
-      outMeta.setUint16(8 + i * 2, max(p1, p2), Endian.little);
+    outData.setUint32(0, totalSamples, Endian.little);
+    outData.setUint32(4, totalDurationMs, Endian.little);
+
+    // Merge peaks if we have a next file with peaks
+    if (nBytes != null && nBytes.length >= 408 && dBytes.length >= 408) {
+      final nMeta = ByteData.sublistView(nBytes);
+      for (int i = 0; i < 200; i++) {
+        final p1 = dMeta.getUint16(8 + i * 2, Endian.little);
+        final p2 = nMeta.getUint16(8 + i * 2, Endian.little);
+        outData.setUint16(8 + i * 2, max(p1, p2), Endian.little);
+      }
     }
 
-    // Preserve sessionId and startUptime from the original draft
-    if (dBytes.length >= 416) {
-      outMeta.setUint32(408, dMeta.getUint32(408, Endian.little), Endian.little);
-      outMeta.setUint32(412, dMeta.getUint32(412, Endian.little), Endian.little);
-    }
-
-    // Keep the upload key from the draft (or update it? Draft keys are temporary).
-    // Actually, draft keys should probably be ignored.
-    final outBytes = outMeta.buffer.asUint8List().toList();
-    if (dBytes.length > 416) {
-      outBytes.addAll(dBytes.sublist(416));
-    }
-    await draftMeta.writeAsBytes(outBytes);
+    await draftMetaFile.writeAsBytes(outBytes, flush: true);
   }
 
   static String fmtDate(DateTime date) {

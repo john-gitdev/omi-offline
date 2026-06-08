@@ -726,7 +726,16 @@ class VadAudioProcessor {
 
             final markerMs = markerFrameTime.millisecondsSinceEpoch;
             _forcedByMarker = true;
-            if (markerMs > 946684800000) {
+            if (markerUtcMs > 946684800000) {
+              // Always use the marker's own RTC for the protection window. This
+              // ensures that if a marker wakes the device after a long silence,
+              // the subsequent VAD-resume packet (which will have a similar UTC)
+              // is correctly caught by the protection window, even if the audio
+              // timeline is currently stale (drifts from RTC) and markerFrameTime
+              // was capped by the drift limit.
+              _markerProtectedUntilMs = markerUtcMs + 50000;
+            } else if (markerMs > 946684800000) {
+              // Fallback for pre-time-sync devices: use the derived wall-clock.
               _markerProtectedUntilMs = markerMs + 50000;
             }
             // Capture offset *after* deciding whether this marker starts a new
@@ -845,7 +854,10 @@ class VadAudioProcessor {
             // If uptime Gap matches frame count (small gap) but UTC gap is large, it's a clock sync.
             final bool isClockJump = uptimeGapMs.abs() < 5000 && gapMs.abs() > 10000;
 
-            if (gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump) {
+            final bool withinMarkerWindow =
+                _markerProtectedUntilMs != null && newResumeTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
+
+            if (!withinMarkerWindow && gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump) {
               // Gap exceeds threshold — flush current recording, start new conversation.
               // TWO-PASS: flush any deferred batch before the split decision.
               if (_useBatchRunner && _batchDeferredFrames.isNotEmpty) {
