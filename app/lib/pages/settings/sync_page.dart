@@ -586,42 +586,55 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 style: const TextStyle(color: Colors.white, fontSize: 16),
               ),
               const SizedBox(height: 24),
-              SwitchListTile(
-                title: const Text('Keep Screen On',
-                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
-                subtitle: const Text('Holds a wakelock while the app is open so the screen never sleeps.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12)),
-                value: SharedPreferencesUtil().keepScreenOn,
-                onChanged: (val) async {
-                  SharedPreferencesUtil().keepScreenOn = val;
-                  await WakelockPlus.toggle(enable: val);
-                  setState(() {});
-                },
-                activeColor: Colors.amber,
-                contentPadding: EdgeInsets.zero,
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: SwitchListTile(
+                  title: const Text('Keep Screen On',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  subtitle: Text('Holds a wakelock while the app is open so the screen never sleeps.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+                  value: SharedPreferencesUtil().keepScreenOn,
+                  onChanged: (val) async {
+                    SharedPreferencesUtil().keepScreenOn = val;
+                    await WakelockPlus.toggle(enable: val);
+                    setState(() {});
+                  },
+                  activeColor: Colors.deepPurpleAccent,
+                  contentPadding: EdgeInsets.zero,
+                ),
               ),
-              const SizedBox(height: 12),
-              const SizedBox(height: 12),
-              SwitchListTile(
-                title: const Text('Save Diagnostic Logs to File',
-                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
-                subtitle: const Text('Persists info/debug logs to a file on your device.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12)),
-                value: SharedPreferencesUtil().devLogsToFileEnabled,
-                onChanged: (val) async {
-                  if (val) {
-                    await DebugLogManager.setEnabled(true);
-                    _startLogPolling();
-                  } else {
-                    // Stop the 2 s poll before deleting so getRecentLogs can't
-                    // recreate the file we're removing.
-                    _stopLogPolling();
-                    await DebugLogManager.setEnabled(false);
-                  }
-                  setState(() {});
-                },
-                activeColor: Colors.amber,
-                contentPadding: EdgeInsets.zero,
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: SwitchListTile(
+                  title: const Text('Save Diagnostic Logs to File',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  subtitle: Text('Persists info/debug logs to a file on your device.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+                  value: SharedPreferencesUtil().devLogsToFileEnabled,
+                  onChanged: (val) async {
+                    if (val) {
+                      await DebugLogManager.setEnabled(true);
+                      _startLogPolling();
+                    } else {
+                      // Stop the 2 s poll before deleting so getRecentLogs can't
+                      // recreate the file we're removing.
+                      _stopLogPolling();
+                      await DebugLogManager.setEnabled(false);
+                    }
+                    setState(() {});
+                  },
+                  activeColor: Colors.deepPurpleAccent,
+                  contentPadding: EdgeInsets.zero,
+                ),
               ),
               if (SharedPreferencesUtil().devLogsToFileEnabled) ...[
                 const SizedBox(height: 12),
@@ -669,54 +682,68 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   ],
                 ),
               ],
-              const SizedBox(height: 12),
-              SwitchListTile(
-                title: const Text('Show SD Write Drops',
-                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
-                subtitle: const Text('Polls the device every 2 s for SD-card drop counters. Off by default.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12)),
-                value: SharedPreferencesUtil().showSdWriteDrops,
-                onChanged: (val) {
-                  SharedPreferencesUtil().showSdWriteDrops = val;
-                  if (val) {
-                    _startDropPolling();
-                  } else {
-                    _stopDropPolling();
-                  }
-                  setState(() {});
-                },
-                activeColor: Colors.amber,
-                contentPadding: EdgeInsets.zero,
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: SwitchListTile(
+                  title: const Text('Show SD Write Drops',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  subtitle: Text('Polls the device every 2 s for SD-card drop counters. Off by default.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+                  value: SharedPreferencesUtil().showSdWriteDrops,
+                  onChanged: (val) {
+                    SharedPreferencesUtil().showSdWriteDrops = val;
+                    if (val) {
+                      _startDropPolling();
+                    } else {
+                      _stopDropPolling();
+                    }
+                    setState(() {});
+                  },
+                  activeColor: Colors.deepPurpleAccent,
+                  contentPadding: EdgeInsets.zero,
+                ),
               ),
               if (SharedPreferencesUtil().showSdWriteDrops) ...[
-                const SizedBox(height: 12),
+                const SizedBox(height: 16),
                 _buildDropStatsSection(),
               ],
-              const SizedBox(height: 12),
-              SwitchListTile(
-                title: const Text('Adjustment Mode',
-                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
-                subtitle: const Text('Copies all raw bins into an isolated folder for safe reprocessing.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12)),
-                value: SharedPreferencesUtil().adjustmentMode,
-                onChanged: (val) async {
-                  SharedPreferencesUtil().adjustmentMode = val;
-                  setState(() {});
-                  if (val) {
-                    await RecordingsManager.processAllCompletedSessions();
-                  } else {
-                    final directory = await getApplicationDocumentsDirectory();
-                    final adjDir = Directory('${directory.path}/adjustment_mode_segments');
-                    if (await adjDir.exists()) {
-                      await adjDir.delete(recursive: true);
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: SwitchListTile(
+                  title: const Text('Adjustment Mode',
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                  subtitle: Text('Copies all raw bins into an isolated folder for safe reprocessing.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+                  value: SharedPreferencesUtil().adjustmentMode,
+                  onChanged: (val) async {
+                    SharedPreferencesUtil().adjustmentMode = val;
+                    setState(() {});
+                    if (val) {
+                      await RecordingsManager.processAllCompletedSessions();
+                    } else {
+                      final directory = await getApplicationDocumentsDirectory();
+                      final adjDir = Directory('${directory.path}/adjustment_mode_segments');
+                      if (await adjDir.exists()) {
+                        await adjDir.delete(recursive: true);
+                      }
                     }
-                  }
-                },
-                activeColor: Colors.amber,
-                contentPadding: EdgeInsets.zero,
+                  },
+                  activeColor: Colors.deepPurpleAccent,
+                  contentPadding: EdgeInsets.zero,
+                ),
               ),
               if (SharedPreferencesUtil().adjustmentMode) ...[
-                const SizedBox(height: 12),
+                const SizedBox(height: 16),
                 Center(
                   child: ElevatedButton(
                     onPressed: () async {
