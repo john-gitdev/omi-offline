@@ -6,6 +6,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/pages/recordings/passthrough_integration.dart';
+import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
 
@@ -22,6 +23,9 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
   late String _audioSaveFormat;
   late int _keepRecordingsDays;
   late bool _uploadOnWifiOnly;
+  late int _filterMinDurationSeconds;
+
+  static const List<int> _kShortRecordingOptions = [0, 10, 30, 60, 120, 300, 600, 1800];
 
   bool _isDirty = false;
 
@@ -33,10 +37,61 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     _audioSaveFormat = SharedPreferencesUtil().audioSaveFormat;
     _keepRecordingsDays = SharedPreferencesUtil().keepRecordingsDays;
     _uploadOnWifiOnly = SharedPreferencesUtil().uploadOnWifiOnly;
+    _filterMinDurationSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
   }
 
   void _markDirty() {
     if (!_isDirty) setState(() => _isDirty = true);
+  }
+
+  static String _formatShortDuration(int seconds) {
+    if (seconds == 0) return 'Off';
+    if (seconds < 60) return '${seconds}s';
+    if (seconds < 3600) return '${seconds ~/ 60}m';
+    return '${seconds ~/ 3600}h';
+  }
+
+  Future<void> _handleCleanUp() async {
+    final controller = context.read<RecordingsController>();
+    final count = controller.countShortRecordings(_filterMinDurationSeconds);
+    if (count == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No recordings found matching the current filter.')),
+      );
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1C1C1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Delete short recordings?', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'This will permanently delete $count recording${count == 1 ? '' : 's'} shorter than ${_formatShortDuration(_filterMinDurationSeconds)}. This cannot be undone.',
+          style: const TextStyle(color: Colors.white70, fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete All', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true && mounted) {
+      await controller.deleteShortRecordings(_filterMinDurationSeconds);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Deleted $count short recording${count == 1 ? '' : 's'}.')),
+        );
+      }
+    }
   }
 
   Future<void> _saveSettings() async {
@@ -49,6 +104,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     prefs.audioSaveFormat = _audioSaveFormat;
     prefs.keepRecordingsDays = _keepRecordingsDays;
     prefs.uploadOnWifiOnly = _uploadOnWifiOnly;
+    prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -385,6 +441,77 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                     _markDirty();
                   },
                   activeColor: Colors.deepPurpleAccent,
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Short Recordings
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1C1C1E),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Short Recordings',
+                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                        DropdownButton<int>(
+                          value: _filterMinDurationSeconds,
+                          dropdownColor: const Color(0xFF2C2C2E),
+                          icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                          underline: const SizedBox(),
+                          style: TextStyle(
+                            color: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade500,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          items: _kShortRecordingOptions.map((sec) {
+                            return DropdownMenuItem(
+                              value: sec,
+                              child: Text(_formatShortDuration(sec)),
+                            );
+                          }).toList(),
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => _filterMinDurationSeconds = value);
+                              _markDirty();
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _filterMinDurationSeconds == 0
+                          ? 'All recordings are kept and shown regardless of length.'
+                          : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the main list and skipped by integrations.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                    if (_filterMinDurationSeconds > 0) ...[
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: _handleCleanUp,
+                          icon: const FaIcon(FontAwesomeIcons.trashCan, size: 14),
+                          label: const Text('Clean Up Short Recordings'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.redAccent,
+                            side: BorderSide(color: Colors.redAccent.withOpacity(0.5)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ),
               const SizedBox(height: 24),

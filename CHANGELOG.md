@@ -7,6 +7,10 @@
 - **Added: AAD/VAD designation in recording list.**
     - Added a processing mode indicator (AAD or VAD) next to the recording size in the recordings list and player pages, making it easy to see which recordings were processed with Silero VAD.
     - Updated the metadata format to persist the processing mode in `.meta` files.
+- **Moved: 'Short Recordings' setting to App Settings.**
+    - Relocated the 'Short Recordings' filter from 'Recording Settings' to 'App Settings' to centralize application-wide filters.
+    - Enabled 'Short Recordings' filtering for 'Manual Mode'. Previously, manual recordings were always shown regardless of length.
+    - Added a 'Clean Up Short Recordings' button to the App Settings page, allowing users to batch-delete recordings that match the current filter.
 - **Fix: Resolved back-to-back recording splits on marker tap.**
     - Fixed a race condition where the VAD-resume signal (waking the device after silence) would ignore the marker protection window and trigger an immediate split.
     - Improved Marker protection robustness by anchoring the 50s window to the raw hardware RTC (Real-Time Clock) instead of the drifted audio timeline.

@@ -9,14 +9,10 @@ import 'package:omi/providers/device_provider.dart';
 import 'package:provider/provider.dart';
 
 class OfflineAudioSettingsPage extends StatefulWidget {
-  final int Function(int minSeconds)? onCountShortRecordings;
-  final Future<void> Function(int minSeconds)? onDeleteShortRecordings;
   final bool flashManualMode;
 
   const OfflineAudioSettingsPage({
     super.key,
-    this.onCountShortRecordings,
-    this.onDeleteShortRecordings,
     this.flashManualMode = false,
   });
 
@@ -33,10 +29,8 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
   late double _vadSpeechThreshold;
   late int _vadSplitSeconds;
   late int _vadMaxConversationMinutes;
-  late int _filterMinDurationSeconds;
   late int _vadMinSpeechSeconds;
 
-  static const List<int> _kShortRecordingOptions = [0, 10, 30, 60, 120, 300, 600, 1800];
   static const List<(String, double)> _kSpeechSensitivityOptions = [
     ('Sensitive', 0.3),
     ('Balanced', 0.5),
@@ -45,13 +39,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
 
   static double _snapToSensitivity(double v) =>
       _kSpeechSensitivityOptions.map((o) => o.$2).reduce((a, b) => (a - v).abs() < (b - v).abs() ? a : b);
-
-  static String _formatShortDuration(int seconds) {
-    if (seconds == 0) return 'Off';
-    if (seconds < 60) return '${seconds}s';
-    if (seconds < 3600) return '${seconds ~/ 60}m';
-    return '${seconds ~/ 3600}h';
-  }
 
   bool _isDirty = false;
   bool _isIgnoringBatteryOptimizations = true;
@@ -99,14 +86,12 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
       // 10 s), so any positive gap between bins splits. Defensive backup in
       // case the session-end marker fails to land (e.g. SD queue full).
       _vadSplitSeconds = 0;
-      _filterMinDurationSeconds = 0;
       _vadMaxConversationMinutes = p.manualModeVadMaxConversationMinutes;
     } else {
       _vadEnabled = p.autoModeVadEnabled;
       _vadSpeechThreshold = _snapToSensitivity(p.autoModeVadSpeechThreshold);
       _vadMinSpeechSeconds = p.autoModeVadMinSpeechSeconds;
       _vadSplitSeconds = p.autoModeVadSplitSeconds;
-      _filterMinDurationSeconds = p.autoModeFilterMinDurationSeconds;
       _vadMaxConversationMinutes = p.autoModeVadMaxConversationMinutes;
     }
   }
@@ -121,7 +106,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
       p.autoModeVadSpeechThreshold = _vadSpeechThreshold;
       p.autoModeVadMinSpeechSeconds = _vadMinSpeechSeconds;
       p.autoModeVadSplitSeconds = _vadSplitSeconds;
-      p.autoModeFilterMinDurationSeconds = _filterMinDurationSeconds;
       p.autoModeVadMaxConversationMinutes = _vadMaxConversationMinutes;
     }
   }
@@ -135,49 +119,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     if (mounted) setState(() => _isIgnoringBatteryOptimizations = v);
   }
 
-  Future<void> _handleCleanUp() async {
-    final count = widget.onCountShortRecordings!(_filterMinDurationSeconds);
-    final label = _formatShortDuration(_filterMinDurationSeconds);
-    if (count == 0) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No recordings to clean up.')),
-        );
-      }
-      return;
-    }
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1C1C1E),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete short recordings?', style: TextStyle(color: Colors.white)),
-        content: Text(
-          '$count recording${count == 1 ? '' : 's'} shorter than $label will be permanently deleted and cannot be recovered.',
-          style: const TextStyle(color: Colors.white70, fontSize: 14),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
-          ),
-        ],
-      ),
-    );
-    if (confirm == true && mounted) {
-      await widget.onDeleteShortRecordings!(_filterMinDurationSeconds);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deleted $count short recording${count == 1 ? '' : 's'}.')),
-        );
-      }
-    }
-  }
-
   Future<void> _saveSettings() async {
     final prefs = SharedPreferencesUtil();
     if (_manualMode != prefs.manualMode) {
@@ -188,7 +129,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
     prefs.vadMinSpeechSeconds = _vadMinSpeechSeconds;
     prefs.vadSplitSeconds = _vadSplitSeconds;
     prefs.vadMaxConversationMinutes = _vadMaxConversationMinutes;
-    prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
     _saveModeSnapshot(_manualMode);
 
     if (mounted) setState(() => _isDirty = false);
@@ -584,62 +524,6 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                     ),
                   if (!_manualMode) const SizedBox(height: 16),
 
-                  // Short Recordings (hidden in manual mode — always off)
-                  if (!_manualMode)
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1C1C1E),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.white.withOpacity(0.05)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text(
-                                'Short Recordings',
-                                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                              ),
-                              DropdownButton<int>(
-                                value: _filterMinDurationSeconds,
-                                dropdownColor: const Color(0xFF2C2C2E),
-                                icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                                underline: const SizedBox(),
-                                style: TextStyle(
-                                  color: _filterMinDurationSeconds > 0 ? Colors.deepPurpleAccent : Colors.grey.shade500,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                                items: _kShortRecordingOptions.map((sec) {
-                                  return DropdownMenuItem(
-                                    value: sec,
-                                    child: Text(_formatShortDuration(sec)),
-                                  );
-                                }).toList(),
-                                onChanged: (value) {
-                                  if (value != null) {
-                                    setState(() => _filterMinDurationSeconds = value);
-                                    _markDirty();
-                                  }
-                                },
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            _filterMinDurationSeconds == 0
-                                ? 'All recordings are kept and shown regardless of length.'
-                                : 'Recordings shorter than ${_formatShortDuration(_filterMinDurationSeconds)} are hidden from the main list and skipped by integrations.',
-                            style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                          ),
-                        ],
-                      ),
-                    ),
-                  if (!_manualMode) const SizedBox(height: 16),
-
                   // Maximum Conversation Length
                   Container(
                     padding: const EdgeInsets.all(16),
@@ -736,7 +620,7 @@ class _BatteryOptimizationCard extends StatelessWidget {
                 const SizedBox(height: 3),
                 Text(
                   'Battery optimization is active. Android can stop processing when the screen turns off. '
-                  'Tap Fix, then select "Don\'t optimize" to allow background operation.',
+                  'Tap Fix, then select \"Don\'t optimize\" to allow background operation.',
                   style: TextStyle(color: Colors.red.shade300, fontSize: 12, height: 1.4),
                 ),
               ],

@@ -111,8 +111,6 @@ class SharedPreferencesUtil {
   set autoModeVadMinSpeechSeconds(int v) => saveInt('auto_vadMinSpeechSeconds', v);
   int get autoModeVadSplitSeconds => getInt('auto_vadSplitSeconds', defaultValue: 120);
   set autoModeVadSplitSeconds(int v) => saveInt('auto_vadSplitSeconds', v);
-  int get autoModeFilterMinDurationSeconds => getInt('auto_filterMinDurationSeconds', defaultValue: 0);
-  set autoModeFilterMinDurationSeconds(int v) => saveInt('auto_filterMinDurationSeconds', v);
   int get autoModeVadMaxConversationMinutes => getInt('auto_vadMaxConversationMinutes', defaultValue: 0);
   set autoModeVadMaxConversationMinutes(int v) => saveInt('auto_vadMaxConversationMinutes', v);
 
