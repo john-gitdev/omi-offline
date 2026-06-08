@@ -19,6 +19,9 @@ abstract class IDeviceService {
 
   DeviceServiceStatus get status;
 
+  /// Devices found by the most recent discovery (including background scans).
+  List<BtDevice> get devices;
+
   Future<DeviceConnection?> ensureConnection(String deviceId, {bool force = false, bool requiresBond = false});
 
   void subscribe(IDeviceServiceSubscription subscription, Object context);
@@ -35,7 +38,7 @@ abstract class IDeviceService {
   /// matches [deviceId], null otherwise. See [DeviceTransport.gattConnectFuture].
   Future<void>? getGattConnectFuture(String deviceId);
 
-  bool hasCompanionDeviceAssociation();
+  Future<bool> hasCompanionDeviceAssociation();
   Future<String> requestCompanionDeviceAssociation(String deviceId);
 }
 
@@ -75,8 +78,10 @@ class DeviceService implements IDeviceService {
   final Map<Object, IDeviceServiceSubscription> _subscriptions = {};
 
   DeviceConnection? _connection;
+  @override
   List<BtDevice> get devices => _devices;
 
+  @override
   DeviceServiceStatus get status => _status;
 
   DateTime? _firstConnectedAt;
@@ -95,6 +100,7 @@ class DeviceService implements IDeviceService {
     }
 
     _status = DeviceServiceStatus.scanning;
+    onStatusChanged(_status);
 
     try {
       final discoveredDevices = <BtDevice>[];
@@ -129,6 +135,7 @@ class DeviceService implements IDeviceService {
       return _devices;
     } finally {
       _status = DeviceServiceStatus.ready;
+      onStatusChanged(_status);
     }
   }
 
@@ -338,7 +345,7 @@ class DeviceService implements IDeviceService {
   }
 
   @override
-  bool hasCompanionDeviceAssociation() {
+  Future<bool> hasCompanionDeviceAssociation() {
     return BleHostApi().hasCompanionDeviceAssociation();
   }
 
