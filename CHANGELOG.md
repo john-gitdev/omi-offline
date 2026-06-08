@@ -2,6 +2,12 @@
 
 ## App
 
+### 0.20.4
+
+- **Improved: Device Troubleshooting UI.**
+    - Added a permanent, full-width "Reset Connection" button to the "Find Omi Devices" page to improve visibility and ease of access during troubleshooting.
+    - Optimized the device list layout to ensure the troubleshooting button remains accessible at the bottom of the screen.
+
 ### 0.20.3
 
 - **Improved: Device Discovery and Connectivity.**
@@ -279,6 +285,10 @@
 ---
 
 ## Firmware
+
+### oo-1.9.3
+
+- **Increased SD write queue size.** Bumped `SD_REQ_QUEUE_MSGS` from 100 to 150, providing a ~3-second deeper buffer to survive SD card write stalls and maintenance cycles without audio loss.
 
 ### oo-1.9.2
 
