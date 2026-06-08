@@ -30,6 +30,15 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
   Future<void> _startScan() async {
     if (_isScanning) return;
 
+    if (ServiceManager.instance().device.status == DeviceServiceStatus.scanning) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('A background scan is already running. Please wait.')),
+        );
+      }
+      return;
+    }
+
     // Request permissions
     Map<Permission, PermissionStatus> statuses = await [
       Permission.bluetoothScan,

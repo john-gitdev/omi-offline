@@ -8,6 +8,8 @@
     - Fixed a bug where a Bluetooth connection timeout (e.g., during "Reset Connection") would erroneously show a success snackbar instead of an error message.
 - **Improved: Notification readability.**
     - Expanded 'Bat' to 'Battery' in the 'Next Sync' idle notification subtext for better clarity.
+- **Improved: Device Scanning Feedback.**
+    - The "Scan Again" button now explicitly notifies the user if a background scan is already in progress instead of appearing to fail instantly.
 
 ### 0.20.4
 
