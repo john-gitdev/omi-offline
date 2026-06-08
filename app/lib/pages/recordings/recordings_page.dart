@@ -704,10 +704,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                       GestureDetector(
                         onTap: () => Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (_) => OfflineAudioSettingsPage(
+                            builder: (_) => const OfflineAudioSettingsPage(
                               flashManualMode: true,
-                              onCountShortRecordings: _controller.countShortRecordings,
-                              onDeleteShortRecordings: _controller.deleteShortRecordings,
                             ),
                           ),
                         ),

@@ -312,10 +312,7 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           );
                           await Navigator.of(context).push(
                             MaterialPageRoute(
-                              builder: (context) => OfflineAudioSettingsPage(
-                                onCountShortRecordings: controller.countShortRecordings,
-                                onDeleteShortRecordings: controller.deleteShortRecordings,
-                              ),
+                              builder: (context) => const OfflineAudioSettingsPage(),
                             ),
                           );
                           controller.reloadBatchesSilently();
@@ -330,9 +327,13 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           size: 20,
                         ),
                         onTap: () {
+                          final controller = Provider.of<RecordingsController>(context, listen: false);
                           Navigator.of(context).push(
                             MaterialPageRoute(
-                              builder: (context) => const AppSettingsPage(),
+                              builder: (context) => ChangeNotifierProvider.value(
+                                value: controller,
+                                child: const AppSettingsPage(),
+                              ),
                             ),
                           );
                         },
