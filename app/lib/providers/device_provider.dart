@@ -648,7 +648,8 @@ class DeviceProvider extends ChangeNotifier
     final String text;
     if (lastMs > 0) {
       final time = DateFormat('h:mm a').format(DateTime.fromMillisecondsSinceEpoch(lastMs));
-      text = lastBattery >= 0 ? 'Last sync finished at $time with $lastBattery% battery' : 'Last sync finished at $time';
+      final status = prefs.lastSyncPartial ? 'Partial' : 'Complete';
+      text = lastBattery >= 0 ? 'Last Sync: $status • $time • $lastBattery% Bat' : 'Last Sync: $status • $time';
     } else {
       text = isConnected ? 'Omi is Connected' : (isConnecting ? 'Connecting...' : 'Omi is Disconnected');
     }
@@ -766,9 +767,14 @@ class DeviceProvider extends ChangeNotifier
         // disconnect doesn't throw (syncAll returns partial and falls through),
         // so this inner catch only covers the early-abort cases.
         try {
-          await walSync.syncAll(progress: _BackgroundSyncProgress());
+          final result = await walSync.syncAll(progress: _BackgroundSyncProgress());
+          SharedPreferencesUtil().lastSyncPartial = result?.isPartial ?? false;
           SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
         } catch (e) {
+          SharedPreferencesUtil().lastSyncPartial = true;
+          // Stamp the time too so the notification reads "Partial • <now>" rather
+          // than pinning a fresh "Partial" status to a stale prior-sync timestamp.
+          SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
           lastSyncError = e.toString();
           lastSyncErrorTime = DateTime.now();
           notifyListeners();
