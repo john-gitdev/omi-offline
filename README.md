@@ -25,7 +25,7 @@ A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable proj
 
 ## What it does
 
-The nRF5340 wearable captures audio continuously via PDM microphones, encodes it as Opus (16 kHz mono, 20 ms frames), and writes it to an SD card. The Flutter app connects over BLE, pulls files via a resumable WAL protocol, then segments the audio into dated recordings — splitting on firmware activity timestamps (AAD, the default) or, optionally, by running Silero VAD locally on the phone. Recordings are saved as WAV by default (M4A and OGG optional). Everything runs on-device.
+The nRF5340 wearable captures audio continuously via PDM microphones, encodes it as Opus (16 kHz mono, 20 ms frames), and writes it to an SD card. The Flutter app connects over BLE, pulls files via a resumable WAL protocol, then segments the audio into dated recordings — splitting on firmware activity timestamps (AAD, the default) or, optionally, by running Silero VAD locally on the phone. Recordings are saved as WAV by default (M4A optional). Everything runs on-device.
 
 ---
 
@@ -78,7 +78,7 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
 - **Processing checkpoint.** After each completed segment, the processor writes `vad_checkpoint.json` containing the full VAD state. Interrupted runs restore from this snapshot so processing resumes at the last completed segment with identical Silero recurrent state.
 - **Background disconnect.** Always disconnects BLE on backgrounding (after ~30 s grace). A native Android keep-alive (`0x32`, `WRITE_NO_RESPONSE`, every 15 s) prevents firmware idle-disconnect during long file reads without blocking the GATT command queue.
 - **Foreground-service resilience.** The sync/processing notification updates in place (rather than stop/restart) to avoid the Android 12+ "start foreground service from background" restriction, and re-posts itself if swiped away on Android 14+. Recording Settings also surfaces a warning card when the app is not exempt from battery optimization, with a one-tap Fix that opens the system exemption prompt. A native `AlarmManager` exact alarm (`setExactAndAllowWhileIdle`) is armed whenever the next sync time is set; if Android freezes the Dart isolate, the alarm fires natively and delivers the sync request without Dart. The always-on BLE notification (ID 2001) shows last-known battery level and last-connected time; the sync/process notification (ID 2002) uses a title + subtext layout ("Syncing recordings" / "45% complete") with 5 s update intervals in both foreground and background.
-- **Recordings manager.** Parses finalized recordings (`.wav` by default; `.m4a`/`.ogg` if configured) from `recordings/` for UI binding. Each recording carries a `.meta` sidecar listing the raw bins it was built from (`relativeBins`); marker EDL sidecars live alongside their recordings.
+- **Recordings manager.** Parses finalized recordings (`.wav` by default; `.m4a` if configured) from `recordings/` for UI binding. Each recording carries a `.meta` sidecar listing the raw bins it was built from (`relativeBins`); marker EDL sidecars live alongside their recordings.
 
 ---
 
@@ -184,7 +184,7 @@ File indices are cache positions (0-based, rebuilt after every LIST and every de
 
 | Setting | Pref key | Default | Notes |
 |---------|----------|---------|-------|
-| Recording format | `audioSaveFormat` | wav | Output container: `wav` (PCM, default), `m4a`, or `ogg` |
+| Recording format | `audioSaveFormat` | wav | Output container: `wav` (PCM, default) or `m4a` |
 | Keep recordings for | `keepRecordingsDays` | -1 | -1 = forever, 0 = delete immediately after upload |
 
 ---
