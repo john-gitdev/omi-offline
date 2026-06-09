@@ -207,7 +207,8 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
     } catch (e) {
       Logger.error('Player upload failed: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
       }
     } finally {
       if (mounted) setState(() => _isUploading = false);
@@ -233,22 +234,25 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
       UploadStatus.partial => Colors.amber,
       UploadStatus.failed => Colors.orange,
       UploadStatus.none => Colors.redAccent,
+      UploadStatus.unavailable => Colors.grey.shade600,
     };
     final tooltip = switch (status) {
       UploadStatus.all => 'Re-upload to integrations',
       UploadStatus.partial => 'Some integrations pending — tap to retry',
       UploadStatus.failed => 'Upload failed — tap to retry',
       UploadStatus.none => 'Upload to integrations',
+      UploadStatus.unavailable => 'No uploadable file for this recording',
     };
     final icon = switch (status) {
       UploadStatus.all => Icons.cloud_done,
       UploadStatus.failed => Icons.error_outline,
+      UploadStatus.unavailable => Icons.cloud_off,
       _ => Icons.cloud_upload,
     };
     return IconButton(
       icon: Icon(icon, color: color, size: 22),
       tooltip: tooltip,
-      onPressed: _handleUpload,
+      onPressed: status == UploadStatus.unavailable ? null : _handleUpload,
     );
   }
 
