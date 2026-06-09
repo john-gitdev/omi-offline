@@ -27,8 +27,7 @@ class OmiSyncResult {
     this.error,
   });
 
-  List<String> get allConversationIds =>
-      {...newConversationIds, ...updatedConversationIds}.toList();
+  List<String> get allConversationIds => {...newConversationIds, ...updatedConversationIds}.toList();
 
   @override
   String toString() =>
@@ -36,6 +35,22 @@ class OmiSyncResult {
 }
 
 class OmiApiClient {
+  // The server runs the full decode→VAD→Parakeet-STT pipeline on each uploaded
+  // file as a single segment, with a per-segment STT timeout (~120 s). One big
+  // bin = one oversized segment that times out. So we split each bin into bounded
+  // chunks with sequential timestamps; the server stitches consecutive timestamps
+  // back into one conversation, and a single slow chunk fails in isolation
+  // (partial_failure) instead of failing the whole recording.
+  //
+  // The official app uploads 1-min chunks but with 3 concurrent uploads. We hold
+  // Omi Cloud to a single in-flight upload (its server 503s on parallel jobs), so
+  // a recording's chunks are processed by one job rather than fanned out 3-wide.
+  // 5-min chunks keep the segment count (and per-segment round-trip overhead) low
+  // for our single-job model; if the server times out STT on a segment this size,
+  // drop this toward 1-3 min.
+  static const int _chunkSeconds = 300; // 5 min per uploaded segment
+  static const int _maxChunkFrames = _chunkSeconds * 50; // fs320 = 50 frames/s (20 ms each)
+
   static const _tokenUrl = 'https://securetoken.googleapis.com/v1/token';
   static const _syncUrlV2 = 'https://api.omi.me/v2/sync-local-files';
   static const _syncUrlV1 = 'https://api.omi.me/v1/sync-local-files';
@@ -66,7 +81,8 @@ class OmiApiClient {
       Logger.debug('OmiApiClient: Token still valid, expires in ${(remainingMs / 1000).round()}s');
       return;
     }
-    Logger.debug('OmiApiClient: Token expired or expiring soon (${(remainingMs / 1000).round()}s remaining), refreshing...');
+    Logger.debug(
+        'OmiApiClient: Token expired or expiring soon (${(remainingMs / 1000).round()}s remaining), refreshing...');
 
     final refreshToken = prefs.omiRefreshToken;
     final apiKey = prefs.omiFirebaseApiKey;
@@ -116,7 +132,9 @@ class OmiApiClient {
 
   /// Uploads [binFiles] to /v2/sync-local-files in the official device format:
   /// `audio_<mac>_opus_fs320_16000_1_fs320_<ts_sec>.bin` containing length-prefixed
-  /// Opus frames (app-side marker frames stripped). Throws [OmiSyncException] on failure.
+  /// Opus frames (app-side marker frames stripped). Each bin is split into
+  /// ≤[_chunkSeconds] segments with sequential timestamps so no single segment
+  /// exceeds the server's per-segment STT timeout. Throws [OmiSyncException] on failure.
   static Future<OmiSyncResult?> syncLocalFiles(List<File> binFiles) async {
     if (!isSignedIn) {
       Logger.debug('OmiApiClient: Not signed in, skipping sync');
@@ -132,14 +150,24 @@ class OmiApiClient {
 
     final namedBytes = <(String, Uint8List)>[];
     for (final f in binFiles) {
-      final bytes = await _readOpusFrames(f);
-      if (bytes.isEmpty) {
+      final chunks = await _readOpusFrameChunks(f);
+      if (chunks.isEmpty) {
         Logger.error('OmiApiClient: No Opus frames found in ${f.path}');
         continue;
       }
-      final filename = _opusFilename(f, mac);
-      namedBytes.add((filename, bytes));
-      Logger.debug('OmiApiClient: Prepared ${f.uri.pathSegments.last} → $filename (${bytes.length} bytes)');
+      final baseTs = _baseTsSeconds(f);
+      final latestSafe = (DateTime.now().millisecondsSinceEpoch ~/ 1000) - 30;
+      for (var j = 0; j < chunks.length; j++) {
+        // Sequential per-chunk timestamps so the server orders/stitches them back
+        // into one conversation. Clamp defensively so a chunk never lands in the
+        // future (recordings are finalized after the fact, so this rarely fires).
+        var ts = baseTs + j * _chunkSeconds;
+        if (ts > latestSafe) ts = latestSafe;
+        final filename = 'audio_${mac}_opus_fs320_16000_1_fs320_$ts.bin';
+        namedBytes.add((filename, chunks[j]));
+      }
+      Logger.debug(
+          'OmiApiClient: Prepared ${f.uri.pathSegments.last} → ${chunks.length} chunk(s) of ≤$_chunkSeconds s');
     }
     if (namedBytes.isEmpty) throw const OmiSyncException('No upload payload available');
 
@@ -166,7 +194,7 @@ class OmiApiClient {
       final json = jsonDecode(responseBody) as Map<String, dynamic>;
       final jobId = json['job_id'] as String?;
       final pollAfterMs = (json['poll_after_ms'] as int?) ?? 3000;
-      if (jobId != null) return await _pollJob(usedUrl, jobId, pollAfterMs);
+      if (jobId != null) return await _pollJob(usedUrl, jobId, pollAfterMs, segmentCount: namedBytes.length);
     }
 
     final result = _parseSyncResult(res.statusCode, responseBody);
@@ -185,29 +213,34 @@ class OmiApiClient {
     return cleaned.isEmpty ? 'unknown' : cleaned;
   }
 
-  static String _opusFilename(File binFile, String mac) {
-    // Extract millisecond timestamp from "recording_fs320_<ms>.bin" and convert to seconds.
+  /// Base segment timestamp (epoch seconds) from "recording_fs320_<ms>.bin",
+  /// clamped to the server's accepted window (>= 2024-01-01, <= now - 30 s).
+  /// Per-chunk timestamps are derived by adding [_chunkSeconds] × chunkIndex.
+  static int _baseTsSeconds(File binFile) {
     final name = binFile.uri.pathSegments.last;
     final tsStr = name.replaceFirst('recording_fs320_', '').replaceFirst('.bin', '');
     final parsed = int.tryParse(tsStr) ?? 0;
     var tsSeconds = parsed > 1000000000000 ? parsed ~/ 1000 : parsed;
 
-    // Server requires >= 2024-01-01 and <= now - 30s.
     const minValidSeconds = 1704067200;
     final latestSafe = (DateTime.now().millisecondsSinceEpoch ~/ 1000) - 30;
     final safeFloor = latestSafe > minValidSeconds ? latestSafe : minValidSeconds;
     if (tsSeconds < minValidSeconds) tsSeconds = safeFloor;
     if (tsSeconds > latestSafe) tsSeconds = latestSafe;
 
-    return 'audio_${mac}_opus_fs320_16000_1_fs320_$tsSeconds.bin';
+    return tsSeconds;
   }
 
-  /// Reads a .bin and returns only length-prefixed Opus frames, defensively skipping
-  /// app-side marker frames (0xFFFFFFFE/FD/FB) and zero/sentinel slots.
-  static Future<Uint8List> _readOpusFrames(File binFile) async {
+  /// Reads a .bin and returns its length-prefixed Opus frames split into chunks of
+  /// at most [_maxChunkFrames] frames (≈ [_chunkSeconds] of audio), so each chunk
+  /// becomes a separate server segment that stays under the Parakeet STT timeout.
+  /// App-side marker frames (0xFFFFFFFE/FD/FB) and zero/sentinel slots are skipped.
+  static Future<List<Uint8List>> _readOpusFrameChunks(File binFile) async {
     final bytes = await binFile.readAsBytes();
     final byteData = ByteData.sublistView(bytes);
-    final output = BytesBuilder();
+    final chunks = <Uint8List>[];
+    var current = BytesBuilder();
+    int framesInChunk = 0;
 
     int offset = 0;
     int frameCount = 0;
@@ -216,29 +249,59 @@ class OmiApiClient {
     while (offset + 4 <= bytes.length) {
       final frameLength = byteData.getUint32(offset, Endian.little);
 
-      if (frameLength == 0 || frameLength == 0xFFFFFFFF) { offset += 4; continue; }
-      if (frameLength == 0xFFFFFFFB) { offset += 36; skippedMarkers++; continue; }
-      if (frameLength == 0xFFFFFFFE) { offset += 20; skippedMarkers++; continue; }
-      if (frameLength == 0xFFFFFFFD) { offset += 16; skippedMarkers++; continue; }
-      if (frameLength > 0xFFFF00) { offset += 4; skippedMarkers++; continue; }
+      if (frameLength == 0 || frameLength == 0xFFFFFFFF) {
+        offset += 4;
+        continue;
+      }
+      if (frameLength == 0xFFFFFFFB) {
+        offset += 36;
+        skippedMarkers++;
+        continue;
+      }
+      if (frameLength == 0xFFFFFFFE) {
+        offset += 20;
+        skippedMarkers++;
+        continue;
+      }
+      if (frameLength == 0xFFFFFFFD) {
+        offset += 16;
+        skippedMarkers++;
+        continue;
+      }
+      if (frameLength > 0xFFFF00) {
+        offset += 4;
+        skippedMarkers++;
+        continue;
+      }
 
-      if (offset + 4 + frameLength > bytes.length) { desynced = true; break; }
+      if (offset + 4 + frameLength > bytes.length) {
+        desynced = true;
+        break;
+      }
 
-      output.add(Uint8List.sublistView(bytes, offset, offset + 4 + frameLength));
+      current.add(Uint8List.sublistView(bytes, offset, offset + 4 + frameLength));
       offset += 4 + frameLength;
       frameCount++;
+      framesInChunk++;
+
+      if (framesInChunk >= _maxChunkFrames) {
+        chunks.add(current.takeBytes());
+        current = BytesBuilder();
+        framesInChunk = 0;
+      }
     }
+    if (current.length > 0) chunks.add(current.takeBytes());
 
     // Each Opus frame is 20 ms (fs320 @ 16 kHz), so duration ≈ frames × 20 ms.
     final estMs = frameCount * 20;
     Logger.debug(
-      'OmiApiClient: _readOpusFrames ${binFile.uri.pathSegments.last}: '
-      '$frameCount frames (~${(estMs / 60000).toStringAsFixed(1)} min), '
+      'OmiApiClient: _readOpusFrameChunks ${binFile.uri.pathSegments.last}: '
+      '$frameCount frames (~${(estMs / 60000).toStringAsFixed(1)} min) → ${chunks.length} chunk(s), '
       'markers skipped: $skippedMarkers, trailing bytes after last frame: ${bytes.length - offset}'
       '${desynced ? ' [DESYNC: stopped early at offset $offset of ${bytes.length}]' : ''}',
     );
 
-    return output.takeBytes();
+    return chunks;
   }
 
   static Future<http.Response> _doUploadBytes(
@@ -264,10 +327,15 @@ class OmiApiClient {
     }
   }
 
-  static Future<OmiSyncResult> _pollJob(String baseUrl, String jobId, int initialDelayMs) async {
+  static Future<OmiSyncResult> _pollJob(String baseUrl, String jobId, int initialDelayMs,
+      {int segmentCount = 1}) async {
     await Future.delayed(Duration(milliseconds: initialDelayMs));
 
-    const maxAttempts = 80;
+    // One job processes every chunk we uploaded, so scale the poll budget with the
+    // segment count (a long recording = many chunks). Floor of 80 (~4 min) keeps
+    // small uploads unchanged; ~6 polls/segment covers slow STT without giving up
+    // while the job is still running server-side.
+    final maxAttempts = segmentCount * 6 > 80 ? segmentCount * 6 : 80;
     var delayMs = 3000;
     for (var i = 0; i < maxAttempts; i++) {
       await refreshTokenIfNeeded();
@@ -277,9 +345,7 @@ class OmiApiClient {
 
       final http.Response res;
       try {
-        res = await http
-            .get(Uri.parse('$baseUrl/$jobId'), headers: headers)
-            .timeout(const Duration(seconds: 15));
+        res = await http.get(Uri.parse('$baseUrl/$jobId'), headers: headers).timeout(const Duration(seconds: 15));
       } on SocketException {
         throw const OmiSyncException('No network connection');
       }
@@ -347,10 +413,12 @@ class OmiApiClient {
       final headers = {'Authorization': 'Bearer $token'};
 
       for (final id in result.allConversationIds.take(3)) {
-        final res = await http.get(
-          Uri.parse('$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true'),
-          headers: headers,
-        ).timeout(const Duration(seconds: 15));
+        final res = await http
+            .get(
+              Uri.parse('$_conversationUrl/${Uri.encodeComponent(id)}?include_transcript=true'),
+              headers: headers,
+            )
+            .timeout(const Duration(seconds: 15));
 
         if (res.statusCode == 200) {
           final json = jsonDecode(res.body) as Map<String, dynamic>;
@@ -405,11 +473,11 @@ class OmiApiClient {
 
       final body = jsonDecode(res.body) as Map<String, dynamic>;
       final hasProfile = body['has_profile'] == true;
-      
+
       final prefs = SharedPreferencesUtil();
       prefs.omiHasSpeechProfile = hasProfile;
       prefs.omiSpeechProfileCheckedAtMs = DateTime.now().millisecondsSinceEpoch;
-      
+
       Logger.debug('OmiApiClient: Speech profile checked: $hasProfile');
       return hasProfile;
     } catch (e) {
