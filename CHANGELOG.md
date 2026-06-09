@@ -16,6 +16,8 @@
     - When Omi has no upload file for a recording (its `.bin` is only created when Omi sync is enabled at processing time), the error now says it was processed before Omi sync was enabled, instead of incorrectly blaming passthrough cleanup.
 - **New: Auto-upload cutoff shown on the Integrations page.**
     - Each integration with Auto-Upload on now shows the date/time from which recordings are auto-uploaded, with a reminder that earlier recordings must be uploaded manually via the cloud icon. Respects the 12/24-hour time preference.
+- **Improved: Consistent player controls.**
+    - Removed the 1×/1.5×/2× playback-speed toggles from the marker recording player so it matches the normal recording player's transport controls.
 
 ### 0.21.1
 
