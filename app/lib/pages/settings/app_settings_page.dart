@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -315,10 +314,9 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                           underline: const SizedBox(),
                           style: const TextStyle(
                               color: Colors.deepPurpleAccent, fontSize: 16, fontWeight: FontWeight.w500),
-                          items: [
-                            const DropdownMenuItem(value: 'm4a', child: Text('M4A (AAC)')),
-                            if (!Platform.isIOS) const DropdownMenuItem(value: 'ogg', child: Text('OGG (Opus)')),
-                            const DropdownMenuItem(value: 'wav', child: Text('WAV (PCM)')),
+                          items: const [
+                            DropdownMenuItem(value: 'm4a', child: Text('M4A (AAC)')),
+                            DropdownMenuItem(value: 'wav', child: Text('WAV (PCM)')),
                           ],
                           onChanged: (value) {
                             if (value != null) {
@@ -333,9 +331,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                     Text(
                       _audioSaveFormat == 'm4a'
                           ? 'M4A provides maximum compatibility for cloud services and mobile players.'
-                          : _audioSaveFormat == 'ogg'
-                              ? 'OGG provides the smallest file size by saving the original Opus stream (Android only).'
-                              : 'WAV provides uncompressed, lossless PCM audio but results in very large file sizes.',
+                          : 'WAV provides uncompressed, lossless PCM audio but results in very large file sizes.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                   ],
