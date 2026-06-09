@@ -403,9 +403,10 @@ class SharedPreferencesUtil {
   bool get keepScreenOn => getBool('keepScreenOn');
   set keepScreenOn(bool value) => saveBool('keepScreenOn', value);
 
-  // When true, the SD Write Drops panel is shown on Debug Tools and polls the
-  // device's drop counters every 2s. Off by default so the BLE read never runs
-  // unless the user is actively investigating.
+  // When true, the Diagnostics panel (SD-write drops + BLE connect failures) is
+  // shown on Debug Tools and polls the device's diagnostics counters every 2s.
+  // Off by default so the BLE read never runs unless the user is investigating.
+  // (Key kept as 'showSdWriteDrops' to preserve existing users' setting.)
   bool get showSdWriteDrops => getBool('showSdWriteDrops', defaultValue: false);
   set showSdWriteDrops(bool value) => saveBool('showSdWriteDrops', value);
 
