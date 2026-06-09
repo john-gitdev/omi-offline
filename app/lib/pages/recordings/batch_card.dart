@@ -13,10 +13,11 @@ class UploadIconButton extends StatelessWidget {
   final bool isUploading;
   final UploadStatus uploadStatus;
 
-  /// Number of integrations that apply to this recording. When >= 2, a small
-  /// count badge is overlaid on the cloud icon and a tap opens the detail sheet.
+  /// Number of integrations that apply to this recording; a count badge is
+  /// overlaid on the icon when >= 2. The icon is a non-interactive indicator —
+  /// taps fall through to the row, which opens the player where the
+  /// per-integration detail and actions live.
   final int integrationCount;
-  final VoidCallback? onTap;
 
   const UploadIconButton({
     super.key,
@@ -25,7 +26,6 @@ class UploadIconButton extends StatelessWidget {
     required this.isUploading,
     required this.uploadStatus,
     this.integrationCount = 0,
-    this.onTap,
   });
 
   @override
@@ -33,38 +33,30 @@ class UploadIconButton extends StatelessWidget {
     if (!anyIntegrationEnabled) return const SizedBox.shrink();
 
     if (conversation == null) {
-      return _button(Icons.cloud_off, Colors.grey.shade600, 'Upload key unavailable', onTap);
+      return _indicator(Icons.cloud_off, Colors.grey.shade600, 'Upload key unavailable');
     }
     if (isUploading) {
-      return IconButton(
-        padding: const EdgeInsets.symmetric(horizontal: 6),
-        constraints: const BoxConstraints(),
-        icon: const SizedBox(
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 6),
+        child: SizedBox(
           width: 18,
           height: 18,
           child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
         ),
-        tooltip: 'Uploading to integrations',
-        onPressed: null,
       );
     }
 
-    final (IconData icon, Color color, String tooltip, bool enabled) = switch (uploadStatus) {
-      UploadStatus.all => (Icons.cloud_done, Colors.green, 'Uploaded — tap for details', true),
-      UploadStatus.partial => (Icons.cloud_upload, Colors.amber, 'Some integrations pending — tap for details', true),
-      UploadStatus.failed => (Icons.error_outline, Colors.orange, 'Upload failed — tap for details', true),
-      UploadStatus.unavailable => (
-          Icons.cloud_off,
-          Colors.grey.shade600,
-          'No uploadable file for this recording',
-          false
-        ),
-      UploadStatus.none => (Icons.cloud_upload, Colors.redAccent, 'Upload to integrations', true),
+    final (IconData icon, Color color, String tooltip) = switch (uploadStatus) {
+      UploadStatus.all => (Icons.cloud_done, Colors.green, 'Uploaded to all integrations'),
+      UploadStatus.partial => (Icons.cloud_upload, Colors.amber, 'Some integrations pending'),
+      UploadStatus.failed => (Icons.error_outline, Colors.orange, 'Upload failed'),
+      UploadStatus.unavailable => (Icons.cloud_off, Colors.grey.shade600, 'No uploadable file for this recording'),
+      UploadStatus.none => (Icons.cloud_upload, Colors.redAccent, 'Not uploaded'),
     };
-    return _button(icon, color, tooltip, enabled ? onTap : null);
+    return _indicator(icon, color, tooltip);
   }
 
-  Widget _button(IconData icon, Color color, String tooltip, VoidCallback? onPressed) {
+  Widget _indicator(IconData icon, Color color, String tooltip) {
     final showBadge = integrationCount >= 2;
     final iconWidget = showBadge
         ? Stack(
@@ -90,12 +82,9 @@ class UploadIconButton extends StatelessWidget {
             ],
           )
         : Icon(icon, color: color, size: 18);
-    return IconButton(
+    return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6),
-      constraints: const BoxConstraints(),
-      icon: iconWidget,
-      tooltip: tooltip,
-      onPressed: onPressed,
+      child: Tooltip(message: tooltip, child: iconWidget),
     );
   }
 }
@@ -393,7 +382,6 @@ class BatchCard extends StatelessWidget {
   final UploadStatus Function(Conversation) uploadStatus;
   final int Function(Conversation) uploadCount;
   final bool Function(String) isUploading;
-  final void Function(Conversation) onUploadTap;
   final void Function(Conversation) onConversationTap;
   final void Function(MarkerConversation) onMarkerTap;
   final void Function(List<Conversation>) onExportAll;
@@ -412,7 +400,6 @@ class BatchCard extends StatelessWidget {
     required this.uploadStatus,
     required this.uploadCount,
     required this.isUploading,
-    required this.onUploadTap,
     required this.onConversationTap,
     required this.onMarkerTap,
     required this.onExportAll,
@@ -500,7 +487,6 @@ class BatchCard extends StatelessWidget {
                   isUploading: uploadKey != null && isUploading(uploadKey),
                   uploadStatus: uploadStatus(c),
                   integrationCount: uploadCount(c),
-                  onTap: () => onUploadTap(c),
                 ),
                 onMarkerTap: onMarkerTap,
               );
