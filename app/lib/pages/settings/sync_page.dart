@@ -48,6 +48,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   static const _kBaselineBlocks = 'drop_baseline_blocks';
   static const _kBaselineFrames = 'drop_baseline_frames';
   static const _kBaselineBoot = 'drop_baseline_boot';
+  static const _kBaselineConnFail = 'conn_fail_baseline';
+  // BLE connect-fail baseline (app-side). Unlike _dropBaseline it survives a
+  // device reboot, because the firmware counter is flash-persisted.
+  int? _connFailBaseline;
   List<Map<String, dynamic>> _recentLogs = const [];
 
   // Count of .bin files held in the isolated Adjustment Mode folder. Refreshed
@@ -61,8 +65,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       final processing = RecordingsManager.isProcessingAny;
       if (processing != _isProcessing) setState(() => _isProcessing = processing);
     });
-    // Drop-stats poll only runs when the user opts in via the Show SD Write
-    // Drops toggle. Logs poll only runs when Save Diagnostic Logs is on.
+    // Diagnostics poll only runs when the user opts in via the Show Diagnostics
+    // toggle. Logs poll only runs when Save Diagnostic Logs is on.
     if (SharedPreferencesUtil().showSdWriteDrops) _startDropPolling();
     if (SharedPreferencesUtil().devLogsToFileEnabled) _startLogPolling();
     // Refresh the Adjustment Mode bin count whenever the Debug menu is opened.
@@ -84,6 +88,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     _dropPollTimer = null;
     _dropStats = null;
     _dropBaseline = null;
+    _connFailBaseline = null;
     _dropsUnsupported = false;
     _dropsWaitingSync = false;
     _baselineRestored = false;
@@ -464,23 +469,38 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (_baselineRestored) return;
     _baselineRestored = true;
     final prefs = SharedPreferencesUtil();
+
+    // SD-drop baseline: app-side, discarded when the device reboots (those
+    // counters reset to 0 on reboot, so the saved baseline would over-subtract).
     final savedBlocks = prefs.getInt(_kBaselineBlocks, defaultValue: -1);
-    if (savedBlocks < 0) return; // no saved baseline
-    final savedFrames = prefs.getInt(_kBaselineFrames, defaultValue: 0);
-    final savedBoot = prefs.getInt(_kBaselineBoot, defaultValue: 0);
-    // Device rebooted — counters reset below the saved baseline; discard it.
-    if (stats.blockDrops < savedBlocks || stats.streamFrameDrops < savedFrames) {
-      unawaited(prefs.remove(_kBaselineBlocks));
-      return;
+    if (savedBlocks >= 0) {
+      final savedFrames = prefs.getInt(_kBaselineFrames, defaultValue: 0);
+      final savedBoot = prefs.getInt(_kBaselineBoot, defaultValue: 0);
+      if (stats.blockDrops < savedBlocks || stats.streamFrameDrops < savedFrames) {
+        unawaited(prefs.remove(_kBaselineBlocks));
+      } else {
+        setState(() => _dropBaseline = DeviceDropStats(
+              blockDrops: savedBlocks,
+              lastBlockDropUptimeMs: 0,
+              streamFrameDrops: savedFrames,
+              bootFrameDrops: savedBoot,
+              currentUptimeMs: 0,
+              readAt: DateTime.now(),
+            ));
+      }
     }
-    setState(() => _dropBaseline = DeviceDropStats(
-          blockDrops: savedBlocks,
-          lastBlockDropUptimeMs: 0,
-          streamFrameDrops: savedFrames,
-          bootFrameDrops: savedBoot,
-          currentUptimeMs: 0,
-          readAt: DateTime.now(),
-        ));
+
+    // BLE connect-fail baseline: SURVIVES reboot (firmware counter is flash-
+    // persisted). Only discard if the counter went backwards — i.e. the device's
+    // flash was wiped / re-flashed below the saved baseline.
+    final savedConnFail = prefs.getInt(_kBaselineConnFail, defaultValue: -1);
+    if (savedConnFail >= 0) {
+      if (stats.failedConnCount < savedConnFail) {
+        unawaited(prefs.remove(_kBaselineConnFail));
+      } else {
+        setState(() => _connFailBaseline = savedConnFail);
+      }
+    }
   }
 
   void _snapshotDropBaseline() {
@@ -491,6 +511,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     unawaited(prefs.saveInt(_kBaselineFrames, stats.streamFrameDrops));
     unawaited(prefs.saveInt(_kBaselineBoot, stats.bootFrameDrops));
     setState(() => _dropBaseline = stats);
+  }
+
+  void _snapshotConnFailBaseline() {
+    final stats = _dropStats;
+    if (stats == null) return;
+    unawaited(SharedPreferencesUtil().saveInt(_kBaselineConnFail, stats.failedConnCount));
+    setState(() => _connFailBaseline = stats.failedConnCount);
   }
 
   /// Counts `.bin` files in the isolated Adjustment Mode folder.
@@ -677,9 +704,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: SwitchListTile(
-                  title: const Text('Show SD Write Drops',
+                  title: const Text('Show Diagnostics',
                       style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Polls the device every 2 s for SD-card drop counters. Off by default.',
+                  subtitle: Text('Polls the device every 2 s for SD-card drops and BLE connect failures. Off by default.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
                   value: SharedPreferencesUtil().showSdWriteDrops,
                   onChanged: (val) {
@@ -987,7 +1014,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           SizedBox(width: 8),
           Expanded(
             child: Text(
-              'SD Write Drops unavailable (older firmware).',
+              'Diagnostics unavailable (older firmware).',
               style: TextStyle(color: Colors.white38, fontSize: 12),
             ),
           ),
@@ -1011,6 +1038,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final frames = baseline == null ? stats.streamFrameDrops : (stats.streamFrameDrops - baseline.streamFrameDrops);
     final boot = stats.bootFrameDrops; // boot drops are fixed at boot; baseline doesn't apply
     final hasFreshDrops = blocks > 0 || frames > 0;
+    final connFails =
+        _connFailBaseline == null ? stats.failedConnCount : (stats.failedConnCount - _connFailBaseline!);
 
     final color = hasFreshDrops ? Colors.amber : Colors.white70;
 
@@ -1037,7 +1066,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               FaIcon(FontAwesomeIcons.solidHardDrive, size: 13, color: color),
               const SizedBox(width: 8),
               Text(
-                baseline == null ? 'SD Write Drops' : 'SD Write Drops (since reset)',
+                (baseline == null && _connFailBaseline == null) ? 'Diagnostics' : 'Diagnostics (since reset)',
                 style: TextStyle(color: color, fontSize: 14, fontWeight: FontWeight.w600),
               ),
             ],
@@ -1048,22 +1077,46 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _dropStatRow('Boot-window frame drops', boot.toString(), false),
           _dropStatRow('Last block drop', lastDropLabel, hasFreshDrops),
           _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
-          // BLE connect-establishment failures (persisted across reboots). See
-          // NOTES.md "BLE: advertising but won't connect".
-          _dropStatRow('BLE connect failures', stats.failedConnCount.toString(), stats.failedConnCount > 0),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 6),
+            child: Divider(color: Color(0xFF2C2C2E), height: 1),
+          ),
+          // BLE connect-establishment failures. The firmware counter is
+          // persisted across reboots; this baseline ("Reset BLE") is too, unlike
+          // the SD-drop baseline. See NOTES.md "BLE: advertising but won't connect".
+          _dropStatRow('BLE connect failures', connFails.toString(), connFails > 0),
           if (stats.failedConnCount > 0)
             _dropStatRow(
                 'Last fail adv mode', stats.lastFailedConnDuringSlowAdv ? 'slow (1s)' : 'fast', true),
           const SizedBox(height: 10),
-          OutlinedButton(
-            onPressed: _snapshotDropBaseline,
-            style: OutlinedButton.styleFrom(
-              side: const BorderSide(color: Colors.amber, width: 1),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              minimumSize: const Size(double.infinity, 0),
-            ),
-            child: const Text('Reset to zero', style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _snapshotDropBaseline,
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Colors.amber, width: 1),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: const Text('Reset drops',
+                      style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _snapshotConnFailBaseline,
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Colors.lightBlueAccent, width: 1),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: const Text('Reset BLE',
+                      style: TextStyle(color: Colors.lightBlueAccent, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
           ),
         ],
       ),
