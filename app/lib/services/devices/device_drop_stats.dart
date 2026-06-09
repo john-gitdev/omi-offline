@@ -10,12 +10,21 @@
 /// (0 = none since boot).
 /// `currentUptimeMs`: firmware uptime at the moment of the read — used to
 /// render "X ago" without trusting the phone clock.
+///
+/// `failedConnCount` / `lastFailedConnDuringSlowAdv`: cumulative BLE
+/// connection-establishment failures (HCI 0x3e), persisted across reboots so the
+/// count survives the power-cycle the user must do to reconnect and read it.
+/// Appended to the characteristic at offset 20 — 0 / false on older firmware
+/// that returns only the legacy 20 bytes. See NOTES.md "BLE: advertising but
+/// won't connect".
 class DeviceDropStats {
   final int blockDrops;
   final int lastBlockDropUptimeMs;
   final int streamFrameDrops;
   final int bootFrameDrops;
   final int currentUptimeMs;
+  final int failedConnCount;
+  final bool lastFailedConnDuringSlowAdv;
   final DateTime readAt;
 
   const DeviceDropStats({
@@ -24,6 +33,8 @@ class DeviceDropStats {
     required this.streamFrameDrops,
     required this.bootFrameDrops,
     required this.currentUptimeMs,
+    this.failedConnCount = 0,
+    this.lastFailedConnDuringSlowAdv = false,
     required this.readAt,
   });
 
