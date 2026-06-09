@@ -21,6 +21,33 @@ import 'package:omi/utils/audio/foreground.dart';
 
 enum UploadStatus { none, partial, all, failed, unavailable }
 
+/// Per-integration upload state for one recording, surfaced in the detail sheet.
+enum IntegrationUploadState {
+  /// Upload in flight right now.
+  uploading,
+
+  /// Confirmed delivered to this integration.
+  delivered,
+
+  /// Available but tried and failed (retry budget exhausted for auto-upload).
+  failed,
+
+  /// Available, not delivered, no upload in flight — actionable.
+  pending,
+
+  /// This integration cannot upload this recording at all (e.g. Omi with no
+  /// processing-time .bin, or HeyPocket with the audio file gone).
+  unavailable,
+}
+
+class IntegrationStatus {
+  final String name;
+  final IntegrationUploadState state;
+  const IntegrationStatus(this.name, this.state);
+
+  bool get isActionable => state == IntegrationUploadState.pending || state == IntegrationUploadState.failed;
+}
+
 class UploadFailure {
   final String integration;
   final Object error;
@@ -1596,36 +1623,102 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
   }
 
+  /// Per-integration upload status for [c] across all *configured* integrations,
+  /// for the detail sheet and the row badge. Both the aggregate [uploadStatus]
+  /// and [applicableIntegrationCount] derive from this so the row icon, badge,
+  /// and sheet never disagree.
+  List<IntegrationStatus> integrationStatuses(Conversation c) {
+    final result = <IntegrationStatus>[];
+    for (final i in _integrations) {
+      if (!i.isConfigured) continue;
+      result.add(IntegrationStatus(i.name, _integrationState(i, c)));
+    }
+    return result;
+  }
+
+  IntegrationUploadState _integrationState(PassthroughIntegration i, Conversation c) {
+    if (i.hasDelivered(c)) return IntegrationUploadState.delivered;
+    final uploading = _uploadingFiles.contains(c.uploadKey) || _syncingKeys.contains('${i.name}_${c.file.path}');
+    if (uploading) return IntegrationUploadState.uploading;
+    if (!i.isAvailableFor(c)) return IntegrationUploadState.unavailable;
+    if (i.isFailed(c)) return IntegrationUploadState.failed;
+    return IntegrationUploadState.pending;
+  }
+
+  /// How many configured integrations actually apply to [c] (i.e. are not
+  /// `unavailable`). Drives the row badge: shown only when >= 2, and decides
+  /// whether a tap opens the multi-integration sheet or uploads directly.
+  int applicableIntegrationCount(Conversation c) =>
+      integrationStatuses(c).where((s) => s.state != IntegrationUploadState.unavailable).length;
+
   UploadStatus uploadStatus(Conversation c) {
     if (!PassthroughIntegration.hasAnyConfigured(_prefs)) return UploadStatus.unavailable;
 
-    // Status reflects per-integration manual-upload availability (configured +
-    // the source data each integration needs), not auto-upload eligibility — so
-    // the icon stays actionable, and flips to delivered/green, for recordings
-    // made before auto-upload was enabled. When no integration can take this
-    // recording (e.g. Omi-only with no processing-time .bin) it is unavailable,
-    // not a red "tap to upload".
-    final active = _integrations.where((i) => i.isAvailableFor(c)).toList();
-    if (active.isEmpty) return UploadStatus.unavailable;
-
-    int doneCnt = 0;
-    bool failed = false;
-
-    for (final integration in active) {
-      if (integration.hasDelivered(c)) {
-        doneCnt++;
-      } else if (integration.isFailed(c)) {
-        failed = true;
-      }
+    // Aggregate the worst state that needs attention. Anything 'unavailable'
+    // (an integration that can't take this recording) is ignored; if none
+    // apply, the recording is unavailable rather than a red "tap to upload".
+    final relevant = integrationStatuses(c).where((s) => s.state != IntegrationUploadState.unavailable).toList();
+    if (relevant.isEmpty) return UploadStatus.unavailable;
+    if (relevant.every((s) => s.state == IntegrationUploadState.delivered)) return UploadStatus.all;
+    if (relevant.any((s) => s.state == IntegrationUploadState.failed)) return UploadStatus.failed;
+    if (relevant
+        .any((s) => s.state == IntegrationUploadState.delivered || s.state == IntegrationUploadState.uploading)) {
+      return UploadStatus.partial;
     }
-
-    if (doneCnt == active.length) return UploadStatus.all;
-    if (failed) return UploadStatus.failed;
-    if (doneCnt == 0) return UploadStatus.none;
-    return UploadStatus.partial;
+    return UploadStatus.none; // all pending, nothing delivered yet
   }
 
   bool isUploaded(Conversation c) => uploadStatus(c) == UploadStatus.all;
+
+  /// Uploads [c] to a single integration by [integrationName] (the per-row
+  /// action in the detail sheet). Tracks progress per-integration via
+  /// [_syncingKeys] so only that sheet row spins. Returns failures (empty = ok).
+  Future<List<UploadFailure>> uploadOne(Conversation c, String integrationName, {bool force = false}) async {
+    PassthroughIntegration? integration;
+    for (final i in _integrations) {
+      if (i.name == integrationName) {
+        integration = i;
+        break;
+      }
+    }
+    if (integration == null) return [UploadFailure(integrationName, Exception('Unknown integration'))];
+    if (!integration.isAvailableFor(c)) {
+      return [UploadFailure(integrationName, Exception('not available for this recording'))];
+    }
+    if (!force && integration.hasDelivered(c)) return [];
+
+    final syncKey = '${integration.name}_${c.file.path}';
+    if (_syncingKeys.contains(syncKey)) return [];
+
+    if (_prefs.uploadOnWifiOnly) {
+      try {
+        final connectivity = await Connectivity().checkConnectivity();
+        if (!connectivity.contains(ConnectivityResult.wifi)) {
+          return [
+            UploadFailure(integration.name,
+                Exception('WiFi required — connect to WiFi or disable "Upload on Wifi Only" in App Settings'))
+          ];
+        }
+      } catch (e) {
+        return [UploadFailure(integration.name, Exception('Could not verify WiFi connection'))];
+      }
+    }
+
+    _syncingKeys.add(syncKey);
+    notifyListeners();
+
+    final failures = <UploadFailure>[];
+    try {
+      await integration.upload(c);
+      if (_prefs.passthroughMode) await _convertToPassthrough(c);
+    } catch (e) {
+      failures.add(UploadFailure(integration.name, e));
+    } finally {
+      _syncingKeys.remove(syncKey);
+      notifyListeners();
+    }
+    return failures;
+  }
 
   static Iterable<String> _binPathsForConversations(List<Conversation> conversations) => conversations.map((c) {
         final ts = c.file.path.split('/').last.split('_').last.split('.').first;
