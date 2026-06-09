@@ -424,7 +424,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         const Text(
-                          'Keep Recordings For',
+                          'Recording Retention',
                           style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                         ),
                         DropdownButton<int>(
