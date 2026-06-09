@@ -42,7 +42,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
 
   Duration _position = Duration.zero;
   bool _isPlaying = false;
-  double _speed = 1.0;
 
   _DragMode _dragMode = _DragMode.none;
   late bool _userSaved;
@@ -264,11 +263,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
   Future<void> _seekRelative(int seconds) async {
     final target = _position + Duration(seconds: seconds);
     await _player.seek(target.isNegative ? Duration.zero : target);
-  }
-
-  Future<void> _setSpeed(double speed) async {
-    await _player.setSpeed(speed);
-    setState(() => _speed = speed);
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -583,51 +577,6 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                                   isForward: true,
                                   onTap: () => _seekRelative(30)),
                             ],
-                          ),
-                          const SizedBox(height: 24),
-
-                          // Speed selector
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [1.0, 1.5, 2.0].map((s) {
-                              final selected = _speed == s;
-                              final labelText = s == 1.0
-                                  ? '1×'
-                                  : s == 1.5
-                                      ? '1.5×'
-                                      : '2×';
-                              return Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 6),
-                                child: Semantics(
-                                  button: true,
-                                  label: 'Playback speed $labelText',
-                                  child: Tooltip(
-                                    message: 'Set playback speed to $labelText',
-                                    child: Material(
-                                      color: selected ? Colors.deepPurpleAccent : const Color(0xFF2C2C2E),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(20),
-                                      ),
-                                      clipBehavior: Clip.antiAlias,
-                                      child: InkWell(
-                                        onTap: () => _setSpeed(s),
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                                          child: Text(
-                                            labelText,
-                                            style: TextStyle(
-                                              color: selected ? Colors.white : Colors.grey.shade400,
-                                              fontSize: 13,
-                                              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              );
-                            }).toList(),
                           ),
                           const SizedBox(height: 32),
                         ],
