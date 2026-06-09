@@ -1222,7 +1222,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     } catch (_) {}
   }
 
-
   Future<void> deleteDay(Batch batch) async {
     final keys = batch.finalizedRecordings.map((c) => c.uploadKey).whereType<String>().toSet();
     await _prefs.removeUploadedFromHeypocket(keys);
@@ -1455,7 +1454,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   Future<bool> _allIntegrationsDelivered(Conversation c) async {
     for (final integration in _integrations) {
-      if (integration.isEnabled(c)) {
+      if (integration.isAvailableFor(c)) {
         if (!integration.hasDelivered(c)) {
           Logger.debug('Passthrough blocked by ${integration.name}');
           return false;
@@ -1562,13 +1561,19 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (_prefs.uploadOnWifiOnly) {
         final connectivity = await Connectivity().checkConnectivity();
         if (!connectivity.contains(ConnectivityResult.wifi)) {
-          throw Exception('WiFi required for upload — connect to WiFi or disable "Upload on Wifi Only" in App Settings');
+          throw Exception(
+              'WiFi required for upload — connect to WiFi or disable "Upload on Wifi Only" in App Settings');
         }
       }
 
+      // Manual upload bypasses the auto-upload time cutoff (isEnabled): an
+      // explicit tap should upload even recordings made before auto-upload was
+      // switched on. A missing source (e.g. Omi's pruned .bin) surfaces as a
+      // clear per-integration failure from upload(), not a blanket "no
+      // integrations enabled" message.
       final List<Future<void>> uploads = [];
       for (final integration in _integrations) {
-        if (integration.isEnabled(conversation)) {
+        if (integration.isAvailableFor(conversation)) {
           if (force || !integration.hasDelivered(conversation)) {
             uploads.add(integration.upload(conversation).catchError((e) {
               failures.add(UploadFailure(integration.name, e));
@@ -1594,7 +1599,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   UploadStatus uploadStatus(Conversation c) {
     if (!PassthroughIntegration.hasAnyConfigured(_prefs)) return UploadStatus.none;
 
-    final active = _integrations.where((i) => i.isEnabled(c)).toList();
+    // Status reflects manual-upload availability (configured + Enabled toggle),
+    // not auto-upload eligibility — so the icon stays actionable, and flips to
+    // delivered/green, for recordings made before auto-upload was enabled.
+    final active = _integrations.where((i) => i.isAvailableFor(c)).toList();
     if (active.isEmpty) return UploadStatus.none;
 
     int doneCnt = 0;
