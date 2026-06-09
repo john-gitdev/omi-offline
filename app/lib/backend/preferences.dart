@@ -243,7 +243,9 @@ class SharedPreferencesUtil {
   List<String> get heypocketUploadedFiles => getStringList('heypocketUploadedFiles');
   set heypocketUploadedFiles(List<String> v) => saveStringList('heypocketUploadedFiles', v);
 
-  // Epoch ms when the API key was first saved — used to limit auto-upload to new recordings only.
+  // Epoch ms when Auto-Upload was last enabled (set only by the heypocketAutoUpload
+  // setter, not on key save) — limits auto-upload to recordings made after it. 0 =
+  // never enabled; auto-upload fails closed in that case (see HeyPocket.isEnabled).
   int get heypocketKeySetAt => getInt('heypocketKeySetAt', defaultValue: 0);
   set heypocketKeySetAt(int v) => saveInt('heypocketKeySetAt', v);
 
