@@ -19,7 +19,7 @@ import 'package:omi/pages/recordings/recordings_types.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:omi/utils/audio/foreground.dart';
 
-enum UploadStatus { none, partial, all, failed }
+enum UploadStatus { none, partial, all, failed, unavailable }
 
 class UploadFailure {
   final String integration;
@@ -1597,13 +1597,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   UploadStatus uploadStatus(Conversation c) {
-    if (!PassthroughIntegration.hasAnyConfigured(_prefs)) return UploadStatus.none;
+    if (!PassthroughIntegration.hasAnyConfigured(_prefs)) return UploadStatus.unavailable;
 
-    // Status reflects manual-upload availability (configured + Enabled toggle),
-    // not auto-upload eligibility — so the icon stays actionable, and flips to
-    // delivered/green, for recordings made before auto-upload was enabled.
+    // Status reflects per-integration manual-upload availability (configured +
+    // the source data each integration needs), not auto-upload eligibility — so
+    // the icon stays actionable, and flips to delivered/green, for recordings
+    // made before auto-upload was enabled. When no integration can take this
+    // recording (e.g. Omi-only with no processing-time .bin) it is unavailable,
+    // not a red "tap to upload".
     final active = _integrations.where((i) => i.isAvailableFor(c)).toList();
-    if (active.isEmpty) return UploadStatus.none;
+    if (active.isEmpty) return UploadStatus.unavailable;
 
     int doneCnt = 0;
     bool failed = false;
