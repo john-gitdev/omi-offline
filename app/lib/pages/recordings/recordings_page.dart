@@ -13,6 +13,7 @@ import 'package:omi/pages/settings/find_devices_page.dart';
 import 'package:omi/pages/settings/device_settings.dart';
 import 'package:omi/pages/recordings/marker_conversation_player_page.dart';
 import 'package:omi/pages/recordings/passthrough_integration.dart';
+import 'package:omi/pages/recordings/integration_status_sheet.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
 import 'package:omi/pages/recordings/recordings_banners.dart';
 import 'package:omi/pages/recordings/sync_process_card.dart';
@@ -170,7 +171,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
   }
 
-  Future<void> _deleteDayConversations(Batch batch, List<Conversation> toDelete, List<DiscardRecord> toDeleteDiscards) async {
+  Future<void> _deleteDayConversations(
+      Batch batch, List<Conversation> toDelete, List<DiscardRecord> toDeleteDiscards) async {
     if (toDelete.isEmpty && toDeleteDiscards.isEmpty) return;
     final messenger = ScaffoldMessenger.of(context);
 
@@ -331,6 +333,14 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
     if (_controller.uploadingFiles.contains(uploadKey)) return;
 
+    // With 2+ applicable integrations the single aggregate icon can't represent
+    // every per-integration state, so a tap opens the detail sheet (per-row
+    // upload/retry) instead of firing a blind upload-to-all.
+    if (_controller.applicableIntegrationCount(conversation) >= 2) {
+      await showIntegrationStatusSheet(context, _controller, conversation);
+      return;
+    }
+
     final alreadyUploaded = _controller.isUploaded(conversation);
     if (alreadyUploaded) {
       final confirm = await showDialog<bool>(
@@ -357,7 +367,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
     } catch (e) {
       Logger.error('Manual upload failed: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
       }
     }
   }
@@ -913,6 +924,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           anyIntegrationEnabled: anyIntegrationEnabled,
                                           filterMode: _filterMode,
                                           uploadStatus: controller.uploadStatus,
+                                          uploadCount: controller.applicableIntegrationCount,
                                           isUploading: controller.uploadingFiles.contains,
                                           onUploadTap: _handleUploadTap,
                                           onConversationTap: _openConversation,
