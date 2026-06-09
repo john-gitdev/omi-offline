@@ -8,11 +8,9 @@ import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/pages/recordings/passthrough_integration.dart';
-import 'package:omi/pages/recordings/integration_status_sheet.dart';
+import 'package:omi/pages/recordings/integration_status_section.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart' show RecordingsController, UploadStatus;
-import 'package:omi/utils/logger.dart';
-import 'package:omi/widgets/dialog.dart';
 import 'package:omi/pages/recordings/waveform_utils.dart';
 
 class ConversationPlayerPage extends StatefulWidget {
@@ -33,7 +31,6 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   Duration _position = Duration.zero;
   Duration _total = Duration.zero;
   bool _isPlaying = false;
-  bool _isUploading = false;
   StreamSubscription? _positionSub;
   StreamSubscription? _durationSub;
   StreamSubscription? _playerStateSub;
@@ -176,91 +173,51 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
     );
   }
 
-  Future<void> _handleUpload() async {
-    final anyIntegrationEnabled = PassthroughIntegration.hasAnyConfigured(_prefs);
-    if (!anyIntegrationEnabled || _isUploading) return;
-
-    // 2+ applicable integrations → open the per-integration detail sheet rather
-    // than a blind upload-to-all (matches the day-list behaviour).
-    if (widget.controller.applicableIntegrationCount(widget.conversation) >= 2) {
-      await showIntegrationStatusSheet(context, widget.controller, widget.conversation);
-      return;
-    }
-
-    final alreadyUploaded = widget.controller.isUploaded(widget.conversation);
-    if (alreadyUploaded) {
-      final confirm = await showDialog<bool>(
-        context: context,
-        builder: (c) => getDialog(
-          c,
-          () => Navigator.of(c).pop(false),
-          () => Navigator.of(c).pop(true),
-          'Re-upload Conversation',
-          'This conversation was already uploaded to your enabled integrations. Upload again? (It may create duplicates.)',
-          confirmText: 'Upload',
-        ),
-      );
-      if (confirm != true) return;
-    }
-
-    setState(() => _isUploading = true);
-    try {
-      final failures = await widget.controller.uploadConversation(widget.conversation, force: alreadyUploaded);
-      if (!mounted) return;
-      for (final failure in failures) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
-      }
-      setState(() {});
-    } catch (e) {
-      Logger.error('Player upload failed: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
-      }
-    } finally {
-      if (mounted) setState(() => _isUploading = false);
-    }
-  }
-
+  /// App-bar upload indicator: a non-interactive summary of the aggregate
+  /// upload state. The per-integration detail and actions live in the
+  /// Integrations section in the body, so this no longer has a tap action.
+  /// Wrapped in a [ListenableBuilder] so it tracks uploads driven from there.
   Widget _buildUploadAction() {
-    final anyIntegrationEnabled = PassthroughIntegration.hasAnyConfigured(_prefs);
-    if (!anyIntegrationEnabled) return const SizedBox.shrink();
-
+    if (!PassthroughIntegration.hasAnyConfigured(_prefs)) return const SizedBox.shrink();
     final uploadKey = widget.conversation.uploadKey;
     if (uploadKey == null) return const SizedBox.shrink();
 
-    if (_isUploading || widget.controller.uploadingFiles.contains(uploadKey)) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 16),
-        child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
-      );
-    }
-    final status = widget.controller.uploadStatus(widget.conversation);
-    final color = switch (status) {
-      UploadStatus.all => Colors.green,
-      UploadStatus.partial => Colors.amber,
-      UploadStatus.failed => Colors.orange,
-      UploadStatus.none => Colors.redAccent,
-      UploadStatus.unavailable => Colors.grey.shade600,
-    };
-    final tooltip = switch (status) {
-      UploadStatus.all => 'Re-upload to integrations',
-      UploadStatus.partial => 'Some integrations pending — tap to retry',
-      UploadStatus.failed => 'Upload failed — tap to retry',
-      UploadStatus.none => 'Upload to integrations',
-      UploadStatus.unavailable => 'No uploadable file for this recording',
-    };
-    final icon = switch (status) {
-      UploadStatus.all => Icons.cloud_done,
-      UploadStatus.failed => Icons.error_outline,
-      UploadStatus.unavailable => Icons.cloud_off,
-      _ => Icons.cloud_upload,
-    };
-    return IconButton(
-      icon: Icon(icon, color: color, size: 22),
-      tooltip: tooltip,
-      onPressed: status == UploadStatus.unavailable ? null : _handleUpload,
+    return ListenableBuilder(
+      listenable: widget.controller,
+      builder: (context, _) {
+        if (widget.controller.uploadingFiles.contains(uploadKey)) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child:
+                SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+          );
+        }
+        final status = widget.controller.uploadStatus(widget.conversation);
+        final color = switch (status) {
+          UploadStatus.all => Colors.green,
+          UploadStatus.partial => Colors.amber,
+          UploadStatus.failed => Colors.orange,
+          UploadStatus.none => Colors.redAccent,
+          UploadStatus.unavailable => Colors.grey.shade600,
+        };
+        final tooltip = switch (status) {
+          UploadStatus.all => 'Uploaded to all integrations',
+          UploadStatus.partial => 'Some integrations pending',
+          UploadStatus.failed => 'Upload failed — see Integrations below',
+          UploadStatus.none => 'Not uploaded — see Integrations below',
+          UploadStatus.unavailable => 'No uploadable file for this recording',
+        };
+        final icon = switch (status) {
+          UploadStatus.all => Icons.cloud_done,
+          UploadStatus.failed => Icons.error_outline,
+          UploadStatus.unavailable => Icons.cloud_off,
+          _ => Icons.cloud_upload,
+        };
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Tooltip(message: tooltip, child: Icon(icon, color: color, size: 22)),
+        );
+      },
     );
   }
 
@@ -345,130 +302,145 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
       ),
       body: SafeArea(
         top: false,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              // Metadata
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(widget.conversation.durationLabel, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
-                  const SizedBox(width: 16),
-                  Container(width: 1, height: 14, color: Colors.grey.shade700),
-                  const SizedBox(width: 16),
-                  Text(widget.conversation.sizeLabel, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
-                ],
-              ),
-              const SizedBox(height: 48),
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                // Metadata
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(widget.conversation.durationLabel,
+                        style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
+                    const SizedBox(width: 16),
+                    Container(width: 1, height: 14, color: Colors.grey.shade700),
+                    const SizedBox(width: 16),
+                    Text(widget.conversation.sizeLabel, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
+                  ],
+                ),
+                const SizedBox(height: 48),
 
-              // Waveform
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 40),
-                child: SizedBox(
-                  height: 120,
-                  child: _loadingWaveform
-                      ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
-                      : _waveform.isEmpty
-                          ? Center(
-                              child: Text('Waveform unavailable',
-                                  style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
-                            )
-                          : LayoutBuilder(
-                              builder: (ctx, constraints) => GestureDetector(
-                                onTapDown: (d) {
-                                  final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
-                                  _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
-                                },
-                                onHorizontalDragUpdate: (d) {
-                                  final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
-                                  _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
-                                },
-                                child: CustomPaint(
-                                  painter: _WaveformPainter(amplitudes: _waveform, progress: progressRatio),
-                                  size: Size(constraints.maxWidth, 120),
+                // Waveform
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 40),
+                  child: SizedBox(
+                    height: 120,
+                    child: _loadingWaveform
+                        ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent, strokeWidth: 2))
+                        : _waveform.isEmpty
+                            ? Center(
+                                child: Text('Waveform unavailable',
+                                    style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                              )
+                            : LayoutBuilder(
+                                builder: (ctx, constraints) => GestureDetector(
+                                  onTapDown: (d) {
+                                    final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
+                                    _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
+                                  },
+                                  onHorizontalDragUpdate: (d) {
+                                    final ratio = (d.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0);
+                                    _player.seek(Duration(milliseconds: (ratio * _total.inMilliseconds).round()));
+                                  },
+                                  child: CustomPaint(
+                                    painter: _WaveformPainter(amplitudes: _waveform, progress: progressRatio),
+                                    size: Size(constraints.maxWidth, 120),
+                                  ),
                                 ),
                               ),
-                            ),
+                  ),
                 ),
-              ),
 
-              const SizedBox(height: 16),
+                const SizedBox(height: 16),
 
-              // Time labels
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(_fmt(_position), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                  Text(_fmt(_total), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                ],
-              ),
-              const SizedBox(height: 4),
-
-              // Progress slider
-              SliderTheme(
-                data: SliderTheme.of(context).copyWith(
-                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                  trackHeight: 3,
-                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                  activeTrackColor: Colors.deepPurpleAccent,
-                  inactiveTrackColor: Colors.grey.shade800,
-                  thumbColor: Colors.deepPurpleAccent,
-                  overlayColor: Colors.deepPurpleAccent.withValues(alpha: 0.2),
+                // Time labels
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(_fmt(_position), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                    Text(_fmt(_total), style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                  ],
                 ),
-                child: Slider(
-                  value: progressRatio,
-                  onChanged: (v) {
-                    _player.seek(Duration(milliseconds: (v * _total.inMilliseconds).round()));
-                  },
+                const SizedBox(height: 4),
+
+                // Progress slider
+                SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                    trackHeight: 3,
+                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                    activeTrackColor: Colors.deepPurpleAccent,
+                    inactiveTrackColor: Colors.grey.shade800,
+                    thumbColor: Colors.deepPurpleAccent,
+                    overlayColor: Colors.deepPurpleAccent.withValues(alpha: 0.2),
+                  ),
+                  child: Slider(
+                    value: progressRatio,
+                    onChanged: (v) {
+                      _player.seek(Duration(milliseconds: (v * _total.inMilliseconds).round()));
+                    },
+                  ),
                 ),
-              ),
 
-              const SizedBox(height: 32),
+                const SizedBox(height: 32),
 
-              // Transport controls
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  _SeekButton(
-                      icon: FontAwesomeIcons.rotateLeft,
-                      seconds: 30,
-                      isForward: false,
-                      onTap: () => _seekRelative(-30)),
-                  const SizedBox(width: 40),
-                  Semantics(
-                    button: true,
-                    label: _isPlaying ? 'Pause' : 'Play',
-                    child: Tooltip(
-                      message: _isPlaying ? 'Pause' : 'Play',
-                      child: Material(
-                        color: Colors.deepPurpleAccent,
-                        shape: const CircleBorder(),
-                        clipBehavior: Clip.antiAlias,
-                        child: InkWell(
-                          onTap: _togglePlay,
-                          child: SizedBox(
-                            width: 72,
-                            height: 72,
-                            child: Center(
-                              child: FaIcon(
-                                _isPlaying ? FontAwesomeIcons.pause : FontAwesomeIcons.play,
-                                color: Colors.white,
-                                size: 26,
+                // Transport controls
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _SeekButton(
+                        icon: FontAwesomeIcons.rotateLeft,
+                        seconds: 30,
+                        isForward: false,
+                        onTap: () => _seekRelative(-30)),
+                    const SizedBox(width: 40),
+                    Semantics(
+                      button: true,
+                      label: _isPlaying ? 'Pause' : 'Play',
+                      child: Tooltip(
+                        message: _isPlaying ? 'Pause' : 'Play',
+                        child: Material(
+                          color: Colors.deepPurpleAccent,
+                          shape: const CircleBorder(),
+                          clipBehavior: Clip.antiAlias,
+                          child: InkWell(
+                            onTap: _togglePlay,
+                            child: SizedBox(
+                              width: 72,
+                              height: 72,
+                              child: Center(
+                                child: FaIcon(
+                                  _isPlaying ? FontAwesomeIcons.pause : FontAwesomeIcons.play,
+                                  color: Colors.white,
+                                  size: 26,
+                                ),
                               ),
                             ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 40),
-                  _SeekButton(
-                      icon: FontAwesomeIcons.rotateRight, seconds: 30, isForward: true, onTap: () => _seekRelative(30)),
-                ],
-              ),
-            ],
+                    const SizedBox(width: 40),
+                    _SeekButton(
+                        icon: FontAwesomeIcons.rotateRight,
+                        seconds: 30,
+                        isForward: true,
+                        onTap: () => _seekRelative(30)),
+                  ],
+                ),
+
+                const SizedBox(height: 36),
+
+                // Per-integration upload status + actions (uses the blank space
+                // below the controls; replaces the old tap-to-open sheet).
+                SizedBox(
+                  width: double.infinity,
+                  child: IntegrationStatusList(controller: widget.controller, conversation: widget.conversation),
+                ),
+              ],
+            ),
           ),
         ),
       ),
