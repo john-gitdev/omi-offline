@@ -13,8 +13,10 @@ class UploadIconButton extends StatelessWidget {
   final bool isUploading;
   final UploadStatus uploadStatus;
 
-  /// Number of integrations that apply to this recording; a count badge is
-  /// overlaid on the icon when >= 2. The icon is a non-interactive indicator —
+  /// Number of integrations that still need attention for this recording
+  /// (pending or failed); a count badge is overlaid on the icon when >= 2 so it
+  /// reflects how many remain to be addressed, not the total configured. The
+  /// badge color follows [uploadStatus]. The icon is a non-interactive indicator —
   /// taps fall through to the row, which opens the player where the
   /// per-integration detail and actions live.
   final int integrationCount;
