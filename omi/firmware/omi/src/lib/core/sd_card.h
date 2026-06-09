@@ -112,14 +112,6 @@ typedef struct {
 int app_sd_init(void);
 
 /**
- * @brief Request a proactive wipe of the SD card on next mount.
- * 
- * Must be called BEFORE app_sd_init() to ensure the wipe happens 
- * before the worker thread starts scanning files.
- */
-void sd_request_wipe(void);
-
-/**
  * @brief Check if the SD card has completed boot init (mount + lfs_fs_gc pre-warm + file open).
  *
  * Returns true once the SD worker has set sd_boot_ready. Safe to poll from any thread.
