@@ -2,6 +2,11 @@
 
 ## App
 
+### 0.21.3
+
+- **Fix: Force Sync bolt now lands on the last recording when a discard trails it.**
+    - When you Force Process and the chronologically-last item was a discard (ghost), the final real recording either got no force-synced bolt or was left unfinalized as a draft. The bolt now correctly marks the last actual recording — trailing discards/ghosts after it no longer count as "later audio."
+
 ### 0.21.2
 
 - **New: Per-integration upload status.**
