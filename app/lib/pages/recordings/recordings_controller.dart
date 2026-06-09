@@ -29,7 +29,8 @@ enum IntegrationUploadState {
   /// Confirmed delivered to this integration.
   delivered,
 
-  /// Available but tried and failed (retry budget exhausted for auto-upload).
+  /// Available but the last attempt failed — either a manual upload failed, or
+  /// the auto-upload retry budget is exhausted.
   failed,
 
   /// Available, not delivered, no upload in flight — actionable.
@@ -43,7 +44,11 @@ enum IntegrationUploadState {
 class IntegrationStatus {
   final String name;
   final IntegrationUploadState state;
-  const IntegrationStatus(this.name, this.state);
+
+  /// When [state] is `failed`, the time of the most recent failed attempt (for
+  /// the "Last Upload Failed at" label). Null otherwise or if no time recorded.
+  final DateTime? failedAt;
+  const IntegrationStatus(this.name, this.state, {this.failedAt});
 
   bool get isActionable => state == IntegrationUploadState.pending || state == IntegrationUploadState.failed;
 }
@@ -1453,6 +1458,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
               if (isPassthrough) await _convertToPassthrough(conversation);
             }).catchError((e) {
               unawaited(_prefs.incrementAutoUploadRetry(retryKey));
+              unawaited(_prefs.setAutoUploadLastFailureAt(retryKey));
               if (e is HeyPocketException && e.statusCode == 401) {
                 _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
               } else if (e is OmiSyncException && e.isAuthError) {
@@ -1602,6 +1608,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       for (final integration in _integrations) {
         if (integration.isAvailableFor(conversation)) {
           if (force || !integration.hasDelivered(conversation)) {
+            // Persist an attempt marker up-front so an app-kill mid-upload (the
+            // in-memory uploading flag is lost on relaunch) surfaces as failed
+            // rather than reverting to pending. Cleared by upload() on success.
+            unawaited(_prefs.setAutoUploadLastFailureAt(integration.getRetryKey(conversation)));
             uploads.add(integration.upload(conversation).catchError((e) {
               failures.add(UploadFailure(integration.name, e));
             }));
@@ -1625,13 +1635,19 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   /// Per-integration upload status for [c] across all *configured* integrations,
   /// for the detail sheet and the row badge. Both the aggregate [uploadStatus]
-  /// and [applicableIntegrationCount] derive from this so the row icon, badge,
+  /// and [actionableIntegrationCount] derive from this so the row icon, badge,
   /// and sheet never disagree.
   List<IntegrationStatus> integrationStatuses(Conversation c) {
     final result = <IntegrationStatus>[];
     for (final i in _integrations) {
       if (!i.isConfigured) continue;
-      result.add(IntegrationStatus(i.name, _integrationState(i, c)));
+      final state = _integrationState(i, c);
+      DateTime? failedAt;
+      if (state == IntegrationUploadState.failed) {
+        final ms = _prefs.getAutoUploadLastFailureAt(i.getRetryKey(c));
+        if (ms > 0) failedAt = DateTime.fromMillisecondsSinceEpoch(ms);
+      }
+      result.add(IntegrationStatus(i.name, state, failedAt: failedAt));
     }
     return result;
   }
@@ -1641,15 +1657,29 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final uploading = _uploadingFiles.contains(c.uploadKey) || _syncingKeys.contains('${i.name}_${c.file.path}');
     if (uploading) return IntegrationUploadState.uploading;
     if (!i.isAvailableFor(c)) return IntegrationUploadState.unavailable;
-    if (i.isFailed(c)) return IntegrationUploadState.failed;
-    return IntegrationUploadState.pending;
+
+    final retryKey = i.getRetryKey(c);
+    // Has any attempt failed? `isFailed` covers the auto retry-budget exhaustion;
+    // the timestamp also covers a manual failure (which doesn't touch the retry
+    // count). Without this a manual failure would stay stuck on "pending".
+    final hasFailed = i.isFailed(c) || _prefs.getAutoUploadLastFailureAt(retryKey) > 0;
+    if (!hasFailed) return IntegrationUploadState.pending;
+
+    // Auto-upload retries immediately (no backoff) up to 3 times. While it still
+    // has budget for this recording, surface the whole retry window as
+    // "Uploading" rather than flickering to failed between the back-to-back
+    // attempts. Only once retries are exhausted, or auto-upload won't handle this
+    // recording (disabled, before the cutoff, or a manual-only failure), is it a
+    // real failure.
+    final autoWillRetry = i.isAutoUploadEnabled && i.isEnabled(c) && _prefs.getAutoUploadRetries(retryKey) < 3;
+    return autoWillRetry ? IntegrationUploadState.uploading : IntegrationUploadState.failed;
   }
 
-  /// How many configured integrations actually apply to [c] (i.e. are not
-  /// `unavailable`). Drives the row badge: shown only when >= 2, and decides
-  /// whether a tap opens the multi-integration sheet or uploads directly.
-  int applicableIntegrationCount(Conversation c) =>
-      integrationStatuses(c).where((s) => s.state != IntegrationUploadState.unavailable).length;
+  /// How many applicable integrations still need attention for [c] — i.e. are
+  /// `pending` or `failed` (see [IntegrationStatus.isActionable]). Drives the
+  /// row badge count: shown only when >= 2, so the number reflects how many
+  /// integrations remain to be addressed rather than the total configured.
+  int actionableIntegrationCount(Conversation c) => integrationStatuses(c).where((s) => s.isActionable).length;
 
   UploadStatus uploadStatus(Conversation c) {
     if (!PassthroughIntegration.hasAnyConfigured(_prefs)) return UploadStatus.unavailable;
@@ -1705,6 +1735,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
 
     _syncingKeys.add(syncKey);
+    // Persist an attempt marker up-front so an app-kill mid-upload (the in-memory
+    // _syncingKeys flag is lost on relaunch) surfaces as failed rather than
+    // reverting to pending. Cleared by integration.upload() on success.
+    unawaited(_prefs.setAutoUploadLastFailureAt(integration.getRetryKey(c)));
     notifyListeners();
 
     final failures = <UploadFailure>[];
@@ -1712,6 +1746,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       await integration.upload(c);
       if (_prefs.passthroughMode) await _convertToPassthrough(c);
     } catch (e) {
+      unawaited(_prefs.setAutoUploadLastFailureAt(integration.getRetryKey(c)));
       failures.add(UploadFailure(integration.name, e));
     } finally {
       _syncingKeys.remove(syncKey);
