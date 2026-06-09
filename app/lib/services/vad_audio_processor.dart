@@ -136,14 +136,10 @@ class VadAudioProcessor {
   int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
 
   // App-side silence-split tracking. _silenceRunMs is the length of the current
-  // unbroken run of non-speech frames (reset to 0 on any speech frame). The
-  // high-water marks record _currentRefs.length / _currentChunkDurationMs as of
-  // the last speech frame, so a split can trim the trailing silence off the
-  // saved recording. Reset on every conversation boundary (see _resetState and
-  // the inline resets in the gap-split / max-cap paths).
+  // unbroken run of non-speech frames (reset to 0 on any speech frame). Reset on
+  // every conversation boundary (see _resetState and the inline resets in the
+  // gap-split / max-cap paths).
   int _silenceRunMs = 0;
-  int _lastSpeechRefCount = 0;
-  int _lastSpeechChunkMs = 0;
 
   // Max Silero voice_prob observed during the current conversation. Surfaced in
   // discard records so the recovery UI can explain why VAD rejected the audio.
@@ -364,8 +360,6 @@ class VadAudioProcessor {
       'lit': _lastImuTicks,
       'ccd': _currentChunkDurationMs,
       'srm': _silenceRunMs,
-      'lsr': _lastSpeechRefCount,
-      'lsc': _lastSpeechChunkMs,
       'cmv': _currentMaxVoiceProb,
       'fbm': _forcedByMarker,
       'mpu': _markerProtectedUntilMs,
@@ -408,8 +402,6 @@ class VadAudioProcessor {
     _lastImuTicks = s['lit'] as int?;
     _currentChunkDurationMs = s['ccd'] as int;
     _silenceRunMs = s['srm'] as int;
-    _lastSpeechRefCount = s['lsr'] as int;
-    _lastSpeechChunkMs = s['lsc'] as int;
     _currentMaxVoiceProb = (s['cmv'] as num).toDouble();
     _forcedByMarker = s['fbm'] as bool;
     _markerProtectedUntilMs = s['mpu'] as int?;
@@ -898,8 +890,6 @@ class VadAudioProcessor {
               _speechFrameCount = 0;
               _currentChunkDurationMs = 0;
               _silenceRunMs = 0;
-              _lastSpeechRefCount = 0;
-              _lastSpeechChunkMs = 0;
               _recordingStartTime = newResumeTime;
               _pcmBufferLen = 0;
               // ignore: unawaited_futures, discarded_futures
@@ -1065,20 +1055,15 @@ class VadAudioProcessor {
   }
 
   /// Cuts the current conversation when the Silero VAD has observed
-  /// [_silenceDurationToSplitMs] of continuous non-speech. The speech is saved
-  /// trimmed at the last speech frame (or discarded if below the speech
-  /// minimum); the trailing silence is trashed but its bins are kept
-  /// recoverable on disk (excluding any bin that also backs the saved
-  /// recording). Pure-silence runs with no speech yet are trashed wholesale so
-  /// the buffer can't grow unbounded. Leaves state reset so the next speech
-  /// frame starts a fresh conversation.
+  /// [_silenceDurationToSplitMs] of continuous non-speech. The entire buffer —
+  /// including the trailing silence that triggered the split — is saved as the
+  /// conversation (or discarded if the speech is below the minimum). Pure-silence
+  /// runs with no speech yet are trashed wholesale so the buffer can't grow
+  /// unbounded. Leaves state reset so the next speech frame starts a fresh
+  /// conversation.
   Future<void> _splitOnSilence(List<String> savedFiles) async {
     await _flushPartialWindow();
-    if (_speechFrameCount > 0 && _lastSpeechRefCount > 0 && _lastSpeechRefCount <= _currentRefs.length) {
-      // CHANGED (June 2026): We no longer trim the trailing silence off the end
-      // of the recording. The entire buffer, including the silence that triggered
-      // the split, is now saved as part of the conversation. Consequently, we
-      // no longer generate the 'silence_trimmed' discard record.
+    if (_speechFrameCount > 0) {
       final speechMs = _speechFrameCount * frameDurationMs;
       final tooShort = _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
       if (tooShort) {
@@ -1172,8 +1157,6 @@ class VadAudioProcessor {
     _currentMaxVoiceProb = 0.0;
     _recordingStartTime = null;
     _silenceRunMs = 0;
-    _lastSpeechRefCount = 0;
-    _lastSpeechChunkMs = 0;
     // Reset VAD model state so the next conversation starts with a clean LSTM.
     // Not resetting these contaminates the first few VAD decisions of the new
     // conversation with the previous conversation's recurrent state.
@@ -1195,64 +1178,46 @@ class VadAudioProcessor {
   }
 
   /// Zero-pads the partial sample buffer to 512 samples and runs one final
-  /// VAD pass at a conversation boundary. If speech is detected in the tail,
-  /// updates the high-water marks so [_splitOnSilence] trims at the correct
-  /// frame rather than over-trimming by up to 1–2 frames (~32 ms).
+  /// VAD pass at a conversation boundary so the tail window contributes to
+  /// [_currentMaxVoiceProb] (surfaced in discard records) and the VAD recurrent
+  /// state stays consistent. The speech verdict itself is not consumed — the
+  /// full buffer is saved regardless of where the last speech frame landed.
   ///
   /// Must be called — with the current LSTM state intact — immediately before
   /// any [_resetState] call or inline state reset. Is a no-op when the buffer
-  /// is empty or no Silero session is loaded (AAD mode).
+  /// is empty or no Silero session is loaded (AAD mode), and is skipped during
+  /// batch replay (the native runner's LSTM state has already advanced past
+  /// this point, so it can't be evaluated with the correct recurrent context).
   Future<void> _flushPartialWindow() async {
     if (_pcmBufferLen == 0) return;
-
-    // During batch replay the native runner's LSTM state has already advanced
-    // past this point — we can't evaluate with the correct recurrent context.
-    // Conservatively treat partial window as speech so silence-split trims at
-    // the last full-window speech boundary rather than over-trimming.
-    if (_isReplayingBatch) {
-      _lastSpeechRefCount = _currentRefs.length;
-      _lastSpeechChunkMs = _currentChunkDurationMs;
-      return;
-    }
-
-    if (_session == null) {
-      _lastSpeechRefCount = _currentRefs.length;
-      _lastSpeechChunkMs = _currentChunkDurationMs;
-      return;
-    }
+    if (_isReplayingBatch) return;
+    if (_session == null) return;
 
     final padded = Float32List(_vadWindowSamples);
     padded.setRange(0, _pcmBufferLen, _pcmBuffer);
     // Remainder is already zero — Float32List default.
-    bool isSpeech = false;
     if (_useBatchRunner) {
       try {
         final probs = await _batchRunner!.runVadBatch(padded, resetStateFirst: _batchResetPending);
         _batchResetPending = false;
-        if (probs.isNotEmpty) {
-          if (probs[0] > _currentMaxVoiceProb) _currentMaxVoiceProb = probs[0];
-          isSpeech = probs[0] > _speechThreshold;
-        }
+        if (probs.isNotEmpty && probs[0] > _currentMaxVoiceProb) _currentMaxVoiceProb = probs[0];
       } catch (e) {
         // Per-window fallback (see _flushVadBatch): score this single padded window
         // through the independent Dart _session instead of disabling VAD for the
         // rest of the run. This is exactly what the single-pass path does below.
+        // _runVad updates _currentMaxVoiceProb internally.
         Logger.error('VadAudioProcessor: _flushPartialWindow batch runner failed ($e) — per-window fallback');
-        isSpeech = await _runVad(padded);
+        await _runVad(padded);
         _batchResetPending = true;
       }
     } else {
-      isSpeech = await _runVad(padded);
-    }
-
-    if (isSpeech) {
-      _lastSpeechRefCount = _currentRefs.length;
-      _lastSpeechChunkMs = _currentChunkDurationMs;
+      // _runVad updates _currentMaxVoiceProb internally.
+      await _runVad(padded);
     }
   }
 
   /// Unified verdict application — the single place where per-frame speech /
-  /// silence tracking, silence-split, max-cap, and high-water-mark logic lives.
+  /// silence tracking, silence-split, and max-cap logic lives.
   ///
   /// Called inline by the single-pass fallback path (iOS / desktop / tests) and
   /// in the Pass-2 replay loop by the batched Android path. Both paths supply
@@ -1278,12 +1243,6 @@ class VadAudioProcessor {
     }
     _currentRefs.add(frameRef);
     _currentChunkDurationMs += frameDurationMs;
-    if (isSpeech) {
-      // High-water mark of the conversation's last speech, used to trim the
-      // trailing silence off the saved recording on an in-stream split.
-      _lastSpeechRefCount = _currentRefs.length;
-      _lastSpeechChunkMs = _currentChunkDurationMs;
-    }
 
     // Anchor a fresh conversation to THIS frame's wall-clock time. After an
     // in-stream silence split, _splitOnSilence resets _recordingStartTime to
@@ -1341,8 +1300,6 @@ class VadAudioProcessor {
       _speechFrameCount = 0;
       _currentChunkDurationMs = 0;
       _silenceRunMs = 0;
-      _lastSpeechRefCount = 0;
-      _lastSpeechChunkMs = 0;
       _recordingStartTime = cutTime;
       if (!_isReplayingBatch) {
         _pcmBufferLen = 0;
