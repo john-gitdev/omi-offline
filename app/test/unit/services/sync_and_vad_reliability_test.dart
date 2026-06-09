@@ -132,8 +132,6 @@ void main() {
         'lit': 2022,
         'ccd': 3033,
         'srm': 4044,
-        'lsr': 55,
-        'lsc': 666,
         'cmv': 0.95,
         'fbm': true,
         'mpu': 777,
