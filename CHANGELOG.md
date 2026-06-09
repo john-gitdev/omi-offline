@@ -2,6 +2,17 @@
 
 ## App
 
+### 0.21.4
+
+- **New: "Ready to Upload" / "Last Upload Failed at" upload states.**
+    - The Integrations section now reads "Ready to Upload" instead of "Pending", and a failed upload shows "Last Upload Failed at: <time>" (formatted per your 12/24-hour setting) instead of a bare "Failed". The day-list cloud badge now counts only the integrations that still need attention rather than the total.
+- **New: Upload failures show the actual reason.**
+    - When an Omi Cloud upload fails, the snackbar now surfaces the server's error (e.g. a transcription timeout) instead of a generic "failed".
+- **Fix: Upload state survives the full lifecycle.**
+    - A recording stays "Uploading…" through the upload and the immediate auto-retry window instead of flickering to failed between attempts. A manual upload that fails — or is interrupted by the app being killed mid-upload — now shows "Last Upload Failed" rather than reverting to "Ready to Upload".
+- **Fix: Omi Cloud uploads are limited to one at a time.**
+    - Starting a second Omi upload while one is in progress is now blocked with a clear message, across both manual upload paths and the background sweep. Firing parallel sync jobs was causing the server to return 503 errors.
+
 ### 0.21.3
 
 - **Fix: Force Sync bolt now lands on the last recording when a discard trails it.**
