@@ -70,14 +70,20 @@ class HeyPocketPassthroughIntegration implements PassthroughIntegration {
   @override
   bool isEnabled(Conversation c) {
     if (!_prefs.heypocketEnabled || !isConfigured || c.uploadKey == null) return false;
-    final keySetAt = _prefs.heypocketKeySetAt;
-    final keySetTime = keySetAt > 0 ? DateTime.fromMillisecondsSinceEpoch(keySetAt) : null;
-    if (keySetTime != null && c.startTime.isBefore(keySetTime)) return false;
+    final enabledAt = _prefs.heypocketKeySetAt;
+    // Fail closed: with no recorded auto-upload-enabled time we never auto-upload
+    // (manual upload via isAvailableFor still works). A zero/legacy timestamp must
+    // not sweep up recordings made before the Auto-Upload toggle was switched on.
+    if (enabledAt <= 0) return false;
+    if (c.startTime.isBefore(DateTime.fromMillisecondsSinceEpoch(enabledAt))) return false;
     return true;
   }
 
+  // HeyPocket uploads the recording's audio file (wav/m4a/ogg), so any recording
+  // whose audio still exists can be uploaded manually — independent of when
+  // auto-upload was enabled.
   @override
-  bool isAvailableFor(Conversation c) => isConfigured && c.uploadKey != null;
+  bool isAvailableFor(Conversation c) => isConfigured && c.uploadKey != null && c.file.existsSync();
 
   @override
   bool get isConfigured => _prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty;
@@ -123,14 +129,18 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
   @override
   bool isEnabled(Conversation c) {
     if (!_prefs.omiEnabled || !isConfigured) return false;
-    final autoSyncAt = _prefs.omiAutoUploadAt;
-    final autoSyncTime = autoSyncAt > 0 ? DateTime.fromMillisecondsSinceEpoch(autoSyncAt) : null;
-    if (autoSyncTime != null && c.startTime.isBefore(autoSyncTime)) return false;
+    final enabledAt = _prefs.omiAutoUploadAt;
+    // Fail closed when no auto-upload-enabled time is recorded (see HeyPocket.isEnabled).
+    if (enabledAt <= 0) return false;
+    if (c.startTime.isBefore(DateTime.fromMillisecondsSinceEpoch(enabledAt))) return false;
     return true;
   }
 
+  // Omi can only upload the processing-time fs320 .bin, which is written solely
+  // while Omi sync is enabled. Recordings processed before then have no bin and
+  // cannot be uploaded at all — manual or otherwise — so they are not available.
   @override
-  bool isAvailableFor(Conversation c) => isConfigured;
+  bool isAvailableFor(Conversation c) => isConfigured && File(PassthroughIntegration.getBinPath(c)).existsSync();
 
   @override
   bool get isConfigured => _prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty;
