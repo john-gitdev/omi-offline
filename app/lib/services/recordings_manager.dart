@@ -1749,6 +1749,12 @@ class RecordingsManager {
           continue;
         }
 
+        // Whether any real speech recording follows this draft anywhere in the
+        // timeline. If not, the draft is the last actual recording and a Force
+        // Process should mark it force-synced (bolt) — trailing discards/ghosts
+        // after it don't count as "later audio".
+        final hasLaterAudio = allEvents.skip(currentIndex + 1).any((e) => e.audio != null);
+
         // Look ahead and accumulate non-speech duration (gaps + ghosts)
         int accumulatedNonSpeechMs = 0;
         int currentPointerTs = draftEndTs;
@@ -1787,7 +1793,9 @@ class RecordingsManager {
         if (finalizeNow) {
           Logger.debug(
               'RecordingsManager: Finalizing draft $draftTs — non-speech threshold (${thresholdMs}ms) exceeded.');
-          await _finalizeDraft(draftFile, isForceSynced: false);
+          // Bolt only when this is a Force Process and no speech follows — i.e.
+          // the boundary was a trailing gap/discard, not a real next recording.
+          await _finalizeDraft(draftFile, isForceSynced: finalizeAll && !hasLaterAudio);
           scanNeeded = true;
           break;
         }
@@ -1848,6 +1856,15 @@ class RecordingsManager {
               break;
             }
           }
+        } else if (finalizeAll) {
+          // Force Process and the only events after this draft are trailing
+          // discards/ghosts under threshold (no speech follows). The draft is
+          // the last actual recording, so finalize it now with the bolt instead
+          // of leaving it open as a draft.
+          Logger.debug('RecordingsManager: Force-finalizing draft $draftTs — only trailing discards follow (bolt).');
+          await _finalizeDraft(draftFile, isForceSynced: true);
+          scanNeeded = true;
+          break;
         }
       }
     }
