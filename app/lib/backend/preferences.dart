@@ -42,6 +42,10 @@ class SharedPreferencesUtil {
   bool get adjustmentMode => getBool('adjustmentMode', defaultValue: false);
   set adjustmentMode(bool v) => saveBool('adjustmentMode', v);
 
+  // Epoch ms when Adjustment Mode was last toggled on (0 = never / off).
+  int get adjustmentModeEnabledAt => getInt('adjustmentModeEnabledAt', defaultValue: 0);
+  set adjustmentModeEnabledAt(int v) => saveInt('adjustmentModeEnabledAt', v);
+
   int get autoVadThreshold => getInt('autoVadThreshold', defaultValue: 250);
   set autoVadThreshold(int v) => saveInt('autoVadThreshold', v);
 
