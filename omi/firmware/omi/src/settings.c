@@ -17,7 +17,6 @@ static uint8_t mic_gain = DEFAULT_MIC_GAIN;
 static uint16_t vad_threshold = DEFAULT_VAD_THRESHOLD;
 static struct rtc_time rtc_timestamp = {0};
 static uint64_t rtc_epoch = 0;
-static char last_fw_version[32] = {0};
 
 struct lsm6dsl_time_base {
     uint64_t epoch_s;
@@ -50,17 +49,6 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
 {
     const char *next;
     int rc;
-
-    if (settings_name_steq(name, "fw_version", &next) && !next) {
-        size_t to_read = (len < sizeof(last_fw_version) - 1) ? len : sizeof(last_fw_version) - 1;
-        rc = read_cb(cb_arg, last_fw_version, to_read);
-        if (rc >= 0) {
-            last_fw_version[to_read] = '\0';
-            LOG_INF("Loaded fw_version: %s", last_fw_version);
-            return 0;
-        }
-        return rc;
-    }
 
     if (settings_name_steq(name, "dim_ratio", &next) && !next) {
         if (len != sizeof(dim_light_ratio)) {
@@ -341,14 +329,6 @@ uint16_t app_settings_get_vad_threshold(void)
     return vad_threshold;
 }
 
-int app_settings_get_fw_version(char *buf, size_t len)
-{
-    if (!buf || len == 0) return -EINVAL;
-    strncpy(buf, last_fw_version, len - 1);
-    buf[len - 1] = '\0';
-    return 0;
-}
-
 int app_settings_save_last_reset(uint32_t cause, uint64_t uptime_ms)
 {
     last_reset.cause = cause;
@@ -406,10 +386,3 @@ void app_settings_get_conn_fail(uint32_t *count, uint8_t *last_adv_slow)
     }
 }
 
-int app_settings_save_fw_version(const char *version)
-{
-    if (!version) return -EINVAL;
-    strncpy(last_fw_version, version, sizeof(last_fw_version) - 1);
-    last_fw_version[sizeof(last_fw_version) - 1] = '\0';
-    return settings_save_one("omi/fw_version", last_fw_version, strlen(last_fw_version));
-}
