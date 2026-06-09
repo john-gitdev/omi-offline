@@ -190,6 +190,9 @@ class OmiDeviceConnection extends DeviceConnection {
         streamFrameDrops: data.getUint32LittleEndian(8),
         bootFrameDrops: data.getUint32LittleEndian(12),
         currentUptimeMs: data.getUint32LittleEndian(16),
+        // Appended fields (28-byte firmware); 0 / false on older 20-byte builds.
+        failedConnCount: data.length >= 28 ? data.getUint32LittleEndian(20) : 0,
+        lastFailedConnDuringSlowAdv: data.length >= 28 && data.getUint32LittleEndian(24) == 1,
         readAt: DateTime.now(),
       );
     } catch (e) {
