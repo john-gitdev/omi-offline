@@ -18,6 +18,8 @@
     - Each integration with Auto-Upload on now shows the date/time from which recordings are auto-uploaded, with a reminder that earlier recordings must be uploaded manually via the cloud icon. Respects the 12/24-hour time preference.
 - **Improved: Consistent player controls.**
     - Removed the 1×/1.5×/2× playback-speed toggles from the marker recording player so it matches the normal recording player's transport controls.
+- **Removed: OGG (Opus) save format.**
+    - The recording save-format setting now offers only WAV and M4A. OGG (which was Android-only) has been removed, along with its in-app Ogg encoder/stitcher. Anyone who had OGG selected is moved to WAV automatically; no existing recordings are touched.
 
 ### 0.21.1
 
