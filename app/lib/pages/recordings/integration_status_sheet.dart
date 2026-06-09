@@ -1,0 +1,184 @@
+import 'package:flutter/material.dart';
+import 'package:omi/pages/recordings/recordings_controller.dart';
+import 'package:omi/services/recordings_manager.dart';
+
+/// Per-integration upload detail for one recording: a row per configured
+/// integration showing its state (Uploaded / Pending / Failed / Uploading /
+/// Not available) with a per-integration action, plus an "Upload all pending"
+/// footer. Opened from the aggregate cloud icon when 2+ integrations apply.
+Future<void> showIntegrationStatusSheet(
+  BuildContext context,
+  RecordingsController controller,
+  Conversation conversation,
+) {
+  return showModalBottomSheet(
+    context: context,
+    backgroundColor: const Color(0xFF1C1C1E),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
+    builder: (_) => _IntegrationStatusSheet(controller: controller, conversation: conversation),
+  );
+}
+
+class _IntegrationStatusSheet extends StatelessWidget {
+  final RecordingsController controller;
+  final Conversation conversation;
+
+  const _IntegrationStatusSheet({required this.controller, required this.conversation});
+
+  Future<void> _runAction(BuildContext context, Future<List<UploadFailure>> Function() action) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final failures = await action();
+      for (final f in failures) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('${f.integration}: ${f.error.toString().replaceFirst('Exception: ', '')}')),
+        );
+      }
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) {
+          final statuses = controller.integrationStatuses(conversation);
+          final anyActionable = statuses.any((s) => s.isActionable);
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 18, 20, 8),
+                child: Text(
+                  'Upload status',
+                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+                ),
+              ),
+              ...statuses.map((s) => _IntegrationRow(
+                    status: s,
+                    onUpload: () => _runAction(context, () => controller.uploadOne(conversation, s.name)),
+                    onReupload: () =>
+                        _runAction(context, () => controller.uploadOne(conversation, s.name, force: true)),
+                  )),
+              if (anyActionable)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () => _runAction(context, () => controller.uploadConversation(conversation)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.deepPurpleAccent,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: const Text('Upload all pending',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 8),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _IntegrationRow extends StatelessWidget {
+  final IntegrationStatus status;
+  final VoidCallback onUpload;
+  final VoidCallback onReupload;
+
+  const _IntegrationRow({required this.status, required this.onUpload, required this.onReupload});
+
+  /// Why an integration can't take this recording — integration-specific so the
+  /// user understands it's expected, not an error.
+  String get _unavailableReason {
+    switch (status.name) {
+      case 'Omi Cloud':
+        return 'Recorded before Omi sync was enabled';
+      case 'HeyPocket':
+        return 'Audio file is no longer available';
+      default:
+        return 'Not available for this recording';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final (Color color, String label, IconData icon) = switch (status.state) {
+      IntegrationUploadState.delivered => (Colors.green, 'Uploaded', Icons.cloud_done),
+      IntegrationUploadState.uploading => (Colors.deepPurpleAccent, 'Uploading…', Icons.cloud_upload),
+      IntegrationUploadState.failed => (Colors.redAccent, 'Failed', Icons.error_outline),
+      IntegrationUploadState.pending => (Colors.amber, 'Pending', Icons.cloud_upload),
+      IntegrationUploadState.unavailable => (Colors.grey.shade600, 'Not available', Icons.cloud_off),
+    };
+
+    Widget trailing;
+    switch (status.state) {
+      case IntegrationUploadState.uploading:
+        trailing = const SizedBox(
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
+        );
+        break;
+      case IntegrationUploadState.delivered:
+        trailing = TextButton(
+          onPressed: onReupload,
+          child: Text('Re-upload', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+        );
+        break;
+      case IntegrationUploadState.failed:
+        trailing = TextButton(
+          onPressed: onUpload,
+          child:
+              const Text('Retry', style: TextStyle(color: Colors.redAccent, fontSize: 13, fontWeight: FontWeight.w600)),
+        );
+        break;
+      case IntegrationUploadState.pending:
+        trailing = TextButton(
+          onPressed: onUpload,
+          child: const Text('Upload',
+              style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13, fontWeight: FontWeight.w600)),
+        );
+        break;
+      case IntegrationUploadState.unavailable:
+        trailing = const SizedBox.shrink();
+        break;
+    }
+
+    final isUnavailable = status.state == IntegrationUploadState.unavailable;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(status.name, style: const TextStyle(color: Colors.white, fontSize: 15)),
+                const SizedBox(height: 2),
+                Text(
+                  isUnavailable ? _unavailableReason : label,
+                  style: TextStyle(color: color, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          trailing,
+        ],
+      ),
+    );
+  }
+}
