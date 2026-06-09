@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
@@ -49,6 +50,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   static const _kBaselineBoot = 'drop_baseline_boot';
   List<Map<String, dynamic>> _recentLogs = const [];
 
+  // Count of .bin files held in the isolated Adjustment Mode folder. Refreshed
+  // on entering the Debug menu and after toggling Adjustment Mode.
+  int _adjustmentBinCount = 0;
+
   @override
   void initState() {
     super.initState();
@@ -60,6 +65,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     // Drops toggle. Logs poll only runs when Save Diagnostic Logs is on.
     if (SharedPreferencesUtil().showSdWriteDrops) _startDropPolling();
     if (SharedPreferencesUtil().devLogsToFileEnabled) _startLogPolling();
+    // Refresh the Adjustment Mode bin count whenever the Debug menu is opened.
+    unawaited(_refreshAdjustmentBinCount());
     // Do NOT call start() here. start() fires getMissingWals() asynchronously and
     // overwrites _wals via .then(), which races with syncAll() between the moment it
     // takes its local `wals` snapshot and when it sets _isSyncing = true.
@@ -486,6 +493,36 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     setState(() => _dropBaseline = stats);
   }
 
+  /// Counts `.bin` files in the isolated Adjustment Mode folder.
+  Future<void> _refreshAdjustmentBinCount() async {
+    int count = 0;
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final adjDir = Directory('${directory.path}/adjustment_mode_segments');
+      if (await adjDir.exists()) {
+        await for (final e in adjDir.list(recursive: true)) {
+          if (e is File && e.path.endsWith('.bin')) count++;
+        }
+      }
+    } catch (_) {
+      // Best-effort count — leave at 0 on any filesystem error.
+    }
+    if (mounted) setState(() => _adjustmentBinCount = count);
+  }
+
+  /// True if an in-progress recording (`*_draft.*`) exists on disk.
+  Future<bool> _hasDraftInProgress() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final recDir = Directory('${directory.path}/recordings');
+      if (!await recDir.exists()) return false;
+      await for (final e in recDir.list(recursive: true)) {
+        if (e is File && e.path.contains('_draft.')) return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
   @override
   void dispose() {
     _pollTimer?.cancel();
@@ -663,94 +700,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 _buildDropStatsSection(),
               ],
               const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1C1C1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: SwitchListTile(
-                  title: const Text('Adjustment Mode',
-                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Copies all raw bins into an isolated folder for safe reprocessing.',
-                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
-                  value: SharedPreferencesUtil().adjustmentMode,
-                  onChanged: (val) async {
-                    if (val) {
-                      SharedPreferencesUtil().adjustmentMode = true;
-                      setState(() {});
-                      await RecordingsManager.processAllCompletedSessions();
-                      return;
-                    }
-
-                    // Turning OFF wipes the isolated copy of raw bins. Confirm
-                    // first when there's actually an archive to lose; leave the
-                    // toggle ON (driven by the pref) if the user cancels.
-                    final directory = await getApplicationDocumentsDirectory();
-                    final adjDir = Directory('${directory.path}/adjustment_mode_segments');
-                    final hasArchive = await adjDir.exists();
-                    if (hasArchive) {
-                      if (!context.mounted) return;
-                      final confirm = await showDialog<bool>(
-                        context: context,
-                        builder: (c) => getDialog(
-                          context,
-                          () => Navigator.of(context).pop(false),
-                          () => Navigator.of(context).pop(true),
-                          'Turn Off Adjustment Mode',
-                          'This deletes the isolated copy of raw bins kept for reprocessing. This cannot be undone. Continue?',
-                          confirmText: 'Turn Off',
-                        ),
-                      );
-                      if (confirm != true) return;
-                    }
-
-                    SharedPreferencesUtil().adjustmentMode = false;
-                    if (mounted) setState(() {});
-                    if (hasArchive) {
-                      await adjDir.delete(recursive: true);
-                    }
-                  },
-                  activeColor: Colors.deepPurpleAccent,
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-              if (SharedPreferencesUtil().adjustmentMode) ...[
-                const SizedBox(height: 16),
-                Center(
-                  child: ElevatedButton(
-                    onPressed: () async {
-                      setState(() { _statusMessage = 'Copying adjustment bins...'; });
-                      final directory = await getApplicationDocumentsDirectory();
-                      final adjDir = Directory('${directory.path}/adjustment_mode_segments');
-                      final rawDir = Directory('${directory.path}/raw_segments');
-                      if (await adjDir.exists()) {
-                        await for (final file in adjDir.list(recursive: true)) {
-                          if (file is File) {
-                            final relPath = file.path.substring(adjDir.path.length + 1);
-                            final destPath = '${rawDir.path}/$relPath';
-                            final destFile = File(destPath);
-                            if (!await destFile.parent.exists()) {
-                              await destFile.parent.create(recursive: true);
-                            }
-                            await file.copy(destPath);
-                          }
-                        }
-                        setState(() { _statusMessage = 'Adjustment bins copied to raw_segments'; });
-                      } else {
-                        setState(() { _statusMessage = 'No adjustment bins found.'; });
-                      }
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.deepPurpleAccent,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
-                    ),
-                    child: const Text('Copy Bins for Reprocessing',
-                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  ),
-                ),
-              ],
+              _buildAdjustmentModeSection(),
               const SizedBox(height: 24),
               const Divider(color: Color(0xFF2C2C2E), height: 1),
               const SizedBox(height: 24),
@@ -892,6 +842,143 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     );
   }
 
+  Widget _buildAdjustmentModeSection() {
+    final on = SharedPreferencesUtil().adjustmentMode;
+    final enabledAtMs = SharedPreferencesUtil().adjustmentModeEnabledAt;
+    final enabledAtLabel =
+        enabledAtMs > 0 ? DateFormat('MMM d, h:mm a').format(DateTime.fromMillisecondsSinceEpoch(enabledAtMs)) : '—';
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1C),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF2C2C2E)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SwitchListTile(
+            title: const Text('Adjustment Mode',
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+            subtitle: Text('Copies all raw bins into an isolated folder for safe reprocessing.',
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+            value: on,
+            onChanged: _onAdjustmentModeToggled,
+            activeColor: Colors.deepPurpleAccent,
+            contentPadding: EdgeInsets.zero,
+          ),
+          if (on) ...[
+            const SizedBox(height: 4),
+            _dropStatRow('Enabled at', enabledAtLabel, false),
+            _dropStatRow('Bins in adjustment folder', _adjustmentBinCount.toString(), false),
+            const SizedBox(height: 10),
+            OutlinedButton(
+              onPressed: _copyAdjustmentBinsForReprocessing,
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.deepPurpleAccent, width: 1),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                minimumSize: const Size(double.infinity, 0),
+              ),
+              child: const Text('Copy Bins for Reprocessing',
+                  style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _onAdjustmentModeToggled(bool val) async {
+    final prefs = SharedPreferencesUtil();
+    if (val) {
+      // If a recording is in progress, confirm finalizing it before entering AM —
+      // turning on Adjustment Mode promotes the in-progress draft to a conversation.
+      final hasDraft = await _hasDraftInProgress();
+      if (hasDraft) {
+        if (!mounted) return;
+        final confirm = await showDialog<bool>(
+          context: context,
+          builder: (c) => getDialog(
+            context,
+            () => Navigator.of(context).pop(false),
+            () => Navigator.of(context).pop(true),
+            'Finalize Current Recording?',
+            'You have a recording in progress. Turning on Adjustment Mode will finalize it into a conversation. Continue?',
+            confirmText: 'Finalize & Continue',
+          ),
+        );
+        if (confirm != true) return; // leave the toggle off
+      }
+      prefs.adjustmentMode = true;
+      prefs.adjustmentModeEnabledAt = DateTime.now().millisecondsSinceEpoch;
+      if (mounted) setState(() {});
+      await _refreshAdjustmentBinCount();
+      // forceProcessAll finalizes the in-progress draft; the lighter
+      // processAllCompletedSessions leaves drafts untouched when there are none.
+      if (hasDraft) {
+        await RecordingsManager.forceProcessAll();
+      } else {
+        await RecordingsManager.processAllCompletedSessions();
+      }
+      return;
+    }
+
+    // Turning OFF wipes the isolated copy of raw bins. Confirm first when there's
+    // actually an archive to lose; leave the toggle ON (driven by the pref) if the
+    // user cancels.
+    final directory = await getApplicationDocumentsDirectory();
+    final adjDir = Directory('${directory.path}/adjustment_mode_segments');
+    final hasArchive = await adjDir.exists();
+    if (hasArchive) {
+      if (!mounted) return;
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (c) => getDialog(
+          context,
+          () => Navigator.of(context).pop(false),
+          () => Navigator.of(context).pop(true),
+          'Turn Off Adjustment Mode',
+          'This deletes the isolated copy of raw bins kept for reprocessing. This cannot be undone. Continue?',
+          confirmText: 'Turn Off',
+        ),
+      );
+      if (confirm != true) return;
+    }
+
+    prefs.adjustmentMode = false;
+    prefs.adjustmentModeEnabledAt = 0;
+    if (mounted) setState(() {});
+    if (hasArchive) {
+      await adjDir.delete(recursive: true);
+    }
+    await _refreshAdjustmentBinCount();
+  }
+
+  Future<void> _copyAdjustmentBinsForReprocessing() async {
+    setState(() => _statusMessage = 'Copying adjustment bins...');
+    final directory = await getApplicationDocumentsDirectory();
+    final adjDir = Directory('${directory.path}/adjustment_mode_segments');
+    final rawDir = Directory('${directory.path}/raw_segments');
+    if (await adjDir.exists()) {
+      await for (final file in adjDir.list(recursive: true)) {
+        if (file is File) {
+          final relPath = file.path.substring(adjDir.path.length + 1);
+          final destPath = '${rawDir.path}/$relPath';
+          final destFile = File(destPath);
+          if (!await destFile.parent.exists()) {
+            await destFile.parent.create(recursive: true);
+          }
+          await file.copy(destPath);
+        }
+      }
+      if (mounted) setState(() => _statusMessage = 'Adjustment bins copied to raw_segments');
+    } else {
+      if (mounted) setState(() => _statusMessage = 'No adjustment bins found.');
+    }
+  }
+
   Widget _buildDropStatsSection() {
     if (_dropsUnsupported) {
       return const Row(
@@ -961,6 +1048,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _dropStatRow('Boot-window frame drops', boot.toString(), false),
           _dropStatRow('Last block drop', lastDropLabel, hasFreshDrops),
           _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
+          // BLE connect-establishment failures (persisted across reboots). See
+          // NOTES.md "BLE: advertising but won't connect".
+          _dropStatRow('BLE connect failures', stats.failedConnCount.toString(), stats.failedConnCount > 0),
+          if (stats.failedConnCount > 0)
+            _dropStatRow(
+                'Last fail adv mode', stats.lastFailedConnDuringSlowAdv ? 'slow (1s)' : 'fast', true),
           const SizedBox(height: 10),
           OutlinedButton(
             onPressed: _snapshotDropBaseline,
