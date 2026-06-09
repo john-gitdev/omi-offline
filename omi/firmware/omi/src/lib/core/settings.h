@@ -154,4 +154,19 @@ int app_settings_save_crash_session_uptime(uint64_t uptime_ms);
 /** @brief Return the previous session's final uptime checkpoint (ms). */
 uint64_t app_settings_get_crash_session_uptime(void);
 
+/**
+ * @brief Persist the cumulative BLE connection-establishment failure count.
+ *
+ * Survives a power-cycle so the count is still readable after the user reboots
+ * the Omi to reconnect (the only way to read it, since a failing device can't
+ * be connected to). See NOTES.md "BLE: advertising but won't connect".
+ * @param count          cumulative failed establishments (across boots)
+ * @param last_adv_slow  1 if the most recent failure occurred during slow (1 s)
+ *                       advertising, 0 if during fast advertising
+ */
+int app_settings_save_conn_fail(uint32_t count, uint8_t last_adv_slow);
+
+/** @brief Load the persisted connection-failure count + last-failure adv mode. */
+void app_settings_get_conn_fail(uint32_t *count, uint8_t *last_adv_slow);
+
 #endif // SETTINGS_H
