@@ -849,7 +849,9 @@ class VadAudioProcessor {
             final bool withinMarkerWindow =
                 _markerProtectedUntilMs != null && newResumeTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
 
-            if (!withinMarkerWindow && gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump) {
+            if (!withinMarkerWindow &&
+                gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) &&
+                !isClockJump) {
               // Gap exceeds threshold — flush current recording, start new conversation.
               // TWO-PASS: flush any deferred batch before the split decision.
               if (_useBatchRunner && _batchDeferredFrames.isNotEmpty) {
@@ -996,7 +998,7 @@ class VadAudioProcessor {
             markerProtected: isSpeech, // includes AAD-mode and marker-protected speech
           ));
 
-          // DYNAMIC BATCH LIMIT: Flush early to prevent MethodChannel OOMs on 
+          // DYNAMIC BATCH LIMIT: Flush early to prevent MethodChannel OOMs on
           // continuous background noise (limit to 120s of audio / 6000 frames per batch).
           if (_batchDeferredFrames.length >= 6000) {
             segmentSpeechFrames = await _flushVadBatch(
@@ -1029,8 +1031,7 @@ class VadAudioProcessor {
 
       // TWO-PASS: flush any remaining batch at segment end.
       if (_batchDeferredFrames.isNotEmpty) {
-        segmentSpeechFrames =
-            await _flushVadBatch(savedFiles: savedFiles, segmentSpeechFrames: segmentSpeechFrames);
+        segmentSpeechFrames = await _flushVadBatch(savedFiles: savedFiles, segmentSpeechFrames: segmentSpeechFrames);
       }
 
       _lastSegmentEndTime = lastFrameWallTime.add(const Duration(milliseconds: frameDurationMs));
@@ -1078,7 +1079,8 @@ class VadAudioProcessor {
         } else {
           savedFiles.add(filePath);
         }
-        Logger.debug('VadAudioProcessor: Silence split — saved ${_currentChunkDurationMs}ms recording (including trailing silence).');
+        Logger.debug(
+            'VadAudioProcessor: Silence split — saved ${_currentChunkDurationMs}ms recording (including trailing silence).');
       }
     } else {
       // No speech yet — the whole buffer is silence. Trash it (bins recoverable).
@@ -1272,8 +1274,7 @@ class VadAudioProcessor {
       Logger.debug('VadAudioProcessor: Max conversation duration — forcing cut.');
       await _flushPartialWindow();
       final speechMs = _speechFrameCount * frameDurationMs;
-      final bool tooShortSpeech =
-          _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
+      final bool tooShortSpeech = _session != null && _minSpeechMs > 0 && speechMs < _minSpeechMs && !_forcedByMarker;
 
       if (!tooShortSpeech) {
         // capEnded=true: VAD cut here because the recording hit the max-duration cap,
@@ -1331,89 +1332,88 @@ class VadAudioProcessor {
 
     _isReplayingBatch = true;
     try {
+      // If the model was disabled (e.g. from a prior ML failure), AAD mode is active.
+      // Treat all deferred frames as speech to avoid data loss.
+      final bool aadMode = _session == null;
+      final frameSpeechFlags = List<bool>.filled(_batchDeferredFrames.length, aadMode);
 
-    // If the model was disabled (e.g. from a prior ML failure), AAD mode is active.
-    // Treat all deferred frames as speech to avoid data loss.
-    final bool aadMode = _session == null;
-    final frameSpeechFlags = List<bool>.filled(_batchDeferredFrames.length, aadMode);
+      if (!aadMode && _batchWindows.isNotEmpty && _batchRunner != null && _batchRunner!.available) {
+        try {
+          final stopwatch = Stopwatch()..start();
+          final samples = Float32List(_batchWindows.length * _vadWindowSamples);
+          int offset = 0;
+          for (final w in _batchWindows) {
+            samples.setAll(offset, w);
+            offset += _vadWindowSamples;
+          }
+          final probs = await _batchRunner!.runVadBatch(samples, resetStateFirst: _batchResetPending);
+          stopwatch.stop();
+          Logger.debug(
+              'VadAudioProcessor: batch runner evaluated ${probs.length} windows (${samples.length} samples) in ${stopwatch.elapsedMilliseconds}ms.');
 
-    if (!aadMode && _batchWindows.isNotEmpty && _batchRunner != null && _batchRunner!.available) {
-      try {
-        final stopwatch = Stopwatch()..start();
-        final samples = Float32List(_batchWindows.length * _vadWindowSamples);
-        int offset = 0;
-        for (final w in _batchWindows) {
-          samples.setAll(offset, w);
-          offset += _vadWindowSamples;
-        }
-        final probs = await _batchRunner!.runVadBatch(samples, resetStateFirst: _batchResetPending);
-        stopwatch.stop();
-        Logger.debug(
-            'VadAudioProcessor: batch runner evaluated ${probs.length} windows (${samples.length} samples) in ${stopwatch.elapsedMilliseconds}ms.');
-        
-        _batchResetPending = false;
-        // Map each window's prob back to the frame that triggered it.
-        for (int w = 0; w < probs.length && w < _batchWindowFrameIndices.length; w++) {
-          final prob = probs[w];
-          if (prob > _currentMaxVoiceProb) _currentMaxVoiceProb = prob;
-          if (prob > _speechThreshold) {
-            frameSpeechFlags[_batchWindowFrameIndices[w]] = true;
+          _batchResetPending = false;
+          // Map each window's prob back to the frame that triggered it.
+          for (int w = 0; w < probs.length && w < _batchWindowFrameIndices.length; w++) {
+            final prob = probs[w];
+            if (prob > _currentMaxVoiceProb) _currentMaxVoiceProb = prob;
+            if (prob > _speechThreshold) {
+              frameSpeechFlags[_batchWindowFrameIndices[w]] = true;
+            }
           }
-        }
-      } catch (e) {
-        // The native batch channel failed (e.g. a transient timeout or channel
-        // hiccup). Rather than disabling VAD for the rest of the run, fall back to
-        // per-window inference for THIS batch only and keep the runner + session
-        // alive for subsequent batches. _runVad scores through the Dart-side
-        // _session, which is independent of the native batch channel; it tracks
-        // _currentMaxVoiceProb and, if that session is *also* broken, nulls itself
-        // and returns true (AAD) — so the keep-everything safety net is preserved
-        // for the both-broken worst case. _runVad re-inits its LSTM state lazily
-        // (cold-start) and then carries it window-to-window like single-pass mode.
-        Logger.error('VadAudioProcessor: batch runner failed ($e) — per-window fallback for this batch');
-        for (int w = 0; w < _batchWindows.length && w < _batchWindowFrameIndices.length; w++) {
-          if (await _runVad(_batchWindows[w])) {
-            frameSpeechFlags[_batchWindowFrameIndices[w]] = true;
+        } catch (e) {
+          // The native batch channel failed (e.g. a transient timeout or channel
+          // hiccup). Rather than disabling VAD for the rest of the run, fall back to
+          // per-window inference for THIS batch only and keep the runner + session
+          // alive for subsequent batches. _runVad scores through the Dart-side
+          // _session, which is independent of the native batch channel; it tracks
+          // _currentMaxVoiceProb and, if that session is *also* broken, nulls itself
+          // and returns true (AAD) — so the keep-everything safety net is preserved
+          // for the both-broken worst case. _runVad re-inits its LSTM state lazily
+          // (cold-start) and then carries it window-to-window like single-pass mode.
+          Logger.error('VadAudioProcessor: batch runner failed ($e) — per-window fallback for this batch');
+          for (int w = 0; w < _batchWindows.length && w < _batchWindowFrameIndices.length; w++) {
+            if (await _runVad(_batchWindows[w])) {
+              frameSpeechFlags[_batchWindowFrameIndices[w]] = true;
+            }
           }
+          // The native runner (if it recovers next batch) never saw this batch's
+          // audio, so force a clean state reset rather than letting it resume from
+          // stale state — a bounded cold-start beats content-dependent drift.
+          _batchResetPending = true;
         }
-        // The native runner (if it recovers next batch) never saw this batch's
-        // audio, so force a clean state reset rather than letting it resume from
-        // stale state — a bounded cold-start beats content-dependent drift.
-        _batchResetPending = true;
       }
-    }
 
-    // Replay verdicts in frame order through the shared _applyVadVerdict.
-    //
-    // KNOWN DIVERGENCE FROM THE SINGLE-PASS PATH (intentional, accepted):
-    // the whole batch was scored by the native runner in one continuous-state
-    // pass, so if a verdict below fires an in-batch boundary (silence-split or
-    // max-cap), the frames *after* that boundary in this same batch were already
-    // scored with the pre-boundary LSTM state — the single-pass path would have
-    // zeroed the state at the cut. Effect is sub-100 ms: a silence-split only
-    // fires after _silenceDurationToSplitMs of quiet, so the carried-over state
-    // is silence-saturated, and only the first ~1-3 windows of the next
-    // conversation are slightly under-scored before Silero re-converges. A kept
-    // conversation needs _minSpeechMs (default 3 s) anyway, so those boundary
-    // frames don't change the outcome. _batchResetPending is set true at the
-    // boundary so the *next* runVadBatch call correctly starts from zeroed state.
-    for (int f = 0; f < _batchDeferredFrames.length; f++) {
-      final df = _batchDeferredFrames[f];
-      // isSpeech = marker-protected (set during Pass 1) OR VAD detected speech
-      final isSpeech = df.markerProtected || frameSpeechFlags[f];
-      final verdictResult = await _applyVadVerdict(
-        isSpeech: isSpeech,
-        frameRef: df.ref,
-        frameTime: df.frameTime,
-        savedFiles: savedFiles,
-        segmentSpeechFrames: segmentSpeechFrames,
-      );
-      segmentSpeechFrames = verdictResult.segmentSpeechFrames;
-      // splitFired is handled inside _applyVadVerdict (calls _splitOnSilence
-      // or resets state); no outer loop to `continue` from here.
-    }
+      // Replay verdicts in frame order through the shared _applyVadVerdict.
+      //
+      // KNOWN DIVERGENCE FROM THE SINGLE-PASS PATH (intentional, accepted):
+      // the whole batch was scored by the native runner in one continuous-state
+      // pass, so if a verdict below fires an in-batch boundary (silence-split or
+      // max-cap), the frames *after* that boundary in this same batch were already
+      // scored with the pre-boundary LSTM state — the single-pass path would have
+      // zeroed the state at the cut. Effect is sub-100 ms: a silence-split only
+      // fires after _silenceDurationToSplitMs of quiet, so the carried-over state
+      // is silence-saturated, and only the first ~1-3 windows of the next
+      // conversation are slightly under-scored before Silero re-converges. A kept
+      // conversation needs _minSpeechMs (default 3 s) anyway, so those boundary
+      // frames don't change the outcome. _batchResetPending is set true at the
+      // boundary so the *next* runVadBatch call correctly starts from zeroed state.
+      for (int f = 0; f < _batchDeferredFrames.length; f++) {
+        final df = _batchDeferredFrames[f];
+        // isSpeech = marker-protected (set during Pass 1) OR VAD detected speech
+        final isSpeech = df.markerProtected || frameSpeechFlags[f];
+        final verdictResult = await _applyVadVerdict(
+          isSpeech: isSpeech,
+          frameRef: df.ref,
+          frameTime: df.frameTime,
+          savedFiles: savedFiles,
+          segmentSpeechFrames: segmentSpeechFrames,
+        );
+        segmentSpeechFrames = verdictResult.segmentSpeechFrames;
+        // splitFired is handled inside _applyVadVerdict (calls _splitOnSilence
+        // or resets state); no outer loop to `continue` from here.
+      }
 
-    return segmentSpeechFrames;
+      return segmentSpeechFrames;
     } finally {
       _isReplayingBatch = false;
       // Clear batch buffers for the next batch boundary.
@@ -1608,12 +1608,6 @@ class VadAudioProcessor {
     // The RecordingsManager will convert the finalized WAV to M4A during the promotion phase.
     if (_audioSaveFormat == 'wav' || (isDraft && _audioSaveFormat == 'm4a')) {
       return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix, capEnded: capEnded);
-    } else if (_audioSaveFormat == 'ogg') {
-      if (Platform.isIOS) {
-        return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix, capEnded: capEnded);
-      } else {
-        return await _saveOgg(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix, capEnded: capEnded);
-      }
     }
 
     final m4aPath = '${dateFolder.path}/${prefix}_$timestamp$suffix.m4a';
@@ -1782,7 +1776,11 @@ class VadAudioProcessor {
 
   Future<void> _saveMetadata(List<Object> refs, String dateFolderPath, int timestamp, int totalSamples,
       List<double> dynamicPeaks, int waveformBuckets,
-      {required String prefix, required String extension, String suffix = '', bool capEnded = false, required bool isSilero}) async {
+      {required String prefix,
+      required String extension,
+      String suffix = '',
+      bool capEnded = false,
+      required bool isSilero}) async {
     final finalAmplitudes = List<double>.filled(waveformBuckets, 0.0);
     if (dynamicPeaks.isNotEmpty) {
       final double ratio = dynamicPeaks.length / waveformBuckets;
@@ -1839,12 +1837,8 @@ class VadAudioProcessor {
     metaOut.add(isSilero ? 1 : 0); // isSilero
 
     // Append relative bins used for this recording (binary length + JSON)
-    final relativeBins = refs
-        .whereType<FrameRef>()
-        .map((r) => r.segmentFile.path.split('/raw_segments/').last)
-        .toSet()
-        .toList()
-      ..sort();
+    final relativeBins =
+        refs.whereType<FrameRef>().map((r) => r.segmentFile.path.split('/raw_segments/').last).toSet().toList()..sort();
     final binsJson = jsonEncode(relativeBins);
     final binsBytes = utf8.encode(binsJson);
     final binsLen = ByteData(4)..setUint32(0, binsBytes.length, Endian.little);
@@ -1852,235 +1846,6 @@ class VadAudioProcessor {
     metaOut.addAll(binsBytes);
 
     await File(metaPath).writeAsBytes(metaOut);
-  }
-
-  Future<String?> _saveOgg(List<Object> refs, String dateFolderPath, int timestamp,
-      {String prefix = 'recording', String suffix = '', bool capEnded = false}) async {
-    final oggPath = '$dateFolderPath/${prefix}_$timestamp$suffix.ogg';
-    final tmpPath = '$oggPath.tmp';
-    final oggFile = File(tmpPath);
-    final IOSink sink = oggFile.openWrite();
-
-    const waveformBuckets = 200;
-    const windowSize = 800;
-
-    final dynamicPeaks = <double>[];
-    double currentWindowMax = 0.0;
-    int currentWindowSamples = 0;
-    int totalSamples = 0;
-
-    // 1-byte 16kHz SILK mode Opus DTX (silence) frame
-    final opusSilenceFrame = Uint8List.fromList([0x48]);
-
-    int granulePos = 0;
-    int pageSeqNum = 2;
-    String? currentFilePath;
-    Uint8List? currentFileBytes;
-    final pagePackets = <Uint8List>[];
-
-    bool renamed = false;
-    try {
-      final serial = Random().nextInt(0x7FFFFFFF);
-      sink.add(_createOggPage(0, 0, serial, [_createOggOpusIdHeader()], isFirstPage: true));
-      sink.add(_createOggPage(0, 1, serial, [_createOggOpusCommentHeader()]));
-
-      for (var i = 0; i < refs.length; i++) {
-        _onLiveness?.call();
-        final item = refs[i];
-
-        if (item is Duration) {
-          final ms = item.inMilliseconds;
-          final durationSamples = (ms * sampleRate) ~/ 1000;
-          final silenceFrames = (ms / frameDurationMs).round();
-
-          for (int f = 0; f < silenceFrames; f++) {
-            granulePos += 960; // 20ms at 48kHz
-            pagePackets.add(opusSilenceFrame);
-
-            if (pagePackets.length >= 40) {
-              sink.add(_createOggPage(granulePos, pageSeqNum++, serial, pagePackets.toList()));
-              pagePackets.clear();
-            }
-          }
-
-          // Waveform metadata for silence — O(buckets) not O(samples).
-          final totalNow = currentWindowSamples + durationSamples;
-          dynamicPeaks.addAll(List.filled(totalNow ~/ windowSize, 0.0));
-          currentWindowSamples = totalNow % windowSize;
-          totalSamples += durationSamples;
-        } else {
-          final ref = item as FrameRef;
-          // Yield every 500 frames instead of 50 — readAsBytes() already yields on
-          // file transitions; the finer cadence is pure overhead in a dedicated isolate.
-          if (i % 500 == 0) await Future.delayed(Duration.zero);
-
-          if (ref.segmentFile.path != currentFilePath) {
-            currentFileBytes = await ref.segmentFile.readAsBytes();
-            currentFilePath = ref.segmentFile.path;
-          }
-
-          if (currentFileBytes == null) continue;
-
-          final frameDataOffset = ref.byteOffset + 4;
-          final opusBytes = Uint8List.sublistView(currentFileBytes, frameDataOffset, frameDataOffset + ref.frameLength);
-
-          Int16List? pcmData;
-          try {
-            pcmData = _decoder?.decode(input: opusBytes);
-          } catch (e) {
-            continue;
-          }
-          if (pcmData != null) {
-            for (int s = 0; s < pcmData.length; s++) {
-              final amplitude = pcmData[s].abs() / 32768.0;
-              if (amplitude > currentWindowMax) currentWindowMax = amplitude;
-              currentWindowSamples++;
-              if (currentWindowSamples >= windowSize) {
-                dynamicPeaks.add(currentWindowMax);
-                currentWindowMax = 0.0;
-                currentWindowSamples = 0;
-              }
-            }
-            totalSamples += pcmData.length;
-          }
-
-          granulePos += 960; // 20ms frame at 48kHz
-          pagePackets.add(opusBytes);
-        }
-
-        if (pagePackets.length >= 40) {
-          // 40 frames per page (~800ms)
-          sink.add(_createOggPage(granulePos, pageSeqNum++, serial, pagePackets.toList()));
-          pagePackets.clear();
-        }
-      }
-
-      if (pagePackets.isNotEmpty) {
-        sink.add(_createOggPage(granulePos, pageSeqNum++, serial, pagePackets, isLastPage: true));
-      } else {
-        // OGG needs at least one page with the EOS flag.
-        sink.add(_createOggPage(granulePos, pageSeqNum++, serial, [], isLastPage: true));
-      }
-
-      await sink.flush();
-      await sink.close();
-
-      await _saveMetadata(refs, dateFolderPath, timestamp, totalSamples, dynamicPeaks, waveformBuckets,
-          prefix: prefix, extension: 'ogg', suffix: suffix, capEnded: capEnded, isSilero: _session != null);
-
-      await oggFile.rename(oggPath);
-      renamed = true;
-      Logger.debug(
-          'VadAudioProcessor: Saved recording (${refs.length} frames, ${((totalSamples * 1000) ~/ sampleRate)}ms) '
-          'starting at $_recordingStartTime to $oggPath');
-      return oggPath;
-    } catch (e) {
-      Logger.error('VadAudioProcessor: _saveOgg failed: $e');
-      if (!renamed && await oggFile.exists()) await oggFile.delete();
-      return await _saveWav(refs, dateFolderPath, timestamp, prefix: prefix, suffix: suffix);
-    }
-  }
-
-  Uint8List _createOggOpusIdHeader() {
-    final header = ByteData(19);
-    header.setUint8(0, 0x4F); // O
-    header.setUint8(1, 0x70); // p
-    header.setUint8(2, 0x75); // u
-    header.setUint8(3, 0x73); // s
-    header.setUint8(4, 0x48); // H
-    header.setUint8(5, 0x65); // e
-    header.setUint8(6, 0x61); // a
-    header.setUint8(7, 0x64); // d
-    header.setUint8(8, 0x01); // Version
-    header.setUint8(9, channels);
-    header.setUint16(10, 0, Endian.little); // Pre-skip
-    header.setUint32(12, 48000, Endian.little); // Input sample rate
-    header.setUint16(16, 0, Endian.little); // Output gain
-    header.setUint8(18, 0x00); // Channel map
-    return header.buffer.asUint8List();
-  }
-
-  Uint8List _createOggOpusCommentHeader() {
-    const vendor = "Omi Offline";
-    final vendorBytes = utf8.encode(vendor);
-    final header = ByteData(8 + 4 + vendorBytes.length + 4);
-    header.setUint8(0, 0x4F); // O
-    header.setUint8(1, 0x70); // p
-    header.setUint8(2, 0x75); // u
-    header.setUint8(3, 0x73); // s
-    header.setUint8(4, 0x54); // T
-    header.setUint8(5, 0x61); // a
-    header.setUint8(6, 0x67); // g
-    header.setUint8(7, 0x73); // s
-    header.setUint32(8, vendorBytes.length, Endian.little);
-    for (int i = 0; i < vendorBytes.length; i++) {
-      header.setUint8(12 + i, vendorBytes[i]);
-    }
-    header.setUint32(12 + vendorBytes.length, 0, Endian.little); // User comment count
-    return header.buffer.asUint8List();
-  }
-
-  Uint8List _createOggPage(int granulePos, int pageSeqNum, int serial, List<Uint8List> packets,
-      {bool isFirstPage = false, bool isLastPage = false}) {
-    int pageHeaderSize = 27 + packets.length;
-    int pageDataSize = packets.fold(0, (sum, p) => sum + p.length);
-    final page = ByteData(pageHeaderSize + pageDataSize);
-
-    page.setUint8(0, 0x4F); // O
-    page.setUint8(1, 0x67); // g
-    page.setUint8(2, 0x67); // g
-    page.setUint8(3, 0x53); // S
-    page.setUint8(4, 0x00); // Version
-    int flags = 0;
-    if (isFirstPage) flags |= 0x02;
-    if (isLastPage) flags |= 0x04;
-    page.setUint8(5, flags);
-    page.setUint64(6, granulePos, Endian.little);
-    page.setUint32(14, serial, Endian.little);
-    page.setUint32(18, pageSeqNum, Endian.little);
-    page.setUint32(22, 0, Endian.little); // Checksum (filled later)
-    page.setUint8(26, packets.length);
-
-    int offset = 27;
-    for (var p in packets) {
-      page.setUint8(offset++, p.length);
-    }
-    for (var p in packets) {
-      for (int i = 0; i < p.length; i++) {
-        page.setUint8(offset++, p[i]);
-      }
-    }
-
-    // CRC-32 (Ogg variant)
-    final crc = _computeOggCrc(page.buffer.asUint8List());
-    page.setUint32(22, crc, Endian.little);
-
-    return page.buffer.asUint8List();
-  }
-
-  int _computeOggCrc(Uint8List data) {
-    int crc = 0;
-    for (int i = 0; i < data.length; i++) {
-      crc = (crc << 8) ^ _oggCrcTable[((crc >> 24) ^ data[i]) & 0xFF];
-    }
-    return crc & 0xFFFFFFFF;
-  }
-
-  static final List<int> _oggCrcTable = _generateOggCrcTable();
-  static List<int> _generateOggCrcTable() {
-    final table = List<int>.filled(256, 0);
-    for (int i = 0; i < 256; i++) {
-      int r = i << 24;
-      for (int j = 0; j < 8; j++) {
-        if ((r & 0x80000000) != 0) {
-          r = (r << 1) ^ 0x04c11db7;
-        } else {
-          r <<= 1;
-        }
-      }
-      table[i] = r & 0xFFFFFFFF;
-    }
-    return table;
   }
 
   Future<String?> _saveWav(List<Object> refs, String dateFolderPath, int timestamp,
@@ -2268,6 +2033,7 @@ class VadAudioProcessor {
 class _DeferredFrame {
   final FrameRef ref;
   final DateTime frameTime;
+
   /// True if this frame was already determined to be speech during Pass 1
   /// (AAD mode or marker protection). VAD speech from the batch is OR'd in
   /// during Pass 2.
