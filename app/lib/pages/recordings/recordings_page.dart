@@ -868,7 +868,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           anyIntegrationEnabled: anyIntegrationEnabled,
                                           filterMode: _filterMode,
                                           uploadStatus: controller.uploadStatus,
-                                          uploadCount: controller.applicableIntegrationCount,
+                                          uploadCount: controller.actionableIntegrationCount,
                                           isUploading: controller.uploadingFiles.contains,
                                           onConversationTap: _openConversation,
                                           onMarkerTap: _openMarkerConversation,
