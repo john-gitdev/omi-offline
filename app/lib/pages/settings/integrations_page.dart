@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:intl/intl.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/pages/settings/omi_login_webview.dart';
 import 'package:omi/services/heypocket_service.dart';
@@ -284,6 +285,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               setState(() {});
             },
             autoUpload: _prefs.omiAutoUpload,
+            autoUploadSinceMs: _prefs.omiAutoUploadAt,
             onAutoUploadChanged: (v) {
               _prefs.omiAutoUpload = v;
               setState(() {});
@@ -321,9 +323,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton(
-                    onPressed: _omiState == _ConnectionState.checking
-                        ? null
-                        : () => _openOmiLogin(fallback: true),
+                    onPressed: _omiState == _ConnectionState.checking ? null : () => _openOmiLogin(fallback: true),
                     style: OutlinedButton.styleFrom(
                       side: BorderSide(color: Colors.grey.shade600),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -375,7 +375,8 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
-                    child: const Text('Log out', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                    child:
+                        const Text('Log out', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
                   ),
                 ),
                 Center(
@@ -419,6 +420,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
               setState(() {});
             },
             autoUpload: _prefs.heypocketAutoUpload,
+            autoUploadSinceMs: _prefs.heypocketKeySetAt,
             onAutoUploadChanged: (v) {
               _prefs.heypocketAutoUpload = v;
               setState(() {});
@@ -445,6 +447,7 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
     required bool enabled,
     required ValueChanged<bool> onEnabledChanged,
     required bool autoUpload,
+    required int autoUploadSinceMs,
     required ValueChanged<bool> onAutoUploadChanged,
     required List<Widget> fields,
     VoidCallback? onDelete,
@@ -509,9 +512,35 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             activeThumbColor: Colors.deepPurpleAccent,
             onChanged: isChecking || !isConnected || !enabled ? null : onAutoUploadChanged,
           ),
+          if (autoUpload && isConnected && autoUploadSinceMs > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, bottom: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.schedule, size: 13, color: Colors.grey.shade500),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Auto-uploading recordings started after ${_formatCutoff(autoUploadSinceMs)}. '
+                      'Earlier recordings aren\'t sent automatically — open one and tap the cloud icon to upload it.',
+                      style: TextStyle(color: Colors.grey.shade500, fontSize: 11, height: 1.3),
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
+  }
+
+  /// Formats the auto-upload cutoff timestamp (epoch ms) for display, honoring
+  /// the user's 12/24-hour preference.
+  String _formatCutoff(int ms) {
+    final dt = DateTime.fromMillisecondsSinceEpoch(ms);
+    final pattern = _prefs.use24HourTime ? 'MMM d, yyyy · HH:mm' : 'MMM d, yyyy · h:mm a';
+    return DateFormat(pattern).format(dt);
   }
 
   Widget _buildField({
