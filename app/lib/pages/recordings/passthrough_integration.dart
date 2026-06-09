@@ -13,13 +13,15 @@ abstract class PassthroughIntegration {
   /// background auto-upload sweep.
   bool isEnabled(Conversation c);
 
-  /// Available for a *manual* (explicit user-tap) upload of [c]: configured and
-  /// the Enabled toggle on, applicable to [c] — but WITHOUT the auto-upload
-  /// time cutoff that [isEnabled] applies. An explicit upload should work on
-  /// recordings made before auto-upload was switched on. Source-data existence
-  /// (e.g. Omi's passthrough .bin) is NOT checked here so a delivered recording
-  /// whose source was later pruned still reports as delivered; a missing source
-  /// surfaces as a clear error from [upload] instead.
+  /// Available for a *manual* (explicit user-tap) upload of [c]: configured, the
+  /// Enabled toggle on, and the source data this integration uploads actually
+  /// exists for [c] — but WITHOUT the auto-upload time cutoff that [isEnabled]
+  /// applies (an explicit upload works on recordings made before auto-upload was
+  /// switched on). Source requirements are integration-specific: HeyPocket needs
+  /// the recording's audio file; Omi needs the processing-time .bin (only created
+  /// while Omi sync is enabled, so pre-enable recordings are never available).
+  /// Drives both the manual upload action and the upload-status icon; when no
+  /// integration is available for a recording it shows as unavailable.
   bool isAvailableFor(Conversation c);
 
   bool get isConfigured;
