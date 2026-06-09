@@ -310,21 +310,7 @@ int main(void)
     }
 #endif
 
-    /* Check for firmware version change to trigger a clean wipe */
-    char saved_version[32] = {0};
-    app_settings_get_fw_version(saved_version, sizeof(saved_version));
-    if (strcmp(saved_version, CONFIG_BT_DIS_FW_REV_STR) != 0) {
-        LOG_INF("[BOOT] New firmware version detected (%s -> %s). Triggering clean wipe...",
-                saved_version, CONFIG_BT_DIS_FW_REV_STR);
-
-        app_settings_save_fw_version(CONFIG_BT_DIS_FW_REV_STR);
-
-        /* Signal the SD system to wipe BEFORE starting it */
-        sd_request_wipe();
-        app_sd_init();
-    } else {
-        app_sd_init();
-    }
+    app_sd_init();
     init_rtc();
 
 #ifdef CONFIG_LSM6DSL
