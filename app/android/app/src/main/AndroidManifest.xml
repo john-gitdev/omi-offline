@@ -11,6 +11,12 @@
         android:name="android.hardware.bluetooth_le"
         android:required="true" />
 
+    <!-- Required by CompanionDeviceManager.associate(); without this the OS throws
+         IllegalStateException "Must declare uses-feature android.software.companion_device_setup". -->
+    <uses-feature
+        android:name="android.software.companion_device_setup"
+        android:required="false" />
+
     <!-- New Bluetooth permissions in Android 12
     https://developer.android.com/about/versions/12/features/bluetooth-permissions -->
     <uses-permission
