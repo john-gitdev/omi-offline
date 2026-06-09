@@ -7,7 +7,21 @@ import 'package:omi/services/omi_api_client.dart';
 
 abstract class PassthroughIntegration {
   String get name;
+
+  /// Eligible for *auto*-upload of [c]: configured, the Enabled toggle on, and
+  /// [c] recorded after the auto-upload time cutoff. Used only by the
+  /// background auto-upload sweep.
   bool isEnabled(Conversation c);
+
+  /// Available for a *manual* (explicit user-tap) upload of [c]: configured and
+  /// the Enabled toggle on, applicable to [c] — but WITHOUT the auto-upload
+  /// time cutoff that [isEnabled] applies. An explicit upload should work on
+  /// recordings made before auto-upload was switched on. Source-data existence
+  /// (e.g. Omi's passthrough .bin) is NOT checked here so a delivered recording
+  /// whose source was later pruned still reports as delivered; a missing source
+  /// surfaces as a clear error from [upload] instead.
+  bool isAvailableFor(Conversation c);
+
   bool get isConfigured;
   bool get isAutoUploadEnabled;
   bool hasDelivered(Conversation c);
@@ -63,6 +77,9 @@ class HeyPocketPassthroughIntegration implements PassthroughIntegration {
   }
 
   @override
+  bool isAvailableFor(Conversation c) => isConfigured && c.uploadKey != null;
+
+  @override
   bool get isConfigured => _prefs.heypocketEnabled && _prefs.heypocketApiKey.isNotEmpty;
 
   @override
@@ -113,6 +130,9 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
   }
 
   @override
+  bool isAvailableFor(Conversation c) => isConfigured;
+
+  @override
   bool get isConfigured => _prefs.omiEnabled && _prefs.omiRefreshToken.isNotEmpty;
 
   @override
@@ -133,7 +153,7 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
     final binPath = PassthroughIntegration.getBinPath(c);
     final binFile = File(binPath);
     if (!binFile.existsSync()) {
-      throw Exception('Binary file not found: $binPath');
+      throw Exception('source audio no longer on device (passthrough .bin was cleaned up)');
     }
 
     try {
