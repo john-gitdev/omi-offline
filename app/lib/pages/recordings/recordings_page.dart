@@ -13,7 +13,6 @@ import 'package:omi/pages/settings/find_devices_page.dart';
 import 'package:omi/pages/settings/device_settings.dart';
 import 'package:omi/pages/recordings/marker_conversation_player_page.dart';
 import 'package:omi/pages/recordings/passthrough_integration.dart';
-import 'package:omi/pages/recordings/integration_status_sheet.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
 import 'package:omi/pages/recordings/recordings_banners.dart';
 import 'package:omi/pages/recordings/sync_process_card.dart';
@@ -22,7 +21,6 @@ import 'package:omi/pages/recordings/recording_player_page.dart';
 import 'package:omi/pages/recordings/marker_day_card.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/pages/settings/offline_audio_settings_page.dart';
-import 'package:omi/utils/logger.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:omi/widgets/battery_status_indicator.dart';
 
@@ -317,60 +315,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
     await SharePlus.instance.share(
       ShareParams(files: files, subject: 'Conversations – ${batch.dateString}'),
     );
-  }
-
-  Future<void> _handleUploadTap(Conversation conversation) async {
-    final uploadKey = conversation.uploadKey;
-    if (uploadKey == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Upload key unavailable — please reconnect your device and try again.',
-          ),
-        ),
-      );
-      return;
-    }
-    if (_controller.uploadingFiles.contains(uploadKey)) return;
-
-    // With 2+ applicable integrations the single aggregate icon can't represent
-    // every per-integration state, so a tap opens the detail sheet (per-row
-    // upload/retry) instead of firing a blind upload-to-all.
-    if (_controller.applicableIntegrationCount(conversation) >= 2) {
-      await showIntegrationStatusSheet(context, _controller, conversation);
-      return;
-    }
-
-    final alreadyUploaded = _controller.isUploaded(conversation);
-    if (alreadyUploaded) {
-      final confirm = await showDialog<bool>(
-        context: context,
-        builder: (c) => getDialog(
-          c,
-          () => Navigator.of(c).pop(false),
-          () => Navigator.of(c).pop(true),
-          'Re-upload Conversation',
-          'This conversation was already uploaded to your enabled integrations. Upload again? (It may create duplicates.)',
-          confirmText: 'Upload',
-        ),
-      );
-      if (confirm != true) return;
-    }
-
-    try {
-      final failures = await _controller.uploadConversation(conversation, force: alreadyUploaded);
-      if (!mounted) return;
-      for (final failure in failures) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('${failure.integration} upload failed: ${failure.error}')));
-      }
-    } catch (e) {
-      Logger.error('Manual upload failed: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
-      }
-    }
   }
 
   Map<String, List<MarkerConversation>> _buildMarkerMap() {
@@ -926,7 +870,6 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           uploadStatus: controller.uploadStatus,
                                           uploadCount: controller.applicableIntegrationCount,
                                           isUploading: controller.uploadingFiles.contains,
-                                          onUploadTap: _handleUploadTap,
                                           onConversationTap: _openConversation,
                                           onMarkerTap: _openMarkerConversation,
                                           onExportAll: (conversations) => _exportAll(
