@@ -2,6 +2,79 @@
 
 ## ACTIVE
 
+## Multi-select recordings: long-press → selection mode with Delete + Merge [medium] [Active]
+
+Replace the current long-press-to-delete on a recording row with **long-press-to-enter-selection-mode**. Once in selection mode the user can tap rows to build a set, then act on the set via a contextual action bar: **Delete** (already trivially supported) or **Merge** (stitch N selected recordings into one continuous file, filling the inter-recording gaps with any ghost/raw audio that lives between them, silence only as a last resort).
+
+The headline finding: **the merge audio logic already exists.** The draft-stitch pipeline in `recordings_manager.dart` already does exactly the gap-padding + ghost-splice + silence-fallback semantics we want — merge is mostly *repurposing* that machine to operate on two user-selected finalized recordings instead of "draft + following events." Estimated **~2–3 days** for a solid wav/ogg implementation with m4a gracefully disabled.
+
+### What changes for the user
+- **Long-press a recording** → enters selection mode (the row gets a checkbox/highlight) instead of immediately deleting.
+- **Tap rows** to add/remove from the selection; a contextual app bar shows the count + a Delete icon and a Merge icon. Back / clear exits selection mode.
+- **Delete icon** → deletes all selected recordings (wraps the existing list-delete).
+- **Merge icon** → stitches the selected recordings (sorted by start time) into one recording:
+  - Adds **gap padding** (silence) to account for the wall-clock gap between consecutive files.
+  - Goes one step further: **processes any ghosts (discards) between the two recordings and appends that audio** into the merged file.
+  - Also splices in any **uncut/"saved" raw bins** sitting in the gap window.
+  - Only inserts **silence when there is genuinely no ghost recording and no saved bin** in between.
+
+### Why merge is cheaper than it sounds — reuse the draft-stitch pipeline
+The exact merge semantics described above already exist in the **draft-stitch pipeline** (`app/lib/services/recordings_manager.dart`):
+
+- `_stitchDraftRecordings()` (~line 1676) walks events in time order (draft → intermediate ghosts → next audio), accumulating the inter-recording gap and deciding what to splice.
+- `_stitchDiscard()` (~line 1858) re-decodes a ghost's `relativeBins` into a temp audio file of the same format and splices it in, **preceded by `gapMs` of silence** — i.e. "process the ghost and append it," exactly as specified.
+- `_stitchSilence()` (~line 1927) is the no-ghost/no-bin silence fallback.
+- `_performStitch` / `_stitchWav` (~2210) / `_stitchOgg` (~2158) concatenate audio; `_mergeMeta` rebuilds the `.meta` (totalSamples, durationMs, 200×u16 waveform, union of `relativeBins`) and **re-anchors marker EDLs** by the prefix's wall-clock duration (the marker offset-shift we'd otherwise have to invent ourselves — see the CLAUDE.md note "Markers re-anchored across stitched files have their offsets shifted by the prefix's wall-clock duration").
+
+So a merge is essentially: *take this "draft + following events → one file" machine and point it at two (or N) user-selected finalized recordings.*
+
+### The real work / risks
+1. **New `mergeConversations(List<Conversation>)` in `RecordingsManager`** — sort selected by start time; for each adjacent pair compute the gap, gather discards **and uncut raw bins** in that time window, feed them through the existing stitch helpers; rebuild one merged `.meta`; delete the source recordings. The **"saved bin in the gap"** case (raw bins in `raw_segments/` that are neither part of a recording nor a ghost) is the one genuinely new bit — needs a time-window lookup over `raw_segments/{timerStart}/`, but it can reuse the bin→wav decode already living inside `_stitchDiscard` (`SimpleOpusDecoder` 16 kHz mono, inline-frame skipping). The existing pipeline only knew about "audio file" and "ghost" events; merge adds "bare bin in gap."
+
+2. **Format is the one sharp edge.** The stitch helpers handle **`.wav` and `.ogg` only**; **`.m4a` is explicitly unsupported** (`recordings_manager.dart` ~line 2146: *"M4A stitching requires decode/re-encode which we can't do easily here"* — M4A can't be physically concatenated). The **default `audioSaveFormat` is `wav`** (`preferences.dart:109`), so the common case Just Works. If a user opted into `m4a`, merging needs an m4a→wav decode-stitch-(re-encode) path. **Recommendation: support wav/ogg, and disable/grey the Merge icon when any selected recording is `.m4a`** (cheap; the transcode path is +~1 day if we ever want it). There is already a WAV→M4A transcode path (`RecordingsManager.isTranscoding`) to model an m4a→wav decode on if needed.
+
+3. **UI plumbing (selection mode).** Convert the `onLongPress` handlers (currently delete) to enter selection mode; add a selected-set to `RecordingsController`; checkbox/highlight on tiles; a contextual action bar with Delete + Merge. Touches:
+   - `app/lib/pages/recordings/recordings_page.dart` (~line 398 — `onLongPress: () => _deleteConversation(conv)`; also the page scaffold for the contextual app bar)
+   - `app/lib/pages/recordings/batch_card.dart` — `ConversationTile` (~line 184 `onLongPress: () => onDeleteConversation(conversation)`), and `MarkerSubEntry`
+   - `app/lib/pages/recordings/marker_day_card.dart` — `MarkerTile` (~line 19/94)
+
+### Delete is essentially free
+`RecordingsController.deleteConversations(List<Conversation>)` (~line 1272) already exists and handles the full teardown: HeyPocket upload-key removal, `removeOmiSynced`, orphaned-session bin cleanup (so deleted recordings don't resurrect on next sync). The selection-mode Delete action just calls it with the selected list — no new audio/cleanup logic.
+
+### Open questions to brainstorm before/while building
+- **Markers (`MarkerConversation` / `MarkerSubEntry`) in selection mode** — are they selectable, mergeable, or selection-only-for-delete? They have their own `.edl` sidecars and `deleteMarkerConversation` path. Simplest first cut: selection mode applies to **recordings only**; markers keep their current long-press-to-delete (or are excluded from multiselect). Decide before wiring `MarkerSubEntry`/`MarkerTile`.
+- **Non-adjacent / cross-day selection** — do we allow merging recordings from different day-batches, or constrain to same-day contiguous? The stitch helpers are time-driven and `_stitchBinIfPresent`/`_mergeMeta` already scan across day folders, so cross-day is mechanically possible, but the gap could be huge (hours of silence). Consider a sanity cap or a confirm dialog when the total inserted silence is large.
+- **Merge confirmation / preview** — show the resulting duration (incl. inserted silence + spliced ghosts) before committing, since merge is destructive (deletes the sources).
+- **Which timestamp/date the merged recording inherits** — earliest start time (keeps it anchored correctly in the day list). Filename `recording_{startMs}` from the earliest source.
+- **Upload state after merge** — the merged recording is a new file with a fresh upload key; the sources' upload state is discarded. Confirm that's acceptable (it mirrors how draft-stitch already produces a fresh finalized file).
+
+### Rough estimate
+| Piece | Effort |
+|---|---|
+| Selection-mode state + UI (long-press → multiselect, contextual action bar, checkboxes) | ~half day |
+| Delete-selected | trivial (wire to existing `deleteConversations`) |
+| `mergeConversations` reusing stitch helpers (wav/ogg) | ~half–full day |
+| Uncut-bin-in-gap handling + merged `.meta` / marker re-anchor verification | ~half day |
+| m4a handling (block via greyed icon, or transcode) | small if blocked; +~1 day if transcoded |
+
+**~2–3 days** for a solid wav/ogg implementation with m4a gracefully disabled.
+
+### Suggested build order (de-risk first)
+1. **Prototype `mergeConversations` against the existing stitch helpers** (the load-bearing risk). Confirm `_stitchWav`/`_stitchDiscard`/`_mergeMeta` generalize cleanly from "draft + next" to "two finalized files," including marker re-anchoring and the merged `.meta`. This de-risks the whole feature.
+2. **Add the uncut-bin-in-gap lookup** (the one net-new audio bit).
+3. **Build selection-mode UI** + wire Delete (free) and Merge.
+4. **Decide markers + m4a policy** (grey the Merge icon for m4a / exclude markers from multiselect for v1).
+
+### Relevant files
+- `app/lib/services/recordings_manager.dart` — the stitch helpers to reuse (`_stitchDraftRecordings` ~1676, `_stitchDiscard` ~1858, `_stitchSilence` ~1927, `_performStitch`/`_stitchWav` ~2210/`_stitchOgg` ~2158, `_stitchBinIfPresent` ~2273, `_mergeMeta`), the `Conversation` model (~line 23, `relativeBins` ~43), `DiscardRecord` (~454), `MarkerConversation` (~481); new `mergeConversations` lives here.
+- `app/lib/pages/recordings/recordings_controller.dart` — `deleteConversations` (~1272, reuse for Delete), `deleteConversation`/`deleteMarkerConversation`; add selection-set state + `mergeConversations` wiring + `reloadBatchesSilently`/`_loadBatches` after merge.
+- `app/lib/pages/recordings/recordings_page.dart` — top-level long-press (~398) + page scaffold for the contextual selection app bar.
+- `app/lib/pages/recordings/batch_card.dart` — `ConversationTile` (~184), `MarkerSubEntry` (~92), `GhostRow` (discards = ghosts, ~245); selection visuals.
+- `app/lib/pages/recordings/marker_day_card.dart` — `MarkerTile` (~5).
+- `app/lib/backend/preferences.dart` — `audioSaveFormat` (~101, default `wav`) gates the m4a-disable decision.
+
+---
+
 ## VAD Native Batch Runner: collapse per-window Silero channel round-trips [major] [Active — Android first]
 
 Speed up the post-sync **processing** phase (Opus-decode → Silero VAD split → AAC encode, run in a spawned isolate) by moving Silero's per-window inference loop native-side, collapsing the Dart↔native platform-channel round-trips. Pure performance — **bit-identical VAD output**, no accuracy risk. Full investigation in `NOTES.md` → "VAD perf: timing diagnostics". **Promoted from DEFERRED 2026-06-06 (thermal trigger — see "Why now" below). Shipping Android-only; iOS stays on the per-window fallback.**
