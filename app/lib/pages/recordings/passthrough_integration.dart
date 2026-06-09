@@ -94,7 +94,7 @@ class HeyPocketPassthroughIntegration implements PassthroughIntegration {
   bool get isAutoUploadEnabled => _prefs.heypocketAutoUpload;
 
   @override
-  bool hasDelivered(Conversation c) => _prefs.isUploadedToHeypocket(c.uploadKey!);
+  bool hasDelivered(Conversation c) => c.uploadKey != null && _prefs.isUploadedToHeypocket(c.uploadKey!);
 
   @override
   bool isFailed(Conversation c) => _prefs.getAutoUploadRetries(c.uploadKey!) >= 3;
