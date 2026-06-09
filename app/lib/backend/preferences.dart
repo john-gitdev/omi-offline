@@ -306,12 +306,23 @@ class SharedPreferencesUtil {
     await saveInt('autoUploadRetry_$key', current + 1);
   }
 
+  /// Epoch millis of the most recent failed upload attempt for [key], or 0 if
+  /// none recorded. Surfaced as the "Last Upload Failed at" label.
+  int getAutoUploadLastFailureAt(String key) => getInt('autoUploadFailAt_$key', defaultValue: 0);
+
+  Future<void> setAutoUploadLastFailureAt(String key) async {
+    await saveInt('autoUploadFailAt_$key', DateTime.now().millisecondsSinceEpoch);
+  }
+
   Future<void> clearAutoUploadRetry(String key) async {
     await remove('autoUploadRetry_$key');
+    await remove('autoUploadFailAt_$key');
   }
 
   Future<void> clearAllAutoUploadRetries() async {
-    final keys = (_preferences?.getKeys() ?? {}).where((k) => k.startsWith('autoUploadRetry_')).toList();
+    final keys = (_preferences?.getKeys() ?? {})
+        .where((k) => k.startsWith('autoUploadRetry_') || k.startsWith('autoUploadFailAt_'))
+        .toList();
     for (final key in keys) {
       await _preferences?.remove(key);
     }
