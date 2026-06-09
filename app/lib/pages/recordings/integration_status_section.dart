@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/services/recordings_manager.dart';
+import 'package:omi/utils/other/time_utils.dart';
 
 /// Inline per-integration upload detail for one recording, shown on the player
 /// page. A row per configured integration with its state (Uploaded / Pending /
@@ -91,6 +92,14 @@ class _IntegrationRow extends StatelessWidget {
 
   const _IntegrationRow({required this.status, required this.onUpload, required this.onReupload});
 
+  /// "Last Upload Failed at: <time>" using the recorded failure time, formatted
+  /// per the user's 24-hour / AM-PM preference. Plain "Last Upload Failed" when
+  /// no timestamp is available.
+  String _failedLabel(DateTime? at) {
+    if (at == null) return 'Last Upload Failed';
+    return 'Last Upload Failed at: ${fmtHourMin(at)}';
+  }
+
   /// Why an integration can't take this recording — integration-specific so the
   /// user understands it's expected, not an error.
   String get _unavailableReason {
@@ -109,8 +118,8 @@ class _IntegrationRow extends StatelessWidget {
     final (Color color, String label, IconData icon) = switch (status.state) {
       IntegrationUploadState.delivered => (Colors.green, 'Uploaded', Icons.cloud_done),
       IntegrationUploadState.uploading => (Colors.deepPurpleAccent, 'Uploading…', Icons.cloud_upload),
-      IntegrationUploadState.failed => (Colors.redAccent, 'Failed', Icons.error_outline),
-      IntegrationUploadState.pending => (Colors.amber, 'Pending', Icons.cloud_upload),
+      IntegrationUploadState.failed => (Colors.redAccent, _failedLabel(status.failedAt), Icons.error_outline),
+      IntegrationUploadState.pending => (Colors.amber, 'Ready to Upload', Icons.cloud_upload),
       IntegrationUploadState.unavailable => (Colors.grey.shade600, 'Not available', Icons.cloud_off),
     };
 
