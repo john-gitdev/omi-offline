@@ -190,11 +190,10 @@ class Conversation {
 
     // Size-based duration estimate
     // For WAV: 16kHz 16-bit mono = 32000 bytes/sec
-    // For M4A/OGG: We use ~32kbps (4000 bytes/sec)
+    // For M4A: We use ~32kbps (4000 bytes/sec)
     final path = file.path.toLowerCase();
     final isWav = path.endsWith('.wav');
     final isM4a = path.endsWith('.m4a');
-    final isOgg = path.endsWith('.ogg');
 
     int fileSize = 0;
     try {
@@ -204,7 +203,7 @@ class Conversation {
     int durationMs = 0;
     if (isWav && fileSize > 44) {
       durationMs = ((fileSize - 44) / 32000.0 * 1000).round();
-    } else if ((isM4a || isOgg) && fileSize > 0) {
+    } else if (isM4a && fileSize > 0) {
       // Rough estimate for compressed audio to allow marker resolution
       durationMs = (fileSize / 4000.0 * 1000).round();
     }
@@ -379,7 +378,7 @@ class Conversation {
     }
 
     // Size-based duration estimate — only valid for WAV files.
-    // For M4A/OGG/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
+    // For M4A/other formats without a .meta sidecar, return 0 to avoid a wildly wrong duration.
     final isWav = file.path.endsWith('.wav');
     int fileSize = 0;
     try {
@@ -948,10 +947,7 @@ class RecordingsManager {
         });
         for (final file in allEntities) {
           final fileName = file.path.split('/').last;
-          if (!fileName.endsWith('.m4a') &&
-              !fileName.endsWith('.wav') &&
-              !fileName.endsWith('.ogg') &&
-              !fileName.endsWith('.meta')) continue;
+          if (!fileName.endsWith('.m4a') && !fileName.endsWith('.wav') && !fileName.endsWith('.meta')) continue;
           final parts = fileName.split('_');
           var millis = parts.length >= 2 ? int.tryParse(parts.last.split('.').first) : null;
           if (millis == null || millis <= 0) continue;
@@ -1055,9 +1051,7 @@ class RecordingsManager {
         final files = folderEntities
             .whereType<File>()
             .where(
-              (f) =>
-                  (f.path.endsWith('.m4a') || f.path.endsWith('.wav') || f.path.endsWith('.ogg')) &&
-                  !f.path.endsWith('.tmp.m4a'),
+              (f) => (f.path.endsWith('.m4a') || f.path.endsWith('.wav')) && !f.path.endsWith('.tmp.m4a'),
             )
             .toList();
 
@@ -1168,7 +1162,8 @@ class RecordingsManager {
     // Only strip in background mode when no settings override is provided.
     // Manual runs (Process button, Recover Discard) honor the
     // explicit set of bins provided.
-    final discardedRelBins = (backgroundMode && settingsOverride == null) ? await discardedRelBinPaths() : const <String>{};
+    final discardedRelBins =
+        (backgroundMode && settingsOverride == null) ? await discardedRelBinPaths() : const <String>{};
     if (discardedRelBins.isNotEmpty) {
       batches = batches.map((b) {
         final filtered = b.rawSegments.where((f) {
@@ -1247,11 +1242,7 @@ class RecordingsManager {
           // where the main isolate moves a file while the background isolate is still writing it.
           if (name.contains('.tmp')) return false;
           // Only move known finalized file types
-          return name.endsWith('.m4a') ||
-              name.endsWith('.wav') ||
-              name.endsWith('.ogg') ||
-              name.endsWith('.meta') ||
-              name.endsWith('.bin');
+          return name.endsWith('.m4a') || name.endsWith('.wav') || name.endsWith('.meta') || name.endsWith('.bin');
         }).toList()
           ..sort((a, b) {
             final aIsMeta = a.path.endsWith('.meta') ? 0 : 1;
@@ -1282,15 +1273,15 @@ class RecordingsManager {
           // If we are moving a draft, delete any existing finalized version.
           // If we are moving a finalized file, delete any existing draft version.
           // Only do this for audio files to avoid deleting the meta we just moved (since meta comes first).
-          final isAudio = fileName.endsWith('.m4a') || fileName.endsWith('.wav') || fileName.endsWith('.ogg');
+          final isAudio = fileName.endsWith('.m4a') || fileName.endsWith('.wav');
           if (isAudio) {
             try {
               if (fileName.contains('_draft')) {
                 await File(dest.replaceAll('_draft', '')).delete();
-                await File(dest.replaceAll(RegExp(r'_draft\.(m4a|wav|ogg)$'), '.meta')).delete();
+                await File(dest.replaceAll(RegExp(r'_draft\.(m4a|wav)$'), '.meta')).delete();
               } else {
-                await File(dest.replaceAllMapped(RegExp(r'\.(m4a|wav|ogg)$'), (m) => '_draft${m[0]}')).delete();
-                await File(dest.replaceAll(RegExp(r'\.(m4a|wav|ogg)$'), '_draft.meta')).delete();
+                await File(dest.replaceAllMapped(RegExp(r'\.(m4a|wav)$'), (m) => '_draft${m[0]}')).delete();
+                await File(dest.replaceAll(RegExp(r'\.(m4a|wav)$'), '_draft.meta')).delete();
               }
             } on FileSystemException catch (_) {}
           }
@@ -1305,7 +1296,7 @@ class RecordingsManager {
             } on FileSystemException catch (_) {}
             onRecordingFinalized?.call();
             notifyRecordingsChanged();
-          } else if (fileName.endsWith('.wav') || fileName.endsWith('.ogg')) {
+          } else if (fileName.endsWith('.wav')) {
             onRecordingFinalized?.call();
             notifyRecordingsChanged();
           }
@@ -1671,7 +1662,7 @@ class RecordingsManager {
   /// recording that crossed local midnight (draft in day-N folder, next in
   /// day-(N+1) folder, since `_saveRecordingCore` places files by their
   /// `startTime.toLocal()` date) gets stitched into a single recording
-  /// instead of two split files. `_stitchOgg`/`_stitchWav` keep the draft's
+  /// instead of two split files. `_stitchWav` keeps the draft's
   /// filename and folder, deleting nextFile wherever it lived.
   Future<void> _stitchDraftRecordings({bool finalizeAll = false}) async {
     final directory = await getApplicationDocumentsDirectory();
@@ -1695,7 +1686,7 @@ class RecordingsManager {
         final entities = (await folder.list().toList()).whereType<File>().toList();
         allAudioFiles.addAll(entities.where((f) {
           final p = f.path;
-          return (p.endsWith('.m4a') || p.endsWith('.wav') || p.endsWith('.ogg')) && !p.contains('.tmp');
+          return (p.endsWith('.m4a') || p.endsWith('.wav')) && !p.contains('.tmp');
         }));
       }
 
@@ -1708,8 +1699,14 @@ class RecordingsManager {
       }
 
       final allEvents = [
-        ...allAudioFiles.map((f) => (audio: f, discard: null as DiscardRecord?, timestamp: _extractTimestamp(f.path), durationMs: 0)),
-        ...allDiscards.map((d) => (audio: null as File?, discard: d, timestamp: d.startTime.millisecondsSinceEpoch, durationMs: d.duration.inMilliseconds)),
+        ...allAudioFiles.map(
+            (f) => (audio: f, discard: null as DiscardRecord?, timestamp: _extractTimestamp(f.path), durationMs: 0)),
+        ...allDiscards.map((d) => (
+              audio: null as File?,
+              discard: d,
+              timestamp: d.startTime.millisecondsSinceEpoch,
+              durationMs: d.duration.inMilliseconds
+            )),
       ];
 
       allEvents.sort((a, b) => a.timestamp.compareTo(b.timestamp));
@@ -1811,7 +1808,9 @@ class RecordingsManager {
           }
 
           if (success) {
-            final finalGap = audioToStitch.path.contains('_draft.') ? 0 : (allEvents.firstWhere((e) => e.audio == audioToStitch).timestamp - lastEndTs);
+            final finalGap = audioToStitch.path.contains('_draft.')
+                ? 0
+                : (allEvents.firstWhere((e) => e.audio == audioToStitch).timestamp - lastEndTs);
             final int nextTs = allEvents.firstWhere((e) => e.audio == audioToStitch).timestamp;
 
             // Re-read meta since it may have been updated by _stitchDiscard
@@ -1841,7 +1840,8 @@ class RecordingsManager {
             }
 
             final gapMs = (isClockJump || gapToAudio < 10000) ? 0 : gapToAudio;
-            Logger.debug('RecordingsManager: Stitching draft $draftTs with next ${audioToStitch.path.split('/').last} (gap=${gapMs}ms)');
+            Logger.debug(
+                'RecordingsManager: Stitching draft $draftTs with next ${audioToStitch.path.split('/').last} (gap=${gapMs}ms)');
             final finalSuccess = await _performStitch(draftFile, audioToStitch, gapMs);
             if (finalSuccess) {
               scanNeeded = true;
@@ -1886,10 +1886,12 @@ class RecordingsManager {
             while (offset + 4 <= bytes.length) {
               final frameLen = byteData.getUint32(offset, Endian.little);
               if (frameLen == 0 || frameLen == 0xFFFFFFFF) {
-                offset += 4; continue;
+                offset += 4;
+                continue;
               }
               if (frameLen >= 0xFFFFFFFB) {
-                offset += (frameLen == 0xFFFFFFFB ? 36 : 20); continue;
+                offset += (frameLen == 0xFFFFFFFB ? 36 : 20);
+                continue;
               }
               if (offset + 4 + frameLen > bytes.length) break;
 
@@ -1903,8 +1905,8 @@ class RecordingsManager {
           }
           await sink.close();
         } else {
-          // OGG/M4A: We don't have a high-level OGG/M4A encoder on the main isolate.
-          // Fall back to silence-only stitching for these formats to maintain timeline.
+          // M4A: We don't have a high-level M4A encoder on the main isolate.
+          // Fall back to silence-only stitching for this format to maintain timeline.
           return await _stitchSilence(draftFile, gapMs + ghost.duration.inMilliseconds);
         }
       } finally {
@@ -2138,9 +2140,7 @@ class RecordingsManager {
     }
 
     try {
-      if (ext == 'ogg') {
-        return await _stitchOgg(draftFile, nextFile, gapMs);
-      } else if (ext == 'wav') {
+      if (ext == 'wav') {
         return await _stitchWav(draftFile, nextFile, gapMs);
       } else if (ext == 'm4a') {
         // M4A stitching requires decode/re-encode which we can't do easily here.
@@ -2153,58 +2153,6 @@ class RecordingsManager {
       await _finalizeDraft(draftFile);
     }
     return false;
-  }
-
-  Future<bool> _stitchOgg(File draftFile, File nextFile, int gapMs) async {
-    // OGG Opus physical concatenation (bitstream chaining).
-    // Note: Chaining is valid OGG but does not physically pad the gap with silence frames.
-    // The .meta sidecar duration remains wall-clock accurate (including the gap).
-    final nextBytes = await nextFile.readAsBytes();
-
-    // Capture the draft's wall-clock duration *before* mutating either file so
-    // we can re-anchor next-file markers to the combined timeline (B13). Bail
-    // if meta is missing — without an accurate prefix duration, re-anchored
-    // markers would land in the wrong half of the stitched file (D3).
-    final int? draftDurationMsOrNull = await _readMetaDurationMs(draftFile);
-    if (draftDurationMsOrNull == null) {
-      Logger.error(
-          'RecordingsManager: _stitchOgg aborting — missing/short meta for ${draftFile.path}; finalizing draft to preserve marker offsets');
-      await _finalizeDraft(draftFile);
-      return false;
-    }
-    final int draftDurationMs = draftDurationMsOrNull;
-
-    final sink = await draftFile.open(mode: FileMode.append);
-    await sink.writeFrom(nextBytes);
-    await sink.close();
-
-    // Update Meta
-    await _mergeMeta(draftFile, nextFile, gapMs);
-
-    // Re-anchor EDLs pointing at the soon-to-be-deleted next file to the draft
-    // file, adding the draft's duration + gap to each markerOffsetMs (B6 + B13).
-    final reanchorOk = await _reanchorMarkerEdls(
-      fromFilename: nextFile.path.split('/').last,
-      toFilename: draftFile.path.split('/').last,
-      offsetShiftMs: draftDurationMs + gapMs,
-      newDurationMs: await _readMetaDurationMs(draftFile),
-      folders: [draftFile.parent, nextFile.parent],
-    );
-
-    if (!reanchorOk) {
-      // Leave nextFile on disk so the user (or a retry) can recover the
-      // un-reanchored markers (D2). The stitched audio is still good.
-      Logger.error('RecordingsManager: _stitchOgg leaving ${nextFile.path} undeleted — re-anchor had errors');
-      return true;
-    }
-
-    // Delete next (and merge Omi bin so the upload sends the full recording)
-    await _stitchBinIfPresent(draftFile, nextFile);
-    await nextFile.delete();
-    final nextMeta = File(nextFile.path.replaceAll(RegExp(r'\.ogg$'), '.meta'));
-    if (await nextMeta.exists()) await nextMeta.delete();
-
-    return true;
   }
 
   Future<bool> _stitchWav(File draftFile, File nextFile, int gapMs) async {
@@ -2806,7 +2754,7 @@ class RecordingsManager {
     final recordingsDir = Directory('${directory.path}/recordings');
     if (!await recordingsDir.exists()) return;
     await for (final entity in recordingsDir.list(recursive: true)) {
-      if (entity is File && (entity.path.endsWith('.tmp.m4a') || entity.path.endsWith('.ogg.tmp'))) {
+      if (entity is File && entity.path.endsWith('.tmp.m4a')) {
         try {
           await entity.delete();
           Logger.debug(
@@ -2973,7 +2921,7 @@ class RecordingsManager {
       for (final folder in dateFolders) {
         final audioFiles = await folder
             .list()
-            .where((e) => e is File && (e.path.endsWith('.m4a') || e.path.endsWith('.wav') || e.path.endsWith('.ogg')))
+            .where((e) => e is File && (e.path.endsWith('.m4a') || e.path.endsWith('.wav')))
             .cast<File>()
             .toList();
 
@@ -3427,7 +3375,7 @@ class RecordingsManager {
       await for (final entity in dayFolder.list()) {
         if (entity is! File) continue;
         final path = entity.path;
-        if (!(path.endsWith('.wav') || path.endsWith('.m4a') || path.endsWith('.ogg'))) continue;
+        if (!(path.endsWith('.wav') || path.endsWith('.m4a'))) continue;
         if (path.endsWith('.tmp.m4a') || path.contains('.tmp.')) continue;
         final isDraft = path.contains('_draft.');
         final conv = Conversation.fromFile(entity);
@@ -3640,5 +3588,4 @@ class RecordingsManager {
     }
     return deleted;
   }
-
 }
