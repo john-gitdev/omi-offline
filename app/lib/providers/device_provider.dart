@@ -1275,6 +1275,23 @@ class DeviceProvider extends ChangeNotifier
           }
         }
       }
+
+      // Log the persisted BLE connect-failure counter on every connect so it
+      // lands in 'Save Diagnostic Logs to File'. The count survives a reboot, so
+      // after power-cycling to reconnect, this captures failures from before the
+      // reboot. See NOTES.md "BLE: advertising but won't connect". Skip if a sync
+      // is already transferring — a GATT read racing the storage stream throws
+      // Error 133 on Android (next connect logs it instead).
+      final dropStats = conn.isStorageBusy ? null : await conn.getDropStats();
+      if (dropStats != null && dropStats.failedConnCount > 0) {
+        Logger.warning(
+            'Device BLE connect-fail counter: ${dropStats.failedConnCount} '
+            '(last failure during ${dropStats.lastFailedConnDuringSlowAdv ? "slow" : "fast"} advertising)');
+        await DebugLogManager.logEvent('device_conn_fail', {
+          'failed_conn_count': dropStats.failedConnCount,
+          'last_failure_adv_mode': dropStats.lastFailedConnDuringSlowAdv ? 'slow' : 'fast',
+        });
+      }
     }
 
     notifyListeners();
