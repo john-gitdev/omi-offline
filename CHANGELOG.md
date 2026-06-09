@@ -2,6 +2,17 @@
 
 ## App
 
+### 0.21.1
+
+- **Fix: Android pairing "channel-error".**
+    - Added the required `android.software.companion_device_setup` manifest feature so the Companion Device pairing dialog actually opens instead of failing with a `PlatformException(channel-error)`. The native association call is now wrapped so any failure surfaces the real error instead of an opaque channel error.
+- **New: BLE connection-failure diagnostics.**
+    - The firmware now counts failed BLE connection establishments (and whether they happened during slow vs fast advertising), persists the count across reboots, and exposes it over the diagnostics characteristic. Surfaced in Debug Tools (the "SD Write Drops" card) and written to "Save Diagnostic Logs to File" on connect — so a connect-failure that needs a device restart to recover can still be diagnosed after rebooting. Helps investigate the intermittent "Omi is advertising but won't connect" case.
+- **Improved: Adjustment Mode controls (Debug Tools).**
+    - Turning on Adjustment Mode while a recording is in progress now asks you to confirm finalizing the current draft first.
+    - The Adjustment Mode card now shows when it was enabled and how many bins are held in the isolated adjustment folder (refreshed each time you open Debug Tools), and matches the styling of the SD Write Drops card.
+- **Firmware:** bumped to `oo-1.9.4`.
+
 ### 0.21.0
 
 - **Fix: False-positive "Connected" snackbar.**
