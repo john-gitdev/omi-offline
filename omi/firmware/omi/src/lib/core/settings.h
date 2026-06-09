@@ -108,23 +108,6 @@ int app_settings_save_lsm6dsl_time_base(uint64_t epoch_s, uint32_t imu_timestamp
 int app_settings_get_lsm6dsl_time_base(uint64_t *epoch_s, uint32_t *imu_timestamp);
 
 /**
- * @brief Get the firmware version stored in NVS from the last boot.
- *
- * @param buf Buffer to store the version string.
- * @param len Size of the buffer.
- * @return 0 on success, negative error code otherwise.
- */
-int app_settings_get_fw_version(char *buf, size_t len);
-
-/**
- * @brief Save the current firmware version string to NVS.
- *
- * @param version The firmware version string to save.
- * @return 0 on success, negative error code otherwise.
- */
-int app_settings_save_fw_version(const char *version);
-
-/**
  * @brief Persist reset cause + session uptime for the current boot.
  *
  * Call once at boot with the HWINFO reset cause. Call again periodically
