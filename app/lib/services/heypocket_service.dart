@@ -13,9 +13,8 @@ class HeyPocketService {
   /// Returns true if API key is valid (GET /recordings/list-recordings → 200).
   static Future<bool> testConnection(String apiKey) async {
     try {
-      final res = await http
-          .get(Uri.parse('$_base/public/recordings'), headers: {'Authorization': 'Bearer $apiKey'})
-          .timeout(const Duration(seconds: 8));
+      final res = await http.get(Uri.parse('$_base/public/recordings'),
+          headers: {'Authorization': 'Bearer $apiKey'}).timeout(const Duration(seconds: 8));
       return res.statusCode >= 200 && res.statusCode < 300;
     } on TimeoutException {
       throw HeyPocketException(0, 'Connection timed out — check your network');
@@ -28,7 +27,6 @@ class HeyPocketService {
 
   static String _mimeType(String path) {
     if (path.endsWith('.wav')) return 'audio/wav';
-    if (path.endsWith('.ogg')) return 'audio/ogg; codecs=opus';
     return 'audio/mp4';
   }
 
