@@ -36,6 +36,16 @@ struct last_reset_record {
 static struct last_reset_record last_reset = {0};
 static uint64_t crash_session_uptime_ms = 0;
 
+/* BLE connection-establishment failure counter, persisted so it survives the
+ * power-cycle the user must perform to reconnect and read it. */
+struct conn_fail_record {
+    uint32_t count;
+    uint8_t last_adv_slow;
+    uint8_t _pad[3];
+};
+
+static struct conn_fail_record conn_fail = {0};
+
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
     const char *next;
@@ -179,6 +189,18 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         rc = read_cb(cb_arg, &crash_session_uptime_ms, sizeof(crash_session_uptime_ms));
         if (rc >= 0) {
             LOG_INF("Loaded crash_uptime: %llums", crash_session_uptime_ms);
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "conn_fail", &next) && !next) {
+        if (len != sizeof(conn_fail)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, &conn_fail, sizeof(conn_fail));
+        if (rc >= 0) {
+            LOG_INF("Loaded conn_fail: count=%u last_adv_slow=%u", conn_fail.count, conn_fail.last_adv_slow);
             return 0;
         }
         return rc;
@@ -361,6 +383,27 @@ int app_settings_save_crash_session_uptime(uint64_t uptime_ms)
 uint64_t app_settings_get_crash_session_uptime(void)
 {
     return crash_session_uptime_ms;
+}
+
+int app_settings_save_conn_fail(uint32_t count, uint8_t last_adv_slow)
+{
+    conn_fail.count = count;
+    conn_fail.last_adv_slow = last_adv_slow;
+    int err = settings_save_one("omi/conn_fail", &conn_fail, sizeof(conn_fail));
+    if (err) {
+        LOG_ERR("Failed to save conn_fail (err %d)", err);
+    }
+    return err;
+}
+
+void app_settings_get_conn_fail(uint32_t *count, uint8_t *last_adv_slow)
+{
+    if (count) {
+        *count = conn_fail.count;
+    }
+    if (last_adv_slow) {
+        *last_adv_slow = conn_fail.last_adv_slow;
+    }
 }
 
 int app_settings_save_fw_version(const char *version)
