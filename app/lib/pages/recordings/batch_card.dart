@@ -76,6 +76,15 @@ class UploadIconButton extends StatelessWidget {
         onPressed: onTap,
       );
     }
+    if (uploadStatus == UploadStatus.unavailable) {
+      return IconButton(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        constraints: const BoxConstraints(),
+        icon: Icon(Icons.cloud_off, color: Colors.grey.shade600, size: 18),
+        tooltip: 'No uploadable file for this recording',
+        onPressed: null,
+      );
+    }
     return IconButton(
       padding: const EdgeInsets.symmetric(horizontal: 6),
       constraints: const BoxConstraints(),
@@ -426,8 +435,7 @@ class BatchCard extends StatelessWidget {
         ? switch (filterMode) {
             RecordingFilterMode.visible =>
               batch.discards.where((d) => d.duration.inSeconds >= minFilterSeconds).toList(),
-            RecordingFilterMode.hidden =>
-              batch.discards.where((d) => d.duration.inSeconds < minFilterSeconds).toList(),
+            RecordingFilterMode.hidden => batch.discards.where((d) => d.duration.inSeconds < minFilterSeconds).toList(),
             RecordingFilterMode.all => [...batch.discards],
           }
         : [...batch.discards];
