@@ -68,10 +68,6 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define LFS_MAGIC_PATH  ".lfs_magic"
 #define LFS_MAGIC_VALUE 0x4C465356u /* 'L','F','S','V' */
 
-/* Sentinel file created to request a full SD wipe on next boot.
- * Provides persistence across unexpected resets/watchdog triggers. */
-#define WIPE_SENTINEL_PATH ".wipe_pending"
-
 /* ------------------------------------------------------------------ */
 /* Disk sector size (always 512 for SD) */
 #define DISK_SECTOR_SIZE 512
@@ -279,7 +275,6 @@ static atomic_t pending_time_synced;
 static uint32_t pending_timesync_utc; /* Written only from sd_notify_time_synced (single writer), read only on worker thread — no atomic needed. */
 static atomic_t deferred_timesync_rename_pending;
 static uint32_t deferred_timesync_utc;
-static atomic_t proactive_wipe_requested;
 
 /* Set when a TMP→UTC rename is in flight (between sd_notify_time_synced and the
  * sd_worker completing sd_update_filename_after_timesync). The storage thread
@@ -1594,29 +1589,6 @@ void sd_worker_thread(void)
         return;
     }
 
-    /* ---- Handle proactive wipe request (e.g. firmware update) ---- */
-    struct lfs_info sinfo;
-    bool sentinel_found = (lfs_stat(&lfs_fs, WIPE_SENTINEL_PATH, &sinfo) == 0);
-
-    if (sentinel_found || atomic_cas(&proactive_wipe_requested, 1, 0)) {
-        LOG_INF("[SD_WORK] Executing early reformat (sentinel=%d)...", sentinel_found);
-        lfs_unmount(&lfs_fs);
-        int fmt_ret = lfs_format(&lfs_fs, &lfs_cfg);
-        if (fmt_ret != LFS_ERR_OK) {
-            LOG_ERR("[SD_WORK] Proactive reformat failed: %d", fmt_ret);
-            sd_write_blocked = true;
-            return;
-        }
-        int mnt_ret = lfs_mount(&lfs_fs, &lfs_cfg);
-        if (mnt_ret != LFS_ERR_OK) {
-            LOG_ERR("[SD_WORK] Proactive remount failed: %d", mnt_ret);
-            sd_write_blocked = true;
-            return;
-        }
-        check_or_write_magic();
-        LOG_INF("[SD_WORK] Early reformat complete.");
-    }
-
     /* ---- Ensure audio directory exists ---- */
     struct lfs_info dir_info;
     if (lfs_stat(&lfs_fs, FILE_DATA_DIR, &dir_info) < 0) {
@@ -2188,23 +2160,6 @@ uint32_t sd_get_boot_dropped_frames(void)
 uint32_t sd_get_stream_dropped_frames(void)
 {
     return (uint32_t)atomic_get(&stat_dropped_frames);
-}
-
-void sd_request_wipe(void)
-{
-    atomic_set(&proactive_wipe_requested, 1);
-
-    /* If already mounted, try to write the sentinel file for hardware persistence.
-     * The worker thread check at boot handles the case where we reset before this. */
-    if (is_mounted) {
-        lfs_file_t f;
-        if (lfs_file_open(&lfs_fs, &f, WIPE_SENTINEL_PATH, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC) >= 0) {
-            lfs_file_close(&lfs_fs, &f);
-            LOG_INF("[SD] Wipe sentinel created on SD card");
-        }
-    }
-
-    LOG_INF("[SD] Proactive wipe flag set for next boot");
 }
 
 int app_sd_init(void)
