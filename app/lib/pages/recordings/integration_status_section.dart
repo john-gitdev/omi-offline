@@ -2,30 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/services/recordings_manager.dart';
 
-/// Per-integration upload detail for one recording: a row per configured
-/// integration showing its state (Uploaded / Pending / Failed / Uploading /
-/// Not available) with a per-integration action, plus an "Upload all pending"
-/// footer. Opened from the aggregate cloud icon when 2+ integrations apply.
-Future<void> showIntegrationStatusSheet(
-  BuildContext context,
-  RecordingsController controller,
-  Conversation conversation,
-) {
-  return showModalBottomSheet(
-    context: context,
-    backgroundColor: const Color(0xFF1C1C1E),
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-    ),
-    builder: (_) => _IntegrationStatusSheet(controller: controller, conversation: conversation),
-  );
-}
-
-class _IntegrationStatusSheet extends StatelessWidget {
+/// Inline per-integration upload detail for one recording, shown on the player
+/// page. A row per configured integration with its state (Uploaded / Pending /
+/// Failed / Uploading / Not available — with an integration-specific reason for
+/// the unavailable case) and a per-row Upload / Retry / Re-upload action, plus
+/// an "Upload all pending" button. Reactive via [ListenableBuilder] on the
+/// controller so rows update live as uploads progress. Renders nothing when no
+/// integration is configured.
+class IntegrationStatusList extends StatelessWidget {
   final RecordingsController controller;
   final Conversation conversation;
 
-  const _IntegrationStatusSheet({required this.controller, required this.conversation});
+  const IntegrationStatusList({super.key, required this.controller, required this.conversation});
 
   Future<void> _runAction(BuildContext context, Future<List<UploadFailure>> Function() action) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -43,21 +31,26 @@ class _IntegrationStatusSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      child: ListenableBuilder(
-        listenable: controller,
-        builder: (context, _) {
-          final statuses = controller.integrationStatuses(conversation);
-          final anyActionable = statuses.any((s) => s.isActionable);
-          return Column(
-            mainAxisSize: MainAxisSize.min,
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) {
+        final statuses = controller.integrationStatuses(conversation);
+        if (statuses.isEmpty) return const SizedBox.shrink();
+        final anyActionable = statuses.any((s) => s.isActionable);
+        return Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF1C1C1E),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Padding(
-                padding: EdgeInsets.fromLTRB(20, 18, 20, 8),
+                padding: EdgeInsets.fromLTRB(16, 14, 16, 4),
                 child: Text(
-                  'Upload status',
-                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+                  'Integrations',
+                  style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
                 ),
               ),
               ...statuses.map((s) => _IntegrationRow(
@@ -68,7 +61,7 @@ class _IntegrationStatusSheet extends StatelessWidget {
                   )),
               if (anyActionable)
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
                   child: SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
@@ -83,11 +76,10 @@ class _IntegrationStatusSheet extends StatelessWidget {
                     ),
                   ),
                 ),
-              const SizedBox(height: 8),
             ],
-          );
-        },
-      ),
+          ),
+        );
+      },
     );
   }
 }
@@ -158,7 +150,7 @@ class _IntegrationRow extends StatelessWidget {
 
     final isUnavailable = status.state == IntegrationUploadState.unavailable;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         children: [
           Icon(icon, color: color, size: 20),
