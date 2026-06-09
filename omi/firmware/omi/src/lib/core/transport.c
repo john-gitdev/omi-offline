@@ -293,6 +293,29 @@ static struct bt_gatt_service battery_detail_service = BT_GATT_SERVICE(battery_d
 static atomic_t storage_block_drops = ATOMIC_INIT(0);
 static atomic_t last_storage_drop_uptime_ms = ATOMIC_INIT(0);
 
+/* Diagnostics: BLE connection-establishment failures (NOTES.md: "BLE: advertising
+ * but won't connect"). _transport_connected fires with err set when a central sent
+ * CONNECT_IND but the link failed to establish (HCI 0x3e). Pairing the count with the
+ * advertising mode in effect tells us whether the "visible but unconnectable until
+ * reboot" failures correlate with slow (1 s) advertising vs a controller/RF wedge.
+ * RTT/UART log only — no BLE characteristic. */
+static atomic_t failed_conn_count = ATOMIC_INIT(0);
+static const char *current_adv_mode = "fast"; /* boot + post-disconnect both start fast */
+static uint8_t last_failed_adv_slow = 0;      /* 1 if the most recent failure was during slow adv */
+
+/* Throttled flash persist of failed_conn_count (NOTES.md: "BLE: advertising but
+ * won't connect"). The failures accrue while disconnected, and the user must
+ * power-cycle to reconnect and read them, so the count is persisted to survive
+ * the reboot. k_work_schedule (not reschedule) coalesces a storm into one write
+ * ~CONN_FAIL_PERSIST_DELAY after the first failure — bounding flash wear while
+ * keeping the persisted count current to within that window. */
+#define CONN_FAIL_PERSIST_DELAY_MS 10000
+static void conn_fail_persist_work_handler(struct k_work *work)
+{
+    app_settings_save_conn_fail((uint32_t)atomic_get(&failed_conn_count), last_failed_adv_slow);
+}
+static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_handler);
+
 // --- Diagnostics Service ---
 // Service UUID:       19B10060-E8F2-537E-4F6C-D104768A1214
 // Characteristic A:   19B10061-E8F2-537E-4F6C-D104768A1214
@@ -346,13 +369,19 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn, const struct
     uint32_t sd_stream_drops = sd_get_stream_dropped_frames();
     uint32_t sd_boot_drops   = sd_get_boot_dropped_frames();
     uint32_t now_ms         = (uint32_t)k_uptime_get();
+    uint32_t conn_fails     = (uint32_t)atomic_get(&failed_conn_count);
 
-    uint8_t payload[20];
+    /* 28 bytes: 5 legacy u32 (drops) + conn_fail count + last-failure adv mode.
+     * Appended after the legacy 20 so older app builds (which read only the
+     * first 20) keep working unchanged. */
+    uint8_t payload[28];
     pack_u32_le(payload + 0,  block_drops);
     pack_u32_le(payload + 4,  last_drop_ms);
     pack_u32_le(payload + 8,  sd_stream_drops);
     pack_u32_le(payload + 12, sd_boot_drops);
     pack_u32_le(payload + 16, now_ms);
+    pack_u32_le(payload + 20, conn_fails);
+    pack_u32_le(payload + 24, (uint32_t)last_failed_adv_slow);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
 
@@ -820,7 +849,18 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     /* HCI connection failure: conn is borrowed and being torn down by the stack.
      * Do not ref/store/unref it — peripheral-role connected callbacks just observe. */
     if (err) {
-        LOG_ERR("Connection failed (err 0x%02x)", err);
+        /* atomic_inc returns the pre-increment value. See NOTES.md "BLE: advertising
+         * but won't connect" — if this fires during the failures, the peripheral *is*
+         * receiving CONNECT_IND but the link dies at establishment (points at a
+         * controller/RF wedge); if nothing logs while a phone is retrying, the
+         * CONNECT_IND is never reaching the device. adv_mode reveals slow-interval
+         * correlation. */
+        uint32_t fails = (uint32_t)atomic_inc(&failed_conn_count) + 1;
+        last_failed_adv_slow = (current_adv_mode[0] == 's') ? 1 : 0; /* "slow" vs "fast" */
+        LOG_ERR("Connection failed (err 0x%02x) adv_mode=%s failed_conn_count=%u uptime=%lld ms",
+                err, current_adv_mode, fails, (long long)k_uptime_get());
+        /* Coalesced flash persist so the count survives the power-cycle needed to read it. */
+        k_work_schedule(&conn_fail_persist_work, K_MSEC(CONN_FAIL_PERSIST_DELAY_MS));
         return;
     }
 
@@ -894,6 +934,7 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
      * invisible after a connect/disconnect cycle — Zephyr does not auto-restart
      * advertising when ONE_TIME is set. Start with fast params; AAD will switch
      * back to slow once VAD returns to sleep. */
+    current_adv_mode = "fast";
     bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
 }
 
@@ -1395,6 +1436,7 @@ int transport_set_adv_slow(void)
     if (err) {
         LOG_ERR("adv_slow: start failed (%d)", err);
     } else {
+        current_adv_mode = "slow";
         LOG_INF("BLE advertising switched to slow interval");
     }
     return err;
@@ -1414,6 +1456,7 @@ int transport_set_adv_fast(void)
     if (err) {
         LOG_ERR("adv_fast: start failed (%d)", err);
     } else {
+        current_adv_mode = "fast";
         LOG_INF("BLE advertising switched to fast interval");
     }
     return err;
@@ -1439,6 +1482,15 @@ int transport_start()
 
     // Configure callbacks
     bt_conn_cb_register(&_callback_references);
+
+    /* Seed the connection-failure counter from flash (app_settings_init ran in
+     * main before transport_start) so it stays cumulative across reboots — the
+     * count is only readable after the user power-cycles to reconnect. */
+    {
+        uint32_t persisted = 0;
+        app_settings_get_conn_fail(&persisted, &last_failed_adv_slow);
+        atomic_set(&failed_conn_count, (atomic_val_t)persisted);
+    }
 
     // Enable Bluetooth
     err = bt_enable(NULL);
