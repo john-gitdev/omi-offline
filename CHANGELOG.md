@@ -362,6 +362,14 @@
 
 ## Firmware
 
+### oo-1.9.5
+
+- **Removed the SD-card wipe on firmware version change.** Booting a new firmware version no longer reformats the SD card, so unsynced recordings survive an OTA/flash. The boot-time version comparison, the persisted `fw_version` NVS key, and the proactive-wipe/sentinel machinery that existed solely to drive it have all been removed. (User-initiated `CMD_CLEAR_STORAGE` is unchanged.)
+
+### oo-1.9.4
+
+- **BLE connect-failure diagnostics.** The firmware now counts failed connection establishments (HCI `0x3e`) along with the advertising mode in effect at the time, persists the count across reboots (throttled flash writes so a failing device still reports it after a power-cycle), and appends it to the `0x19B10062` diagnostics characteristic. Helps diagnose "advertising but won't connect" cases.
+
 ### oo-1.9.3
 
 - **Increased SD write queue size.** Bumped `SD_REQ_QUEUE_MSGS` from 100 to 150, providing a ~3-second deeper buffer to survive SD card write stalls and maintenance cycles without audio loss.
