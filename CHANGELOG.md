@@ -2,6 +2,11 @@
 
 ## App
 
+### 0.21.5
+
+- **Fix: Large Omi Cloud uploads no longer time out on transcription.**
+    - The Omi server now transcribes with Parakeet, which has a per-segment time budget. A whole recording was uploaded as a single segment, so long conversations blew past that budget and failed with a transcription timeout. Each recording is now split into ~5-minute segments at upload time (with sequential timestamps the server stitches back into one conversation), so no single segment exceeds the limit and one slow segment fails on its own instead of failing the whole recording. This applies to existing recordings too — just retry; no reprocessing needed.
+
 ### 0.21.4
 
 - **New: "Ready to Upload" / "Last Upload Failed at" upload states.**
