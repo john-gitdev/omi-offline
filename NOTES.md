@@ -716,3 +716,72 @@ static List<PassthroughIntegration> getIntegrations(SharedPreferencesUtil prefs)
 - **Auto-Upload**: The `tryAutoUploadAll` loop in `RecordingsController` will automatically pick up your integration and attempt background syncs.
 - **Passthrough Mode**: If "Delete After Upload" is enabled, your integration will correctly block local file deletion until it confirms delivery via `hasDelivered`.
 - **Validation**: The WiFi toggle will correctly detect that an integration is configured, allowing the user to turn it on.
+
+---
+
+## BLE: "advertising but won't connect" (OPEN — instrumented, awaiting next occurrence)
+
+**Status:** root cause NOT yet determined. Firmware logging added 2026-06-08 to capture the answer on the next occurrence. Do **not** change battery-affecting advertising behavior until the instrumentation tells us which branch we're on (see decision tree).
+
+### Symptom (observed 2026-06-08, one data point)
+Phone could not connect to the Omi — every attempt failed with HCI `0x3e GATT_CONN_FAILED_ESTABLISHMENT` (`CONNECTION_FAILED_ESTABLISHMENT`), retrying through retry #3–#6 (15 s / 30 s timeouts). **Power-cycling the Omi fixed it instantly** — it connected on the first try afterward. So the device was at fault, and a reboot cleared whatever state it was in.
+
+Crucially: **the device was advertising the whole time** — the phone's companion-discovery log showed `onDeviceFound() (BLE) c3:94:71:ea:a8:d5 'Omi' - New device`. So it was visible/discoverable but rejecting/failing the connection. This rules out "advertising stopped" (an adv-watchdog would not have helped).
+
+### What `0x3e` means
+The central received an ADV, sent `CONNECT_IND`, but the link never completed at the first connection event(s) — the peripheral didn't show up. By definition this is the *peripheral* (or the RF link to it) failing at connection setup, not the phone's app logic.
+
+### Config facts that rule suspects in/out (`omi/firmware/omi/omi.conf`)
+- **No `CONFIG_BT_PRIVACY`** → stable **static-random** address, NOT a rotating RPA. So address rotation is *not* the cause.
+- **`CONFIG_BT_CTLR_TX_PWR_ANTENNA=8`** (+8 dBm) → TX power already high; not a weak-signal-from-device issue.
+- **`CONFIG_BT_MAX_CONN=1` / `CONFIG_BT_MAX_PAIRED=1`** → single connection slot. A stale/half-open slot, or an OEM agent grabbing it, would block new connections until reboot.
+- The phone is an **Oplus/OnePlus/Realme** device: logs showed `com.heytap.accessory` / `PTC.CONN.GattServer` *also* opening GATT connections to the same Omi — i.e., OEM accessory framework contending for the radio on the same device.
+
+### Advertising state machine (`transport.c`)
+- **Fast adv** `BT_LE_ADV_CONN` (100–150 ms): on boot (`transport_start`), after every disconnect (`_transport_disconnected`, ~line 914), and on AAD wake.
+- **Slow adv** `adv_param_slow` (**1000–1200 ms**, `BT_LE_ADV_OPT_CONNECTABLE | BT_LE_ADV_OPT_ONE_TIME`): when AAD/VAD goes quiet (`aad.c:245`), saves ~300–500 µA.
+- On reboot the device comes up in **fast** adv → connected immediately. So the failure *correlates* with having been in slow adv, but correlation ≠ cause (see below).
+
+### Two competing hypotheses
+- **(A) Slow-adv path / 1 s interval is unconnectable on this phone.** Fits the reboot-fixes-it observation (reboot → fast adv). If true, **tiering the interval does NOT fix it** — the important reconnect (idle → background sync) lands *after* idle, i.e. right back on the slow tier. The only fix would be to never advertise slower than the phone can connect to (raise the floor, e.g. 1 s → ~300–400 ms) — a permanent idle-battery cost.
+- **(B) Controller/RF wedge cleared by reboot.** A BLE-stack or BLE↔Wi-Fi (nRF7002 / RF switch, `CONFIG_OMI_ENABLE_RFSW_CTRL`) coexistence wedge, or a stale connection slot (`MAX_CONN=1`). The "was in slow adv" detail is then coincidental.
+
+**Why I lean away from a pure-interval explanation:** per BLE spec the peripheral opens an RX window for `CONNECT_IND` *after every ADV packet*, and that window is identical at 100 ms or 1 s spacing. The advertising interval changes *discovery latency*, not whether a `CONNECT_IND` is answered. So a 1 s interval shouldn't by itself produce a hard `0x3e`. That points more at (B) — or at a *bug* in the slow-adv path that makes it effectively non-connectable (the only real diffs from fast are interval + `ONE_TIME`, both nominally connectable).
+
+### Instrumentation added (2026-06-08) — readable WITHOUT RTT
+Surfaced over BLE + the app log, **persisted across power-cycle** so it survives the reboot the user must do to reconnect and read it (a failing device can't be connected to, so the count had to outlive the reboot). Zero battery cost (off the hot path; flash write is coalesced ~once per 10 s during a failure storm).
+
+**Firmware (`transport.c` + `settings.c`):**
+- `failed_conn_count` (atomic, **cumulative across boots** — seeded from flash in `transport_start` ~line 1491) + `last_failed_adv_slow` + `current_adv_mode` (`"slow"`/`"fast"`, set in `transport_set_adv_slow`/`_fast`, reset to `"fast"` in `_transport_disconnected`; boot default `"fast"`).
+- `_transport_connected` err path (~line 858): increments the counter, records the adv mode, schedules a throttled flash persist (`conn_fail_persist_work`, `app_settings_save_conn_fail`), and still RTT-logs `Connection failed (err 0x3e) adv_mode=slow failed_conn_count=N …`.
+- Persisted via Zephyr settings key `omi/conn_fail` (`struct conn_fail_record { count; last_adv_slow; }`).
+- Exposed by **appending 8 bytes to the existing drops characteristic `0x19B10062`** (now 28 B: legacy 20 + `failed_conn_count` u32 @20 + `last_failed_adv_slow` u32 @24). No new characteristic — backward compatible (old app reads first 20).
+
+**App:**
+- `DeviceDropStats.failedConnCount` / `.lastFailedConnDuringSlowAdv` (parsed length-gated in `omi_connection.performGetDropStats`; 0/false on ≤20-byte firmware).
+- **Debug Tools → "SD Write Drops" card** shows `BLE connect failures` + `Last fail adv mode` (`sync_page.dart` `_buildDropStatsSection`).
+- **Logged on every connect** to `'Save Diagnostic Logs to File'** via `Logger.warning` + `DebugLogManager.logEvent('device_conn_fail', …)` when count > 0 (`device_provider._finishDeviceSetup`). So: reboot the Omi → reconnect with logging on → Share Logs → the pre-reboot count + last-failure adv mode are in the file.
+
+**Decision tree for the next occurrence** (after it gets stuck, power-cycle the Omi to reconnect, then read Debug Tools / Share Logs — the count is persisted so it reflects the *pre-reboot* session):
+1. **`failed_conn_count` increased (delta > 0) since you last checked** → the peripheral *was* receiving `CONNECT_IND` but the link died at establishment → **hypothesis (B)**: controller/RF wedge. Check `Last fail adv mode` (slow vs fast). Next step: BLE-recovery watchdog (on prolonged-disconnected + repeated failed establishments, full `bt_le_adv_stop`/restart, or controller reset) + investigate Wi-Fi/RF-switch coexistence and `MAX_CONN=1` slot cleanup in `_transport_disconnected`.
+2. **`failed_conn_count` did NOT move** (you had failures but the counter stayed flat) → the `CONNECT_IND` never reached the device (peripheral never saw the connect) → asymmetric RF / RX or genuinely-not-listening. Then A/B: force slow vs fast adv and try many connects. If slow *consistently* fails and fast *consistently* works → **hypothesis (A)** real (slow-adv-path bug or raise the interval floor at a battery cost).
+3. **`Last fail adv mode = fast`** → exonerates the slow interval → (B).
+
+Note: cumulative-across-boots, so mentally baseline it (or snapshot the value now). The `0x3e` RTT line still exists for anyone who *does* have a probe attached.
+
+### Battery note (for the eventual fix)
+Advertising power only matters during long idle stretches (while recording, the mic/codec/SD dwarf it). The fast↔slow delta is ~300–500 µA. A watchdog (B-fix) is ~free if piggybacked on the existing AAD 100 ms loop and made mode-aware (restart adv in the *currently-intended* mode, not blindly fast). Raising the slow-interval floor (A-fix) is a real, permanent idle cost and should only be done if the instrumentation confirms (A).
+
+### Related (already fixed, separate bug)
+The Android-side `PlatformException(channel-error … requestCompanionDeviceAssociation)` seen first was a **different** problem: `AndroidManifest.xml` was missing `<uses-feature android:name="android.software.companion_device_setup">`, so `CompanionDeviceManager.associate()` threw `IllegalStateException` synchronously → pigeon surfaced it as the opaque channel-error. Fixed by adding the `uses-feature` + a defensive try/catch in `BleHostApiImpl.requestCompanionDeviceAssociation`. That fix is what let the flow progress far enough to expose this firmware-side `0x3e`.
+
+### Code locations
+- `omi/firmware/omi/src/lib/core/transport.c` — `failed_conn_count` / `current_adv_mode` / `last_failed_adv_slow` / `conn_fail_persist_work` (~line 302), failure path in `_transport_connected` (~line 858), 28-byte `diagnostics_drops_read_handler` (~line 372), boot seed in `transport_start` (~1491), `current_adv_mode` sets in `_transport_disconnected` (~937) / `transport_set_adv_slow` (~1439) / `transport_set_adv_fast` (~1459), `adv_param_slow` definition.
+- `omi/firmware/omi/src/settings.c` + `src/lib/core/settings.h` — `omi/conn_fail` persistence (`struct conn_fail_record`, `app_settings_save_conn_fail` / `app_settings_get_conn_fail`).
+- `omi/firmware/omi/src/aad.c` — slow/fast switch requests (`adv_slow_req`/`adv_fast_req`, ~lines 244–247, 298, 318, 452).
+- `omi/firmware/omi/omi.conf` — `BT_MAX_CONN`, `BT_CTLR_TX_PWR_ANTENNA`, (absence of) `BT_PRIVACY`, `BT_PERIPHERAL_PREF_*`.
+- `app/lib/services/devices/device_drop_stats.dart` — `failedConnCount` / `lastFailedConnDuringSlowAdv` on `DeviceDropStats`.
+- `app/lib/services/devices/omi_connection.dart` — `performGetDropStats` length-gated parse of bytes 20–27.
+- `app/lib/providers/device_provider.dart` — `_finishDeviceSetup` connect-time log (`device_conn_fail`).
+- `app/lib/pages/settings/sync_page.dart` — `_buildDropStatsSection` "BLE connect failures" rows.
+- `app/android/app/src/main/AndroidManifest.xml` — the `companion_device_setup` uses-feature (the separate fix).
