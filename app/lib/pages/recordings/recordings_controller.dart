@@ -1413,6 +1413,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   String _dateString(DateTime t) =>
       '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
 
+  /// True when [i] already has its maximum concurrent uploads in flight, counting
+  /// the shared [_syncingKeys] registry across all paths (auto + both manual
+  /// entry points). Omi Cloud (limit 1) uses this to block a second concurrent
+  /// upload — the server returns 503s when hit with parallel sync jobs.
+  bool _atConcurrencyLimit(PassthroughIntegration i) =>
+      _syncingKeys.where((k) => k.startsWith('${i.name}_')).length >= i.concurrencyLimit;
+
   void tryAutoUploadAll() async {
     // Fire-and-forget (callers don't await), so any throw here would become an
     // unhandled async error. Guard the connectivity probe and, when wifi-only is
@@ -1444,9 +1451,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
           final integrationKey = '${integration.name}_${conversation.file.path}';
           if (_syncingKeys.contains(integrationKey)) continue;
 
-          // Check concurrency limit for this integration
-          final activeCount = _syncingKeys.where((k) => k.startsWith('${integration.name}_')).length;
-          if (activeCount >= integration.concurrencyLimit) continue;
+          // Respect the integration's concurrency limit across all in-flight uploads.
+          if (_atConcurrencyLimit(integration)) continue;
 
           // Retry logic (Generic)
           final retryKey = integration.getRetryKey(conversation);
@@ -1606,17 +1612,29 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       // integrations enabled" message.
       final List<Future<void>> uploads = [];
       for (final integration in _integrations) {
-        if (integration.isAvailableFor(conversation)) {
-          if (force || !integration.hasDelivered(conversation)) {
-            // Persist an attempt marker up-front so an app-kill mid-upload (the
-            // in-memory uploading flag is lost on relaunch) surfaces as failed
-            // rather than reverting to pending. Cleared by upload() on success.
-            unawaited(_prefs.setAutoUploadLastFailureAt(integration.getRetryKey(conversation)));
-            uploads.add(integration.upload(conversation).catchError((e) {
-              failures.add(UploadFailure(integration.name, e));
-            }));
-          }
+        if (!integration.isAvailableFor(conversation)) continue;
+        if (!force && integration.hasDelivered(conversation)) continue;
+
+        final syncKey = '${integration.name}_${conversation.file.path}';
+        if (_syncingKeys.contains(syncKey)) continue;
+        // Block a concurrent upload past the integration's limit (Omi Cloud = 1)
+        // so we don't fire parallel sync jobs at the server and trip its 503s.
+        if (_atConcurrencyLimit(integration)) {
+          failures.add(UploadFailure(integration.name,
+              Exception('Another ${integration.name} upload is in progress — try again when it finishes')));
+          continue;
         }
+
+        // Register in the shared registry so this upload counts toward the
+        // concurrency limit seen by every other path, and remove it on completion.
+        _syncingKeys.add(syncKey);
+        // Persist an attempt marker up-front so an app-kill mid-upload (the
+        // in-memory uploading flag is lost on relaunch) surfaces as failed
+        // rather than reverting to pending. Cleared by upload() on success.
+        unawaited(_prefs.setAutoUploadLastFailureAt(integration.getRetryKey(conversation)));
+        uploads.add(integration.upload(conversation).catchError((e) {
+          failures.add(UploadFailure(integration.name, e));
+        }).whenComplete(() => _syncingKeys.remove(syncKey)));
       }
 
       if (uploads.isEmpty) {
@@ -1719,6 +1737,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     final syncKey = '${integration.name}_${c.file.path}';
     if (_syncingKeys.contains(syncKey)) return [];
+
+    // Block a concurrent upload past the integration's limit (Omi Cloud = 1) so
+    // we don't fire parallel sync jobs at the server and trip its 503s.
+    if (_atConcurrencyLimit(integration)) {
+      return [
+        UploadFailure(
+            integration.name, Exception('Another ${integration.name} upload is in progress — wait for it to finish'))
+      ];
+    }
 
     if (_prefs.uploadOnWifiOnly) {
       try {
