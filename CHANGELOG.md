@@ -2,6 +2,17 @@
 
 ## App
 
+### 0.21.2
+
+- **Fix: Manual upload now works on recordings made before auto-upload was enabled.**
+    - Tapping the red cloud icon on such a recording previously failed with "No integrations enabled for upload." The auto-upload time cutoff was wrongly gating explicit manual uploads; it now only governs the background auto-upload sweep. An explicit tap uploads regardless of when the recording was made, and the icon flips to green afterward.
+- **Fix: Delivered recordings no longer show a red cloud icon.**
+    - The upload icon was keyed off auto-upload eligibility (the time cutoff) instead of actual delivery state. Because the cutoff moves forward each time you re-enable Auto-Upload or re-validate an integration key, recordings that were already uploaded could retroactively fall "before the cutoff" and flip back to red despite still being in the cloud. The icon now reflects whether the recording was actually delivered.
+- **Fix: Clearer Omi error for un-uploadable recordings.**
+    - When Omi has no upload file for a recording (its `.bin` is only created when Omi sync is enabled at processing time), the error now says it was processed before Omi sync was enabled, instead of incorrectly blaming passthrough cleanup.
+- **New: Auto-upload cutoff shown on the Integrations page.**
+    - Each integration with Auto-Upload on now shows the date/time from which recordings are auto-uploaded, with a reminder that earlier recordings must be uploaded manually via the cloud icon. Respects the 12/24-hour time preference.
+
 ### 0.21.1
 
 - **Fix: Android pairing "channel-error".**
