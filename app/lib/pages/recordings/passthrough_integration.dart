@@ -175,7 +175,10 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
         await _prefs.clearAutoUploadRetry(binPath);
         unawaited(OmiApiClient.traceSyncResult(result));
       } else {
-        throw Exception('Omi upload failed: ${result?.status}');
+        // Prefer the server's detailed error (e.g. a transcription/STT failure)
+        // over the bare 'failed' status so the snackbar explains what went wrong.
+        final detail = result?.error ?? result?.status ?? 'unknown error';
+        throw Exception('Omi upload failed: $detail');
       }
     } catch (e) {
       if (e is OmiSyncException && e.isAuthError) {
