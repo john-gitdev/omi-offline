@@ -97,16 +97,24 @@ class SharedPreferencesUtil {
   int get manualModeVadMaxConversationMinutes => getInt('manual_vadMaxConversationMinutes', defaultValue: 0);
   set manualModeVadMaxConversationMinutes(int v) => saveInt('manual_vadMaxConversationMinutes', v);
 
-  // The format to save processed audio files. Options: 'm4a', 'ogg', 'wav'.
+  // The format to save processed audio files. Options: 'm4a', 'wav'.
+  // OGG support was removed entirely; any stored 'ogg' value (from the legacy
+  // convertOpusToM4a migration or a previously-chosen setting) is coerced to
+  // 'wav' so the settings dropdown and save path never see an unknown format.
   String get audioSaveFormat {
     if (_preferences?.containsKey('convertOpusToM4a') == true) {
       final isM4a = getBool('convertOpusToM4a', defaultValue: false);
       remove('convertOpusToM4a');
-      final format = isM4a ? 'm4a' : 'ogg';
+      final format = isM4a ? 'm4a' : 'wav';
       saveString('audioSaveFormat', format);
       return format;
     }
-    return getString('audioSaveFormat', defaultValue: 'wav');
+    final format = getString('audioSaveFormat', defaultValue: 'wav');
+    if (format == 'ogg') {
+      saveString('audioSaveFormat', 'wav');
+      return 'wav';
+    }
+    return format;
   }
 
   set audioSaveFormat(String value) => saveString('audioSaveFormat', value);
