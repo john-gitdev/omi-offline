@@ -3163,8 +3163,10 @@ class RecordingsManager {
   /// filename's timestamp, and callers pre-filter to rawSegments-bearing days),
   /// so a per-batch derivation drops cross-date records and the bins re-run VAD
   /// every sync cycle (inflating "minutes to process", never finalizing).
-  /// `silence_trimmed` is excluded — recording-adjacent trailing silence,
-  /// pruned elsewhere, not a reprocess guard.
+  /// `silence_trimmed` is excluded — recording-adjacent trailing silence that
+  /// is not a reprocess guard. No longer generated since the June 2026 change
+  /// that keeps trailing silence in the recording, but legacy discards.jsonl
+  /// files may still contain it, so the guard stays for backward compatibility.
   ///
   static Future<Set<String>> discardedRelBinPaths() async {
     final out = <String>{};
