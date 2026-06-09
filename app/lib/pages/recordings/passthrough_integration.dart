@@ -153,7 +153,7 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
     final binPath = PassthroughIntegration.getBinPath(c);
     final binFile = File(binPath);
     if (!binFile.existsSync()) {
-      throw Exception('source audio no longer on device (passthrough .bin was cleaned up)');
+      throw Exception('no Omi upload file for this recording — it was processed before Omi sync was enabled');
     }
 
     try {
