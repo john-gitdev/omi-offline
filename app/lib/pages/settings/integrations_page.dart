@@ -120,7 +120,9 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
       final result = await HeyPocketService.testConnection(key);
       if (_heypocketController.text != key) return;
       if (result) {
-        _prefs.heypocketKeySetAt = DateTime.now().millisecondsSinceEpoch;
+        // Note: enabling the integration must NOT set the auto-upload cutoff —
+        // only toggling Auto-Upload on does (heypocketAutoUpload setter). The
+        // cutoff means "when auto-upload started", not "when the key was saved".
         await _prefs.setHeypocketApiKey(key);
         _prefs.heypocketEnabled = true;
         unawaited(_prefs.clearAllAutoUploadRetries());
