@@ -629,7 +629,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: SwitchListTile(
-                  title: const Text('Save Diagnostic Logs to File',
+                  title: const Text('Save Debug Logs to File',
                       style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
                   subtitle: Text('Persists info/debug logs to a file on your device.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
