@@ -136,7 +136,16 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
         }
 
         companionAssociationCallback = callback
-        cm.associate(deviceAddress = deviceAddress)
+        // associate() can throw synchronously (e.g. CompanionDeviceManager rejects
+        // the request). Report it back through the callback so Dart sees the real
+        // error instead of an opaque pigeon "channel-error" from a thrown handler.
+        try {
+            cm.associate(deviceAddress = deviceAddress)
+        } catch (e: Throwable) {
+            Log.e(TAG, "associate() threw synchronously", e)
+            companionAssociationCallback = null
+            callback(Result.failure(e))
+        }
     }
 
     override fun acquireProcessingWakeLock() {
