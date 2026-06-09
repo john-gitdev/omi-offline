@@ -12,6 +12,10 @@ class UploadIconButton extends StatelessWidget {
   final bool anyIntegrationEnabled;
   final bool isUploading;
   final UploadStatus uploadStatus;
+
+  /// Number of integrations that apply to this recording. When >= 2, a small
+  /// count badge is overlaid on the cloud icon and a tap opens the detail sheet.
+  final int integrationCount;
   final VoidCallback? onTap;
 
   const UploadIconButton({
@@ -20,6 +24,7 @@ class UploadIconButton extends StatelessWidget {
     required this.anyIntegrationEnabled,
     required this.isUploading,
     required this.uploadStatus,
+    this.integrationCount = 0,
     this.onTap,
   });
 
@@ -28,13 +33,7 @@ class UploadIconButton extends StatelessWidget {
     if (!anyIntegrationEnabled) return const SizedBox.shrink();
 
     if (conversation == null) {
-      return IconButton(
-        padding: const EdgeInsets.symmetric(horizontal: 6),
-        constraints: const BoxConstraints(),
-        icon: Icon(Icons.cloud_off, color: Colors.grey.shade600, size: 18),
-        tooltip: 'Upload key unavailable',
-        onPressed: onTap,
-      );
+      return _button(Icons.cloud_off, Colors.grey.shade600, 'Upload key unavailable', onTap);
     }
     if (isUploading) {
       return IconButton(
@@ -49,48 +48,54 @@ class UploadIconButton extends StatelessWidget {
         onPressed: null,
       );
     }
-    if (uploadStatus == UploadStatus.all) {
-      return IconButton(
-        padding: const EdgeInsets.symmetric(horizontal: 6),
-        constraints: const BoxConstraints(),
-        icon: const Icon(Icons.cloud_done, color: Colors.green, size: 18),
-        tooltip: 'Re-upload to integrations',
-        onPressed: onTap,
-      );
-    }
-    if (uploadStatus == UploadStatus.partial) {
-      return IconButton(
-        padding: const EdgeInsets.symmetric(horizontal: 6),
-        constraints: const BoxConstraints(),
-        icon: const Icon(Icons.cloud_upload, color: Colors.amber, size: 18),
-        tooltip: 'Some integrations pending — tap to retry',
-        onPressed: onTap,
-      );
-    }
-    if (uploadStatus == UploadStatus.failed) {
-      return IconButton(
-        padding: const EdgeInsets.symmetric(horizontal: 6),
-        constraints: const BoxConstraints(),
-        icon: const Icon(Icons.error_outline, color: Colors.orange, size: 18),
-        tooltip: 'Upload failed — tap to retry',
-        onPressed: onTap,
-      );
-    }
-    if (uploadStatus == UploadStatus.unavailable) {
-      return IconButton(
-        padding: const EdgeInsets.symmetric(horizontal: 6),
-        constraints: const BoxConstraints(),
-        icon: Icon(Icons.cloud_off, color: Colors.grey.shade600, size: 18),
-        tooltip: 'No uploadable file for this recording',
-        onPressed: null,
-      );
-    }
+
+    final (IconData icon, Color color, String tooltip, bool enabled) = switch (uploadStatus) {
+      UploadStatus.all => (Icons.cloud_done, Colors.green, 'Uploaded — tap for details', true),
+      UploadStatus.partial => (Icons.cloud_upload, Colors.amber, 'Some integrations pending — tap for details', true),
+      UploadStatus.failed => (Icons.error_outline, Colors.orange, 'Upload failed — tap for details', true),
+      UploadStatus.unavailable => (
+          Icons.cloud_off,
+          Colors.grey.shade600,
+          'No uploadable file for this recording',
+          false
+        ),
+      UploadStatus.none => (Icons.cloud_upload, Colors.redAccent, 'Upload to integrations', true),
+    };
+    return _button(icon, color, tooltip, enabled ? onTap : null);
+  }
+
+  Widget _button(IconData icon, Color color, String tooltip, VoidCallback? onPressed) {
+    final showBadge = integrationCount >= 2;
+    final iconWidget = showBadge
+        ? Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Icon(icon, color: color, size: 18),
+              Positioned(
+                right: -5,
+                top: -4,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 3.5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(7),
+                    border: Border.all(color: const Color(0xFF1C1C1E), width: 1),
+                  ),
+                  child: Text(
+                    '$integrationCount',
+                    style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold, height: 1.0),
+                  ),
+                ),
+              ),
+            ],
+          )
+        : Icon(icon, color: color, size: 18);
     return IconButton(
       padding: const EdgeInsets.symmetric(horizontal: 6),
       constraints: const BoxConstraints(),
-      icon: const Icon(Icons.cloud_upload, color: Colors.redAccent, size: 18),
-      tooltip: 'Upload to integrations',
-      onPressed: onTap,
+      icon: iconWidget,
+      tooltip: tooltip,
+      onPressed: onPressed,
     );
   }
 }
@@ -386,6 +391,7 @@ class BatchCard extends StatelessWidget {
   final bool anyIntegrationEnabled;
   final RecordingFilterMode filterMode;
   final UploadStatus Function(Conversation) uploadStatus;
+  final int Function(Conversation) uploadCount;
   final bool Function(String) isUploading;
   final void Function(Conversation) onUploadTap;
   final void Function(Conversation) onConversationTap;
@@ -404,6 +410,7 @@ class BatchCard extends StatelessWidget {
     required this.anyIntegrationEnabled,
     required this.filterMode,
     required this.uploadStatus,
+    required this.uploadCount,
     required this.isUploading,
     required this.onUploadTap,
     required this.onConversationTap,
@@ -492,6 +499,7 @@ class BatchCard extends StatelessWidget {
                   anyIntegrationEnabled: anyIntegrationEnabled,
                   isUploading: uploadKey != null && isUploading(uploadKey),
                   uploadStatus: uploadStatus(c),
+                  integrationCount: uploadCount(c),
                   onTap: () => onUploadTap(c),
                 ),
                 onMarkerTap: onMarkerTap,
