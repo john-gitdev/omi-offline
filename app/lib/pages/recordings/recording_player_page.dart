@@ -8,6 +8,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/pages/recordings/passthrough_integration.dart';
+import 'package:omi/pages/recordings/integration_status_sheet.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart' show RecordingsController, UploadStatus;
 import 'package:omi/utils/logger.dart';
@@ -178,6 +179,13 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
   Future<void> _handleUpload() async {
     final anyIntegrationEnabled = PassthroughIntegration.hasAnyConfigured(_prefs);
     if (!anyIntegrationEnabled || _isUploading) return;
+
+    // 2+ applicable integrations → open the per-integration detail sheet rather
+    // than a blind upload-to-all (matches the day-list behaviour).
+    if (widget.controller.applicableIntegrationCount(widget.conversation) >= 2) {
+      await showIntegrationStatusSheet(context, widget.controller, widget.conversation);
+      return;
+    }
 
     final alreadyUploaded = widget.controller.isUploaded(widget.conversation);
     if (alreadyUploaded) {
