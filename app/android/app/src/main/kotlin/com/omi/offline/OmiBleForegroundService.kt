@@ -102,6 +102,30 @@ class OmiBleForegroundService : Service() {
                 Log.e(TAG, "Failed to stop service", e)
             }
         }
+
+        /// Start (or flag) the service in persistent mode with no device to manage,
+        /// so the idle "Next sync / Last Sync" notification stays up across BLE
+        /// disconnect and app background. Safe to call from an exempt background
+        /// context (exact alarm / WorkManager) where starting an FGS is allowed.
+        fun startServicePersistent(context: Context) {
+            val inst = instance
+            if (inst != null) {
+                inst.persistent = true
+                return
+            }
+            if (isDestroyingStatic) {
+                Log.w(TAG, "startServicePersistent: still destroying, skipping")
+                return
+            }
+            val intent = Intent(context, OmiBleForegroundService::class.java).apply {
+                putExtra("persistent_only", true)
+            }
+            try {
+                ContextCompat.startForegroundService(context, intent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start persistent foreground service", e)
+            }
+        }
     }
 
     // ── Per-device state ──
@@ -136,6 +160,20 @@ class OmiBleForegroundService : Service() {
     // text updates so the "Next sync at…" label stays stable through the brief
     // connect→sync→disconnect cycle.
     private var syncTimerActive = false
+
+    // ── Single-notification / persistent mode ──
+    // When persistent, the service is the app's one foreground notification and
+    // survives BLE disconnect + app background (it stops only when persistence is
+    // turned off and no device is managed). Set true while auto-sync is on and a
+    // device is bound (Dart drives it via setPersistentNotification).
+    @Volatile
+    private var persistent = false
+
+    // While true, the Dart sync state machine owns the notification text (idle /
+    // connecting / syncing / processing / …). The service's own connection-state
+    // text updates are suppressed so the two don't fight.
+    @Volatile
+    private var dartDrivesNotification = false
 
     private val notificationDismissedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -281,7 +319,7 @@ class OmiBleForegroundService : Service() {
             Log.w(TAG, "fireDeviceReady: $addr disconnected during pipeline, skipping")
             return
         }
-        updateNativeNotification("Connected")
+        if (!dartDrivesNotification) updateNativeNotification("Connected")
         bleManager.mainHandler.post {
             bleManager.flutterApi?.onDeviceReady(addr, services) {}
         }
@@ -377,9 +415,9 @@ class OmiBleForegroundService : Service() {
             bleManager.flutterApi?.onPeripheralDisconnected(addr, "unmanaged") {}
         }
 
-        if (managedDevices.isEmpty()) {
+        if (managedDevices.isEmpty() && !persistent) {
             handler.postDelayed({
-                if (managedDevices.isEmpty()) {
+                if (managedDevices.isEmpty() && !persistent) {
                     Log.i(TAG, "No more devices managed, stopping service")
                     stopSelf()
                 }
@@ -411,7 +449,7 @@ class OmiBleForegroundService : Service() {
             Log.i(TAG, "connectToDevice($source): $addr (autoConnect=$autoConnect, timeout=${timeoutMs}ms)")
             // Flip back to "Connecting..." when retrying after a disconnect.
             // Skip for the initial manageDevice call since onCreate already set "Connecting...".
-            if (source != "manageDevice") updateNativeNotification(DEFAULT_NOTIF_TEXT)
+            if (source != "manageDevice" && !dartDrivesNotification) updateNativeNotification(DEFAULT_NOTIF_TEXT)
             val gatt = try {
                 bleManager.connectGatt(addr, autoConnect = autoConnect)
             } catch (e: SecurityException) {
@@ -499,6 +537,13 @@ class OmiBleForegroundService : Service() {
         if (managed != null && !managed.hasEverConnected && status != -1) {
             Log.w(TAG, "Device $addr disconnected before ever connecting (status=$status)")
         }
+
+        // Reflect the drop on the notification immediately instead of leaving the
+        // stale "Connected" text until the delayed retry's connectToDevice flips
+        // it (see connectToDevice's source != "manageDevice" branch). This path
+        // only runs for genuine drops we're about to retry — intentional
+        // disconnects early-return above (managed entry removed by unmanageDevice).
+        if (!dartDrivesNotification) updateNativeNotification(DEFAULT_NOTIF_TEXT)
 
         bleManager.mainHandler.post {
             bleManager.flutterApi?.onPeripheralDisconnected(addr, error) {}
@@ -746,20 +791,20 @@ class OmiBleForegroundService : Service() {
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val address = intent?.getStringExtra("device_address")
+        if (intent?.getBooleanExtra("persistent_only", false) == true) persistent = true
 
         if (address != null) {
             val requiresBond = intent.getBooleanExtra("requires_bond", false)
             manageDevice(address, requiresBond)
-        } else {
-            // No device specified — Omi streams via WebSocket which needs the app.
-            // No point keeping BLE alive without it.
-            if (managedDevices.isEmpty()) {
-                Log.i(TAG, "onStartCommand: no device address and no managed devices, stopping")
-                stopSelf()
-            }
+        } else if (!persistent && managedDevices.isEmpty()) {
+            // No device and not pinned persistent — nothing to keep alive.
+            Log.i(TAG, "onStartCommand: no device address and no managed devices, stopping")
+            stopSelf()
         }
 
-        return START_NOT_STICKY
+        // START_STICKY in persistent mode so the OS relaunches the notification
+        // after a low-memory kill (a user force-stop still wins, by design).
+        return if (persistent) START_STICKY else START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -803,8 +848,37 @@ class OmiBleForegroundService : Service() {
     }
 
     fun setDeviceBattery(level: Int, timestampMs: Long) {
-        // Battery info is surfaced in the flutter_foreground_task notification;
-        // the native notification stays on connection state only.
+        // Battery info is surfaced in the idle notification text (built by Dart and
+        // pushed via setSyncStatus); the native service no longer renders it itself.
+    }
+
+    /// Pin/unpin the service so it survives BLE disconnect + app background.
+    fun setPersistent(enabled: Boolean) {
+        persistent = enabled
+        if (!enabled && managedDevices.isEmpty()) {
+            // Allow normal teardown now that nothing pins it.
+            handler.postDelayed({
+                if (!persistent && managedDevices.isEmpty()) {
+                    Log.i(TAG, "setPersistent(false): no managed devices, stopping service")
+                    stopSelf()
+                }
+            }, 5000)
+        }
+    }
+
+    /// Dart sync state machine takes over the notification text. Suppresses the
+    /// service's own connection-state updates while a status is set.
+    fun setSyncStatus(title: String, text: String) {
+        dartDrivesNotification = true
+        updateNativeNotification(text, title)
+    }
+
+    /// Release Dart ownership; native resumes connection-state text on the next
+    /// event. Reflect the current state immediately so the line isn't stale.
+    fun clearSyncStatus() {
+        dartDrivesNotification = false
+        val connected = managedDevices.keys.any { bleManager.isPeripheralConnected(it) }
+        updateNativeNotification(if (connected) "Connected" else DEFAULT_NOTIF_TEXT)
     }
 
     private fun updateNativeNotification(text: String, title: String = DEFAULT_NOTIF_TITLE) {
