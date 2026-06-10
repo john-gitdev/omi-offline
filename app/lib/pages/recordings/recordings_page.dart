@@ -684,8 +684,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         ),
                         content: Text(
                           endLabel != null
-                              ? 'Accumulated recording will end at $endLabel.'
-                              : 'Accumulated recording will be finalized now.',
+                              ? 'This recording will be finalized with an end time of ~$endLabel.'
+                              : 'This recording will be finalized now.',
                           style: const TextStyle(color: Colors.white70, fontSize: 14),
                         ),
                         actions: [
