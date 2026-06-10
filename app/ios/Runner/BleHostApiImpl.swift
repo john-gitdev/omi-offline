@@ -104,4 +104,25 @@ final class BleHostApiImpl: BleHostApi {
     func releaseProcessingWakeLock() throws {
         // Android-only — no-op on iOS
     }
+
+    func setNextSyncTime(timestampMs: Int64) throws {
+        // Android-only (drives the native foreground-service notification) — no-op on iOS.
+    }
+
+    func setDeviceBattery(level: Int64, timestampMs: Int64) throws {
+        // Android-only — no-op on iOS.
+    }
+
+    func setSyncStatus(title: String, text: String) throws {
+        // Android-only single-notification state machine — iOS has no persistent
+        // notification (background work runs via BGProcessingTask).
+    }
+
+    func setPersistentNotification(enabled: Bool) throws {
+        // Android-only — no-op on iOS.
+    }
+
+    func clearSyncStatus() throws {
+        // Android-only — no-op on iOS.
+    }
 }
