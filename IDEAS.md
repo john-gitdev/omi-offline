@@ -75,9 +75,15 @@ So a merge is essentially: *take this "draft + following events → one file" ma
 
 ---
 
-## VAD Native Batch Runner: collapse per-window Silero channel round-trips [major] [Active — Android first]
+## DEFERRED
 
-Speed up the post-sync **processing** phase (Opus-decode → Silero VAD split → AAC encode, run in a spawned isolate) by moving Silero's per-window inference loop native-side, collapsing the Dart↔native platform-channel round-trips. Pure performance — **bit-identical VAD output**, no accuracy risk. Full investigation in `NOTES.md` → "VAD perf: timing diagnostics". **Promoted from DEFERRED 2026-06-06 (thermal trigger — see "Why now" below). Shipping Android-only; iOS stays on the per-window fallback.**
+## VAD Native Batch Runner — iOS port (Android shipped) [major] [Deferred — no iOS hardware]
+
+Speed up the post-sync **processing** phase (Opus-decode → Silero VAD split → AAC encode, run in a spawned isolate) by moving Silero's per-window inference loop native-side, collapsing the Dart↔native platform-channel round-trips. Pure performance — **bit-identical VAD output**, no accuracy risk. Full investigation in `NOTES.md` → "VAD perf: timing diagnostics".
+
+**Status: shipped on Android (2026-06-10); iOS port remains deferred** — no iOS hardware to test the native half. iOS continues to run the per-window fallback unchanged (see "Android-first scope"). The Dart contract, the `_applyVadVerdict` extraction, and the two-pass `processSegmentFile` loop are all already in place, so the iOS work is purely additive (phase 3 in Staging below).
+
+**Measured on Android (6-segment / ~4.9 MB / 28.5 s run, 2026-06-10):** batched Silero ran **~0.3 ms/window** (~20.3 k windows, ~6.1 s total VAD). That **beat this doc's own estimate by ~7×**: the projected "~2.1 ms/inf fixed and unreducible compute floor" and ~2× VAD speedup did not hold — the batched path is **~14× faster than the 4.2 ms/inf single-pass timing**, because the supposed compute floor was almost entirely per-call overhead (channel hop + per-call `session.run` setup/teardown + tensor alloc) that batching amortizes, not model dispatch. Net result: **~73 % off total processing** vs. the projected ~37 %. **Treat the ~2.1 ms floor below as falsified when sizing the iOS win — expect it to be much larger.**
 
 ### The optimization (what & why)
 Silero runs once per 512-sample / 32 ms window — **~112,500 inferences per recorded hour** — and each `_runVad` (`vad_audio_processor.dart`) crosses the platform channel 3× on the critical path (`OrtValue.fromList` create + `session.run` + `asFlattenedList` read) plus 2 fire-and-forget disposes. On-device timing (2026-06-02):
@@ -150,10 +156,10 @@ The **decision logic is unchanged** and lives in exactly one place (`_applyVadVe
 - **Context is native now.** Today Dart maintains `_vadContext` (trailing 64). Moving it native (the contract above) means the Dart-side `_vadContext` / `_cachedStateValue` / `_cachedSrValue` plumbing in `_runVad` is replaced by the channel for the batched path — but keep the per-window path intact for fallback.
 - **Manual mode / AAD (`_session == null`)** never calls Silero (`isSpeech = true`); the batched path is only taken when a session would exist. Don't route AAD frames through the channel.
 
-### Staging (Android-first — three commits)
-1. **Safe, additive (Android native):** the `VadBatchRunner.kt` channel + registration in `MainActivity` + the Dart wrapper (`Platform.isAndroid`-gated) + the ORT dep in `app/android/app/build.gradle` + the A/B flag, with the per-window path still the default. Nothing uses the batch path yet → zero behavior change; verifies the channel loads + returns probs **bit-identical to the per-window path** on a sample bin.
-2. **Risky (shared Dart):** extract `_applyVadVerdict`, then the deferred-verdict two-pass refactor of `processSegmentFile` that feeds the batch path behind the flag, with test updates. iOS/desktop/tests ride the single-pass branch through the same `_applyVadVerdict`, so they're covered by `vad_audio_processor_test.dart` on CI.
-3. **Later — iOS (when hardware available):** `VadBatchRunner.swift` mirroring the Kotlin + `pod 'onnxruntime-objc', '1.22.0'` in `app/ios/Podfile` + registration in `AppDelegate`. Purely additive; no Dart changes.
+### Staging — phases 1 & 2 shipped (Android); phase 3 (iOS) deferred
+1. ✅ **Shipped — Android native:** the `VadBatchRunner.kt` channel + registration in `MainActivity` + the Dart wrapper (`Platform.isAndroid`-gated) + the ORT dep in `app/android/app/build.gradle` + the A/B flag. Verified channel loads + returns probs bit-identical to the per-window path.
+2. ✅ **Shipped — shared Dart:** `_applyVadVerdict` extracted; the deferred-verdict two-pass refactor of `processSegmentFile` feeds the batch path. iOS/desktop/tests ride the single-pass branch through the same `_applyVadVerdict`, covered by `vad_audio_processor_test.dart` on CI.
+3. ⏳ **Deferred — iOS (needs hardware):** `VadBatchRunner.swift` mirroring the Kotlin + `pod 'onnxruntime-objc', '1.22.0'` in `app/ios/Podfile` + registration in `AppDelegate`. Purely additive; no Dart changes. Mirror Kotlin↔Swift exactly; reference `FlutterOnnxruntimePlugin.swift` (`runInference`, session-options, tensor I/O).
 
 ### Relevant files
 - `app/lib/services/vad_audio_processor.dart` — `_runVad` (the per-window path to keep as fallback), `processSegmentFile` (the single-pass loop to refactor), the new `_applyVadVerdict` extraction, `_vadContext` / `_cachedStateValue` / `_cachedSrValue` plumbing, `buildSileroSessionOptions` (reuse the XNNPACK+intraOp config native-side).
@@ -164,8 +170,6 @@ The **decision logic is unchanged** and lives in exactly one place (`_applyVadVe
 - Reference templates (read-only): `~/AppData/Local/Pub/Cache/hosted/pub.dev/flutter_onnxruntime-1.7.1/android/.../FlutterOnnxruntimePlugin.kt` (Kotlin, phase 1) + `ios/Classes/FlutterOnnxruntimePlugin.swift` (Swift, phase 3) — `runInference`, session-options, tensor I/O.
 
 ---
-
-## DEFERRED
 
 ## Apple Watch Integration [minor] [Deferred]
 
