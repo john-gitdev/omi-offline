@@ -34,20 +34,64 @@ class OmiSyncResult {
       'OmiSyncResult(success: $success, status: $status, new: ${newConversationIds.length}, updated: ${updatedConversationIds.length}, okSeg: $successfulSegments, failSeg: $failedSegments)';
 }
 
+/// Outcome of syncing one chunk, distinguishing a server *verdict* from the
+/// client merely giving up waiting — the two used to be conflated, so a slow
+/// (but still-running) job got abandoned and re-uploaded, deepening the backlog.
+enum OmiJobStatus {
+  /// Server finished the job (success or per-segment partial). Mark chunk synced.
+  completed,
+
+  /// Server ran the job and rejected it for a content/processing reason. The
+  /// chunk needs a fresh upload to retry.
+  failed,
+
+  /// Server is overloaded — a 503/502/504 on submit, or a job whose failure is a
+  /// transient transcription 503. NOT a content failure: the chunk will re-upload
+  /// fresh, but only after a backoff so we don't hammer a struggling backend.
+  busy,
+
+  /// Job is still `queued`/`processing`, or our poll budget elapsed while it was
+  /// still alive. NOT a failure — keep the job id and reattach on the next run.
+  pending,
+
+  /// The job id no longer exists server-side (404). Re-upload fresh.
+  gone,
+}
+
+class OmiJobOutcome {
+  final OmiJobStatus status;
+
+  /// The server job id, when one exists — persisted by the caller so a later
+  /// run can reattach (poll) instead of re-uploading.
+  final String? jobId;
+
+  /// Parsed result when [status] is [OmiJobStatus.completed].
+  final OmiSyncResult? result;
+
+  /// Server-reported error when [status] is [OmiJobStatus.failed].
+  final String? error;
+
+  OmiJobOutcome(this.status, {this.jobId, this.result, this.error});
+}
+
 class OmiApiClient {
   // The server runs the full decode→VAD→Parakeet-STT pipeline on each uploaded
-  // file as a single segment, with a per-segment STT timeout (~120 s). One big
-  // bin = one oversized segment that times out. So we split each bin into bounded
-  // chunks with sequential timestamps; the server stitches consecutive timestamps
-  // back into one conversation, and a single slow chunk fails in isolation
-  // (partial_failure) instead of failing the whole recording.
+  // segment, with a per-segment STT timeout (~120 s). A whole recording uploaded
+  // as one segment times out, so we split each bin into bounded chunks with
+  // sequential timestamps; the server stitches consecutive timestamps back into
+  // one conversation. Each chunk is uploaded in its own request, serialized (see
+  // buildSegments / syncSegment), so the server only ever runs one Parakeet
+  // transcription at a time — handing it many segments in one job made it fan
+  // them out in parallel and 503 the STT backend.
   //
-  // The official app uploads 1-min chunks but with 3 concurrent uploads. We hold
-  // Omi Cloud to a single in-flight upload (its server 503s on parallel jobs), so
-  // a recording's chunks are processed by one job rather than fanned out 3-wide.
-  // 5-min chunks keep the segment count (and per-segment round-trip overhead) low
-  // for our single-job model; if the server times out STT on a segment this size,
-  // drop this toward 1-3 min.
+  // Chunk size barely moves the needle on throughput: the server's dominant cost
+  // is queue wait for a free Parakeet worker (observed jobs sitting in `queued`
+  // for 4+ min, never reaching `processing`), which is independent of chunk size.
+  // Smaller chunks just mean more serial jobs competing for the same backlog, so
+  // we keep chunks large (5 min, still well under the ~120 s STT *processing*
+  // budget) to minimise the job count. The real resilience comes from job-id
+  // reattach (see [syncSegment]): a slow job is polled across retries instead of
+  // being abandoned and re-uploaded, which would only deepen the backlog.
   static const int _chunkSeconds = 300; // 5 min per uploaded segment
   static const int _maxChunkFrames = _chunkSeconds * 50; // fs320 = 50 frames/s (20 ms each)
 
@@ -130,60 +174,87 @@ class OmiApiClient {
     unawaited(prefs.clearAllAutoUploadRetries());
   }
 
-  /// Uploads [binFiles] to /v2/sync-local-files in the official device format:
-  /// `audio_<mac>_opus_fs320_16000_1_fs320_<ts_sec>.bin` containing length-prefixed
-  /// Opus frames (app-side marker frames stripped). Each bin is split into
-  /// ≤[_chunkSeconds] segments with sequential timestamps so no single segment
-  /// exceeds the server's per-segment STT timeout. Throws [OmiSyncException] on failure.
-  static Future<OmiSyncResult?> syncLocalFiles(List<File> binFiles) async {
-    if (!isSignedIn) {
-      Logger.debug('OmiApiClient: Not signed in, skipping sync');
-      return null;
+  /// Reads [binFile] and prepares its upload segments in the official device
+  /// format `audio_<mac>_opus_fs320_16000_1_fs320_<ts_sec>.bin`: length-prefixed
+  /// Opus frames (app-side marker frames stripped), split into ≤[_chunkSeconds]
+  /// chunks with sequential timestamps the server stitches back into one
+  /// conversation. Returns one (filename, bytes) entry per segment; empty if the
+  /// bin holds no Opus frames. Callers upload these one at a time via
+  /// [syncSegment] so the server never runs Parakeet on them in parallel.
+  static Future<List<(String, Uint8List)>> buildSegments(File binFile) async {
+    final chunks = await _readOpusFrameChunks(binFile);
+    if (chunks.isEmpty) {
+      Logger.error('OmiApiClient: No Opus frames found in ${binFile.path}');
+      return const [];
     }
 
-    Logger.debug('Omi Cloud: starting upload for ${binFiles.length} file(s)');
+    final mac = _deviceMacForFilename();
+    final baseTs = _baseTsSeconds(binFile);
+    final latestSafe = (DateTime.now().millisecondsSinceEpoch ~/ 1000) - 30;
+
+    final segments = <(String, Uint8List)>[];
+    for (var j = 0; j < chunks.length; j++) {
+      // Sequential per-chunk timestamps so the server orders/stitches them back
+      // into one conversation. Clamp defensively so a chunk never lands in the
+      // future (recordings are finalized after the fact, so this rarely fires).
+      var ts = baseTs + j * _chunkSeconds;
+      if (ts > latestSafe) ts = latestSafe;
+      segments.add(('audio_${mac}_opus_fs320_16000_1_fs320_$ts.bin', chunks[j]));
+    }
+    Logger.debug('OmiApiClient: ${binFile.uri.pathSegments.last} → ${segments.length} segment(s) of ≤$_chunkSeconds s');
+    return segments;
+  }
+
+  /// Syncs ONE chunk and reports the [OmiJobOutcome]. Callers serialize calls, so
+  /// the server runs at most one Parakeet transcription at a time — handing it
+  /// many segments at once made it fan them out in parallel and 503 the STT
+  /// backend.
+  ///
+  /// If [existingJobId] is given, the chunk's prior job is **reattached** (polled)
+  /// instead of re-uploaded. Outcomes: `completed` (mark synced); `failed`/`gone`
+  /// (a real verdict — re-upload fresh); `pending` (job still alive — keep the id
+  /// and reattach next time, don't enqueue a duplicate); `busy` (server 503/502/504
+  /// or a transient transcription 503 — re-upload, but only after a backoff so a
+  /// struggling backend isn't hammered).
+  ///
+  /// Throws [OmiSyncException] on auth/transport/HTTP error (incl. not signed in).
+  static Future<OmiJobOutcome> syncSegment((String, Uint8List) segment, {String? existingJobId}) async {
+    if (!isSignedIn) throw const OmiSyncException('Not signed in');
+
     await refreshTokenIfNeeded();
     final token = await SharedPreferencesUtil().omiIdToken;
     if (token.isEmpty) throw const OmiSyncException('No Omi ID token available');
-
-    final mac = _deviceMacForFilename();
-
-    final namedBytes = <(String, Uint8List)>[];
-    for (final f in binFiles) {
-      final chunks = await _readOpusFrameChunks(f);
-      if (chunks.isEmpty) {
-        Logger.error('OmiApiClient: No Opus frames found in ${f.path}');
-        continue;
-      }
-      final baseTs = _baseTsSeconds(f);
-      final latestSafe = (DateTime.now().millisecondsSinceEpoch ~/ 1000) - 30;
-      for (var j = 0; j < chunks.length; j++) {
-        // Sequential per-chunk timestamps so the server orders/stitches them back
-        // into one conversation. Clamp defensively so a chunk never lands in the
-        // future (recordings are finalized after the fact, so this rarely fires).
-        var ts = baseTs + j * _chunkSeconds;
-        if (ts > latestSafe) ts = latestSafe;
-        final filename = 'audio_${mac}_opus_fs320_16000_1_fs320_$ts.bin';
-        namedBytes.add((filename, chunks[j]));
-      }
-      Logger.debug(
-          'OmiApiClient: Prepared ${f.uri.pathSegments.last} → ${chunks.length} chunk(s) of ≤$_chunkSeconds s');
-    }
-    if (namedBytes.isEmpty) throw const OmiSyncException('No upload payload available');
-
     final headers = {'Authorization': 'Bearer $token'};
 
-    var res = await _doUploadBytes(_syncUrlV2, namedBytes, headers);
+    // Reattach path: poll the outstanding job rather than re-uploading. Jobs live
+    // under the URL they were submitted to; we default to v2 (the normal path) —
+    // if it was a rare v1 fallback, v2 returns 404 → `gone` → a fresh upload below
+    // re-discovers the right endpoint.
+    if (existingJobId != null) {
+      Logger.debug('Omi Cloud: reattaching to job $existingJobId for ${segment.$1}');
+      final outcome = await _pollJob(_syncUrlV2, existingJobId, 0);
+      if (outcome.status != OmiJobStatus.gone) return outcome;
+      Logger.debug('Omi Cloud: job $existingJobId gone — re-uploading ${segment.$1}');
+    }
+
+    Logger.debug('Omi Cloud: uploading segment ${segment.$1}');
+    var res = await _doUploadBytes(_syncUrlV2, [segment], headers);
     var usedUrl = _syncUrlV2;
 
     if (res.statusCode == 404 || res.statusCode == 405) {
       Logger.debug('OmiApiClient: v2 not found (${res.statusCode}), falling back to v1');
-      res = await _doUploadBytes(_syncUrlV1, namedBytes, headers);
+      res = await _doUploadBytes(_syncUrlV1, [segment], headers);
       usedUrl = _syncUrlV1;
     }
 
     final responseBody = res.body;
     Logger.debug('OmiApiClient: Upload response ${res.statusCode}: $responseBody');
+
+    // Server overloaded — back off and retry later rather than failing/hammering.
+    if (_isBusyStatus(res.statusCode)) {
+      Logger.debug('Omi Cloud: server busy on submit (${res.statusCode}) for ${segment.$1}');
+      return OmiJobOutcome(OmiJobStatus.busy, error: 'Server busy (${res.statusCode})');
+    }
 
     if (res.statusCode < 200 || res.statusCode >= 300) {
       final isAuth = res.statusCode == 401 || res.statusCode == 403;
@@ -194,16 +265,17 @@ class OmiApiClient {
       final json = jsonDecode(responseBody) as Map<String, dynamic>;
       final jobId = json['job_id'] as String?;
       final pollAfterMs = (json['poll_after_ms'] as int?) ?? 3000;
-      if (jobId != null) return await _pollJob(usedUrl, jobId, pollAfterMs, segmentCount: namedBytes.length);
+      if (jobId != null) return await _pollJob(usedUrl, jobId, pollAfterMs);
     }
 
+    // Synchronous (non-202) result.
     final result = _parseSyncResult(res.statusCode, responseBody);
     if (result.success) {
       Logger.debug('Omi Cloud: upload success');
-    } else {
-      Logger.error('Omi Cloud: upload failed: ${result.status}');
+      return OmiJobOutcome(OmiJobStatus.completed, result: result);
     }
-    return result;
+    Logger.error('Omi Cloud: upload failed: ${result.status}');
+    return OmiJobOutcome(OmiJobStatus.failed, error: result.error ?? result.status);
   }
 
   static String _deviceMacForFilename() {
@@ -327,15 +399,16 @@ class OmiApiClient {
     }
   }
 
-  static Future<OmiSyncResult> _pollJob(String baseUrl, String jobId, int initialDelayMs,
-      {int segmentCount = 1}) async {
+  /// Polls a single job until the server renders a verdict or the budget elapses.
+  /// Each chunk is its own one-segment job, so the budget is a fixed ~4 min (80
+  /// polls × ~3 s). Crucially, budget-elapse returns [OmiJobStatus.pending] — the
+  /// job is still alive server-side, so the caller reattaches next run instead of
+  /// abandoning and re-uploading it (which would only add to the queue backlog
+  /// that made it slow in the first place). A 404 returns [OmiJobStatus.gone].
+  static Future<OmiJobOutcome> _pollJob(String baseUrl, String jobId, int initialDelayMs) async {
     await Future.delayed(Duration(milliseconds: initialDelayMs));
 
-    // One job processes every chunk we uploaded, so scale the poll budget with the
-    // segment count (a long recording = many chunks). Floor of 80 (~4 min) keeps
-    // small uploads unchanged; ~6 polls/segment covers slow STT without giving up
-    // while the job is still running server-side.
-    final maxAttempts = segmentCount * 6 > 80 ? segmentCount * 6 : 80;
+    const maxAttempts = 80; // ~4 min at ~3 s/poll
     var delayMs = 3000;
     for (var i = 0; i < maxAttempts; i++) {
       await refreshTokenIfNeeded();
@@ -356,15 +429,24 @@ class OmiApiClient {
         throw OmiSyncException('Job poll auth error (${res.statusCode})', isAuthError: true);
       }
 
+      if (res.statusCode == 404) {
+        return OmiJobOutcome(OmiJobStatus.gone, jobId: jobId);
+      }
+
       if (res.statusCode >= 200 && res.statusCode < 300) {
         final bodyJson = jsonDecode(res.body) as Map<String, dynamic>;
         final status = bodyJson['status'] as String?;
         if (status == 'completed' || status == 'partial_failure') {
-          return _parseSyncResult(res.statusCode, res.body);
+          return OmiJobOutcome(OmiJobStatus.completed,
+              jobId: jobId, result: _parseSyncResult(res.statusCode, res.body));
         }
         if (status == 'failed') {
-          final err = bodyJson['error'] ?? bodyJson['message'] ?? 'unknown error';
-          return OmiSyncResult(success: false, status: 'failed', error: err.toString());
+          final err = (bodyJson['error'] ?? bodyJson['message'] ?? 'unknown error').toString();
+          // A job failed purely because the transcription backend was unavailable
+          // (503) is transient — treat it as busy (back off + re-upload later), not
+          // a content failure.
+          final status503 = _looksTransient(err) ? OmiJobStatus.busy : OmiJobStatus.failed;
+          return OmiJobOutcome(status503, jobId: jobId, error: err);
         }
         delayMs = (bodyJson['poll_after_ms'] as int?) ?? delayMs;
       }
@@ -372,7 +454,20 @@ class OmiApiClient {
       await Future.delayed(Duration(milliseconds: delayMs));
     }
 
-    throw const OmiSyncException('Omi job timed out after polling');
+    // Budget elapsed but the job is still queued/processing — reattach next run.
+    Logger.debug('OmiApiClient: Job $jobId still running after poll budget — leaving for reattach');
+    return OmiJobOutcome(OmiJobStatus.pending, jobId: jobId);
+  }
+
+  /// 5xx gateway/overload statuses the server returns when it can't take work
+  /// right now — retryable after a backoff rather than a hard failure.
+  static bool _isBusyStatus(int code) => code == 503 || code == 502 || code == 504;
+
+  /// Whether a failed-job error message is a transient backend-unavailable signal
+  /// (a transcription 503) rather than a real content/processing failure.
+  static bool _looksTransient(String error) {
+    final e = error.toLowerCase();
+    return e.contains('503') || e.contains('service unavailable') || e.contains('temporarily unavailable');
   }
 
   static OmiSyncResult _parseSyncResult(int httpStatus, String body) {
