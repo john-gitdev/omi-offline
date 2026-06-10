@@ -4,6 +4,10 @@
 
 ### 0.22.1
 
+- **Fix: Omi Cloud uploads now proceed oldest-to-newest.** Auto-upload iterates recordings from the oldest day to the newest, and within each day from the earliest recording to the latest.
+
+### 0.22.1
+
 - **Rework: "Conversation in progress" banner shows when the recording ends and finalizes in one tap.** When only a draft is open, the banner shows the estimated end time inline (e.g. `Captured through ~3:42 PM`) and the button confirms with the exact time. When raw audio is still waiting to be decoded, it processes immediately without a prompt.
 
 ### 0.22.0
