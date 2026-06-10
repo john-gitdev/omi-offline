@@ -17,7 +17,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
-import 'package:omi/utils/audio/foreground.dart';
+import 'package:omi/utils/audio/sync_notification.dart';
 
 enum UploadStatus { none, partial, all, failed, unavailable }
 
@@ -48,7 +48,14 @@ class IntegrationStatus {
   /// When [state] is `failed`, the time of the most recent failed attempt (for
   /// the "Last Upload Failed at" label). Null otherwise or if no time recorded.
   final DateTime? failedAt;
-  const IntegrationStatus(this.name, this.state, {this.failedAt});
+
+  /// For chunked integrations (Omi Cloud), how many segments have been delivered
+  /// and the total — drives the "X/Total chunks" label so a partial/failed-midway
+  /// upload shows its progress. Null for single-shot integrations or ≤1 chunk.
+  final int? deliveredSegments;
+  final int? totalSegments;
+
+  const IntegrationStatus(this.name, this.state, {this.failedAt, this.deliveredSegments, this.totalSegments});
 
   bool get isActionable => state == IntegrationUploadState.pending || state == IntegrationUploadState.failed;
 }
@@ -288,15 +295,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _lastNotificationUpdate = now;
 
     if (_spState == SyncProcessState.syncing) {
-      ForegroundUtil.updateNotification(
-        title: 'Syncing recordings',
-        text: syncingNotificationText(_syncedCount, _totalCount),
-      );
+      SyncNotification.syncing(syncingNotificationText(_syncedCount, _totalCount));
     } else {
-      ForegroundUtil.updateNotification(
-        title: 'Processing recordings',
-        text: processingNotificationText(),
-      );
+      SyncNotification.processing(processingNotificationText());
     }
   }
 
@@ -703,11 +704,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _transitionTo(SyncProcessState.syncing);
 
     WakelockPlus.enable();
-    if (!await ForegroundUtil.isRunningService) {
-      await ForegroundUtil.startForegroundTask(title: 'Syncing recordings', text: 'Preparing...');
-    } else {
-      await ForegroundUtil.updateNotification(title: 'Syncing recordings', text: 'Preparing...');
-    }
+    await SyncNotification.preparingSync();
 
     final syncs = ServiceManager.instance().wal.getSyncs();
     notifyListeners();
@@ -801,11 +798,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _transitionTo(SyncProcessState.syncing);
 
     WakelockPlus.enable();
-    if (!await ForegroundUtil.isRunningService) {
-      await ForegroundUtil.startForegroundTask(title: 'Syncing recordings', text: 'Preparing...');
-    } else {
-      await ForegroundUtil.updateNotification(title: 'Syncing recordings', text: 'Preparing...');
-    }
+    await SyncNotification.preparingSync();
 
     await Future.delayed(const Duration(seconds: 1));
 
@@ -879,11 +872,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _transitionTo(SyncProcessState.processing);
 
     WakelockPlus.enable();
-    if (!await ForegroundUtil.isRunningService) {
-      await ForegroundUtil.startForegroundTask(title: 'Processing recordings', text: 'Preparing...');
-    } else {
-      await ForegroundUtil.updateNotification(title: 'Processing recordings', text: 'Preparing...');
-    }
+    await SyncNotification.preparingProcessing();
 
     final allBins = _batches.expand((b) => b.rawSegments).toList();
     // Always-on idempotency guard: skip bins already covered by a recording so we
@@ -957,7 +946,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (gen != _pipelineGeneration) return; // watchdog already recovered
       _releaseWakelock();
       if (_isAppForeground()) {
-        await ForegroundUtil.stopForegroundTask();
+        _settleNotification();
       }
       if (_spState == SyncProcessState.stopping) {
         _transitionTo(SyncProcessState.idle);
@@ -972,7 +961,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_spState == SyncProcessState.stopping) {
       _releaseWakelock();
       if (_isAppForeground()) {
-        await ForegroundUtil.stopForegroundTask();
+        _settleNotification();
       }
       _transitionTo(SyncProcessState.idle);
       unawaited(reloadBatchesSilently());
@@ -1012,7 +1001,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _isForcePipeline = false;
     _releaseWakelock();
     if (_isAppForeground()) {
-      await ForegroundUtil.stopForegroundTask();
+      _settleNotification();
     }
     _transitionTo(SyncProcessState.idle);
     unawaited(reloadBatchesSilently());
@@ -1054,7 +1043,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       _isUserTriggered = false;
       _releaseWakelock();
       if (_isAppForeground()) {
-        await ForegroundUtil.stopForegroundTask();
+        _settleNotification();
       }
       if (errorIfEmpty != null) {
         _transitionToError('syncing', errorIfEmpty);
@@ -1089,7 +1078,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _transitionTo(SyncProcessState.idle);
     _loadBatches();
     if (_isAppForeground()) {
-      unawaited(ForegroundUtil.stopForegroundTask());
+      _settleNotification();
     }
   }
 
@@ -1097,10 +1086,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _isForcePipeline = false;
     _transitionTo(SyncProcessState.successUi);
     RecordingsManager.isSuccessNotificationActive.value = true;
-    unawaited(ForegroundUtil.updateNotification(
-      title: 'Conversations ready',
-      text: 'Sync and processing complete',
-    ));
+    unawaited(SyncNotification.complete());
     await Future.delayed(const Duration(milliseconds: 10000));
     RecordingsManager.isSuccessNotificationActive.value = false;
     if (_isDisposed || _spState != SyncProcessState.successUi) return;
@@ -1111,6 +1097,18 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   bool _isAppForeground() {
     final state = WidgetsBinding.instance.lifecycleState;
     return state == null || state == AppLifecycleState.resumed;
+  }
+
+  /// Settle the single notification after a foreground pipeline ends. With
+  /// auto-sync on, revert to the idle "Next sync / Last Sync" line; in Manual
+  /// Only the service isn't persistent, so release Dart ownership and let native
+  /// resume connection-state text (no redundant line).
+  void _settleNotification() {
+    if (_prefs.backgroundSyncIntervalMinutes > 0) {
+      unawaited(SyncNotification.idle());
+    } else {
+      unawaited(SyncNotification.clear());
+    }
   }
 
   /// [processDownloaded] only applies when cancelling during the syncing phase:
@@ -1180,7 +1178,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // turning a recoverable stall into a full process kill. Sync-stall recovery
     // always stops the service (no ongoing work to protect).
     if (!serviceIsProcessing || serviceIsSyncing) {
-      unawaited(ForegroundUtil.stopForegroundTask());
+      _settleNotification();
     }
     _transitionTo(SyncProcessState.idle);
     unawaited(reloadBatchesSilently());
@@ -1447,6 +1445,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         for (final integration in _integrations) {
           if (!integration.isAutoUploadEnabled || !integration.isEnabled(conversation)) continue;
           if (integration.hasDelivered(conversation)) continue;
+          // Server asked us to back off (recent 503) — skip until the window passes.
+          if (integration.isBackingOff(conversation)) continue;
 
           final integrationKey = '${integration.name}_${conversation.file.path}';
           if (_syncingKeys.contains(integrationKey)) continue;
@@ -1460,7 +1460,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
           _syncingKeys.add(integrationKey);
           unawaited(
-            integration.upload(conversation).then((_) async {
+            integration.upload(conversation, onProgress: _notifyChunkProgress).then((_) async {
               if (isPassthrough) await _convertToPassthrough(conversation);
             }).catchError((e) {
               unawaited(_prefs.incrementAutoUploadRetry(retryKey));
@@ -1632,7 +1632,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         // in-memory uploading flag is lost on relaunch) surfaces as failed
         // rather than reverting to pending. Cleared by upload() on success.
         unawaited(_prefs.setAutoUploadLastFailureAt(integration.getRetryKey(conversation)));
-        uploads.add(integration.upload(conversation).catchError((e) {
+        uploads.add(integration.upload(conversation, onProgress: _notifyChunkProgress).catchError((e) {
           failures.add(UploadFailure(integration.name, e));
         }).whenComplete(() => _syncingKeys.remove(syncKey)));
       }
@@ -1655,6 +1655,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   /// for the detail sheet and the row badge. Both the aggregate [uploadStatus]
   /// and [actionableIntegrationCount] derive from this so the row icon, badge,
   /// and sheet never disagree.
+  /// Passed to [PassthroughIntegration.upload] so each delivered chunk repaints
+  /// the integration rows with the new "X/Total chunks" count live.
+  void _notifyChunkProgress() {
+    if (!_isDisposed) notifyListeners();
+  }
+
   List<IntegrationStatus> integrationStatuses(Conversation c) {
     final result = <IntegrationStatus>[];
     for (final i in _integrations) {
@@ -1665,7 +1671,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         final ms = _prefs.getAutoUploadLastFailureAt(i.getRetryKey(c));
         if (ms > 0) failedAt = DateTime.fromMillisecondsSinceEpoch(ms);
       }
-      result.add(IntegrationStatus(i.name, state, failedAt: failedAt));
+      final progress = i.segmentProgress(c);
+      result.add(IntegrationStatus(
+        i.name,
+        state,
+        failedAt: failedAt,
+        deliveredSegments: progress?.$1,
+        totalSegments: progress?.$2,
+      ));
     }
     return result;
   }
@@ -1770,7 +1783,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     final failures = <UploadFailure>[];
     try {
-      await integration.upload(c);
+      await integration.upload(c, onProgress: _notifyChunkProgress);
       if (_prefs.passthroughMode) await _convertToPassthrough(c);
     } catch (e) {
       unawaited(_prefs.setAutoUploadLastFailureAt(integration.getRetryKey(c)));
