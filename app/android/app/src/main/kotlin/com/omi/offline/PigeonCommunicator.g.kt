@@ -659,6 +659,27 @@ interface BleHostApi {
    * Call whenever a battery reading is obtained. iOS no-op.
    */
   fun setDeviceBattery(level: Long, timestampMs: Long)
+  /**
+   * (Android only) Set the single foreground-service notification's title and
+   * text directly. Used by the Dart sync state machine to drive the one
+   * persistent notification (idle / connecting / syncing / processing / …).
+   * While a status is set, native suppresses its own connection-state text so
+   * the two don't fight. iOS no-op.
+   */
+  fun setSyncStatus(title: String, text: String)
+  /**
+   * (Android only) Keep the foreground service alive with no device connected
+   * so the idle "Next sync / Last Sync" notification persists across BLE
+   * disconnect and app background. true while auto-sync is on and a device is
+   * bound; false in Manual Only / unbound (reverts to connection-only service
+   * lifetime). iOS no-op.
+   */
+  fun setPersistentNotification(enabled: Boolean)
+  /**
+   * (Android only) Clear any Dart-pushed status text and let native resume
+   * owning the notification (connection state / idle). iOS no-op.
+   */
+  fun clearSyncStatus()
 
   companion object {
     /** The codec used by BleHostApi. */
@@ -1030,6 +1051,59 @@ interface BleHostApi {
             val timestampMsArg = args[1] as Long
             val wrapped: List<Any?> = try {
               api.setDeviceBattery(levelArg, timestampMsArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.setSyncStatus$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val titleArg = args[0] as String
+            val textArg = args[1] as String
+            val wrapped: List<Any?> = try {
+              api.setSyncStatus(titleArg, textArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.setPersistentNotification$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val enabledArg = args[0] as Boolean
+            val wrapped: List<Any?> = try {
+              api.setPersistentNotification(enabledArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.clearSyncStatus$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              api.clearSyncStatus()
               listOf(null)
             } catch (exception: Throwable) {
               PigeonCommunicatorPigeonUtils.wrapError(exception)
