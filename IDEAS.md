@@ -4,74 +4,88 @@
 
 ## Multi-select recordings: long-press → selection mode with Delete + Merge [medium] [Active]
 
-Replace the current long-press-to-delete on a recording row with **long-press-to-enter-selection-mode**. Once in selection mode the user can tap rows to build a set, then act on the set via a contextual action bar: **Delete** (already trivially supported) or **Merge** (stitch N selected recordings into one continuous file, filling the inter-recording gaps with any ghost/raw audio that lives between them, silence only as a last resort).
+Replace the current long-press-to-delete on a recording row with **long-press-to-enter-selection-mode**. Once in selection mode the user can tap rows to build a set, then act on the set via a contextual action bar: **Delete** (already trivially supported) or **Merge** (combine N selected recordings into one continuous file).
 
-The headline finding: **the merge audio logic already exists.** The draft-stitch pipeline in `recordings_manager.dart` already does exactly the gap-padding + ghost-splice + silence-fallback semantics we want — merge is mostly *repurposing* that machine to operate on two user-selected finalized recordings instead of "draft + following events." Estimated **~2–3 days** for a solid wav/ogg implementation with m4a gracefully disabled.
+**Merge is implemented as reprocess-from-bins, not file concatenation** (revised design — see history at the bottom of this entry). Merge gathers **the bins owned by the selected recordings** — the union of each recording's `relativeBins`, deduped and sorted by time — and **re-runs the decode pipeline with VAD off, no silence padding**, producing one fresh recording in the user's chosen format. It processes *only the selected recordings' own bins*, never a time-span, so un-selected recordings sitting between two selections are simply never touched (no absorb, no contiguity rule, their bins stay theirs). This depends on a new **Recording Retention** policy under which **bins are kept for the life of their recording** (default retention **7 days**): if a recording exists, its bins exist; when a recording is deleted, its bins are deleted with it. Because of that coupling there is no "bins expired" state, no greying out, and no fallback path — any recording you can see, you can merge.
 
 ### What changes for the user
 - **Long-press a recording** → enters selection mode (the row gets a checkbox/highlight) instead of immediately deleting.
 - **Tap rows** to add/remove from the selection; a contextual app bar shows the count + a Delete icon and a Merge icon. Back / clear exits selection mode.
 - **Delete icon** → deletes all selected recordings (wraps the existing list-delete).
-- **Merge icon** → stitches the selected recordings (sorted by start time) into one recording:
-  - Adds **gap padding** (silence) to account for the wall-clock gap between consecutive files.
-  - Goes one step further: **processes any ghosts (discards) between the two recordings and appends that audio** into the merged file.
-  - Also splices in any **uncut/"saved" raw bins** sitting in the gap window.
-  - Only inserts **silence when there is genuinely no ghost recording and no saved bin** in between.
+- **Merge icon** → re-derives one recording from the selected recordings' own bins (deduped, sorted by start time):
+  - **VAD off**: every selected bin is decoded and kept — nothing is re-trimmed, and **no drafts, discards, or ghosts are emitted** (this is a pure re-derivation, not a sync pass).
+  - **No silence padding**: bins are AAD-gated (firmware only writes to SD when audio is present), so the captured audio is simply concatenated in order. The merged file's duration is the *sum of the selected recordings' captured audio* — nothing from the gaps between them. Merging the morning's recordings yields the morning's audio back-to-back; if the user merges the whole day, so be it.
+  - Output is encoded **once** in the user's `audioSaveFormat` (**m4a included** — see below).
+  - Markers regenerate for free: button-tap markers are inline `0xFFFFFFFE` frames in the bin stream and `VadAudioProcessor` re-parses them on the decode pass, so the merged recording's `.edl` markers land at correct offsets by construction — no offset re-anchoring math.
 
-### Why merge is cheaper than it sounds — reuse the draft-stitch pipeline
-The exact merge semantics described above already exist in the **draft-stitch pipeline** (`app/lib/services/recordings_manager.dart`):
+### Why reprocess-from-bins is the right mechanism
+Conceiving merge as **concatenation of finished files** is what created its sharp edges. Reprocessing from raw bins removes them:
 
-- `_stitchDraftRecordings()` (~line 1676) walks events in time order (draft → intermediate ghosts → next audio), accumulating the inter-recording gap and deciding what to splice.
-- `_stitchDiscard()` (~line 1858) re-decodes a ghost's `relativeBins` into a temp audio file of the same format and splices it in, **preceded by `gapMs` of silence** — i.e. "process the ghost and append it," exactly as specified.
-- `_stitchSilence()` (~line 1927) is the no-ghost/no-bin silence fallback.
-- `_performStitch` / `_stitchWav` (~2210) / `_stitchOgg` (~2158) concatenate audio; `_mergeMeta` rebuilds the `.meta` (totalSamples, durationMs, 200×u16 waveform, union of `relativeBins`) and **re-anchors marker EDLs** by the prefix's wall-clock duration (the marker offset-shift we'd otherwise have to invent ourselves — see the CLAUDE.md note "Markers re-anchored across stitched files have their offsets shifted by the prefix's wall-clock duration").
+- **Format-agnostic / solves m4a.** You can't byte-concatenate `.m4a` (the old blocker — `recordings_manager.dart` ~2146 *"M4A stitching requires decode/re-encode"*). Reprocess never concatenates encoded audio; it decodes Opus → PCM → encodes once, exactly like the normal pipeline, so the output is native m4a/wav/ogg with no transcode hack.
+- **No `.meta` hand-rebuild.** The pipeline emits a correct `.meta` (totalSamples, durationMs, 200×u16 waveform, `relativeBins`) natively — no `_mergeMeta` reconstruction.
+- **No marker re-anchoring.** Markers come back from the inline bin frames (above), so the fiddly "shift EDL offsets by prefix wall-clock duration" step is gone.
+- **The mode mostly exists.** Manual mode *is* "VAD off, one continuous file" (`vadThreshold=65535`, `vadSplitSeconds=0`). Reprocess-merge is manual-mode semantics pointed at the selected bins: feed each bin to `VadAudioProcessor.processSegmentFile(File, DateTime, …)` with `silenceDurationToSplitMs` effectively infinite (never split) and VAD disabled. **Caveat (the real risk):** `processSegmentFile` is built to run a *sync pass* — it also emits drafts, discards/ghosts, and `delete_segments` of consumed bins, and it checkpoints. Merge wants none of those side effects (just "these bins → one file, leave the sources alone"). That likely means threading a real `reprocessOnly`/merge flag through the processor, not just flipping `vadSplitSeconds`. **Prototype this first** — if it fights the control flow, the estimate moves.
 
-So a merge is essentially: *take this "draft + following events → one file" machine and point it at two (or N) user-selected finalized recordings.*
+### Dependency: Recording Retention (bins live with their recording, default 7 days)
+Reprocess needs the selected recordings' bins on disk, and the retention model guarantees it: **bins are owned by their recording.** Today bins are deleted at the conversation boundary (`delete_segments`, the central chokepoint in `vad_audio_processor.dart` — sites at ~666/765/808), keeping only ghosts; the change makes finalized recordings *retain* their source bins instead. The rules:
+
+- **Recording exists ⇒ its bins exist; recording deleted ⇒ its bins deleted.** No separate bin GC racing against recordings, no orphaned bins, no "expired bins" state. Bin lifetime == recording lifetime.
+- **New `Recording Retention` setting** (preference, default **7 days**) governs how long recordings — and their bins together — are kept; old recordings age out at the window. The user can extend it (e.g. 30 days) or choose **"Always keep."** Selecting Always-keep **pops a warning dialog** that recordings + raw bins will accumulate indefinitely and can consume a lot of space (storage is the user's call — we just warn).
+- **Stop the boundary delete; retain bins under the finalized recording.** Convert the `delete_segments` consumers from "delete consumed bins now" to "hand the consumed bins to the finalized recording" (track them in the recording's `relativeBins` / a per-recording bin folder). Deletion then happens only via `deleteConversations` and the retention age-out — both of which delete the recording and its bins together.
+- **Disk cost** scales with the window and isn't a blocker (user owns the tradeoff). Memory has encoded ingest at ~5,100 B/s (~440 MB/day continuous, far less AAD-gated); 7 days is a modest default, Always-keep grows without bound (hence the warning).
 
 ### The real work / risks
-1. **New `mergeConversations(List<Conversation>)` in `RecordingsManager`** — sort selected by start time; for each adjacent pair compute the gap, gather discards **and uncut raw bins** in that time window, feed them through the existing stitch helpers; rebuild one merged `.meta`; delete the source recordings. The **"saved bin in the gap"** case (raw bins in `raw_segments/` that are neither part of a recording nor a ghost) is the one genuinely new bit — needs a time-window lookup over `raw_segments/{timerStart}/`, but it can reuse the bin→wav decode already living inside `_stitchDiscard` (`SimpleOpusDecoder` 16 kHz mono, inline-frame skipping). The existing pipeline only knew about "audio file" and "ghost" events; merge adds "bare bin in gap."
-
-2. **Format is the one sharp edge.** The stitch helpers handle **`.wav` and `.ogg` only**; **`.m4a` is explicitly unsupported** (`recordings_manager.dart` ~line 2146: *"M4A stitching requires decode/re-encode which we can't do easily here"* — M4A can't be physically concatenated). The **default `audioSaveFormat` is `wav`** (`preferences.dart:109`), so the common case Just Works. If a user opted into `m4a`, merging needs an m4a→wav decode-stitch-(re-encode) path. **Recommendation: support wav/ogg, and disable/grey the Merge icon when any selected recording is `.m4a`** (cheap; the transcode path is +~1 day if we ever want it). There is already a WAV→M4A transcode path (`RecordingsManager.isTranscoding`) to model an m4a→wav decode on if needed.
-
-3. **UI plumbing (selection mode).** Convert the `onLongPress` handlers (currently delete) to enter selection mode; add a selected-set to `RecordingsController`; checkbox/highlight on tiles; a contextual action bar with Delete + Merge. Touches:
+1. **Recording Retention + bin ownership** — the enabling dependency. New preference; convert the `delete_segments` consumers from immediate-delete to "retain under the finalized recording"; age-out old recordings+bins at the window (guarded by the existing sync `Mutex` so it can't race draft re-stitch / a resuming sync; honor `discardProtectedPaths`).
+2. **New `mergeConversations(List<Conversation>)` in `RecordingsManager`** — collect the union of the selected recordings' `relativeBins`, **dedupe** (a bin straddling a VAD boundary can appear in two recordings' lists), sort by time; feed them through `processSegmentFile` with VAD off / split disabled and side-effects suppressed; write one fresh recording (+ `.meta`, regenerated `.edl` markers); delete the source recordings and re-home their bins under the new merged recording (so the merged recording owns its bins and stays mergeable/reprocessable itself).
+3. **Selection is bin-exact, not span-based.** Because merge processes only the selected recordings' own bins, un-selected recordings between them are never pulled in — no absorb-vs-contiguous decision, no "hole in the span" case. The only edge is the **boundary-straddling bin**: if a single ~5-min bin was split by VAD across recording A (tail) and B (start), merging just A reprocesses that whole bin and includes a sliver of B's audio at the seam. Minor over-inclusion; acceptable, or trim at the known VAD offset if it ever matters.
+4. **VAD-off + no-side-effects knob.** Confirm `processSegmentFile` can be driven in a true pass-through (no re-trim) mode that also suppresses draft/discard/ghost emission and source-bin deletion (see the caveat under "The mode mostly exists"). The merged output keeps the selected bins' audio verbatim — the intended "faithful" behavior.
+5. **UI plumbing (selection mode).** Convert the `onLongPress` handlers (currently delete) to enter selection mode; add a selected-set to `RecordingsController`; checkbox/highlight on tiles; a contextual action bar with Delete + Merge. Touches:
    - `app/lib/pages/recordings/recordings_page.dart` (~line 398 — `onLongPress: () => _deleteConversation(conv)`; also the page scaffold for the contextual app bar)
    - `app/lib/pages/recordings/batch_card.dart` — `ConversationTile` (~line 184 `onLongPress: () => onDeleteConversation(conversation)`), and `MarkerSubEntry`
    - `app/lib/pages/recordings/marker_day_card.dart` — `MarkerTile` (~line 19/94)
 
 ### Delete is essentially free
-`RecordingsController.deleteConversations(List<Conversation>)` (~line 1272) already exists and handles the full teardown: HeyPocket upload-key removal, `removeOmiSynced`, orphaned-session bin cleanup (so deleted recordings don't resurrect on next sync). The selection-mode Delete action just calls it with the selected list — no new audio/cleanup logic.
+`RecordingsController.deleteConversations(List<Conversation>)` (~line 1272) already exists and handles the full teardown: HeyPocket upload-key removal, `removeOmiSynced`, orphaned-session bin cleanup (so deleted recordings don't resurrect on next sync). The selection-mode Delete action just calls it with the selected list — no new audio/cleanup logic. **With the retention coupling, delete also deletes the recording's owned bins** (recording deleted ⇒ bins deleted) — verify `deleteConversations` purges the recording's `relativeBins`, not just the recording file/meta, so deleted audio leaves no orphaned bins behind.
 
 ### Open questions to brainstorm before/while building
-- **Markers (`MarkerConversation` / `MarkerSubEntry`) in selection mode** — are they selectable, mergeable, or selection-only-for-delete? They have their own `.edl` sidecars and `deleteMarkerConversation` path. Simplest first cut: selection mode applies to **recordings only**; markers keep their current long-press-to-delete (or are excluded from multiselect). Decide before wiring `MarkerSubEntry`/`MarkerTile`.
-- **Non-adjacent / cross-day selection** — do we allow merging recordings from different day-batches, or constrain to same-day contiguous? The stitch helpers are time-driven and `_stitchBinIfPresent`/`_mergeMeta` already scan across day folders, so cross-day is mechanically possible, but the gap could be huge (hours of silence). Consider a sanity cap or a confirm dialog when the total inserted silence is large.
-- **Merge confirmation / preview** — show the resulting duration (incl. inserted silence + spliced ghosts) before committing, since merge is destructive (deletes the sources).
-- **Which timestamp/date the merged recording inherits** — earliest start time (keeps it anchored correctly in the day list). Filename `recording_{startMs}` from the earliest source.
-- **Upload state after merge** — the merged recording is a new file with a fresh upload key; the sources' upload state is discarded. Confirm that's acceptable (it mirrors how draft-stitch already produces a fresh finalized file).
+- **7-day default is for new installs only.** Existing users are not migrated — on upgrade they keep their current behavior (effectively Always-keep), so no old audio is silently deleted. Only fresh installs default to 7 days. Implementation: seed `recordingRetentionDays` to Always-keep when the preference is absent *and* the app has existing data/an existing install marker; seed it to 7 only for a clean first run. (They can change it either way in settings afterward.)
+- **Markers (`MarkerConversation` / `MarkerSubEntry`) in selection mode** — selectable, mergeable, or selection-only-for-delete? Simplest first cut: selection mode applies to **recordings only**; markers keep their current long-press-to-delete. (Reprocess regenerates markers anyway, so any button-tap markers inside the selected bins re-emit.)
+- **Cross-day selection** — mechanically fine: it's just the union of two recordings' `relativeBins`, which can live in different day folders. With bin-exact selection there's no gap audio at all, so the old "huge silent gap" concern is fully moot. Still worth a duration preview.
+- **Merge confirmation / preview** — show the resulting duration (sum of the selected recordings' captured audio) before committing, since merge is destructive (deletes the sources).
+- **Which timestamp/date the merged recording inherits** — earliest start time. Filename `recording_{startMs}` from the earliest source.
+- **Upload state after merge** — the merged recording is a new file with a fresh upload key; the sources' upload state is discarded (mirrors how draft-stitch already produces a fresh finalized file). If Omi Cloud is on, a fresh `recording_fs320_<ms>.bin` is written for the merged result.
 
 ### Rough estimate
 | Piece | Effort |
 |---|---|
+| Recording Retention: bins owned by recording (flip `delete_segments` → retain under finalized recording) + age-out old recordings+bins at window, under sync Mutex. **Cross-cutting** — audit every bin-deletion site (WAL service, truncate-on-resume guard, orphaned-session cleanup, draft re-stitch), not just `delete_segments`. | ~1.5–2 days |
+| `processSegmentFile` reprocess/merge mode — VAD off + suppress drafts/discards/ghosts + don't delete source bins (the real risk; prototype first) | ~1 day |
 | Selection-mode state + UI (long-press → multiselect, contextual action bar, checkboxes) | ~half day |
-| Delete-selected | trivial (wire to existing `deleteConversations`) |
-| `mergeConversations` reusing stitch helpers (wav/ogg) | ~half–full day |
-| Uncut-bin-in-gap handling + merged `.meta` / marker re-anchor verification | ~half day |
-| m4a handling (block via greyed icon, or transcode) | small if blocked; +~1 day if transcoded |
+| Delete-selected | trivial (wire to existing `deleteConversations`; verify it purges owned bins) |
+| `mergeConversations` = gather + dedupe selected recordings' bins in order + reprocess + re-home bins under merged recording | ~1 day |
 
-**~2–3 days** for a solid wav/ogg implementation with m4a gracefully disabled.
+**~4–5 days.** Earlier "~2.5–3" under-counted the bin-ownership audit (cross-cutting) and the processor reprocess-mode flag (not a config flip). The merge logic itself is small; the dependencies are the cost.
 
 ### Suggested build order (de-risk first)
-1. **Prototype `mergeConversations` against the existing stitch helpers** (the load-bearing risk). Confirm `_stitchWav`/`_stitchDiscard`/`_mergeMeta` generalize cleanly from "draft + next" to "two finalized files," including marker re-anchoring and the merged `.meta`. This de-risks the whole feature.
-2. **Add the uncut-bin-in-gap lookup** (the one net-new audio bit).
-3. **Build selection-mode UI** + wire Delete (free) and Merge.
-4. **Decide markers + m4a policy** (grey the Merge icon for m4a / exclude markers from multiselect for v1).
+1. **Prototype the `processSegmentFile` reprocess mode** (highest risk) — drive it over a known set of bins with VAD off, splitting disabled, and side-effects suppressed (no draft/discard/ghost, no source-bin delete). Confirm it produces one clean file with a correct `.meta` + regenerated markers, in `audioSaveFormat` (**test m4a explicitly — the whole point**). If this fights the control flow, everything else waits.
+2. **Recording Retention / bin ownership** with default 7 days (new installs only). Audit all bin-deletion sites; verify finalized recordings retain their bins, delete purges them, and old recordings+bins age out together. The load-bearing dependency.
+3. **`mergeConversations`** — gather + dedupe a 2-recording selection's bins, reprocess, re-home bins under the merged recording, delete sources.
+4. **Build selection-mode UI** + wire Delete (free) and Merge.
+5. **Decide markers policy** (exclude from multiselect for v1).
 
 ### Relevant files
-- `app/lib/services/recordings_manager.dart` — the stitch helpers to reuse (`_stitchDraftRecordings` ~1676, `_stitchDiscard` ~1858, `_stitchSilence` ~1927, `_performStitch`/`_stitchWav` ~2210/`_stitchOgg` ~2158, `_stitchBinIfPresent` ~2273, `_mergeMeta`), the `Conversation` model (~line 23, `relativeBins` ~43), `DiscardRecord` (~454), `MarkerConversation` (~481); new `mergeConversations` lives here.
-- `app/lib/pages/recordings/recordings_controller.dart` — `deleteConversations` (~1272, reuse for Delete), `deleteConversation`/`deleteMarkerConversation`; add selection-set state + `mergeConversations` wiring + `reloadBatchesSilently`/`_loadBatches` after merge.
+- `app/lib/services/vad_audio_processor.dart` — `processSegmentFile` (~529) is the reprocess entrypoint (needs a reprocess/merge mode: VAD off, split disabled, no draft/discard/ghost emission, no source-bin delete); `silenceDurationToSplitMs`/`vadSplitSeconds` (~57) controls splitting; `delete_segments` sends (~666/765/808) are the deletion chokepoint to convert from "delete consumed bins" to "retain under finalized recording"; `discardProtectedPaths` shows the protection pattern to reuse.
+- `app/lib/services/recordings_manager.dart` — new `mergeConversations` lives here; the bin→PCM decode (`SimpleOpusDecoder` 16 kHz mono, inline-frame skipping); `Conversation` (~23, `relativeBins` ~43 — now the recording's owned-bin list), `DiscardRecord` (~454), `MarkerConversation` (~481). (The old draft-stitch helpers `_stitchWav`/`_stitchDiscard`/`_mergeMeta` etc. are **not** used by the reprocess path — reprocess goes through `VadAudioProcessor`, not file concatenation.)
+- `app/lib/pages/recordings/recordings_controller.dart` — `deleteConversations` (~1272, reuse for Delete); add selection-set state + `mergeConversations` wiring + `reloadBatchesSilently`/`_loadBatches` after merge.
 - `app/lib/pages/recordings/recordings_page.dart` — top-level long-press (~398) + page scaffold for the contextual selection app bar.
-- `app/lib/pages/recordings/batch_card.dart` — `ConversationTile` (~184), `MarkerSubEntry` (~92), `GhostRow` (discards = ghosts, ~245); selection visuals.
+- `app/lib/pages/recordings/batch_card.dart` — `ConversationTile` (~184), `MarkerSubEntry` (~92), `GhostRow` (~245); selection visuals.
 - `app/lib/pages/recordings/marker_day_card.dart` — `MarkerTile` (~5).
-- `app/lib/backend/preferences.dart` — `audioSaveFormat` (~101, default `wav`) gates the m4a-disable decision.
+- `app/lib/backend/preferences.dart` — `audioSaveFormat` (~101, default `wav`) drives the merged output format; **new `recordingRetentionDays` (default 7)** lives here.
+
+### Design history (why the pivot)
+- **v1 (concatenation):** merge = repurpose the draft-stitch pipeline to splice finished files + ghosts, silence as last resort. Cheap (the machine exists) but had two sharp edges: `.m4a` can't be concatenated (greyed), and it only opportunistically found raw bins in gaps because bins were reaped at the conversation boundary.
+- **v2 (reprocess, current):** retain bins under their recording via Recording Retention, then merge by reprocessing the selection's bins with VAD off. This dissolves the m4a edge (encode-once, any format), regenerates markers for free, drops `_mergeMeta`, and produces a faithful lossless result — at the cost of the retention dependency (which the reprocess consumer now justifies). Bins are coupled to recordings (exist together, delete together), so there is no orphaned-bin state, no greying out, and no concatenation fallback — the v1 stitch path is dropped entirely.
+- Earlier standalone "retain all bins" brainstorm concluded YAGNI *absent a consumer*; reprocess-merge is that consumer.
 
 ---
 
