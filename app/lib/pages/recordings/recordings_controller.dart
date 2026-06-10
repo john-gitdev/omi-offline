@@ -1443,8 +1443,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final minDuration = _prefs.filterMinDurationSeconds;
     final isPassthrough = _prefs.passthroughMode;
 
-    for (final batch in _batches) {
-      for (final conversation in batch.finalizedRecordings) {
+    for (final batch in _batches.reversed) {
+      final sortedConversations = [...batch.finalizedRecordings]..sort((a, b) => a.startTime.compareTo(b.startTime));
+      for (final conversation in sortedConversations) {
         if (conversation.passthrough) continue;
         if (conversation.duration.inSeconds < minDuration) continue;
         if (conversation.duration == Duration.zero || conversation.fileSizeBytes == 0) continue;
