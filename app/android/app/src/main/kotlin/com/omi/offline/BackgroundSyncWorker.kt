@@ -63,6 +63,18 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
         Log.d(TAG, "doWork: sync due for device=$deviceId")
 
         if (!OmiBleManager.isInitialized) OmiBleManager.initialize(ctx as android.app.Application)
+
+        // Promote the single foreground service so Dart's setSyncStatus updates an
+        // existing notification rather than cold-starting one from the background.
+        // Best-effort: if the OS refuses the start here (worker is a background
+        // context), the exact-alarm path — scheduled for the same instant — is the
+        // primary promoter. No-ops (just flags persistent) when already running.
+        try {
+            OmiBleForegroundService.startServicePersistent(ctx)
+        } catch (e: Exception) {
+            Log.w(TAG, "doWork: could not promote foreground service: $e")
+        }
+
         val flutterApi = OmiBleManager.instance.flutterApi
 
         return if (flutterApi != null) {
