@@ -54,6 +54,14 @@ class SyncAlarmReceiver : BroadcastReceiver() {
         if (!OmiBleManager.isInitialized) {
             OmiBleManager.initialize(context.applicationContext as android.app.Application)
         }
+
+        // Promote the single foreground service NOW, from the exact-alarm context
+        // where starting an FGS is exempt from the Android 12+ background-start
+        // restriction. With the service already foreground, the subsequent Dart
+        // setSyncStatus calls are just notification updates (never a refused cold
+        // start). See gap #2 in the single-notification design.
+        OmiBleForegroundService.startServicePersistent(context.applicationContext)
+
         val flutterApi = OmiBleManager.instance.flutterApi
         if (flutterApi != null) {
             Handler(Looper.getMainLooper()).post {
