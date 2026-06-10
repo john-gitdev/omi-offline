@@ -682,6 +682,21 @@ protocol BleHostApi {
   /// read to OmiBleForegroundService so ID 2001 shows "78% · 3:45 PM".
   /// Call whenever a battery reading is obtained. iOS no-op.
   func setDeviceBattery(level: Int64, timestampMs: Int64) throws
+  /// (Android only) Set the single foreground-service notification's title and
+  /// text directly. Used by the Dart sync state machine to drive the one
+  /// persistent notification (idle / connecting / syncing / processing / …).
+  /// While a status is set, native suppresses its own connection-state text so
+  /// the two don't fight. iOS no-op.
+  func setSyncStatus(title: String, text: String) throws
+  /// (Android only) Keep the foreground service alive with no device connected
+  /// so the idle "Next sync / Last Sync" notification persists across BLE
+  /// disconnect and app background. true while auto-sync is on and a device is
+  /// bound; false in Manual Only / unbound (reverts to connection-only service
+  /// lifetime). iOS no-op.
+  func setPersistentNotification(enabled: Bool) throws
+  /// (Android only) Clear any Dart-pushed status text and let native resume
+  /// owning the notification (connection state / idle). iOS no-op.
+  func clearSyncStatus() throws
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -1024,6 +1039,62 @@ class BleHostApiSetup {
       }
     } else {
       setDeviceBatteryChannel.setMessageHandler(nil)
+    }
+    /// (Android only) Set the single foreground-service notification's title and
+    /// text directly. Used by the Dart sync state machine to drive the one
+    /// persistent notification (idle / connecting / syncing / processing / …).
+    /// While a status is set, native suppresses its own connection-state text so
+    /// the two don't fight. iOS no-op.
+    let setSyncStatusChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.setSyncStatus\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setSyncStatusChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let titleArg = args[0] as! String
+        let textArg = args[1] as! String
+        do {
+          try api.setSyncStatus(title: titleArg, text: textArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      setSyncStatusChannel.setMessageHandler(nil)
+    }
+    /// (Android only) Keep the foreground service alive with no device connected
+    /// so the idle "Next sync / Last Sync" notification persists across BLE
+    /// disconnect and app background. true while auto-sync is on and a device is
+    /// bound; false in Manual Only / unbound (reverts to connection-only service
+    /// lifetime). iOS no-op.
+    let setPersistentNotificationChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.setPersistentNotification\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setPersistentNotificationChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let enabledArg = args[0] as! Bool
+        do {
+          try api.setPersistentNotification(enabled: enabledArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      setPersistentNotificationChannel.setMessageHandler(nil)
+    }
+    /// (Android only) Clear any Dart-pushed status text and let native resume
+    /// owning the notification (connection state / idle). iOS no-op.
+    let clearSyncStatusChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.clearSyncStatus\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      clearSyncStatusChannel.setMessageHandler { _, reply in
+        do {
+          try api.clearSyncStatus()
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      clearSyncStatusChannel.setMessageHandler(nil)
     }
   }
 }
