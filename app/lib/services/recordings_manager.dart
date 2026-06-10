@@ -1848,8 +1848,12 @@ class RecordingsManager {
             }
 
             final gapMs = (isClockJump || gapToAudio < 10000) ? 0 : gapToAudio;
-            Logger.debug(
-                'RecordingsManager: Stitching draft $draftTs with next ${audioToStitch.path.split('/').last} (gap=${gapMs}ms)');
+            if (draftExt == 'wav') {
+              Logger.debug(
+                  'RecordingsManager: Stitching draft $draftTs with next ${audioToStitch.path.split('/').last} (gap=${gapMs}ms)');
+            } else {
+              Logger.debug('RecordingsManager: Converting draft $draftTs — $draftExt cannot be stitched, finalizing');
+            }
             final finalSuccess = await _performStitch(draftFile, audioToStitch, gapMs);
             if (finalSuccess) {
               scanNeeded = true;
