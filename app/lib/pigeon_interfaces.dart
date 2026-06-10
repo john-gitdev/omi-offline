@@ -181,6 +181,27 @@ abstract class BleHostApi {
   /// Call whenever a battery reading is obtained. iOS no-op.
   @SwiftFunction('setDeviceBattery(level:timestampMs:)')
   void setDeviceBattery(int level, int timestampMs);
+
+  /// (Android only) Set the single foreground-service notification's title and
+  /// text directly. Used by the Dart sync state machine to drive the one
+  /// persistent notification (idle / connecting / syncing / processing / …).
+  /// While a status is set, native suppresses its own connection-state text so
+  /// the two don't fight. iOS no-op.
+  @SwiftFunction('setSyncStatus(title:text:)')
+  void setSyncStatus(String title, String text);
+
+  /// (Android only) Keep the foreground service alive with no device connected
+  /// so the idle "Next sync / Last Sync" notification persists across BLE
+  /// disconnect and app background. true while auto-sync is on and a device is
+  /// bound; false in Manual Only / unbound (reverts to connection-only service
+  /// lifetime). iOS no-op.
+  @SwiftFunction('setPersistentNotification(enabled:)')
+  void setPersistentNotification(bool enabled);
+
+  /// (Android only) Clear any Dart-pushed status text and let native resume
+  /// owning the notification (connection state / idle). iOS no-op.
+  @SwiftFunction('clearSyncStatus()')
+  void clearSyncStatus();
 }
 
 @FlutterApi()
