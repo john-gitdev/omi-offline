@@ -72,6 +72,10 @@ class OmiBleManager private constructor(private val application: Application) {
     @Volatile
     var flutterApi: BleFlutterApi? = null
 
+    /// Application context for components (e.g. BleHostApiImpl) that need to start
+    /// the foreground service when no Activity is available (background).
+    val app: Application get() = application
+
     private val bluetoothManager = application.getSystemService(Application.BLUETOOTH_SERVICE) as BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
     val mainHandler = Handler(Looper.getMainLooper())
