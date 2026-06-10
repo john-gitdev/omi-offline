@@ -113,13 +113,29 @@ class _IntegrationRow extends StatelessWidget {
     }
   }
 
+  /// " (X/Total chunks)" suffix for chunked integrations (Omi Cloud) so an
+  /// in-flight or failed-midway upload shows how many segments have landed.
+  /// Empty when there's no multi-chunk progress to report, or once delivered
+  /// (the whole recording is up — no need to count).
+  String get _chunkSuffix {
+    final total = status.totalSegments;
+    final delivered = status.deliveredSegments;
+    if (total == null || delivered == null || total <= 1) return '';
+    if (status.state == IntegrationUploadState.delivered) return '';
+    return ' ($delivered/$total chunks)';
+  }
+
   @override
   Widget build(BuildContext context) {
     final (Color color, String label, IconData icon) = switch (status.state) {
       IntegrationUploadState.delivered => (Colors.green, 'Uploaded', Icons.cloud_done),
-      IntegrationUploadState.uploading => (Colors.deepPurpleAccent, 'Uploading…', Icons.cloud_upload),
-      IntegrationUploadState.failed => (Colors.redAccent, _failedLabel(status.failedAt), Icons.error_outline),
-      IntegrationUploadState.pending => (Colors.amber, 'Ready to Upload', Icons.cloud_upload),
+      IntegrationUploadState.uploading => (Colors.deepPurpleAccent, 'Uploading…$_chunkSuffix', Icons.cloud_upload),
+      IntegrationUploadState.failed => (
+          Colors.redAccent,
+          '${_failedLabel(status.failedAt)}$_chunkSuffix',
+          Icons.error_outline
+        ),
+      IntegrationUploadState.pending => (Colors.amber, 'Ready to Upload$_chunkSuffix', Icons.cloud_upload),
       IntegrationUploadState.unavailable => (Colors.grey.shade600, 'Not available', Icons.cloud_off),
     };
 
