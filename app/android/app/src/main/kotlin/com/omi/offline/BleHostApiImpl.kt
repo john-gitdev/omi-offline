@@ -169,6 +169,25 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
         OmiBleForegroundService.instance?.setDeviceBattery(level.toInt(), timestampMs)
     }
 
+    override fun setSyncStatus(title: String, text: String) {
+        OmiBleForegroundService.instance?.setSyncStatus(title, text)
+    }
+
+    override fun setPersistentNotification(enabled: Boolean) {
+        val inst = OmiBleForegroundService.instance
+        if (inst != null) {
+            inst.setPersistent(enabled)
+        } else if (enabled) {
+            // No service yet (e.g. Manual Only → auto-sync just enabled): start it
+            // pinned so the idle notification appears without waiting for a connect.
+            OmiBleForegroundService.startServicePersistent(bleManager.app)
+        }
+    }
+
+    override fun clearSyncStatus() {
+        OmiBleForegroundService.instance?.clearSyncStatus()
+    }
+
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): String? {
         val address = companionManager?.onActivityResult(requestCode, resultCode, data)
         val cb = companionAssociationCallback
