@@ -4,7 +4,7 @@
 
 ### 0.22.1
 
-- **Rework: "Conversation in progress" banner shows when the recording ends and finalizes in one tap.** When only a draft is open, the banner shows the estimated end time inline (e.g. `3m 12s accumulated · ends ~3:42 PM`) and the button confirms with the exact time. When raw audio is still waiting to be decoded, it processes immediately without a prompt.
+- **Rework: "Conversation in progress" banner shows when the recording ends and finalizes in one tap.** When only a draft is open, the banner shows the estimated end time inline (e.g. `Captured through ~3:42 PM`) and the button confirms with the exact time. When raw audio is still waiting to be decoded, it processes immediately without a prompt.
 
 ### 0.22.0
 
