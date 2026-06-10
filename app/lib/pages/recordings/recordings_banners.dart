@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:intl/intl.dart';
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
 
 class StorageWarningBanner extends StatelessWidget {
@@ -34,6 +36,7 @@ class AccumulatingBanner extends StatelessWidget {
   final double toProcessMinutes;
   final double draftMinutes;
   final int unprocessedBinCount;
+  final DateTime? draftEndTime;
   final VoidCallback? onTap;
   const AccumulatingBanner({
     super.key,
@@ -41,6 +44,7 @@ class AccumulatingBanner extends StatelessWidget {
     required this.toProcessMinutes,
     this.draftMinutes = 0.0,
     this.unprocessedBinCount = 0,
+    this.draftEndTime,
     this.onTap,
   });
 
@@ -70,9 +74,13 @@ class AccumulatingBanner extends StatelessWidget {
       final mins = totalSeconds ~/ 60;
       final secs = totalSeconds % 60;
       title = 'Conversation in progress';
-      label = mins > 0
+      final accumulated = mins > 0
           ? (secs > 0 ? '${mins}m ${secs}s accumulated' : '$mins ${mins == 1 ? 'minute' : 'minutes'} accumulated')
           : '$secs ${secs == 1 ? 'second' : 'seconds'} accumulated';
+      final end = draftEndTime;
+      label = end != null
+          ? '$accumulated · ends ~${DateFormat(SharedPreferencesUtil().use24HourTime ? 'HH:mm' : 'h:mm a').format(end)}'
+          : accumulated;
     }
 
     return Container(
@@ -128,4 +136,3 @@ class AccumulatingBanner extends StatelessWidget {
     );
   }
 }
-
