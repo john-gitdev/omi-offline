@@ -118,6 +118,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   double _draftMinutes = 0.0;
   double get draftMinutes => _draftMinutes;
 
+  // Wall-clock end of the open draft (where a force-finalize would cut). Null
+  // when there is no draft. Surfaced in the accumulating banner / confirm dialog.
+  DateTime? _draftEndTime;
+  DateTime? get draftEndTime => _draftEndTime;
+
   // Count of raw .bin files behind _toProcessMinutes, shown alongside it.
   int _unprocessedBinCount = 0;
   int get unprocessedBinCount => _unprocessedBinCount;
@@ -1211,6 +1216,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _toProcessMinutes = acc.toProcessMinutes;
         _draftMinutes = acc.draftMinutes;
         _unprocessedBinCount = acc.unprocessedBins;
+        _draftEndTime = acc.draftEndTime;
         notifyListeners();
         tryAutoUploadAll();
       }
@@ -1247,6 +1253,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         _toProcessMinutes = acc.toProcessMinutes;
         _draftMinutes = acc.draftMinutes;
         _unprocessedBinCount = acc.unprocessedBins;
+        _draftEndTime = acc.draftEndTime;
         notifyListeners();
       }
     } catch (_) {}
@@ -1812,7 +1819,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   /// [discardedRelBins] MUST be the global persisted set from
   /// [RecordingsManager.discardedRelBinPaths]. [coveredBins] are those identified
   /// by [RecordingsManager.coveredBinPaths].
-  ({double toProcessMinutes, double draftMinutes, int unprocessedBins}) _computeAccumulated(
+  ({double toProcessMinutes, double draftMinutes, int unprocessedBins, DateTime? draftEndTime}) _computeAccumulated(
       List<Batch> batches, Set<String> discardedRelBins, Set<String> coveredBins) {
     int rawBytes = 0;
     int unprocessedBinsCount = 0;
@@ -1826,14 +1833,17 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
 
     int draftMs = 0;
+    DateTime? draftEndTime;
     for (final c in batches.expand((b) => b.draftRecordings)) {
       draftMs += c.duration.inMilliseconds;
+      if (draftEndTime == null || c.endTime.isAfter(draftEndTime)) draftEndTime = c.endTime;
     }
 
     return (
       toProcessMinutes: rawBytes / 252000.0,
       draftMinutes: draftMs / 60000.0,
       unprocessedBins: unprocessedBinsCount,
+      draftEndTime: draftEndTime,
     );
   }
 }
