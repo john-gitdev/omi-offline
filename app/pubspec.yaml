@@ -3,7 +3,7 @@ description: A new Flutter project.
 
 publish_to: "none" # Remove this line if you wish to publish to pub.dev
 
-version: 0.21.5
+version: 0.22.0
 
 
 environment:
@@ -41,11 +41,9 @@ dependencies:
   flutter_secure_storage: ^9.2.2
   path: ^1.9.0
   uuid: ^4.4.0
-  awesome_notifications: any
   package_info_plus: ^8.0.1
   device_info_plus: ^11.5.0
   path_provider: 2.1.5
-  flutter_foreground_task: 9.1.0
   crypto: ^3.0.3
   opus_flutter: ^3.0.3
   opus_dart:
