@@ -201,7 +201,12 @@ class SharedPreferencesUtil {
     await saveStringList('omiSyncedFiles', updated.toList());
   }
 
-  Future<void> clearOmiSyncedFiles() async => saveStringList('omiSyncedFiles', []);
+  Future<void> clearOmiSyncedFiles() async {
+    await saveStringList('omiSyncedFiles', []);
+    await saveStringList('omiSyncedSegments', []);
+    await saveStringList('omiSegmentTotals', []);
+    await saveStringList('omiSegmentJobs', []);
+  }
 
   Future<void> removeOmiSynced(Iterable<String> binPaths) async {
     final paths = binPaths.toSet();
@@ -211,6 +216,114 @@ class SharedPreferencesUtil {
     if (pruned.length != current.length) {
       await saveStringList('omiSyncedFiles', pruned);
     }
+    for (final p in paths) {
+      await clearOmiSegments(p);
+    }
+  }
+
+  // Per-segment delivery markers for an Omi Cloud upload, keyed '<binPath>#<index>'.
+  // A recording's bin is uploaded one 5-min segment at a time; recording each
+  // delivered segment lets a retry after a partial failure resume from the first
+  // undelivered segment instead of re-sending the whole recording. Pruned by
+  // [clearOmiSegments] once the whole bin is marked synced.
+  List<String> get omiSyncedSegments => getStringList('omiSyncedSegments');
+
+  bool isOmiSegmentSynced(String segmentKey) => omiSyncedSegments.contains(segmentKey);
+
+  Future<void> markOmiSegmentSynced(String segmentKey) async {
+    if (isOmiSegmentSynced(segmentKey)) return;
+    final updated = {...omiSyncedSegments}..add(segmentKey);
+    await saveStringList('omiSyncedSegments', updated.toList());
+  }
+
+  /// How many of [binPath]'s segments have been delivered (keys '<binPath>#<i>').
+  int omiSyncedSegmentCount(String binPath) {
+    final prefix = '$binPath#';
+    return omiSyncedSegments.where((k) => k.startsWith(prefix)).length;
+  }
+
+  // Total segment count for an Omi upload, recorded when the upload is first
+  // built, so the UI can show "delivered/total chunks" — including after a
+  // partial failure where only some chunks made it. Entry form '<binPath>\t<n>'.
+  // Pruned by [clearOmiSegments] once the whole bin is synced so progress for a
+  // completed recording doesn't linger.
+  List<String> get _omiSegmentTotals => getStringList('omiSegmentTotals');
+
+  int getOmiSegmentTotal(String binPath) {
+    final prefix = '$binPath\t';
+    for (final e in _omiSegmentTotals) {
+      if (e.startsWith(prefix)) return int.tryParse(e.substring(prefix.length)) ?? 0;
+    }
+    return 0;
+  }
+
+  Future<void> setOmiSegmentTotal(String binPath, int count) async {
+    final prefix = '$binPath\t';
+    final updated = _omiSegmentTotals.where((e) => !e.startsWith(prefix)).toList()..add('$prefix$count');
+    await saveStringList('omiSegmentTotals', updated);
+  }
+
+  // Outstanding server job id per chunk, keyed '<binPath>#<index>\t<jobId>'. A
+  // chunk whose job is still queued/processing (or whose poll budget elapsed) is
+  // recorded here so the next upload attempt reattaches (polls) the same job
+  // instead of re-uploading and enqueuing a duplicate. Cleared once the chunk
+  // completes or fails, and pruned with the rest of a bin's segments by
+  // [clearOmiSegments].
+  List<String> get _omiSegmentJobs => getStringList('omiSegmentJobs');
+
+  String? getOmiSegmentJobId(String segmentKey) {
+    final prefix = '$segmentKey\t';
+    for (final e in _omiSegmentJobs) {
+      if (e.startsWith(prefix)) return e.substring(prefix.length);
+    }
+    return null;
+  }
+
+  Future<void> setOmiSegmentJobId(String segmentKey, String jobId) async {
+    final prefix = '$segmentKey\t';
+    final updated = _omiSegmentJobs.where((e) => !e.startsWith(prefix)).toList()..add('$prefix$jobId');
+    await saveStringList('omiSegmentJobs', updated);
+  }
+
+  Future<void> clearOmiSegmentJobId(String segmentKey) async {
+    final prefix = '$segmentKey\t';
+    final current = _omiSegmentJobs;
+    final pruned = current.where((e) => !e.startsWith(prefix)).toList();
+    if (pruned.length != current.length) {
+      await saveStringList('omiSegmentJobs', pruned);
+    }
+  }
+
+  // Epoch millis before which auto-upload should not re-attempt [binPath], set
+  // when the server reports it's busy (a 503/502/504), so a struggling backend
+  // isn't hammered. 0 = no backoff. Cleared on full sync by [clearOmiSegments].
+  int getOmiBackoffUntil(String binPath) => getInt('omiBackoffUntil_$binPath', defaultValue: 0);
+
+  Future<void> setOmiBackoffUntil(String binPath, int epochMs) async {
+    await saveInt('omiBackoffUntil_$binPath', epochMs);
+  }
+
+  Future<void> clearOmiSegments(String binPath) async {
+    final prefix = '$binPath#';
+    final current = omiSyncedSegments;
+    final pruned = current.where((k) => !k.startsWith(prefix)).toList();
+    if (pruned.length != current.length) {
+      await saveStringList('omiSyncedSegments', pruned);
+    }
+    final tPrefix = '$binPath\t';
+    final totals = _omiSegmentTotals;
+    final tPruned = totals.where((e) => !e.startsWith(tPrefix)).toList();
+    if (tPruned.length != totals.length) {
+      await saveStringList('omiSegmentTotals', tPruned);
+    }
+    // Job-id entries are keyed '<binPath>#<index>\t…', so the '<binPath>#' prefix
+    // prunes them too.
+    final jobs = _omiSegmentJobs;
+    final jPruned = jobs.where((e) => !e.startsWith(prefix)).toList();
+    if (jPruned.length != jobs.length) {
+      await saveStringList('omiSegmentJobs', jPruned);
+    }
+    await remove('omiBackoffUntil_$binPath');
   }
 
   // Firebase user UID and email — stored in plain SharedPreferences (non-sensitive identifiers).
