@@ -2,7 +2,7 @@
 
 A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
 
-**Current versions:** App `0.19.0` · Firmware `oo-1.9.2`
+**Current versions:** App `0.22.1` · Firmware `oo-1.9.5`
 
 ---
 
@@ -40,7 +40,7 @@ The nRF5340 wearable captures audio continuously via PDM microphones, encodes it
 - **Discard recovery (ghost rows).** Audio that processing dropped (silenced as noise, or too short) is surfaced as a greyed-out "ghost" row in the recordings list, appearing in real time as each discard is identified. Source bins are protected for a 48 h window so you can recover a clip with a lower threshold or delete it.
 - **Background battery saving.** The app always disconnects BLE when backgrounded (after a ~30 s grace window to survive quick screen-off/on) and reconnects only when a sync is due. The firmware records to SD card regardless of phone connectivity. A `PARTIAL_WAKE_LOCK` is held over the background sync+process run so Android doesn't downclock the processing isolate when the screen is off.
 - **Processing resume from checkpoint.** If processing is interrupted (background kill, BLE drop, cancel), the next run restores the exact Silero LSTM recurrent state from a checkpoint file and picks up from the last completed segment — no re-decoding from scratch.
-- **Integrations.** Optional upload to HeyPocket or Omi after processing.
+- **Integrations.** Optional upload to HeyPocket or Omi after processing. Omi uploads are split into ~5-minute chunks sent one at a time, with live chunk-level progress and resume-on-retry. Per-integration status (Uploaded / Pending / Failed / Uploading) is shown per recording with individual retry actions.
 
 ---
 
@@ -62,7 +62,7 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
 
 - **Audio:** PDM at 16 kHz → Opus VBR, complexity 5, 20 ms frames (codec ID `20`: 80 B/frame, 50 fps).
 - **Storage:** LittleFS on SD card. Copy-on-write metadata and journaling means the filesystem stays consistent through sudden power loss.
-- **SD write pipeline:** Frames queue into `sd_msgq` (depth 100). Worker batches 100 frames per LittleFS write, fsyncs every 60 s. SPI bus is power-gated between operations (`sd_io_low_power`).
+- **SD write pipeline:** Frames queue into `sd_msgq` (depth 150). Worker batches 100 frames per LittleFS write, fsyncs every 60 s. SPI bus is power-gated between operations (`sd_io_low_power`).
 - **Time sync:** On BLE connect the app writes UTC as a little-endian `u32` to characteristic `0x0031`. The firmware renames any `TMP_` files and anchors recording timestamps to real wall time.
 - **LED:** Defaults to off (stealth) after the boot-sequence flash (white breathe → solid white → fade). Triple-tap to enable the LED; triple-tap again to return to stealth.
 - **Button:** Interrupt-driven (no 25 Hz polling). GPIO callback wakes the FSM only on press.
@@ -77,7 +77,7 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
 - **VAD processor (`VadAudioProcessor`).** Runs in a fresh isolate. Stateless across runs — uncut segments stay on disk and are re-processed next cycle. Silero LSTM state is kept as a live native tensor between inference calls (no Dart-layer copy), reducing per-call allocations from ~6 objects to ~1. End-of-run always flushes as a `_draft` file; finalization only on a confirmed silence or cap boundary.
 - **Processing checkpoint.** After each completed segment, the processor writes `vad_checkpoint.json` containing the full VAD state. Interrupted runs restore from this snapshot so processing resumes at the last completed segment with identical Silero recurrent state.
 - **Background disconnect.** Always disconnects BLE on backgrounding (after ~30 s grace). A native Android keep-alive (`0x32`, `WRITE_NO_RESPONSE`, every 15 s) prevents firmware idle-disconnect during long file reads without blocking the GATT command queue.
-- **Foreground-service resilience.** The sync/processing notification updates in place (rather than stop/restart) to avoid the Android 12+ "start foreground service from background" restriction, and re-posts itself if swiped away on Android 14+. Recording Settings also surfaces a warning card when the app is not exempt from battery optimization, with a one-tap Fix that opens the system exemption prompt. A native `AlarmManager` exact alarm (`setExactAndAllowWhileIdle`) is armed whenever the next sync time is set; if Android freezes the Dart isolate, the alarm fires natively and delivers the sync request without Dart. The always-on BLE notification (ID 2001) shows last-known battery level and last-connected time; the sync/process notification (ID 2002) uses a title + subtext layout ("Syncing recordings" / "45% complete") with 5 s update intervals in both foreground and background.
+- **Foreground-service resilience.** A single persistent notification (owned by the native `OmiBle` service) covers the full sync/processing cycle — idle → syncing → processing → ready — and survives BLE disconnects, backgrounding, and swipe-away without a force-close. The `flutter_foreground_task` plugin has been dropped entirely. Recording Settings surfaces a warning card when the app is not exempt from battery optimization, with a one-tap Fix that opens the system exemption prompt. A native `AlarmManager` exact alarm (`setExactAndAllowWhileIdle`) is armed whenever the next sync time is set; if Android freezes the Dart isolate, the alarm fires natively and delivers the sync request without Dart.
 - **Recordings manager.** Parses finalized recordings (`.wav` by default; `.m4a` if configured) from `recordings/` for UI binding. Each recording carries a `.meta` sidecar listing the raw bins it was built from (`relativeBins`); marker EDL sidecars live alongside their recordings.
 
 ---
@@ -185,7 +185,7 @@ File indices are cache positions (0-based, rebuilt after every LIST and every de
 | Setting | Pref key | Default | Notes |
 |---------|----------|---------|-------|
 | Recording format | `audioSaveFormat` | wav | Output container: `wav` (PCM, default) or `m4a` |
-| Keep recordings for | `keepRecordingsDays` | -1 | -1 = forever, 0 = delete immediately after upload |
+| Recording Retention | `keepRecordingsDays` | -1 | -1 = forever, 0 = delete immediately after upload |
 
 ---
 
