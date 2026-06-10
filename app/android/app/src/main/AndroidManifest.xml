@@ -61,16 +61,14 @@
         android:requestLegacyExternalStorage="true"
         android:networkSecurityConfig="@xml/network_security_config"
         tools:replace="android:label">
-        <service
-            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
-            android:exported="false"
-            android:foregroundServiceType="connectedDevice|dataSync"
-            android:stopWithTask="false" />
-        <!-- Native BLE Services -->
+        <!-- Native BLE Services. stopWithTask=false so the single persistent
+             notification (and the process) survives the app being swiped from
+             Recents, the same way the old flutter_foreground_task service did. -->
         <service
             android:name=".OmiBleForegroundService"
             android:enabled="true"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="connectedDevice" />
 
         <receiver
