@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart' show SharePlus, ShareParams, XFile;
 import 'package:omi/providers/device_provider.dart';
@@ -652,21 +653,40 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   toProcessMinutes: controller.toProcessMinutes,
                   draftMinutes: controller.draftMinutes,
                   unprocessedBinCount: controller.unprocessedBinCount,
+                  draftEndTime: controller.draftEndTime,
                   onTap: () {
                     if (controller.spState == SyncProcessState.syncing ||
                         controller.spState == SyncProcessState.processing ||
                         controller.spState == SyncProcessState.stopping) return;
+
+                    // Raw bins waiting to be decoded → just process them; the
+                    // normal pass respects pause limits and folds them into the
+                    // draft. No need to confirm — nothing gets cut.
+                    const double minShown = 1.0 / 60.0;
+                    if (controller.toProcessMinutes >= minShown) {
+                      controller.startProcessingWithoutSync();
+                      return;
+                    }
+
+                    // No bins left, only an open draft: force-finalizing cuts the
+                    // conversation at the draft's end. Show that end time and confirm.
+                    final end = controller.draftEndTime;
+                    final endLabel = end != null
+                        ? DateFormat(SharedPreferencesUtil().use24HourTime ? 'HH:mm' : 'h:mm a').format(end)
+                        : null;
                     showDialog(
                       context: context,
                       builder: (ctx) => AlertDialog(
                         backgroundColor: const Color(0xFF1C1C1E),
                         title: const Text(
-                          'Process Audio',
+                          'Finalize Recording',
                           style: TextStyle(color: Colors.white),
                         ),
-                        content: const Text(
-                          'You can process the accumulated audio now. Processing normally will respect the conversation pause limits, while Force Processing will finalize everything immediately.',
-                          style: TextStyle(color: Colors.white70, fontSize: 14),
+                        content: Text(
+                          endLabel != null
+                              ? 'Accumulated recording will end at $endLabel.'
+                              : 'Accumulated recording will be finalized now.',
+                          style: const TextStyle(color: Colors.white70, fontSize: 14),
                         ),
                         actions: [
                           TextButton(
@@ -679,20 +699,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
                           TextButton(
                             onPressed: () {
                               Navigator.of(ctx).pop();
-                              controller.startProcessingWithoutSync();
-                            },
-                            child: const Text(
-                              'Process Normally',
-                              style: TextStyle(color: Colors.deepPurpleAccent),
-                            ),
-                          ),
-                          TextButton(
-                            onPressed: () {
-                              Navigator.of(ctx).pop();
                               controller.startForceProcessingWithoutSync();
                             },
                             child: const Text(
-                              'Force Process',
+                              'Confirm',
                               style: TextStyle(color: Colors.deepPurpleAccent),
                             ),
                           ),
