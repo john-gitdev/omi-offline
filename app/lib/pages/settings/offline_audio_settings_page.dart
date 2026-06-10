@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/providers/device_provider.dart';
@@ -115,7 +115,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
   }
 
   Future<void> _checkBatteryOptimization() async {
-    final v = await FlutterForegroundTask.isIgnoringBatteryOptimizations;
+    final v = await Permission.ignoreBatteryOptimizations.isGranted;
     if (mounted) setState(() => _isIgnoringBatteryOptimizations = v);
   }
 
@@ -216,7 +216,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                   // Battery optimization warning — only shown on Android when not exempt
                   if (Platform.isAndroid && !_isIgnoringBatteryOptimizations) ...[
                     _BatteryOptimizationCard(onFix: () async {
-                      await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+                      await Permission.ignoreBatteryOptimizations.request();
                       await Future<void>.delayed(const Duration(milliseconds: 500));
                       _checkBatteryOptimization();
                     }),
