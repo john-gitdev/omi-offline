@@ -70,17 +70,11 @@ class AccumulatingBanner extends StatelessWidget {
           unprocessedBinCount > 0 ? ' · $unprocessedBinCount ${unprocessedBinCount == 1 ? 'bin' : 'bins'}' : '';
       label = '~$mins ${mins == 1 ? 'minute' : 'minutes'} to process$binsLabel';
     } else {
-      final totalSeconds = (draftMinutes * 60).round();
-      final mins = totalSeconds ~/ 60;
-      final secs = totalSeconds % 60;
       title = 'Conversation in progress';
-      final accumulated = mins > 0
-          ? (secs > 0 ? '${mins}m ${secs}s accumulated' : '$mins ${mins == 1 ? 'minute' : 'minutes'} accumulated')
-          : '$secs ${secs == 1 ? 'second' : 'seconds'} accumulated';
       final end = draftEndTime;
       label = end != null
-          ? '$accumulated · ends ~${DateFormat(SharedPreferencesUtil().use24HourTime ? 'HH:mm' : 'h:mm a').format(end)}'
-          : accumulated;
+          ? 'Captured through ~${DateFormat(SharedPreferencesUtil().use24HourTime ? 'HH:mm' : 'h:mm a').format(end)}'
+          : 'Captured so far';
     }
 
     return Container(
