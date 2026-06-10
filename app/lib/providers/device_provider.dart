@@ -2,10 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:intl/intl.dart';
-
 import 'package:flutter/material.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
@@ -18,7 +15,7 @@ import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals.dart';
-import 'package:omi/utils/audio/foreground.dart';
+import 'package:omi/utils/audio/sync_notification.dart';
 import 'package:omi/utils/debug_log_manager.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/other/debouncer.dart';
@@ -53,7 +50,16 @@ class DeviceProvider extends ChangeNotifier
   final int _connectionCheckSeconds = 15; // Scan every 15s instead of 30s
 
   Timer? _backgroundSyncTimer;
-  DateTime? nextSyncTime;
+  DateTime? _nextSyncTime;
+  DateTime? get nextSyncTime => _nextSyncTime;
+  // Mirror into SyncNotification so its self-contained idle() can render the
+  // "Next sync at H:MM" title from any caller (e.g. the foreground pipeline)
+  // without a DeviceProvider reference.
+  set nextSyncTime(DateTime? value) {
+    _nextSyncTime = value;
+    SyncNotification.nextSyncTime = value;
+  }
+
   bool _pendingAppOpenSync = false;
   bool _pendingBackgroundSync = false;
   // Set when a background disconnect interrupts an active sync. Allows the
@@ -146,7 +152,6 @@ class DeviceProvider extends ChangeNotifier
     _loadCrashLogs();
     ServiceManager.instance().device.subscribe(this, this);
     ServiceManager.instance().wal.subscribe(this, this);
-    FlutterForegroundTask.addTaskDataCallback(_onForegroundTaskData);
     BleBridge.instance.backgroundSyncRequestedCallback = _onBackgroundSyncRequested;
     BleBridge.instance.bluetoothStateChangedCallback = (state) {
       Logger.debug('Bluetooth state changed: $state');
@@ -182,49 +187,28 @@ class DeviceProvider extends ChangeNotifier
   }
 
   void _onBackgroundSyncRequested() {
-    Logger.debug('[BLE] _onBackgroundSyncRequested: OS scheduler fired (fg=$_isAppInForeground connected=$isConnected)');
+    Logger.debug(
+        '[BLE] _onBackgroundSyncRequested: OS scheduler fired (fg=$_isAppInForeground connected=$isConnected)');
     if (isConnected) {
       _doBackgroundSync();
     } else {
       _pendingBackgroundSync = true;
-      scanAndConnectToDevice();
+      unawaited(SyncNotification.connecting());
+      unawaited(_connectThenSyncOrFail());
     }
   }
 
-  void _onForegroundTaskData(Object data) {
-    if (data == 'heartbeat') {
-      Logger.debug('DeviceProvider: Heartbeat received from foreground task');
-      if (!_isAppInForeground) {
-        // The device is left disconnected in the background; the sync-if-due
-        // branch below is the only thing that reconnects, and only when a sync
-        // is actually due.
-
-        // Use heartbeat to trigger sync if due
-        final next = nextSyncTime;
-        if (next != null && DateTime.now().isAfter(next)) {
-          Logger.debug('DeviceProvider: Heartbeat triggering background sync');
-          if (isConnected) {
-            _doBackgroundSync();
-          } else {
-            _pendingBackgroundSync = true;
-            scanAndConnectToDevice();
-          }
-          // Reset next sync time
-          final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
-          if (interval > 0) {
-            nextSyncTime = DateTime.now().add(Duration(minutes: interval));
-            if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(nextSyncTime!.millisecondsSinceEpoch));
-            notifyListeners();
-          }
-        } else {
-          // Not due yet — refresh the idle notification so ID 2002 reflects the
-          // current next-sync time (or connection state in manual-only mode).
-          // Skip while a sync/process is running; that flow owns the notification.
-          if (!_syncOwnsNotification) {
-            unawaited(_showIdleNotification());
-          }
-        }
-      }
+  /// Connect for an alarm-triggered background sync. On success,
+  /// [_finishDeviceSetup] clears the pending flag and runs [_doBackgroundSync];
+  /// on failure, advance to the next slot and settle to idle so the notification
+  /// doesn't stick on "Connecting…".
+  Future<void> _connectThenSyncOrFail() async {
+    try {
+      await scanAndConnectToDevice();
+    } catch (_) {}
+    if (!isConnected) {
+      _pendingBackgroundSync = false;
+      _failSyncCycleToIdle();
     }
   }
 
@@ -599,10 +583,7 @@ class DeviceProvider extends ChangeNotifier
       final now = DateTime.now();
       if (now.difference(_lastProcessingNotif) < const Duration(seconds: 5)) return;
       _lastProcessingNotif = now;
-      ForegroundUtil.updateNotification(
-        title: 'Processing recordings',
-        text: RecordingsController.processingNotificationText(),
-      );
+      SyncNotification.processing(RecordingsController.processingNotificationText());
     }
   }
 
@@ -615,49 +596,14 @@ class DeviceProvider extends ChangeNotifier
       RecordingsManager.isSuccessNotificationActive.value ||
       _backgroundSyncActive;
 
-  /// The single source of truth for the persistent background notification when
-  /// no sync/process is running.
-  ///
-  /// When auto-sync is **on** the notification is deliberately **connection-state
-  /// independent**: the device stays disconnected in the background and only
-  /// connects briefly at scheduled-sync time, so reflecting connection state
-  /// here (or writing transient "Scanning…"/"Connected" text) would make the
-  /// connection-status and sync-timer writers fight and flicker. Showing only
-  /// the next-sync countdown keeps the notification stable. The title doubles as
-  /// the feature name and the subtext counts down to [nextSyncTime] (refreshed
-  /// each ~1-min heartbeat).
-  ///
-  /// When auto-sync is **off** (interval = Manual Only) there is no scheduled
-  /// connect/disconnect cycle, so the connection state is stable enough to
-  /// surface — the notification reflects Connected/Connecting/Disconnected
-  /// instead of a countdown. It self-corrects to the current state on the next
-  /// heartbeat (see [_onForegroundTaskData]).
-  ///
-  /// Safe to call from the foreground — [ForegroundUtil.updateNotification]
-  /// no-ops when the service isn't running.
-  Future<void> _showIdleNotification({bool start = false}) async {
-    final prefs = SharedPreferencesUtil();
-    final lastMs = prefs.lastSyncCompletedMs;
-    final lastBattery = prefs.lastBatteryLevel;
-    final next = nextSyncTime;
-
-    final String title = next != null
-        ? 'Next sync at ${DateFormat('h:mm a').format(next)}'
-        : ForegroundUtil.defaultTitle;
-
-    final String text;
-    if (lastMs > 0) {
-      final time = DateFormat('h:mm a').format(DateTime.fromMillisecondsSinceEpoch(lastMs));
-      final status = prefs.lastSyncPartial ? 'Partial' : 'Complete';
-      text = lastBattery >= 0 ? 'Last Sync: $status • $time • $lastBattery% Battery' : 'Last Sync: $status • $time';
-    } else {
-      text = isConnected ? 'Omi is Connected' : (isConnecting ? 'Connecting...' : 'Omi is Disconnected');
-    }
-    if (start && !await ForegroundUtil.isRunningService) {
-      await ForegroundUtil.startForegroundTask(title: title, text: text);
-    } else {
-      await ForegroundUtil.updateNotification(title: title, text: text);
-    }
+  /// The single source of truth for the idle notification text shown when no
+  /// sync/process is running. With auto-sync on, the title is the next-sync time
+  /// and the subtext is the last-sync summary; the absolute "Next sync at H:MM"
+  /// needs no per-minute refresh (it's woken/advanced by the exact alarm). With
+  /// auto-sync off (Manual Only) the service isn't persistent, so this is a no-op
+  /// at the native layer unless a connection notification is already up.
+  Future<void> _showIdleNotification() async {
+    await SyncNotification.idle(isConnected: isConnected, isConnecting: isConnecting);
   }
 
   void _pushBatteryToNative(int level) {
@@ -676,6 +622,12 @@ class DeviceProvider extends ChangeNotifier
     if (Platform.isAndroid) {
       unawaited(BleHostApi().rescheduleBackgroundSync(interval));
     }
+    // Pin the single notification persistent while auto-sync is on and a device
+    // is bound, so the idle "Next sync / Last Sync" line survives BLE disconnect
+    // and app background. Manual Only / unbound releases it (connection-only
+    // service lifetime — no idle notification, no redundant "Connected" line).
+    final deviceBound = SharedPreferencesUtil().btDevice.id.isNotEmpty;
+    unawaited(SyncNotification.setPersistent(interval > 0 && deviceBound));
     if (interval <= 0) {
       nextSyncTime = null;
       if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(0));
@@ -698,6 +650,7 @@ class DeviceProvider extends ChangeNotifier
           // background drop-guard knows this connection is a sanctioned
           // background sync and shouldn't be dropped.
           _pendingBackgroundSync = true;
+          unawaited(SyncNotification.connecting());
           bool connectedThisTick = false;
           try {
             for (int attempt = 0; attempt < 3 && !isConnected; attempt++) {
@@ -714,6 +667,9 @@ class DeviceProvider extends ChangeNotifier
             // and bypass the drop guard for future connections.
             if (!connectedThisTick) {
               _pendingBackgroundSync = false;
+              // Connect failed: advance to the next auto-sync slot and settle the
+              // notification back to idle (never leave it stuck on "Connecting…").
+              _failSyncCycleToIdle();
             }
           }
           // If connectedThisTick, _finishDeviceSetup will clear the flag and
@@ -755,11 +711,7 @@ class DeviceProvider extends ChangeNotifier
         // set, so this also arms the keep-alive in the background. See
         // _startForegroundKeepAlive.
         _startForegroundKeepAlive();
-        if (!await ForegroundUtil.isRunningService) {
-          await ForegroundUtil.startForegroundTask(title: 'Syncing recordings', text: 'Preparing...');
-        } else {
-          await ForegroundUtil.updateNotification(title: 'Syncing recordings', text: 'Preparing...');
-        }
+        await SyncNotification.preparingSync();
         // A setup-phase failure in this sync (no connection, storage full,
         // or any early abort that throws) must NOT skip processing — bins that
         // already reached disk should still be decoded, mirroring how the
@@ -770,6 +722,7 @@ class DeviceProvider extends ChangeNotifier
           final result = await walSync.syncAll(progress: _BackgroundSyncProgress());
           SharedPreferencesUtil().lastSyncPartial = result?.isPartial ?? false;
           SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
+          await SyncNotification.finishingSync();
         } catch (e) {
           SharedPreferencesUtil().lastSyncPartial = true;
           // Stamp the time too so the notification reads "Partial • <now>" rather
@@ -780,7 +733,7 @@ class DeviceProvider extends ChangeNotifier
           notifyListeners();
         }
 
-        await ForegroundUtil.updateNotification(title: 'Processing recordings', text: 'Preparing...');
+        await SyncNotification.preparingProcessing();
         // Remove-before-add: onAppPaused may already hold a registration, and
         // ChangeNotifier allows duplicates that each fire separately.
         RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
@@ -790,6 +743,7 @@ class DeviceProvider extends ChangeNotifier
         // its own errors, so it runs whether or not the sync above succeeded.
         await RecordingsManager.processAllCompletedSessions();
         RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
+        await SyncNotification.finishingProcessing();
       } catch (e) {
         lastSyncError = e.toString();
         lastSyncErrorTime = DateTime.now();
@@ -802,25 +756,12 @@ class DeviceProvider extends ChangeNotifier
         if (!_isAppInForeground) _stopForegroundKeepAlive();
         RecordingsManager.processingProgress.removeListener(_onProcessingProgress);
 
-        // Success state: show "Conversations ready" for 10s if we finished normally
-        // (no error). If the app comes to foreground, ForegroundUtil.stopForegroundTask
-        // will still clean up naturally.
+        // Success state: show "Conversations ready" for 10s if we finished normally.
         if (lastSyncError == null && !RecordingsManager.isProcessingAny) {
           RecordingsManager.isSuccessNotificationActive.value = true;
-          unawaited(ForegroundUtil.updateNotification(
-            title: 'Conversations ready',
-            text: 'Sync and processing complete',
-          ));
+          unawaited(SyncNotification.complete());
           await Future.delayed(const Duration(seconds: 10));
           RecordingsManager.isSuccessNotificationActive.value = false;
-        }
-
-        // Only release the foreground service (and wake lock) when the app is
-        // visible. In background we keep it alive so the next timer tick fires.
-        if (_isAppInForeground) {
-          await ForegroundUtil.stopForegroundTask();
-        } else {
-          unawaited(_showIdleNotification());
         }
 
         // Disconnect after the full sync+process cycle so that new firmware files
@@ -832,12 +773,31 @@ class DeviceProvider extends ChangeNotifier
         // sync (or on app open/resume when one is due).
         if (!_isAppInForeground && !isFirmwareUpdateInProgress && !_isOnFirmwareUpdatePage && isConnected) {
           Logger.debug('Background sync done: disconnecting device.');
+          unawaited(SyncNotification.disconnecting());
           ServiceManager.instance().device.disconnectDevice(isManual: true);
         }
+
+        // The single notification persists across the disconnect and app
+        // background — revert it to the idle "Next sync / Last Sync" line.
+        unawaited(_showIdleNotification());
       }
     } finally {
       _backgroundSyncActive = false;
     }
+  }
+
+  /// A sync cycle could not run (e.g. the device wasn't reachable). Advance to
+  /// the next auto-sync slot — re-arm the native exact alarm and recompute
+  /// [nextSyncTime] — and settle the notification back to the idle line so it
+  /// never sticks on "Connecting…".
+  void _failSyncCycleToIdle() {
+    final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
+    if (interval > 0) {
+      nextSyncTime = DateTime.now().add(Duration(minutes: interval));
+      if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(nextSyncTime!.millisecondsSinceEpoch));
+      notifyListeners();
+    }
+    unawaited(_showIdleNotification());
   }
 
   void onAppPaused() async {
@@ -864,11 +824,10 @@ class DeviceProvider extends ChangeNotifier
     // wake lock — without this the CPU sleeps and the Dart timer never fires.
     final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     if (interval > 0 && SharedPreferencesUtil().btDevice.id.isNotEmpty) {
-      // A running sync/process already owns the foreground notification (and
-      // keeps the service alive); don't overwrite its live progress with the
-      // idle countdown. Otherwise start/refresh the "next sync" timer.
+      // The single notification is already persistent; just refresh it to the
+      // idle "Next sync" line unless a sync/process is actively driving it.
       if (!_syncOwnsNotification) {
-        await _showIdleNotification(start: true);
+        await _showIdleNotification();
       }
     }
     // Grace period: don't drop the link the instant we're backgrounded — a
@@ -932,15 +891,13 @@ class DeviceProvider extends ChangeNotifier
     if (isConnected) _startForegroundKeepAlive();
     // Release the overnight wake lock now that the user has the app open.
     final walSync = ServiceManager.instance().wal.getSyncs();
-    // Don't tear down the foreground service while a sync OR a background
-    // processing run is still active. Without it the OS can suspend (Doze) the
-    // process mid-decode — which freezes the progress notification and later
-    // makes the stall watchdog misread the wake-up time-jump as a wedge and
-    // force-kill a healthy run, restarting the whole backlog.
+    // The single notification is persistent (it survives foreground/background),
+    // so we no longer tear it down on resume — just settle it to the idle line
+    // when nothing is actively driving it.
     if (!walSync.isSyncing &&
         !RecordingsManager.isProcessingAny &&
         !RecordingsManager.isSuccessNotificationActive.value) {
-      ForegroundUtil.stopForegroundTask();
+      unawaited(_showIdleNotification());
     }
 
     final prefs = SharedPreferencesUtil();
@@ -1196,7 +1153,7 @@ class DeviceProvider extends ChangeNotifier
   Future<void> _finishDeviceSetup(BtDevice device) async {
     if (_disposed || connectedDevice?.id != device.id) return;
 
-    unawaited(ForegroundUtil.requestPermissions());
+    unawaited(SyncNotification.requestPermissions());
 
     // Re-anchor the firmware clock on every connected transition, not just the
     // Dart-initiated connect path. A native auto-reconnect (e.g. after a
@@ -1245,6 +1202,7 @@ class DeviceProvider extends ChangeNotifier
     if (_pendingBackgroundSync || _pendingSyncResume) {
       _pendingBackgroundSync = false;
       _pendingSyncResume = false;
+      unawaited(SyncNotification.connected());
       unawaited(_doBackgroundSync());
     }
 
@@ -1284,8 +1242,7 @@ class DeviceProvider extends ChangeNotifier
       // Error 133 on Android (next connect logs it instead).
       final dropStats = conn.isStorageBusy ? null : await conn.getDropStats();
       if (dropStats != null && dropStats.failedConnCount > 0) {
-        Logger.warning(
-            'Device BLE connect-fail counter: ${dropStats.failedConnCount} '
+        Logger.warning('Device BLE connect-fail counter: ${dropStats.failedConnCount} '
             '(last failure during ${dropStats.lastFailedConnDuringSlowAdv ? "slow" : "fast"} advertising)');
         await DebugLogManager.logEvent('device_conn_fail', {
           'failed_conn_count': dropStats.failedConnCount,
@@ -1418,14 +1375,11 @@ class _BackgroundSyncProgress implements IWalSyncProgressListener {
     final state = WidgetsBinding.instance.lifecycleState;
     if (state == null || state == AppLifecycleState.resumed) return;
     final now = DateTime.now();
-    if (now.difference(_lastNotif) < const Duration(seconds: 5)) return;
+    if (now.difference(_lastNotif) < const Duration(seconds: 1)) return;
     _lastNotif = now;
     final estimated = ServiceManager.instance().wal.getSyncs().estimatedTotalSegments;
     if (estimated > _totalCount) _totalCount = estimated;
     final synced = (percentage * _totalCount).round().clamp(0, _totalCount);
-    ForegroundUtil.updateNotification(
-      title: 'Syncing recordings',
-      text: RecordingsController.syncingNotificationText(synced, _totalCount),
-    );
+    SyncNotification.syncing(RecordingsController.syncingNotificationText(synced, _totalCount));
   }
 }
