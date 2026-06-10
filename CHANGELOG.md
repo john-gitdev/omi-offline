@@ -2,6 +2,23 @@
 
 ## App
 
+### 0.22.0
+
+- **Rework: One persistent notification that no longer disappears.** (Android)
+    - The app used to run two notifications — a native "Connected" one and a separate sync/processing one — and the sync notification could vanish mid-session and only come back after a force-close. Both are now collapsed into a **single persistent notification** that shows the whole cycle live: `Next sync at H:MM / Last Sync …` when idle, then `Connecting… → Syncing (N of M segments) → Processing (~k min) → Conversations ready` and back to idle. It survives the Omi disconnecting over BLE and the app being backgrounded or swiped away, and it's owned by the always-running native service so it can't get stuck — no more force-close to get it back. In Manual Only mode there's no idle notification (just the connection state while connected), so you won't see a redundant second line.
+    - Under the hood this drops the `flutter_foreground_task` plugin entirely. Background syncs are now woken by an exact alarm instead of a 1-minute heartbeat, so the app no longer holds a CPU wakelock around the clock — only during an actual sync — which is easier on battery. If a scheduled sync can't reach the device, it cleanly rolls forward to the next sync slot instead of getting stuck on "Connecting…".
+- **Fix: Omi Cloud uploads no longer abandon and re-send slow jobs, or hammer a busy server.**
+    - When the server's transcription backend is backed up, a chunk's job can sit queued for minutes. Previously the app gave up after ~4 minutes, marked the upload failed, and on retry re-sent the chunk as a brand-new job — piling more work onto the very queue that was already slow. Now each chunk's job id is remembered: if the job is still running when the app stops waiting, the recording is left "pending" (not failed) and the next attempt **reattaches to the same job** instead of re-uploading. A chunk is only re-sent when the server reports a real failure. And when the server says it's overloaded (a 503), the recording backs off for a few minutes before retrying instead of immediately re-trying three times in a row. Together these stop the timeout→retry→re-queue cycle that made a slow backend worse.
+- **New: Omi Cloud upload rows show "X/Total chunks" progress.**
+    - An Omi Cloud upload is sent one chunk at a time, and the integration row now shows how many chunks have landed (e.g. "Uploading… (3/12 chunks)") and updates live as each one completes. If an upload stops partway, the row keeps the count so you can see how far it got — and resuming continues from the first chunk that didn't make it rather than re-sending the whole recording.
+
+### 0.21.6
+
+- **Fix: Omi Cloud uploads no longer overwhelm the transcription backend.**
+    - Splitting a recording into segments was correct, but all of them were sent in one job and the server then transcribed them in parallel, hammering its Parakeet backend until it returned 503 and the whole upload failed. Each 5-minute segment is now uploaded in its own request, one at a time, so the server only transcribes one at a time. Delivered segments are remembered individually, so retrying after a partial failure resumes from the first segment that didn't make it instead of re-sending the whole recording.
+- **Fix: The connection notification no longer shows a stale "Connected".**
+    - The Android BLE notification kept reading "Connected" after the device dropped, only correcting itself when a reconnect attempt fired. It now flips to "Connecting…" the instant the link drops, so the notification reflects the real connection state live.
+
 ### 0.21.5
 
 - **Fix: Large Omi Cloud uploads no longer time out on transcription.**
