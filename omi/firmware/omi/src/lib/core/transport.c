@@ -326,12 +326,15 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
 //
 // Characteristic B:   19B10062-E8F2-537E-4F6C-D104768A1214
-// Returns 20 bytes LE:
+// Returns 32 bytes LE (fields appended over time; older apps read a prefix):
 //   [uint32 storage_block_drops]   storage_block_drops since boot (each = ~5 Opus frames lost)
 //   [uint32 last_drop_uptime_ms]   k_uptime_get() at the most recent block drop (0 = none)
 //   [uint32 sd_stream_drops]       stat_dropped_frames from sd_card.c (queue-full audio frame drops)
 //   [uint32 sd_boot_drops]         frames lost during SD mount/boot window
 //   [uint32 current_uptime_ms]     k_uptime_get() at the moment of read
+//   [uint32 conn_fails]            BLE connection-establishment failures (offset 20)
+//   [uint32 last_failed_adv_slow]  1 if last conn fail was during slow adv (offset 24)
+//   [uint32 codec_drops]           PCM blocks dropped before encode, ring-full (offset 28)
 static struct bt_uuid_128 diagnostics_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_characteristic_uuid =
@@ -370,11 +373,12 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn, const struct
     uint32_t sd_boot_drops   = sd_get_boot_dropped_frames();
     uint32_t now_ms         = (uint32_t)k_uptime_get();
     uint32_t conn_fails     = (uint32_t)atomic_get(&failed_conn_count);
+    uint32_t codec_drops    = codec_get_dropped_frames();
 
-    /* 28 bytes: 5 legacy u32 (drops) + conn_fail count + last-failure adv mode.
-     * Appended after the legacy 20 so older app builds (which read only the
-     * first 20) keep working unchanged. */
-    uint8_t payload[28];
+    /* 32 bytes: 5 legacy u32 (drops) + conn_fail count + last-failure adv mode +
+     * codec_drops. Each field is appended at the end so older app builds (which
+     * read only the first 20 / 28 bytes) keep working unchanged. */
+    uint8_t payload[32];
     pack_u32_le(payload + 0,  block_drops);
     pack_u32_le(payload + 4,  last_drop_ms);
     pack_u32_le(payload + 8,  sd_stream_drops);
@@ -382,6 +386,7 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn, const struct
     pack_u32_le(payload + 16, now_ms);
     pack_u32_le(payload + 20, conn_fails);
     pack_u32_le(payload + 24, (uint32_t)last_failed_adv_slow);
+    pack_u32_le(payload + 28, codec_drops);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
 
@@ -788,7 +793,7 @@ K_WORK_DELAYABLE_DEFINE(post_connect_work, post_connect_work_handler);
  * (verified 2026-05-27 by toggling BT off/on and observing no auto-reconnect
  * for 30+ s), so the link stays down until the app's next periodic sync
  * scans and connects. */
-#define IDLE_DISCONNECT_TIMEOUT_MS 30000
+#define IDLE_DISCONNECT_TIMEOUT_MS 15000
 #define IDLE_DISCONNECT_POLL_MS    5000
 
 static atomic_t last_activity_ms;
@@ -1159,6 +1164,11 @@ static struct k_thread pusher_thread;
 #define MAX_WRITE_SIZE 440
 static uint16_t buffer_offset = 0;
 static K_MUTEX_DEFINE(storage_temp_mutex);
+/* True when the block currently accumulating in storage_temp_data contains a
+ * marker frame (button-tap / session-end / VAD-resume). Such a block is flushed
+ * via write_to_file_blocking() so the marker survives transient SD saturation.
+ * Guarded by storage_temp_mutex (set/read/cleared only while it is held). */
+static bool storage_block_has_marker = false;
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
 static uint8_t storage_temp_data[MAX_WRITE_SIZE];
@@ -1175,7 +1185,7 @@ static void on_codec_output(uint8_t *data, size_t len)
     broadcast_audio_packets(data, len);
 }
 
-bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t data_size)
+bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t data_size, bool important)
 {
     /* Framed entry: [length:4LE][payload:NB] */
     uint32_t entry_size = data_size + 4;
@@ -1186,7 +1196,12 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
     if (buffer_offset + entry_size > MAX_WRITE_SIZE) {
         /* Pad remaining block with 0 (NULL entries) */
         memset(storage_temp_data + buffer_offset, 0, MAX_WRITE_SIZE - buffer_offset);
-        uint32_t wrote = write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        /* If the block being flushed carries a marker, use the blocking enqueue
+         * so it isn't dropped on transient saturation. */
+        uint32_t wrote = storage_block_has_marker
+                             ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
+                             : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        storage_block_has_marker = false;
         if (wrote != MAX_WRITE_SIZE) {
             /* SD queue rejected the block — the buffered bytes (up to one
              * full block of audio frames or markers) are lost. We still
@@ -1212,6 +1227,12 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
     memcpy(storage_temp_data + buffer_offset + 4, data, data_size);
     buffer_offset += entry_size;
 
+    /* This block now carries a marker; mark it so every flush path (here, the
+     * rollover above, and the marker force-drain) uses the durable enqueue. */
+    if (important) {
+        storage_block_has_marker = true;
+    }
+
     /* Align buffer_offset to 4-byte boundary for the next entry */
     uint16_t alignment_padding = (4 - (buffer_offset % 4)) % 4;
     if (alignment_padding > 0 && buffer_offset + alignment_padding <= MAX_WRITE_SIZE) {
@@ -1220,7 +1241,10 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
     }
 
     if (buffer_offset == MAX_WRITE_SIZE) {
-        uint32_t wrote = write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        uint32_t wrote = storage_block_has_marker
+                             ? write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE)
+                             : write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        storage_block_has_marker = false;
         if (wrote != MAX_WRITE_SIZE) {
             /* Full-buffer flush rejected. Same trade-off as above: reset
              * so subsequent writes can proceed, but report the loss. */
@@ -1243,7 +1267,7 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
 bool write_to_storage(void)
 {
     uint8_t *buffer = tx_buffer + 2;
-    return write_custom_packet_to_storage(tx_buffer_size, buffer, tx_buffer_size);
+    return write_custom_packet_to_storage(tx_buffer_size, buffer, tx_buffer_size, false);
 }
 
 atomic_t device_session_id = ATOMIC_INIT(0);
@@ -1277,7 +1301,7 @@ static bool write_marker_header_to_storage(uint32_t header, const char *label)
     memcpy(temp_buffer + 12, &sid, 4);
 
     LOG_INF("Writing %s marker to storage (DeviceSession: %u)", label, sid);
-    bool ok = write_custom_packet_to_storage(header, temp_buffer, 16);
+    bool ok = write_custom_packet_to_storage(header, temp_buffer, 16, true);
 
     /* Force-drain any partial block in storage_temp_data so the marker is
      * durable to SD even when no audio is flowing (e.g. mic muted) (B2).
@@ -1296,9 +1320,11 @@ static bool write_marker_header_to_storage(uint32_t header, const char *label)
     if (buffer_offset > 0) {
         uint16_t saved_offset = buffer_offset;
         memset(storage_temp_data + buffer_offset, 0, MAX_WRITE_SIZE - buffer_offset);
-        uint32_t wrote = write_to_file(storage_temp_data, MAX_WRITE_SIZE);
+        /* This drain carries the marker just appended — use the durable enqueue. */
+        uint32_t wrote = write_to_file_blocking(storage_temp_data, MAX_WRITE_SIZE);
         if (wrote == MAX_WRITE_SIZE) {
             buffer_offset = 0;
+            storage_block_has_marker = false;
         } else {
             /* Queue rejected; keep the original payload bytes in place
              * (the memset only touched the padding region). */
