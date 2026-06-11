@@ -86,7 +86,11 @@ typedef struct __attribute__((packed)) {
  * `(uint32_t)atomic_get(&device_session_id)` to read. */
 extern atomic_t device_session_id;
 
-bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t data_size);
+/* important=true marks the frame as a marker (button-tap / session-end /
+ * VAD-resume): the 440-byte block it lands in is flushed with the durable
+ * (blocking) SD enqueue so it isn't dropped on transient queue saturation.
+ * Audio frames pass important=false. */
+bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t data_size, bool important);
 
 void transport_notify_button_state(uint8_t state);
 
