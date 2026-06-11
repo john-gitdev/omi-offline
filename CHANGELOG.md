@@ -2,6 +2,11 @@
 
 ## App
 
+### 0.22.7
+
+- **UI: Optimized Day Card action buttons.** The "Export All", "Delete Discards", and "Delete Day" buttons are now forced into a single row to prevent stacking.
+- **UI: Responsive Button Labels.** Button labels now automatically shorten ("Del Discards", "Del Day") and hide completely (showing only icons) on smaller screens to ensure a clean, one-row layout across all devices.
+
 ### 0.22.6
 
 - **Fix: "Conversation in progress" banner no longer shows a stale, too-early time.** The "Captured through" estimate now comes from the in-progress draft's own end instead of whichever raw bin happened to still be on disk — which could be an unrelated old discard (e.g. showing "~4:50 AM" long after that segment had been discarded). The time is clamped to now so a padded silence gap can't read into the future.

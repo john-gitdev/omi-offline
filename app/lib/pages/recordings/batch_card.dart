@@ -498,31 +498,40 @@ class BatchCard extends StatelessWidget {
             const SizedBox(height: 4),
             const Divider(color: Color(0xFF2C2C2E), height: 1),
             const SizedBox(height: 4),
-            OverflowBar(
-              alignment: MainAxisAlignment.spaceBetween,
-              overflowAlignment: OverflowBarAlignment.center,
-              overflowSpacing: 4,
-              children: [
-                TextButton.icon(
-                  key: Key('export_all_${batch.dateString}'),
-                  onPressed: () => onExportAll(filtered),
-                  icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 13, color: Colors.grey.shade400),
-                  label: Text('Export All', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
-                ),
-                if (discards.isNotEmpty)
-                  TextButton.icon(
-                    key: Key('delete_discards_${batch.dateString}'),
-                    onPressed: () => onDeleteAllDiscards(discards),
-                    icon: FaIcon(FontAwesomeIcons.ghost, size: 13, color: Colors.orange.shade300),
-                    label: Text('Delete Discards', style: TextStyle(color: Colors.orange.shade300, fontSize: 13)),
-                  ),
-                TextButton.icon(
-                  key: Key('delete_day_${batch.dateString}'),
-                  onPressed: () => onDeleteDay(filtered, discards),
-                  icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
-                  label: Text('Delete Day', style: TextStyle(color: Colors.red.shade400, fontSize: 13)),
-                ),
-              ],
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final showText = constraints.maxWidth > 340;
+                return Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    TextButton.icon(
+                      key: Key('export_all_${batch.dateString}'),
+                      onPressed: () => onExportAll(filtered),
+                      icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 13, color: Colors.grey.shade400),
+                      label: showText
+                          ? Text('Export All', style: TextStyle(color: Colors.grey.shade400, fontSize: 13))
+                          : const SizedBox.shrink(),
+                    ),
+                    if (discards.isNotEmpty)
+                      TextButton.icon(
+                        key: Key('delete_discards_${batch.dateString}'),
+                        onPressed: () => onDeleteAllDiscards(discards),
+                        icon: FaIcon(FontAwesomeIcons.ghost, size: 13, color: Colors.orange.shade300),
+                        label: showText
+                            ? Text('Del Discards', style: TextStyle(color: Colors.orange.shade300, fontSize: 13))
+                            : const SizedBox.shrink(),
+                      ),
+                    TextButton.icon(
+                      key: Key('delete_day_${batch.dateString}'),
+                      onPressed: () => onDeleteDay(filtered, discards),
+                      icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
+                      label: showText
+                          ? Text('Del Day', style: TextStyle(color: Colors.red.shade400, fontSize: 13))
+                          : const SizedBox.shrink(),
+                    ),
+                  ],
+                );
+              },
             ),
           ],
         ),
