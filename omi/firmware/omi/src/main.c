@@ -44,6 +44,13 @@ LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
 extern uint8_t battery_percentage;
 #endif
 
+/* Set when the SD card fails to become ready within SD_BOOT_TIMEOUT_MS. The
+ * device keeps running (BLE/mic) but cannot record. set_led_state() then locks
+ * the LED solid red, ignoring stealth/mute/marker/button states, so the user
+ * can see the unit is non-functional. */
+static volatile bool sd_fatal_error = false;
+#define SD_BOOT_TIMEOUT_MS 90000
+
 static enum mgmt_cb_return ota_mgmt_callback(uint32_t event, enum mgmt_cb_return prev_status,
                                              int32_t *rc, uint16_t *group, bool *abort_more,
                                              void *data, size_t data_size)
@@ -95,10 +102,20 @@ static void boot_warming_sequence(void)
     int64_t wait_start_ms = k_uptime_get();
 
     /* Spin while LEDs are breathing until sd_worker finishes mount + lfs_fs_gc + file open.
-     * With little data this completes in <5 s; with 200 MB it can take ~50 s. */
+     * With little data this completes in <5 s; with 200 MB it can take ~50 s.
+     * Bounded: if the SD never initializes (card fault / unrecoverable corruption,
+     * which returns the sd_worker thread before it sets sd_boot_ready), do NOT
+     * spin forever feeding the watchdog — give up, flag fatal, and let the device
+     * come up without storage so the red-LED fault indicator can run. */
     while (!sd_is_boot_ready()) {
         watchdog_feed();
         k_msleep(delay_ms);
+        if ((k_uptime_get() - wait_start_ms) >= SD_BOOT_TIMEOUT_MS) {
+            LOG_ERR("[BOOT] SD not ready after %d ms — starting WITHOUT storage (FATAL)",
+                    SD_BOOT_TIMEOUT_MS);
+            sd_fatal_error = true;
+            return;
+        }
     }
     LOG_INF("[BOOT] SD ready after %lld ms — starting mic", k_uptime_get() - wait_start_ms);
 }
@@ -133,6 +150,15 @@ void set_led_state()
 {
     if (is_off) {
         led_off();
+        return;
+    }
+
+    // Fatal SD fault: lock solid red. Overrides stealth/mute/marker/charging and
+    // is unaffected by any button press, so the user knows the unit is borked.
+    if (sd_fatal_error) {
+        set_led_red(true);
+        set_led_green(false);
+        set_led_blue(false);
         return;
     }
 
@@ -364,7 +390,11 @@ int main(void)
 
     led_stop_breathing();
 
-    boot_ready_fade();
+    /* On fatal SD fault, skip the green-ish ready fade and let the main loop
+     * drive the solid-red fault indicator instead. */
+    if (!sd_fatal_error) {
+        boot_ready_fade();
+    }
 
     LOG_INF("Ready\n");
 
