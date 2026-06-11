@@ -118,8 +118,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   double _draftMinutes = 0.0;
   double get draftMinutes => _draftMinutes;
 
-  // Wall-clock end of the open draft (where a force-finalize would cut). Null
-  // when there is no draft. Surfaced in the accumulating banner / confirm dialog.
+  // Estimated wall-clock end of the open draft, derived from the most recent
+  // bin (UTC timerStart + size-estimated duration). Null when there is no draft
+  // or no dated bin to anchor it — the banner/dialog then omit the time and just
+  // offer to finalize early. Surfaced in the accumulating banner / confirm dialog.
   DateTime? _draftEndTime;
   DateTime? get draftEndTime => _draftEndTime;
 
@@ -1834,10 +1836,46 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
 
     int draftMs = 0;
-    DateTime? draftEndTime;
+    bool hasDraft = false;
     for (final c in batches.expand((b) => b.draftRecordings)) {
       draftMs += c.duration.inMilliseconds;
-      if (draftEndTime == null || c.endTime.isAfter(draftEndTime)) draftEndTime = c.endTime;
+      hasDraft = true;
+    }
+
+    // "Captured through" is derived from the most recent bin: its UTC timerStart
+    // (epoch seconds in the file name) plus a duration estimated from byte size
+    // (~252000 B/min, the rate used for toProcessMinutes). We deliberately avoid
+    // the draft's encoded sample length (startTime + decoded duration), which
+    // overshoots wall-clock — reading into the future — when an inter-file gap is
+    // padded with more silence than truly elapsed. When no dated bin is available
+    // draftEndTime stays null and the UI falls back to a timeless "finalize early"
+    // prompt rather than showing a bogus time.
+    DateTime? draftEndTime;
+    if (hasDraft) {
+      const int kMinValidEpoch = 946684800;
+      int lastBinStartSec = 0;
+      int lastBinBytes = 0;
+      for (final f in batches.expand((b) => b.rawSegments)) {
+        final timerStart = int.tryParse(f.path.split('/').last.split('.').first.split('_').first);
+        if (timerStart == null || timerStart <= kMinValidEpoch) continue;
+        if (timerStart > lastBinStartSec) {
+          lastBinStartSec = timerStart;
+          try {
+            lastBinBytes = f.lengthSync();
+          } catch (_) {
+            lastBinBytes = 0;
+          }
+        }
+      }
+      if (lastBinStartSec > 0) {
+        final estDurMs = (lastBinBytes / 252000.0 * 60000).round();
+        var end = DateTime.fromMillisecondsSinceEpoch(lastBinStartSec * 1000 + estDurMs);
+        // A bin timestamped by a firmware clock running ahead of the phone could
+        // still land in the future; captured audio never has, so clamp to now.
+        final now = DateTime.now();
+        if (end.isAfter(now)) end = now;
+        draftEndTime = end;
+      }
     }
 
     return (
