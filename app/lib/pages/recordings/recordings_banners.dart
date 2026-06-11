@@ -74,7 +74,7 @@ class AccumulatingBanner extends StatelessWidget {
       final end = draftEndTime;
       label = end != null
           ? 'Captured through ~${DateFormat(SharedPreferencesUtil().use24HourTime ? 'HH:mm' : 'h:mm a').format(end)}'
-          : 'Captured so far';
+          : 'Tap to finalize early';
     }
 
     return Container(
