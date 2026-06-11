@@ -25,6 +25,11 @@ class DeviceDropStats {
   final int currentUptimeMs;
   final int failedConnCount;
   final bool lastFailedConnDuringSlowAdv;
+
+  /// PCM blocks dropped before Opus encode because the codec ring buffer was
+  /// full (encoder starved). Each ~= one mic chunk (~100 ms). Appended at
+  /// offset 28 — 0 on older firmware that returns only the first 28 bytes.
+  final int codecFrameDrops;
   final DateTime readAt;
 
   const DeviceDropStats({
@@ -35,10 +40,11 @@ class DeviceDropStats {
     required this.currentUptimeMs,
     this.failedConnCount = 0,
     this.lastFailedConnDuringSlowAdv = false,
+    this.codecFrameDrops = 0,
     required this.readAt,
   });
 
-  bool get hasAnyDrops => blockDrops > 0 || streamFrameDrops > 0 || bootFrameDrops > 0;
+  bool get hasAnyDrops => blockDrops > 0 || streamFrameDrops > 0 || bootFrameDrops > 0 || codecFrameDrops > 0;
 
   /// Milliseconds since the most recent block drop, or `null` if none.
   int? get msSinceLastBlockDrop {
