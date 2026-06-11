@@ -2,6 +2,13 @@
 
 ## App
 
+### 0.22.9
+
+- **UI: Day actions moved into an overflow (⋯) menu.** Each day's "Export All", "Delete Discards", and "Delete Day" now live behind a single menu button on the date row instead of a row of icons at the bottom of the card — so they're reachable without scrolling to the end of a long day, get their full labels back, and keep destructive actions behind a deliberate tap.
+- **UI: The multi-select action bar now slides up from the bottom** edge when you enter selection mode and slides back down when you leave, instead of expanding in place.
+- **UI: Discard rows brighten while you're picking them.** In discard-selection mode the ghost rows turn from grey to white so it's clear which are selectable; the "Delete Discards" icon is a ghost with a small ✕ in the corner.
+- **New: Back-to-top button.** Scroll a screen or so down the day list and a small up-arrow appears in the bottom-right; tap it to jump back to the top.
+
 ### 0.22.8
 
 - **New: multi-select for recordings and discards.** Long-press any row to enter selection mode, scoped to that day and that type (so a selection never mixes recordings with discards). Pick rows with a tap, then act from a floating bar: **Select All / Select None**, **Export Selected** or **Recover Selected** (discards), and **Delete Selected**. While selecting, the other days and the off-type rows dim away so you can't lose track of what you're picking, and the list shrinks so the last row stays reachable above the bar. Back or ✕ exits.
