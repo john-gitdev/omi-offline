@@ -2,6 +2,15 @@
 
 ## App
 
+### 0.22.4
+
+- **Fix: device no longer drops and reconnects every ~15 seconds.** The foreground keep-alive ran every 20 s but the firmware idle-disconnects after 15 s, so the heartbeat could never arrive in time — the link dropped on a fixed ~15 s loop, which also peppered recordings with small lost-audio gaps. Keep-alive now fires every 10 s.
+- **New: write-path diagnostics.** The Diagnostics card adds "SD queue peak depth" (how close the SD write path runs to its drop limit) and "Write-fairness activations". Requires firmware `oo-1.9.7`.
+- **Firmware (`oo-1.9.7`):**
+  - **Write fairness** in the SD worker so an active BLE sync (file reads) can no longer starve audio writes and drop blocks; reads and writes now share the worker under contention.
+  - Audio-write drop tolerance relaxed (unified 25 ms) so transient stalls during connect/sync stop sacrificing audio; codec ring buffer 0.6 s → 1.0 s; SD write queue 150 → 100 slots (net RAM reduction).
+  - Diagnostics characteristic extended with SD-queue peak depth and write-fairness activation counters.
+
 ### 0.22.3
 
 - **Fix: "Conversation in progress" banner no longer shows a future end time.** The estimated end is now derived from the most recent bin (its timestamp plus a size-estimated duration) instead of the draft's decoded length, which could read minutes into the future when a silence gap was padded. When no timestamped bin is available, the banner and finalize dialog drop the time and simply offer to finalize the recording early.
