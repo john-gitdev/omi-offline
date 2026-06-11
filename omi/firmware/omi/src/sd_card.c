@@ -308,14 +308,12 @@ static atomic_t ota_active = ATOMIC_INIT(0);
 static atomic_t sd_io_low_power = ATOMIC_INIT(0);
 static atomic_t sd_dev_pm_supported = ATOMIC_INIT(1);
 
-/* Deferred full power-gate (worker-thread state only).
- * sd_write_pause() (short VAD silence) only suspends the SPI bus; the SD chip
- * stays powered. After SD_DEEP_GATE_DELAY_MS of continuous paused silence while
- * disconnected and not OTA'ing, the worker fully unmounts and drops sd_en so the
- * NAND draws no current. The next queued request remounts (no GC) on demand. */
-#define SD_DEEP_GATE_DELAY_MS (120 * 1000)
-static bool sd_deep_gated = false;
-static int64_t sd_pause_since_ms = 0;
+/* Idle power saving is SPI-bus suspend only (sd_set_io_low_power): the SD chip
+ * stays mounted and powered the whole time the device is running, matching the
+ * upstream firmware. The NAND is fully powered off only at shutdown. We do NOT
+ * deep-power-gate during operation — a full power-off + remount-on-wake could
+ * persistently fail (driver wedge) and latch sd_write_blocked, silently killing
+ * recording until a reboot. */
 
 /* Worker thread & task definitions */
 #define SD_WORKER_STACK_SIZE 16384
@@ -1043,9 +1041,9 @@ static int sd_unmount(void)
 
 /* Power on + remount (NO lfs_fs_gc — that runs once at boot) and reopen the info
  * file that a prior unmount closed. The audio file is intentionally NOT reopened:
- * current_filename is empty, so the next write starts a fresh segment. Does not
- * touch sd_deep_gated / sd_write_blocked — the caller decides what to do with the
- * result. Returns 0 on success, negative errno otherwise. */
+ * current_filename is empty, so the next write starts a fresh segment. Used by
+ * the sd_write_blocked recovery path. Returns 0 on success, negative errno
+ * otherwise; the caller decides what to do with the result. */
 static int sd_remount_and_reopen_info(void)
 {
     int64_t t0 = k_uptime_get();
@@ -1070,19 +1068,6 @@ static int sd_remount_and_reopen_info(void)
     }
 
     LOG_INF("[SD] remount + reopen info in %lld ms", k_uptime_get() - t0);
-    return 0;
-}
-
-/* Wake from deep power-gate after a long idle silence. */
-static int sd_wake_from_deep_gate(void)
-{
-    int res = sd_remount_and_reopen_info();
-    if (res != 0) {
-        sd_write_blocked = true;
-        return res;
-    }
-    sd_deep_gated = false;
-    LOG_INF("[SD] Woke from deep power-gate");
     return 0;
 }
 
@@ -1877,30 +1862,9 @@ void sd_worker_thread(void)
             }
             sd_set_io_low_power(true);
         }
-
-        /* Deferred full power-gate: after a long, fully-idle silence, power the
-         * SD chip all the way off (not just the SPI bus). Gated on disconnected
-         * + not OTA so a connected/keep-alive'd app or an in-progress DFU keeps
-         * the card alive. Wakes on the next queued request (handle_req below). */
-        if (!sd_deep_gated && is_mounted &&
-            atomic_get(&sd_write_paused) &&
-            !atomic_get(&ota_active) &&
-            !atomic_get(&ble_connected) &&
-            (k_uptime_get() - sd_pause_since_ms) >= SD_DEEP_GATE_DELAY_MS) {
-            LOG_INF("[SD] Entering deep power-gate after %d ms idle silence", SD_DEEP_GATE_DELAY_MS);
-            /* Wake the SPI bus first — it was left suspended while paused, and
-             * sd_unmount() does LFS I/O (close/sync/unmount) before sd_en drops. */
-            sd_set_io_low_power(false);
-            sd_unmount();
-            sd_deep_gated = true;
-        }
         continue;
 
     handle_req:
-        /* If deep-gated, re-power + remount before servicing any request. */
-        if (sd_deep_gated) {
-            sd_wake_from_deep_gate();
-        }
         /* Wake SPI for all requests except write data — write data manages
          * its own SPI gating internally via spi_woken in process_write_data_req. */
         if (req.type != REQ_WRITE_DATA) {
@@ -2238,8 +2202,6 @@ void sd_worker_thread(void)
                 lfs_file_sync(&lfs_fs, &lfs_fil_data);
             }
             sd_write_pause(true);
-            /* Start the deep-gate countdown from the moment writes are paused. */
-            sd_pause_since_ms = k_uptime_get();
             if (req.u.create_file.resp) {
                 req.u.create_file.resp->res = 0;
                 k_sem_give(&req.u.create_file.resp->sem);
