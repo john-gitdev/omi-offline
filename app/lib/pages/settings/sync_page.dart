@@ -1052,8 +1052,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final codec = baseline == null ? stats.codecFrameDrops : (stats.codecFrameDrops - baseline.codecFrameDrops);
     final boot = stats.bootFrameDrops; // boot drops are fixed at boot; baseline doesn't apply
     final hasFreshDrops = blocks > 0 || frames > 0 || codec > 0;
-    final connFails =
-        _connFailBaseline == null ? stats.failedConnCount : (stats.failedConnCount - _connFailBaseline!);
+    final connFails = _connFailBaseline == null ? stats.failedConnCount : (stats.failedConnCount - _connFailBaseline!);
 
     final color = hasFreshDrops ? Colors.amber : Colors.white70;
 
@@ -1092,6 +1091,12 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           _dropStatRow('Boot-window frame drops', boot.toString(), false),
           _dropStatRow('Last block drop', lastDropLabel, hasFreshDrops),
           _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
+          // Write-path headroom (since boot; not baseline-adjusted). Peak depth
+          // near the queue limit (100) means the write path is riding the drop
+          // edge; a low peak means plenty of headroom. Fairness activations just
+          // show the read-vs-write arbiter engaging — informational, not a fault.
+          _dropStatRow('SD queue peak depth', '${stats.msgqPeakDepth} / 100', stats.msgqPeakDepth >= 80),
+          _dropStatRow('Write-fairness activations', stats.writeFairActivations.toString(), false),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 6),
             child: Divider(color: Color(0xFF2C2C2E), height: 1),
@@ -1101,8 +1106,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           // the SD-drop baseline. See NOTES.md "BLE: advertising but won't connect".
           _dropStatRow('BLE connect failures', connFails.toString(), connFails > 0),
           if (stats.failedConnCount > 0)
-            _dropStatRow(
-                'Last fail adv mode', stats.lastFailedConnDuringSlowAdv ? 'slow (1s)' : 'fast', true),
+            _dropStatRow('Last fail adv mode', stats.lastFailedConnDuringSlowAdv ? 'slow (1s)' : 'fast', true),
           const SizedBox(height: 10),
           SizedBox(
             width: double.infinity,
