@@ -466,6 +466,27 @@ Future<void> showDiscardSheet(
   );
 }
 
+/// One labelled row inside the day-actions overflow menu.
+class _DayMenuRow extends StatelessWidget {
+  final Widget icon;
+  final String label;
+  final Color color;
+
+  const _DayMenuRow({required this.icon, required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(width: 18, height: 18, child: Center(child: icon)),
+        const SizedBox(width: 12),
+        Text(label, style: TextStyle(color: color, fontSize: 14)),
+      ],
+    );
+  }
+}
+
 class BatchCard extends StatelessWidget {
   final Batch batch;
   final Map<String, List<MarkerConversation>> markerMap;
@@ -549,9 +570,79 @@ class BatchCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              batch.dateString,
-              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    batch.dateString,
+                    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                // Day actions collapse into one overflow menu on the header, so
+                // the common whole-day shortcuts are reachable without scrolling
+                // and stay out of the way of the per-row multi-select path.
+                if (!inSelection)
+                  PopupMenuButton<String>(
+                    tooltip: 'Day actions',
+                    color: const Color(0xFF2C2C2E),
+                    padding: EdgeInsets.zero,
+                    icon: FaIcon(FontAwesomeIcons.ellipsisVertical, size: 16, color: Colors.grey.shade400),
+                    onSelected: (value) {
+                      switch (value) {
+                        case 'export':
+                          onExportAll(filtered);
+                        case 'discards':
+                          onDeleteAllDiscards(discards);
+                        case 'day':
+                          onDeleteDay(filtered, discards);
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      PopupMenuItem(
+                        key: Key('export_all_${batch.dateString}'),
+                        value: 'export',
+                        child: _DayMenuRow(
+                          icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 15, color: Colors.grey.shade300),
+                          label: 'Export All',
+                          color: Colors.grey.shade300,
+                        ),
+                      ),
+                      if (discards.isNotEmpty)
+                        PopupMenuItem(
+                          key: Key('delete_discards_${batch.dateString}'),
+                          value: 'discards',
+                          child: _DayMenuRow(
+                            icon: SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  FaIcon(FontAwesomeIcons.ghost, size: 16, color: Colors.orange.shade300),
+                                  Positioned(
+                                    right: -3,
+                                    top: -2,
+                                    child: FaIcon(FontAwesomeIcons.xmark, size: 10, color: Colors.red.shade400),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            label: 'Delete Discards',
+                            color: Colors.orange.shade300,
+                          ),
+                        ),
+                      PopupMenuItem(
+                        key: Key('delete_day_${batch.dateString}'),
+                        value: 'day',
+                        child: _DayMenuRow(
+                          icon: FaIcon(FontAwesomeIcons.trashCan, size: 15, color: Colors.red.shade400),
+                          label: 'Delete Day',
+                          color: Colors.red.shade400,
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
             ),
             const SizedBox(height: 12),
             ...items.map((r) {
@@ -597,47 +688,6 @@ class BatchCard extends StatelessWidget {
                 onMarkerTap: onMarkerTap,
               );
             }),
-            // Shortcut row hides in selection mode — the floating pill is the
-            // sole action surface there.
-            if (!inSelection) ...[
-              const SizedBox(height: 4),
-              const Divider(color: Color(0xFF2C2C2E), height: 1),
-              const SizedBox(height: 4),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  IconButton(
-                    key: Key('export_all_${batch.dateString}'),
-                    onPressed: () => onExportAll(filtered),
-                    tooltip: 'Export All',
-                    icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 16, color: Colors.grey.shade400),
-                  ),
-                  if (discards.isNotEmpty)
-                    IconButton(
-                      key: Key('delete_discards_${batch.dateString}'),
-                      onPressed: () => onDeleteAllDiscards(discards),
-                      tooltip: 'Delete Discards',
-                      icon: Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          FaIcon(FontAwesomeIcons.ghost, size: 18, color: Colors.orange.shade300),
-                          Positioned(
-                            right: -4,
-                            top: -3,
-                            child: FaIcon(FontAwesomeIcons.xmark, size: 11, color: Colors.red.shade400),
-                          ),
-                        ],
-                      ),
-                    ),
-                  IconButton(
-                    key: Key('delete_day_${batch.dateString}'),
-                    onPressed: () => onDeleteDay(filtered, discards),
-                    tooltip: 'Delete Day',
-                    icon: FaIcon(FontAwesomeIcons.trashCan, size: 16, color: Colors.red.shade400),
-                  ),
-                ],
-              ),
-            ],
           ],
         ),
       ),
