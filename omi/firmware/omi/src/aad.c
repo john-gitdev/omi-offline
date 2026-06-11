@@ -292,7 +292,7 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
                 uint64_t up = (uint64_t)k_uptime_get();
                 memcpy(vad_ts_buf, &utc, 4);
                 memcpy(vad_ts_buf + 4, &up, 4);
-                write_custom_packet_to_storage(0xFFFFFFFD, vad_ts_buf, 16);
+                write_custom_packet_to_storage(0xFFFFFFFD, vad_ts_buf, 16, true);
 
                 atomic_set(&sd_pause_pending, 2);
                 atomic_set(&adv_fast_req, 1);
