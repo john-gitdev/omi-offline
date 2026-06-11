@@ -48,6 +48,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   static const _kBaselineBlocks = 'drop_baseline_blocks';
   static const _kBaselineFrames = 'drop_baseline_frames';
   static const _kBaselineBoot = 'drop_baseline_boot';
+  static const _kBaselineCodec = 'drop_baseline_codec';
   static const _kBaselineConnFail = 'conn_fail_baseline';
   // BLE connect-fail baseline (app-side). Unlike _dropBaseline it survives a
   // device reboot, because the firmware counter is flash-persisted.
@@ -476,7 +477,10 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (savedBlocks >= 0) {
       final savedFrames = prefs.getInt(_kBaselineFrames, defaultValue: 0);
       final savedBoot = prefs.getInt(_kBaselineBoot, defaultValue: 0);
-      if (stats.blockDrops < savedBlocks || stats.streamFrameDrops < savedFrames) {
+      final savedCodec = prefs.getInt(_kBaselineCodec, defaultValue: 0);
+      if (stats.blockDrops < savedBlocks ||
+          stats.streamFrameDrops < savedFrames ||
+          stats.codecFrameDrops < savedCodec) {
         unawaited(prefs.remove(_kBaselineBlocks));
       } else {
         setState(() => _dropBaseline = DeviceDropStats(
@@ -485,6 +489,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               streamFrameDrops: savedFrames,
               bootFrameDrops: savedBoot,
               currentUptimeMs: 0,
+              codecFrameDrops: savedCodec,
               readAt: DateTime.now(),
             ));
       }
@@ -510,6 +515,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     unawaited(prefs.saveInt(_kBaselineBlocks, stats.blockDrops));
     unawaited(prefs.saveInt(_kBaselineFrames, stats.streamFrameDrops));
     unawaited(prefs.saveInt(_kBaselineBoot, stats.bootFrameDrops));
+    unawaited(prefs.saveInt(_kBaselineCodec, stats.codecFrameDrops));
     setState(() => _dropBaseline = stats);
   }
 
@@ -518,6 +524,13 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     if (stats == null) return;
     unawaited(SharedPreferencesUtil().saveInt(_kBaselineConnFail, stats.failedConnCount));
     setState(() => _connFailBaseline = stats.failedConnCount);
+  }
+
+  /// Reset every diagnostic counter (SD-queue/block/codec drops + BLE connect
+  /// failures) to a fresh baseline in one tap.
+  void _resetAllDiagnostics() {
+    _snapshotDropBaseline();
+    _snapshotConnFailBaseline();
   }
 
   /// Counts `.bin` files in the isolated Adjustment Mode folder.
@@ -706,7 +719,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                 child: SwitchListTile(
                   title: const Text('Show Diagnostics',
                       style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Polls the device every 2 s for SD-card drops and BLE connect failures. Off by default.',
+                  subtitle: Text('Polls the device every 2 s for SD-card, codec and BLE drop counters. Off by default.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
                   value: SharedPreferencesUtil().showSdWriteDrops,
                   onChanged: (val) {
@@ -1036,8 +1049,9 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     final baseline = _dropBaseline;
     final blocks = baseline == null ? stats.blockDrops : (stats.blockDrops - baseline.blockDrops);
     final frames = baseline == null ? stats.streamFrameDrops : (stats.streamFrameDrops - baseline.streamFrameDrops);
+    final codec = baseline == null ? stats.codecFrameDrops : (stats.codecFrameDrops - baseline.codecFrameDrops);
     final boot = stats.bootFrameDrops; // boot drops are fixed at boot; baseline doesn't apply
-    final hasFreshDrops = blocks > 0 || frames > 0;
+    final hasFreshDrops = blocks > 0 || frames > 0 || codec > 0;
     final connFails =
         _connFailBaseline == null ? stats.failedConnCount : (stats.failedConnCount - _connFailBaseline!);
 
@@ -1074,6 +1088,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
           const SizedBox(height: 10),
           _dropStatRow('440 B blocks dropped', blocks.toString(), hasFreshDrops),
           _dropStatRow('Audio frames dropped (SD queue)', frames.toString(), hasFreshDrops),
+          _dropStatRow('Audio dropped pre-encode (codec)', codec.toString(), codec > 0),
           _dropStatRow('Boot-window frame drops', boot.toString(), false),
           _dropStatRow('Last block drop', lastDropLabel, hasFreshDrops),
           _dropStatRow('Device uptime', _formatDuration(stats.currentUptimeMs), false),
@@ -1089,34 +1104,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
             _dropStatRow(
                 'Last fail adv mode', stats.lastFailedConnDuringSlowAdv ? 'slow (1s)' : 'fast', true),
           const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: _snapshotDropBaseline,
-                  style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: Colors.amber, width: 1),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                  child: const Text('Reset drops',
-                      style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
-                ),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: _resetAllDiagnostics,
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.amber, width: 1),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: _snapshotConnFailBaseline,
-                  style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: Colors.lightBlueAccent, width: 1),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                  child: const Text('Reset BLE',
-                      style: TextStyle(color: Colors.lightBlueAccent, fontWeight: FontWeight.bold)),
-                ),
-              ),
-            ],
+              child: const Text('Reset all diagnostics',
+                  style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+            ),
           ),
         ],
       ),
