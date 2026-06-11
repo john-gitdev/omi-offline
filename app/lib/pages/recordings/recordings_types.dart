@@ -1,5 +1,10 @@
 enum RecordingFilterMode { visible, hidden, all }
 
+/// Row kind a multi-select session is scoped to. Selection is always confined
+/// to a single day *and* a single type, so a selection never mixes recordings
+/// and discards — which keeps the action bar's available actions unambiguous.
+enum RecordingRowType { recording, ghost }
+
 enum SyncProcessState {
   idle,
   syncing,

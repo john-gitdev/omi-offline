@@ -326,7 +326,7 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
                   builder: (c) => AlertDialog(
                     backgroundColor: Colors.grey.shade900,
                     title: const Text('Delete Marker', style: TextStyle(color: Colors.white)),
-                    content: const Text('This will permanently delete this marker conversation.',
+                    content: const Text('This will permanently delete this marker.',
                         style: TextStyle(color: Colors.white70)),
                     actions: [
                       TextButton(

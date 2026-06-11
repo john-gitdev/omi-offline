@@ -2,6 +2,11 @@
 
 ## App
 
+### 0.22.8
+
+- **New: multi-select for recordings and discards.** Long-press any row to enter selection mode, scoped to that day and that type (so a selection never mixes recordings with discards). Pick rows with a tap, then act from a floating bar: **Select All / Select None**, **Export Selected** or **Recover Selected** (discards), and **Delete Selected**. While selecting, the other days and the off-type rows dim away so you can't lose track of what you're picking, and the list shrinks so the last row stays reachable above the bar. Back or ✕ exits.
+- **UI: Day Card action buttons are now icon-only.** "Export All", "Delete Discards", and "Delete Day" show as icons with tooltips for a compact one-row layout; "Delete Discards" uses a ghost marked with a red ✕.
+
 ### 0.22.7
 
 - **UI: Optimized Day Card action buttons.** The "Export All", "Delete Discards", and "Delete Day" buttons are now forced into a single row to prevent stacking.

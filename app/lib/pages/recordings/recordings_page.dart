@@ -45,6 +45,213 @@ class _RecordingsPageState extends State<RecordingsPage> {
   bool _showMarkersOnly = false;
   RecordingFilterMode _filterMode = RecordingFilterMode.visible;
 
+  // ─── Multi-select state ─────────────────────────────────────────────────
+  // Selection is scoped to one day (_selDate) and one type (_selType) so a
+  // selection never mixes recordings and discards. Null _selDate == off.
+  String? _selDate;
+  RecordingRowType? _selType;
+  final Set<String> _selIds = {};
+  bool get _inSelectionMode => _selDate != null;
+
+  void _enterSelection(String date, RecordingRowType type, String id) {
+    setState(() {
+      _selDate = date;
+      _selType = type;
+      _selIds
+        ..clear()
+        ..add(id);
+    });
+  }
+
+  void _toggleSelection(String id) {
+    setState(() {
+      if (!_selIds.remove(id)) _selIds.add(id);
+    });
+  }
+
+  void _selectAll(Iterable<String> ids) => setState(() => _selIds
+    ..clear()
+    ..addAll(ids));
+
+  void _selectNone() => setState(_selIds.clear);
+
+  void _exitSelection() {
+    setState(() {
+      _selDate = null;
+      _selType = null;
+      _selIds.clear();
+    });
+  }
+
+  Batch? _activeBatch(RecordingsController controller) {
+    for (final b in controller.batches) {
+      if (b.dateString == _selDate) return b;
+    }
+    return null;
+  }
+
+  /// The on-screen recordings/discards for the active selection day, filtered
+  /// identically to [BatchCard] so "Select All" matches what's visible.
+  ({List<Conversation> recordings, List<DiscardRecord> discards})? _activeRows(RecordingsController controller) {
+    final b = _activeBatch(controller);
+    if (b == null) return null;
+    return filterBatchRows(b, _filterMode, _prefs.filterMinDurationSeconds);
+  }
+
+  Future<void> _deleteSelectedRecordings(RecordingsController controller) async {
+    final rows = _activeRows(controller);
+    if (rows == null) return;
+    final sel = rows.recordings.where((r) => _selIds.contains(r.file.path)).toList();
+    if (sel.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final n = sel.length;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        c,
+        () => Navigator.of(c).pop(false),
+        () => Navigator.of(c).pop(true),
+        'Delete ${n == 1 ? 'Recording' : 'Recordings'}',
+        'This will permanently delete $n recording${n == 1 ? '' : 's'}. This cannot be undone.',
+        confirmText: 'Delete',
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await controller.deleteConversations(sel);
+      _exitSelection();
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Deleted $n recording${n == 1 ? '' : 's'}')));
+    } catch (e) {
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Error deleting: $e')));
+    }
+  }
+
+  Future<void> _deleteSelectedDiscards(RecordingsController controller) async {
+    final rows = _activeRows(controller);
+    if (rows == null) return;
+    final sel = rows.discards.where((d) => _selIds.contains(d.id)).toList();
+    if (sel.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final n = sel.length;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        c,
+        () => Navigator.of(c).pop(false),
+        () => Navigator.of(c).pop(true),
+        'Delete ${n == 1 ? 'Discard' : 'Discards'}',
+        'This will permanently delete $n discarded ${n == 1 ? 'segment' : 'segments'}, including their audio. '
+            'They can no longer be recovered. This cannot be undone.',
+        confirmText: 'Delete',
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await controller.deleteDiscards(sel);
+      _exitSelection();
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Deleted $n discard${n == 1 ? '' : 's'}')));
+    } catch (e) {
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Error deleting: $e')));
+    }
+  }
+
+  Future<void> _recoverSelectedDiscards(RecordingsController controller) async {
+    final rows = _activeRows(controller);
+    if (rows == null) return;
+    final sel = rows.discards.where((d) => _selIds.contains(d.id)).toList();
+    if (sel.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final n = sel.length;
+    _exitSelection();
+    if (mounted) messenger.showSnackBar(SnackBar(content: Text('Recovering $n discard${n == 1 ? '' : 's'}…')));
+    for (final d in sel) {
+      await controller.recoverDiscard(d);
+    }
+  }
+
+  Future<void> _exportSelectedRecordings(RecordingsController controller) async {
+    final rows = _activeRows(controller);
+    if (rows == null) return;
+    final sel = rows.recordings.where((r) => _selIds.contains(r.file.path)).toList();
+    if (sel.isEmpty) return;
+    final date = _selDate;
+    _exitSelection();
+    final files = sel.map((r) => XFile(r.file.path)).toList();
+    await SharePlus.instance.share(
+      ShareParams(files: files, subject: 'Conversations – $date'),
+    );
+  }
+
+  Widget _buildSelectionBar(RecordingsController controller) {
+    final rows = _activeRows(controller);
+    final type = _selType;
+    if (rows == null || type == null) return const SizedBox.shrink();
+    final isRec = type == RecordingRowType.recording;
+    final allIds = isRec ? rows.recordings.map((r) => r.file.path).toList() : rows.discards.map((d) => d.id).toList();
+    final count = _selIds.length;
+    final hasSel = count > 0;
+    Color actionColor(Color enabled) => hasSel ? enabled : Colors.grey.shade700;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 6, 16, 12),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: const Color(0xFF2C2C2E),
+        borderRadius: BorderRadius.circular(28),
+        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 12, offset: Offset(0, 4))],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.white, size: 22),
+                tooltip: 'Cancel',
+                onPressed: _exitSelection,
+              ),
+              Text('$count', style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+            ],
+          ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.checklist, color: Colors.white, size: 20),
+                tooltip: 'Select all',
+                onPressed: () => _selectAll(allIds),
+              ),
+              IconButton(
+                icon: Icon(Icons.remove_done, color: hasSel ? Colors.white : Colors.grey.shade700, size: 20),
+                tooltip: 'Select none',
+                onPressed: hasSel ? _selectNone : null,
+              ),
+              if (isRec)
+                IconButton(
+                  icon: FaIcon(FontAwesomeIcons.shareFromSquare, color: actionColor(Colors.grey.shade300), size: 18),
+                  tooltip: 'Export selected',
+                  onPressed: hasSel ? () => _exportSelectedRecordings(controller) : null,
+                )
+              else
+                IconButton(
+                  icon: FaIcon(FontAwesomeIcons.rotateLeft, color: actionColor(Colors.deepPurpleAccent), size: 18),
+                  tooltip: 'Recover selected',
+                  onPressed: hasSel ? () => _recoverSelectedDiscards(controller) : null,
+                ),
+              IconButton(
+                icon: FaIcon(FontAwesomeIcons.trashCan, color: actionColor(Colors.red.shade400), size: 18),
+                tooltip: 'Delete selected',
+                onPressed: hasSel
+                    ? (isRec ? () => _deleteSelectedRecordings(controller) : () => _deleteSelectedDiscards(controller))
+                    : null,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -316,7 +523,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
         () => Navigator.of(c).pop(false),
         () => Navigator.of(c).pop(true),
         'Delete Marker',
-        'This will permanently delete this marker conversation.',
+        'This will permanently delete this marker.',
         confirmText: 'Delete',
       ),
     );
@@ -818,6 +1025,18 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                     .toList();
                             final unknownRecordings =
                                 visibleBatches.expand((b) => b.finalizedRecordings).where((c) => c.isUnknown).toList();
+                            // In selection mode, collapse the list to just the
+                            // active day so you can't scroll to another card and
+                            // keep selecting. If the active day vanished (e.g. a
+                            // background reload), drop out of selection.
+                            if (_inSelectionMode && !visibleBatches.any((b) => b.dateString == _selDate)) {
+                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                if (mounted && _inSelectionMode) _exitSelection();
+                              });
+                            }
+                            final renderBatches = _inSelectionMode
+                                ? visibleBatches.where((b) => b.dateString == _selDate).toList()
+                                : visibleBatches;
                             return RefreshIndicator(
                               color: Colors.deepPurpleAccent,
                               onRefresh: () {
@@ -893,17 +1112,18 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                   : ListView.builder(
                                       physics: const AlwaysScrollableScrollPhysics(),
                                       padding: const EdgeInsets.all(16),
-                                      itemCount: visibleBatches.length + 1,
+                                      // Unorganized section hides in selection mode.
+                                      itemCount: renderBatches.length + (_inSelectionMode ? 0 : 1),
                                       itemBuilder: (context, index) {
-                                        if (index == 0) {
+                                        if (!_inSelectionMode && index == 0) {
                                           return _buildUnorganizedSection(
                                             unknownRecordings,
                                           );
                                         }
-                                        final batchIndex = index - 1;
+                                        final batch = renderBatches[_inSelectionMode ? index : index - 1];
                                         final anyIntegrationEnabled = PassthroughIntegration.hasAnyConfigured(_prefs);
                                         return BatchCard(
-                                          batch: visibleBatches[batchIndex],
+                                          batch: batch,
                                           markerMap: markerMap,
                                           anyIntegrationEnabled: anyIntegrationEnabled,
                                           filterMode: _filterMode,
@@ -912,29 +1132,40 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           isUploading: controller.uploadingFiles.contains,
                                           onConversationTap: _openConversation,
                                           onMarkerTap: _openMarkerConversation,
-                                          onExportAll: (conversations) => _exportAll(
-                                            visibleBatches[batchIndex],
-                                            conversations,
-                                          ),
+                                          onExportAll: (conversations) => _exportAll(batch, conversations),
                                           onDeleteDay: (toDelete, toDeleteDiscards) => _deleteDayConversations(
-                                            visibleBatches[batchIndex],
+                                            batch,
                                             toDelete,
                                             toDeleteDiscards,
                                           ),
                                           onDeleteAllDiscards: (toDeleteDiscards) => _deleteAllDiscards(
-                                            visibleBatches[batchIndex],
+                                            batch,
                                             toDeleteDiscards,
                                           ),
-                                          onDeleteConversation: _deleteConversation,
                                           onDeleteMarkerConversation: _deleteMarkerConversation,
                                           onRecoverDiscard: controller.recoverDiscard,
                                           onDeleteDiscard: controller.deleteDiscard,
+                                          activeSelectionType:
+                                              (_inSelectionMode && batch.dateString == _selDate) ? _selType : null,
+                                          selectedIds: _selIds,
+                                          onEnterSelection: (type, id) => _enterSelection(batch.dateString, type, id),
+                                          onToggleSelection: _toggleSelection,
                                         );
                                       },
                                     ),
                             );
                           },
                         ),
+                ),
+                // Floating action pill — in-flow below the list so it shrinks
+                // the viewport (last row stays tappable) instead of overlaying.
+                SafeArea(
+                  top: false,
+                  child: AnimatedSize(
+                    duration: const Duration(milliseconds: 180),
+                    curve: Curves.easeOut,
+                    child: _inSelectionMode ? _buildSelectionBar(controller) : const SizedBox.shrink(),
+                  ),
                 ),
               ],
             ),
@@ -946,6 +1177,11 @@ class _RecordingsPageState extends State<RecordingsPage> {
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
+        // Back exits selection mode first, before falling through to minimize.
+        if (_inSelectionMode) {
+          _exitSelection();
+          return;
+        }
         // Root page: minimize instead of closing so the BLE foreground service
         // (and its notification) survives. iOS forbids self-backgrounding.
         if (Platform.isAndroid) _systemChannel.invokeMethod('moveTaskToBack');
