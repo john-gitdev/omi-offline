@@ -30,6 +30,17 @@ class DeviceDropStats {
   /// full (encoder starved). Each ~= one mic chunk (~100 ms). Appended at
   /// offset 28 — 0 on older firmware that returns only the first 28 bytes.
   final int codecFrameDrops;
+
+  /// High-water mark of the firmware SD write queue (sd_msgq) occupancy since
+  /// boot, out of SD_REQ_QUEUE_MSGS (100). Shows how close the write path runs
+  /// to the drop edge — low peak = plenty of headroom. Appended at offset 32;
+  /// 0 on older firmware.
+  final int msgqPeakDepth;
+
+  /// Times the firmware forced an audio-write turn over pending reads because a
+  /// steady read stream would otherwise have starved writes (write fairness
+  /// engaged). Appended at offset 36; 0 on older firmware.
+  final int writeFairActivations;
   final DateTime readAt;
 
   const DeviceDropStats({
@@ -41,6 +52,8 @@ class DeviceDropStats {
     this.failedConnCount = 0,
     this.lastFailedConnDuringSlowAdv = false,
     this.codecFrameDrops = 0,
+    this.msgqPeakDepth = 0,
+    this.writeFairActivations = 0,
     required this.readAt,
   });
 
