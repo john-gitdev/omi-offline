@@ -193,6 +193,8 @@ class OmiDeviceConnection extends DeviceConnection {
         // Appended fields (28-byte firmware); 0 / false on older 20-byte builds.
         failedConnCount: data.length >= 28 ? data.getUint32LittleEndian(20) : 0,
         lastFailedConnDuringSlowAdv: data.length >= 28 && data.getUint32LittleEndian(24) == 1,
+        // codec_drops appended at offset 28 (32-byte firmware); 0 on older builds.
+        codecFrameDrops: data.length >= 32 ? data.getUint32LittleEndian(28) : 0,
         readAt: DateTime.now(),
       );
     } catch (e) {
