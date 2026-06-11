@@ -31,6 +31,17 @@ uint8_t codec_ring_buffer_data[AUDIO_BUFFER_SAMPLES * 2]; // 2 bytes per sample
 struct ring_buf codec_ring_buf;
 static K_MUTEX_DEFINE(codec_ring_mutex);
 
+/* Count of PCM blocks dropped before encode because the codec ring buffer was
+ * full (encoder thread starved of CPU). Each drop ~= one mic chunk (~100 ms of
+ * audio). Surfaced over BLE via the diagnostics drops characteristic so the
+ * capture-stage loss is observable in the field without a UART/RTT log. */
+static atomic_t codec_dropped_count = ATOMIC_INIT(0);
+
+uint32_t codec_get_dropped_frames(void)
+{
+    return (uint32_t)atomic_get(&codec_dropped_count);
+}
+
 /* Signaled by codec_receive_pcm() each time a PCM block arrives.
  * codec_entry() blocks here instead of polling every 10 ms. */
 K_SEM_DEFINE(codec_data_sem, 0, NETWORK_RING_BUF_SIZE);
@@ -44,6 +55,7 @@ int codec_receive_pcm(int16_t *data, size_t len) // this gets called after mic d
     k_mutex_lock(&codec_ring_mutex, K_FOREVER);
     if (ring_buf_space_get(&codec_ring_buf) < bytes_to_write) {
         k_mutex_unlock(&codec_ring_mutex);
+        atomic_inc(&codec_dropped_count);
         LOG_WRN("Codec ring buffer full, dropping %u bytes", (unsigned)bytes_to_write);
         return -1;
     }
@@ -51,6 +63,7 @@ int codec_receive_pcm(int16_t *data, size_t len) // this gets called after mic d
     int written = ring_buf_put(&codec_ring_buf, (uint8_t *) data, bytes_to_write);
     k_mutex_unlock(&codec_ring_mutex);
     if (written != bytes_to_write) {
+        atomic_inc(&codec_dropped_count);
         LOG_ERR("Failed to write %u bytes to codec ring buffer (written %d)", (unsigned)bytes_to_write, written);
         return -1;
     }
