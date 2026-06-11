@@ -2,6 +2,11 @@
 
 ## App
 
+### 0.22.2
+
+- **New: codec drop counter in Diagnostics.** The Diagnostics card now shows audio dropped before encode (capture-stage starvation), alongside the existing SD-queue and BLE drop counters. Requires firmware `oo-1.9.6`.
+- **Diagnostics reset is now a single "Reset all diagnostics" button** — resets the SD, codec, and BLE counters together, replacing the separate drops/BLE reset buttons.
+
 ### 0.22.1
 
 - **Fix: Omi Cloud uploads now proceed oldest-to-newest.** Auto-upload iterates recordings from the oldest day to the newest, and within each day from the earliest recording to the latest.
@@ -154,6 +159,15 @@
 ---
 
 ## Firmware
+
+### oo-1.9.6
+
+- **Battery: SD card fully powers off during long silence.** After ~2 minutes of continuous VAD silence while disconnected, the SD chip is unmounted and power-gated (not just the SPI bus suspended). It remounts on demand when audio resumes or the phone reconnects. Skipped during OTA.
+- **Battery: idle-disconnect shortened from 30 s to 15 s.** The device drops an idle BLE link sooner to fall back to low-power advertising.
+- **Reliability: in-stream markers survive SD congestion.** Button-tap (`0xFFFFFFFE`), session-end (`0xFFFFFFFC`), and VAD-resume (`0xFFFFFFFD`) markers now use a blocking SD write so they aren't dropped if the write queue is briefly saturated. Audio ordering is preserved.
+- **Reliability: auto-recovery for a stuck SD card.** If writes fail repeatedly mid-recording, the firmware power-cycles and remounts the card instead of dropping audio until the next reboot.
+- **Reliability: bounded SD boot with a fault indicator.** If the SD card fails to initialize within 90 s, the device still comes up (BLE + mic) and locks the LED solid red so the fault is visible, instead of hanging on boot.
+- **Codec drop counter** added to the `0x19B10062` diagnostics characteristic (now 32 bytes) — surfaces audio dropped before encode when the encoder is CPU-starved.
 
 ### oo-1.9.5
 
