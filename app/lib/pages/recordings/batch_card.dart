@@ -388,6 +388,7 @@ class BatchCard extends StatelessWidget {
   final void Function(MarkerConversation) onMarkerTap;
   final void Function(List<Conversation>) onExportAll;
   final void Function(List<Conversation>, List<DiscardRecord>) onDeleteDay;
+  final void Function(List<DiscardRecord>) onDeleteAllDiscards;
   final void Function(Conversation) onDeleteConversation;
   final void Function(MarkerConversation) onDeleteMarkerConversation;
   final Future<void> Function(DiscardRecord) onRecoverDiscard;
@@ -406,6 +407,7 @@ class BatchCard extends StatelessWidget {
     required this.onMarkerTap,
     required this.onExportAll,
     required this.onDeleteDay,
+    required this.onDeleteAllDiscards,
     required this.onDeleteConversation,
     required this.onDeleteMarkerConversation,
     required this.onRecoverDiscard,
@@ -496,8 +498,10 @@ class BatchCard extends StatelessWidget {
             const SizedBox(height: 4),
             const Divider(color: Color(0xFF2C2C2E), height: 1),
             const SizedBox(height: 4),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            OverflowBar(
+              alignment: MainAxisAlignment.spaceBetween,
+              overflowAlignment: OverflowBarAlignment.center,
+              overflowSpacing: 4,
               children: [
                 TextButton.icon(
                   key: Key('export_all_${batch.dateString}'),
@@ -505,6 +509,13 @@ class BatchCard extends StatelessWidget {
                   icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 13, color: Colors.grey.shade400),
                   label: Text('Export All', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
                 ),
+                if (discards.isNotEmpty)
+                  TextButton.icon(
+                    key: Key('delete_discards_${batch.dateString}'),
+                    onPressed: () => onDeleteAllDiscards(discards),
+                    icon: FaIcon(FontAwesomeIcons.ghost, size: 13, color: Colors.orange.shade300),
+                    label: Text('Delete Discards', style: TextStyle(color: Colors.orange.shade300, fontSize: 13)),
+                  ),
                 TextButton.icon(
                   key: Key('delete_day_${batch.dateString}'),
                   onPressed: () => onDeleteDay(filtered, discards),
