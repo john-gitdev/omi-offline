@@ -45,8 +45,15 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #endif
 
 #define DISK_DRIVE_NAME CONFIG_SDMMC_VOLUME_NAME
-#define SD_REQ_QUEUE_MSGS 150
+#define SD_REQ_QUEUE_MSGS 100
 #define SD_PRIO_QUEUE_MSGS 10
+/* Write fairness: the priority (read) queue is normally drained first, but a
+ * steady read stream (active sync) must not starve audio writes. Force a write
+ * turn after this many consecutive reads, and drain at least this many writes
+ * per turn before yielding back to reads. Bounds write latency to
+ * MAX_READS_BETWEEN_WRITES read-ops and keeps write throughput above ingest. */
+#define MAX_READS_BETWEEN_WRITES 6
+#define WRITE_FAIR_MIN 4
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
 #define WRITE_BATCH_COUNT 100
 #define ERROR_THRESHOLD 5
@@ -266,6 +273,14 @@ static atomic_t sd_boot_ready;
  * Incremented in write_to_file(); queryable via sd_get_boot_dropped_frames(). */
 static atomic_t boot_dropped_frames;
 static atomic_t stat_dropped_frames;
+
+/* Observability for the write path (since boot, reset on reboot):
+ *  - sd_msgq_peak_depth: high-water mark of sd_msgq occupancy. Shows headroom
+ *    vs SD_REQ_QUEUE_MSGS — how close write fairness keeps us to a drop.
+ *  - write_fair_activations: times the worker forced a write turn over pending
+ *    reads (fairness engaged). Both queryable via getters for diagnostics. */
+static atomic_t sd_msgq_peak_depth;
+static atomic_t write_fair_activations;
 
 /* Protects current_filename / current_file_path across threads.
  * The SD worker updates these during file creation and TMP→hex rename;
@@ -1797,6 +1812,9 @@ void sd_worker_thread(void)
      * which resumes SPI before any flash writes occur. */
     sd_set_io_low_power(true);
 
+    /* Write-fairness: consecutive reads served without a write turn. */
+    uint32_t reads_since_write = 0;
+
     /* ---- Main loop ---- */
     while (1) {
 
@@ -1822,8 +1840,17 @@ void sd_worker_thread(void)
             goto handle_req;
         }
 
-        /* Priority queue always checked first (no-wait). */
-        if (k_msgq_get(&sd_prio_msgq, &req, K_NO_WAIT) == 0) {
+        /* Priority queue normally checked first (no-wait), but write fairness:
+         * once we've served MAX_READS_BETWEEN_WRITES reads back-to-back while
+         * audio writes are waiting, skip the read this iteration so a write
+         * gets a turn. Prevents a steady read stream (active sync) from
+         * starving audio writes and filling sd_msgq. */
+        bool force_write = (k_msgq_num_used_get(&sd_msgq) > 0) &&
+                           (reads_since_write >= MAX_READS_BETWEEN_WRITES);
+        if (force_write) {
+            atomic_inc(&write_fair_activations);
+        } else if (k_msgq_get(&sd_prio_msgq, &req, K_NO_WAIT) == 0) {
+            reads_since_write++;
             goto handle_req;
         }
 
@@ -1833,6 +1860,7 @@ void sd_worker_thread(void)
          * On timeout, flush any partially-filled batch buffer. */
         k_timeout_t write_wait = atomic_get(&ble_connected) ? K_MSEC(50) : K_MSEC(500);
         if (k_msgq_get(&sd_msgq, &req, write_wait) == 0) {
+            reads_since_write = 0;
             goto handle_req;
         }
 
@@ -1884,10 +1912,14 @@ void sd_worker_thread(void)
         /* ---- Write data ---- */
         case REQ_WRITE_DATA:
             process_write_data_req(&req);
+            reads_since_write = 0;
             /* Drain up to 16 additional write/save_offset messages in one pass
-             * to improve SD throughput by batching more work per wake. */
+             * to improve SD throughput by batching more work per wake. The
+             * first WRITE_FAIR_MIN drain unconditionally so a steady read
+             * stream can't starve audio; beyond that, yield to pending reads
+             * to keep sync responsive. */
             for (int _d = 0; _d < 16; _d++) {
-                if (k_msgq_num_used_get(&sd_prio_msgq) > 0)
+                if (_d >= WRITE_FAIR_MIN && k_msgq_num_used_get(&sd_prio_msgq) > 0)
                     break;
                 sd_req_t _next = {0};
                 if (k_msgq_get(&sd_msgq, &_next, K_NO_WAIT) != 0)
@@ -2275,6 +2307,16 @@ uint32_t sd_get_stream_dropped_frames(void)
     return (uint32_t)atomic_get(&stat_dropped_frames);
 }
 
+uint32_t sd_get_msgq_peak_depth(void)
+{
+    return (uint32_t)atomic_get(&sd_msgq_peak_depth);
+}
+
+uint32_t sd_get_write_fair_activations(void)
+{
+    return (uint32_t)atomic_get(&write_fair_activations);
+}
+
 int app_sd_init(void)
 {
     sd_shutdown_in_progress = false;
@@ -2505,15 +2547,28 @@ static uint32_t write_to_file_impl(uint8_t *data, uint32_t length, k_timeout_t r
         }
         return 0;
     }
+
+    /* Track the high-water mark right after enqueue (queue at its fullest from
+     * the producer's view) so diagnostics can show headroom vs the drop edge. */
+    {
+        uint32_t depth = k_msgq_num_used_get(&sd_msgq);
+        if (depth > (uint32_t)atomic_get(&sd_msgq_peak_depth)) {
+            atomic_set(&sd_msgq_peak_depth, (atomic_val_t)depth);
+        }
+    }
     return length;
 }
 
 uint32_t write_to_file(uint8_t *data, uint32_t length)
 {
-    /* Bounded blocking: very short adaptive timeout. SD cards frequently stall
-     * for 100-400ms during internal maintenance; drop quickly rather than
-     * stalling the mic thread. */
-    k_timeout_t retry_to = atomic_get(&ble_connected) ? K_MSEC(1) : K_MSEC(5);
+    /* Bounded blocking on the producer (codec) thread: wait briefly for queue
+     * space before dropping. This is NOT the worker and does not slow reads —
+     * it only governs how patient the audio thread is when the queue is full.
+     * 25 ms rides out transient stalls (flush-on-connect, read bursts) without
+     * dropping; it's ~4% of the 1.0 s codec ring, so the ring recovers easily
+     * between stalls. Same value connected or not — the old 1 ms connected
+     * timeout dropped audio the instant the worker got busy, for no benefit. */
+    k_timeout_t retry_to = K_MSEC(25);
     return write_to_file_impl(data, length, retry_to);
 }
 
