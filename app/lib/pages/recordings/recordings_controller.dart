@@ -1835,47 +1835,32 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       } catch (_) {}
     }
 
+    // The "Conversation in progress" banner reflects the accumulated `_draft`
+    // files already combined on disk (the banner renders this branch only when
+    // there is no raw audio left to process — see AccumulatingBanner). Its
+    // duration is the sum of the drafts' decoded length.
     int draftMs = 0;
-    bool hasDraft = false;
+    DateTime? latestDraftEnd;
     for (final c in batches.expand((b) => b.draftRecordings)) {
       draftMs += c.duration.inMilliseconds;
-      hasDraft = true;
+      if (latestDraftEnd == null || c.endTime.isAfter(latestDraftEnd)) {
+        latestDraftEnd = c.endTime;
+      }
     }
 
-    // "Captured through" is derived from the most recent bin: its UTC timerStart
-    // (epoch seconds in the file name) plus a duration estimated from byte size
-    // (~252000 B/min, the rate used for toProcessMinutes). We deliberately avoid
-    // the draft's encoded sample length (startTime + decoded duration), which
-    // overshoots wall-clock — reading into the future — when an inter-file gap is
-    // padded with more silence than truly elapsed. When no dated bin is available
-    // draftEndTime stays null and the UI falls back to a timeless "finalize early"
-    // prompt rather than showing a bogus time.
+    // "Captured through" is the draft's own end (startTime + decoded duration) —
+    // the draft file is the source of truth for how far the in-progress audio
+    // reaches. We must NOT derive this from leftover raw bins: once the draft's
+    // bins are pruned after a processing pass, the only bin still on disk can be
+    // an unrelated stale discard from much earlier (e.g. a 4:50 AM "below minimum
+    // speech" segment), which would make the banner read a time *earlier* than
+    // the audio actually captured. The decoded duration can overshoot wall-clock
+    // when an inter-file gap is padded with silence, so clamp to now — captured
+    // audio never reaches into the future.
     DateTime? draftEndTime;
-    if (hasDraft) {
-      const int kMinValidEpoch = 946684800;
-      int lastBinStartSec = 0;
-      int lastBinBytes = 0;
-      for (final f in batches.expand((b) => b.rawSegments)) {
-        final timerStart = int.tryParse(f.path.split('/').last.split('.').first.split('_').first);
-        if (timerStart == null || timerStart <= kMinValidEpoch) continue;
-        if (timerStart > lastBinStartSec) {
-          lastBinStartSec = timerStart;
-          try {
-            lastBinBytes = f.lengthSync();
-          } catch (_) {
-            lastBinBytes = 0;
-          }
-        }
-      }
-      if (lastBinStartSec > 0) {
-        final estDurMs = (lastBinBytes / 252000.0 * 60000).round();
-        var end = DateTime.fromMillisecondsSinceEpoch(lastBinStartSec * 1000 + estDurMs);
-        // A bin timestamped by a firmware clock running ahead of the phone could
-        // still land in the future; captured audio never has, so clamp to now.
-        final now = DateTime.now();
-        if (end.isAfter(now)) end = now;
-        draftEndTime = end;
-      }
+    if (latestDraftEnd != null) {
+      final now = DateTime.now();
+      draftEndTime = latestDraftEnd.isAfter(now) ? now : latestDraftEnd;
     }
 
     return (
