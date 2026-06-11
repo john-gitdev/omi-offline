@@ -659,13 +659,16 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_
 #define BATTERY_REFRESH_INTERVAL_CONNECTED    60000  // 60 seconds while connected
 #define BATTERY_REFRESH_INTERVAL_DISCONNECTED 300000 // 5 minutes while offline
 #define CONFIG_OMI_BATTERY_CRITICAL_MV        3500  // mV
-/* Flush and pause SD writes at this percentage to prevent brownout corruption.
- * The 150mAh cell's internal resistance rises sharply below ~15%, and SD write
- * bursts or LFS alloc scans can dip voltage below the CPU reset threshold. */
+/* Below this percentage the 150mAh cell's internal resistance rises sharply, so
+ * a brownout mid-write is more likely. We flush once here so everything captured
+ * so far is durable, but recording CONTINUES — a recorder should capture to the
+ * critical-voltage shutdown, not stop at 15%. littlefs is power-loss resilient,
+ * so a brownout costs at most the last unsynced frames; the clean shutdown still
+ * happens at CONFIG_OMI_BATTERY_CRITICAL_MV. */
 #define BATTERY_LOW_SD_FLUSH_THRESHOLD        15    // %
 uint8_t battery_percentage = 100;
 bool battery_ready = false;
-static bool sd_paused_for_low_battery = false;
+static bool sd_flushed_for_low_battery = false;
 void broadcast_battery_level(struct k_work *work_item);
 
 K_WORK_DELAYABLE_DEFINE(battery_work, broadcast_battery_level);
@@ -699,20 +702,19 @@ void broadcast_battery_level(struct k_work *work_item)
         }
         put_current_connection(conn);
 
-        /* Flush and pause SD writes before the cell voltage collapses.
-         * A write burst or LFS alloc scan at low charge can brownout the CPU. */
+        /* Flush once when we first drop into the low-battery zone so everything
+         * captured so far is durable before the high-internal-resistance region.
+         * Recording is NOT paused — it continues until the critical-voltage clean
+         * shutdown below. Re-arms if the battery recovers above the threshold. */
         if (!is_charging && battery_percentage <= BATTERY_LOW_SD_FLUSH_THRESHOLD &&
-            !sd_paused_for_low_battery) {
-            LOG_WRN("Battery low (%d%%) — flushing SD and pausing writes to prevent brownout",
+            !sd_flushed_for_low_battery) {
+            LOG_WRN("Battery low (%d%%) — flushing SD; recording continues to critical shutdown",
                     battery_percentage);
             sd_flush_current_file();
-            sd_write_pause(true);
-            sd_paused_for_low_battery = true;
-        } else if (sd_paused_for_low_battery &&
+            sd_flushed_for_low_battery = true;
+        } else if (sd_flushed_for_low_battery &&
                    (is_charging || battery_percentage > BATTERY_LOW_SD_FLUSH_THRESHOLD)) {
-            LOG_INF("Battery recovered (%d%%) — resuming SD writes", battery_percentage);
-            sd_write_pause(false);
-            sd_paused_for_low_battery = false;
+            sd_flushed_for_low_battery = false;
         }
 
         if (battery_millivolt < CONFIG_OMI_BATTERY_CRITICAL_MV) {
