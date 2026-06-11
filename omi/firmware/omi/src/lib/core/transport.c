@@ -326,7 +326,7 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   uptime_seconds: how long the PREVIOUS session ran before it ended (crash or clean shutdown)
 //
 // Characteristic B:   19B10062-E8F2-537E-4F6C-D104768A1214
-// Returns 32 bytes LE (fields appended over time; older apps read a prefix):
+// Returns 40 bytes LE (fields appended over time; older apps read a prefix):
 //   [uint32 storage_block_drops]   storage_block_drops since boot (each = ~5 Opus frames lost)
 //   [uint32 last_drop_uptime_ms]   k_uptime_get() at the most recent block drop (0 = none)
 //   [uint32 sd_stream_drops]       stat_dropped_frames from sd_card.c (queue-full audio frame drops)
@@ -335,6 +335,8 @@ static K_WORK_DELAYABLE_DEFINE(conn_fail_persist_work, conn_fail_persist_work_ha
 //   [uint32 conn_fails]            BLE connection-establishment failures (offset 20)
 //   [uint32 last_failed_adv_slow]  1 if last conn fail was during slow adv (offset 24)
 //   [uint32 codec_drops]           PCM blocks dropped before encode, ring-full (offset 28)
+//   [uint32 sd_msgq_peak_depth]    high-water mark of sd_msgq occupancy / SD_REQ_QUEUE_MSGS (offset 32)
+//   [uint32 write_fair_activations] times write fairness forced a write over reads (offset 36)
 static struct bt_uuid_128 diagnostics_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10060, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
 static struct bt_uuid_128 diagnostics_characteristic_uuid =
@@ -374,11 +376,14 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn, const struct
     uint32_t now_ms         = (uint32_t)k_uptime_get();
     uint32_t conn_fails     = (uint32_t)atomic_get(&failed_conn_count);
     uint32_t codec_drops    = codec_get_dropped_frames();
+    uint32_t msgq_peak      = sd_get_msgq_peak_depth();
+    uint32_t fair_acts      = sd_get_write_fair_activations();
 
-    /* 32 bytes: 5 legacy u32 (drops) + conn_fail count + last-failure adv mode +
-     * codec_drops. Each field is appended at the end so older app builds (which
-     * read only the first 20 / 28 bytes) keep working unchanged. */
-    uint8_t payload[32];
+    /* 40 bytes: legacy u32 drops + conn_fail count + last-failure adv mode +
+     * codec_drops + sd_msgq peak depth + write-fairness activations. Each field
+     * is appended at the end so older app builds (which read only the first
+     * 20 / 28 / 32 bytes) keep working unchanged. */
+    uint8_t payload[40];
     pack_u32_le(payload + 0,  block_drops);
     pack_u32_le(payload + 4,  last_drop_ms);
     pack_u32_le(payload + 8,  sd_stream_drops);
@@ -387,6 +392,8 @@ static ssize_t diagnostics_drops_read_handler(struct bt_conn *conn, const struct
     pack_u32_le(payload + 20, conn_fails);
     pack_u32_le(payload + 24, (uint32_t)last_failed_adv_slow);
     pack_u32_le(payload + 28, codec_drops);
+    pack_u32_le(payload + 32, msgq_peak);
+    pack_u32_le(payload + 36, fair_acts);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
 }
 
