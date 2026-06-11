@@ -195,6 +195,9 @@ class OmiDeviceConnection extends DeviceConnection {
         lastFailedConnDuringSlowAdv: data.length >= 28 && data.getUint32LittleEndian(24) == 1,
         // codec_drops appended at offset 28 (32-byte firmware); 0 on older builds.
         codecFrameDrops: data.length >= 32 ? data.getUint32LittleEndian(28) : 0,
+        // sd_msgq peak depth (32) + write-fairness activations (36), 40-byte firmware; 0 on older.
+        msgqPeakDepth: data.length >= 36 ? data.getUint32LittleEndian(32) : 0,
+        writeFairActivations: data.length >= 40 ? data.getUint32LittleEndian(36) : 0,
         readAt: DateTime.now(),
       );
     } catch (e) {
