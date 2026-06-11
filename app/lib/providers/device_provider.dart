@@ -81,11 +81,12 @@ class DeviceProvider extends ChangeNotifier
   // at the top of onAppPaused.
   Timer? _pauseDisconnectTimer;
   static const Duration _backgroundDisconnectGrace = Duration(seconds: 30);
-  // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 20s so
-  // the firmware (oo-1.9.0+) doesn't trip its 30s idle-disconnect. Runs while
-  // the user is actively in the app, during an active background sync
+  // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 10s so
+  // the firmware doesn't trip its 15s idle-disconnect (the 10s cadence leaves a
+  // 5s margin and survives one missed beat). Runs while the user is actively in
+  // the app, during an active background sync
   // (_backgroundSyncActive) — a single large-file read sends no command for
-  // >30s, so without an in-flight keep-alive the firmware drops the link
+  // >15s, so without an in-flight keep-alive the firmware drops the link
   // mid-file and that file can never finish syncing ("Stream closed without
   // EOT") — and during the post-background grace window so a quick return
   // doesn't pay a reconnect. Otherwise stops in the background, where the
@@ -548,7 +549,7 @@ class DeviceProvider extends ChangeNotifier
     _foregroundKeepAliveTimer?.cancel();
     if ((!_isAppInForeground && !_backgroundSyncActive) || !isConnected || connectedDevice == null) return;
     _consecutiveKeepAliveFails = 0;
-    _foregroundKeepAliveTimer = Timer.periodic(const Duration(seconds: 20), (_) async {
+    _foregroundKeepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!isConnected || connectedDevice == null) return;
       final conn = await ServiceManager.instance().device.ensureConnection(connectedDevice!.id);
       final ok = (conn != null) && (await conn.sendKeepAlive());
