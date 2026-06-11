@@ -33,7 +33,7 @@ class RecordingsPage extends StatefulWidget {
   State<RecordingsPage> createState() => _RecordingsPageState();
 }
 
-class _RecordingsPageState extends State<RecordingsPage> {
+class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProviderStateMixin {
   // Back press on the root page minimizes the app (moves the task to back)
   // rather than finishing MainActivity — finishing would tear down the BLE
   // foreground service and drop its persistent notification.
@@ -53,6 +53,21 @@ class _RecordingsPageState extends State<RecordingsPage> {
   final Set<String> _selIds = {};
   bool get _inSelectionMode => _selDate != null;
 
+  // Drives the action bar sliding up from / down to the bottom edge.
+  late final AnimationController _selBarAnim;
+  late final Animation<double> _selBarCurve;
+
+  // Back-to-top FAB: appears once scrolled ~1.5 viewports down the day list.
+  final ScrollController _scrollController = ScrollController();
+  bool _showBackToTop = false;
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    final show = pos.pixels > pos.viewportDimension * 1.5;
+    if (show != _showBackToTop) setState(() => _showBackToTop = show);
+  }
+
   void _enterSelection(String date, RecordingRowType type, String id) {
     setState(() {
       _selDate = date;
@@ -61,6 +76,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
         ..clear()
         ..add(id);
     });
+    _selBarAnim.forward(from: 0);
   }
 
   void _toggleSelection(String id) {
@@ -76,10 +92,17 @@ class _RecordingsPageState extends State<RecordingsPage> {
   void _selectNone() => setState(_selIds.clear);
 
   void _exitSelection() {
-    setState(() {
-      _selDate = null;
-      _selType = null;
-      _selIds.clear();
+    if (_selDate == null) return;
+    // Slide the bar back down first, then clear state (which re-expands the
+    // list) once it's fully off-screen.
+    _selBarAnim.reverse().whenComplete(() {
+      if (mounted && _selBarAnim.status == AnimationStatus.dismissed) {
+        setState(() {
+          _selDate = null;
+          _selType = null;
+          _selIds.clear();
+        });
+      }
     });
   }
 
@@ -256,12 +279,46 @@ class _RecordingsPageState extends State<RecordingsPage> {
   void initState() {
     super.initState();
     _controller = RecordingsController()..init();
+    _selBarAnim = AnimationController(vsync: this, duration: const Duration(milliseconds: 220));
+    _selBarCurve = CurvedAnimation(parent: _selBarAnim, curve: Curves.easeOutCubic, reverseCurve: Curves.easeInCubic);
+    _scrollController.addListener(_onScroll);
   }
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    _selBarAnim.dispose();
     _controller.dispose();
     super.dispose();
+  }
+
+  Widget _buildBackToTop() {
+    final visible = _showBackToTop;
+    return AnimatedSlide(
+      offset: visible ? Offset.zero : const Offset(0, 1.5),
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+      child: AnimatedOpacity(
+        opacity: visible ? 1 : 0,
+        duration: const Duration(milliseconds: 200),
+        child: IgnorePointer(
+          ignoring: !visible,
+          child: FloatingActionButton.small(
+            heroTag: null,
+            backgroundColor: const Color(0xFF2C2C2E),
+            foregroundColor: Colors.white,
+            elevation: 4,
+            onPressed: () => _scrollController.animateTo(
+              0,
+              duration: const Duration(milliseconds: 400),
+              curve: Curves.easeOutCubic,
+            ),
+            child: const Icon(Icons.keyboard_arrow_up),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _forceSyncButtonPressed() async {
@@ -949,222 +1006,242 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   },
                 ),
                 Expanded(
-                  child: controller.isLoading
-                      ? const Center(
-                          child: CircularProgressIndicator(
-                            color: Colors.deepPurpleAccent,
-                          ),
-                        )
-                      : Builder(
-                          builder: (context) {
-                            if (_showMarkersOnly) {
-                              final byDate = _groupMarkersByDate();
-                              final dates = byDate.keys.toList()..sort((a, b) => b.compareTo(a));
-                              return RefreshIndicator(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      controller.isLoading
+                          ? const Center(
+                              child: CircularProgressIndicator(
                                 color: Colors.deepPurpleAccent,
-                                onRefresh: () async {},
-                                child: dates.isEmpty
-                                    ? ListView(
-                                        physics: const AlwaysScrollableScrollPhysics(),
-                                        children: [
-                                          const SizedBox(height: 100),
-                                          Center(
-                                            child: const Text(
-                                              'No marked recordings yet.\nPress the button on your Omi to tag a moment.',
-                                              textAlign: TextAlign.center,
-                                              style: TextStyle(
-                                                color: Colors.grey,
-                                                fontSize: 16,
+                              ),
+                            )
+                          : Builder(
+                              builder: (context) {
+                                if (_showMarkersOnly) {
+                                  final byDate = _groupMarkersByDate();
+                                  final dates = byDate.keys.toList()..sort((a, b) => b.compareTo(a));
+                                  return RefreshIndicator(
+                                    color: Colors.deepPurpleAccent,
+                                    onRefresh: () async {},
+                                    child: dates.isEmpty
+                                        ? ListView(
+                                            physics: const AlwaysScrollableScrollPhysics(),
+                                            children: [
+                                              const SizedBox(height: 100),
+                                              Center(
+                                                child: const Text(
+                                                  'No marked recordings yet.\nPress the button on your Omi to tag a moment.',
+                                                  textAlign: TextAlign.center,
+                                                  style: TextStyle(
+                                                    color: Colors.grey,
+                                                    fontSize: 16,
+                                                  ),
+                                                ),
                                               ),
+                                            ],
+                                          )
+                                        : ListView.builder(
+                                            physics: const AlwaysScrollableScrollPhysics(),
+                                            padding: const EdgeInsets.all(16),
+                                            itemCount: dates.length,
+                                            itemBuilder: (context, index) => MarkerDayCard(
+                                              dateStr: dates[index],
+                                              markers: byDate[dates[index]]!,
+                                              onMarkerTap: _openMarkerConversation,
+                                              onDeleteMarkerConversation: _deleteMarkerConversation,
                                             ),
                                           ),
-                                        ],
-                                      )
-                                    : ListView.builder(
-                                        physics: const AlwaysScrollableScrollPhysics(),
-                                        padding: const EdgeInsets.all(16),
-                                        itemCount: dates.length,
-                                        itemBuilder: (context, index) => MarkerDayCard(
-                                          dateStr: dates[index],
-                                          markers: byDate[dates[index]]!,
-                                          onMarkerTap: _openMarkerConversation,
-                                          onDeleteMarkerConversation: _deleteMarkerConversation,
-                                        ),
-                                      ),
-                              );
-                            }
+                                  );
+                                }
 
-                            final markerMap = _buildMarkerMap();
-                            final minSeconds = _prefs.filterMinDurationSeconds;
-                            final visibleBatches = minSeconds > 0
-                                ? switch (_filterMode) {
-                                    RecordingFilterMode.visible => controller.batches
-                                        .where((b) =>
-                                            b.rawSegments.isNotEmpty ||
-                                            b.finalizedRecordings.any((c) => c.duration.inSeconds >= minSeconds) ||
-                                            b.discards.any((d) => d.duration.inSeconds >= minSeconds))
-                                        .toList(),
-                                    RecordingFilterMode.hidden => controller.batches
-                                        .where((b) =>
-                                            b.rawSegments.isNotEmpty ||
-                                            b.finalizedRecordings.any((c) => c.duration.inSeconds < minSeconds) ||
-                                            b.discards.any((d) => d.duration.inSeconds < minSeconds))
-                                        .toList(),
-                                    RecordingFilterMode.all => controller.batches
+                                final markerMap = _buildMarkerMap();
+                                final minSeconds = _prefs.filterMinDurationSeconds;
+                                final visibleBatches = minSeconds > 0
+                                    ? switch (_filterMode) {
+                                        RecordingFilterMode.visible => controller.batches
+                                            .where((b) =>
+                                                b.rawSegments.isNotEmpty ||
+                                                b.finalizedRecordings.any((c) => c.duration.inSeconds >= minSeconds) ||
+                                                b.discards.any((d) => d.duration.inSeconds >= minSeconds))
+                                            .toList(),
+                                        RecordingFilterMode.hidden => controller.batches
+                                            .where((b) =>
+                                                b.rawSegments.isNotEmpty ||
+                                                b.finalizedRecordings.any((c) => c.duration.inSeconds < minSeconds) ||
+                                                b.discards.any((d) => d.duration.inSeconds < minSeconds))
+                                            .toList(),
+                                        RecordingFilterMode.all => controller.batches
+                                            .where((b) =>
+                                                b.rawSegments.isNotEmpty ||
+                                                b.finalizedRecordings.isNotEmpty ||
+                                                b.discards.isNotEmpty)
+                                            .toList(),
+                                      }
+                                    : controller.batches
                                         .where((b) =>
                                             b.rawSegments.isNotEmpty ||
                                             b.finalizedRecordings.isNotEmpty ||
                                             b.discards.isNotEmpty)
-                                        .toList(),
-                                  }
-                                : controller.batches
-                                    .where((b) =>
-                                        b.rawSegments.isNotEmpty ||
-                                        b.finalizedRecordings.isNotEmpty ||
-                                        b.discards.isNotEmpty)
+                                        .toList();
+                                final unknownRecordings = visibleBatches
+                                    .expand((b) => b.finalizedRecordings)
+                                    .where((c) => c.isUnknown)
                                     .toList();
-                            final unknownRecordings =
-                                visibleBatches.expand((b) => b.finalizedRecordings).where((c) => c.isUnknown).toList();
-                            // In selection mode, collapse the list to just the
-                            // active day so you can't scroll to another card and
-                            // keep selecting. If the active day vanished (e.g. a
-                            // background reload), drop out of selection.
-                            if (_inSelectionMode && !visibleBatches.any((b) => b.dateString == _selDate)) {
-                              WidgetsBinding.instance.addPostFrameCallback((_) {
-                                if (mounted && _inSelectionMode) _exitSelection();
-                              });
-                            }
-                            final renderBatches = _inSelectionMode
-                                ? visibleBatches.where((b) => b.dateString == _selDate).toList()
-                                : visibleBatches;
-                            return RefreshIndicator(
-                              color: Colors.deepPurpleAccent,
-                              onRefresh: () {
-                                if (controller.spState != SyncProcessState.idle &&
-                                    controller.spState != SyncProcessState.error) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('Sync already in progress'),
-                                    ),
-                                  );
-                                  return Future.value();
+                                // In selection mode, collapse the list to just the
+                                // active day so you can't scroll to another card and
+                                // keep selecting. If the active day vanished (e.g. a
+                                // background reload), drop out of selection.
+                                if (_inSelectionMode && !visibleBatches.any((b) => b.dateString == _selDate)) {
+                                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                                    if (mounted && _inSelectionMode) _exitSelection();
+                                  });
                                 }
-                                return controller.startPipeline();
-                              },
-                              child: visibleBatches.isEmpty
-                                  ? ListView(
-                                      physics: const AlwaysScrollableScrollPhysics(),
-                                      children: [
-                                        const SizedBox(height: 100),
-                                        Center(
-                                          child: Column(
-                                            children: [
-                                              const Text(
-                                                'No conversations found.\nSwipe down to sync device.',
-                                                textAlign: TextAlign.center,
-                                                style: TextStyle(
-                                                  color: Colors.grey,
-                                                  fontSize: 16,
-                                                ),
-                                              ),
-                                              if (deviceProvider.isConnected) ...[
-                                                const SizedBox(height: 32),
-                                                ElevatedButton.icon(
-                                                  onPressed: controller.spState == SyncProcessState.idle
-                                                      ? controller.startPipeline
-                                                      : null,
-                                                  icon: const FaIcon(
-                                                    FontAwesomeIcons.rotate,
-                                                    size: 16,
-                                                  ),
-                                                  label: const Text(
-                                                    'Sync and Process',
-                                                  ),
-                                                  style: ElevatedButton.styleFrom(
-                                                    backgroundColor: Colors.deepPurpleAccent,
-                                                    foregroundColor: Colors.white,
-                                                  ),
-                                                ),
-                                              ] else ...[
-                                                const SizedBox(height: 32),
-                                                ElevatedButton(
-                                                  onPressed: () => Navigator.of(
-                                                    context,
-                                                  ).push(
-                                                    MaterialPageRoute(
-                                                      builder: (c) => const FindDevicesPage(),
+                                final renderBatches = _inSelectionMode
+                                    ? visibleBatches.where((b) => b.dateString == _selDate).toList()
+                                    : visibleBatches;
+                                return RefreshIndicator(
+                                  color: Colors.deepPurpleAccent,
+                                  onRefresh: () {
+                                    if (controller.spState != SyncProcessState.idle &&
+                                        controller.spState != SyncProcessState.error) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('Sync already in progress'),
+                                        ),
+                                      );
+                                      return Future.value();
+                                    }
+                                    return controller.startPipeline();
+                                  },
+                                  child: visibleBatches.isEmpty
+                                      ? ListView(
+                                          physics: const AlwaysScrollableScrollPhysics(),
+                                          children: [
+                                            const SizedBox(height: 100),
+                                            Center(
+                                              child: Column(
+                                                children: [
+                                                  const Text(
+                                                    'No conversations found.\nSwipe down to sync device.',
+                                                    textAlign: TextAlign.center,
+                                                    style: TextStyle(
+                                                      color: Colors.grey,
+                                                      fontSize: 16,
                                                     ),
                                                   ),
-                                                  style: ElevatedButton.styleFrom(
-                                                    backgroundColor: Colors.deepPurpleAccent,
-                                                    foregroundColor: Colors.white,
-                                                  ),
-                                                  child: const Text(
-                                                    'Connect Omi',
-                                                  ),
-                                                ),
-                                              ],
-                                            ],
-                                          ),
+                                                  if (deviceProvider.isConnected) ...[
+                                                    const SizedBox(height: 32),
+                                                    ElevatedButton.icon(
+                                                      onPressed: controller.spState == SyncProcessState.idle
+                                                          ? controller.startPipeline
+                                                          : null,
+                                                      icon: const FaIcon(
+                                                        FontAwesomeIcons.rotate,
+                                                        size: 16,
+                                                      ),
+                                                      label: const Text(
+                                                        'Sync and Process',
+                                                      ),
+                                                      style: ElevatedButton.styleFrom(
+                                                        backgroundColor: Colors.deepPurpleAccent,
+                                                        foregroundColor: Colors.white,
+                                                      ),
+                                                    ),
+                                                  ] else ...[
+                                                    const SizedBox(height: 32),
+                                                    ElevatedButton(
+                                                      onPressed: () => Navigator.of(
+                                                        context,
+                                                      ).push(
+                                                        MaterialPageRoute(
+                                                          builder: (c) => const FindDevicesPage(),
+                                                        ),
+                                                      ),
+                                                      style: ElevatedButton.styleFrom(
+                                                        backgroundColor: Colors.deepPurpleAccent,
+                                                        foregroundColor: Colors.white,
+                                                      ),
+                                                      child: const Text(
+                                                        'Connect Omi',
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        )
+                                      : ListView.builder(
+                                          controller: _scrollController,
+                                          physics: const AlwaysScrollableScrollPhysics(),
+                                          padding: const EdgeInsets.all(16),
+                                          // Unorganized section hides in selection mode.
+                                          itemCount: renderBatches.length + (_inSelectionMode ? 0 : 1),
+                                          itemBuilder: (context, index) {
+                                            if (!_inSelectionMode && index == 0) {
+                                              return _buildUnorganizedSection(
+                                                unknownRecordings,
+                                              );
+                                            }
+                                            final batch = renderBatches[_inSelectionMode ? index : index - 1];
+                                            final anyIntegrationEnabled =
+                                                PassthroughIntegration.hasAnyConfigured(_prefs);
+                                            return BatchCard(
+                                              batch: batch,
+                                              markerMap: markerMap,
+                                              anyIntegrationEnabled: anyIntegrationEnabled,
+                                              filterMode: _filterMode,
+                                              uploadStatus: controller.uploadStatus,
+                                              uploadCount: controller.actionableIntegrationCount,
+                                              isUploading: controller.uploadingFiles.contains,
+                                              onConversationTap: _openConversation,
+                                              onMarkerTap: _openMarkerConversation,
+                                              onExportAll: (conversations) => _exportAll(batch, conversations),
+                                              onDeleteDay: (toDelete, toDeleteDiscards) => _deleteDayConversations(
+                                                batch,
+                                                toDelete,
+                                                toDeleteDiscards,
+                                              ),
+                                              onDeleteAllDiscards: (toDeleteDiscards) => _deleteAllDiscards(
+                                                batch,
+                                                toDeleteDiscards,
+                                              ),
+                                              onDeleteMarkerConversation: _deleteMarkerConversation,
+                                              onRecoverDiscard: controller.recoverDiscard,
+                                              onDeleteDiscard: controller.deleteDiscard,
+                                              activeSelectionType:
+                                                  (_inSelectionMode && batch.dateString == _selDate) ? _selType : null,
+                                              selectedIds: _selIds,
+                                              onEnterSelection: (type, id) =>
+                                                  _enterSelection(batch.dateString, type, id),
+                                              onToggleSelection: _toggleSelection,
+                                            );
+                                          },
                                         ),
-                                      ],
-                                    )
-                                  : ListView.builder(
-                                      physics: const AlwaysScrollableScrollPhysics(),
-                                      padding: const EdgeInsets.all(16),
-                                      // Unorganized section hides in selection mode.
-                                      itemCount: renderBatches.length + (_inSelectionMode ? 0 : 1),
-                                      itemBuilder: (context, index) {
-                                        if (!_inSelectionMode && index == 0) {
-                                          return _buildUnorganizedSection(
-                                            unknownRecordings,
-                                          );
-                                        }
-                                        final batch = renderBatches[_inSelectionMode ? index : index - 1];
-                                        final anyIntegrationEnabled = PassthroughIntegration.hasAnyConfigured(_prefs);
-                                        return BatchCard(
-                                          batch: batch,
-                                          markerMap: markerMap,
-                                          anyIntegrationEnabled: anyIntegrationEnabled,
-                                          filterMode: _filterMode,
-                                          uploadStatus: controller.uploadStatus,
-                                          uploadCount: controller.actionableIntegrationCount,
-                                          isUploading: controller.uploadingFiles.contains,
-                                          onConversationTap: _openConversation,
-                                          onMarkerTap: _openMarkerConversation,
-                                          onExportAll: (conversations) => _exportAll(batch, conversations),
-                                          onDeleteDay: (toDelete, toDeleteDiscards) => _deleteDayConversations(
-                                            batch,
-                                            toDelete,
-                                            toDeleteDiscards,
-                                          ),
-                                          onDeleteAllDiscards: (toDeleteDiscards) => _deleteAllDiscards(
-                                            batch,
-                                            toDeleteDiscards,
-                                          ),
-                                          onDeleteMarkerConversation: _deleteMarkerConversation,
-                                          onRecoverDiscard: controller.recoverDiscard,
-                                          onDeleteDiscard: controller.deleteDiscard,
-                                          activeSelectionType:
-                                              (_inSelectionMode && batch.dateString == _selDate) ? _selType : null,
-                                          selectedIds: _selIds,
-                                          onEnterSelection: (type, id) => _enterSelection(batch.dateString, type, id),
-                                          onToggleSelection: _toggleSelection,
-                                        );
-                                      },
-                                    ),
-                            );
-                          },
+                                );
+                              },
+                            ),
+                      // Back-to-top FAB overlays the list (normal browse only).
+                      if (!_showMarkersOnly && !_inSelectionMode)
+                        Positioned(
+                          right: 16,
+                          bottom: 16,
+                          child: _buildBackToTop(),
                         ),
+                    ],
+                  ),
                 ),
                 // Floating action pill — in-flow below the list so it shrinks
                 // the viewport (last row stays tappable) instead of overlaying.
                 SafeArea(
                   top: false,
-                  child: AnimatedSize(
-                    duration: const Duration(milliseconds: 180),
-                    curve: Curves.easeOut,
-                    child: _inSelectionMode ? _buildSelectionBar(controller) : const SizedBox.shrink(),
+                  // axisAlignment 1.0 anchors the reveal to the bottom edge, so
+                  // the bar slides up from the bottom on enter and back down on
+                  // exit, while still shrinking the list as it grows.
+                  child: SizeTransition(
+                    sizeFactor: _selBarCurve,
+                    axisAlignment: 1.0,
+                    child: _buildSelectionBar(controller),
                   ),
                 ),
               ],
