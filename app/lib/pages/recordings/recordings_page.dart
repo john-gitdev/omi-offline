@@ -669,7 +669,8 @@ class _RecordingsPageState extends State<RecordingsPage> {
                     }
 
                     // No bins left, only an open draft: force-finalizing cuts the
-                    // conversation at the draft's end. Show that end time and confirm.
+                    // conversation at its current end. Show the estimated end time
+                    // when we have one; otherwise just confirm finalizing early.
                     final end = controller.draftEndTime;
                     final endLabel = end != null
                         ? DateFormat(SharedPreferencesUtil().use24HourTime ? 'HH:mm' : 'h:mm a').format(end)
@@ -685,7 +686,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
                         content: Text(
                           endLabel != null
                               ? 'This recording will be finalized with an end time of ~$endLabel.'
-                              : 'This recording will be finalized now.',
+                              : 'This finalizes the in-progress recording early.',
                           style: const TextStyle(color: Colors.white70, fontSize: 14),
                         ),
                         actions: [
