@@ -3465,34 +3465,37 @@ class RecordingsManager {
     return covered;
   }
 
-  /// Deletes raw .bin segments whose wall-clock window is already fully covered
-  /// by an existing recording. Idempotency guard against the mid-processing kill
-  /// path where VAD wrote a `recording_<ts>.wav` but the app was killed (e.g. by
-  /// an APK update) before the `delete_segments` IPC ran. Without this guard,
-  /// the leftover bins re-VAD on next launch and produce a near-duplicate .wav
-  /// with a slightly different VAD cut.
+  /// Deletes raw .bin segments that a finalized recording has already consumed.
+  /// Idempotency guard against the mid-processing kill path where VAD wrote a
+  /// `recording_<ts>.wav` but the app was killed (e.g. by an APK update) before
+  /// the `delete_segments` IPC ran. Without this guard, the leftover bins re-VAD
+  /// on next launch and produce a near-duplicate .wav with a slightly different
+  /// VAD cut.
   ///
-  /// Coverage rule per recording (finalized + drafts):
-  ///   left edge  = recStart - FILE_ROTATION_INTERVAL_MS (a bin's leading silence
-  ///                may have been trimmed by VAD; the bin can start up to one full
-  ///                firmware rotation interval before the first detected speech)
-  ///   right edge = capEnded ? recEnd                       (cap-ended: anything
-  ///                                                         past rec_end is
-  ///                                                         un-consumed audio)
-  ///              : recEnd + vadSplitSeconds * 1000ms       (silence-ended: VAD
-  ///                                                         observed this much
-  ///                                                         silence past rec_end,
-  ///                                                         so bin tail there is
-  ///                                                         provably silence)
+  /// Pruning is by EXACT bin membership, not a geometric time window. Every
+  /// finalized recording's `.meta` records the exact set of bins it consumed
+  /// (`relativeBins`, written by `_saveRecording`), so a bin is deleted iff:
+  ///   • some finalized recording lists it in `relativeBins`  (its audio is now
+  ///     safely re-encoded into the .m4a/.wav, so the raw copy is redundant), AND
+  ///   • no draft lists it      — an in-progress draft's last bin may still hold
+  ///     un-decoded tail that the next cycle will process, AND
+  ///   • no discard references it — the bin is the only copy of recoverable audio
+  ///     behind a ghost row's "recover" action.
   ///
-  /// Per-day coverage intervals are then merged (overlapping intervals collapse)
-  /// so a bin spanning two back-to-back recordings is recognized as fully covered.
+  /// This replaces the old geometric coverage window. That window padded each
+  /// recording with a 10-minute LEFT slack (to catch the bin straddling the
+  /// recording's start, whose silent head VAD trimmed) and a vadSplitSeconds
+  /// RIGHT slack (provably-silent tail). The left slack over-reached: a bin
+  /// sitting a few minutes BEFORE a recording — e.g. a short below-min-speech
+  /// discard — fell inside the window and was swept, silently breaking
+  /// recoverDiscard. The exact-membership rule needs no slack: the straddle bin
+  /// at a recording's start is still reclaimed because the recording lists it
+  /// (its speech frames were consumed; only the already-trimmed silent head is
+  /// lost, which is the intent), while unrelated neighbours are never touched.
+  /// Recordings whose legacy `.meta` predates the bin-list field contribute no
+  /// entries and so simply retain their bins (conservative).
   ///
-  /// A bin is deleted iff [binStart, binEnd] sits fully inside ONE merged
-  /// coverage interval. Bins that extend past the right edge are preserved
-  /// (this covers the cap-end case for the user's hour-long meeting recordings).
-  ///
-  /// use [coveredBinPaths] to skip them without deleting.
+  /// use [coveredBinPaths] to skip bins during VAD without deleting.
   ///
   /// Returns the number of bins deleted.
   static Future<int> pruneConsumedBins() async {
@@ -3500,61 +3503,48 @@ class RecordingsManager {
     final rawDir = Directory('${directory.path}/raw_segments');
     if (!await rawDir.exists()) return 0;
 
-    final merged = await _buildMergedCoverageIntervals();
-    if (merged.isEmpty) return 0;
-
-    // Opus on SD averages 81 B/frame × 50 fps. Used to derive bin duration
-    // from file size (sufficient for overlap math — exact frame walk is overkill).
-    const double opusBytesPerMs = 4050 / 1000;
-    // Bin file metadata header: 0xFFFFFFFB marker + 4-byte length + 28-byte payload.
-    const int binHeaderBytes = 36;
+    // Bins consumed by a finalized recording (candidates for deletion) vs. bins
+    // that must be preserved. `discardedRelBinPaths` seeds the protected set
+    // (ghost-row recovery); draft recordings add to it (in-progress tail).
+    // `silence_trimmed` is intentionally NOT protected — it is recording-adjacent
+    // trailing silence already folded into the recording, safe to drop.
+    final consumed = <String>{};
+    final protectedBins = await discardedRelBinPaths();
+    final recordingsDir = Directory('${directory.path}/recordings');
+    if (await recordingsDir.exists()) {
+      await for (final dayFolder in recordingsDir.list()) {
+        if (dayFolder is! Directory) continue;
+        await for (final entity in dayFolder.list()) {
+          if (entity is! File) continue;
+          final path = entity.path;
+          if (!(path.endsWith('.wav') || path.endsWith('.m4a')) || path.contains('.tmp.')) continue;
+          final conv = Conversation.fromFile(entity);
+          if (path.contains('_draft.')) {
+            protectedBins.addAll(conv.relativeBins); // in-progress: keep every bin it touches
+          } else {
+            consumed.addAll(conv.relativeBins);
+          }
+        }
+      }
+    }
+    final deletable = consumed.difference(protectedBins);
+    if (deletable.isEmpty) return 0;
 
     int deletedCount = 0;
     final touchedFolders = <Directory>{};
     await for (final folder in rawDir.list()) {
       if (folder is! Directory) continue;
       final folderName = p.basename(folder.path);
-      // session_<hex>/ holds pre-time-sync bins (uptime ticks, not UTC) — we
-      // can't derive a wall-clock window for them, so leave them alone.
-      if (folderName.startsWith('session_') || folderName.startsWith('unknown_') || folderName.startsWith('.')) {
-        continue;
-      }
+      if (folderName.startsWith('.')) continue;
       await for (final binEntity in folder.list()) {
         if (binEntity is! File || !binEntity.path.endsWith('.bin')) continue;
         final binName = p.basename(binEntity.path);
-        final parts = binName.split('.').first.split('_');
-        if (parts.isEmpty) continue;
-        final timerStart = int.tryParse(parts.first);
-        // 946684800 = 2000-01-01 epoch sec; smaller values are uptime ticks
-        if (timerStart == null || timerStart < 946684800) continue;
-        int binSize;
-        try {
-          binSize = await binEntity.length();
-        } catch (_) {
-          continue;
-        }
-        if (binSize <= binHeaderBytes) continue;
-        final binStartMs = timerStart * 1000;
-        // Use ceil so the bin-end estimate slightly overshoots — keeps the
-        // "fully inside" check conservative (a bin we can't be 100% sure is
-        // covered will survive).
-        final binDurationMs = (((binSize - binHeaderBytes) / opusBytesPerMs)).ceil();
-        final binEndMs = binStartMs + binDurationMs;
-
-        bool covered = false;
-        for (final iv in merged) {
-          if (binStartMs >= iv[0] && binEndMs <= iv[1]) {
-            covered = true;
-            break;
-          }
-        }
-        if (!covered) continue;
-
+        if (!deletable.contains('$folderName/$binName')) continue;
         try {
           await binEntity.delete();
           deletedCount++;
           touchedFolders.add(folder);
-          Logger.debug('RecordingsManager: pruneConsumedBins deleted $binName (covered by recording window)');
+          Logger.debug('RecordingsManager: pruneConsumedBins deleted $binName (consumed by a finalized recording)');
         } catch (e) {
           Logger.error('RecordingsManager: pruneConsumedBins failed to delete ${binEntity.path}: $e');
         }
