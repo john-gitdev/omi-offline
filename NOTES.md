@@ -231,17 +231,34 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
 
 **Current values:**
 ```c
-#define SD_REQ_QUEUE_MSGS  100   // main audio write queue depth
+#define SD_REQ_QUEUE_MSGS  150   // main audio write queue depth
 #define SD_PRIO_QUEUE_MSGS  10   // priority queue (control requests)
 #define WRITE_BATCH_COUNT  100   // frames accumulated per write batch
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)  // fsync every 60s
 ```
 
-Each slot in `sd_msgq` holds one `sd_req_t`. The queue is backed by `K_MSGQ_DEFINE` (static allocation). The worker accumulates up to `WRITE_BATCH_COUNT` (100) frames into a batch buffer before flushing to LittleFS.
+Each slot in `sd_msgq` holds one `sd_req_t`, which embeds a `uint8_t buf[MAX_WRITE_SIZE]` (440 B) directly — so the queue's RAM cost is ~`SD_REQ_QUEUE_MSGS × 440 B`. At 150 that's **~66 KB** — the single largest RAM consumer in the app core (next is `write_batch_buffer` at 44 KB). A `k_mem_slab` refactor (pointer-in-slot instead of embedded buffer) was tried and **reverted** — same buffer depth = same RAM, no win. The only lever to shrink the queue's RAM is the slot **count**: each slot dropped frees ~440 B.
 
 `SD_FSYNC_INTERVAL_MS` (60 s) controls durability: data is in the LittleFS write cache until fsync fires. A hard power-off within this window risks losing up to 60 s of audio, but LittleFS's copy-on-write metadata ensures the filesystem itself stays consistent.
 
 The early-flush path (`sd_boot_ready` gate + high-watermark logic) prevents the queue from filling during the boot `lfs_fs_gc` pre-warm and during bursts of rapid audio ingestion.
+
+### Why 150 (history — do not re-litigate without data)
+
+The depth has been a repeated tug-of-war between RAM and **audio frame drops during BLE sync**. Trajectory (git):
+
+| Commit / date | Value | Reason |
+|---|---|---|
+| LittleFS migration | 100 | initial |
+| `2c6db1be8` (Mar 23) | **25** | RAM recovery (−34 KB); claimed "25 slots = 500 ms backpressure" |
+| `443d4c860` (BLE sync work) | 100 | bumped back during sync/stability work |
+| `5d6d20fe8` (Apr 3) | **200** | **"to prevent frame drops"** (companion: `a1bf73ef8` "diagnose SD queue contention during BLE sync") |
+| `252d3b0f1` (oo-1.4.0) | 100 | RAM |
+| `b577639bc` (Jun 8) | **150** | settled compromise — RAM-affordable, still above the depth that dropped |
+
+**The binding constraint is NOT steady-state SD stalls — it's read/write contention during phone sync.** Audio writes and BLE file reads share one SD-worker thread; while the worker serves a read burst it stops draining the write queue, which then fills at the audio ingest rate and drops frames. A bigger queue absorbs those diversions. **100 demonstrably dropped frames during sync (that's why it went to 200); 150 did not.** Do not drop below 150 without re-running a heavy sync-while-recording test with the drop counters (see "SD Write Drop Counters" section).
+
+**Rate note (the "2–4 s vs 13 s" confusion):** the Mar 23 commit assumed 25 slots = 500 ms (≈50 blocks/s → 100 = 2 s, 200 = 4 s). On-device measurement (`audio/stats.txt`) showed ~5,100 B/s, i.e. ~11.6 blocks/s → 150 = ~13 s, 100 = ~8.6 s. The queue holds **encoded Opus**, not PCM, so it fills ~6× slower than the 32 KB/s mic rate. The two estimates were never reconciled, but the *observed* drops at 100 settle the decision regardless.
 
 ---
 
@@ -459,57 +476,70 @@ Originally built to validate a deferred proposal ("Sequence & Sync" marker re-sy
 
 That proposal's complexity is only justified **if SD write drops actually happen**. These counters were built to measure that. **Result: zero drops across the entire usage history since they shipped** — so the Sequence & Sync proposal was dropped as solving a non-problem (the section was removed from `IDEAS.md` on 2026-05-28). The counters are retained as a permanent cheap canary: if a future firmware change reintroduces drops, the Debug Tools page surfaces it instead of silently shipping marker drift.
 
-### Three counters, three failure modes
+### Counters and their failure modes
+
+These span the whole capture→card pipeline. In pipeline order (mic → encoder → SD queue → card):
 
 | Counter | Source | Fires when |
 |---|---|---|
-| `block_drops` | `transport.c::write_custom_packet_to_storage` | `write_to_file` returns ≠ `MAX_WRITE_SIZE` — the entire 440 B block is lost (~5 Opus frames ≈ 100 ms of audio). This is the headline number — exactly the loss the marker-drift proposal solved for. |
-| `sd_stream_drops` | `sd_card.c::write_to_file` (~line 589) | `k_msgq_put(&sd_msgq, …)` times out after a 1–5 ms retry — a single audio frame is lost. This is the upstream signal; most block drops are downstream of a stream drop. |
-| `sd_boot_drops` | `sd_card.c::write_to_file` boot path | An audio frame arrives before the SD mount + `lfs_fs_gc` + file-open completes. Separate cold-start issue, **not** relevant to mid-stream drift. |
+| `codec_drops` | `codec.c::codec_receive_pcm` | The codec ring buffer (`AUDIO_BUFFER_SAMPLES`, 9600 = 0.6 s of PCM) is full when a mic chunk arrives — the **encoder** is CPU-starved. Each drop ≈ one mic chunk (~100 ms). This is the *capture-stage* loss; it's the number that tells you whether `AUDIO_BUFFER_SAMPLES` is too small. Added 2026-06-10. |
+| `sd_stream_drops` | `sd_card.c::write_to_file` | `k_msgq_put(&sd_msgq, …)` times out after a 1–5 ms retry — a single audio frame is lost. Upstream signal; most block drops are downstream of a stream drop. |
+| `block_drops` | `transport.c::write_custom_packet_to_storage` | `write_to_file` returns ≠ `MAX_WRITE_SIZE` — the entire 440 B block is lost (~5 Opus frames ≈ 100 ms). Headline number; exactly the loss the marker-drift proposal solved for. |
+| `sd_boot_drops` | `sd_card.c::write_to_file` boot path | An audio frame arrives before SD mount + `lfs_fs_gc` + file-open completes. Cold-start issue, **not** relevant to mid-stream drift. |
+| `conn_fails` | `transport.c::_transport_connected` | A BLE connection establishment fails (HCI error). Flash-persisted across reboots (survives the power-cycle needed to reconnect and read it). Plus `last_failed_adv_slow` = whether the last fail was during slow (1 s) advertising. |
 
 ### BLE characteristic `0x19B10062` (diagnostics service)
 
-Read-only. Returns **20 bytes, little-endian**, five `u32` fields in this order:
+Read-only. Returns **32 bytes, little-endian**, eight `u32` fields. Fields were appended over time, so an older app reads a shorter prefix and ignores the rest; the firmware always returns the full current length.
 
 ```
-[ block_drops u32 ][ last_drop_uptime_ms u32 ][ sd_stream_drops u32 ][ sd_boot_drops u32 ][ now_uptime_ms u32 ]
+offset:  0            4                  8                12             16
+        [ block_drops ][ last_drop_up_ms ][ sd_stream_drops ][ sd_boot_drops ][ now_uptime_ms ]
+offset: 20            24                  28
+        [ conn_fails  ][ last_failed_slow ][ codec_drops ]
 ```
 
-- `block_drops` — see table above.
-- `last_drop_uptime_ms` — device uptime (ms) of the most recent block drop; 0 if none. Compare against `now_uptime_ms` to tell "recent" from "early-boot, long ago."
-- `sd_stream_drops` — single-frame msgq-saturation drops.
-- `sd_boot_drops` — cold-start pre-mount drops.
-- `now_uptime_ms` — current device uptime, the reference clock for `last_drop_uptime_ms`.
+- `block_drops` / `sd_stream_drops` / `sd_boot_drops` / `codec_drops` — see table above.
+- `last_drop_uptime_ms` (offset 4) — device uptime (ms) of the most recent **block** drop; 0 if none. Compare against `now_uptime_ms` to tell "recent" from "early-boot, long ago."
+- `now_uptime_ms` (offset 16) — current device uptime, the reference clock for `last_drop_uptime_ms`.
+- `conn_fails` (offset 20) — BLE connection-establishment failures (flash-persisted). `last_failed_slow` (offset 24) — 1 if the last fail was during slow advertising.
+- `codec_drops` (offset 28) — capture-stage drops. Added 2026-06-10 (firmware grew 28 → 32 bytes).
 
-All counters are cumulative since boot. They reset only on device reboot — there is no firmware reset command (the originally-planned `0x19B10063` "reset stats" write was never added; baseline subtraction is done app-side instead).
+**History of the length:** 20 B (legacy, 5 drop fields) → 28 B (+ `conn_fails` + `last_failed_slow`) → 32 B (+ `codec_drops`). Keep appending; never reorder.
+
+All counters are cumulative since boot (except `conn_fails`, which is flash-persisted across reboots). There is **no firmware reset command** — the planned `0x19B10063` "reset stats" write was never added. Reset is done **app-side by baseline subtraction** (see below).
 
 ### Firmware variables / internals
 
-- `transport.c`: `static atomic_t storage_block_drops` and `static atomic_t last_storage_drop_uptime_ms` (both `ATOMIC_INIT(0)`). Incremented together at the two `write_custom_packet_to_storage` failure sites (`atomic_inc` + `atomic_set(k_uptime_get())`). Exposed via `diagnostics_drops_read_handler`, registered as the last attribute in `diagnostics_service_attr[]`.
-- `sd_card.c`: `static atomic_t stat_dropped_frames` (stream drops) and `static atomic_t boot_dropped_frames` (boot drops). `SD_REQ_QUEUE_MSGS = 100` (sd_card.c:48) backs `K_MSGQ_DEFINE(sd_msgq, …)` — ~10 s of write buffer at 50 fps; typical SD GC stalls are 100–400 ms and won't saturate it. Accessors: `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`.
-- `sd_card.h`: declares `sd_get_stream_dropped_frames()` (line 160) and `sd_get_boot_dropped_frames()`.
+- `transport.c`: `static atomic_t storage_block_drops` and `static atomic_t last_storage_drop_uptime_ms` (both `ATOMIC_INIT(0)`). Incremented together at the two `write_custom_packet_to_storage` failure sites (`atomic_inc` + `atomic_set(k_uptime_get())`). `conn_fails` = `failed_conn_count` atomic. Exposed via `diagnostics_drops_read_handler` (packs all 32 bytes), registered as the last attribute in `diagnostics_service_attr[]`.
+- `codec.c`: `static atomic_t codec_dropped_count` (`ATOMIC_INIT(0)`), incremented at both `codec_receive_pcm` failure sites (ring-full and partial-write). Accessor `codec_get_dropped_frames()` declared in `codec.h`; read by `transport.c` into the diagnostics payload.
+- `sd_card.c`: `static atomic_t stat_dropped_frames` (stream drops) and `static atomic_t boot_dropped_frames` (boot drops). `SD_REQ_QUEUE_MSGS = 150` (sd_card.c:52) backs `K_MSGQ_DEFINE(sd_msgq, …)` — see "SD Write Queue Configuration" for why 150. Accessors: `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`.
+- `sd_card.h`: declares `sd_get_stream_dropped_frames()` and `sd_get_boot_dropped_frames()`.
 
 ### App side / how to use it
 
-1. Open the **Debug Tools** page (`SyncPage`). Look at the **"SD Write Drops"** card (`_buildDropStatsSection()`, sync_page.dart:797). It polls the characteristic every 2 s via a `Timer.periodic` started in `initState`.
-2. State fields: `_dropStats` (latest read), `_dropBaseline` (snapshot for delta measurement), `_dropsUnsupported` (true if the char read fails — older firmware without the characteristic).
-3. **"Snapshot baseline"** button stores the current counters into `_dropBaseline`; the card then shows the delta since the snapshot — use this to measure drops over a specific window (e.g. an active sync-while-recording stress test) without rebooting the device.
-4. Healthy reading: all four drop counts at 0 (or unchanged from baseline). Any movement means real audio loss — investigate per the table above (`sd_stream_drops` moving = genuine msgq saturation → the marker-drift concern is back on the table; `boot_drops` moving = cold-start window leak, a separate fix).
+1. Settings → **Sync** page (`SyncPage`). Turn on the **"Show Diagnostics"** toggle (`SharedPreferencesUtil().showSdWriteDrops`, off by default). The **Diagnostics** card (`_buildDropStatsSection()`) appears and polls the characteristic every 2 s via a `Timer.periodic`.
+2. State fields: `_dropStats` (latest read), `_dropBaseline` (SD/codec snapshot for delta), `_connFailBaseline` (BLE snapshot), `_dropsUnsupported` (true if the char read fails — older firmware).
+3. Rows shown: `440 B blocks dropped`, `Audio frames dropped (SD queue)`, **`Audio dropped pre-encode (codec)`**, `Boot-window frame drops`, `Last block drop`, `Device uptime`, `BLE connect failures`, `Last fail adv mode`.
+4. **One button — "Reset all diagnostics"** (`_resetAllDiagnostics()`) — snapshots a fresh baseline for *every* counter (SD/block/codec drops + BLE fails) at once. The header flips to **"Diagnostics (since reset)"** and all rows restart from 0. This is an **app-side baseline subtraction**, not a firmware zero — the device counters keep climbing; the app shows the delta. SD/codec baselines auto-clear on device reboot (those counters reset to 0 anyway); the BLE baseline persists (firmware counter is flash-backed). Baseline pref keys: `_kBaselineBlocks` / `_kBaselineFrames` / `_kBaselineBoot` / `_kBaselineCodec` / `_kBaselineConnFail`.
+5. Healthy reading: all drop counts at 0 (or unchanged from baseline). Movement means real audio loss — investigate per the table above. **`codec_drops` moving = the encoder is CPU-starved → bump `AUDIO_BUFFER_SAMPLES` (9600 → 16000) — this is the only data that justifies that change.** `sd_stream_drops` moving = msgq saturation (marker-drift concern returns); `boot_drops` moving = cold-start leak.
 
 ### Forcing drops for a controlled test
 
-- Run an active BLE sync **while recording**: the SD-worker retry budget tightens (`K_MSEC(5)` → `K_MSEC(1)`) and sync reads compete with writes on the same worker thread. ~30–60 min usually enough to provoke something if the system is marginal.
-- Or temporarily drop `SD_REQ_QUEUE_MSGS` from 100 → 8 in `sd_card.c` and rebuild — forces drops within minutes. This only proves the counters fire; it says nothing about real-world frequency. Revert after verifying.
+- Run an active BLE sync **while recording**: the SD-worker retry budget tightens (`K_MSEC(5)` → `K_MSEC(1)`) and sync reads compete with writes on the same worker thread. ~30–60 min usually enough to provoke something if the system is marginal. This is the realistic `block_drops` / `sd_stream_drops` provocation.
+- Or temporarily drop `SD_REQ_QUEUE_MSGS` from 150 → 8 in `sd_card.c` and rebuild — forces SD drops within minutes. Proves the counters fire; says nothing about real-world frequency. Revert after.
+- For `codec_drops`: temporarily shrink `AUDIO_BUFFER_SAMPLES` (config.h) to a tiny value (e.g. 800) and/or add CPU load; the encoder will starve and drop. Revert after.
 
 ### Code locations
 
-- `omi/firmware/omi/src/lib/core/transport.c` — `storage_block_drops` / `last_storage_drop_uptime_ms` (declared ~line 293), `diagnostics_drops_read_handler` (~line 341), char registration in `diagnostics_service_attr[]` (UUID encode ~line 317), increment sites in `write_custom_packet_to_storage` (~lines 1157, 1187).
-- `omi/firmware/omi/src/sd_card.c` — `stat_dropped_frames` / `boot_dropped_frames` atomics (~line 267), `SD_REQ_QUEUE_MSGS` (line 48), `sd_get_stream_dropped_frames()` (~line 2188), `sd_get_boot_dropped_frames()` (~line 2183).
-- `omi/firmware/omi/src/lib/core/sd_card.h` — accessor declarations (line 160).
-- `app/lib/services/devices/device_drop_stats.dart` — `DeviceDropStats` model + 20-byte LE parsing.
-- `app/lib/services/devices/omi_connection.dart` — `diagnosticsDropsCharacteristicUuid` (line 53), `performGetDropStats()` (line 186).
-- `app/lib/services/devices/device_connection.dart` — abstract `getDropStats()` (line 89).
-- `app/lib/pages/settings/sync_page.dart` — state fields (lines 37–40), 2 s polling in `initState`, `_buildDropStatsSection()` (line 797).
+- `omi/firmware/omi/src/lib/core/transport.c` — `storage_block_drops` / `last_storage_drop_uptime_ms` (declared ~line 293), `diagnostics_drops_read_handler` (packs 32 bytes incl. `codec_get_dropped_frames()`), char registration in `diagnostics_service_attr[]`, increment sites in `write_custom_packet_to_storage`.
+- `omi/firmware/omi/src/lib/core/codec.c` / `codec.h` — `codec_dropped_count` atomic + `codec_get_dropped_frames()`; increments in `codec_receive_pcm`.
+- `omi/firmware/omi/src/sd_card.c` — `stat_dropped_frames` / `boot_dropped_frames` atomics, `SD_REQ_QUEUE_MSGS` (line 52), `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`.
+- `omi/firmware/omi/src/lib/core/sd_card.h` — accessor declarations.
+- `app/lib/services/devices/device_drop_stats.dart` — `DeviceDropStats` model (incl. `codecFrameDrops`).
+- `app/lib/services/devices/omi_connection.dart` — `diagnosticsDropsCharacteristicUuid` (line 53), `performGetDropStats()` (32-byte LE parsing, codec at offset 28).
+- `app/lib/services/devices/device_connection.dart` — abstract `getDropStats()`.
+- `app/lib/pages/settings/sync_page.dart` — `showSdWriteDrops` toggle, baseline keys (incl. `_kBaselineCodec`), `_buildDropStatsSection()`, `_resetAllDiagnostics()`.
 
 ### Removal plan (if ever decided the canary isn't worth keeping)
 
