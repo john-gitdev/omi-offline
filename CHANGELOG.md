@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.22.3
+
+- **Fix: "Conversation in progress" banner no longer shows a future end time.** The estimated end is now derived from the most recent bin (its timestamp plus a size-estimated duration) instead of the draft's decoded length, which could read minutes into the future when a silence gap was padded. When no timestamped bin is available, the banner and finalize dialog drop the time and simply offer to finalize the recording early.
+
 ### 0.22.2
 
 - **New: codec drop counter in Diagnostics.** The Diagnostics card now shows audio dropped before encode (capture-stage starvation), alongside the existing SD-queue and BLE drop counters. Requires firmware `oo-1.9.6`.
