@@ -2,6 +2,12 @@
 
 ## App
 
+### 0.22.6
+
+- **Fix: "Conversation in progress" banner no longer shows a stale, too-early time.** The "Captured through" estimate now comes from the in-progress draft's own end instead of whichever raw bin happened to still be on disk — which could be an unrelated old discard (e.g. showing "~4:50 AM" long after that segment had been discarded). The time is clamped to now so a padded silence gap can't read into the future.
+- **Fix: discarded segments stay recoverable.** Cleanup of already-decoded raw audio now deletes only the bins a finalized recording actually consumed (tracked exactly per recording), instead of any bin sitting inside a 10-minute window around it. Previously a short discard a few minutes before a recording could be swept up, silently turning its ghost row into a dead "recover" button.
+- **New: "Delete Discards" button** on each day card (between Export All and Delete Day) clears that day's discarded segments and their audio in one tap, with confirmation. Only appears when the day has discards, and respects the active Main/Hidden/All tab.
+
 ### 0.22.5
 
 - **Fix: recording could silently stop until a manual reboot.** Reverted the SD deep power-gate (added in oo-1.9.6): it fully powered the storage chip off after idle and remounted on wake, but a failed wake-remount latched the write path into a blocked state, dropping all audio until the device was rebooted. Idle power saving now uses SPI-bus suspend only (the card stays mounted and powered), matching the upstream firmware; the NAND powers fully off only at shutdown. Requires firmware `oo-1.9.8`.
