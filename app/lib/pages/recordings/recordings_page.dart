@@ -212,6 +212,35 @@ class _RecordingsPageState extends State<RecordingsPage> {
     }
   }
 
+  Future<void> _deleteAllDiscards(Batch batch, List<DiscardRecord> discards) async {
+    if (discards.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final count = discards.length;
+
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        c,
+        () => Navigator.of(c).pop(false),
+        () => Navigator.of(c).pop(true),
+        'Delete Discards',
+        'This will permanently delete $count discarded ${count == 1 ? 'segment' : 'segments'} for ${batch.dateString}, '
+            'including their audio. They can no longer be recovered. This cannot be undone.',
+        confirmText: 'Delete',
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await _controller.deleteDiscards(discards);
+    } catch (e) {
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Error deleting discards: $e')),
+        );
+      }
+    }
+  }
+
   Widget _buildFilterBubble(String label, RecordingFilterMode mode) {
     final selected = _filterMode == mode;
     return Expanded(
@@ -890,6 +919,10 @@ class _RecordingsPageState extends State<RecordingsPage> {
                                           onDeleteDay: (toDelete, toDeleteDiscards) => _deleteDayConversations(
                                             visibleBatches[batchIndex],
                                             toDelete,
+                                            toDeleteDiscards,
+                                          ),
+                                          onDeleteAllDiscards: (toDeleteDiscards) => _deleteAllDiscards(
+                                            visibleBatches[batchIndex],
                                             toDeleteDiscards,
                                           ),
                                           onDeleteConversation: _deleteConversation,
