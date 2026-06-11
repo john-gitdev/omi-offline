@@ -171,6 +171,17 @@ int app_sd_off(void);
 uint32_t write_to_file(uint8_t *data, uint32_t length);
 
 /**
+ * @brief Same as write_to_file() but tolerates a longer SD-queue stall (≤500ms)
+ *        before dropping. Use for blocks that carry a marker frame, which must
+ *        not be lost to transient sd_msgq saturation.
+ *
+ * @param data Buffer containing data to write
+ * @param length Number of bytes to write
+ * @return number of bytes written
+ */
+uint32_t write_to_file_blocking(uint8_t *data, uint32_t length);
+
+/**
  * @brief Read from a specific audio file
  *
  * @param filename Name of the file to read from (e.g., "1234567890.txt")
