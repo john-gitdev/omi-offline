@@ -136,14 +136,63 @@ class MarkerSubEntry extends StatelessWidget {
   }
 }
 
+/// Applies the active filter to a batch, returning the recordings and discards
+/// actually visible in the current tab. Shared by [BatchCard] (to render) and
+/// the page's selection bar (so "Select All" sees exactly the rows on screen).
+({List<Conversation> recordings, List<DiscardRecord> discards}) filterBatchRows(
+  Batch batch,
+  RecordingFilterMode filterMode,
+  int minFilterSeconds,
+) {
+  final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
+  final recordings = minFilterSeconds > 0
+      ? switch (filterMode) {
+          RecordingFilterMode.visible => conversations.where((c) => c.duration.inSeconds >= minFilterSeconds).toList(),
+          RecordingFilterMode.hidden => conversations.where((c) => c.duration.inSeconds < minFilterSeconds).toList(),
+          RecordingFilterMode.all => conversations,
+        }
+      : conversations;
+  final discards = minFilterSeconds > 0
+      ? switch (filterMode) {
+          RecordingFilterMode.visible => batch.discards.where((d) => d.duration.inSeconds >= minFilterSeconds).toList(),
+          RecordingFilterMode.hidden => batch.discards.where((d) => d.duration.inSeconds < minFilterSeconds).toList(),
+          RecordingFilterMode.all => [...batch.discards],
+        }
+      : [...batch.discards];
+  return (recordings: recordings, discards: discards);
+}
+
+/// Leading check-circle shown on selectable rows while in selection mode.
+Widget _selectionCheck(bool selected) => Padding(
+      padding: const EdgeInsets.only(right: 12),
+      child: Icon(
+        selected ? Icons.check_circle : Icons.circle_outlined,
+        color: selected ? Colors.deepPurpleAccent : Colors.grey.shade600,
+        size: 22,
+      ),
+    );
+
 class ConversationTile extends StatelessWidget {
   final Conversation conversation;
   final List<MarkerConversation> markers;
   final Widget uploadIcon;
   final void Function(MarkerConversation) onMarkerTap;
   final void Function(Conversation) onConversationTap;
-  final void Function(Conversation) onDeleteConversation;
   final void Function(MarkerConversation) onDeleteMarkerConversation;
+
+  /// True when this card is in selection mode (of any type). When the active
+  /// type is *not* recording, recording rows render dimmed and inert.
+  final bool selectionActive;
+
+  /// True when the active selection type is recording, so this row is pickable.
+  final bool selectable;
+  final bool selected;
+
+  /// Long-press in normal mode → start a recording-scoped selection here.
+  final VoidCallback onEnterSelection;
+
+  /// Tap/long-press while selecting → toggle this row in/out of the set.
+  final VoidCallback onToggleSelection;
 
   const ConversationTile({
     super.key,
@@ -152,8 +201,12 @@ class ConversationTile extends StatelessWidget {
     required this.uploadIcon,
     required this.onMarkerTap,
     required this.onConversationTap,
-    required this.onDeleteConversation,
     required this.onDeleteMarkerConversation,
+    this.selectionActive = false,
+    this.selectable = false,
+    this.selected = false,
+    required this.onEnterSelection,
+    required this.onToggleSelection,
   });
 
   bool _isAdjustmentMode() {
@@ -178,17 +231,21 @@ class ConversationTile extends StatelessWidget {
     final subtitle =
         isPassthrough ? conversation.durationLabel : '${conversation.durationLabel}  ·  ${conversation.sizeLabel}';
     final isAdj = _isAdjustmentMode();
-    return Column(
+    final dimmed = selectionActive && !selectable;
+    Widget tile = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         InkWell(
-          onTap: isPassthrough ? null : () => onConversationTap(conversation),
-          onLongPress: () => onDeleteConversation(conversation),
+          onTap: selectionActive
+              ? (selectable ? onToggleSelection : null)
+              : (isPassthrough ? null : () => onConversationTap(conversation)),
+          onLongPress: selectionActive ? (selectable ? onToggleSelection : null) : onEnterSelection,
           borderRadius: BorderRadius.circular(8),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
             child: Row(
               children: [
+                if (selectionActive && selectable) _selectionCheck(selected),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -217,22 +274,26 @@ class ConversationTile extends StatelessWidget {
                     ],
                   ),
                 ),
-                if (isPassthrough) ...[
-                  Icon(Icons.send_rounded, size: 16, color: Colors.deepPurpleAccent.withValues(alpha: 0.8)),
-                  const SizedBox(width: 6),
-                ] else ...[
-                  uploadIcon,
-                  FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
+                if (!selectionActive) ...[
+                  if (isPassthrough) ...[
+                    Icon(Icons.send_rounded, size: 16, color: Colors.deepPurpleAccent.withValues(alpha: 0.8)),
+                    const SizedBox(width: 6),
+                  ] else ...[
+                    uploadIcon,
+                    FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade600, size: 14),
+                  ],
                 ],
               ],
             ),
           ),
         ),
-        if (!isPassthrough)
+        if (!selectionActive && !isPassthrough)
           ...sortedMarkers.map((mc) =>
               MarkerSubEntry(mc: mc, onTap: () => onMarkerTap(mc), onLongPress: () => onDeleteMarkerConversation(mc))),
       ],
     );
+    if (dimmed) tile = Opacity(opacity: 0.35, child: IgnorePointer(child: tile));
+    return tile;
   }
 }
 
@@ -248,7 +309,28 @@ class GhostRow extends StatelessWidget {
   final DiscardRecord discard;
   final VoidCallback onTap;
 
-  const GhostRow({super.key, required this.discard, required this.onTap});
+  /// True when this card is in selection mode (of any type). When the active
+  /// type is *not* ghost, discard rows render dimmed and inert.
+  final bool selectionActive;
+
+  /// True when the active selection type is ghost, so this row is pickable.
+  final bool selectable;
+  final bool selected;
+
+  /// Long-press in normal mode → start a ghost-scoped selection here.
+  final VoidCallback onEnterSelection;
+  final VoidCallback onToggleSelection;
+
+  const GhostRow({
+    super.key,
+    required this.discard,
+    required this.onTap,
+    this.selectionActive = false,
+    this.selectable = false,
+    this.selected = false,
+    required this.onEnterSelection,
+    required this.onToggleSelection,
+  });
 
   static String _durationLabel(Duration d) {
     final h = d.inHours;
@@ -267,13 +349,19 @@ class GhostRow extends StatelessWidget {
         : discard.reason == 'silence_only'
             ? 'no speech detected'
             : 'below minimum length';
-    return InkWell(
-      onTap: onTap,
+    final dimmed = selectionActive && !selectable;
+    // Ghost rows are grey by default; once they become selectable, brighten
+    // them so it's clear they're now interactive picks.
+    final active = selectionActive && selectable;
+    Widget row = InkWell(
+      onTap: selectionActive ? (selectable ? onToggleSelection : null) : onTap,
+      onLongPress: selectionActive ? (selectable ? onToggleSelection : null) : onEnterSelection,
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
         child: Row(
           children: [
+            if (selectionActive && selectable) _selectionCheck(selected),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -281,7 +369,7 @@ class GhostRow extends StatelessWidget {
                   Text(
                     timeRange,
                     style: TextStyle(
-                      color: Colors.grey.shade600,
+                      color: active ? Colors.white : Colors.grey.shade600,
                       fontSize: 15,
                       fontWeight: FontWeight.w400,
                     ),
@@ -289,16 +377,18 @@ class GhostRow extends StatelessWidget {
                   const SizedBox(height: 3),
                   Text(
                     '$subLabel  ·  $dur',
-                    style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+                    style: TextStyle(color: active ? Colors.grey.shade400 : Colors.grey.shade700, fontSize: 12),
                   ),
                 ],
               ),
             ),
-            FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade800, size: 12),
+            if (!selectionActive) FaIcon(FontAwesomeIcons.chevronRight, color: Colors.grey.shade800, size: 12),
           ],
         ),
       ),
     );
+    if (dimmed) row = Opacity(opacity: 0.35, child: IgnorePointer(child: row));
+    return row;
   }
 }
 
@@ -389,10 +479,20 @@ class BatchCard extends StatelessWidget {
   final void Function(List<Conversation>) onExportAll;
   final void Function(List<Conversation>, List<DiscardRecord>) onDeleteDay;
   final void Function(List<DiscardRecord>) onDeleteAllDiscards;
-  final void Function(Conversation) onDeleteConversation;
   final void Function(MarkerConversation) onDeleteMarkerConversation;
   final Future<void> Function(DiscardRecord) onRecoverDiscard;
   final Future<void> Function(DiscardRecord) onDeleteDiscard;
+
+  /// Non-null only when this card is the active selection target; its value is
+  /// the type being selected. Null elsewhere (normal mode / other days).
+  final RecordingRowType? activeSelectionType;
+
+  /// IDs currently selected — recording paths or discard ids depending on type.
+  final Set<String> selectedIds;
+
+  /// Long-press on a row → enter selection scoped to (this day, that type, id).
+  final void Function(RecordingRowType, String) onEnterSelection;
+  final void Function(String) onToggleSelection;
 
   const BatchCard({
     super.key,
@@ -408,38 +508,31 @@ class BatchCard extends StatelessWidget {
     required this.onExportAll,
     required this.onDeleteDay,
     required this.onDeleteAllDiscards,
-    required this.onDeleteConversation,
     required this.onDeleteMarkerConversation,
     required this.onRecoverDiscard,
     required this.onDeleteDiscard,
+    this.activeSelectionType,
+    this.selectedIds = const {},
+    required this.onEnterSelection,
+    required this.onToggleSelection,
   });
 
   @override
   Widget build(BuildContext context) {
-    final conversations = [...batch.finalizedRecordings]..sort((a, b) => b.startTime.compareTo(a.startTime));
     final minFilterSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
-    final filtered = minFilterSeconds > 0
-        ? switch (filterMode) {
-            RecordingFilterMode.visible =>
-              conversations.where((c) => c.duration.inSeconds >= minFilterSeconds).toList(),
-            RecordingFilterMode.hidden => conversations.where((c) => c.duration.inSeconds < minFilterSeconds).toList(),
-            RecordingFilterMode.all => conversations,
-          }
-        : conversations;
-    // Apply the same filter to ghost rows so short discards land in the
-    // hidden tab alongside short recordings instead of cluttering the
-    // visible tab. With no minimum set, all discards show in all tabs.
-    final discards = minFilterSeconds > 0
-        ? switch (filterMode) {
-            RecordingFilterMode.visible =>
-              batch.discards.where((d) => d.duration.inSeconds >= minFilterSeconds).toList(),
-            RecordingFilterMode.hidden => batch.discards.where((d) => d.duration.inSeconds < minFilterSeconds).toList(),
-            RecordingFilterMode.all => [...batch.discards],
-          }
-        : [...batch.discards];
+    // Shared with the page's selection bar so "Select All" sees exactly these
+    // rows. Ghosts get the same filter so short discards land in the hidden tab
+    // alongside short recordings; with no minimum set, all discards show.
+    final rows = filterBatchRows(batch, filterMode, minFilterSeconds);
+    final filtered = rows.recordings;
+    final discards = rows.discards;
     if (filtered.isEmpty && discards.isEmpty) {
       return const SizedBox.shrink();
     }
+
+    final inSelection = activeSelectionType != null;
+    final selectingRecordings = activeSelectionType == RecordingRowType.recording;
+    final selectingGhosts = activeSelectionType == RecordingRowType.ghost;
 
     // Time-sorted (newest first) merge of recordings and ghosts.
     final items = <_Row>[
@@ -467,6 +560,11 @@ class BatchCard extends StatelessWidget {
                 return GhostRow(
                   key: ValueKey('ghost_${d.id}'),
                   discard: d,
+                  selectionActive: inSelection,
+                  selectable: selectingGhosts,
+                  selected: selectedIds.contains(d.id),
+                  onEnterSelection: () => onEnterSelection(RecordingRowType.ghost, d.id),
+                  onToggleSelection: () => onToggleSelection(d.id),
                   onTap: () => showDiscardSheet(
                     context,
                     d,
@@ -482,8 +580,12 @@ class BatchCard extends StatelessWidget {
               return ConversationTile(
                 conversation: c,
                 markers: markers,
+                selectionActive: inSelection,
+                selectable: selectingRecordings,
+                selected: selectedIds.contains(c.file.path),
+                onEnterSelection: () => onEnterSelection(RecordingRowType.recording, c.file.path),
+                onToggleSelection: () => onToggleSelection(c.file.path),
                 onConversationTap: onConversationTap,
-                onDeleteConversation: onDeleteConversation,
                 onDeleteMarkerConversation: onDeleteMarkerConversation,
                 uploadIcon: UploadIconButton(
                   conversation: c,
@@ -495,44 +597,47 @@ class BatchCard extends StatelessWidget {
                 onMarkerTap: onMarkerTap,
               );
             }),
-            const SizedBox(height: 4),
-            const Divider(color: Color(0xFF2C2C2E), height: 1),
-            const SizedBox(height: 4),
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final showText = constraints.maxWidth > 340;
-                return Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    TextButton.icon(
-                      key: Key('export_all_${batch.dateString}'),
-                      onPressed: () => onExportAll(filtered),
-                      icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 13, color: Colors.grey.shade400),
-                      label: showText
-                          ? Text('Export All', style: TextStyle(color: Colors.grey.shade400, fontSize: 13))
-                          : const SizedBox.shrink(),
-                    ),
-                    if (discards.isNotEmpty)
-                      TextButton.icon(
-                        key: Key('delete_discards_${batch.dateString}'),
-                        onPressed: () => onDeleteAllDiscards(discards),
-                        icon: FaIcon(FontAwesomeIcons.ghost, size: 13, color: Colors.orange.shade300),
-                        label: showText
-                            ? Text('Del Discards', style: TextStyle(color: Colors.orange.shade300, fontSize: 13))
-                            : const SizedBox.shrink(),
+            // Shortcut row hides in selection mode — the floating pill is the
+            // sole action surface there.
+            if (!inSelection) ...[
+              const SizedBox(height: 4),
+              const Divider(color: Color(0xFF2C2C2E), height: 1),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  IconButton(
+                    key: Key('export_all_${batch.dateString}'),
+                    onPressed: () => onExportAll(filtered),
+                    tooltip: 'Export All',
+                    icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 16, color: Colors.grey.shade400),
+                  ),
+                  if (discards.isNotEmpty)
+                    IconButton(
+                      key: Key('delete_discards_${batch.dateString}'),
+                      onPressed: () => onDeleteAllDiscards(discards),
+                      tooltip: 'Delete Discards',
+                      icon: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          FaIcon(FontAwesomeIcons.ghost, size: 18, color: Colors.orange.shade300),
+                          Positioned(
+                            right: -4,
+                            top: -3,
+                            child: FaIcon(FontAwesomeIcons.xmark, size: 11, color: Colors.red.shade400),
+                          ),
+                        ],
                       ),
-                    TextButton.icon(
-                      key: Key('delete_day_${batch.dateString}'),
-                      onPressed: () => onDeleteDay(filtered, discards),
-                      icon: FaIcon(FontAwesomeIcons.trashCan, size: 13, color: Colors.red.shade400),
-                      label: showText
-                          ? Text('Del Day', style: TextStyle(color: Colors.red.shade400, fontSize: 13))
-                          : const SizedBox.shrink(),
                     ),
-                  ],
-                );
-              },
-            ),
+                  IconButton(
+                    key: Key('delete_day_${batch.dateString}'),
+                    onPressed: () => onDeleteDay(filtered, discards),
+                    tooltip: 'Delete Day',
+                    icon: FaIcon(FontAwesomeIcons.trashCan, size: 16, color: Colors.red.shade400),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
       ),

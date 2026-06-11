@@ -475,7 +475,7 @@ class DiscardRecord {
   String get id => '${sourceJsonl.path}:${startTime.millisecondsSinceEpoch}:${relativeBins.join(",")}';
 }
 
-/// A marker conversation: a device button tap and the segment(s) it was tagged to.
+/// A marker: a device button tap and the segment(s) it was tagged to.
 /// [segments] is empty when the backing m4a has not yet been produced (pending).
 class MarkerConversation {
   final DateTime markerTime;
@@ -2861,11 +2861,11 @@ class RecordingsManager {
     }
   }
 
-  /// Deletes a marker conversation.
+  /// Deletes a marker.
   static Future<void> deleteMarkerConversation(MarkerConversation mc) async {
     if (await mc.edlFile.exists()) {
       await mc.edlFile.delete();
-      Logger.debug('RecordingsManager: Deleted marker conversation ${mc.edlFile.path}');
+      Logger.debug('RecordingsManager: Deleted marker ${mc.edlFile.path}');
     }
   }
 
