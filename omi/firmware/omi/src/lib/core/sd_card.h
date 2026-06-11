@@ -152,6 +152,24 @@ uint32_t sd_get_boot_dropped_frames(void);
 uint32_t sd_get_stream_dropped_frames(void);
 
 /**
+ * @brief Get the high-water mark of sd_msgq occupancy since boot.
+ *
+ * Peak number of queued write requests observed (out of SD_REQ_QUEUE_MSGS).
+ * Shows how much headroom the write path keeps vs the drop edge — i.e. how
+ * close write fairness is to falling behind. Safe to call from any thread.
+ */
+uint32_t sd_get_msgq_peak_depth(void);
+
+/**
+ * @brief Get the number of times write fairness forced a write turn over reads.
+ *
+ * Incremented whenever a steady read stream would otherwise have starved audio
+ * writes and the worker forced a write to be serviced. Safe to call from any
+ * thread.
+ */
+uint32_t sd_get_write_fair_activations(void);
+
+/**
  * @brief Put the SD card interface (controller) into a low-power (suspend) state.
  *        Note: This typically suspends the SPI controller managing the SD card slot.
  *
