@@ -2,6 +2,12 @@
 
 ## App
 
+### 0.22.5
+
+- **Fix: recording could silently stop until a manual reboot.** Reverted the SD deep power-gate (added in oo-1.9.6): it fully powered the storage chip off after idle and remounted on wake, but a failed wake-remount latched the write path into a blocked state, dropping all audio until the device was rebooted. Idle power saving now uses SPI-bus suspend only (the card stays mounted and powered), matching the upstream firmware; the NAND powers fully off only at shutdown. Requires firmware `oo-1.9.8`.
+- **Change: recording now continues down to the critical-voltage shutdown** instead of pausing at 15% battery. The card is flushed once at the low-battery threshold so captured audio is durable, but capture no longer stops early — the clean shutdown still happens at the critical voltage.
+- **Fix: firmware updates no longer stall from the keep-alive.** During DFU the keep-alive write can transiently fail on the saturated BLE link; it no longer force-disconnects mid-update, which could leave OTA stuck at 0%.
+
 ### 0.22.4
 
 - **Fix: device no longer drops and reconnects every ~15 seconds.** The foreground keep-alive ran every 20 s but the firmware idle-disconnects after 15 s, so the heartbeat could never arrive in time — the link dropped on a fixed ~15 s loop, which also peppered recordings with small lost-audio gaps. Keep-alive now fires every 10 s.
