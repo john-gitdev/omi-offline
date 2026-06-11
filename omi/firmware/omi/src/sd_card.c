@@ -50,6 +50,9 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)
 #define WRITE_BATCH_COUNT 100
 #define ERROR_THRESHOLD 5
+/* After this many failed 2s recovery cycles, escalate from plain retry to a
+ * full power-cycle + remount of the SD card before continuing to drop. */
+#define SD_RECOVERY_REMOUNT_THRESHOLD 3
 
 /* SPI3 MOSI hold-low pin — disconnected on SD power-off to prevent back-feed.
    gpio1 pin 11 = P1.11 on the nRF52840 board schematic. */
@@ -244,6 +247,7 @@ static struct lfs_config lfs_cfg = {
 /* ------------------------------------------------------------------ */
 
 static uint8_t writing_error_counter = 0;
+static uint8_t sd_recovery_cycles = 0;  /* consecutive failed write-block recoveries */
 static bool sd_write_blocked = false;
 static uint8_t write_batch_buffer[WRITE_BATCH_COUNT * MAX_WRITE_SIZE];
 static size_t write_batch_offset = 0;
@@ -288,6 +292,15 @@ static atomic_t sd_write_paused = ATOMIC_INIT(0);
 static atomic_t ota_active = ATOMIC_INIT(0);
 static atomic_t sd_io_low_power = ATOMIC_INIT(0);
 static atomic_t sd_dev_pm_supported = ATOMIC_INIT(1);
+
+/* Deferred full power-gate (worker-thread state only).
+ * sd_write_pause() (short VAD silence) only suspends the SPI bus; the SD chip
+ * stays powered. After SD_DEEP_GATE_DELAY_MS of continuous paused silence while
+ * disconnected and not OTA'ing, the worker fully unmounts and drops sd_en so the
+ * NAND draws no current. The next queued request remounts (no GC) on demand. */
+#define SD_DEEP_GATE_DELAY_MS (120 * 1000)
+static bool sd_deep_gated = false;
+static int64_t sd_pause_since_ms = 0;
 
 /* Worker thread & task definitions */
 #define SD_WORKER_STACK_SIZE 16384
@@ -466,6 +479,8 @@ static void invalidate_file_cache(void);
 static void update_current_file_cache_size(uint32_t delta);
 static void sort_cached_file_entries(void);
 static void sd_set_io_low_power(bool enable);
+static int sd_unmount(void);
+static int sd_remount_and_reopen_info(void);
 
 static void process_save_offset_req(const sd_req_t *req)
 {
@@ -558,6 +573,7 @@ static int flush_batch_buffer_chunked(void)
 
     update_current_file_cache_size(total_written);
     writing_error_counter = 0;
+    sd_recovery_cycles = 0;  /* a successful flush means the card is healthy again */
     write_batch_offset = 0;
     write_batch_counter = 0;
     return 0;
@@ -569,10 +585,33 @@ static void process_write_data_req(const sd_req_t *req)
 
     if (sd_write_blocked) {
         if ((k_uptime_get() - last_write_error_uptime_ms) > 2000) {
-            sd_write_blocked = false;
-            writing_error_counter = 0;
-            LOG_INF("[SD_WORK] Attempting recovery from write-blocked state (data)");
-        } else {
+            if (++sd_recovery_cycles >= SD_RECOVERY_REMOUNT_THRESHOLD) {
+                /* Plain 2s retries aren't clearing the fault — power-cycle and
+                 * remount the card ("unplug/replug") before continuing to drop. */
+                LOG_WRN("[SD_WORK] %u failed recoveries — power-cycling + remounting SD",
+                        sd_recovery_cycles);
+                sd_set_io_low_power(false);
+                spi_woken = true;
+                sd_unmount();
+                int mret = sd_remount_and_reopen_info();
+                sd_recovery_cycles = 0;
+                if (mret == 0) {
+                    sd_write_blocked = false;
+                    writing_error_counter = 0;
+                    LOG_INF("[SD_WORK] SD remounted — resuming writes");
+                } else {
+                    /* Remount failed too; stay blocked and retry in 2s. */
+                    last_write_error_uptime_ms = k_uptime_get();
+                }
+            } else {
+                sd_write_blocked = false;
+                writing_error_counter = 0;
+                LOG_INF("[SD_WORK] Attempting recovery from write-blocked state (data, cycle %u)",
+                        sd_recovery_cycles);
+            }
+        }
+
+        if (sd_write_blocked) {
             /* Still blocked: buffer the frame to preserve audio if space allows */
             if (write_batch_offset + req->u.write.len <= sizeof(write_batch_buffer)) {
                 memcpy(write_batch_buffer + write_batch_offset,
@@ -583,11 +622,17 @@ static void process_write_data_req(const sd_req_t *req)
                 /* Batch buffer full — frame is truly unrecoverable */
                 atomic_inc(&stat_dropped_frames);
             }
+            if (spi_woken) {
+                sd_set_io_low_power(true);
+            }
             return;
         }
     }
 
     if (atomic_get(&sd_write_paused)) {
+        if (spi_woken) {
+            sd_set_io_low_power(true);
+        }
         return;
     }
 
@@ -978,6 +1023,51 @@ static int sd_unmount(void)
     }
     sd_enable_power(false);
     LOG_INF("LittleFS unmounted");
+    return 0;
+}
+
+/* Power on + remount (NO lfs_fs_gc — that runs once at boot) and reopen the info
+ * file that a prior unmount closed. The audio file is intentionally NOT reopened:
+ * current_filename is empty, so the next write starts a fresh segment. Does not
+ * touch sd_deep_gated / sd_write_blocked — the caller decides what to do with the
+ * result. Returns 0 on success, negative errno otherwise. */
+static int sd_remount_and_reopen_info(void)
+{
+    int64_t t0 = k_uptime_get();
+
+    int res = sd_mount();
+    if (res != 0) {
+        LOG_ERR("[SD] remount failed: %d", res);
+        return res;
+    }
+
+    res = lfs_file_opencfg(&lfs_fs, &lfs_fil_info, FILE_INFO_PATH,
+                           LFS_O_CREAT | LFS_O_RDWR, &lfs_finfo_cfg);
+    if (res < 0) {
+        LOG_ERR("[SD] reopen info failed: %d", res);
+        return res;
+    }
+    lfs_file_seek(&lfs_fs, &lfs_fil_info, 0, LFS_SEEK_SET);
+    lfs_ssize_t rb = lfs_file_read(&lfs_fs, &lfs_fil_info, &current_offset_info,
+                                   sizeof(current_offset_info));
+    if (rb != (lfs_ssize_t) sizeof(current_offset_info)) {
+        LOG_WRN("[SD] info read short (%d) — keeping cached copy", (int) rb);
+    }
+
+    LOG_INF("[SD] remount + reopen info in %lld ms", k_uptime_get() - t0);
+    return 0;
+}
+
+/* Wake from deep power-gate after a long idle silence. */
+static int sd_wake_from_deep_gate(void)
+{
+    int res = sd_remount_and_reopen_info();
+    if (res != 0) {
+        sd_write_blocked = true;
+        return res;
+    }
+    sd_deep_gated = false;
+    LOG_INF("[SD] Woke from deep power-gate");
     return 0;
 }
 
@@ -1759,9 +1849,30 @@ void sd_worker_thread(void)
             }
             sd_set_io_low_power(true);
         }
+
+        /* Deferred full power-gate: after a long, fully-idle silence, power the
+         * SD chip all the way off (not just the SPI bus). Gated on disconnected
+         * + not OTA so a connected/keep-alive'd app or an in-progress DFU keeps
+         * the card alive. Wakes on the next queued request (handle_req below). */
+        if (!sd_deep_gated && is_mounted &&
+            atomic_get(&sd_write_paused) &&
+            !atomic_get(&ota_active) &&
+            !atomic_get(&ble_connected) &&
+            (k_uptime_get() - sd_pause_since_ms) >= SD_DEEP_GATE_DELAY_MS) {
+            LOG_INF("[SD] Entering deep power-gate after %d ms idle silence", SD_DEEP_GATE_DELAY_MS);
+            /* Wake the SPI bus first — it was left suspended while paused, and
+             * sd_unmount() does LFS I/O (close/sync/unmount) before sd_en drops. */
+            sd_set_io_low_power(false);
+            sd_unmount();
+            sd_deep_gated = true;
+        }
         continue;
 
     handle_req:
+        /* If deep-gated, re-power + remount before servicing any request. */
+        if (sd_deep_gated) {
+            sd_wake_from_deep_gate();
+        }
         /* Wake SPI for all requests except write data — write data manages
          * its own SPI gating internally via spi_woken in process_write_data_req. */
         if (req.type != REQ_WRITE_DATA) {
@@ -2095,6 +2206,8 @@ void sd_worker_thread(void)
                 lfs_file_sync(&lfs_fs, &lfs_fil_data);
             }
             sd_write_pause(true);
+            /* Start the deep-gate countdown from the moment writes are paused. */
+            sd_pause_since_ms = k_uptime_get();
             if (req.u.create_file.resp) {
                 req.u.create_file.resp->res = 0;
                 k_sem_give(&req.u.create_file.resp->sem);
@@ -2319,7 +2432,11 @@ void sd_notify_ble_state(bool connected)
     atomic_set(&ble_connected, connected ? 1 : 0);
 }
 
-uint32_t write_to_file(uint8_t *data, uint32_t length)
+/* Shared write path. retry_to is the bounded blocking timeout used on the
+ * second enqueue attempt after an initial K_NO_WAIT put fails. Audio uses a
+ * short adaptive timeout (drop-friendly); marker-bearing blocks use a long
+ * timeout via write_to_file_blocking() so they survive transient saturation. */
+static uint32_t write_to_file_impl(uint8_t *data, uint32_t length, k_timeout_t retry_to)
 {
     static int64_t last_write_err_log_ms;
     static int64_t last_shutdown_drop_log_ms;
@@ -2371,10 +2488,6 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
     /* Try non-blocking put first to check if we need to track a block attempt */
     int ret = k_msgq_put(&sd_msgq, &req, K_NO_WAIT);
     if (ret != 0) {
-        /* Bounded blocking: use a very short adaptive timeout.
-         * SD cards frequently stall for 100-400ms during internal maintenance.
-         * We drop quickly rather than stalling the mic thread. */
-        k_timeout_t retry_to = atomic_get(&ble_connected) ? K_MSEC(1) : K_MSEC(5);
         ret = k_msgq_put(&sd_msgq, &req, retry_to);
     }
 
@@ -2393,6 +2506,23 @@ uint32_t write_to_file(uint8_t *data, uint32_t length)
         return 0;
     }
     return length;
+}
+
+uint32_t write_to_file(uint8_t *data, uint32_t length)
+{
+    /* Bounded blocking: very short adaptive timeout. SD cards frequently stall
+     * for 100-400ms during internal maintenance; drop quickly rather than
+     * stalling the mic thread. */
+    k_timeout_t retry_to = atomic_get(&ble_connected) ? K_MSEC(1) : K_MSEC(5);
+    return write_to_file_impl(data, length, retry_to);
+}
+
+uint32_t write_to_file_blocking(uint8_t *data, uint32_t length)
+{
+    /* Marker-bearing blocks: tolerate a full SD maintenance stall (≤500ms) so
+     * button-tap / session-end / VAD-resume markers are not lost to a transient
+     * sd_msgq saturation. Markers are rare, so the bounded stall is acceptable. */
+    return write_to_file_impl(data, length, K_MSEC(500));
 }
 
 int read_audio_data(const char *filename, uint8_t *buf, int amount, int offset)
