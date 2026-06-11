@@ -558,7 +558,12 @@ class DeviceProvider extends ChangeNotifier
         return;
       }
       _consecutiveKeepAliveFails++;
-      if (_consecutiveKeepAliveFails >= 2) {
+      // During DFU the link is saturated with SMP packets, so a keep-alive
+      // write to the storage characteristic can transiently time out. Keep
+      // SENDING (the firmware resets its idle timer only on storage-char
+      // activity), but never force-disconnect — that would abort an otherwise
+      // healthy firmware update. The DFU layer owns connection health here.
+      if (_consecutiveKeepAliveFails >= 2 && !isFirmwareUpdateInProgress) {
         Logger.debug('KeepAlive: 2 consecutive failures, force-disconnecting to resync state');
         _consecutiveKeepAliveFails = 0;
         await ServiceManager.instance().device.disconnectDevice(isManual: false);
