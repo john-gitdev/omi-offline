@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.23.4
+
+- **Internal: diagnostic logging for the "Captured through" banner — no user-facing changes.** Added temporary debug lines that record each in-progress draft's start/duration/end and whether the banner-time clamp fired, to track down a case where "Captured through ~<time>" overshoots the finalized recording's actual end. Logging only; behaviour is unchanged.
+
 ### 0.23.3
 
 - **Internal: large-file refactor — no user-facing changes.** Broke several oversized files into focused units (recording domain models, upload/VAD value types, WAL sync exceptions, the sync-page debug widgets, the integration upload manager, the discard ledger, and the background-processing isolate worker) and added unit-test coverage for the upload subsystem. Behaviour is unchanged; this is purely code organization and test hardening.
