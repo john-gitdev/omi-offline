@@ -135,6 +135,31 @@ class MockDeviceConnection implements DeviceConnection {
   Future<bool> performSendKeepAlive() async => true;
 
   @override
+  Future<({bool muted, DateTime? since})> performGetMuteState() async => (muted: false, since: null);
+
+  @override
+  Future<void> performSetMute(bool muted) async {}
+
+  @override
+  Future<StreamSubscription<List<int>>?> performGetMuteListener(
+          {required void Function(bool muted, DateTime? since) onMuteChange}) async =>
+      null;
+
+  @override
+  Future<({bool muted, DateTime? since})> getMuteState() async => (muted: false, since: null);
+
+  @override
+  Future<void> setMute(bool muted) async {}
+
+  @override
+  Future<StreamSubscription<List<int>>?> getMuteListener(
+          {required void Function(bool muted, DateTime? since) onMuteChange}) async =>
+      null;
+
+  @override
+  Future<bool> syncTime() async => true;
+
+  @override
   Future<Stream<List<int>>> getBleStorageBytesStream() async => _controller.stream;
 
   @override
