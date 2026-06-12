@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.23.1
+
+- **New: the app now shows when Omi is muted.** When you mute the device (double-tap-and-hold → solid red LED, mic off) in auto mode, the recordings screen shows a red "Omi is Muted since H:MM" banner, the Android sync notification's resting line reads **"Muted since 3:42 PM" / "Next sync at 4:15 PM"**, and a red mic-off button appears in the app bar (next to Force Sync). Tapping that mic button while connected toggles mute on/off over BLE (auto mode only — the button is hidden in manual mode, where muting is unavailable). Mute state is read on connect and updates live, even mid-sync. Requires firmware oo-1.9.9+.
+
 ### 0.23.0
 
 - **Integration uploads are now queued, per-integration.** Tapping Upload on several recordings (or "Upload all pending") no longer fires everything at once or bounces all but the first with "another upload in progress." Each integration has its own queue that uploads one recording at a time — so no single server is ever hit in parallel — but different integrations (Omi Cloud, HeyPocket) now upload **concurrently**, so a slow Omi upload no longer blocks HeyPocket. Manual taps jump ahead of automatic uploads; rows show **Queued → Uploading → Uploaded**, and a failed integration drops the rest of its own queue (the others keep going). On Android the sync notification shows aggregate progress ("Uploading N of M") and expands to a per-integration status line — including Omi's chunk progress and a "server busy, retry …" line when Omi is rate-limited (503). Uploads hold the device awake until they finish (bounded by each upload's own timeout) so backgrounding the app doesn't abandon them, pause if "Upload on Wifi Only" is on and wifi drops, and resume on the next launch if the app is killed mid-upload.
@@ -205,6 +209,19 @@
 ---
 
 ## Firmware
+
+### oo-1.9.9
+
+- **New: mute state is exposed over BLE.** A new Mute service (`0x19B10070` / characteristic `0x19B10071`, Read/Write/Notify) reports whether the mic is muted plus the time mute was engaged (`[muted][since_utc_s][since_uptime_ms]`), so the app can show "Muted since H:MM". Writing `0`/`1` toggles mute from the app (honored only in auto mode, mirroring the physical-button gate). Notifications fire on subscribe and on every change, and are intentionally **not** suppressed during file sync (mute changes are rare, single-packet events). The characteristic is registered last so all existing handles stay stable.
+- **LED: a fatal SD fault now blinks red instead of solid red**, so it's distinguishable from the mute indicator (solid red).
+
+Also rolled up from oo-1.9.7 and oo-1.9.8 (never separately released):
+
+- **Reliability: reverted the SD deep power-gate from oo-1.9.6.** Fully powering the NAND off after 120 s of disconnected idle could latch on a failed wake-remount (a driver wedge only a reboot clears), silently dropping all audio until a manual reboot — recording could stop overnight. Idle power saving is now SPI-bus suspend only with the card kept mounted; the NAND powers off only at shutdown.
+- **Battery: record down to the critical-voltage shutdown instead of stopping at 15%.** The old handler paused all SD writes at ≤15% and stayed latched until charged, ending recording early. It now does a one-time durable flush at the threshold but keeps recording; the clean shutdown at critical voltage still guards against brownout.
+- **Reliability: write-fairness so an active sync can't starve audio writes.** The SD worker forces a write turn after a run of consecutive file reads, and transient write stalls during connect/sync no longer drop audio immediately (retry window relaxed to 25 ms). SD request queue trimmed 150 → 100.
+- **Diagnostics: `0x19B10062` grown 32 → 40 bytes** — adds SD-queue peak depth (offset 32) and write-fairness activation count (offset 36). Older apps read the prefix.
+- **Codec ring buffer grown 0.6 s → 1.0 s** for more headroom absorbing codec-thread stalls (net RAM still down, paid for by the SD-queue reduction).
 
 ### oo-1.9.6
 
