@@ -48,6 +48,18 @@ bool write_marker_to_storage(void);
 bool write_session_end_marker_to_storage(void);
 
 /**
+ * @brief Write mute-on (0xFFFFFFFA) / mute-off (0xFFFFFFF9) markers to storage.
+ *
+ * Bracket a muted stretch in the audio stream so the app can render it as a
+ * "Muted" gap in the recordings timeline. Force-drained like other markers so
+ * they're durable even though no audio flows while muted.
+ *
+ * @return true if successful
+ */
+bool write_mute_on_marker_to_storage(void);
+bool write_mute_off_marker_to_storage(void);
+
+/**
  * @brief Broadcast audio packets over BLE
  *
  * @param buffer Buffer containing audio data
