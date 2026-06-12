@@ -61,7 +61,20 @@ bool mute_apply(bool on)
         mic_resume();
     }
     LOG_INF("Mute toggled: %s", on ? "ON" : "OFF");
+    // Push the live state first (fast, non-blocking) before the marker write,
+    // which may briefly block on a saturated SD queue.
     mute_state_notify();
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    // Mute can be toggled while VAD has paused SD writes (e.g. during a silence
+    // gap), which would drop the marker. Resume writes first, then write a
+    // durable mute-on/off marker bracketing the muted stretch in the stream.
+    sd_write_pause(false);
+    if (on) {
+        write_mute_on_marker_to_storage();
+    } else {
+        write_mute_off_marker_to_storage();
+    }
+#endif
     return true;
 }
 
