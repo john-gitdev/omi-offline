@@ -980,4 +980,152 @@ void main() {
       });
     });
   });
+
+  group('Mute markers (0xFFFFFFFA mute-on / 0xFFFFFFF9 mute-off)', () {
+    const int kBase = 1746057600000; // 2026-05-01 UTC, past the year-2000 guard
+
+    ProcessingSettings muteSettings() => ProcessingSettings(
+          vadEnabled: false,
+          speechThreshold: 0.5,
+          silenceDurationToSplitMs: 120000,
+          minDurationMs: 0,
+          minSpeechMs: 0,
+          maxChunkMs: 0x7FFFFFFFFFFFFFFF,
+          deviceId: '',
+          audioSaveFormat: 'wav',
+          omiEnabled: false,
+        );
+
+    void addHeader(BytesBuilder b, {required int utcStartMs, int sessionId = 1}) {
+      final hdr = ByteData(36);
+      hdr.setUint32(0, 0xFFFFFFFB, Endian.little);
+      hdr.setUint32(4, 28, Endian.little);
+      hdr.setUint64(8, utcStartMs, Endian.little);
+      hdr.setUint64(16, 0, Endian.little);
+      hdr.setUint32(24, 0, Endian.little);
+      hdr.setUint32(28, sessionId, Endian.little);
+      b.add(hdr.buffer.asUint8List());
+    }
+
+    void addFrames(BytesBuilder b, int n) {
+      final fhdr = ByteData(4)..setUint32(0, 4, Endian.little);
+      for (int i = 0; i < n; i++) {
+        b.add(fhdr.buffer.asUint8List());
+        b.add(List.filled(4, 0));
+      }
+    }
+
+    void addMarker(BytesBuilder b, int tag, int utcMs) {
+      final m = ByteData(20);
+      m.setUint32(0, tag, Endian.little);
+      m.setUint64(4, utcMs, Endian.little);
+      m.setUint32(12, 0, Endian.little);
+      m.setUint32(16, 1, Endian.little);
+      b.add(m.buffer.asUint8List());
+    }
+
+    File writeBin(String name, BytesBuilder b) {
+      final f = File('${tempDir.path}/$name');
+      f.writeAsBytesSync(b.toBytes());
+      return f;
+    }
+
+    test('mute-on then mute-off emits one muted discard spanning the interval', () async {
+      final b = BytesBuilder();
+      addHeader(b, utcStartMs: kBase);
+      addMarker(b, 0xFFFFFFFA, kBase + 1000); // mute-on
+      addMarker(b, 0xFFFFFFF9, kBase + 5000); // mute-off
+      final file = writeBin('mute_pair.bin', b);
+
+      final proc = VadAudioProcessor.fromSettings(settings: muteSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      final discards = proc.consumePendingDiscards();
+      await proc.destroy();
+
+      expect(discards.length, 1);
+      expect(discards[0]['reason'], 'muted');
+      expect(discards[0]['startMs'], kBase + 1000);
+      expect(discards[0]['endMs'], kBase + 5000);
+      expect((discards[0]['relativeBins'] as List).isEmpty, isTrue, reason: 'muted intervals have no recoverable bins');
+    });
+
+    test('mute-off with no open interval emits nothing', () async {
+      final b = BytesBuilder();
+      addHeader(b, utcStartMs: kBase);
+      addMarker(b, 0xFFFFFFF9, kBase + 2000); // mute-off only
+      final file = writeBin('mute_off_only.bin', b);
+
+      final proc = VadAudioProcessor.fromSettings(settings: muteSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      final discards = proc.consumePendingDiscards();
+      await proc.destroy();
+
+      expect(discards.where((d) => d['reason'] == 'muted'), isEmpty);
+    });
+
+    test('mute-on finalizes the in-progress recording (like session-end)', () async {
+      // 10 captured frames (forced by a button tap) then mute-on → recording saved.
+      final b = BytesBuilder();
+      addHeader(b, utcStartMs: kBase);
+      addFrames(b, 10);
+      addMarker(b, 0xFFFFFFFE, kBase + 100); // button tap forces capture
+      addMarker(b, 0xFFFFFFFA, kBase + 5000); // mute-on finalizes
+      final file = writeBin('mute_finalize.bin', b);
+
+      final proc = VadAudioProcessor.fromSettings(settings: muteSettings(), outputDir: tempDir.path);
+      final saved = await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      final flushed = await proc.flushRemaining();
+      await proc.destroy();
+
+      expect(saved.length, 1, reason: 'mute-on should finalize the in-progress recording');
+      expect(flushed, isNull, reason: 'nothing remaining after mute-on finalize');
+    });
+
+    test('mute-on with bad UTC (epoch 0) falls back to audio wall time', () async {
+      // 5 frames → lastFrameWallTime = kBase + 4*20 = kBase+80; mute-on utc=0 falls back to it.
+      final b = BytesBuilder();
+      addHeader(b, utcStartMs: kBase);
+      addFrames(b, 5);
+      addMarker(b, 0xFFFFFFFA, 0); // mute-on, pre-time-sync
+      addMarker(b, 0xFFFFFFF9, kBase + 9000); // mute-off (valid)
+      final file = writeBin('mute_badutc.bin', b);
+
+      final proc = VadAudioProcessor.fromSettings(settings: muteSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      final discards = proc.consumePendingDiscards();
+      await proc.destroy();
+
+      final muted = discards.where((d) => d['reason'] == 'muted').toList();
+      expect(muted.length, 1);
+      expect(muted[0]['startMs'], kBase + 80, reason: 'fell back to audio wall time');
+    });
+
+    test('session change closes an open muted interval at the new session start', () async {
+      // File 1 (session 1): frames + button tap + mute-on, no mute-off (interval left open).
+      final b1 = BytesBuilder();
+      addHeader(b1, utcStartMs: kBase, sessionId: 1);
+      addFrames(b1, 10);
+      addMarker(b1, 0xFFFFFFFE, kBase + 100);
+      addMarker(b1, 0xFFFFFFFA, kBase + 5000);
+      final file1 = writeBin('mute_sess1.bin', b1);
+
+      // File 2 (session 2): device rebooted while muted → mute cleared in firmware.
+      final b2 = BytesBuilder();
+      addHeader(b2, utcStartMs: kBase + 60000, sessionId: 2);
+      addFrames(b2, 5);
+      final file2 = writeBin('mute_sess2.bin', b2);
+
+      final proc = VadAudioProcessor.fromSettings(settings: muteSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file1, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      await proc.processSegmentFile(file2, DateTime.fromMillisecondsSinceEpoch(kBase + 60000, isUtc: true));
+      final discards = proc.consumePendingDiscards();
+      await proc.flushRemaining(isDraft: true);
+      await proc.destroy();
+
+      final muted = discards.where((d) => d['reason'] == 'muted').toList();
+      expect(muted.length, 1, reason: 'session change should close the open muted interval');
+      expect(muted[0]['startMs'], kBase + 5000);
+      expect(muted[0]['endMs'], kBase + 60000, reason: 'closed at the new session start');
+    });
+  });
 }
