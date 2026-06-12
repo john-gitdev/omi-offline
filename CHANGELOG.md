@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.23.5
+
+- **Fix: the "Conversation in progress" banner's "Captured through" time no longer drifts to the current clock.** A freshly-stitched in-progress draft was being mis-dated — its start time was read from the file's last-modified time (≈ now) instead of its filename timestamp — so the draft's computed end overshot into the future and the banner pinned to the current time (e.g. showing "~2:24 PM" when the recording actually ended at 2:18). The draft's start is now parsed correctly, so "Captured through" reflects the real end of the captured audio. (Removes the 0.23.4 diagnostic logging, which has served its purpose.)
+
 ### 0.23.4
 
 - **Internal: diagnostic logging for the "Captured through" banner — no user-facing changes.** Added temporary debug lines that record each in-progress draft's start/duration/end and whether the banner-time clamp fired, to track down a case where "Captured through ~<time>" overshoots the finalized recording's actual end. Logging only; behaviour is unchanged.
