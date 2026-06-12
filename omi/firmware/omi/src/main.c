@@ -45,9 +45,9 @@ extern uint8_t battery_percentage;
 #endif
 
 /* Set when the SD card fails to become ready within SD_BOOT_TIMEOUT_MS. The
- * device keeps running (BLE/mic) but cannot record. set_led_state() then locks
- * the LED solid red, ignoring stealth/mute/marker/button states, so the user
- * can see the unit is non-functional. */
+ * device keeps running (BLE/mic) but cannot record. set_led_state() then
+ * blinks the LED red, ignoring stealth/mute/marker/button states, so the user
+ * can tell a fault (blinking red) apart from mute (solid red). */
 static volatile bool sd_fatal_error = false;
 #define SD_BOOT_TIMEOUT_MS 90000
 
@@ -153,12 +153,14 @@ void set_led_state()
         return;
     }
 
-    // Fatal SD fault: lock solid red. Overrides stealth/mute/marker/charging and
-    // is unaffected by any button press, so the user knows the unit is borked.
+    // Fatal SD fault: blink red. Overrides stealth/mute/marker/charging and is
+    // unaffected by any button press, so a fault (blinking red) is distinguishable
+    // from mute (solid red). Toggles each ~500ms loop pass (see k_msleep below).
     if (sd_fatal_error) {
-        set_led_red(true);
+        set_led_red(blink_toggle);
         set_led_green(false);
         set_led_blue(false);
+        blink_toggle = !blink_toggle;
         return;
     }
 
