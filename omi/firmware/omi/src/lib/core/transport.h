@@ -94,6 +94,11 @@ bool write_custom_packet_to_storage(uint32_t marker, uint8_t *data, uint32_t dat
 
 void transport_notify_button_state(uint8_t state);
 
+/* Push a notification on the BLE mute characteristic (19B10071) with the
+ * current mute state. Called from the button FSM / BLE write path whenever
+ * mute toggles. */
+void mute_state_notify(void);
+
 int transport_set_adv_slow(void);
 int transport_set_adv_fast(void);
 
