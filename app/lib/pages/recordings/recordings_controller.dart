@@ -1579,12 +1579,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       if (latestDraftEnd == null || c.endTime.isAfter(latestDraftEnd)) {
         latestDraftEnd = c.endTime;
       }
-      // DIAG (draftEndTime overshoot): log every draft feeding the "Captured
-      // through" banner so we can see which one's start+duration overshoots
-      // wall-clock and by how much. Remove once the banner-time bug is resolved.
-      Logger.debug('draftEndTime diag: draft=${c.file.path.split('/').last} '
-          'start=${c.startTime.toIso8601String()} durMs=${c.duration.inMilliseconds} '
-          'end=${c.endTime.toIso8601String()}');
     }
 
     // "Captured through" is the draft's own end (startTime + decoded duration) —
@@ -1600,12 +1594,6 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (latestDraftEnd != null) {
       final now = DateTime.now();
       draftEndTime = latestDraftEnd.isAfter(now) ? now : latestDraftEnd;
-      // DIAG (draftEndTime overshoot): records whether the clamp fired (banner
-      // shows "now" instead of the true draft end) and by how much it overshot.
-      Logger.debug('draftEndTime diag: latestDraftEnd=${latestDraftEnd.toIso8601String()} '
-          'now=${now.toIso8601String()} clamped=${latestDraftEnd.isAfter(now)} '
-          'overshootMs=${latestDraftEnd.difference(now).inMilliseconds} '
-          'shown=${draftEndTime.toIso8601String()}');
     }
 
     return (
