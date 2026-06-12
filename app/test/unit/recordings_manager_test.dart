@@ -164,6 +164,22 @@ void main() {
       expect(conversation.startTime.difference(now).inSeconds.abs() <= 1, true);
     });
 
+    test('fromFileAsync parses start time from a _draft filename, not lastModified', () async {
+      // Regression: fromFileAsync previously took name.split('_').last, which for
+      // recording_<ts>_draft.wav is "draft" — parse failed and it fell back to the
+      // file's mtime (≈ now). The draft's end then overshot wall-clock, pinning the
+      // "Captured through" banner to the current time.
+      final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-06-12'))..createSync(recursive: true);
+      const tsMs = 1781300209596; // 2026-06-12, mid-day UTC
+      final draft = File(p.join(recordingsDir.path, 'recording_${tsMs}_draft.wav'))..writeAsBytesSync(Uint8List(44));
+      // Set mtime far from the filename ts to prove we don't fall back to it.
+      draft.setLastModifiedSync(DateTime(2030, 1, 1));
+
+      final conversation = await Conversation.fromFileAsync(draft);
+
+      expect(conversation.startTime.millisecondsSinceEpoch, tsMs);
+    });
+
     test('reads isSilero flag and formats sizeLabel with AAD/VAD', () async {
       final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
       final markerMs = 1773223200000;
