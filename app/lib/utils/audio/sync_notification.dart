@@ -65,6 +65,13 @@ class SyncNotification {
   /// [text] is `RecordingsController.processingNotificationText()`.
   static Future<void> processing(String text) => _push('Processing recordings', text);
   static Future<void> finishingProcessing() => _push('Processing recordings', 'Finishing…');
+
+  /// Integration upload progress, shown only while the sync/process pipeline is
+  /// idle (it owns the notification when active). [text] is the controller-composed
+  /// body: a one-line summary (shown collapsed) followed by per-integration lines
+  /// (shown expanded via the native BigTextStyle). May contain newlines.
+  static Future<void> uploading(String text) => _push('Uploading recordings', text);
+
   static Future<void> complete() => _push('Conversations ready', 'Sync and processing complete');
   static Future<void> disconnecting() => _push('Omi Offline', 'Disconnecting…');
 
