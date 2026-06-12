@@ -24,6 +24,20 @@ class SyncNotification {
   /// the "Next sync at H:MM" title from any caller. Null = Manual Only.
   static DateTime? nextSyncTime;
 
+  /// Mirrored from DeviceProvider so the resting notification line can show
+  /// "Muted since H:MM" while the device mic is muted. [muteSince] is null when
+  /// the mute time is unknown (pre-time-sync), in which case a timeless label is
+  /// used instead.
+  static bool isMuted = false;
+  static DateTime? muteSince;
+
+  /// The muted title line ("Muted since 3:42 PM" / "Omi is Muted"), or null when
+  /// not muted.
+  static String? _mutedTitle() {
+    if (!isMuted) return null;
+    return muteSince != null ? 'Muted since ${DateFormat('h:mm a').format(muteSince!.toLocal())}' : 'Omi is Muted';
+  }
+
   /// Keep the foreground service alive with no device connected so the idle
   /// "Next sync / Last Sync" notification persists across BLE disconnect and app
   /// background. true while auto-sync is on and a device is bound; false in
@@ -54,7 +68,15 @@ class SyncNotification {
   static Future<void> push(String title, String text) => _push(title, text);
 
   static Future<void> connecting() => _push('Omi Offline', 'Connecting to Omi…');
-  static Future<void> connected() => _push('Omi Offline', 'Connected');
+  static Future<void> connected() {
+    final muted = _mutedTitle();
+    if (muted != null) {
+      final next = nextSyncTime;
+      return _push(muted, next != null ? 'Next sync at ${DateFormat('h:mm a').format(next)}' : 'Connected');
+    }
+    return _push('Omi Offline', 'Connected');
+  }
+
   static Future<void> preparingSync() => _push('Syncing recordings', 'Preparing…');
 
   /// [text] is `RecordingsController.syncingNotificationText(synced, total)`.
@@ -80,6 +102,14 @@ class SyncNotification {
   /// falls back to connection state if the caller knows it ([isConnected] /
   /// [isConnecting]), else a neutral "Ready to sync".
   static Future<void> idle({bool? isConnected, bool? isConnecting}) async {
+    // Muted takes over the resting line: "Muted since 3:42 PM" / "Next sync at 4:15 PM".
+    final muted = _mutedTitle();
+    if (muted != null) {
+      final nextMuted = nextSyncTime;
+      final body = nextMuted != null ? 'Next sync at ${DateFormat('h:mm a').format(nextMuted)}' : 'Auto-sync off';
+      await _push(muted, body);
+      return;
+    }
     final prefs = SharedPreferencesUtil();
     final lastMs = prefs.lastSyncCompletedMs;
     final next = nextSyncTime;
