@@ -28,7 +28,7 @@ clang-format -i <files>          # firmware C/C++
 
 # Build dev-flavor APK, rename oo<version>.apk, drop in releases/ at repo root.
 # Reads version from app/pubspec.yaml; deterministic only — no bump/commit/push.
-./app/build-apk.sh
+./app/build.sh
 ```
 
 The per-version history lives in [CHANGELOG.md](CHANGELOG.md).
@@ -178,6 +178,6 @@ clang-format -i <files>                  # C/C++ firmware
 - Never push or create PRs unless explicitly asked — commit locally by default.
 
 ### RELEASE / release command
-When the user says "release" or "RELEASE", increment the patch digit in `app/pubspec.yaml` by 1, commit, and push. The patch digit serves as the build number — there is no separate `+N` suffix. Example: `0.3.18` → `0.3.19`. After the bump, `app/build-apk.sh` can produce the matching `oo<digits>.apk` at repo root (deterministic, no extra git ops).
+When the user says "release" or "RELEASE", increment the patch digit in `app/pubspec.yaml` by 1, commit, and push. The patch digit serves as the build number — there is no separate `+N` suffix. Example: `0.3.18` → `0.3.19`. After the bump, `app/build.sh` can produce the matching `oo<digits>.apk` at repo root (deterministic, no extra git ops).
 
 Document user-visible behavioural changes in `CHANGELOG.md` (newest entry on top). `README.md` only links to it.
