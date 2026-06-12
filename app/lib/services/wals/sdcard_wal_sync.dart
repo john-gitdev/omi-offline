@@ -19,23 +19,7 @@ import 'package:omi/services/devices/storage_file.dart';
 import 'package:omi/services/services.dart';
 import 'package:omi/services/wals/wal.dart';
 import 'package:omi/services/wals/wal_interfaces.dart';
-
-/// Thrown when the framed BLE protocol detects a gap in the offset sequence.
-class _ProtocolGapException implements Exception {
-  final int incoming;
-  final int expected;
-  const _ProtocolGapException(this.incoming, this.expected);
-  @override
-  String toString() => 'Protocol gap: incoming=$incoming expected=$expected';
-}
-
-/// Thrown when the firmware returns a non-zero ACK (error) for a command.
-class _AckException implements Exception {
-  final int code;
-  const _AckException(this.code);
-  @override
-  String toString() => 'Error ACK: $code';
-}
+import 'package:omi/services/wals/wal_sync_exceptions.dart';
 
 class SDCardWalSyncImpl implements SDCardWalSync {
   List<Wal> _wals = <Wal>[];
@@ -567,7 +551,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               hasError = true;
               if (!completer.isCompleted) {
                 completer.completeError(
-                  _ProtocolGapException(incomingOffset, expectedOffset),
+                  ProtocolGapException(incomingOffset, expectedOffset),
                 );
               }
               return;
@@ -601,7 +585,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               isStreamLocked = true;
               hasError = true;
               if (!completer.isCompleted) {
-                completer.completeError(_AckException(value[1]));
+                completer.completeError(AckException(value[1]));
               }
               return;
             }
@@ -937,7 +921,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
               overrideFileNum: 0, // Always target oldest file for fast-path
             );
             transferred = true;
-          } on _ProtocolGapException catch (e) {
+          } on ProtocolGapException catch (e) {
             gapRetries++;
             if (gapRetries > maxGapRetries) rethrow;
             wal.walOffset = e.incoming;
@@ -945,7 +929,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             _lastSegmentBoundaryOffset = e.incoming;
             await connection.stopStorageSync();
             await Future.delayed(const Duration(milliseconds: 200));
-          } on _AckException catch (e) {
+          } on AckException catch (e) {
             // ACK 7 = FILE_NOT_FOUND, often due to SD contention.
             if (e.code == 7 && ackRetries < maxAckRetries) {
               ackRetries++;
@@ -1122,7 +1106,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
             },
           );
           transferred = true;
-        } on _ProtocolGapException catch (e) {
+        } on ProtocolGapException catch (e) {
           gapRetries++;
           if (gapRetries > maxGapRetries) rethrow;
           wal.walOffset = e.incoming;
