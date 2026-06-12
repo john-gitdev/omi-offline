@@ -14,6 +14,8 @@ import 'package:omi/services/wals.dart';
 import 'package:omi/backend/preferences.dart';
 import 'package:omi/utils/logger.dart';
 import 'package:omi/utils/debug_log_manager.dart';
+import 'package:omi/pages/settings/widgets/debug_button.dart';
+import 'package:omi/pages/settings/widgets/diagnostic_log_row.dart';
 import 'package:omi/widgets/dialog.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -781,14 +783,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   child: const Text('Cancel Download', style: TextStyle(color: Colors.white)),
                 ),
               ] else ...[
-                _DebugButton(
+                DebugButton(
                   label: 'Sync Omi Segments',
                   description: 'Download any pending raw segments from your Omi.',
                   icon: FontAwesomeIcons.arrowDown,
                   onTap: _startSync,
                 ),
                 const SizedBox(height: 12),
-                _DebugButton(
+                DebugButton(
                   label: 'Force Sync Omi',
                   description:
                       'Seals the current recording on the device and syncs everything, including the current session.',
@@ -796,7 +798,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   onTap: _forceSync,
                 ),
                 const SizedBox(height: 12),
-                _DebugButton(
+                DebugButton(
                   label: 'Force Process Omi',
                   description: 'Process raw segments immediately, including the newest (may be incomplete).',
                   icon: FontAwesomeIcons.gears,
@@ -822,7 +824,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                         },
                 ),
                 const SizedBox(height: 12),
-                _DebugButton(
+                DebugButton(
                   label: 'Delete Omi Segments',
                   description:
                       'Permanently deletes raw segments from your Omi. The device immediately starts a new recording file.',
@@ -831,7 +833,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   onTap: _deleteAllPending,
                 ),
                 const SizedBox(height: 12),
-                _DebugButton(
+                DebugButton(
                   label: 'Delete Phone Segments',
                   description:
                       'Permanently deletes raw, undecoded segment files downloaded to this phone. Decoded recordings and drafts are kept.',
@@ -840,7 +842,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                   onTap: _deleteAllSegments,
                 ),
                 const SizedBox(height: 12),
-                _DebugButton(
+                DebugButton(
                   label: 'Delete Phone Conversations',
                   description:
                       'Permanently deletes decoded recordings on this phone — finalized conversations and in-progress drafts.',
@@ -877,7 +879,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               reverse: true,
               padding: const EdgeInsets.symmetric(vertical: 4),
               itemCount: _recentLogs.length,
-              itemBuilder: (context, i) => _DiagnosticLogRow(log: _recentLogs[i]),
+              itemBuilder: (context, i) => DiagnosticLogRow(log: _recentLogs[i]),
             ),
     );
   }
@@ -1161,112 +1163,3 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 }
 
-class _DiagnosticLogRow extends StatelessWidget {
-  final Map<String, dynamic> log;
-
-  const _DiagnosticLogRow({required this.log});
-
-  @override
-  Widget build(BuildContext context) {
-    final level = (log['level'] as String?) ?? 'INFO';
-    final message = (log['message'] as String?) ?? '';
-    final type = (log['type'] as String?) ?? '';
-    final ts = (log['timestamp'] as String?) ?? (log['ts'] as String?) ?? '';
-
-    final color = level == 'ERROR' ? Colors.redAccent : Colors.white70;
-    final icon = level == 'ERROR'
-        ? FontAwesomeIcons.circleXmark
-        : (level == 'WARN' ? FontAwesomeIcons.circleExclamation : FontAwesomeIcons.circleInfo);
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1C1C1E),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: FaIcon(icon, size: 12, color: color),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    message.isNotEmpty ? message : type,
-                    style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w500),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  if (ts.isNotEmpty) ...[
-                    const SizedBox(height: 2),
-                    Text(ts, style: const TextStyle(color: Colors.grey, fontSize: 10)),
-                  ],
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DebugButton extends StatelessWidget {
-  final String label;
-  final String description;
-  final IconData icon;
-  final Color color;
-  final VoidCallback? onTap;
-
-  const _DebugButton({
-    required this.label,
-    required this.description,
-    required this.icon,
-    this.color = Colors.deepPurpleAccent,
-    this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final bool disabled = onTap == null;
-    return Opacity(
-      opacity: disabled ? 0.4 : 1.0,
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1C1C1E),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: color.withValues(alpha: 0.35), width: 1),
-          ),
-          child: Row(
-            children: [
-              FaIcon(icon, size: 16, color: color),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(label, style: TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 2),
-                    Text(description, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
-                  ],
-                ),
-              ),
-              const FaIcon(FontAwesomeIcons.chevronRight, size: 12, color: Color(0xFF3C3C43)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
