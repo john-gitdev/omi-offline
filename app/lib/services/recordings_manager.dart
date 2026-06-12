@@ -471,6 +471,10 @@ class DiscardRecord {
   DateTime get expiresAt => endTime.add(RecordingsManager.discardRetentionWindow);
   bool get isNoise => reason.contains('noise');
 
+  /// A muted stretch (mic off via double-tap-hold / app toggle). Has no bins and
+  /// no recoverable audio — surfaced as a delete-only ghost row.
+  bool get isMuted => reason == 'muted';
+
   /// Stable identity for UI keys/comparisons: source file + startMs + bins hash.
   String get id => '${sourceJsonl.path}:${startTime.millisecondsSinceEpoch}:${relativeBins.join(",")}';
 }
@@ -1877,6 +1881,8 @@ class RecordingsManager {
   /// Appends the audio from a [DiscardRecord] (ghost) into the [draftFile],
   /// preceded by [gapMs] of silence.
   Future<bool> _stitchDiscard(File draftFile, DiscardRecord ghost, int gapMs) async {
+    // Muted intervals (and any bin-less ghost) have no audio to recover/stitch.
+    if (ghost.relativeBins.isEmpty) return false;
     final ext = draftFile.path.split('.').last;
     final directory = await getApplicationDocumentsDirectory();
     final rawDir = Directory('${directory.path}/raw_segments');
@@ -3210,7 +3216,11 @@ class RecordingsManager {
 
     for (var i = 1; i < sorted.length; i++) {
       final r = sorted[i];
-      if (r.startTime.difference(end) <= discardMergeGap) {
+      // Muted intervals never merge — they're a distinct kind (no bins, delete-only),
+      // so a muted record always flushes as its own ghost row and is never absorbed
+      // into an adjacent noise/too-short discard (or vice versa).
+      final mergeable = reason != 'muted' && !r.isMuted;
+      if (mergeable && r.startTime.difference(end) <= discardMergeGap) {
         if (r.endTime.isAfter(end)) end = r.endTime;
         if (r.maxVoiceProb > maxProb) maxProb = r.maxVoiceProb;
         bins.addAll(r.relativeBins);
