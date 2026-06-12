@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.23.3
+
+- **Internal: large-file refactor — no user-facing changes.** Broke several oversized files into focused units (recording domain models, upload/VAD value types, WAL sync exceptions, the sync-page debug widgets, the integration upload manager, the discard ledger, and the background-processing isolate worker) and added unit-test coverage for the upload subsystem. Behaviour is unchanged; this is purely code organization and test hardening.
+
 ### 0.23.2
 
 - **Muted stretches now appear in the recordings list.** When you mute Omi (auto mode), the time you were muted shows up as a greyed-out "Muted" ghost row on that day — bracketed by the exact mute/unmute times. If the device powered off while muted, the row ends at the next session's start (mute never survives a reboot). Tapping the row opens a single **Delete** action — there's no audio to recover, so the row is delete-only. Requires firmware oo-2.0.0+.
