@@ -1444,6 +1444,16 @@ bool write_session_end_marker_to_storage(void)
 {
     return write_marker_header_to_storage(0xFFFFFFFC, "session-end");
 }
+
+bool write_mute_on_marker_to_storage(void)
+{
+    return write_marker_header_to_storage(0xFFFFFFFA, "mute-on");
+}
+
+bool write_mute_off_marker_to_storage(void)
+{
+    return write_marker_header_to_storage(0xFFFFFFF9, "mute-off");
+}
 #endif
 
 void pusher(void)
