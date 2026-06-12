@@ -38,6 +38,9 @@ class DeviceProvider extends ChangeNotifier
   StreamSubscription<List<int>>? _bleButtonListener;
   int batteryLevel = -1;
   bool isCharging = false;
+  bool isMuted = false;
+  DateTime? muteSince;
+  StreamSubscription<List<int>>? _bleMuteListener;
   int storageFullPercentage = -1;
   StorageFileStats? storageStats;
   int _lastNotifiedBatteryLevel = -1;
@@ -298,6 +301,53 @@ class DeviceProvider extends ChangeNotifier
       isCharging = charging;
       notifyListeners();
     }
+  }
+
+  /// Read the device's mute state once (used on connect). The live listener
+  /// keeps it current thereafter.
+  Future<void> updateMuteState() async {
+    if (connectedDevice == null) return;
+    var connection = await ServiceManager.instance().device.ensureConnection(connectedDevice!.id);
+    if (connection == null) return;
+    final state = await connection.getMuteState();
+    _applyMuteState(state.muted, state.since);
+  }
+
+  /// Subscribe to mute-state notifications (ungated on the firmware side, so it
+  /// fires even mid-sync). Initial state comes from [updateMuteState] on connect.
+  Future<void> initiateBleMuteListener() async {
+    final oldListener = _bleMuteListener;
+    _bleMuteListener = null;
+    await oldListener?.cancel();
+    if (connectedDevice == null) return;
+    var connection = await ServiceManager.instance().device.ensureConnection(connectedDevice!.id);
+    if (connection == null) return;
+    _bleMuteListener = await connection.getMuteListener(
+      onMuteChange: (bool muted, DateTime? since) => _applyMuteState(muted, since),
+    );
+  }
+
+  void _applyMuteState(bool muted, DateTime? since) {
+    if (isMuted == muted && muteSince == since) return;
+    isMuted = muted;
+    muteSince = since;
+    // Mirror into the OS notification's resting line.
+    SyncNotification.isMuted = muted;
+    SyncNotification.muteSince = since;
+    unawaited(SyncNotification.idle(isConnected: true));
+    notifyListeners();
+  }
+
+  /// Toggle mute over BLE (battery-icon tap). The firmware ignores this in
+  /// manual mode, so we re-read the device's authoritative state afterward
+  /// instead of assuming the write took effect.
+  Future<void> setMuted(bool muted) async {
+    final dev = connectedDevice;
+    if (dev == null) return;
+    final connection = await ServiceManager.instance().device.ensureConnection(dev.id);
+    if (connection == null) return;
+    await connection.setMute(muted);
+    await updateMuteState();
   }
 
   Future<BtDevice?> _getConnectedDevice() async {
@@ -1003,6 +1053,7 @@ class DeviceProvider extends ChangeNotifier
     WidgetsBinding.instance.removeObserver(this);
     _bleBatteryLevelListener?.cancel();
     _bleButtonListener?.cancel();
+    _bleMuteListener?.cancel();
     _reconnectionTimer?.cancel();
     _reconnectDelayTimer?.cancel();
     _resumeReconnectDebounce?.cancel();
@@ -1041,6 +1092,14 @@ class DeviceProvider extends ChangeNotifier
     storageFullPercentage = -1;
     storageStats = null;
     isCharging = false;
+    await _bleMuteListener?.cancel();
+    _bleMuteListener = null;
+    if (isMuted) {
+      isMuted = false;
+      muteSince = null;
+      SyncNotification.isMuted = false;
+      SyncNotification.muteSince = null;
+    }
     notifyListeners();
     await setConnectedDevice(null);
     setIsConnected(false);
@@ -1172,6 +1231,8 @@ class DeviceProvider extends ChangeNotifier
     await initiateBleBatteryListener();
     await updateBatteryLevel();
     await updateChargingState();
+    await initiateBleMuteListener();
+    await updateMuteState();
     await initiateBleButtonListener();
 
     {
