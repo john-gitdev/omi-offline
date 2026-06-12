@@ -52,6 +52,12 @@ class OmiDeviceConnection extends DeviceConnection {
   //                        [sdStreamDrops u32][sdBootDrops u32][nowUptimeMs u32]
   static const String diagnosticsDropsCharacteristicUuid = '19b10062-e8f2-537e-4f6c-d104768a1214';
 
+  // 9-byte mute state (Read / Write / Notify):
+  //   [muted:1][since_utc_s:4 LE][since_uptime_ms:4 LE]
+  // Write [0] to unmute, [1] to mute (no-op on the device while in manual mode).
+  static const String muteServiceUuid = '19b10070-e8f2-537e-4f6c-d104768a1214';
+  static const String muteCharacteristicUuid = '19b10071-e8f2-537e-4f6c-d104768a1214';
+
   // Protects against stale packets from previous calls
   int _listFilesGeneration = 0;
 
@@ -61,6 +67,7 @@ class OmiDeviceConnection extends DeviceConnection {
   Timer? _cccdRetryTimer;
 
   StreamSubscription<List<int>>? _chargingSubscription;
+  StreamSubscription<List<int>>? _muteSubscription;
 
   // Cached audio codec to avoid redundant BLE reads
   BleAudioCodec? _cachedAudioCodec;
@@ -291,10 +298,64 @@ class OmiDeviceConnection extends DeviceConnection {
     return levelSub;
   }
 
+  /// Parse the 9-byte mute payload: [muted:1][since_utc_s:4 LE][since_uptime_ms:4 LE].
+  /// `since` is derived from the RTC seconds when valid (post-time-sync); pre-time-sync
+  /// it stays null and the UI falls back to a timeless "muted" label. The uptime field
+  /// is reserved for a future precise fallback.
+  static ({bool muted, DateTime? since}) _parseMuteState(List<int> data) {
+    if (data.length < 9) return (muted: false, since: null);
+    final muted = data[0] == 1;
+    final sinceUtcS = data.getUint32LittleEndian(1);
+    DateTime? since;
+    if (muted && sinceUtcS > 946684800) {
+      since = DateTime.fromMillisecondsSinceEpoch(sinceUtcS * 1000, isUtc: true);
+    }
+    return (muted: muted, since: since);
+  }
+
+  @override
+  Future<({bool muted, DateTime? since})> performGetMuteState() async {
+    try {
+      final data = await transport.readCharacteristic(muteServiceUuid, muteCharacteristicUuid);
+      return _parseMuteState(data);
+    } catch (_) {
+      return (muted: false, since: null);
+    }
+  }
+
+  @override
+  Future<void> performSetMute(bool muted) async {
+    try {
+      await transport.writeCharacteristic(muteServiceUuid, muteCharacteristicUuid, [muted ? 1 : 0]);
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Error writing mute: $e');
+    }
+  }
+
+  @override
+  Future<StreamSubscription<List<int>>?> performGetMuteListener({
+    required void Function(bool muted, DateTime? since) onMuteChange,
+  }) async {
+    try {
+      final stream = await transport.getCharacteristicStream(muteServiceUuid, muteCharacteristicUuid);
+      await _muteSubscription?.cancel();
+      _muteSubscription = stream.listen((v) {
+        final s = _parseMuteState(v);
+        onMuteChange(s.muted, s.since);
+      });
+      return _muteSubscription;
+    } catch (e) {
+      Logger.debug('OmiDeviceConnection: Error subscribing to mute state: $e');
+      return null;
+    }
+  }
+
   @override
   Future<void> disconnect({bool isManual = true}) async {
     await _chargingSubscription?.cancel();
     _chargingSubscription = null;
+    await _muteSubscription?.cancel();
+    _muteSubscription = null;
     await stop();
     await super.disconnect(isManual: isManual);
   }
