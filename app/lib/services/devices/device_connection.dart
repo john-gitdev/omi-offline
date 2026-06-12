@@ -82,6 +82,22 @@ abstract class DeviceConnection {
     return false;
   }
 
+  Future<({bool muted, DateTime? since})> getMuteState() async {
+    if (await isConnected()) return performGetMuteState();
+    return (muted: false, since: null);
+  }
+
+  Future<void> setMute(bool muted) async {
+    if (await isConnected()) return performSetMute(muted);
+  }
+
+  Future<StreamSubscription<List<int>>?> getMuteListener({
+    required void Function(bool muted, DateTime? since) onMuteChange,
+  }) async {
+    if (await isConnected()) return performGetMuteListener(onMuteChange: onMuteChange);
+    return null;
+  }
+
   Future<DeviceCrashLog?> getDiagnostics() async {
     if (await isConnected()) return performGetDiagnostics();
     return null;
@@ -247,6 +263,11 @@ abstract class DeviceConnection {
 
   Future<int> performRetrieveBatteryLevel();
   Future<bool> performRetrieveChargingState();
+  Future<({bool muted, DateTime? since})> performGetMuteState();
+  Future<void> performSetMute(bool muted);
+  Future<StreamSubscription<List<int>>?> performGetMuteListener({
+    required void Function(bool muted, DateTime? since) onMuteChange,
+  });
   Future<StreamSubscription<List<int>>?> performGetBleBatteryLevelListener({
     void Function(int)? onBatteryLevelChange,
     void Function(bool)? onChargingStateChange,
