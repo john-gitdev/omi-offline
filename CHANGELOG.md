@@ -4,7 +4,7 @@
 
 ### 0.23.2
 
-- **Muted stretches now appear in the recordings list.** When you mute Omi (auto mode), the time you were muted shows up as a greyed-out "Muted" ghost row on that day — bracketed by the exact mute/unmute times. If the device powered off while muted, the row ends at the next session's start (mute never survives a reboot). Tapping the row opens a single **Delete** action — there's no audio to recover, so the row is delete-only. Requires firmware oo-0.20.0+.
+- **Muted stretches now appear in the recordings list.** When you mute Omi (auto mode), the time you were muted shows up as a greyed-out "Muted" ghost row on that day — bracketed by the exact mute/unmute times. If the device powered off while muted, the row ends at the next session's start (mute never survives a reboot). Tapping the row opens a single **Delete** action — there's no audio to recover, so the row is delete-only. Requires firmware oo-2.0.0+.
 
 ### 0.23.1
 
@@ -214,7 +214,7 @@
 
 ## Firmware
 
-### oo-0.20.0
+### oo-2.0.0
 
 - **New: mute markers in the audio stream.** Engaging/releasing mute now writes a mute-on (`0xFFFFFFFA`) / mute-off (`0xFFFFFFF9`) marker into the recording stream (same 16-byte payload as the other markers: UTC ms, uptime ms, session id), so the app can reconstruct exactly when the mic was muted. SD writes are resumed before the marker is written, so it survives even if mute was toggled during a VAD silence gap; the markers are force-drained like button-tap/session-end so they're durable with no audio flowing.
 
