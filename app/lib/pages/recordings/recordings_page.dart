@@ -813,6 +813,22 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                     onPressed: () => setState(() => _showMarkersOnly = !_showMarkersOnly),
                     tooltip: 'Toggle markers only',
                   ),
+                // Mute toggle — auto mode only (mute is unavailable in manual mode).
+                // Red mic-off when muted; disabled until connected.
+                if (!_prefs.manualMode)
+                  IconButton(
+                    icon: FaIcon(
+                      deviceProvider.isMuted ? FontAwesomeIcons.microphoneSlash : FontAwesomeIcons.microphone,
+                      color: deviceProvider.isMuted
+                          ? Colors.red
+                          : (deviceProvider.isConnected ? Colors.white : Colors.grey.shade700),
+                      size: 20,
+                    ),
+                    onPressed: deviceProvider.isConnected
+                        ? () => unawaited(deviceProvider.setMuted(!deviceProvider.isMuted))
+                        : null,
+                    tooltip: deviceProvider.isMuted ? 'Unmute Omi' : 'Mute Omi',
+                  ),
                 IconButton(
                   icon: FaIcon(
                     FontAwesomeIcons.boltLightning,
@@ -916,6 +932,10 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                   ),
                 StorageWarningBanner(
                   percentage: deviceProvider.storageFullPercentage,
+                ),
+                MutedBanner(
+                  isMuted: deviceProvider.isMuted,
+                  since: deviceProvider.muteSince,
                 ),
                 SyncProcessCard(
                   data: SyncCardData(
