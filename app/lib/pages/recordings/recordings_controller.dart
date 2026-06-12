@@ -18,6 +18,7 @@ import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:omi/pages/recordings/recordings_types.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:omi/utils/audio/sync_notification.dart';
+import 'package:omi/utils/other/time_utils.dart';
 
 enum UploadStatus { none, partial, all, failed, unavailable }
 
@@ -35,6 +36,10 @@ enum IntegrationUploadState {
 
   /// Available, not delivered, no upload in flight — actionable.
   pending,
+
+  /// Enqueued for upload, waiting its turn behind the single sequential worker.
+  /// Not actionable — it's already on its way.
+  queued,
 
   /// This integration cannot upload this recording at all (e.g. Omi with no
   /// processing-time .bin, or HeyPocket with the audio file gone).
@@ -64,6 +69,52 @@ class UploadFailure {
   final String integration;
   final Object error;
   UploadFailure(this.integration, this.error);
+}
+
+/// One enqueued upload: a specific [conversation] to a specific [integration].
+/// Drained one at a time within that integration's lane ([_UploadLane], via
+/// [RecordingsController._pumpLane]) so we never fan parallel jobs at a server.
+/// [force] re-uploads an already-delivered recording; [manual] jobs (explicit
+/// user taps) are drained ahead of auto-sweep jobs and ignore server backoff.
+class UploadJob {
+  final PassthroughIntegration integration;
+  final Conversation conversation;
+  final bool force;
+  final bool manual;
+  UploadJob(this.integration, this.conversation, {this.force = false, this.manual = false});
+
+  /// Matches the `_syncingKeys` registry so in-flight and queued jobs dedup
+  /// against each other across every entry point.
+  String get key => '${integration.name}_${conversation.file.path}';
+}
+
+/// One integration's independent upload lane. Lanes drain concurrently (a
+/// dedicated [RecordingsController._pumpLane] future each), but each lane runs
+/// its own jobs strictly one at a time — so every integration's server only ever
+/// sees a single upload, while a slow/503ing Omi lane never blocks a fast
+/// HeyPocket lane. In-memory only (rebuilt by the next sweep after an app-kill).
+class _UploadLane {
+  final List<UploadJob> manual = [];
+  final List<UploadJob> auto = [];
+
+  /// The job whose upload() is currently awaited (null between jobs / paused).
+  UploadJob? current;
+
+  /// Re-entrancy guard — true while this lane's drain loop is running.
+  bool draining = false;
+
+  /// Completed / failed counts for this run. Held after the lane empties (so its
+  /// notification line can read "8/8 done") until *every* lane is idle, then
+  /// reset together so the aggregate total doesn't lurch.
+  int done = 0;
+  int failed = 0;
+
+  /// Server-busy (503) backoff: lane paused until this time, then re-pumped.
+  DateTime? busyUntil;
+
+  bool get isEmpty => manual.isEmpty && auto.isEmpty;
+  bool get isActive => current != null || !isEmpty;
+  bool get isPausedBusy => busyUntil != null && busyUntil!.isAfter(DateTime.now());
 }
 
 class RecordingsController extends ChangeNotifier implements IWalSyncProgressListener {
@@ -135,12 +186,54 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   String _lastActiveStage = 'syncing';
   String get lastActiveStage => _lastActiveStage;
 
-  final Set<String> _uploadingFiles = {};
-  Set<String> get uploadingFiles => _uploadingFiles;
+  /// Upload keys of every recording with an upload in flight or queued — drives
+  /// the row/player "uploading" spinner. Derived from each lane's in-flight job
+  /// plus its queues so it stays in lockstep with the workers.
+  Set<String> get uploadingFiles {
+    final keys = <String>{};
+    void add(Conversation c) {
+      final k = c.uploadKey;
+      if (k != null) keys.add(k);
+    }
+
+    for (final lane in _lanes.values) {
+      if (lane.current != null) add(lane.current!.conversation);
+      for (final j in lane.manual) {
+        add(j.conversation);
+      }
+      for (final j in lane.auto) {
+        add(j.conversation);
+      }
+    }
+    return keys;
+  }
 
   String _lastHpKey = '';
 
   final Set<String> _syncingKeys = {};
+
+  // Per-integration upload lanes, keyed by integration name. Each drains
+  // concurrently but strictly sequentially within itself, so every server sees
+  // one-at-a-time while a slow Omi lane can't block a fast HeyPocket lane. In
+  // tap order within a lane (manual ahead of auto). In-memory only: on app-kill,
+  // auto-eligible jobs self-heal via the next sweep; _syncingKeys gates dedup
+  // against the in-flight job.
+  final Map<String, _UploadLane> _lanes = {};
+  _UploadLane _lane(String name) => _lanes.putIfAbsent(name, () => _UploadLane());
+  bool get _anyLaneActive => _lanes.values.any((l) => l.isActive);
+  // The Omi Cloud server-busy (503) backoff, mirroring OmiPassthroughIntegration's
+  // internal _busyBackoff — used to set a lane's busyUntil for the visible pause.
+  static const Duration _busyBackoff = Duration(minutes: 5);
+
+  // Reasons currently holding the CPU wakelock ('pipeline', 'upload'). The
+  // wakelock stays enabled while the set is non-empty (or Keep Screen On is on);
+  // routing both the sync pipeline and uploads through this keeps them from
+  // clobbering each other's hold.
+  final Set<String> _wakeReasons = {};
+
+  // Connectivity stream subscription that unparks wifi-gated lanes when wifi
+  // returns. Null until init().
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
 
   String? _pendingSnackMessage;
   String? consumePendingSnack() {
@@ -220,11 +313,36 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   AppLifecycleState? _lastLifecycleState;
 
-  /// Releases the foreground wakelock unless the user has pinned the screen on
-  /// via the debug "Keep Screen On" toggle, in which case it stays held.
-  void _releaseWakelock() {
-    if (_prefs.keepScreenOn) return;
-    WakelockPlus.disable();
+  /// Acquire/release a named hold on the foreground CPU wakelock. The wakelock
+  /// stays enabled while any reason is held (or "Keep Screen On" is pinned), so
+  /// the sync pipeline and uploads never drop each other's hold.
+  void _acquireWake(String reason) {
+    _wakeReasons.add(reason);
+    WakelockPlus.enable();
+  }
+
+  void _releaseWake(String reason) {
+    _wakeReasons.remove(reason);
+    if (_wakeReasons.isEmpty && !_prefs.keepScreenOn) WakelockPlus.disable();
+  }
+
+  /// Releases the sync pipeline's wakelock hold. Kept under its original name for
+  /// the existing call sites; honors "Keep Screen On" and any other holder (e.g.
+  /// an in-flight upload) via [_releaseWake].
+  void _releaseWakelock() => _releaseWake('pipeline');
+
+  /// Holds the wakelock while an upload is actually **in flight** — auto or
+  /// manual — so a backgrounded / swiped-away upload still completes; releases it
+  /// between jobs and while a lane is merely queued or wifi-parked (so a parked
+  /// lane can't pin the CPU awake indefinitely). The hold is naturally bounded by
+  /// each upload call's own network timeout (a hung Omi upload eventually returns).
+  void _refreshUploadHold() {
+    final inFlight = _lanes.values.any((l) => l.current != null);
+    if (inFlight) {
+      _acquireWake('upload');
+    } else {
+      _releaseWake('upload');
+    }
   }
 
   void _throttledUpdate({bool force = false}) {
@@ -251,6 +369,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     RecordingsManager.processingLiveness.addListener(_onLivenessChanged);
     RecordingsManager.isTranscoding.addListener(_onTranscodingChanged);
     _pollTimer = Timer.periodic(const Duration(milliseconds: 500), (_) => _poll());
+    // Unpark wifi-gated lanes when connectivity changes (e.g. wifi returns): a
+    // lane parks rather than failing jobs when "Upload on Wifi Only" is on and
+    // wifi drops, so something has to nudge it back to life.
+    _connectivitySub = Connectivity().onConnectivityChanged.listen((_) {
+      if (!_isDisposed) _pumpAllLanes();
+    });
   }
 
   @override
@@ -258,6 +382,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _isDisposed = true;
     _pollTimer?.cancel();
     _forceSyncCooldownTimer?.cancel();
+    _connectivitySub?.cancel();
     ServiceManager.instance().wal.getSyncs().setGlobalProgressListener(null);
     RecordingsManager.recordingsChangeNotifier.removeListener(_onRecordingsChanged);
     RecordingsManager.processingProgress.removeListener(_onProgressChanged);
@@ -710,7 +835,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     _syncSpeed = 0.0;
     _transitionTo(SyncProcessState.syncing);
 
-    WakelockPlus.enable();
+    _acquireWake('pipeline');
     await SyncNotification.preparingSync();
 
     final syncs = ServiceManager.instance().wal.getSyncs();
@@ -804,7 +929,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     _transitionTo(SyncProcessState.syncing);
 
-    WakelockPlus.enable();
+    _acquireWake('pipeline');
     await SyncNotification.preparingSync();
 
     await Future.delayed(const Duration(seconds: 1));
@@ -878,7 +1003,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
     _transitionTo(SyncProcessState.processing);
 
-    WakelockPlus.enable();
+    _acquireWake('pipeline');
     await SyncNotification.preparingProcessing();
 
     final allBins = _batches.expand((b) => b.rawSegments).toList();
@@ -1420,30 +1545,219 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   String _dateString(DateTime t) =>
       '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
 
-  /// True when [i] already has its maximum concurrent uploads in flight, counting
-  /// the shared [_syncingKeys] registry across all paths (auto + both manual
-  /// entry points). Omi Cloud (limit 1) uses this to block a second concurrent
-  /// upload — the server returns 503s when hit with parallel sync jobs.
-  bool _atConcurrencyLimit(PassthroughIntegration i) =>
-      _syncingKeys.where((k) => k.startsWith('${i.name}_')).length >= i.concurrencyLimit;
+  /// Enqueues an upload of [conversation] to [integration] on that integration's
+  /// lane, unless it's already in flight or already queued (dedup by
+  /// [UploadJob.key]). Manual jobs drain ahead of auto within the lane. Does NOT
+  /// start the lane — callers call [_pumpAllLanes] after enqueuing a batch.
+  void _enqueueUpload(PassthroughIntegration integration, Conversation conversation,
+      {bool force = false, bool manual = false}) {
+    final key = '${integration.name}_${conversation.file.path}';
+    if (_syncingKeys.contains(key)) return; // currently uploading
+    final lane = _lane(integration.name);
+    if (lane.manual.any((j) => j.key == key) || lane.auto.any((j) => j.key == key)) return; // already queued
+    (manual ? lane.manual : lane.auto).add(UploadJob(integration, conversation, force: force, manual: manual));
+  }
 
-  void tryAutoUploadAll() async {
-    // Fire-and-forget (callers don't await), so any throw here would become an
-    // unhandled async error. Guard the connectivity probe and, when wifi-only is
-    // on, fail closed: if we can't confirm wifi, skip the pass rather than upload
-    // over cellular.
-    if (_prefs.uploadOnWifiOnly) {
-      try {
-        final connectivity = await Connectivity().checkConnectivity();
-        if (!connectivity.contains(ConnectivityResult.wifi)) return;
-      } catch (e) {
-        Logger.error('tryAutoUploadAll: connectivity check failed ($e) — skipping wifi-gated upload');
-        return;
+  /// Drops every *queued* (not in-flight) job for [integrationName] from its lane
+  /// and returns how many were removed. Shared by the disable-integration actions
+  /// and the per-lane fail-fast path. Dropped jobs stay not-delivered: auto ones
+  /// re-enqueue on the next sweep; manual ones revert to "Ready to Upload".
+  int _purgeQueuedFor(String integrationName) {
+    final lane = _lanes[integrationName];
+    if (lane == null) return 0;
+    final before = lane.manual.length + lane.auto.length;
+    lane.manual.clear();
+    lane.auto.clear();
+    return before;
+  }
+
+  /// Kicks every lane that has work. Used by the auto sweep, the manual upload
+  /// entry points, the connectivity listener (wifi returned), and busy resume.
+  void _pumpAllLanes() {
+    for (final name in _lanes.keys.toList()) {
+      unawaited(_pumpLane(name));
+    }
+  }
+
+  /// One integration's sequential upload worker. Drains its manual queue then its
+  /// auto queue, one job at a time. Lanes run concurrently (a [_pumpLane] future
+  /// each), so a slow/503ing Omi lane never blocks a fast HeyPocket lane; within a
+  /// lane it's strictly one-at-a-time, so each server only ever sees one upload.
+  /// Re-entrant calls for the same lane are coalesced by [lane.draining]. Parks
+  /// (jobs stay queued) when "Upload on Wifi Only" is on and wifi is unavailable,
+  /// and pauses on a 503 until the lane's backoff passes.
+  Future<void> _pumpLane(String name) async {
+    final lane = _lane(name);
+    if (_isDisposed || lane.draining || lane.isPausedBusy) return;
+    lane.draining = true;
+    try {
+      while (!_isDisposed && !lane.isEmpty) {
+        // Wifi gate before committing to a job. Fail closed: if we can't confirm
+        // wifi, park rather than upload over cellular. The connectivity listener
+        // re-pumps on the next change.
+        if (_prefs.uploadOnWifiOnly) {
+          try {
+            final connectivity = await Connectivity().checkConnectivity();
+            if (!connectivity.contains(ConnectivityResult.wifi)) break; // parked
+          } catch (e) {
+            Logger.error('_pumpLane($name): connectivity check failed ($e) — parking lane');
+            break;
+          }
+        }
+
+        final job = lane.manual.isNotEmpty ? lane.manual.removeAt(0) : lane.auto.removeAt(0);
+        final integration = job.integration;
+        final conversation = job.conversation;
+        final retryKey = integration.getRetryKey(conversation);
+
+        // Re-validate at dequeue — state drifts between enqueue and run.
+        if (!job.force && integration.hasDelivered(conversation)) continue; // delivered by another path
+        if (!job.manual && integration.isBackingOff(conversation)) continue; // auto honors backoff; manual overrides
+
+        lane.current = job;
+        _syncingKeys.add(job.key);
+        _refreshUploadHold(); // hold the wakelock while this upload is in flight
+        // Persist an up-front failure marker so an app-kill mid-upload reads
+        // "failed" rather than reverting to "pending". Cleared by upload() on success.
+        unawaited(_prefs.setAutoUploadLastFailureAt(retryKey));
+        _updateUploadNotification();
+        if (!_isDisposed) notifyListeners();
+
+        bool delivered = false;
+        bool busy = false;
+        try {
+          await integration.upload(conversation, onProgress: _notifyChunkProgress);
+          if (integration.hasDelivered(conversation)) {
+            delivered = true;
+            if (_prefs.passthroughMode) await _convertToPassthrough(conversation);
+          } else if (integration.isBackingOff(conversation)) {
+            // Server busy (503): pause the whole lane and resume this recording
+            // first once the backoff passes. Not a failure — don't spend retries.
+            busy = true;
+            lane.busyUntil = DateTime.now().add(_busyBackoff);
+            (job.manual ? lane.manual : lane.auto).insert(0, job);
+            _scheduleLaneResume(name);
+          }
+          // else: pending (job still running server-side) — neither delivered nor
+          // failed; re-derived on the next sweep. Fall through.
+        } catch (e) {
+          // Only auto jobs spend the retry budget; a manual failure just stamps
+          // the timestamp (surfaced as "failed" via _integrationState).
+          if (!job.manual) unawaited(_prefs.incrementAutoUploadRetry(retryKey));
+          unawaited(_prefs.setAutoUploadLastFailureAt(retryKey));
+          lane.failed++;
+          if (e is HeyPocketException && e.statusCode == 401) {
+            _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
+          } else if (e is OmiSyncException && e.isAuthError) {
+            _pendingSnackMessage = 'Omi sync: credentials invalid — update them in Integrations';
+          } else {
+            Logger.error('Upload failed (${integration.name}): $e');
+          }
+          // Fail fast for this lane: a failure usually means the integration/server
+          // is unhealthy, so drop its remaining queued jobs instead of hammering it.
+          // Other lanes are untouched. Dropped jobs aren't lost (auto re-enqueues on
+          // the next sweep; manual reverts to "Ready to Upload").
+          final dropped = _purgeQueuedFor(integration.name);
+          if (dropped > 0) {
+            Logger.debug('Upload: ${integration.name} failed — dropped $dropped remaining queued job(s)');
+          }
+        } finally {
+          lane.current = null;
+          _syncingKeys.remove(job.key);
+          if (delivered) lane.done++;
+          _refreshUploadHold(); // release the in-flight hold (re-acquired by the next job)
+          if (!_isDisposed) {
+            _updateUploadNotification();
+            notifyListeners();
+          }
+        }
+
+        if (busy) break; // lane paused; a timer re-pumps it after the backoff
       }
+    } finally {
+      lane.draining = false;
     }
 
+    _finalizeIfAllIdle();
+  }
+
+  /// Schedules a re-pump of [name]'s lane once its 503 backoff elapses.
+  void _scheduleLaneResume(String name) {
+    final until = _lanes[name]?.busyUntil;
+    if (until == null) return;
+    final delay = until.difference(DateTime.now());
+    Timer(delay.isNegative ? Duration.zero : delay + const Duration(seconds: 1), () {
+      if (!_isDisposed) unawaited(_pumpLane(name));
+    });
+  }
+
+  /// Once no lane has work in flight or queued, reset the per-run counters
+  /// together (so the aggregate total doesn't lurch as one lane finishes before
+  /// another) and settle the notification back to idle.
+  void _finalizeIfAllIdle() {
+    if (_isDisposed || _anyLaneActive) return;
+    final hadProgress = _lanes.values.any((l) => l.done > 0 || l.failed > 0);
+    for (final l in _lanes.values) {
+      l.done = 0;
+      l.failed = 0;
+      l.busyUntil = null;
+    }
+    if (hadProgress && _spState == SyncProcessState.idle) _settleNotification();
+  }
+
+  /// Composes and pushes the aggregated upload notification: a one-line summary
+  /// (shown collapsed) followed by a per-active-integration line (shown expanded
+  /// via the native BigTextStyle). Only while the sync/process pipeline is idle
+  /// (it owns the notification when active). Android-only (no-ops on iOS).
+  void _updateUploadNotification() {
+    if (_spState != SyncProcessState.idle) return;
+
+    int totalDone = 0, total = 0, totalFailed = 0;
+    final lines = <String>[];
+    for (final entry in _lanes.entries) {
+      final lane = entry.value;
+      final remaining = lane.manual.length + lane.auto.length + (lane.current != null ? 1 : 0);
+      // Skip lanes with nothing to report this run.
+      if (remaining == 0 && lane.done == 0 && lane.failed == 0) continue;
+      totalDone += lane.done;
+      totalFailed += lane.failed;
+      total += lane.done + lane.failed + remaining;
+      lines.add(_laneNotificationLine(entry.key, lane));
+    }
+    if (lines.isEmpty) return;
+
+    final failedSuffix = totalFailed > 0 ? ' · $totalFailed failed' : '';
+    // First line is the collapsed summary; the per-integration lines expand below.
+    final text = (['Uploading $totalDone of $total$failedSuffix', ...lines]).join('\n');
+    unawaited(SyncNotification.uploading(text));
+  }
+
+  /// One integration's status line for the expanded notification.
+  String _laneNotificationLine(String name, _UploadLane lane) {
+    final delivered = lane.done;
+    final laneTotal = lane.done + lane.failed + (lane.current != null ? 1 : 0) + lane.manual.length + lane.auto.length;
+    if (lane.isPausedBusy) {
+      return '$name — server busy, retry ${fmtHourMin(lane.busyUntil!)} ($delivered/$laneTotal)';
+    }
+    if (lane.current != null) {
+      final prog = lane.current!.integration.segmentProgress(lane.current!.conversation);
+      final chunk = prog != null ? ' (chunk ${prog.$1 + 1}/${prog.$2})' : '';
+      return '$name — uploading $delivered/$laneTotal$chunk';
+    }
+    if (lane.isEmpty) {
+      return lane.failed > 0
+          ? '$name — $delivered/$laneTotal done · ${lane.failed} failed'
+          : '$name — $delivered/$laneTotal done';
+    }
+    return '$name — $delivered/$laneTotal queued';
+  }
+
+  /// Producer for the auto-upload sweep: enqueues every auto-eligible recording
+  /// (respecting the auto-upload toggle, time cutoff, delivery, server backoff,
+  /// and the retry budget), then kicks the single sequential worker. No longer
+  /// uploads directly — the worker is the sole consumer.
+  void tryAutoUploadAll() {
     final minDuration = _prefs.filterMinDurationSeconds;
-    final isPassthrough = _prefs.passthroughMode;
 
     for (final batch in _batches.reversed) {
       final sortedConversations = [...batch.finalizedRecordings]..sort((a, b) => a.startTime.compareTo(b.startTime));
@@ -1457,47 +1771,14 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
           if (integration.hasDelivered(conversation)) continue;
           // Server asked us to back off (recent 503) — skip until the window passes.
           if (integration.isBackingOff(conversation)) continue;
+          // Retry budget exhausted for this recording.
+          if (_prefs.getAutoUploadRetries(integration.getRetryKey(conversation)) >= 3) continue;
 
-          final integrationKey = '${integration.name}_${conversation.file.path}';
-          if (_syncingKeys.contains(integrationKey)) continue;
-
-          // Respect the integration's concurrency limit across all in-flight uploads.
-          if (_atConcurrencyLimit(integration)) continue;
-
-          // Retry logic (Generic)
-          final retryKey = integration.getRetryKey(conversation);
-          if (_prefs.getAutoUploadRetries(retryKey) >= 3) continue;
-
-          _syncingKeys.add(integrationKey);
-          unawaited(
-            integration.upload(conversation, onProgress: _notifyChunkProgress).then((_) async {
-              if (isPassthrough) await _convertToPassthrough(conversation);
-            }).catchError((e) {
-              unawaited(_prefs.incrementAutoUploadRetry(retryKey));
-              unawaited(_prefs.setAutoUploadLastFailureAt(retryKey));
-              if (e is HeyPocketException && e.statusCode == 401) {
-                _pendingSnackMessage = 'HeyPocket: API key revoked — update it in Integrations';
-              } else if (e is OmiSyncException && e.isAuthError) {
-                _pendingSnackMessage = 'Omi sync: credentials invalid — update them in Integrations';
-              }
-            }).whenComplete(() {
-              _syncingKeys.remove(integrationKey);
-              if (!_isDisposed) {
-                notifyListeners();
-                WidgetsBinding.instance.addPostFrameCallback((_) => tryAutoUploadAll());
-              }
-            }),
-          );
-
-          // No early-out here: the per-integration `activeCount >= concurrencyLimit`
-          // check above already caps a sequential integration (e.g. Omi, limit 1) at
-          // one in-flight upload — the key was just added, so the next conversation's
-          // attempt for the same integration is skipped. Returning here instead would
-          // also abandon the rest of this pass for higher-concurrency integrations
-          // (e.g. HeyPocket, limit 3), throttling them to ~1 upload per cycle.
+          _enqueueUpload(integration, conversation, force: false, manual: false);
         }
       }
     }
+    _pumpAllLanes();
     if (!_isDisposed) notifyListeners();
   }
 
@@ -1586,79 +1867,50 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   }
 
   void cancelPendingOmiUploads() {
-    final count = _syncingKeys.where((k) => k.startsWith('Omi Cloud_')).length;
+    final dropped = _purgeQueuedFor('Omi Cloud');
+    final inFlight = _syncingKeys.where((k) => k.startsWith('Omi Cloud_')).length;
     _syncingKeys.removeWhere((k) => k.startsWith('Omi Cloud_'));
-    Logger.debug('RecordingsController: Omi Cloud disabled — cleared $count in-progress sync(s)');
+    Logger.debug('RecordingsController: Omi Cloud disabled — dropped $dropped queued, cleared $inFlight in-flight');
+    if (!_isDisposed) notifyListeners();
   }
 
   void cancelPendingHeyPocketUploads() {
-    final count = _syncingKeys.where((k) => k.startsWith('HeyPocket_')).length;
-    Logger.debug('RecordingsController: HeyPocket disabled — $count auto-upload(s) will drain and stop');
+    final dropped = _purgeQueuedFor('HeyPocket');
+    Logger.debug('RecordingsController: HeyPocket disabled — dropped $dropped queued; in-flight will drain and stop');
+    if (!_isDisposed) notifyListeners();
   }
 
   Future<List<UploadFailure>> uploadConversation(Conversation conversation, {bool force = false}) async {
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) throw Exception('Upload key unavailable');
-    if (_uploadingFiles.contains(uploadKey)) return [];
 
-    _uploadingFiles.add(uploadKey);
-    notifyListeners();
-
-    final List<UploadFailure> failures = [];
-
-    try {
-      if (_prefs.uploadOnWifiOnly) {
-        final connectivity = await Connectivity().checkConnectivity();
-        if (!connectivity.contains(ConnectivityResult.wifi)) {
-          throw Exception(
-              'WiFi required for upload — connect to WiFi or disable "Upload on Wifi Only" in App Settings');
-        }
+    // Validate wifi up-front so a manual tap gets instant feedback rather than a
+    // job that silently parks. Once enqueued, async upload failures surface via
+    // the reactive row state, not a returned failure.
+    if (_prefs.uploadOnWifiOnly) {
+      final connectivity = await Connectivity().checkConnectivity();
+      if (!connectivity.contains(ConnectivityResult.wifi)) {
+        throw Exception('WiFi required for upload — connect to WiFi or disable "Upload on Wifi Only" in App Settings');
       }
-
-      // Manual upload bypasses the auto-upload time cutoff (isEnabled): an
-      // explicit tap should upload even recordings made before auto-upload was
-      // switched on. A missing source (e.g. Omi's pruned .bin) surfaces as a
-      // clear per-integration failure from upload(), not a blanket "no
-      // integrations enabled" message.
-      final List<Future<void>> uploads = [];
-      for (final integration in _integrations) {
-        if (!integration.isAvailableFor(conversation)) continue;
-        if (!force && integration.hasDelivered(conversation)) continue;
-
-        final syncKey = '${integration.name}_${conversation.file.path}';
-        if (_syncingKeys.contains(syncKey)) continue;
-        // Block a concurrent upload past the integration's limit (Omi Cloud = 1)
-        // so we don't fire parallel sync jobs at the server and trip its 503s.
-        if (_atConcurrencyLimit(integration)) {
-          failures.add(UploadFailure(integration.name,
-              Exception('Another ${integration.name} upload is in progress — try again when it finishes')));
-          continue;
-        }
-
-        // Register in the shared registry so this upload counts toward the
-        // concurrency limit seen by every other path, and remove it on completion.
-        _syncingKeys.add(syncKey);
-        // Persist an attempt marker up-front so an app-kill mid-upload (the
-        // in-memory uploading flag is lost on relaunch) surfaces as failed
-        // rather than reverting to pending. Cleared by upload() on success.
-        unawaited(_prefs.setAutoUploadLastFailureAt(integration.getRetryKey(conversation)));
-        uploads.add(integration.upload(conversation, onProgress: _notifyChunkProgress).catchError((e) {
-          failures.add(UploadFailure(integration.name, e));
-        }).whenComplete(() => _syncingKeys.remove(syncKey)));
-      }
-
-      if (uploads.isEmpty) {
-        failures.add(UploadFailure('Integrations', Exception('No integrations enabled for upload')));
-      } else {
-        await Future.wait(uploads);
-        if (failures.isEmpty && _prefs.passthroughMode) await _convertToPassthrough(conversation);
-      }
-
-      return failures;
-    } finally {
-      _uploadingFiles.remove(uploadKey);
-      notifyListeners();
     }
+
+    // Manual upload bypasses the auto-upload time cutoff (isEnabled): an explicit
+    // tap should upload even recordings made before auto-upload was switched on.
+    // A missing source (e.g. Omi's pruned .bin) is filtered by isAvailableFor.
+    var enqueued = 0;
+    for (final integration in _integrations) {
+      if (!integration.isAvailableFor(conversation)) continue;
+      if (!force && integration.hasDelivered(conversation)) continue;
+      _enqueueUpload(integration, conversation, force: force, manual: true);
+      enqueued++;
+    }
+
+    if (enqueued == 0) {
+      return [UploadFailure('Integrations', Exception('No integrations enabled for upload'))];
+    }
+    _pumpAllLanes();
+    notifyListeners();
+    return [];
   }
 
   /// Per-integration upload status for [c] across all *configured* integrations,
@@ -1695,8 +1947,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   IntegrationUploadState _integrationState(PassthroughIntegration i, Conversation c) {
     if (i.hasDelivered(c)) return IntegrationUploadState.delivered;
-    final uploading = _uploadingFiles.contains(c.uploadKey) || _syncingKeys.contains('${i.name}_${c.file.path}');
-    if (uploading) return IntegrationUploadState.uploading;
+    final key = '${i.name}_${c.file.path}';
+    if (_syncingKeys.contains(key)) return IntegrationUploadState.uploading;
+    final lane = _lanes[i.name];
+    if (lane != null && (lane.manual.any((j) => j.key == key) || lane.auto.any((j) => j.key == key))) {
+      return IntegrationUploadState.queued;
+    }
     if (!i.isAvailableFor(c)) return IntegrationUploadState.unavailable;
 
     final retryKey = i.getRetryKey(c);
@@ -1732,9 +1988,11 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (relevant.isEmpty) return UploadStatus.unavailable;
     if (relevant.every((s) => s.state == IntegrationUploadState.delivered)) return UploadStatus.all;
     if (relevant.any((s) => s.state == IntegrationUploadState.failed)) return UploadStatus.failed;
-    if (relevant
-        .any((s) => s.state == IntegrationUploadState.delivered || s.state == IntegrationUploadState.uploading)) {
-      return UploadStatus.partial;
+    if (relevant.any((s) =>
+        s.state == IntegrationUploadState.delivered ||
+        s.state == IntegrationUploadState.uploading ||
+        s.state == IntegrationUploadState.queued)) {
+      return UploadStatus.partial; // in progress (delivered/uploading/queued) — don't prompt to act
     }
     return UploadStatus.none; // all pending, nothing delivered yet
   }
@@ -1758,18 +2016,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
     if (!force && integration.hasDelivered(c)) return [];
 
-    final syncKey = '${integration.name}_${c.file.path}';
-    if (_syncingKeys.contains(syncKey)) return [];
-
-    // Block a concurrent upload past the integration's limit (Omi Cloud = 1) so
-    // we don't fire parallel sync jobs at the server and trip its 503s.
-    if (_atConcurrencyLimit(integration)) {
-      return [
-        UploadFailure(
-            integration.name, Exception('Another ${integration.name} upload is in progress — wait for it to finish'))
-      ];
-    }
-
+    // Validate wifi up-front so a manual tap gets instant feedback; once enqueued,
+    // an async failure surfaces via the reactive row state. (Already in flight or
+    // queued is a no-op — _enqueueUpload dedups.)
     if (_prefs.uploadOnWifiOnly) {
       try {
         final connectivity = await Connectivity().checkConnectivity();
@@ -1784,25 +2033,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       }
     }
 
-    _syncingKeys.add(syncKey);
-    // Persist an attempt marker up-front so an app-kill mid-upload (the in-memory
-    // _syncingKeys flag is lost on relaunch) surfaces as failed rather than
-    // reverting to pending. Cleared by integration.upload() on success.
-    unawaited(_prefs.setAutoUploadLastFailureAt(integration.getRetryKey(c)));
+    _enqueueUpload(integration, c, force: force, manual: true);
+    _pumpAllLanes();
     notifyListeners();
-
-    final failures = <UploadFailure>[];
-    try {
-      await integration.upload(c, onProgress: _notifyChunkProgress);
-      if (_prefs.passthroughMode) await _convertToPassthrough(c);
-    } catch (e) {
-      unawaited(_prefs.setAutoUploadLastFailureAt(integration.getRetryKey(c)));
-      failures.add(UploadFailure(integration.name, e));
-    } finally {
-      _syncingKeys.remove(syncKey);
-      notifyListeners();
-    }
-    return failures;
+    return [];
   }
 
   static Iterable<String> _binPathsForConversations(List<Conversation> conversations) => conversations.map((c) {
