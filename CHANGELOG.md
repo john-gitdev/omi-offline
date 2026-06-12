@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.23.0
+
+- **Integration uploads are now queued, per-integration.** Tapping Upload on several recordings (or "Upload all pending") no longer fires everything at once or bounces all but the first with "another upload in progress." Each integration has its own queue that uploads one recording at a time — so no single server is ever hit in parallel — but different integrations (Omi Cloud, HeyPocket) now upload **concurrently**, so a slow Omi upload no longer blocks HeyPocket. Manual taps jump ahead of automatic uploads; rows show **Queued → Uploading → Uploaded**, and a failed integration drops the rest of its own queue (the others keep going). On Android the sync notification shows aggregate progress ("Uploading N of M") and expands to a per-integration status line — including Omi's chunk progress and a "server busy, retry …" line when Omi is rate-limited (503). Uploads hold the device awake until they finish (bounded by each upload's own timeout) so backgrounding the app doesn't abandon them, pause if "Upload on Wifi Only" is on and wifi drops, and resume on the next launch if the app is killed mid-upload.
+
 ### 0.22.9
 
 - **UI: Day actions moved into an overflow (⋯) menu.** Each day's "Export All", "Delete Discards", and "Delete Day" now live behind a single menu button on the date row instead of a row of icons at the bottom of the card — so they're reachable without scrolling to the end of a long day, get their full labels back, and keep destructive actions behind a deliberate tap.
