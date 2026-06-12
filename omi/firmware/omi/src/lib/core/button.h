@@ -21,6 +21,17 @@ void activate_button_work();
 void register_button_service();
 void turnoff_all();
 
+/* Apply a mute change from the button FSM or the BLE mute characteristic.
+ * No-op while in manual mode (mirrors the physical-button gate). Records the
+ * mute-since timestamp on engage and notifies the mute characteristic on any
+ * change. Returns true if the state actually changed. */
+bool mute_apply(bool on);
+
+/* Snapshot the mute state for the BLE mute characteristic. *since_* are when
+ * mute was engaged (0 when not muted): utc_s = RTC epoch seconds (0 if
+ * pre-time-sync), uptime_ms = monotonic ms for app-side wall-time derivation. */
+void mute_get_state(uint8_t *muted, uint32_t *since_utc_s, uint32_t *since_uptime_ms);
+
 // Input message queue from evt/button.c
 extern struct k_msgq input_button;
 
