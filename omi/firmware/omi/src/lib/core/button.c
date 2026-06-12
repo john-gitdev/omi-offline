@@ -11,6 +11,7 @@
 #include "haptic.h"
 #include "led.h"
 #include "mic.h"
+#include "rtc.h"
 #include "speaker.h"
 #include "transport.h"
 #include "wdog_facade.h"
@@ -29,6 +30,53 @@ volatile bool is_muted = false;
 volatile bool is_led_enabled = false;
 volatile uint8_t marker_flash_count = 0;
 volatile marker_flash_color_t marker_flash_color = MARKER_FLASH_WHITE;
+
+/* When mute was last engaged, exposed over the BLE mute characteristic so the
+ * app can render "Muted since …". utc_s is best-effort (0 pre-time-sync);
+ * uptime_ms is monotonic so the app can derive wall time after it time-syncs. */
+static volatile uint32_t mute_since_utc_s = 0;
+static volatile uint32_t mute_since_uptime_ms = 0;
+
+bool mute_apply(bool on)
+{
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+    uint16_t thr = aad_get_threshold();
+    bool in_manual = (thr == 32769 || thr == 65535);
+#else
+    bool in_manual = false;
+#endif
+    if (in_manual) {
+        LOG_INF("Mute change ignored (manual mode)");
+        return false;
+    }
+    if (on == is_muted) {
+        return false;
+    }
+    is_muted = on;
+    if (on) {
+        mute_since_utc_s = get_utc_time();
+        mute_since_uptime_ms = (uint32_t)k_uptime_get();
+        mic_pause();
+    } else {
+        mic_resume();
+    }
+    LOG_INF("Mute toggled: %s", on ? "ON" : "OFF");
+    mute_state_notify();
+    return true;
+}
+
+void mute_get_state(uint8_t *muted, uint32_t *since_utc_s, uint32_t *since_uptime_ms)
+{
+    if (is_muted) {
+        *muted = 1;
+        *since_utc_s = mute_since_utc_s;
+        *since_uptime_ms = mute_since_uptime_ms;
+    } else {
+        *muted = 0;
+        *since_utc_s = 0;
+        *since_uptime_ms = 0;
+    }
+}
 
 static const struct device *const buttons = DEVICE_DT_GET(DT_ALIAS(buttons));
 static const struct gpio_dt_spec usr_btn = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(usr_btn), gpios, {0});
@@ -116,21 +164,9 @@ void check_button_level(struct k_work *work_item)
             // Still pressed. Check if held long enough for mute toggle.
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
             if (duration_ms >= HOLD_TIME) {
-                #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                uint16_t thr2 = aad_get_threshold();
-                bool in_manual2 = (thr2 == 32769 || thr2 == 65535);
-                #else
-                bool in_manual2 = false;
-                #endif
-                if (!in_manual2) {
-                    is_muted = !is_muted;
-                    LOG_INF("Mute toggled: %s", is_muted ? "ON" : "OFF");
-                    if (is_muted) {
-                        mic_pause();
-                    } else {
-                        mic_resume();
-                    }
-                }
+                // mute_apply() honors the manual-mode gate, records the
+                // mute-since timestamp, and notifies the BLE mute characteristic.
+                mute_apply(!is_muted);
                 fsm_state = STATE_WAIT_FOR_RELEASE;
             }
         }
