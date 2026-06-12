@@ -281,8 +281,18 @@ class Conversation {
   /// WAV file size calculation. Asynchronous version.
   static Future<Conversation> fromFileAsync(File file) async {
     final name = file.path.split('/').last;
-    final millisStr = name.contains('_') ? name.split('_').last.split('.').first : null;
-    final millis = millisStr != null ? int.tryParse(millisStr) : null;
+    // Find the first numeric underscore-segment so `recording_<ts>_draft.wav`
+    // parses too. Taking the last segment would grab "draft" and wrongly fall
+    // back to lastModified (≈ now), making the draft's end overshoot wall-clock.
+    final nameNoExt = name.split('.').first;
+    int? millis;
+    for (final part in nameNoExt.split('_')) {
+      final val = int.tryParse(part);
+      if (val != null && val > 0) {
+        millis = val;
+        break;
+      }
+    }
     DateTime startTime;
     if (millis != null && millis > 0) {
       startTime = DateTime.fromMillisecondsSinceEpoch(millis);
