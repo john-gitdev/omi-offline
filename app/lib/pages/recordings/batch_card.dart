@@ -344,11 +344,13 @@ class GhostRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final timeRange = '${fmtHourMin(discard.startTime)}–${fmtHourMin(discard.endTime)}';
     final dur = _durationLabel(discard.duration);
-    final subLabel = discard.isNoise
-        ? 'below minimum speech'
-        : discard.reason == 'silence_only'
-            ? 'no speech detected'
-            : 'below minimum length';
+    final subLabel = discard.isMuted
+        ? 'Muted'
+        : discard.isNoise
+            ? 'below minimum speech'
+            : discard.reason == 'silence_only'
+                ? 'no speech detected'
+                : 'below minimum length';
     final dimmed = selectionActive && !selectable;
     // Ghost rows are grey by default; once they become selectable, brighten
     // them so it's clear they're now interactive picks.
@@ -423,27 +425,31 @@ Future<void> showDiscardSheet(
           ),
           const SizedBox(height: 6),
           Text(
-            'Raw audio retained until ${fmtAbs(d.expiresAt.toLocal())}',
+            // Muted stretches have no recorded audio to retain or recover.
+            d.isMuted ? 'Muted — no audio was recorded' : 'Raw audio retained until ${fmtAbs(d.expiresAt.toLocal())}',
             style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
           ),
           const SizedBox(height: 20),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.deepPurpleAccent,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 12),
+          // Muted rows are delete-only — there's nothing to recover.
+          if (!d.isMuted) ...[
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurpleAccent,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                icon: const FaIcon(FontAwesomeIcons.rotateLeft, size: 14),
+                label: const Text('Recover to Recording'),
+                onPressed: () async {
+                  Navigator.of(sheetCtx).pop();
+                  await onRecover(d);
+                },
               ),
-              icon: const FaIcon(FontAwesomeIcons.rotateLeft, size: 14),
-              label: const Text('Recover to Recording'),
-              onPressed: () async {
-                Navigator.of(sheetCtx).pop();
-                await onRecover(d);
-              },
             ),
-          ),
-          const SizedBox(height: 10),
+            const SizedBox(height: 10),
+          ],
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
@@ -453,7 +459,7 @@ Future<void> showDiscardSheet(
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
               icon: const FaIcon(FontAwesomeIcons.trashCan, size: 13),
-              label: const Text('Delete now'),
+              label: Text(d.isMuted ? 'Delete' : 'Delete now'),
               onPressed: () async {
                 Navigator.of(sheetCtx).pop();
                 await onDeleteNow(d);
