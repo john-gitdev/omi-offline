@@ -453,6 +453,87 @@ void transport_notify_button_state(uint8_t state)
     bt_gatt_notify(NULL, &button_service_attr[2], &state, sizeof(state));
 }
 
+// --- Mute Service ---
+// Service UUID:    19B10070-E8F2-537E-4F6C-D104768A1214
+// Characteristic:  19B10071-E8F2-537E-4F6C-D104768A1214 (Read / Write / Notify)
+//   Read/Notify 9 bytes LE: [uint8 muted][uint32 since_utc_s][uint32 since_uptime_ms]
+//     muted: 1 while the mic is muted (double-tap-hold or BLE write), else 0.
+//     since_utc_s: RTC epoch seconds when mute was engaged (0 when not muted or
+//       pre-time-sync). since_uptime_ms: monotonic ms at engage, so the app can
+//       derive wall time after it time-syncs even if the RTC was unset.
+//   Write 1 byte: 0 = unmute, non-zero = mute. Honored only in auto mode (a
+//     no-op in manual mode, mirroring the physical-button gate).
+// Notify is intentionally ungated during file sync: mute changes are rare,
+// user-driven events (one packet), unlike the periodic battery-detail notify.
+static struct bt_uuid_128 mute_service_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10070, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+static struct bt_uuid_128 mute_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x19B10071, 0xE8F2, 0x537E, 0x4F6C, 0xD104768A1214));
+
+static void mute_pack_payload(uint8_t *payload)
+{
+    uint8_t muted = 0;
+    uint32_t since_utc_s = 0;
+    uint32_t since_uptime_ms = 0;
+    mute_get_state(&muted, &since_utc_s, &since_uptime_ms);
+    payload[0] = muted;
+    pack_u32_le(payload + 1, since_utc_s);
+    pack_u32_le(payload + 5, since_uptime_ms);
+}
+
+static ssize_t mute_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                 void *buf, uint16_t len, uint16_t offset)
+{
+    uint8_t payload[9];
+    mute_pack_payload(payload);
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, payload, sizeof(payload));
+}
+
+static ssize_t mute_write_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                  const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+    ARG_UNUSED(conn);
+    ARG_UNUSED(attr);
+    ARG_UNUSED(flags);
+    if (offset != 0) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+    if (len < 1) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+    mute_apply(((const uint8_t *)buf)[0] != 0);
+    return len;
+}
+
+static void mute_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    ARG_UNUSED(attr);
+    // Push the current state on subscribe so the app doesn't wait for a change.
+    if (value == BT_GATT_CCC_NOTIFY) {
+        mute_state_notify();
+    }
+}
+
+static struct bt_gatt_attr mute_service_attr[] = {
+    BT_GATT_PRIMARY_SERVICE(&mute_service_uuid),
+    BT_GATT_CHARACTERISTIC(&mute_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                           mute_read_handler,
+                           mute_write_handler,
+                           NULL),
+    BT_GATT_CCC(mute_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+};
+
+static struct bt_gatt_service mute_service = BT_GATT_SERVICE(mute_service_attr);
+
+void mute_state_notify(void)
+{
+    uint8_t payload[9];
+    mute_pack_payload(payload);
+    bt_gatt_notify(NULL, &mute_service_attr[2], payload, sizeof(payload));
+}
+
 // Advertisement data
 static const struct bt_data bt_ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
@@ -1601,6 +1682,8 @@ int transport_start()
 #endif
     // Diagnostics registered last so existing storage handles stay stable across firmware updates
     bt_gatt_service_register(&diagnostics_service);
+    // Mute service appended after diagnostics so all prior handles stay stable.
+    bt_gatt_service_register(&mute_service);
     err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
     if (err) {
         LOG_ERR("Transport advertising failed to start (err %d)", err);
