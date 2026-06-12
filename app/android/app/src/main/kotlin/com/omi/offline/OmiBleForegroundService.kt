@@ -910,6 +910,10 @@ class OmiBleForegroundService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
+            // Multi-line bodies (the upload status pushes "summary\nOmi…\nHeyPocket…")
+            // collapse to the first line and expand to all lines. Single-line sync/
+            // processing text is unaffected.
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setSmallIcon(applicationInfo.icon)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
