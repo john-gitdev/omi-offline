@@ -136,6 +136,7 @@ class _IntegrationRow extends StatelessWidget {
           Icons.error_outline
         ),
       IntegrationUploadState.pending => (Colors.amber, 'Ready to Upload$_chunkSuffix', Icons.cloud_upload),
+      IntegrationUploadState.queued => (Colors.amber, 'Queued$_chunkSuffix', Icons.schedule),
       IntegrationUploadState.unavailable => (Colors.grey.shade600, 'Not available', Icons.cloud_off),
     };
 
@@ -167,6 +168,10 @@ class _IntegrationRow extends StatelessWidget {
           child: const Text('Upload',
               style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13, fontWeight: FontWeight.w600)),
         );
+        break;
+      case IntegrationUploadState.queued:
+        // Already on its way — waiting behind the single sequential worker.
+        trailing = Text('Waiting…', style: TextStyle(color: Colors.amber.shade200, fontSize: 13));
         break;
       case IntegrationUploadState.unavailable:
         trailing = const SizedBox.shrink();
