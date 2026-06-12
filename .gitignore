@@ -213,6 +213,10 @@ app/android/.kotlin/
 
 web/app/next-env.d.ts
 .claude/settings.local.json
+
+# Local-only — not tracked
+/version.txt
+/REFACTORING_INSTRUCTIONS.md
 app/.claude/
 .claude/worktrees/
 LOCAL_DEV_SETUP.md
