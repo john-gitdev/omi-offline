@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.23.2
+
+- **Muted stretches now appear in the recordings list.** When you mute Omi (auto mode), the time you were muted shows up as a greyed-out "Muted" ghost row on that day — bracketed by the exact mute/unmute times. If the device powered off while muted, the row ends at the next session's start (mute never survives a reboot). Tapping the row opens a single **Delete** action — there's no audio to recover, so the row is delete-only. Requires firmware oo-1.9.10+.
+
 ### 0.23.1
 
 - **New: the app now shows when Omi is muted.** When you mute the device (double-tap-and-hold → solid red LED, mic off) in auto mode, the recordings screen shows a red "Omi is Muted since H:MM" banner, the Android sync notification's resting line reads **"Muted since 3:42 PM" / "Next sync at 4:15 PM"**, and a red mic-off button appears in the app bar (next to Force Sync). Tapping that mic button while connected toggles mute on/off over BLE (auto mode only — the button is hidden in manual mode, where muting is unavailable). Mute state is read on connect and updates live, even mid-sync. Requires firmware oo-1.9.9+.
@@ -209,6 +213,10 @@
 ---
 
 ## Firmware
+
+### oo-1.9.10
+
+- **New: mute markers in the audio stream.** Engaging/releasing mute now writes a mute-on (`0xFFFFFFFA`) / mute-off (`0xFFFFFFF9`) marker into the recording stream (same 16-byte payload as the other markers: UTC ms, uptime ms, session id), so the app can reconstruct exactly when the mic was muted. SD writes are resumed before the marker is written, so it survives even if mute was toggled during a VAD silence gap; the markers are force-drained like button-tap/session-end so they're durable with no audio flowing.
 
 ### oo-1.9.9
 
