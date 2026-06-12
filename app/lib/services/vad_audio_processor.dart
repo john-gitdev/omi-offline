@@ -174,6 +174,14 @@ class VadAudioProcessor {
   // sub-50 ms recording.
   bool _sessionEndPendingResume = false;
 
+  // Muted-interval tracking. Opened by a 0xFFFFFFFA mute-on marker (which also
+  // finalizes the in-progress recording, like session-end), closed by a
+  // 0xFFFFFFF9 mute-off marker or — if the device powered off while muted — by
+  // the next session change. A closed interval is emitted as a "muted" discard
+  // (ghost row). Persisted across runs so an interval that spans a sync survives.
+  bool _muted = false;
+  int? _muteStartMs;
+
   // Markers accumulated since the last _saveRecording call, keyed by their
   // wall-clock timestamp and the recording offset at the time of the tap.
   final List<({int markerMs, int offsetAtMarkerMs})> _pendingMarkers = [];
@@ -364,6 +372,8 @@ class VadAudioProcessor {
       'fbm': _forcedByMarker,
       'mpu': _markerProtectedUntilMs,
       'sep': _sessionEndPendingResume,
+      'mtd': _muted,
+      'mts': _muteStartMs,
       'pm': _pendingMarkers.map((m) => {'ms': m.markerMs, 'o': m.offsetAtMarkerMs}).toList(),
       'vs': vadStateFloats,
       'vc': _vadContext.toList(),
@@ -406,6 +416,8 @@ class VadAudioProcessor {
     _forcedByMarker = s['fbm'] as bool;
     _markerProtectedUntilMs = s['mpu'] as int?;
     _sessionEndPendingResume = s['sep'] as bool;
+    _muted = (s['mtd'] as bool?) ?? false;
+    _muteStartMs = s['mts'] as int?;
     _pendingMarkers.clear();
     for (final m in (s['pm'] as List).cast<Map<String, dynamic>>()) {
       _pendingMarkers.add((markerMs: m['ms'] as int, offsetAtMarkerMs: m['o'] as int));
@@ -578,6 +590,14 @@ class VadAudioProcessor {
       if (_lastSegmentEndTime != null) {
         final gapMs = segmentStartTime.difference(_lastSegmentEndTime!).inMilliseconds;
         final sessionChanged = _currentSessionId != null && sessionId != null && _currentSessionId != sessionId;
+
+        // If we were muted (mute-on seen, no mute-off) and the session changed,
+        // the device powered off while muted — `is_muted` never survives a reboot,
+        // so the new session is effectively the unmute. Close the muted interval
+        // at the new session's start (an upper bound on the unmute time).
+        if (_muted && sessionChanged) {
+          _emitMutedDiscard(segmentStartTime.millisecondsSinceEpoch);
+        }
 
         // Better isClockJump detection using uptime if available.
         // If uptime gap matches audio duration (small gap) but UTC gap is large, it's a clock sync.
@@ -804,6 +824,52 @@ class VadAudioProcessor {
             _cachedStateValue = null;
             _vadContext.fillRange(0, _vadContextSamples, 0.0);
             _batchResetPending = true;
+          }
+          offset += 20;
+          continue;
+        }
+
+        // Mute-on marker (0xFFFFFFFA, 20 bytes). Finalize the current recording at
+        // this boundary (like session-end) and open a muted interval — nothing
+        // records until the matching mute-off or a new session.
+        if (frameLength == 0xFFFFFFFA) {
+          if (offset + 20 <= fileLength) {
+            final markerUtcMs = byteData.getUint64(offset + 4, Endian.little);
+            final muteMs = markerUtcMs > 946684800000 ? markerUtcMs : lastFrameWallTime.millisecondsSinceEpoch;
+            // TWO-PASS: flush any deferred batch before finalizing.
+            if (_useBatchRunner && _batchDeferredFrames.isNotEmpty) {
+              segmentSpeechFrames =
+                  await _flushVadBatch(savedFiles: savedFiles, segmentSpeechFrames: segmentSpeechFrames);
+            }
+            if (_currentRefs.isNotEmpty) {
+              _forcedByMarker = true;
+              final filePath = await flushRemaining(isDraft: false);
+              if (filePath != null) savedFiles.add(filePath);
+            } else {
+              _emitOrphanMarkers();
+            }
+            _muted = true;
+            _muteStartMs = muteMs;
+            _sessionEndPendingResume = true;
+            _pcmBufferLen = 0;
+            _cachedStateValue?.dispose();
+            _cachedStateValue = null;
+            _vadContext.fillRange(0, _vadContextSamples, 0.0);
+            _batchResetPending = true;
+            Logger.debug('VadAudioProcessor: Mute-on marker — muted interval opened at $muteMs.');
+          }
+          offset += 20;
+          continue;
+        }
+
+        // Mute-off marker (0xFFFFFFF9, 20 bytes). Close the muted interval and
+        // emit it as a "muted" ghost row.
+        if (frameLength == 0xFFFFFFF9) {
+          _sessionEndPendingResume = false;
+          if (offset + 20 <= fileLength) {
+            final markerUtcMs = byteData.getUint64(offset + 4, Endian.little);
+            final endMs = markerUtcMs > 946684800000 ? markerUtcMs : lastFrameWallTime.millisecondsSinceEpoch;
+            _emitMutedDiscard(endMs);
           }
           offset += 20;
           continue;
@@ -1461,6 +1527,24 @@ class VadAudioProcessor {
 
   Map<String, dynamic>? _buildDiscardRecord(String reason) =>
       _buildDiscardRecordFor(_currentRefs, _recordingStartTime, _currentChunkDurationMs, reason);
+
+  /// Closes the open muted interval at [endMs] and queues it as a "muted" discard
+  /// (ghost row). Has no bins — nothing recorded while muted — so it is not
+  /// recoverable, only deletable. No-op if no interval is open or the span is empty.
+  void _emitMutedDiscard(int endMs) {
+    final startMs = _muteStartMs;
+    _muted = false;
+    _muteStartMs = null;
+    if (startMs == null || endMs <= startMs) return;
+    _pendingDiscards.add({
+      'startMs': startMs,
+      'endMs': endMs,
+      'reason': 'muted',
+      'maxVoiceProb': 0.0,
+      'relativeBins': <String>[],
+    });
+    Logger.debug('VadAudioProcessor: Muted interval $startMs–$endMs emitted as ghost.');
+  }
 
   /// Builds a discard record for an explicit ref list / span so the referenced
   /// bins are preserved on disk for recovery. [excludeBins] drops any bin that
