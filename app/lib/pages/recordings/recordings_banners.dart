@@ -31,6 +31,40 @@ class StorageWarningBanner extends StatelessWidget {
   }
 }
 
+/// Shown while the connected device's mic is muted (double-tap-hold or app
+/// toggle). Mirrors the OS notification's "Muted since H:MM" line.
+class MutedBanner extends StatelessWidget {
+  final bool isMuted;
+  final DateTime? since;
+  const MutedBanner({super.key, required this.isMuted, this.since});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isMuted) return const SizedBox.shrink();
+    final s = since;
+    final text = s != null
+        ? 'Omi is Muted since ${DateFormat(SharedPreferencesUtil().use24HourTime ? 'HH:mm' : 'h:mm a').format(s.toLocal())}'
+        : 'Omi is Muted';
+    return Container(
+      width: double.infinity,
+      color: Colors.red.shade900,
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: Row(
+        children: [
+          const FaIcon(FontAwesomeIcons.microphoneSlash, color: Colors.white, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class AccumulatingBanner extends StatelessWidget {
   final SyncProcessState spState;
   final double toProcessMinutes;
