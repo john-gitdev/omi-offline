@@ -113,6 +113,10 @@ typedef enum {
     STATE_SECOND_PRESS,
     STATE_SECOND_RELEASE,  // waiting to see if a third tap follows
     STATE_THIRD_PRESS,     // third tap in progress
+    STATE_THIRD_RELEASE,   // waiting to see if a fourth tap follows
+    STATE_FOURTH_PRESS,    // fourth tap in progress
+    STATE_FOURTH_RELEASE,  // waiting to see if a fifth tap follows
+    STATE_FIFTH_PRESS,     // fifth tap in progress (hold for unpair)
     STATE_WAIT_FOR_RELEASE
 } button_fsm_state_t;
 
@@ -123,8 +127,10 @@ static uint32_t state_timer = 0;
 
 #define HOLD_TIME 1000             // 1s hold threshold (single/double tap)
 #define TRIPLE_HOLD_TIME 3000      // 3s hold for triple-tap power off
+#define UNPAIR_HOLD_TIME 10000     // 10s hold for 5-tap unpair
 #define DOUBLE_TAP_WINDOW 600      // 600ms window for second tap
 #define TRIPLE_TAP_WINDOW 600      // 600ms window for third tap
+#define MULTI_TAP_WINDOW 600       // 600ms window for 4th/5th taps
 
 
 void check_button_level(struct k_work *work_item)
@@ -243,17 +249,87 @@ void check_button_level(struct k_work *work_item)
 
     case STATE_THIRD_PRESS:
         if (!pressed) {
-            // Released — triple tap -> toggle LED.
-            is_led_enabled = !is_led_enabled;
-            LOG_INF("Triple tap: LED toggled %s", is_led_enabled ? "ON" : "OFF");
-            fsm_state = STATE_IDLE;
+            // Released — wait to see if a fourth tap follows.
+            fsm_state = STATE_THIRD_RELEASE;
+            state_timer = 0;
         } else {
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
             if (duration_ms >= TRIPLE_HOLD_TIME) {
-                // Triple tap + hold -> power off.
+                // Triple tap + hold → power off.
                 LOG_INF("Power off triggered via triple-tap-hold");
                 turnoff_all();
                 fsm_state = STATE_IDLE;
+            }
+        }
+        break;
+
+    case STATE_THIRD_RELEASE:
+        if (pressed) {
+            // Fourth tap started.
+            fsm_state = STATE_FOURTH_PRESS;
+            state_timer = 0;
+        } else {
+            uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            if (idle_duration_ms > MULTI_TAP_WINDOW) {
+                // Timeout — it was a triple tap → toggle LED.
+                is_led_enabled = !is_led_enabled;
+                LOG_INF("Triple tap: LED toggled %s", is_led_enabled ? "ON" : "OFF");
+                fsm_state = STATE_IDLE;
+            }
+        }
+        break;
+
+    case STATE_FOURTH_PRESS:
+        if (!pressed) {
+            // Released — wait for fifth tap.
+            fsm_state = STATE_FOURTH_RELEASE;
+            state_timer = 0;
+        } else {
+            // Absorb hold — no action on 4-tap hold.
+            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            if (duration_ms >= HOLD_TIME) {
+                fsm_state = STATE_WAIT_FOR_RELEASE;
+            }
+        }
+        break;
+
+    case STATE_FOURTH_RELEASE:
+        if (pressed) {
+            // Fifth tap started!
+            fsm_state = STATE_FIFTH_PRESS;
+            state_timer = 0;
+        } else {
+            uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            if (idle_duration_ms > MULTI_TAP_WINDOW) {
+                // Timeout — 4-tap, no action.
+                LOG_INF("Quadruple tap (no action)");
+                fsm_state = STATE_IDLE;
+            }
+        }
+        break;
+
+    case STATE_FIFTH_PRESS:
+        if (!pressed) {
+            // Released before hold threshold — 5-tap, no action.
+            LOG_INF("Quintuple tap (no action)");
+            fsm_state = STATE_IDLE;
+        } else {
+            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            if (duration_ms >= UNPAIR_HOLD_TIME) {
+                // 5-tap + 10s hold → clear all BLE bonds.
+                LOG_WRN("5-tap + hold: clearing all BLE bonds!");
+                bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+#ifdef CONFIG_OMI_ENABLE_HAPTIC
+                // Three short buzzes to confirm bond wipe.
+                play_haptic_milli(200);
+                k_msleep(300);
+                play_haptic_milli(200);
+                k_msleep(300);
+                play_haptic_milli(200);
+#endif
+                marker_flash_color = MARKER_FLASH_RED;
+                marker_flash_count = 5;
+                fsm_state = STATE_WAIT_FOR_RELEASE;
             }
         }
         break;
