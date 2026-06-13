@@ -5,7 +5,8 @@
 ### 0.23.7
 
 - **Fix: Hardened Bluetooth connection logic for Unpair/Reset.** The "Unpair Device" and "Reset Connection" buttons now surgically remove the bonding/pairing keys directly from Android's native Bluetooth cache, preventing the OS from getting wedged in a "Connection timed out" loop if you reset your Omi. The UI will now also proactively prompt you to toggle your phone's Bluetooth if it detects a stale connection.
-- **Fix: Advanced Android Bluetooth Healing.** The app now automatically disassociates hidden Companion Device bonds when unpairing, and actively hunts down and purges "ghost" connections left behind by the OS daemon on app startup, ensuring a clean slate after app updates.
+- **Fix: Advanced Android Bluetooth Healing.** The app now automatically disassociates hidden Companion Device bonds when unpairing (fixed for Android 8-12), and actively hunts down and purges "ghost" connections left behind by the OS daemon on app startup, ensuring a clean slate after app updates.
+- **Refactor: Modular Build System.** Split the monolithic `build.sh` into focused `build-apk.sh` and `build-fw.sh` scripts with robust version formatting (`oo0210.zip`) and automated workspace cleanup.
 
 ### 0.23.6
 
@@ -289,6 +290,16 @@ Also rolled up from oo-1.9.7 and oo-1.9.8 (never separately released):
 ### oo-1.8.1
 
 - **Session-end marker (`0xFFFFFFFC`) emitted on manual recording stop** — enables the app to auto-finalize without a Force Process step.
+- **LED flashes green on manual recording start, red on stop.**
+
+### oo-1.7.11
+
+- **New diagnostic characteristic (`0x19B10062`)** exposes SD card `storage_block_drops` counter for field debugging.
+
+### oo-1.7.9
+
+- **Background sync hardening** — guard against overlapping syncs, defer `CMD_READ_FILE` to the storage thread, fix BLE connection refcounting, always refresh storage stats at end of sync.
+alize without a Force Process step.
 - **LED flashes green on manual recording start, red on stop.**
 
 ### oo-1.7.11

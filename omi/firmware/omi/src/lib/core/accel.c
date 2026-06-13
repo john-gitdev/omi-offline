@@ -35,7 +35,7 @@ static struct bt_gatt_attr accel_service_attr[] = {
                            accel_data_read_characteristic,
                            NULL,
                            NULL),                                                          // data type
-    BT_GATT_CCC(accel_ccc_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE), // scheduler
+    BT_GATT_CCC(accel_ccc_config_changed_handler, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE_ENCRYPT), // scheduler
 };
 static struct bt_gatt_service accel_service = BT_GATT_SERVICE(accel_service_attr);
 
