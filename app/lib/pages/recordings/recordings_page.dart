@@ -434,6 +434,22 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     }
   }
 
+  void _uploadAllDay(List<Conversation> filtered) {
+    if (filtered.isEmpty) return;
+    int queued = 0;
+    for (final c in filtered) {
+      if (_controller.uploadStatus(c) != UploadStatus.all && _controller.uploadStatus(c) != UploadStatus.unavailable) {
+        _controller.uploadConversation(c).ignore();
+        queued++;
+      }
+    }
+    if (queued > 0 && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Queued $queued recording${queued == 1 ? '' : 's'} for upload')),
+      );
+    }
+  }
+
   Future<void> _deleteDayConversations(
       Batch batch, List<Conversation> toDelete, List<DiscardRecord> toDeleteDiscards) async {
     if (toDelete.isEmpty && toDeleteDiscards.isEmpty) return;
@@ -1217,6 +1233,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                               onConversationTap: _openConversation,
                                               onMarkerTap: _openMarkerConversation,
                                               onExportAll: (conversations) => _exportAll(batch, conversations),
+                                              onUploadAll: _uploadAllDay,
                                               onDeleteDay: (toDelete, toDeleteDiscards) => _deleteDayConversations(
                                                 batch,
                                                 toDelete,

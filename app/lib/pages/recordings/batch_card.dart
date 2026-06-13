@@ -504,6 +504,7 @@ class BatchCard extends StatelessWidget {
   final void Function(Conversation) onConversationTap;
   final void Function(MarkerConversation) onMarkerTap;
   final void Function(List<Conversation>) onExportAll;
+  final void Function(List<Conversation>) onUploadAll;
   final void Function(List<Conversation>, List<DiscardRecord>) onDeleteDay;
   final void Function(List<DiscardRecord>) onDeleteAllDiscards;
   final void Function(MarkerConversation) onDeleteMarkerConversation;
@@ -533,6 +534,7 @@ class BatchCard extends StatelessWidget {
     required this.onConversationTap,
     required this.onMarkerTap,
     required this.onExportAll,
+    required this.onUploadAll,
     required this.onDeleteDay,
     required this.onDeleteAllDiscards,
     required this.onDeleteMarkerConversation,
@@ -597,6 +599,8 @@ class BatchCard extends StatelessWidget {
                       switch (value) {
                         case 'export':
                           onExportAll(filtered);
+                        case 'upload_all':
+                          onUploadAll(filtered);
                         case 'discards':
                           onDeleteAllDiscards(discards);
                         case 'day':
@@ -613,6 +617,16 @@ class BatchCard extends StatelessWidget {
                           color: Colors.grey.shade300,
                         ),
                       ),
+                      if (anyIntegrationEnabled)
+                        PopupMenuItem(
+                          key: Key('upload_all_${batch.dateString}'),
+                          value: 'upload_all',
+                          child: _DayMenuRow(
+                            icon: Icon(Icons.cloud_upload, size: 16, color: Colors.grey.shade300),
+                            label: 'Upload All',
+                            color: Colors.grey.shade300,
+                          ),
+                        ),
                       if (discards.isNotEmpty)
                         PopupMenuItem(
                           key: Key('delete_discards_${batch.dateString}'),

@@ -1022,6 +1022,17 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Widget _buildDropStatsSection() {
+    final devProvider = Provider.of<DeviceProvider>(context);
+    if (!devProvider.isConnected || devProvider.connectedDevice == null) {
+      return const Row(
+        children: [
+          FaIcon(FontAwesomeIcons.circleNotch, size: 13, color: Colors.white38),
+          SizedBox(width: 8),
+          Text('Waiting for device connection…', style: TextStyle(color: Colors.white38, fontSize: 12)),
+        ],
+      );
+    }
+
     if (_dropsUnsupported) {
       return const Row(
         children: [
