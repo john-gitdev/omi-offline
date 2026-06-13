@@ -83,10 +83,10 @@ class DeviceProvider extends ChangeNotifier
   // prevents a firmware idle-drop, so don't re-add _stopForegroundKeepAlive()
   // at the top of onAppPaused.
   Timer? _pauseDisconnectTimer;
-  static const Duration _backgroundDisconnectGrace = Duration(seconds: 30);
-  // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 10s so
-  // the firmware doesn't trip its 15s idle-disconnect (the 10s cadence leaves a
-  // 5s margin and survives one missed beat). Runs while the user is actively in
+  static const Duration _backgroundDisconnectGrace = Duration(seconds: 15);
+  // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 5s so
+  // the firmware doesn't trip its 15s idle-disconnect (the 5s cadence leaves a
+  // 10s margin and survives two missed beats). Runs while the user is actively in
   // the app, during an active background sync
   // (_backgroundSyncActive) — a single large-file read sends no command for
   // >15s, so without an in-flight keep-alive the firmware drops the link
@@ -599,7 +599,7 @@ class DeviceProvider extends ChangeNotifier
     _foregroundKeepAliveTimer?.cancel();
     if ((!_isAppInForeground && !_backgroundSyncActive) || !isConnected || connectedDevice == null) return;
     _consecutiveKeepAliveFails = 0;
-    _foregroundKeepAliveTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
+    _foregroundKeepAliveTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
       if (!isConnected || connectedDevice == null) return;
       final conn = await ServiceManager.instance().device.ensureConnection(connectedDevice!.id);
       final ok = (conn != null) && (await conn.sendKeepAlive());
