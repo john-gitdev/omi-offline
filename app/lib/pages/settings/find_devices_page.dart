@@ -100,6 +100,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
 
   Future<void> _connectToDevice(BtDevice device) async {
     final deviceService = ServiceManager.instance().device;
+    /*
     final isAndroid = TargetPlatform.android == Theme.of(context).platform;
     if (isAndroid && !(await deviceService.hasCompanionDeviceAssociation())) {
       if (!mounted) return;
@@ -131,6 +132,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
         return;
       }
     }
+    */
 
     // Show connecting indicator
     if (!mounted) return;
@@ -143,7 +145,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     );
 
     try {
-      final connection = await ServiceManager.instance().device.ensureConnection(device.id, force: true);
+      final connection = await ServiceManager.instance().device.ensureConnection(device.id, force: true, requiresBond: true);
       if (connection == null) {
         throw Exception("Connection timed out. If it's nearby, toggle your phone's Bluetooth off and on to clear the system cache.");
       }
