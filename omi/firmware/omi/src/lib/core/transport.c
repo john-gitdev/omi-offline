@@ -1641,11 +1641,6 @@ int transport_start()
     }
 #endif
 
-    // --- NUCLEAR FIX ---
-    LOG_WRN("Wiping all bonded keys from NVS to un-jam pairing slots!");
-    bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
-    // -------------------
-
     LOG_INF("Transport bluetooth initialized");
 
     //  Enable accelerometer
