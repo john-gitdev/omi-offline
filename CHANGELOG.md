@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.23.8
+
+- **Fix: Prevented "Incorrect PIN" errors on reconnect.** Disabled aggressive "stale bond" recovery logic that was automatically intercepting `GATT_INSUF_AUTHENTICATION` (status 5) and deleting the phone's pairing keys. This ensures the Android OS can natively elevate security and encrypt the connection using the existing bond without the app sabotaging the process and forcing a re-pair.
+
 ### 0.23.7
 
 - **Fix: Hardened Bluetooth connection logic for Unpair/Reset.** The "Unpair Device" and "Reset Connection" buttons now surgically remove the bonding/pairing keys directly from Android's native Bluetooth cache, preventing the OS from getting wedged in a "Connection timed out" loop if you reset your Omi. The UI will now also proactively prompt you to toggle your phone's Bluetooth if it detects a stale connection.
