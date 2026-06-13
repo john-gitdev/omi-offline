@@ -252,6 +252,10 @@
 
 ## Firmware
 
+### oo-2.1.8
+
+- **Internal: Removed redundant SMP Auth callbacks.** Deleted placebo code that explicitly registered `NoInputNoOutput` for Bluetooth pairing. Zephyr implicitly defaults to "Just Works" securely out of the box.
+
 ### oo-2.1.7
 
 - **New: Native Unpair Command.** Implemented `CMD_UNPAIR` (0x15) on the storage characteristic. When the app sends this byte, the firmware immediately calls `bt_unpair()` to wipe all Bluetooth bonding keys from NVS and drop the connection, ensuring perfectly synchronized device unpairing.
