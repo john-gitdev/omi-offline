@@ -237,6 +237,12 @@
 
 ## Firmware
 
+### oo-0.21.0
+
+- **Security: Surgical GATT Lockdown.** All sensitive and writable Bluetooth characteristics (Offline Storage, Device Settings, Time Sync, Haptics, and Mute) now require mandatory encryption (pairing). This prevents unauthorized devices in range from downloading recordings, muting the microphone, or altering device settings without a secure bond.
+- **Security: Accelerometer Protection.** Motion data notifications (CCCD) are now protected by encryption.
+- **Internal: Integrity Verification.** Core recording infrastructure (SD card writer thread and internal audio pipelines) remains 100% untouched to ensure total data safety during the security upgrade.
+
 ### oo-2.0.0
 
 - **New: mute markers in the audio stream.** Engaging/releasing mute now writes a mute-on (`0xFFFFFFFA`) / mute-off (`0xFFFFFFF9`) marker into the recording stream (same 16-byte payload as the other markers: UTC ms, uptime ms, session id), so the app can reconstruct exactly when the mic was muted. SD writes are resumed before the marker is written, so it survives even if mute was toggled during a VAD silence gap; the markers are force-drained like button-tap/session-end so they're durable with no audio flowing.
