@@ -23,6 +23,8 @@
 #include "aad.h"
 #endif
 
+#include "settings.h"
+
 LOG_MODULE_REGISTER(button, CONFIG_LOG_DEFAULT_LEVEL);
 
 extern bool is_off;
@@ -108,30 +110,86 @@ K_WORK_DELAYABLE_DEFINE(button_work, check_button_level);
 // State machine definitions
 typedef enum {
     STATE_IDLE,
-    STATE_FIRST_PRESS,
-    STATE_FIRST_RELEASE,
-    STATE_SECOND_PRESS,
-    STATE_SECOND_RELEASE,  // waiting to see if a third tap follows
-    STATE_THIRD_PRESS,     // third tap in progress
-    STATE_THIRD_RELEASE,   // waiting to see if a fourth tap follows
-    STATE_FOURTH_PRESS,    // fourth tap in progress
-    STATE_FOURTH_RELEASE,  // waiting to see if a fifth tap follows
-    STATE_FIFTH_PRESS,     // fifth tap in progress (hold for unpair)
+    STATE_PRESS,
+    STATE_RELEASE,
     STATE_WAIT_FOR_RELEASE
 } button_fsm_state_t;
 
-/* Read from the GPIO ISR (to decide whether to (re)start button_work) as well
- * as the handler, so mark volatile to avoid a stale cached read in the ISR. */
 static volatile button_fsm_state_t fsm_state = STATE_IDLE;
 static uint32_t state_timer = 0;
+static uint8_t tap_count = 0;
 
-#define HOLD_TIME 1000             // 1s hold threshold (single/double tap)
-#define TRIPLE_HOLD_TIME 3000      // 3s hold for triple-tap power off
+#define HOLD_TIME 1000             // 1s hold threshold for customizable actions
+#define POWER_OFF_HOLD_TIME 3000   // 3s hold for 4-tap power off
 #define UNPAIR_HOLD_TIME 10000     // 10s hold for 5-tap unpair
-#define DOUBLE_TAP_WINDOW 600      // 600ms window for second tap
-#define TRIPLE_TAP_WINDOW 600      // 600ms window for third tap
-#define MULTI_TAP_WINDOW 600       // 600ms window for 4th/5th taps
+#define MULTI_TAP_WINDOW 600       // 600ms window for multi-taps
 
+
+static void execute_button_action(uint8_t taps, bool is_hold)
+{
+    if (taps < 1 || taps > 3) return;
+
+    uint8_t config[6];
+    app_settings_get_button_config(config);
+
+    uint8_t index = (taps - 1) * 2 + (is_hold ? 1 : 0);
+    button_action_t action = (button_action_t)config[index];
+
+    LOG_INF("Action triggered: taps=%d, hold=%d -> action=%d", taps, is_hold, action);
+
+    switch (action) {
+    case BUTTON_ACTION_MUTE:
+        mute_apply(!is_muted);
+        break;
+    case BUTTON_ACTION_MARKER:
+        if (!is_muted) {
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+            uint16_t thr = aad_get_threshold();
+            bool in_manual = (thr == 32769 || thr == 65535);
+#else
+            bool in_manual = false;
+            uint16_t thr = 0;
+#endif
+            if (in_manual) {
+                if (thr == 32769) {
+                    LOG_INF("Manual mode start recording");
+                    marker_flash_color = MARKER_FLASH_GREEN;
+                    marker_flash_count = 2;
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+                    aad_set_threshold(65535);
+#endif
+                } else {
+                    LOG_INF("Manual mode stop recording");
+                    marker_flash_color = MARKER_FLASH_RED;
+                    marker_flash_count = 2;
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+                    aad_set_threshold(32769);
+#endif
+                }
+            } else {
+                LOG_INF("Marker detected");
+                marker_flash_color = MARKER_FLASH_WHITE;
+                marker_flash_count = 2;
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+                write_marker_to_storage();
+#endif
+#ifdef CONFIG_OMI_ENABLE_T5838_AAD
+                aad_force_wake();
+#endif
+            }
+        } else {
+            LOG_INF("Marker ignored (muted)");
+        }
+        break;
+    case BUTTON_ACTION_TOGGLE_LED:
+        is_led_enabled = !is_led_enabled;
+        LOG_INF("LED toggled %s", is_led_enabled ? "ON" : "OFF");
+        break;
+    case BUTTON_ACTION_NONE:
+    default:
+        break;
+    }
+}
 
 void check_button_level(struct k_work *work_item)
 {
@@ -141,186 +199,27 @@ void check_button_level(struct k_work *work_item)
     switch (fsm_state) {
     case STATE_IDLE:
         if (pressed) {
-            fsm_state = STATE_FIRST_PRESS;
+            fsm_state = STATE_PRESS;
+            tap_count = 1;
             state_timer = 0;
         }
         break;
 
-    case STATE_FIRST_PRESS:
+    case STATE_PRESS:
         if (!pressed) {
-            // Short press — wait for second tap window.
-            fsm_state = STATE_FIRST_RELEASE;
-            state_timer = 0;
-        } else {
-            // Still pressed. Absorb the hold with no action.
-            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms >= HOLD_TIME) {
-                fsm_state = STATE_WAIT_FOR_RELEASE;
-            }
-        }
-        break;
-
-    case STATE_FIRST_RELEASE:
-        if (pressed) {
-            fsm_state = STATE_SECOND_PRESS;
-            state_timer = 0;
-        } else {
-            uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (idle_duration_ms > DOUBLE_TAP_WINDOW) {
-                // Single tap — no action.
-                LOG_INF("Single tap");
-                fsm_state = STATE_IDLE;
-            }
-        }
-        break;
-
-    case STATE_SECOND_PRESS:
-        if (!pressed) {
-            // Released — wait to see if a third press arrives.
-            fsm_state = STATE_SECOND_RELEASE;
-            state_timer = 0;
-        } else {
-            // Still pressed. Check if held long enough for mute toggle.
-            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms >= HOLD_TIME) {
-                // mute_apply() honors the manual-mode gate, records the
-                // mute-since timestamp, and notifies the BLE mute characteristic.
-                mute_apply(!is_muted);
-                fsm_state = STATE_WAIT_FOR_RELEASE;
-            }
-        }
-        break;
-
-    case STATE_SECOND_RELEASE:
-        if (pressed) {
-            // Third tap started — could be triple-tap or triple-tap-hold.
-            fsm_state = STATE_THIRD_PRESS;
-            state_timer = 0;
-        } else {
-            uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (idle_duration_ms > TRIPLE_TAP_WINDOW) {
-                // Timeout — it was a double tap.
-                if (!is_muted) {
-                    #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                    uint16_t thr = aad_get_threshold();
-                    bool in_manual = (thr == 32769 || thr == 65535);
-                    #else
-                    bool in_manual = false;
-                    uint16_t thr = 0;
-                    #endif
-                    if (in_manual) {
-                        if (thr == 32769) {
-                            LOG_INF("Double tap — manual mode, start recording");
-                            marker_flash_color = MARKER_FLASH_GREEN;
-                            marker_flash_count = 2;
-                            #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                            aad_set_threshold(65535);
-                            #endif
-                        } else {
-                            LOG_INF("Double tap — manual mode, stop recording");
-                            marker_flash_color = MARKER_FLASH_RED;
-                            marker_flash_count = 2;
-                            /* aad_set_threshold emits the session-end marker
-                             * itself on the 65535→other transition, so both
-                             * button-stop and BLE-driven mode switches finalize
-                             * cleanly through one path. */
-                            #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                            aad_set_threshold(32769);
-                            #endif
-                        }
-                    } else {
-                        LOG_INF("Double tap (Marker) detected");
-                        marker_flash_color = MARKER_FLASH_WHITE;
-                        marker_flash_count = 2;
-                        #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-                        write_marker_to_storage();
-                        #endif
-                        #ifdef CONFIG_OMI_ENABLE_T5838_AAD
-                        aad_force_wake();
-                        #endif
-                    }
-                } else {
-                    LOG_INF("Double tap ignored (muted)");
-                }
-                fsm_state = STATE_IDLE;
-            }
-        }
-        break;
-
-    case STATE_THIRD_PRESS:
-        if (!pressed) {
-            // Released — wait to see if a fourth tap follows.
-            fsm_state = STATE_THIRD_RELEASE;
+            fsm_state = STATE_RELEASE;
             state_timer = 0;
         } else {
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms >= TRIPLE_HOLD_TIME) {
-                // Triple tap + hold → power off.
-                LOG_INF("Power off triggered via triple-tap-hold");
+            
+            if (tap_count == 4 && duration_ms >= POWER_OFF_HOLD_TIME) {
+                LOG_INF("Power off triggered via 4-tap-hold");
                 turnoff_all();
-                fsm_state = STATE_IDLE;
-            }
-        }
-        break;
-
-    case STATE_THIRD_RELEASE:
-        if (pressed) {
-            // Fourth tap started.
-            fsm_state = STATE_FOURTH_PRESS;
-            state_timer = 0;
-        } else {
-            uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (idle_duration_ms > MULTI_TAP_WINDOW) {
-                // Timeout — it was a triple tap → toggle LED.
-                is_led_enabled = !is_led_enabled;
-                LOG_INF("Triple tap: LED toggled %s", is_led_enabled ? "ON" : "OFF");
-                fsm_state = STATE_IDLE;
-            }
-        }
-        break;
-
-    case STATE_FOURTH_PRESS:
-        if (!pressed) {
-            // Released — wait for fifth tap.
-            fsm_state = STATE_FOURTH_RELEASE;
-            state_timer = 0;
-        } else {
-            // Absorb hold — no action on 4-tap hold.
-            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms >= HOLD_TIME) {
                 fsm_state = STATE_WAIT_FOR_RELEASE;
-            }
-        }
-        break;
-
-    case STATE_FOURTH_RELEASE:
-        if (pressed) {
-            // Fifth tap started!
-            fsm_state = STATE_FIFTH_PRESS;
-            state_timer = 0;
-        } else {
-            uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (idle_duration_ms > MULTI_TAP_WINDOW) {
-                // Timeout — 4-tap, no action.
-                LOG_INF("Quadruple tap (no action)");
-                fsm_state = STATE_IDLE;
-            }
-        }
-        break;
-
-    case STATE_FIFTH_PRESS:
-        if (!pressed) {
-            // Released before hold threshold — 5-tap, no action.
-            LOG_INF("Quintuple tap (no action)");
-            fsm_state = STATE_IDLE;
-        } else {
-            uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            if (duration_ms >= UNPAIR_HOLD_TIME) {
-                // 5-tap + 10s hold → clear all BLE bonds.
+            } else if (tap_count == 5 && duration_ms >= UNPAIR_HOLD_TIME) {
                 LOG_WRN("5-tap + hold: clearing all BLE bonds!");
                 bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
 
-                // Feedback: blink red 3 times, vibrate 1s.
                 led_off();
                 for (int i = 0; i < 3; i++) {
                     set_led_red(true);
@@ -333,8 +232,29 @@ void check_button_level(struct k_work *work_item)
                 k_msleep(1000);
                 haptic_off();
 #endif
-
                 fsm_state = STATE_WAIT_FOR_RELEASE;
+            } else if (tap_count <= 3 && duration_ms >= HOLD_TIME) {
+                execute_button_action(tap_count, true);
+                fsm_state = STATE_WAIT_FOR_RELEASE;
+            }
+        }
+        break;
+
+    case STATE_RELEASE:
+        if (pressed) {
+            tap_count++;
+            fsm_state = STATE_PRESS;
+            state_timer = 0;
+        } else {
+            uint32_t idle_duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
+            if (idle_duration_ms > MULTI_TAP_WINDOW) {
+                if (tap_count <= 3) {
+                    execute_button_action(tap_count, false);
+                } else {
+                    LOG_INF("%d tap(s) ignored (no single action)", tap_count);
+                }
+                fsm_state = STATE_IDLE;
+                tap_count = 0;
             }
         }
         break;
@@ -342,6 +262,7 @@ void check_button_level(struct k_work *work_item)
     case STATE_WAIT_FOR_RELEASE:
         if (!pressed) {
             fsm_state = STATE_IDLE;
+            tap_count = 0;
         }
         break;
     }

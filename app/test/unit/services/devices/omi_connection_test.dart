@@ -13,6 +13,10 @@ class MockDeviceTransport implements DeviceTransport {
   bool throwOnHw = false;
   bool throwOnManuf = false;
   bool throwOnSn = false;
+  bool throwOnButtonConfig = false;
+
+  List<int>? mockButtonConfig;
+  List<int>? lastWrittenButtonConfig;
 
   bool throwAllInner = false;
   bool throwOuter = false;
@@ -70,12 +74,21 @@ class MockDeviceTransport implements DeviceTransport {
       if (throwOnSn) throw Exception('SN exception');
       return 'SN12345'.codeUnits;
     }
+    if (characteristicUuid == OmiDeviceConnection.buttonConfigCharacteristicUuid) {
+      if (throwOnButtonConfig) throw Exception('Button config exception');
+      return mockButtonConfig ?? [0, 0, 2, 1, 3, 0];
+    }
 
     return [];
   }
 
   @override
-  Future<void> writeCharacteristic(String serviceUuid, String characteristicUuid, List<int> data) async {}
+  Future<void> writeCharacteristic(String serviceUuid, String characteristicUuid, List<int> data) async {
+    if (characteristicUuid == OmiDeviceConnection.buttonConfigCharacteristicUuid) {
+      if (throwOnButtonConfig) throw Exception('Button config exception');
+      lastWrittenButtonConfig = List.from(data);
+    }
+  }
 
   @override
   Stream<DeviceTransportState> get connectionStateStream => const Stream.empty();
@@ -144,6 +157,47 @@ void main() {
       // The core device identity should remain unaffected
       expect(device.id, 'test_id');
       expect(device.name, 'Test Device');
+    });
+  });
+
+  group('OmiDeviceConnection Button Config Tests', () {
+    late BtDevice baseDevice;
+    late MockDeviceTransport transport;
+    late OmiDeviceConnection connection;
+
+    setUp(() {
+      baseDevice = BtDevice(id: 'test_id', name: 'Test Device', type: DeviceType.omi, rssi: 0);
+      transport = MockDeviceTransport();
+      connection = OmiDeviceConnection(baseDevice, transport);
+    });
+
+    test('getButtonConfig happy path', () async {
+      transport.mockButtonConfig = [0, 1, 2, 3, 0, 1];
+      final config = await connection.performGetButtonConfig();
+      expect(config, [0, 1, 2, 3, 0, 1]);
+    });
+
+    test('getButtonConfig invalid length returns null safely', () async {
+      transport.mockButtonConfig = [0, 1, 2]; // Too short
+      final config = await connection.performGetButtonConfig();
+      expect(config, isNull);
+    });
+
+    test('getButtonConfig exception returns null safely', () async {
+      transport.throwOnButtonConfig = true;
+      final config = await connection.performGetButtonConfig();
+      expect(config, isNull);
+    });
+
+    test('setButtonConfig happy path', () async {
+      await connection.performSetButtonConfig([3, 2, 1, 0, 1, 2]);
+      expect(transport.lastWrittenButtonConfig, [3, 2, 1, 0, 1, 2]);
+    });
+
+    test('setButtonConfig handles exception safely', () async {
+      transport.throwOnButtonConfig = true;
+      // Should not throw
+      await connection.performSetButtonConfig([0, 0, 0, 0, 0, 0]);
     });
   });
 }

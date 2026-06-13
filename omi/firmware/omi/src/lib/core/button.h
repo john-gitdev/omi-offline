@@ -14,6 +14,13 @@ typedef enum {
     MARKER_FLASH_RED,     // Manual-mode end of recording
 } marker_flash_color_t;
 
+typedef enum {
+    BUTTON_ACTION_NONE = 0,
+    BUTTON_ACTION_MUTE = 1,
+    BUTTON_ACTION_MARKER = 2,
+    BUTTON_ACTION_TOGGLE_LED = 3,
+} button_action_t;
+
 extern volatile marker_flash_color_t marker_flash_color;
 
 int button_init();

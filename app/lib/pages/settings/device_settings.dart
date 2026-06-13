@@ -14,6 +14,7 @@ import 'package:omi/pages/dfuota/firmware_update.dart';
 import 'package:omi/utils/device.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
+import 'package:omi/pages/settings/button_config_page.dart';
 
 class DeviceSettings extends StatefulWidget {
   const DeviceSettings({super.key});
@@ -776,6 +777,15 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               onTap: _showVadThresholdSheet,
             ),
           ],
+          const Divider(height: 1, color: Color(0xFF3C3C43)),
+          _buildProfileStyleItem(
+            icon: FontAwesomeIcons.handPointer,
+            title: 'Button Configuration',
+            chipValue: 'Customize',
+            onTap: () {
+              Navigator.of(context).push(MaterialPageRoute(builder: (c) => const ButtonConfigPage()));
+            },
+          ),
         ],
       ),
     );

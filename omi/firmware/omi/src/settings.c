@@ -45,6 +45,10 @@ struct conn_fail_record {
 
 static struct conn_fail_record conn_fail = {0};
 
+/* 6 bytes: 1 tap, 1 tap hold, 2 tap, 2 tap hold, 3 tap, 3 tap hold.
+ * Actions: 0=None, 1=Mute, 2=Marker, 3=Toggle LED */
+static uint8_t button_config[6] = {0, 0, 2, 1, 3, 0};
+
 static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
     const char *next;
@@ -189,6 +193,18 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
         rc = read_cb(cb_arg, &conn_fail, sizeof(conn_fail));
         if (rc >= 0) {
             LOG_INF("Loaded conn_fail: count=%u last_adv_slow=%u", conn_fail.count, conn_fail.last_adv_slow);
+            return 0;
+        }
+        return rc;
+    }
+
+    if (settings_name_steq(name, "button_config", &next) && !next) {
+        if (len != sizeof(button_config)) {
+            return -EINVAL;
+        }
+        rc = read_cb(cb_arg, button_config, sizeof(button_config));
+        if (rc >= 0) {
+            LOG_INF("Loaded button_config");
             return 0;
         }
         return rc;
@@ -384,5 +400,22 @@ void app_settings_get_conn_fail(uint32_t *count, uint8_t *last_adv_slow)
     if (last_adv_slow) {
         *last_adv_slow = conn_fail.last_adv_slow;
     }
+}
+
+int app_settings_save_button_config(const uint8_t config[6])
+{
+    memcpy(button_config, config, sizeof(button_config));
+    int err = settings_save_one("omi/button_config", button_config, sizeof(button_config));
+    if (err) {
+        LOG_ERR("Failed to save button_config (err %d)", err);
+    } else {
+        LOG_INF("Saved button_config");
+    }
+    return err;
+}
+
+void app_settings_get_button_config(uint8_t config[6])
+{
+    memcpy(config, button_config, sizeof(button_config));
 }
 

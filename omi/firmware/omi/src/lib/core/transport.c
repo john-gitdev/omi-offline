@@ -425,6 +425,28 @@ static struct bt_uuid_128 button_service_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7924, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
 static struct bt_uuid_128 button_characteristic_uuid =
     BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7925, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
+static struct bt_uuid_128 button_config_service_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7926, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
+static struct bt_uuid_128 button_config_characteristic_uuid =
+    BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x23BA7927, 0x0000, 0x1000, 0x7450, 0x346EAC492E92));
+
+static ssize_t button_config_read_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                          void *buf, uint16_t len, uint16_t offset)
+{
+    uint8_t config[6];
+    app_settings_get_button_config(config);
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, config, sizeof(config));
+}
+
+static ssize_t button_config_write_handler(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                           const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+    if (len != 6) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+    app_settings_save_button_config((const uint8_t *)buf);
+    return len;
+}
 
 static void button_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
@@ -447,6 +469,18 @@ static struct bt_gatt_attr button_service_attr[] = {
 };
 
 struct bt_gatt_service button_service = BT_GATT_SERVICE(button_service_attr);
+
+static struct bt_gatt_attr button_config_service_attr[] = {
+    BT_GATT_PRIMARY_SERVICE(&button_config_service_uuid),
+    BT_GATT_CHARACTERISTIC(&button_config_characteristic_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                           button_config_read_handler,
+                           button_config_write_handler,
+                           NULL),
+};
+
+static struct bt_gatt_service button_config_service = BT_GATT_SERVICE(button_config_service_attr);
 
 void transport_notify_button_state(uint8_t state)
 {
@@ -1696,6 +1730,8 @@ int transport_start()
     bt_gatt_service_register(&diagnostics_service);
     // Mute service appended after diagnostics so all prior handles stay stable.
     bt_gatt_service_register(&mute_service);
+    // Button config service appended last so prior handles stay stable.
+    bt_gatt_service_register(&button_config_service);
     err = bt_le_adv_start(BT_LE_ADV_CONN, bt_ad, ARRAY_SIZE(bt_ad), bt_sd, ARRAY_SIZE(bt_sd));
     if (err) {
         LOG_ERR("Transport advertising failed to start (err %d)", err);
