@@ -50,6 +50,28 @@ class OmiCompanionManager(
             }
         }
 
+        fun disassociateAddress(context: Context, address: String) {
+            if (Build.VERSION.SDK_INT < 33) return
+            val cdm = context.getSystemService(Context.COMPANION_DEVICE_SERVICE) as? CompanionDeviceManager ?: return
+            val target = address.uppercase()
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val association = cdm.myAssociations.firstOrNull {
+                        it.deviceMacAddress?.toString()?.uppercase() == target
+                    } ?: return
+                    cdm.disassociate(association.id)
+                    Log.i(TAG, "Disassociated CDM for $target")
+                } else {
+                    @Suppress("DEPRECATION")
+                    cdm.associations.firstOrNull { it.uppercase() == target }?.let {
+                        cdm.disassociate(it)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to disassociate CDM for $target: ${e.message}")
+            }
+        }
+
         /**
          * Stop OS-level presence observation for a specific device by MAC.
          * Called on explicit disconnect so OnePlus-style passive scans don't keep
