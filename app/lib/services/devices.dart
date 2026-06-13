@@ -342,6 +342,12 @@ class DeviceService implements IDeviceService {
     }
 
     _devices.removeWhere((d) => d.id == deviceId);
+    
+    try {
+      await BleHostApi().removeBond(deviceId);
+    } catch (e) {
+      Logger.debug("DeviceService: Failed to remove bond natively: $e");
+    }
   }
 
   @override

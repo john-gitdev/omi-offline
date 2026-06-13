@@ -408,19 +408,8 @@ class OmiBleForegroundService : Service() {
         bleManager.disconnectGatt(addr)
         bleManager.closeGatt(addr)
 
-        // Ensure OS bond is removed so the device can be paired fresh later
-        try {
-            val adapter = BluetoothAdapter.getDefaultAdapter()
-            if (adapter != null) {
-                val device = adapter.getRemoteDevice(addr)
-                if (device.bondState != BluetoothDevice.BOND_NONE) {
-                    removeBondViaReflection(device)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to remove bond during unmanage: ${e.message}")
-        }
-
+        // The OS bond is no longer removed here to prevent background disconnects
+        // from permanently unpairing the device. Use removeBond() instead.
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
             .putBoolean(PREFS_USER_DISCONNECTED, true)
             .apply()
@@ -624,6 +613,20 @@ class OmiBleForegroundService : Service() {
         } catch (e: Exception) {
             Log.w(TAG, "remoteDeviceOrNull failed for $addr: ${e.message}")
             null
+        }
+    }
+
+    fun removeBond(addr: String) {
+        try {
+            val adapter = BluetoothAdapter.getDefaultAdapter()
+            if (adapter != null) {
+                val device = adapter.getRemoteDevice(addr)
+                if (device.bondState != BluetoothDevice.BOND_NONE) {
+                    removeBondViaReflection(device)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to remove bond manually: ${e.message}")
         }
     }
 
