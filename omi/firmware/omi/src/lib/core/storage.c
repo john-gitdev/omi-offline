@@ -47,6 +47,7 @@ static uint32_t current_read_offset = 0;
 #define CMD_DELETE_FILE     0x12   // Delete specific file: [cmd][file_index]
 #define CMD_ROTATE_FILE     0x13   // Close current recording file and open a new one
 #define CMD_CLEAR_STORAGE    0x14   // Delete all audio files
+#define CMD_UNPAIR           0x15   // Wipe Bluetooth pairing keys
 
 #define INVALID_COMMAND 6
 #define FILE_NOT_FOUND 7
@@ -576,6 +577,12 @@ static uint8_t parse_storage_command(void *buf, uint16_t len, struct bt_conn *co
         /* Defer to storage thread so create_new_audio_file() runs on the SD worker context. */
         atomic_set(&rotate_file_requested, 1);
         return 0xFF;  /* ACK sent by storage thread after rotation completes */
+    }
+
+    if (command == CMD_UNPAIR) {
+        LOG_INF("CMD_UNPAIR: received unpair command, wiping all OS bonds");
+        bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+        return 0;
     }
 
     if (command == CMD_CLEAR_STORAGE) {
