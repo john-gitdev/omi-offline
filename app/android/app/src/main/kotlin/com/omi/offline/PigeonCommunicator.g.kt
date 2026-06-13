@@ -612,6 +612,7 @@ interface BleHostApi {
   fun stopScan()
   fun manageDevice(uuid: String, requiresBond: Boolean)
   fun unmanageDevice(uuid: String)
+  fun removeBond(uuid: String)
   fun disconnectPeripheral(uuid: String)
   /**
    * (Android only) Reschedule the WorkManager periodic background sync with
@@ -752,6 +753,24 @@ interface BleHostApi {
             val uuidArg = args[0] as String
             val wrapped: List<Any?> = try {
               api.unmanageDevice(uuidArg)
+              listOf(null)
+            } catch (exception: Throwable) {
+              PigeonCommunicatorPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.omi_pigeon.BleHostApi.removeBond$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val uuidArg = args[0] as String
+            val wrapped: List<Any?> = try {
+              api.removeBond(uuidArg)
               listOf(null)
             } catch (exception: Throwable) {
               PigeonCommunicatorPigeonUtils.wrapError(exception)

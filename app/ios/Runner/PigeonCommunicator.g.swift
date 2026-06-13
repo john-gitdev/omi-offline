@@ -647,6 +647,7 @@ protocol BleHostApi {
   func stopScan() throws
   func manageDevice(uuid: String, requiresBond: Bool) throws
   func unmanageDevice(uuid: String) throws
+  func removeBond(uuid: String) throws
   func disconnectPeripheral(uuid: String) throws
   /// (Android only) Reschedule the WorkManager periodic background sync with
   /// the given interval. Pass 0 or negative to cancel. iOS no-op.
@@ -764,6 +765,21 @@ class BleHostApiSetup {
       }
     } else {
       unmanageDeviceChannel.setMessageHandler(nil)
+    }
+    let removeBondChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.removeBond\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      removeBondChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let uuidArg = args[0] as! String
+        do {
+          try api.removeBond(uuid: uuidArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      removeBondChannel.setMessageHandler(nil)
     }
     let disconnectPeripheralChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.omi_pigeon.BleHostApi.disconnectPeripheral\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {

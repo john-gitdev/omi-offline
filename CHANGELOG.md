@@ -2,6 +2,11 @@
 
 ## App
 
+### 0.23.11
+
+- **Fix: Accurate 'Skipped' state for background syncs.** When a background auto-sync wakes up but fails to connect to the Omi, the app now accurately updates the notification to say "Last Sync: Skipped" at the time of the attempt, instead of leaving a misleading, stale "Complete" state from the previous cycle.
+- **Fix: Aggressive auto-sync recovery.** If a background auto-sync fails and skips, the app will now intelligently ignore the standard interval and immediately attempt to sync the moment you bring the app back to the foreground, ensuring you get your recordings as soon as possible.
+
 ### 0.23.10
 
 - **New: Synchronized Unpairing.** Added a brand new `CMD_UNPAIR` (0x15) Bluetooth command. When you tap "Unpair Device" in the app, it now beams this command directly to the Omi to wipe its hardware memory before naturally purging the Android OS bond. This guarantees a perfectly clean slate on both devices.

@@ -58,12 +58,7 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
     }
 
     override fun disconnectPeripheral(uuid: String) {
-        val inst = OmiBleForegroundService.instance
-        if (inst != null) {
-            inst.disconnectPeripheral(uuid)
-        } else {
-            bleManager.disconnectGatt(uuid)
-        }
+        bleManager.disconnectGatt(uuid)
     }
 
     override fun removeBond(uuid: String) {

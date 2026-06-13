@@ -777,10 +777,12 @@ class DeviceProvider extends ChangeNotifier
         try {
           final result = await walSync.syncAll(progress: _BackgroundSyncProgress());
           SharedPreferencesUtil().lastSyncPartial = result?.isPartial ?? false;
+          SharedPreferencesUtil().lastSyncSkipped = false;
           SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
           await SyncNotification.finishingSync();
         } catch (e) {
           SharedPreferencesUtil().lastSyncPartial = true;
+          SharedPreferencesUtil().lastSyncSkipped = false;
           // Stamp the time too so the notification reads "Partial • <now>" rather
           // than pinning a fresh "Partial" status to a stale prior-sync timestamp.
           SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
@@ -853,6 +855,8 @@ class DeviceProvider extends ChangeNotifier
       if (Platform.isAndroid) unawaited(BleHostApi().setNextSyncTime(nextSyncTime!.millisecondsSinceEpoch));
       notifyListeners();
     }
+    SharedPreferencesUtil().lastSyncSkipped = true;
+    SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
     unawaited(_showIdleNotification());
   }
 
@@ -933,6 +937,7 @@ class DeviceProvider extends ChangeNotifier
     // never auto-syncs on open; the user syncs by hand.
     final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     if (interval <= 0) return false;
+    if (SharedPreferencesUtil().lastSyncSkipped) return true;
     final lastMs = SharedPreferencesUtil().lastSyncCompletedMs;
     if (lastMs <= 0) return true;
     return DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(lastMs)).inMinutes >= interval;

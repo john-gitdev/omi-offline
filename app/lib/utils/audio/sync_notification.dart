@@ -117,7 +117,7 @@ class SyncNotification {
     final String text;
     if (lastMs > 0) {
       final time = DateFormat('h:mm a').format(DateTime.fromMillisecondsSinceEpoch(lastMs));
-      final status = prefs.lastSyncPartial ? 'Partial' : 'Complete';
+      final status = prefs.lastSyncSkipped ? 'Skipped' : (prefs.lastSyncPartial ? 'Partial' : 'Complete');
       final battery = prefs.lastBatteryLevel;
       text = battery >= 0 ? 'Last Sync: $status • $time • $battery% Battery' : 'Last Sync: $status • $time';
     } else if (isConnected == true) {
