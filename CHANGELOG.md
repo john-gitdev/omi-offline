@@ -4,7 +4,7 @@
 
 ### 0.23.6
 
-- **New: "Upload All" button on each day card.** Added an "Upload All" action to the day's overflow menu (between 'Export All' and 'Delete Discards'). It queues all pending recordings for that day to be uploaded to your configured integrations — handy for triggering batch uploads manually when auto-upload isn't enabled. Only appears if you have at least one integration configured.
+- **New: "Upload All" button on each day card.** Added an "Upload All" action to the day's overflow menu (between 'Export All' and 'Delete Discards'). It queues all pending recordings for that day to be uploaded to your configured integrations in chronological order (oldest to newest) — handy for triggering batch uploads manually when auto-upload isn't enabled. Only appears if you have at least one integration configured.
 - **Fix: Diagnostics stuck on "Reading drop counters".** The diagnostics section now correctly checks if the device is connected and shows "Waiting for device connection…" instead of hanging on "Reading drop counters…" indefinitely if the connection drops.
 
 ### 0.23.5
