@@ -140,12 +140,8 @@ class OmiBleManager private constructor(private val application: Application) {
                 if (device.name?.startsWith("Omi", ignoreCase = true) == true) {
                     if (!connectedGatts.containsKey(addr)) {
                         Log.w(TAG, "Found ghost GATT client for $addr on launch. Purging via dummy connect-close.")
-                        val dummyGatt = if (android.os.Build.VERSION.SDK_INT >= 34) {
-                            bluetoothAdapter?.getRemoteLeDevice(addr, BluetoothDevice.ADDRESS_TYPE_RANDOM)
-                        } else {
-                            bluetoothAdapter?.getRemoteDevice(addr)
-                        }?.connectGatt(application, false, object : BluetoothGattCallback() {}, BluetoothDevice.TRANSPORT_LE)
-                        
+                        val dummyGatt = device.connectGatt(application, false, object : BluetoothGattCallback() {}, BluetoothDevice.TRANSPORT_LE)
+
                         // Immediately disconnect and close to flush the OS daemon state
                         dummyGatt?.disconnect()
                         dummyGatt?.close()
