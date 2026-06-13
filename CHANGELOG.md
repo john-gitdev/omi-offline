@@ -237,7 +237,7 @@
 
 ## Firmware
 
-### oo-0.21.0
+### oo-2.1.0
 
 - **Security: Surgical GATT Lockdown.** All sensitive and writable Bluetooth characteristics (Offline Storage, Device Settings, Time Sync, Haptics, and Mute) now require mandatory encryption (pairing). This prevents unauthorized devices in range from downloading recordings, muting the microphone, or altering device settings without a secure bond.
 - **Security: Accelerometer Protection.** Motion data notifications (CCCD) are now protected by encryption.
