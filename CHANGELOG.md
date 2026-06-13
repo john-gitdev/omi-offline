@@ -241,6 +241,8 @@
 
 - **Security: Surgical GATT Lockdown.** All sensitive and writable Bluetooth characteristics (Offline Storage, Device Settings, Time Sync, Haptics, and Mute) now require mandatory encryption (pairing). This prevents unauthorized devices in range from downloading recordings, muting the microphone, or altering device settings without a secure bond.
 - **Security: Accelerometer Protection.** Motion data notifications (CCCD) are now protected by encryption.
+- **Fix: Bluetooth Connection Hardening.** Fixed false-positive "Connected" snackbars, improved Companion Device Manager integration, and resolved a connection deadlock that left the app stuck "Scanning".
+- **Fix: Time Synchronization.** Firmware clock is now re-synced on every reconnect to prevent mis-stamped recordings after a native auto-reconnect.
 - **Internal: Integrity Verification.** Core recording infrastructure (SD card writer thread and internal audio pipelines) remains 100% untouched to ensure total data safety during the security upgrade.
 
 ### oo-2.0.0
@@ -296,16 +298,6 @@ Also rolled up from oo-1.9.7 and oo-1.9.8 (never separately released):
 ### oo-1.8.1
 
 - **Session-end marker (`0xFFFFFFFC`) emitted on manual recording stop** — enables the app to auto-finalize without a Force Process step.
-- **LED flashes green on manual recording start, red on stop.**
-
-### oo-1.7.11
-
-- **New diagnostic characteristic (`0x19B10062`)** exposes SD card `storage_block_drops` counter for field debugging.
-
-### oo-1.7.9
-
-- **Background sync hardening** — guard against overlapping syncs, defer `CMD_READ_FILE` to the storage thread, fix BLE connection refcounting, always refresh storage stats at end of sync.
-alize without a Force Process step.
 - **LED flashes green on manual recording start, red on stop.**
 
 ### oo-1.7.11
