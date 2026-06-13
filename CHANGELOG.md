@@ -5,6 +5,7 @@
 ### 0.23.7
 
 - **Fix: Hardened Bluetooth connection logic for Unpair/Reset.** The "Unpair Device" and "Reset Connection" buttons now surgically remove the bonding/pairing keys directly from Android's native Bluetooth cache, preventing the OS from getting wedged in a "Connection timed out" loop if you reset your Omi. The UI will now also proactively prompt you to toggle your phone's Bluetooth if it detects a stale connection.
+- **Fix: Advanced Android Bluetooth Healing.** The app now automatically disassociates hidden Companion Device bonds when unpairing, and actively hunts down and purges "ghost" connections left behind by the OS daemon on app startup, ensuring a clean slate after app updates.
 
 ### 0.23.6
 

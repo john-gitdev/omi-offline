@@ -49,7 +49,9 @@ class OmiBleManager private constructor(private val application: Application) {
             if (_instance == null) {
                 synchronized(this) {
                     if (_instance == null) {
-                        _instance = OmiBleManager(application)
+                        _instance = OmiBleManager(application).apply {
+                            purgeGhostGatts()
+                        }
                     }
                 }
             }
@@ -126,6 +128,33 @@ class OmiBleManager private constructor(private val application: Application) {
 
     init {
         application.registerReceiver(bondStateReceiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun purgeGhostGatts() {
+        try {
+            val systemConnectedDevices = bluetoothManager.getConnectedDevices(BluetoothProfile.GATT)
+            for (device in systemConnectedDevices) {
+                val addr = device.address.uppercase()
+                // Only target Omi devices to avoid disconnecting user's other smart devices (e.g. Garmin, HR monitors)
+                if (device.name?.startsWith("Omi", ignoreCase = true) == true) {
+                    if (!connectedGatts.containsKey(addr)) {
+                        Log.w(TAG, "Found ghost GATT client for $addr on launch. Purging via dummy connect-close.")
+                        val dummyGatt = if (android.os.Build.VERSION.SDK_INT >= 34) {
+                            bluetoothAdapter?.getRemoteLeDevice(addr, BluetoothDevice.ADDRESS_TYPE_RANDOM)
+                        } else {
+                            bluetoothAdapter?.getRemoteDevice(addr)
+                        }?.connectGatt(application, false, object : BluetoothGattCallback() {}, BluetoothDevice.TRANSPORT_LE)
+                        
+                        // Immediately disconnect and close to flush the OS daemon state
+                        dummyGatt?.disconnect()
+                        dummyGatt?.close()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to purge ghost GATTs: ${e.message}")
+        }
     }
 
     private fun completeBond(success: Boolean) {

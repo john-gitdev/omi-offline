@@ -403,6 +403,7 @@ class OmiBleForegroundService : Service() {
         // and the LED blue even after our gatt.close() — defeating maximize-battery.
         // Per-MAC so any other managed device's observation is untouched.
         OmiCompanionManager.stopObservingForAddress(applicationContext, addr)
+        OmiCompanionManager.disassociateAddress(applicationContext, addr)
 
         bleManager.disconnectGatt(addr)
         bleManager.closeGatt(addr)
