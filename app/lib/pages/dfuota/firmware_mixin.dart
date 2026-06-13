@@ -16,6 +16,7 @@ import 'package:http/http.dart' as http;
 
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/providers/device_provider.dart';
+import 'package:omi/services/services.dart';
 import 'package:omi/utils/logger.dart';
 
 // --- Skeleton classes for missing dependencies ---
@@ -176,6 +177,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       if (state == mcumgr.FirmwareUpgradeState.success) {
         Logger.debug('update success');
         killMcuUpdateManager();
+        ServiceManager.instance().device.forgetDevice(btDevice.id);
         setState(() {
           isInstalling = false;
           isInstalled = true;
@@ -244,6 +246,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       onFirmwareValidating: (deviceAddress) => Logger.debug('address: $deviceAddress, onFirmwareValidating'),
       onDfuCompleted: (deviceAddress) {
         Logger.debug('deviceAddress: $deviceAddress, onDfuCompleted');
+        ServiceManager.instance().device.forgetDevice(btDevice.id);
         setState(() {
           isInstalling = false;
           isInstalled = true;
