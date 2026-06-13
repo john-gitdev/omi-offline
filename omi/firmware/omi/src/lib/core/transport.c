@@ -1616,6 +1616,22 @@ int transport_start()
     // Configure callbacks
     bt_conn_cb_register(&_callback_references);
 
+    /* ── SMP Authentication Callbacks ──
+     *
+     * The Omi device has no display and no keyboard.  We register
+     * bt_conn_auth_cb so Zephyr's SMP layer knows to use "Just Works"
+     * (IO capability = NoInputNoOutput).  Without this, Android may
+     * pop a passkey dialog that always fails ("incorrect PIN").
+     */
+    static struct bt_conn_auth_cb auth_cb = {
+        .cancel = NULL,
+        /* All fields NULL → NoInputNoOutput → Just Works */
+    };
+    err = bt_conn_auth_cb_register(&auth_cb);
+    if (err) {
+        LOG_ERR("Failed to register auth callbacks (err %d)", err);
+    }
+
     /* Seed the connection-failure counter from flash (app_settings_init ran in
      * main before transport_start) so it stays cumulative across reboots — the
      * count is only readable after the user power-cycles to reconnect. */
