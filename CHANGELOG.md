@@ -2,6 +2,11 @@
 
 ## App
 
+### 0.23.6
+
+- **New: "Upload All" button on each day card.** Added an "Upload All" action to the day's overflow menu (between 'Export All' and 'Delete Discards'). It queues all pending recordings for that day to be uploaded to your configured integrations — handy for triggering batch uploads manually when auto-upload isn't enabled. Only appears if you have at least one integration configured.
+- **Fix: Diagnostics stuck on "Reading drop counters".** The diagnostics section now correctly checks if the device is connected and shows "Waiting for device connection…" instead of hanging on "Reading drop counters…" indefinitely if the connection drops.
+
 ### 0.23.5
 
 - **Fix: the "Conversation in progress" banner's "Captured through" time no longer drifts to the current clock.** A freshly-stitched in-progress draft was being mis-dated — its start time was read from the file's last-modified time (≈ now) instead of its filename timestamp — so the draft's computed end overshot into the future and the banner pinned to the current time (e.g. showing "~2:24 PM" when the recording actually ended at 2:18). The draft's start is now parsed correctly, so "Captured through" reflects the real end of the captured audio. (Removes the 0.23.4 diagnostic logging, which has served its purpose.)
