@@ -177,7 +177,6 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       if (state == mcumgr.FirmwareUpgradeState.success) {
         Logger.debug('update success');
         killMcuUpdateManager();
-        ServiceManager.instance().device.forgetDevice(btDevice.id);
         setState(() {
           isInstalling = false;
           isInstalled = true;
@@ -246,7 +245,6 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       onFirmwareValidating: (deviceAddress) => Logger.debug('address: $deviceAddress, onFirmwareValidating'),
       onDfuCompleted: (deviceAddress) {
         Logger.debug('deviceAddress: $deviceAddress, onDfuCompleted');
-        ServiceManager.instance().device.forgetDevice(btDevice.id);
         setState(() {
           isInstalling = false;
           isInstalled = true;
