@@ -152,4 +152,19 @@ int app_settings_save_conn_fail(uint32_t count, uint8_t last_adv_slow);
 /** @brief Load the persisted connection-failure count + last-failure adv mode. */
 void app_settings_get_conn_fail(uint32_t *count, uint8_t *last_adv_slow);
 
+/**
+ * @brief Save the button configuration.
+ *
+ * @param config Array of 6 bytes representing button tap actions.
+ * @return 0 on success, negative error code otherwise.
+ */
+int app_settings_save_button_config(const uint8_t config[6]);
+
+/**
+ * @brief Get the button configuration.
+ *
+ * @param config Array of 6 bytes to store the configuration.
+ */
+void app_settings_get_button_config(uint8_t config[6]);
+
 #endif // SETTINGS_H

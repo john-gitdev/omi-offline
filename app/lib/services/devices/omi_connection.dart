@@ -19,8 +19,11 @@ class OmiDeviceConnection extends DeviceConnection {
   static const String batteryDetailServiceUuid = '19b10050-e8f2-537e-4f6c-d104768a1214';
   static const String batteryDetailCharacteristicUuid = '19b10051-e8f2-537e-4f6c-d104768a1214';
 
-  static const String buttonServiceUuid = '19b10040-e8f2-537e-4f6c-d104768a1214';
-  static const String buttonTriggerCharacteristicUuid = '19b10041-e8f2-537e-4f6c-d104768a1214';
+  static const String buttonServiceUuid = '23ba7924-0000-1000-7450-346eac492e92';
+  static const String buttonTriggerCharacteristicUuid = '23ba7925-0000-1000-7450-346eac492e92';
+
+  static const String buttonConfigServiceUuid = '23ba7926-0000-1000-7450-346eac492e92';
+  static const String buttonConfigCharacteristicUuid = '23ba7927-0000-1000-7450-346eac492e92';
 
   static const String featuresServiceUuid = '19b10020-e8f2-537e-4f6c-d104768a1214';
   static const String featuresCharacteristicUuid = '19b10021-e8f2-537e-4f6c-d104768a1214';
@@ -478,6 +481,22 @@ class OmiDeviceConnection extends DeviceConnection {
       if (data.isNotEmpty) return data[0];
     } catch (_) {}
     return null;
+  }
+
+  @override
+  Future<List<int>?> performGetButtonConfig() async {
+    try {
+      final data = await transport.readCharacteristic(buttonConfigServiceUuid, buttonConfigCharacteristicUuid);
+      if (data.length == 6) return data;
+    } catch (_) {}
+    return null;
+  }
+
+  @override
+  Future<void> performSetButtonConfig(List<int> config) async {
+    try {
+      await transport.writeCharacteristic(buttonConfigServiceUuid, buttonConfigCharacteristicUuid, config);
+    } catch (_) {}
   }
 
   @override

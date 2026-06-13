@@ -217,6 +217,15 @@ abstract class DeviceConnection {
     return null;
   }
 
+  Future<void> setButtonConfig(List<int> config) async {
+    if (await isConnected()) await performSetButtonConfig(config);
+  }
+
+  Future<List<int>?> getButtonConfig() async {
+    if (await isConnected()) return performGetButtonConfig();
+    return null;
+  }
+
   Future<void> setVadThreshold(int threshold) async {
     if (await isConnected()) await performSetVadThreshold(threshold);
   }
@@ -286,6 +295,8 @@ abstract class DeviceConnection {
   Future<int?> performGetLedDimRatio();
   Future<void> performSetMicGain(int gain);
   Future<int?> performGetMicGain();
+  Future<void> performSetButtonConfig(List<int> config);
+  Future<List<int>?> performGetButtonConfig();
   Future<void> performSetVadThreshold(int threshold);
   Future<int?> performGetVadThreshold();
   Future<bool> performSyncDeviceTime();

@@ -2,6 +2,11 @@
 
 ## App
 
+### 0.24.0
+
+- **New: Fully Customizable Button Mapping.** You can now completely customize what actions trigger on a single, double, or triple tap (as well as their holds) directly from the Device Settings menu. Map actions like Toggle LED, Mute, or Marker to your preferred click cadence. 
+- **Security: Dedicated Power Off & Unpair Gestures.** 4-tap hold (3 seconds) is now strictly reserved for Power Off, and 5-tap hold (10 seconds) is reserved for Unpairing. Single 4-tap and 5-tap actions have been disabled to prevent accidental triggers.
+
 ### 0.23.11
 
 - **Fix: Accurate 'Skipped' state for background syncs.** When a background auto-sync wakes up but fails to connect to the Omi, the app now accurately updates the notification to say "Last Sync: Skipped" at the time of the attempt, instead of leaving a misleading, stale "Complete" state from the previous cycle.
@@ -256,6 +261,11 @@
 ---
 
 ## Firmware
+
+### oo-2.2.0
+
+- **New: Customizable Finite State Machine.** Replaced the static button click logic with a robust, counter-based state machine that dynamically checks your custom mappings (synced from the app via a new BLE service) to trigger actions.
+- **Security: Isolated Hardware Gestures.** 4-tap and 5-tap holds are now hardware-enforced for Power Off and Unpairing, ensuring core operations cannot be overridden by custom mappings.
 
 ### oo-2.1.8
 
