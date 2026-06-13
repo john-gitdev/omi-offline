@@ -51,7 +51,7 @@ class OmiCompanionManager(
         }
 
         fun disassociateAddress(context: Context, address: String) {
-            if (Build.VERSION.SDK_INT < 33) return
+            if (Build.VERSION.SDK_INT < 26) return
             val cdm = context.getSystemService(Context.COMPANION_DEVICE_SERVICE) as? CompanionDeviceManager ?: return
             val target = address.uppercase()
             try {
