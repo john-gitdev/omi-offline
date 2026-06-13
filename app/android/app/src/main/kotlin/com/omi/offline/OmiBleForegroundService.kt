@@ -563,9 +563,13 @@ class OmiBleForegroundService : Service() {
             bleManager.flutterApi?.onPeripheralDisconnected(addr, error) {}
         }
 
-        if (status == 5 && tryRecoverFromStaleBond(addr)) {
-            return
-        }
+        // We are disabling aggressive bond recovery here. When a characteristic is marked
+        // BT_GATT_PERM_READ_ENCRYPT, Android first receives an Insufficient Authentication
+        // error (status 5) and then automatically attempts to elevate security. If we intercept
+        // status 5 and manually wipe the bond, we sabotage the OS's native encryption process!
+        // if (status == 5 && tryRecoverFromStaleBond(addr)) {
+        //     return
+        // }
 
         handleRetryLogic(addr, status)
     }
