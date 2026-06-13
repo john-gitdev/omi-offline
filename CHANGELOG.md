@@ -237,6 +237,12 @@
 
 ## Firmware
 
+### oo-2.1.6
+
+- **Security: Hardware Unpair Gesture.** Since the device now strictly rejects unknown pairings to prevent hijacking, a physical gesture is required to pair a new phone. Tap the button 5 times and hold for 10 seconds. The LED will blink red 3 times followed by a 1-second vibration, indicating all BLE bonds have been securely wiped from memory.
+- **Fix: Resolved "Incorrect PIN or Passkey" errors.** The firmware now explicitly registers SMP authentication callbacks to declare "NoInputNoOutput" capability. This forces Android to use "Just Works" pairing securely without ever prompting the user for a non-existent PIN code.
+- **Security: Anti-Hijacking Lockdown.** Removed `CONFIG_BT_KEYS_OVERWRITE_OLDEST` and `CONFIG_BT_SMP_ALLOW_UNAUTH_OVERWRITE`. The Omi will no longer allow any unauthenticated device to overwrite your existing bond slot. It will only accept a connection from the legitimately bonded phone, or from a new phone *only* after a physical 5-tap+hold unpair gesture.
+
 ### oo-2.1.0
 
 - **Security: Surgical GATT Lockdown.** All sensitive and writable Bluetooth characteristics (Offline Storage, Device Settings, Time Sync, Haptics, and Mute) now require mandatory encryption (pairing). This prevents unauthorized devices in range from downloading recordings, muting the microphone, or altering device settings without a secure bond.
