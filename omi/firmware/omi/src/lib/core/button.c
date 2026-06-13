@@ -319,16 +319,21 @@ void check_button_level(struct k_work *work_item)
                 // 5-tap + 10s hold → clear all BLE bonds.
                 LOG_WRN("5-tap + hold: clearing all BLE bonds!");
                 bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+
+                // Feedback: blink red 3 times, vibrate 1s.
+                led_off();
+                for (int i = 0; i < 3; i++) {
+                    set_led_red(true);
+                    k_msleep(150);
+                    led_off();
+                    k_msleep(150);
+                }
 #ifdef CONFIG_OMI_ENABLE_HAPTIC
-                // Three short buzzes to confirm bond wipe.
-                play_haptic_milli(200);
-                k_msleep(300);
-                play_haptic_milli(200);
-                k_msleep(300);
-                play_haptic_milli(200);
+                play_haptic_milli(1000);
+                k_msleep(1000);
+                haptic_off();
 #endif
-                marker_flash_color = MARKER_FLASH_RED;
-                marker_flash_count = 5;
+
                 fsm_state = STATE_WAIT_FOR_RELEASE;
             }
         }
