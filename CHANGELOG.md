@@ -2,6 +2,11 @@
 
 ## App
 
+### 0.23.9
+
+- **Fix: Prevented background disconnects from destroying the OS bond.** The app's power-saving behavior (dropping the LE link after 15 seconds in the background) was erroneously purging the Android Bluetooth pairing keys at the same time. This caused the phone to attempt a fresh pairing upon returning to the foreground, which the Omi rejected with an "Incorrect PIN" error. The bond is now preserved perfectly during idle disconnects, and will only wipe if you explicitly tap "Forget Device".
+- **Fix: Automated OTA pairing cleanup.** Flashing a firmware OTA intentionally wipes the Omi's internal key storage. The app now detects when an OTA finishes successfully and proactively wipes the phone's matching keys, so you don't get trapped in a stale-bond state after updating your Omi.
+
 ### 0.23.8
 
 - **Fix: Prevented "Incorrect PIN" errors on reconnect.** Disabled aggressive "stale bond" recovery logic that was automatically intercepting `GATT_INSUF_AUTHENTICATION` (status 5) and deleting the phone's pairing keys. This ensures the Android OS can natively elevate security and encrypt the connection using the existing bond without the app sabotaging the process and forcing a re-pair.
