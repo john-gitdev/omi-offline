@@ -41,7 +41,7 @@ static struct bt_gatt_attr haptic_attrs[] = {
     BT_GATT_PRIMARY_SERVICE(&haptic_service_uuid),
     BT_GATT_CHARACTERISTIC(&haptic_char_uuid.uuid,
                            BT_GATT_CHRC_WRITE,
-                           BT_GATT_PERM_WRITE,
+                           BT_GATT_PERM_WRITE_ENCRYPT,
                            NULL,
                            haptic_write_handler,
                            NULL),
