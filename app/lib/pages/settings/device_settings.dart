@@ -794,25 +794,31 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               color: Colors.transparent,
               child: InkWell(
                 onTap: () async {
-                  await SharedPreferencesUtil().btDeviceSet(BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0));
-                  SharedPreferencesUtil().deviceName = '';
-                  final pairedDeviceId = provider.pairedDevice!.id;
-                  // Use forgetDevice() to explicitly clear associations
-                  await ServiceManager.instance().device.forgetDevice(pairedDeviceId);
-
-                  // Explicitly tell native to stop managing this device (PR 6200 alignment)
-                  if (provider.pairedDevice != null) {
-                    final BleHostApi hostApi = BleHostApi();
-                    await hostApi.unmanageDevice(provider.pairedDevice!.id);
-                  }
+                  final pairedDeviceId = provider.pairedDevice?.id ?? SharedPreferencesUtil().btDevice.id;
 
                   // Cancel any in-progress sync immediately.
                   final walSync = ServiceManager.instance().wal.getSyncs();
                   walSync.cancelSync();
                   walSync.setDevice(null);
+
+                  if (pairedDeviceId.isNotEmpty) {
+                    // Use forgetDevice() to explicitly clear associations
+                    await ServiceManager.instance().device.forgetDevice(pairedDeviceId);
+
+                    // Explicitly tell native to stop managing this device
+                    try {
+                      final BleHostApi hostApi = BleHostApi();
+                      await hostApi.unmanageDevice(pairedDeviceId);
+                    } catch (_) {}
+                  }
+
+                  await SharedPreferencesUtil().btDeviceSet(BtDevice(id: '', name: '', type: DeviceType.omi, rssi: 0));
+                  SharedPreferencesUtil().deviceName = '';
+
                   provider.setIsConnected(false);
                   await provider.setConnectedDevice(null);
                   provider.updateConnectingStatus(false);
+                  
                   if (mounted) {
                     Navigator.of(context).pop();
                     ScaffoldMessenger.of(

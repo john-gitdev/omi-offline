@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.23.7
+
+- **Fix: Hardened Bluetooth connection logic for Unpair/Reset.** The "Unpair Device" and "Reset Connection" buttons now surgically remove the bonding/pairing keys directly from Android's native Bluetooth cache, preventing the OS from getting wedged in a "Connection timed out" loop if you reset your Omi. The UI will now also proactively prompt you to toggle your phone's Bluetooth if it detects a stale connection.
+
 ### 0.23.6
 
 - **New: "Upload All" button on each day card.** Added an "Upload All" action to the day's overflow menu (between 'Export All' and 'Delete Discards'). It queues all pending recordings for that day to be uploaded to your configured integrations in chronological order (oldest to newest) — handy for triggering batch uploads manually when auto-upload isn't enabled. Only appears if you have at least one integration configured.
