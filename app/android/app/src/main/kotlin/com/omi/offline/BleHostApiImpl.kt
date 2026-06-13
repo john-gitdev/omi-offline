@@ -58,7 +58,35 @@ class BleHostApiImpl(private val getActivity: () -> Activity?, private val flutt
     }
 
     override fun disconnectPeripheral(uuid: String) {
-        bleManager.disconnectGatt(uuid)
+        val inst = OmiBleForegroundService.instance
+        if (inst != null) {
+            inst.disconnectPeripheral(uuid)
+        } else {
+            bleManager.disconnectGatt(uuid)
+        }
+    }
+
+    override fun removeBond(uuid: String) {
+        val inst = OmiBleForegroundService.instance
+        if (inst != null) {
+            inst.removeBond(uuid)
+        } else {
+            // Service not running, but we can still remove the bond via an ephemeral intent
+            // or we can just try directly via adapter. But we'd need to put it in a static method.
+            // Since foreground service might not be running, we can just do it inline here.
+            try {
+                val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+                if (adapter != null) {
+                    val device = adapter.getRemoteDevice(uuid)
+                    if (device.bondState != android.bluetooth.BluetoothDevice.BOND_NONE) {
+                        val method = device.javaClass.getMethod("removeBond")
+                        method.invoke(device)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to remove bond manually: ${e.message}")
+            }
+        }
     }
 
     override fun rescheduleBackgroundSync(intervalMinutes: Long) {
