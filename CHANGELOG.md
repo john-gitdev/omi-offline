@@ -2,6 +2,10 @@
 
 ## App
 
+### 0.23.10
+
+- **Fix: Optimized background battery logic.** Perfected the synchronization between the app and the Omi's internal hardware timers. The app now pulses a keep-alive every 5 seconds (surviving up to two missed beats) and gracefully drops the connection natively after exactly 15 seconds in the background, matching the Omi's internal deadman switch for maximum battery efficiency.
+
 ### 0.23.9
 
 - **Fix: Prevented background disconnects from destroying the OS bond.** The app's power-saving behavior (dropping the LE link after 15 seconds in the background) was erroneously purging the Android Bluetooth pairing keys at the same time. This caused the phone to attempt a fresh pairing upon returning to the foreground, which the Omi rejected with an "Incorrect PIN" error. The bond is now preserved perfectly during idle disconnects, and will only wipe if you explicitly tap "Forget Device".
