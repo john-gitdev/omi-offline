@@ -167,6 +167,9 @@ abstract class DeviceConnection {
 
   Future<bool> performSendKeepAlive() async => false;
 
+  /// Sends a command to the peripheral to wipe its native OS pairing keys.
+  Future<bool> sendUnpairCommand() async => false;
+
   Future<BleAudioCodec?> getAudioCodec() async {
     if (await isConnected()) return performGetAudioCodec();
     return null;

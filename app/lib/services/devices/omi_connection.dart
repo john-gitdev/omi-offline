@@ -687,6 +687,16 @@ class OmiDeviceConnection extends DeviceConnection {
   }
 
   @override
+  Future<bool> sendUnpairCommand() async {
+    try {
+      await transport.writeCharacteristic(storageDataStreamServiceUuid, storageDataStreamCharacteristicUuid, [0x15]);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
   Future<bool> performStopStorageSync() async {
     try {
       final completer = Completer<bool>();

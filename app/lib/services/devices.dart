@@ -327,6 +327,14 @@ class DeviceService implements IDeviceService {
     if (_connection != null) {
       if (_connection!.status == DeviceConnectionState.connected) {
         try {
+          await _connection?.sendUnpairCommand();
+          // Give the Omi a moment to process the command before we sever the link
+          await Future.delayed(const Duration(milliseconds: 500));
+        } catch (e) {
+          Logger.debug("DeviceService: Failed to send unpair command to Omi: $e");
+        }
+        
+        try {
           await disconnectDevice(isManual: true);
         } catch (e) {
           Logger.debug("DeviceService: disconnect during forget failed: $e");

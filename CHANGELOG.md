@@ -4,6 +4,7 @@
 
 ### 0.23.10
 
+- **New: Synchronized Unpairing.** Added a brand new `CMD_UNPAIR` (0x15) Bluetooth command. When you tap "Unpair Device" in the app, it now beams this command directly to the Omi to wipe its hardware memory before naturally purging the Android OS bond. This guarantees a perfectly clean slate on both devices.
 - **Fix: Optimized background battery logic.** Perfected the synchronization between the app and the Omi's internal hardware timers. The app now pulses a keep-alive every 5 seconds (surviving up to two missed beats) and gracefully drops the connection natively after exactly 15 seconds in the background, matching the Omi's internal deadman switch for maximum battery efficiency.
 - **Fix: Prevented "Incorrect PIN" errors after OTA updates.** Discovered that the Omi's hardware partition map actually preserves Bluetooth pairing keys during an OTA update. Removed the automatic OS-level unpairing that was added in 0.23.9 so your phone correctly holds onto its pairing keys, ensuring seamless reconnection after flashing new firmware.
 
