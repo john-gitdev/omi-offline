@@ -436,8 +436,13 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
 
   void _uploadAllDay(List<Conversation> filtered) {
     if (filtered.isEmpty) return;
+    
+    // Sort oldest-to-newest so they queue and upload in chronological order
+    final sorted = List<Conversation>.from(filtered)
+      ..sort((a, b) => a.startTime.compareTo(b.startTime));
+      
     int queued = 0;
-    for (final c in filtered) {
+    for (final c in sorted) {
       if (_controller.uploadStatus(c) != UploadStatus.all && _controller.uploadStatus(c) != UploadStatus.unavailable) {
         _controller.uploadConversation(c).ignore();
         queued++;
