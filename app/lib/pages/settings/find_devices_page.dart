@@ -145,7 +145,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     try {
       final connection = await ServiceManager.instance().device.ensureConnection(device.id, force: true);
       if (connection == null) {
-        throw Exception('Connection timed out or device is unreachable.');
+        throw Exception("Connection timed out. If it's nearby, toggle your phone's Bluetooth off and on to clear the system cache.");
       }
 
       // Save paired device — state transitions (setConnectedDevice, setIsConnected, WAL sync, etc.)
