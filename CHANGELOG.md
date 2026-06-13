@@ -252,6 +252,10 @@
 
 ## Firmware
 
+### oo-2.1.7
+
+- **New: Native Unpair Command.** Implemented `CMD_UNPAIR` (0x15) on the storage characteristic. When the app sends this byte, the firmware immediately calls `bt_unpair()` to wipe all Bluetooth bonding keys from NVS and drop the connection, ensuring perfectly synchronized device unpairing.
+
 ### oo-2.1.6
 
 - **Security: Hardware Unpair Gesture.** Since the device now strictly rejects unknown pairings to prevent hijacking, a physical gesture is required to pair a new phone. Tap the button 5 times and hold for 10 seconds. The LED will blink red 3 times followed by a 1-second vibration, indicating all BLE bonds have been securely wiped from memory.
