@@ -24,6 +24,12 @@ final class BleHostApiImpl: BleHostApi {
         bleManager.disconnectPeripheral(uuid: uuid)
     }
 
+    func removeBond(uuid: String) throws {
+        // iOS does not expose a programmatic API to remove an OS-level pairing/bond.
+        // The user must "Forget This Device" from Settings > Bluetooth. No-op here so
+        // the Dart forgetDevice path (which already ignores failures) stays cross-platform.
+    }
+
     func disconnectPeripheral(uuid: String) throws {
         bleManager.disconnectPeripheral(uuid: uuid)
     }
