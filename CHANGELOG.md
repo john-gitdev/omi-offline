@@ -9,6 +9,7 @@
 - **Security: Encrypted, validated button-config channel.** The button-mapping Bluetooth characteristic now requires a bonded/encrypted connection to read or write — matching every other Omi setting — and the firmware now rejects out-of-range action values so a malformed mapping can never be persisted.
 - **Fix: Restored Android companion pairing & iOS build.** Re-enabled the Android system pairing association on first connect (which lets the OS wake the app for background sync and scan without location permission, complementing the encrypted bond), and added the missing native `removeBond` bridge so the iOS app builds and "Forget Device" works across platforms.
 - **Fix: Accurate sync-status timestamp.** The "Last Sync" notification now tracks the time of the last sync *outcome* (including a skip) separately from the last successful sync, so the interval-based auto-sync scheduling is no longer nudged by skipped cycles.
+- **Polish: Button Configuration layout.** The options card now matches the width and insets of the Device Settings rows for a consistent look.
 
 ### 0.24.0
 
