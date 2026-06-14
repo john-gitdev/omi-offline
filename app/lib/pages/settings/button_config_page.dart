@@ -4,6 +4,10 @@ import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
 
+// Editing is only allowed once we've read a live config off the device; otherwise the
+// page sits in loading or the not-connected state with a Retry affordance.
+enum _ConfigStatus { loading, ready, noDevice }
+
 class ButtonConfigPage extends StatefulWidget {
   const ButtonConfigPage({super.key});
 
@@ -12,10 +16,12 @@ class ButtonConfigPage extends StatefulWidget {
 }
 
 class _ButtonConfigPageState extends State<ButtonConfigPage> {
-  bool _isLoading = true;
+  _ConfigStatus _status = _ConfigStatus.loading;
   List<int> _config = [0, 0, 2, 1, 3, 0];
 
   final List<String> _actions = ['None', 'Mute', 'Marker', 'Toggle LED'];
+
+  bool get _editable => _status == _ConfigStatus.ready;
 
   @override
   void initState() {
@@ -24,42 +30,64 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
   }
 
   Future<void> _loadConfig() async {
-    final deviceProvider = context.read<DeviceProvider>();
-    final pairedDevice = deviceProvider.pairedDevice;
-    if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
-      final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
-      if (connection != null) {
-        final config = await connection.getButtonConfig();
-        if (config != null && config.length == 6) {
-          if (mounted) {
-            setState(() {
-              _config = config;
-              _isLoading = false;
-            });
-          }
-          return;
-        }
-      }
+    final pairedDevice = context.read<DeviceProvider>().pairedDevice;
+    if (pairedDevice == null || pairedDevice.id.isEmpty) {
+      if (mounted) setState(() => _status = _ConfigStatus.noDevice);
+      return;
     }
-    if (mounted) {
-      setState(() {
-        _isLoading = false;
-      });
+    try {
+      final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+      if (connection == null) {
+        if (mounted) setState(() => _status = _ConfigStatus.noDevice);
+        return;
+      }
+      final config = await connection.getButtonConfig();
+      if (config != null && config.length == 6) {
+        if (mounted) {
+          setState(() {
+            _config = config;
+            _status = _ConfigStatus.ready;
+          });
+        }
+        return;
+      }
+      // Live connection but the read came back empty (transient BLE hiccup) — surface the
+      // not-connected/retry state rather than letting the user edit a phantom config.
+      if (mounted) setState(() => _status = _ConfigStatus.noDevice);
+    } catch (_) {
+      if (mounted) setState(() => _status = _ConfigStatus.noDevice);
     }
   }
 
   Future<void> _updateConfig(int index, int action) async {
+    final previous = _config[index];
     setState(() {
       _config[index] = action;
     });
-    final deviceProvider = context.read<DeviceProvider>();
-    final pairedDevice = deviceProvider.pairedDevice;
+
+    final pairedDevice = context.read<DeviceProvider>().pairedDevice;
     if (pairedDevice != null && pairedDevice.id.isNotEmpty) {
-      final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
-      if (connection != null) {
-        await connection.setButtonConfig(_config);
+      try {
+        final connection = await ServiceManager.instance().device.ensureConnection(pairedDevice.id);
+        if (connection != null) {
+          await connection.setButtonConfig(_config);
+          return;
+        }
+      } catch (_) {
+        // Fall through to revert + notify below.
       }
     }
+
+    // Couldn't reach the device — revert the optimistic change so the UI keeps
+    // reflecting what's actually on the firmware, and tell the user why.
+    if (!mounted) return;
+    setState(() {
+      _config[index] = previous;
+      _status = _ConfigStatus.noDevice;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Device not connected — change not saved.')),
+    );
   }
 
   Widget _buildConfigItem(String label, int index) {
@@ -76,18 +104,51 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
             value: currentVal,
             dropdownColor: const Color(0xFF2C2C2E),
             style: const TextStyle(color: Colors.white, fontSize: 16),
+            disabledHint: Text(_actions[currentVal], style: const TextStyle(color: Colors.white38, fontSize: 16)),
             underline: Container(),
-            onChanged: (int? newValue) {
-              if (newValue != null) {
-                _updateConfig(index, newValue);
-              }
-            },
+            onChanged: _editable
+                ? (int? newValue) {
+                    if (newValue != null) {
+                      _updateConfig(index, newValue);
+                    }
+                  }
+                : null,
             items: List.generate(_actions.length, (i) {
               return DropdownMenuItem<int>(
                 value: i,
                 child: Text(_actions[i]),
               );
             }),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusBanner() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16.0),
+      padding: const EdgeInsets.all(12.0),
+      decoration: BoxDecoration(
+        color: const Color(0xFF2C2C2E),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.bluetooth_disabled, color: Colors.white54, size: 18),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Text(
+              'Device not connected. Connect your Omi to view and edit button actions.',
+              style: TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+          ),
+          TextButton(
+            onPressed: () {
+              setState(() => _status = _ConfigStatus.loading);
+              _loadConfig();
+            },
+            child: const Text('Retry'),
           ),
         ],
       ),
@@ -108,7 +169,7 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
         title: const Text('Button Configuration', style: TextStyle(color: Colors.white, fontSize: 18)),
         centerTitle: true,
       ),
-      body: _isLoading
+      body: _status == _ConfigStatus.loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               children: [
@@ -119,6 +180,10 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                     style: TextStyle(color: Colors.white70, fontSize: 14),
                   ),
                 ),
+                if (!_editable) ...[
+                  _buildStatusBanner(),
+                  const SizedBox(height: 16),
+                ],
                 Material(
                   color: const Color(0xFF1C1C1E),
                   borderRadius: BorderRadius.circular(12),
