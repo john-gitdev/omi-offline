@@ -28,6 +28,8 @@ clang-format -i <files>          # firmware C/C++
 
 # Build dev-flavor APK, rename oo<version>.apk, drop in releases/ at repo root.
 # Reads version from app/pubspec.yaml; deterministic only — no bump/commit/push.
+# Also builds the firmware zip if the Zephyr/nRF toolchain is present; that step is
+# best-effort and is skipped (non-fatal) when the toolchain is missing.
 ./app/build.sh
 ```
 
