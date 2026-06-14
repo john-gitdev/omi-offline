@@ -38,7 +38,7 @@ The nRF5340 wearable captures audio continuously via PDM microphones, encodes it
 - **Two recording modes.** Automatic (hands-free; AAD by default, Silero optional) and Manual (explicit start/stop on the hardware button).
 - **Customizable button mapping.** Single / double / triple tap, plus their press-and-hold variants, are each mappable to an action (None, Mute, Marker, Toggle LED) from Device Settings. The mapping is synced to the firmware over a dedicated encrypted BLE characteristic and persisted in flash. The 4-tap-and-hold (3 s) Power Off and 5-tap-and-hold (10 s) Unpair gestures are hardware-reserved and cannot be remapped.
 - **Mute.** Double-tap-and-hold mutes the mic (default mapping; solid red LED). The app shows a "Muted since H:MM" banner and notification line, exposes a mic-toggle button in the app bar (auto mode), and reads/writes mute state live over a BLE Mute service. Muted stretches are written inline into the audio stream and surface as delete-only "Muted" ghost rows on the day they happened.
-- **Verified Markers.** A double-tap drops a timestamped bookmark stored inline within the audio stream. During processing, the app parses these events with sub-frame precision to build high-precision EDL sidecars for the resulting recordings.
+- **Verified Markers.** In automatic mode, the gesture mapped to the Marker action (double-tap by default) drops a timestamped bookmark stored inline within the audio stream. During processing, the app parses these events with sub-frame precision to build high-precision EDL sidecars for the resulting recordings. (In manual mode that same gesture starts/stops recording instead of dropping a marker.)
 - **Discard recovery (ghost rows).** Audio that processing dropped (silenced as noise, or too short) is surfaced as a greyed-out "ghost" row in the recordings list, appearing in real time as each discard is identified. Source bins are protected for a 48 h window so you can recover a clip with a lower threshold or delete it.
 - **Encrypted BLE / anti-hijacking.** All sensitive and writable characteristics (offline storage, device settings, time sync, mute, button config, motion) require a bonded, encrypted connection. The firmware refuses to let an unauthenticated device overwrite the existing bond, so only your paired phone — or a new phone after the physical 5-tap unpair gesture — can read recordings, mute the mic, or change settings. Unpairing is synchronized: "Forget Device" sends `CMD_UNPAIR` (`0x15`) so the Omi wipes its own bond keys at the same time the phone clears its own.
 - **Background battery saving.** The app always disconnects BLE when backgrounded (after a ~15 s grace window to survive quick screen-off/on) and reconnects only when a sync is due — or immediately on next foreground if the last background sync was skipped. The firmware records to SD card regardless of phone connectivity. A `PARTIAL_WAKE_LOCK` is held over the background sync+process run so Android doesn't downclock the processing isolate when the screen is off.
@@ -92,7 +92,7 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
 
 Double-tap the button to start; double-tap again to stop. The LED flashes green on start and red on stop, then stays yellow while recording.
 
-- The AAD threshold is forced to `0xFFFF` (always-on) so the firmware never suppresses audio.
+- Start-tap sets the AAD threshold to `0xFFFF` (always-on) so the firmware never suppresses audio while recording; stop-tap returns it to `32769` (manual idle). Both values mark manual mode.
 - Stopping emits a dedicated `0xFFFFFFFC` session-end marker so the processor finalizes the recording without waiting for a silence timeout.
 - The app treats the captured span as a recording regardless of Silero VAD output.
 - AAD Sensitivity and certain VAD settings are hidden in the UI.
@@ -136,11 +136,13 @@ Priority order (highest wins):
 | Single tap | None | No action |
 | Single tap + hold (1 s) | None | No action |
 | Double tap | Marker | Auto mode: white flash + timestamped marker. Manual mode: green flash starts a recording, second double-tap (red flash) stops it and emits a session-end marker |
-| Double tap + hold (1 s) | Mute | Toggle mute (solid Red LED, mic paused) |
+| Double tap + hold (1 s) | Mute | Toggle mute (solid Red LED, mic paused). No-op while a manual recording is active. |
 | Triple tap | Toggle LED | Toggle Stealth Mode (LED on/off) |
 | Triple tap + hold (1 s) | None | No action |
 | 4-tap + hold (3 s) | **Power off** *(reserved)* | Shuts the device down |
 | 5-tap + hold (10 s) | **Unpair** *(reserved)* | Wipes all BLE bonds (3× red blink + 1 s vibration) |
+
+The Marker action is ignored while the mic is muted, and the Mute action is ignored while a manual recording is active.
 
 ---
 
