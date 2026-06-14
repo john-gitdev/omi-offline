@@ -520,9 +520,19 @@ class SharedPreferencesUtil {
 
   set lastBatteryLevel(int value) => saveInt('lastBatteryLevel', value);
 
+  // Timestamp of the last sync that actually moved data (success/partial). Used by the
+  // auto-sync interval gate to decide when the next cycle is due — NOT stamped on a skip.
   int get lastSyncCompletedMs => getInt('lastSyncCompletedMs', defaultValue: 0);
 
   set lastSyncCompletedMs(int v) => saveInt('lastSyncCompletedMs', v);
+
+  // Timestamp of the last sync *outcome* of any kind (success, partial, or skip). This is
+  // what the notification displays next to its status, so a skip shows its own time rather
+  // than borrowing a stale completion timestamp. Falls back to the completion timestamp so
+  // users upgrading mid-cycle don't briefly lose their "Last Sync" line.
+  int get lastSyncStatusMs => getInt('lastSyncStatusMs', defaultValue: lastSyncCompletedMs);
+
+  set lastSyncStatusMs(int v) => saveInt('lastSyncStatusMs', v);
 
   bool get lastSyncPartial => getBool('lastSyncPartial', defaultValue: false);
 
