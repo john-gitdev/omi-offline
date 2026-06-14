@@ -444,7 +444,14 @@ static ssize_t button_config_write_handler(struct bt_conn *conn, const struct bt
     if (len != 6) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
-    app_settings_save_button_config((const uint8_t *)buf);
+    // Reject out-of-range actions so we never persist a config the FSM can't map.
+    const uint8_t *cfg = (const uint8_t *)buf;
+    for (int i = 0; i < 6; i++) {
+        if (cfg[i] > BUTTON_ACTION_TOGGLE_LED) {
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+    }
+    app_settings_save_button_config(cfg);
     return len;
 }
 
@@ -474,7 +481,7 @@ static struct bt_gatt_attr button_config_service_attr[] = {
     BT_GATT_PRIMARY_SERVICE(&button_config_service_uuid),
     BT_GATT_CHARACTERISTIC(&button_config_characteristic_uuid.uuid,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
-                           BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                            button_config_read_handler,
                            button_config_write_handler,
                            NULL),
