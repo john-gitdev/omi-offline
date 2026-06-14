@@ -16,7 +16,6 @@ import 'package:http/http.dart' as http;
 
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/providers/device_provider.dart';
-import 'package:omi/services/services.dart';
 import 'package:omi/utils/logger.dart';
 
 // --- Skeleton classes for missing dependencies ---
