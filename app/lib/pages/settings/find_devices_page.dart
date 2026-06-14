@@ -100,7 +100,12 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
 
   Future<void> _connectToDevice(BtDevice device) async {
     final deviceService = ServiceManager.instance().device;
-    /*
+    // Establish the CompanionDeviceManager association BEFORE connecting. This grants
+    // background-run + scan-without-location and enables OS presence wake-ups, which the
+    // native layer arms on every manageDevice (startObservingForAddress) and only tears
+    // down on explicit forget (unmanageDevice). hasCompanionDeviceAssociation() gates the
+    // chooser to first-connect only. Keep this before ensureConnection so the OS owns the
+    // association and our GATT connect stays the sole connection actor (avoids GATT 133).
     final isAndroid = TargetPlatform.android == Theme.of(context).platform;
     if (isAndroid && !(await deviceService.hasCompanionDeviceAssociation())) {
       if (!mounted) return;
@@ -132,7 +137,6 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
         return;
       }
     }
-    */
 
     // Show connecting indicator
     if (!mounted) return;
@@ -145,9 +149,11 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     );
 
     try {
-      final connection = await ServiceManager.instance().device.ensureConnection(device.id, force: true, requiresBond: true);
+      final connection =
+          await ServiceManager.instance().device.ensureConnection(device.id, force: true, requiresBond: true);
       if (connection == null) {
-        throw Exception("Connection timed out. If it's nearby, toggle your phone's Bluetooth off and on to clear the system cache.");
+        throw Exception(
+            "Connection timed out. If it's nearby, toggle your phone's Bluetooth off and on to clear the system cache.");
       }
 
       // Save paired device — state transitions (setConnectedDevice, setIsConnected, WAL sync, etc.)
@@ -322,34 +328,34 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                             ),
                           )
                         : ListView.builder(
-                        padding: const EdgeInsets.all(16),
-                        itemCount: displayDevices.length,
-                        itemBuilder: (context, index) {
-                          final device = displayDevices[index];
-                          return Card(
-                            color: const Color(0xFF1C1C1E),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                            margin: const EdgeInsets.only(bottom: 12),
-                            child: ListTile(
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                              leading: const CircleAvatar(
-                                backgroundColor: Colors.deepPurpleAccent,
-                                child: FaIcon(FontAwesomeIcons.microchip, color: Colors.white, size: 18),
-                              ),
-                              title: Text(
-                                device.name,
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                              ),
-                              subtitle: Text(
-                                device.id,
-                                style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-                              ),
-                              trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-                              onTap: () => _connectToDevice(device),
-                            ),
-                          );
-                        },
-                      ),
+                            padding: const EdgeInsets.all(16),
+                            itemCount: displayDevices.length,
+                            itemBuilder: (context, index) {
+                              final device = displayDevices[index];
+                              return Card(
+                                color: const Color(0xFF1C1C1E),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                margin: const EdgeInsets.only(bottom: 12),
+                                child: ListTile(
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                                  leading: const CircleAvatar(
+                                    backgroundColor: Colors.deepPurpleAccent,
+                                    child: FaIcon(FontAwesomeIcons.microchip, color: Colors.white, size: 18),
+                                  ),
+                                  title: Text(
+                                    device.name,
+                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                  ),
+                                  subtitle: Text(
+                                    device.id,
+                                    style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                                  ),
+                                  trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                                  onTap: () => _connectToDevice(device),
+                                ),
+                              );
+                            },
+                          ),
           ),
           if (hasPairedDevice)
             Padding(
