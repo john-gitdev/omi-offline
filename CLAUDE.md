@@ -110,7 +110,7 @@ Enclosure: CNC aluminium covers (Case A/B), PC+ABS injection-moulded shell, SLA 
 
 Zephyr RTOS on nRF5340. Key threads: mic capture → codec ring buffer → Opus encode → BLE notify / SD card write.
 
-**Opus config**: 16 kHz mono, VBR, complexity 5, 20 ms frames.
+**Opus config**: 16 kHz mono, VBR (32 kbps, complexity 3, CELT), 20 ms frames (codec ID `21` = opusFS320).
 
 **C ↔ Dart name mapping** (wire format unchanged — byte offsets define the protocol):
 
