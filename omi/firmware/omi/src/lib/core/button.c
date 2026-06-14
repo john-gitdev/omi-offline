@@ -211,7 +211,7 @@ void check_button_level(struct k_work *work_item)
             state_timer = 0;
         } else {
             uint32_t duration_ms = state_timer * BUTTON_CHECK_INTERVAL;
-            
+
             if (tap_count == 4 && duration_ms >= POWER_OFF_HOLD_TIME) {
                 LOG_INF("Power off triggered via 4-tap-hold");
                 turnoff_all();
@@ -237,6 +237,11 @@ void check_button_level(struct k_work *work_item)
                 execute_button_action(tap_count, true);
                 fsm_state = STATE_WAIT_FOR_RELEASE;
             }
+            // No terminal branch for tap_count > 5: the count keeps climbing and stays
+            // above every gesture threshold, so an over-tap is harmlessly ignored on
+            // release. Do NOT route it to WAIT_FOR_RELEASE — that resets the count and
+            // lets continued tapping wrap around into a fresh gesture (e.g. 10 taps + hold
+            // would re-derive a 4-tap-hold power off).
         }
         break;
 
@@ -430,7 +435,6 @@ void turnoff_all()
         return;
     }
 
-    
     /* Persist an IMU timestamp base so we can estimate time across system_off. */
     lsm6dsl_time_prepare_for_system_off();
     k_msleep(1000);
