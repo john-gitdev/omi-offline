@@ -241,7 +241,7 @@ omi-offline/
 │   ├── test/unit/
 │   ├── integration_test/
 │   └── assets/
-│       ├── models/         # Silero VAD ONNX model
+│       ├── models/         # Silero VAD ONNX model (v6.2.1 — see models/README.md for hashes + update steps)
 │       ├── images/
 │       └── fonts/
 ├── omi/
