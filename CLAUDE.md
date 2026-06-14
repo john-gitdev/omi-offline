@@ -126,13 +126,14 @@ Zephyr RTOS on nRF5340. Key threads: mic capture → codec ring buffer → Opus 
 
 ### BLE Protocol
 
-Omi-custom services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`. Source of truth is `app/lib/services/devices/omi_connection.dart`.
+Omi-custom services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`. Source of truth is `app/lib/services/devices/omi_connection.dart`. There is no live audio-stream service in this offline fork (no `0000`/`0001`) — audio goes Mic → SD → storage-sync, never a BLE stream.
+
+Discovery: the firmware advertises the device name `Omi` plus the Settings service `0010` (UUID128_ALL); the app matches peripherals whose name contains `omi` or that advertise `0010` (`native_bluetooth_discoverer.dart`).
 
 | Service | UUID suffix | Purpose |
 |---------|-------------|---------|
-| Audio | `0000` (service) / `0001` / `0002` | `0001` stream notify, `0002` codec ID read. `0000` is also the BLE advertised service used for discovery. |
 | Settings | `0010` / `0011` / `0012` / `0013` | LED dim ratio, mic gain, VAD threshold |
-| Features | `0020` / `0021` | Capability bitfield (see `OmiFeatures`: accelerometer, button, battery, usb, haptic, offlineStorage, ledDimming, micGain, vadThreshold) |
+| Features | `0020` (service) / `0021` / `0022` | `0021` capability bitfield (see `OmiFeatures`: accelerometer, button, battery, usb, haptic, offlineStorage, ledDimming, micGain, vadThreshold); `0022` audio codec ID read. |
 | Time sync | `0030` / `0031` | Write epoch seconds (u32 LE) |
 | Button | `0040` / `0041` | Tap-event notify (1 byte). App currently consumes event `2` only (double-tap → manual mode toggle). Firmware emits inline `0xFFFFFFFE` markers in the audio stream regardless. |
 | Battery detail | `0050` / `0051` | Notify 1 byte: `charging` (0/1) |
@@ -160,7 +161,7 @@ Storage protocol: write commands to `storageDataStreamCharacteristicUuid` (`…8
 
 File indices are **cache positions** (0-based sequential) that shift after each deletion — the firmware rebuilds its file-list cache on every CMD_LIST_FILES and after every delete, so after deleting index 0, what was index 1 becomes index 0. Supplying the timestamp in CMD_READ_FILE and CMD_DELETE_FILE lets the firmware re-locate the file by timestamp if the index shifted between LIST and READ/DELETE.
 
-Audio codec ID (read from `0002`): the app explicitly recognises `20` = opus (80 B/frame, 50 fps) and `21` = opusFS320 (40 B/frame, 50 fps). Anything else falls back to `pcm8`. The `BleAudioCodec` enum also defines `pcm16`, `mulaw8`, `mulaw16`, `unknown` but no current code path reads those over the wire.
+Audio codec ID (read from `0022`, under the Features service `0020`): the app explicitly recognises `20` = opus (80 B/frame, 50 fps) and `21` = opusFS320 (40 B/frame, 50 fps). Anything else falls back to `pcm8`. Current firmware reports `21` (`CODEC_ID` in `config.h`). The `BleAudioCodec` enum also defines `pcm16`, `mulaw8`, `mulaw16`, `unknown` but no current code path reads those over the wire.
 
 ## Formatting
 
