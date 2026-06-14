@@ -2,6 +2,14 @@
 
 ## App
 
+### 0.24.1
+
+- Firmware: oo-2.2.1
+- **Fix: Button Configuration screen no longer fails silently.** It now loads your actual mapping from the Omi and shows a clear "Device not connected" state with a Retry button when it can't reach the device — instead of displaying defaults and quietly dropping changes. Editing is disabled until a live connection is confirmed, so what you see always matches what's on the device.
+- **Security: Encrypted, validated button-config channel.** The button-mapping Bluetooth characteristic now requires a bonded/encrypted connection to read or write — matching every other Omi setting — and the firmware now rejects out-of-range action values so a malformed mapping can never be persisted.
+- **Fix: Restored Android companion pairing & iOS build.** Re-enabled the Android system pairing association on first connect (which lets the OS wake the app for background sync and scan without location permission, complementing the encrypted bond), and added the missing native `removeBond` bridge so the iOS app builds and "Forget Device" works across platforms.
+- **Fix: Accurate sync-status timestamp.** The "Last Sync" notification now tracks the time of the last sync *outcome* (including a skip) separately from the last successful sync, so the interval-based auto-sync scheduling is no longer nudged by skipped cycles.
+
 ### 0.24.0
 
 - **New: Fully Customizable Button Mapping.** You can now completely customize what actions trigger on a single, double, or triple tap (as well as their holds) directly from the Device Settings menu. Map actions like Toggle LED, Mute, or Marker to your preferred click cadence. 
