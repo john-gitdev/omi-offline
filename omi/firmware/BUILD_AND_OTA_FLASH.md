@@ -321,7 +321,7 @@ CONFIG_BOOTLOADER_MCUBOOT=y               # Use MCUboot
 ```
 
 ### Firmware Features
-- **Audio Codec**: OPUS for efficient audio compression (16 kHz mono, VBR, complexity 5, 20 ms frames)
+- **Audio Codec**: OPUS for efficient audio compression (16 kHz mono, VBR, complexity 3, 20 ms frames)
 - **Bluetooth**: BLE 5.0 with 2M PHY, MTU 498, auto connection parameter negotiation
 - **Power Management**: Interrupt-driven button (no polling), 60 s battery ADC when connected, 5 min when disconnected, per-operation SPI power gating
 - **File System**: LittleFS on SD card — copy-on-write metadata, power-loss safe (EXT2 is not used)
