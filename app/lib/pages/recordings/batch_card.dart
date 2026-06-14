@@ -578,91 +578,94 @@ class BatchCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    batch.dateString,
-                    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 48),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      batch.dateString,
+                      style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
                   ),
-                ),
-                // Day actions collapse into one overflow menu on the header, so
-                // the common whole-day shortcuts are reachable without scrolling
-                // and stay out of the way of the per-row multi-select path.
-                if (!inSelection)
-                  PopupMenuButton<String>(
-                    tooltip: 'Day actions',
-                    color: const Color(0xFF2C2C2E),
-                    padding: EdgeInsets.zero,
-                    icon: FaIcon(FontAwesomeIcons.ellipsisVertical, size: 16, color: Colors.grey.shade400),
-                    onSelected: (value) {
-                      switch (value) {
-                        case 'export':
-                          onExportAll(filtered);
-                        case 'upload_all':
-                          onUploadAll(filtered);
-                        case 'discards':
-                          onDeleteAllDiscards(discards);
-                        case 'day':
-                          onDeleteDay(filtered, discards);
-                      }
-                    },
-                    itemBuilder: (context) => [
-                      PopupMenuItem(
-                        key: Key('export_all_${batch.dateString}'),
-                        value: 'export',
-                        child: _DayMenuRow(
-                          icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 15, color: Colors.grey.shade300),
-                          label: 'Export All',
-                          color: Colors.grey.shade300,
-                        ),
-                      ),
-                      if (anyIntegrationEnabled)
+                  // Day actions collapse into one overflow menu on the header, so
+                  // the common whole-day shortcuts are reachable without scrolling
+                  // and stay out of the way of the per-row multi-select path.
+                  if (!inSelection)
+                    PopupMenuButton<String>(
+                      tooltip: 'Day actions',
+                      color: const Color(0xFF2C2C2E),
+                      padding: EdgeInsets.zero,
+                      icon: FaIcon(FontAwesomeIcons.ellipsisVertical, size: 16, color: Colors.grey.shade400),
+                      onSelected: (value) {
+                        switch (value) {
+                          case 'export':
+                            onExportAll(filtered);
+                          case 'upload_all':
+                            onUploadAll(filtered);
+                          case 'discards':
+                            onDeleteAllDiscards(discards);
+                          case 'day':
+                            onDeleteDay(filtered, discards);
+                        }
+                      },
+                      itemBuilder: (context) => [
                         PopupMenuItem(
-                          key: Key('upload_all_${batch.dateString}'),
-                          value: 'upload_all',
+                          key: Key('export_all_${batch.dateString}'),
+                          value: 'export',
                           child: _DayMenuRow(
-                            icon: Icon(Icons.cloud_upload, size: 16, color: Colors.grey.shade300),
-                            label: 'Upload All',
+                            icon: FaIcon(FontAwesomeIcons.shareFromSquare, size: 15, color: Colors.grey.shade300),
+                            label: 'Export All',
                             color: Colors.grey.shade300,
                           ),
                         ),
-                      if (discards.isNotEmpty)
-                        PopupMenuItem(
-                          key: Key('delete_discards_${batch.dateString}'),
-                          value: 'discards',
-                          child: _DayMenuRow(
-                            icon: SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  FaIcon(FontAwesomeIcons.ghost, size: 16, color: Colors.orange.shade300),
-                                  Positioned(
-                                    right: -3,
-                                    top: -2,
-                                    child: FaIcon(FontAwesomeIcons.xmark, size: 10, color: Colors.red.shade400),
-                                  ),
-                                ],
-                              ),
+                        if (anyIntegrationEnabled)
+                          PopupMenuItem(
+                            key: Key('upload_all_${batch.dateString}'),
+                            value: 'upload_all',
+                            child: _DayMenuRow(
+                              icon: Icon(Icons.cloud_upload, size: 16, color: Colors.grey.shade300),
+                              label: 'Upload All',
+                              color: Colors.grey.shade300,
                             ),
-                            label: 'Delete Discards',
-                            color: Colors.orange.shade300,
+                          ),
+                        if (discards.isNotEmpty)
+                          PopupMenuItem(
+                            key: Key('delete_discards_${batch.dateString}'),
+                            value: 'discards',
+                            child: _DayMenuRow(
+                              icon: SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: Stack(
+                                  clipBehavior: Clip.none,
+                                  children: [
+                                    FaIcon(FontAwesomeIcons.ghost, size: 16, color: Colors.orange.shade300),
+                                    Positioned(
+                                      right: -3,
+                                      top: -2,
+                                      child: FaIcon(FontAwesomeIcons.xmark, size: 10, color: Colors.red.shade400),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              label: 'Delete Discards',
+                              color: Colors.orange.shade300,
+                            ),
+                          ),
+                        PopupMenuItem(
+                          key: Key('delete_day_${batch.dateString}'),
+                          value: 'day',
+                          child: _DayMenuRow(
+                            icon: FaIcon(FontAwesomeIcons.trashCan, size: 15, color: Colors.red.shade400),
+                            label: 'Delete Day',
+                            color: Colors.red.shade400,
                           ),
                         ),
-                      PopupMenuItem(
-                        key: Key('delete_day_${batch.dateString}'),
-                        value: 'day',
-                        child: _DayMenuRow(
-                          icon: FaIcon(FontAwesomeIcons.trashCan, size: 15, color: Colors.red.shade400),
-                          label: 'Delete Day',
-                          color: Colors.red.shade400,
-                        ),
-                      ),
-                    ],
-                  ),
-              ],
+                      ],
+                    ),
+                ],
+              ),
             ),
             const SizedBox(height: 12),
             ...items.map((r) {
