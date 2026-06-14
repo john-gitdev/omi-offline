@@ -146,13 +146,12 @@ Priority order (highest wins):
 
 ## BLE Sync Protocol
 
-Most Omi services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`. Characteristics marked 🔒 require a bonded/encrypted connection.
+Most Omi services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`. Characteristics marked 🔒 require a bonded/encrypted connection. There is no live audio-stream service in this offline fork (audio goes Mic → SD → storage-sync); the device advertises its name (`Omi`) plus the Settings service (`0010`) for discovery.
 
 | Service | UUID suffix | Purpose |
 |---------|-------------|---------|
-| Audio | `0000` / `0001` / `0002` | Stream + codec ID |
 | Settings 🔒 | `0010` / `0011` / `0012` / `0013` | Dim ratio, mic gain, VAD threshold |
-| Features | `0020` / `0021` | Capability flags |
+| Features | `0020` / `0021` / `0022` | `0021` capability flags; `0022` codec ID |
 | Time sync 🔒 | `0030` / `0031` | Write epoch (u32 LE) |
 | Battery detail | `0050` / `0051` | Notify 1 byte: uint8 charging 0/1 |
 | Diagnostics | `0060` / `0061` / `0062` | Reset cause + uptime; SD/codec/BLE drop counters |
