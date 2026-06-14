@@ -779,6 +779,7 @@ class DeviceProvider extends ChangeNotifier
           SharedPreferencesUtil().lastSyncPartial = result?.isPartial ?? false;
           SharedPreferencesUtil().lastSyncSkipped = false;
           SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
+          SharedPreferencesUtil().lastSyncStatusMs = DateTime.now().millisecondsSinceEpoch;
           await SyncNotification.finishingSync();
         } catch (e) {
           SharedPreferencesUtil().lastSyncPartial = true;
@@ -786,6 +787,7 @@ class DeviceProvider extends ChangeNotifier
           // Stamp the time too so the notification reads "Partial • <now>" rather
           // than pinning a fresh "Partial" status to a stale prior-sync timestamp.
           SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
+          SharedPreferencesUtil().lastSyncStatusMs = DateTime.now().millisecondsSinceEpoch;
           lastSyncError = e.toString();
           lastSyncErrorTime = DateTime.now();
           notifyListeners();
@@ -856,7 +858,9 @@ class DeviceProvider extends ChangeNotifier
       notifyListeners();
     }
     SharedPreferencesUtil().lastSyncSkipped = true;
-    SharedPreferencesUtil().lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
+    // A skip didn't move any data, so leave lastSyncCompletedMs alone; only stamp the
+    // status timestamp so the notification shows "Skipped • <now>".
+    SharedPreferencesUtil().lastSyncStatusMs = DateTime.now().millisecondsSinceEpoch;
     unawaited(_showIdleNotification());
   }
 
