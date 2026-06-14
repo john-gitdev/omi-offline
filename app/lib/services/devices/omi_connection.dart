@@ -27,7 +27,8 @@ class OmiDeviceConnection extends DeviceConnection {
 
   static const String featuresServiceUuid = '19b10020-e8f2-537e-4f6c-d104768a1214';
   static const String featuresCharacteristicUuid = '19b10021-e8f2-537e-4f6c-d104768a1214';
-  static const String audioCodecCharacteristicUuid = '19b10002-e8f2-537e-4f6c-d104768a1214';
+  // Codec ID read (opus=20 / opusFS320=21); lives under the Features service.
+  static const String featuresCodecCharacteristicUuid = '19b10022-e8f2-537e-4f6c-d104768a1214';
 
   static const String storageDataStreamServiceUuid = '30295780-4301-eabd-2904-2849adfeae43';
   static const String storageDataStreamCharacteristicUuid = '30295781-4301-eabd-2904-2849adfeae43';
@@ -376,7 +377,7 @@ class OmiDeviceConnection extends DeviceConnection {
   Future<BleAudioCodec> performGetAudioCodec() async {
     if (_cachedAudioCodec != null) return _cachedAudioCodec!;
     try {
-      final data = await transport.readCharacteristic(featuresServiceUuid, audioCodecCharacteristicUuid);
+      final data = await transport.readCharacteristic(featuresServiceUuid, featuresCodecCharacteristicUuid);
       if (data.isNotEmpty) {
         if (data[0] == 20) return _cachedAudioCodec = BleAudioCodec.opus;
         if (data[0] == 21) return _cachedAudioCodec = BleAudioCodec.opusFS320;
