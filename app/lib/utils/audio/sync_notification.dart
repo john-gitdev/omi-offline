@@ -111,7 +111,9 @@ class SyncNotification {
       return;
     }
     final prefs = SharedPreferencesUtil();
-    final lastMs = prefs.lastSyncCompletedMs;
+    // Show the time of the last sync *outcome* (incl. a skip), not the last completion —
+    // otherwise a "Skipped" line would borrow a stale completion timestamp.
+    final lastMs = prefs.lastSyncStatusMs;
     final next = nextSyncTime;
     final title = next != null ? 'Next sync at ${DateFormat('h:mm a').format(next)}' : 'Omi Offline';
     final String text;
