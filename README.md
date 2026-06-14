@@ -2,7 +2,7 @@
 
 A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
 
-**Current versions:** App `0.22.1` · Firmware `oo-1.9.5`
+**Current versions:** App `0.24.1` · Firmware `oo-2.2.1`
 
 ---
 
@@ -35,12 +35,15 @@ The nRF5340 wearable captures audio continuously via PDM microphones, encodes it
 - **Resumable BLE sync (WAL).** Per-file byte-offset bookmarks survive disconnects. Sync resumes exactly where it stopped.
 - **AAD (firmware activity detection) by default.** Automatic mode splits on the firmware's audio-activity timestamps and treats all captured audio as speech — no on-phone model. This is the default: it processes faster and uses less battery than Silero.
 - **Silero VAD on-device (opt-in).** ONNX Runtime can run Silero VAD v6.2.1 locally on the phone to strip silence and segment speech. Disabled by default in Automatic mode; enabling it shows a one-time battery/processing-time warning. Runs in a background isolate so platform threads stay unblocked.
-- **Two recording modes.** Automatic (hands-free; AAD by default, Silero optional) and Manual (explicit double-tap start/stop on the hardware button).
+- **Two recording modes.** Automatic (hands-free; AAD by default, Silero optional) and Manual (explicit start/stop on the hardware button).
+- **Customizable button mapping.** Single / double / triple tap, plus their press-and-hold variants, are each mappable to an action (None, Mute, Marker, Toggle LED) from Device Settings. The mapping is synced to the firmware over a dedicated encrypted BLE characteristic and persisted in flash. The 4-tap-and-hold (3 s) Power Off and 5-tap-and-hold (10 s) Unpair gestures are hardware-reserved and cannot be remapped.
+- **Mute.** Double-tap-and-hold mutes the mic (default mapping; solid red LED). The app shows a "Muted since H:MM" banner and notification line, exposes a mic-toggle button in the app bar (auto mode), and reads/writes mute state live over a BLE Mute service. Muted stretches are written inline into the audio stream and surface as delete-only "Muted" ghost rows on the day they happened.
 - **Verified Markers.** A double-tap drops a timestamped bookmark stored inline within the audio stream. During processing, the app parses these events with sub-frame precision to build high-precision EDL sidecars for the resulting recordings.
 - **Discard recovery (ghost rows).** Audio that processing dropped (silenced as noise, or too short) is surfaced as a greyed-out "ghost" row in the recordings list, appearing in real time as each discard is identified. Source bins are protected for a 48 h window so you can recover a clip with a lower threshold or delete it.
-- **Background battery saving.** The app always disconnects BLE when backgrounded (after a ~30 s grace window to survive quick screen-off/on) and reconnects only when a sync is due. The firmware records to SD card regardless of phone connectivity. A `PARTIAL_WAKE_LOCK` is held over the background sync+process run so Android doesn't downclock the processing isolate when the screen is off.
+- **Encrypted BLE / anti-hijacking.** All sensitive and writable characteristics (offline storage, device settings, time sync, mute, button config, motion) require a bonded, encrypted connection. The firmware refuses to let an unauthenticated device overwrite the existing bond, so only your paired phone — or a new phone after the physical 5-tap unpair gesture — can read recordings, mute the mic, or change settings. Unpairing is synchronized: "Forget Device" sends `CMD_UNPAIR` (`0x15`) so the Omi wipes its own bond keys at the same time the phone clears its own.
+- **Background battery saving.** The app always disconnects BLE when backgrounded (after a ~15 s grace window to survive quick screen-off/on) and reconnects only when a sync is due — or immediately on next foreground if the last background sync was skipped. The firmware records to SD card regardless of phone connectivity. A `PARTIAL_WAKE_LOCK` is held over the background sync+process run so Android doesn't downclock the processing isolate when the screen is off.
 - **Processing resume from checkpoint.** If processing is interrupted (background kill, BLE drop, cancel), the next run restores the exact Silero LSTM recurrent state from a checkpoint file and picks up from the last completed segment — no re-decoding from scratch.
-- **Integrations.** Optional upload to HeyPocket or Omi after processing. Omi uploads are split into ~5-minute chunks sent one at a time, with live chunk-level progress and resume-on-retry. Per-integration status (Uploaded / Pending / Failed / Uploading) is shown per recording with individual retry actions.
+- **Integrations.** Optional upload to HeyPocket or Omi after processing. Each integration has its own queue and uploads one recording at a time, but different integrations upload concurrently — a slow Omi upload no longer blocks HeyPocket. Omi uploads are split into ~5-minute chunks sent one at a time, with live chunk-level progress and resume-on-retry. Per-integration status (Queued / Uploading / Uploaded / Failed) is shown per recording with individual retry actions, plus per-day "Upload All" and multi-select "Upload Selected" batch actions.
 
 ---
 
@@ -62,21 +65,22 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
 
 - **Audio:** PDM at 16 kHz → Opus VBR, complexity 5, 20 ms frames (codec ID `20`: 80 B/frame, 50 fps).
 - **Storage:** LittleFS on SD card. Copy-on-write metadata and journaling means the filesystem stays consistent through sudden power loss.
-- **SD write pipeline:** Frames queue into `sd_msgq` (depth 150). Worker batches 100 frames per LittleFS write, fsyncs every 60 s. SPI bus is power-gated between operations (`sd_io_low_power`).
+- **SD write pipeline:** Frames queue into `sd_msgq` (depth 100). Worker batches 100 frames per LittleFS write, fsyncs every 60 s. A write-fairness rule forces a write turn after a run of file reads so an active BLE sync can't starve audio writes. SPI bus is suspended between operations while the card stays mounted; the NAND is only fully powered off at shutdown.
+- **Security:** Sensitive GATT characteristics (storage, settings, time sync, mute, button config, accelerometer CCCD) are encryption-gated and require a bond. `CONFIG_BT_KEYS_OVERWRITE_OLDEST` / unauthenticated-overwrite are disabled, so a stranger can't hijack the bond slot. A 5-tap-and-hold (10 s) gesture, or the app's `CMD_UNPAIR`, wipes all bonds from NVS.
 - **Time sync:** On BLE connect the app writes UTC as a little-endian `u32` to characteristic `0x0031`. The firmware renames any `TMP_` files and anchors recording timestamps to real wall time.
-- **LED:** Defaults to off (stealth) after the boot-sequence flash (white breathe → solid white → fade). Triple-tap to enable the LED; triple-tap again to return to stealth.
-- **Button:** Interrupt-driven (no 25 Hz polling). GPIO callback wakes the FSM only on press.
-- **Battery ADC:** 60 s when connected, 5 min when disconnected.
+- **LED:** Defaults to off (stealth) after the boot-sequence flash (white breathe → solid white → fade). With the default button mapping, triple-tap toggles the LED on/off.
+- **Button:** Interrupt-driven (no 25 Hz polling). GPIO callback wakes a counter-based FSM only on press. Tap-count + hold resolves against the customizable mapping synced from the app; 4-tap-hold (Power Off) and 5-tap-hold (Unpair) are reserved and bypass the mapping.
+- **Battery:** ADC read every 60 s when connected, 5 min when disconnected. Recording continues down to the critical-voltage clean shutdown (with one durable flush at the low-battery threshold) rather than pausing early.
 
 ### App (Flutter)
 
 - **Native BLE bridge.** Pigeon-generated code calls the platform's native iOS/Android Bluetooth stack directly, bypassing Dart BLE library limitations.
 - **Connection serialization.** `DeviceService.ensureConnection()` uses a `Mutex` so N concurrent callers (battery, storage, WAL sync) share one attempt.
-- **Background lifecycle.** Pressing Back minimizes the app (keeps the BLE foreground service running); swiping from Recents still stops it. The app disconnects BLE ~30 s after going to background and reconnects on the auto-sync schedule or on app open.
+- **Background lifecycle.** Pressing Back minimizes the app (keeps the BLE foreground service running); swiping from Recents still stops it. The app disconnects BLE ~15 s after going to background and reconnects on the auto-sync schedule or on app open. A skipped background sync (couldn't connect) is tracked separately from the last successful sync, so the next foreground reconnects immediately instead of waiting out the interval.
 - **WAL sync (`SDCardWalSyncImpl`).** Saves segments to `raw_segments/<timerStart>/<timerStart>_<sessionId>.bin`, where `timerStart` is the firmware-assigned UTC epoch seconds and `sessionId` is the 32-bit DeviceSession ID (or `0` if unknown). Pre-time-sync files land in a `raw_segments/session_<sessionId>/` fallback folder shown in the UI under "Unorganized".
 - **VAD processor (`VadAudioProcessor`).** Runs in a fresh isolate. Stateless across runs — uncut segments stay on disk and are re-processed next cycle. Silero LSTM state is kept as a live native tensor between inference calls (no Dart-layer copy), reducing per-call allocations from ~6 objects to ~1. End-of-run always flushes as a `_draft` file; finalization only on a confirmed silence or cap boundary.
 - **Processing checkpoint.** After each completed segment, the processor writes `vad_checkpoint.json` containing the full VAD state. Interrupted runs restore from this snapshot so processing resumes at the last completed segment with identical Silero recurrent state.
-- **Background disconnect.** Always disconnects BLE on backgrounding (after ~30 s grace). A native Android keep-alive (`0x32`, `WRITE_NO_RESPONSE`, every 15 s) prevents firmware idle-disconnect during long file reads without blocking the GATT command queue.
+- **Background disconnect.** Always disconnects BLE on backgrounding (after ~15 s grace, matching the firmware's 15 s idle-disconnect deadman). A `0x32` keep-alive (`WRITE_NO_RESPONSE`) resets that idle timer during long file reads without blocking the GATT command queue — fired every 5 s by the Dart foreground loop, and by a native Android timer while the foreground service holds the connection.
 - **Foreground-service resilience.** A single persistent notification (owned by the native `OmiBle` service) covers the full sync/processing cycle — idle → syncing → processing → ready — and survives BLE disconnects, backgrounding, and swipe-away without a force-close. The `flutter_foreground_task` plugin has been dropped entirely. Recording Settings surfaces a warning card when the app is not exempt from battery optimization, with a one-tap Fix that opens the system exemption prompt. A native `AlarmManager` exact alarm (`setExactAndAllowWhileIdle`) is armed whenever the next sync time is set; if Android freezes the Dart isolate, the alarm fires natively and delivers the sync request without Dart.
 - **Recordings manager.** Parses finalized recordings (`.wav` by default; `.m4a` if configured) from `recordings/` for UI binding. Each recording carries a `.meta` sidecar listing the raw bins it was built from (`relativeBins`); marker EDL sidecars live alongside their recordings.
 
@@ -125,33 +129,37 @@ Priority order (highest wins):
 - Fully charged (>= 98%): Solid Green
 - Charging: 500 ms blink between Green and current base color
 
-**Button actions:**
+**Button actions.** Tap gestures are user-mappable (Device Settings → Button Configuration) to one of None / Mute / Marker / Toggle LED. The default mapping and the two reserved hardware gestures are:
 
-| Action | Effect |
-|--------|--------|
-| Single tap | No action |
-| Double tap (automatic mode) | White flash; writes a timestamped marker |
-| Double tap (manual mode) | Green flash starts a recording; second double-tap (red flash) stops it and emits a session-end marker |
-| Double tap + hold (1 s on second press) | Toggle mute (Red LED, mic paused) |
-| Triple tap | Toggle Stealth Mode |
-| Triple tap + hold (3 s on third press) | Power off |
+| Gesture | Default action | Effect |
+|---------|----------------|--------|
+| Single tap | None | No action |
+| Single tap + hold (1 s) | None | No action |
+| Double tap | Marker | Auto mode: white flash + timestamped marker. Manual mode: green flash starts a recording, second double-tap (red flash) stops it and emits a session-end marker |
+| Double tap + hold (1 s) | Mute | Toggle mute (solid Red LED, mic paused) |
+| Triple tap | Toggle LED | Toggle Stealth Mode (LED on/off) |
+| Triple tap + hold (1 s) | None | No action |
+| 4-tap + hold (3 s) | **Power off** *(reserved)* | Shuts the device down |
+| 5-tap + hold (10 s) | **Unpair** *(reserved)* | Wipes all BLE bonds (3× red blink + 1 s vibration) |
 
 ---
 
 ## BLE Sync Protocol
 
-All Omi services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`.
+Most Omi services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`. Characteristics marked 🔒 require a bonded/encrypted connection.
 
 | Service | UUID suffix | Purpose |
 |---------|-------------|---------|
 | Audio | `0000` / `0001` / `0002` | Stream + codec ID |
-| Settings | `0010` / `0011` / `0012` | Dim ratio, mic gain |
+| Settings 🔒 | `0010` / `0011` / `0012` / `0013` | Dim ratio, mic gain, VAD threshold |
 | Features | `0020` / `0021` | Capability flags |
-| Time sync | `0030` / `0031` | Write epoch (u32 LE) |
-| Speaker/haptic | `0040` / `0041` | Playback commands |
+| Time sync 🔒 | `0030` / `0031` | Write epoch (u32 LE) |
 | Battery detail | `0050` / `0051` | Notify 1 byte: uint8 charging 0/1 |
-| Storage | `30295780-…` | File list + read/delete |
-| Button | `23ba7924-…` | Tap events (1=single 2=double 3=long 4=press 5=release) |
+| Diagnostics | `0060` / `0061` / `0062` | Reset cause + uptime; SD/codec/BLE drop counters |
+| Mute 🔒 | `0070` / `0071` | Read/Write/Notify 9 B: `[muted][since_utc_s LE][since_uptime_ms LE]` |
+| Storage 🔒 | `30295780-…` | File list + read/delete |
+| Button | `23ba7924-…` / `23ba7925-…` | Tap-event notify (1 byte) |
+| Button config 🔒 | `23ba7926-…` / `23ba7927-…` | Read/Write 6-byte gesture→action map |
 
 **Storage commands** (write to `storageDataStreamCharacteristicUuid`):
 
@@ -162,6 +170,8 @@ All Omi services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`.
 | DELETE_FILE | `0x12` | `[cmd, fileNum, timestamp_4B LE]` |
 | ROTATE | `0x13` | — |
 | CLEAR_STORAGE | `0x14` | — |
+| UNPAIR | `0x15` | — (firmware calls `bt_unpair()` and drops the link) |
+| KEEP_ALIVE | `0x32` | — (resets the firmware's 15 s idle-disconnect timer) |
 
 File indices are cache positions (0-based, rebuilt after every LIST and every delete). Supplying the timestamp in READ and DELETE lets the firmware re-locate the file by timestamp if the index shifted.
 
