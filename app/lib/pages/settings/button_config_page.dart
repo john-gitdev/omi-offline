@@ -127,7 +127,6 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
 
   Widget _buildStatusBanner() {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16.0),
       padding: const EdgeInsets.all(12.0),
       decoration: BoxDecoration(
         color: const Color(0xFF2C2C2E),
@@ -172,9 +171,10 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
       body: _status == _ConfigStatus.loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
               children: [
                 const Padding(
-                  padding: EdgeInsets.all(16.0),
+                  padding: EdgeInsets.symmetric(vertical: 16.0),
                   child: Text(
                     'Customize what actions are triggered by different button presses.',
                     style: TextStyle(color: Colors.white70, fontSize: 14),
@@ -205,7 +205,7 @@ class _ButtonConfigPageState extends State<ButtonConfigPage> {
                   ),
                 ),
                 const Padding(
-                  padding: EdgeInsets.all(16.0),
+                  padding: EdgeInsets.symmetric(vertical: 16.0),
                   child: Text(
                     'Note: 4 tap and hold (3s) always powers off the device. 5 tap and hold (10s) unpairs the device.',
                     style: TextStyle(color: Colors.white54, fontSize: 12),
