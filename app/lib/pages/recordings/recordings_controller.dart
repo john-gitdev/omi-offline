@@ -913,6 +913,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (activeBatches.isEmpty && !(_isForcePipeline && hasDrafts) && !hasMarkers) {
       _prefs.lastSyncSkipped = false;
       _prefs.lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
+      _prefs.lastSyncStatusMs = DateTime.now().millisecondsSinceEpoch;
       await _finishSuccess();
       return;
     }
@@ -991,6 +992,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     await reloadBatchesSilently();
     _prefs.lastSyncSkipped = false;
     _prefs.lastSyncCompletedMs = DateTime.now().millisecondsSinceEpoch;
+    _prefs.lastSyncStatusMs = DateTime.now().millisecondsSinceEpoch;
     await _finishSuccess();
   }
 
