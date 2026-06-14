@@ -40,10 +40,13 @@ The nRF5340 wearable captures audio continuously via PDM microphones, encodes it
 - **Mute.** Double-tap-and-hold mutes the mic (default mapping; solid red LED). The app shows a "Muted since H:MM" banner and notification line, exposes a mic-toggle button in the app bar (auto mode), and reads/writes mute state live over a BLE Mute service. Muted stretches are written inline into the audio stream and surface as delete-only "Muted" ghost rows on the day they happened.
 - **Verified Markers.** In automatic mode, the gesture mapped to the Marker action (double-tap by default) drops a timestamped bookmark stored inline within the audio stream. During processing, the app parses these events with sub-frame precision to build high-precision EDL sidecars for the resulting recordings. (In manual mode that same gesture starts/stops recording instead of dropping a marker.)
 - **Discard recovery (ghost rows).** Audio that processing dropped (silenced as noise, or too short) is surfaced as a greyed-out "ghost" row in the recordings list, appearing in real time as each discard is identified. Source bins are protected for a 48 h window so you can recover a clip with a lower threshold or delete it.
-- **Encrypted BLE / anti-hijacking.** All sensitive and writable characteristics (offline storage, device settings, time sync, mute, button config, motion) require a bonded, encrypted connection. The firmware refuses to let an unauthenticated device overwrite the existing bond, so only your paired phone — or a new phone after the physical 5-tap unpair gesture — can read recordings, mute the mic, or change settings. Unpairing is synchronized: "Forget Device" sends `CMD_UNPAIR` (`0x15`) so the Omi wipes its own bond keys at the same time the phone clears its own.
+- **Encrypted BLE / single bond.** All sensitive and writable characteristics (offline storage, device settings, time sync, mute, button config, motion) require a bonded, encrypted connection, so a non-bonded device in range can't read recordings, mute the mic, or change settings. The device keeps a single bond slot (`CONFIG_BT_MAX_PAIRED=1`); the physical 5-tap unpair gesture (or the app's `CMD_UNPAIR`) is what frees it for a new phone. Unpairing is synchronized: "Forget Device" sends `CMD_UNPAIR` (`0x15`) so the Omi wipes its own bond keys at the same time the phone clears its own.
 - **Background battery saving.** The app always disconnects BLE when backgrounded (after a ~15 s grace window to survive quick screen-off/on) and reconnects only when a sync is due — or immediately on next foreground if the last background sync was skipped. The firmware records to SD card regardless of phone connectivity. A `PARTIAL_WAKE_LOCK` is held over the background sync+process run so Android doesn't downclock the processing isolate when the screen is off.
 - **Processing resume from checkpoint.** If processing is interrupted (background kill, BLE drop, cancel), the next run restores the exact Silero LSTM recurrent state from a checkpoint file and picks up from the last completed segment — no re-decoding from scratch.
 - **Integrations.** Optional upload to HeyPocket or Omi after processing. Each integration has its own queue and uploads one recording at a time, but different integrations upload concurrently — a slow Omi upload no longer blocks HeyPocket. Omi uploads are split into ~5-minute chunks sent one at a time, with live chunk-level progress and resume-on-retry. Per-integration status (Queued / Uploading / Uploaded / Failed) is shown per recording with individual retry actions, plus per-day "Upload All" and multi-select "Upload Selected" batch actions.
+- **Export & share.** Any recording exports through the system share sheet as its on-disk WAV/M4A file; a cropped marker clip is trimmed with FFmpeg (stream copy, no re-encode) before sharing; and each day card has an "Export All" that shares the whole day's recordings at once.
+- **Local OTA firmware updates.** Pick a firmware `.zip` from Device Settings → Firmware and flash it to the device over BLE — MCUboot SMP (`mcumgr`) with a legacy Nordic DFU fallback and live install progress. No server round-trip: you flash the zip the build produces. The bond survives the update (the partition map preserves pairing keys across an OTA), so there's no re-pairing afterward.
+- **In-app diagnostics.** An opt-in "Show Diagnostics" panel on the Sync page reads the firmware's live counters over the Diagnostics BLE service — SD-queue / block / codec drop counts, BLE connect failures, reset cause, and uptime — with a reset-counters action and an optional "Save Diagnostic Logs" that captures a shareable log file.
 
 ---
 
@@ -66,7 +69,7 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
 - **Audio:** PDM at 16 kHz → Opus VBR (32 kbps, complexity 3, CELT), 20 ms frames (codec ID `21` = opusFS320: ~80 B/frame avg, 50 fps).
 - **Storage:** LittleFS on SD card. Copy-on-write metadata and journaling means the filesystem stays consistent through sudden power loss.
 - **SD write pipeline:** Frames queue into `sd_msgq` (depth 100). Worker batches 100 frames per LittleFS write, fsyncs every 60 s. A write-fairness rule forces a write turn after a run of file reads so an active BLE sync can't starve audio writes. SPI bus is suspended between operations while the card stays mounted; the NAND is only fully powered off at shutdown.
-- **Security:** Sensitive GATT characteristics (storage, settings, time sync, mute, button config, accelerometer CCCD) are encryption-gated and require a bond. `CONFIG_BT_KEYS_OVERWRITE_OLDEST` / unauthenticated-overwrite are disabled, so a stranger can't hijack the bond slot. A 5-tap-and-hold (10 s) gesture, or the app's `CMD_UNPAIR`, wipes all bonds from NVS.
+- **Security:** Sensitive GATT characteristics (storage, settings, time sync, mute, button config, accelerometer CCCD) are encryption-gated and require a bond, so a non-bonded device can't read recordings or change settings. The device keeps a single bond slot (`CONFIG_BT_MAX_PAIRED=1`), and `CONFIG_BT_ID_UNPAIR_MATCHING_BONDS` makes a re-pair from the same address replace the matching bond rather than pile up. A 5-tap-and-hold (10 s) gesture, or the app's `CMD_UNPAIR`, wipes all bonds from NVS.
 - **Time sync:** On BLE connect the app writes UTC as a little-endian `u32` to characteristic `0x0031`. The firmware renames any `TMP_` files and anchors recording timestamps to real wall time.
 - **LED:** Defaults to off (stealth) after the boot-sequence flash (white breathe → solid white → fade). With the default button mapping, triple-tap toggles the LED on/off.
 - **Button:** Interrupt-driven (no 25 Hz polling). GPIO callback wakes a counter-based FSM only on press. Tap-count + hold resolves against the customizable mapping synced from the app; 4-tap-hold (Power Off) and 5-tap-hold (Unpair) are reserved and bypass the mapping.
@@ -103,7 +106,7 @@ The device monitors audio continuously. The LED stays off until audio above the 
 
 - **AAD is the default:** the app treats every captured frame as speech and splits only on the firmware's activity timestamps. No on-phone model runs.
 - **Silero VAD is opt-in.** Enabling it (in Recording Settings) shows a one-time warning that Silero uses more battery and takes longer to process. When on, it segments speech from silence and splits on `vadSplitSeconds` of continuous silence (default 2 min).
-- Either way, the `vadMaxConversationMinutes` cap (default 60 min) forces a split without silence.
+- Either way, an optional max-length cap (`vadMaxConversationMinutes`, off by default) can force a split even without silence.
 - Recordings accumulate across sync cycles — partial in-progress recordings are re-processed each run.
 
 ---
@@ -115,15 +118,16 @@ Priority order (highest wins):
 | Priority | Condition | LED |
 |----------|-----------|-----|
 | 1 | Device off | Off |
-| 2 | Charging starts | Force LED on (restored to prior state on unplug), continue |
-| 3 | Double-tap flash event | ~1 s flash, overrides stealth. White = marker tap (auto mode); Green = manual recording start; Red = manual recording stop |
-| 4 | Stealth mode | Off |
-| 5 | Muted | Solid Red |
-| 6 | Low battery (< 10%) | Solid Purple |
-| 7 | BLE connected | Solid Blue (wins over recording) |
-| 8 | Manual recording active (AAD threshold = 65535) | Solid Yellow |
-| 9 | AAD auto-recording (`aad_is_recording()`) | Solid Yellow |
-| 10 | Idle / disconnected | Off |
+| 2 | Fatal SD fault | Blinking Red (~500 ms) — overrides stealth / mute / marker / charging; the blink distinguishes it from solid-red mute |
+| 3 | Charging starts | Force LED on (restored to prior state on unplug), continue |
+| 4 | Double-tap flash event | ~1 s flash, overrides stealth. White = marker tap (auto mode); Green = manual recording start; Red = manual recording stop |
+| 5 | Stealth mode | Off |
+| 6 | Muted | Solid Red |
+| 7 | Low battery (< 10%) | Solid Purple |
+| 8 | BLE connected | Solid Blue (wins over recording) |
+| 9 | Manual recording active (AAD threshold = 65535) | Solid Yellow |
+| 10 | AAD auto-recording (`aad_is_recording()`) | Solid Yellow |
+| 11 | Idle / disconnected | Off |
 
 **Charging overlay** (applied on top of base state):
 - Fully charged (>= 98%): Solid Green
@@ -188,7 +192,7 @@ File indices are cache positions (0-based, rebuilt after every LIST and every de
 | Speech sensitivity | `vadSpeechThreshold` | 0.5 | Silero cutoff (0–1). Lower = more sensitive. |
 | Silence to split | `vadSplitSeconds` | 120 s | Silence duration triggering a new recording |
 | Min length | `filterMinDurationSeconds` | 0 s | Recordings shorter than this are discarded |
-| Max length | `vadMaxConversationMinutes` | 60 min | Hard cap; forces a split even without silence |
+| Max length | `auto_` / `manual_vadMaxConversationMinutes` | 0 (off) | Hard cap; forces a split even without silence. `0` = no cap. Persisted per mode; mirrored into the legacy `vadMaxConversationMinutes` key the processor reads. |
 | AAD threshold | `autoVadThreshold` | 250 | Firmware audio-activity gate; mode-specific overrides persisted separately |
 
 ### App Settings
