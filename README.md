@@ -63,7 +63,7 @@ PDM mics → Opus encoder (firmware) → SD card (.bin segments)
 
 ### Firmware (Zephyr RTOS, nRF5340)
 
-- **Audio:** PDM at 16 kHz → Opus VBR, complexity 5, 20 ms frames (codec ID `20`: 80 B/frame, 50 fps).
+- **Audio:** PDM at 16 kHz → Opus VBR (32 kbps, complexity 3, CELT), 20 ms frames (codec ID `21` = opusFS320: ~80 B/frame avg, 50 fps).
 - **Storage:** LittleFS on SD card. Copy-on-write metadata and journaling means the filesystem stays consistent through sudden power loss.
 - **SD write pipeline:** Frames queue into `sd_msgq` (depth 100). Worker batches 100 frames per LittleFS write, fsyncs every 60 s. A write-fairness rule forces a write turn after a run of file reads so an active BLE sync can't starve audio writes. SPI bus is suspended between operations while the card stays mounted; the NAND is only fully powered off at shutdown.
 - **Security:** Sensitive GATT characteristics (storage, settings, time sync, mute, button config, accelerometer CCCD) are encryption-gated and require a bond. `CONFIG_BT_KEYS_OVERWRITE_OLDEST` / unauthenticated-overwrite are disabled, so a stranger can't hijack the bond slot. A 5-tap-and-hold (10 s) gesture, or the app's `CMD_UNPAIR`, wipes all bonds from NVS.
@@ -262,4 +262,4 @@ See [CHANGELOG.md](CHANGELOG.md) for the per-version history.
 
 ## Upstream
 
-This is a fork of [BasedHardware/omi](https://github.com/BasedHardware/omi). The fork has diverged substantially — the entire cloud sync, OAuth, transcription, and memory backend has been removed in favour of the offline pipeline described above. Only the Opus codec, BLE characteristic UUIDs, and the nRF5340 board files remain compatible.
+This is a fork of [BasedHardware/omi](https://github.com/BasedHardware/omi). The fork has diverged substantially — the entire cloud sync, OAuth, transcription, and memory backend has been removed in favour of the offline pipeline described above. Only the Opus codec and the nRF5340 board files remain compatible; the BLE GATT layout has also diverged (this fork has no live audio-stream service, and the codec ID is read at `0022` under the Features service).
