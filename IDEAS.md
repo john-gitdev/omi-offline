@@ -91,11 +91,13 @@ Reprocess needs the selected recordings' bins on disk, and the retention model g
 
 ## DEFERRED
 
-## VAD Native Batch Runner — iOS port (Android shipped) [major] [Deferred — no iOS hardware]
+## VAD Native Batch Runner — iOS port (Android shipped) [major] [iOS port unblocked — device + CI build available]
 
 Speed up the post-sync **processing** phase (Opus-decode → Silero VAD split → AAC encode, run in a spawned isolate) by moving Silero's per-window inference loop native-side, collapsing the Dart↔native platform-channel round-trips. Pure performance — **bit-identical VAD output**, no accuracy risk. Full investigation in `NOTES.md` → "VAD perf: timing diagnostics".
 
-**Status: shipped on Android (2026-06-10); iOS port remains deferred** — no iOS hardware to test the native half. iOS continues to run the per-window fallback unchanged (see "Android-first scope"). The Dart contract, the `_applyVadVerdict` extraction, and the two-pass `processSegmentFile` loop are all already in place, so the iOS work is purely additive (phase 3 in Staging below).
+**Status: shipped on Android (2026-06-10); iOS port now actionable.** iOS continues to run the per-window fallback unchanged (see "Android-first scope"). The Dart contract, the `_applyVadVerdict` extraction, and the two-pass `processSegmentFile` loop are all already in place, so the iOS work is purely additive (phase 3 in Staging below).
+
+**Update 2026-06-16 — the "no iOS hardware" blocker is lifted.** There's now a jailbroken iPhone 6s Plus (iOS 15.7.9) for on-device testing **and** a working iOS CI build (`.github/workflows/ios-build.yml`) that compiles the app for iOS 15.1 and packages an installable unsigned IPA (AppSync Unified / TrollStore). So phase 3 is buildable + testable end-to-end. Added motivation: the 6s Plus (A9, 2 GB RAM) is exactly the slow hardware where collapsing the per-window VAD channel round-trips pays off most. Note `onnxruntime-objc` 1.22.0 is already resolvable at the project's iOS-15.1 floor via the **vendored** `flutter_onnxruntime` (`app/third_party/flutter_onnxruntime/`, podspec patched 16.0→15.1), and that vendored copy's `ios/Classes/FlutterOnnxruntimePlugin.swift` is now the in-repo Swift reference for the native loop.
 
 **Measured on Android (6-segment / ~4.9 MB / 28.5 s run, 2026-06-10):** batched Silero ran **~0.3 ms/window** (~20.3 k windows, ~6.1 s total VAD). That **beat this doc's own estimate by ~7×**: the projected "~2.1 ms/inf fixed and unreducible compute floor" and ~2× VAD speedup did not hold — the batched path is **~14× faster than the 4.2 ms/inf single-pass timing**, because the supposed compute floor was almost entirely per-call overhead (channel hop + per-call `session.run` setup/teardown + tensor alloc) that batching amortizes, not model dispatch. Net result: **~73 % off total processing** vs. the projected ~37 %. **Treat the ~2.1 ms floor below as falsified when sizing the iOS win — expect it to be much larger.**
 
@@ -173,7 +175,7 @@ The **decision logic is unchanged** and lives in exactly one place (`_applyVadVe
 ### Staging — phases 1 & 2 shipped (Android); phase 3 (iOS) deferred
 1. ✅ **Shipped — Android native:** the `VadBatchRunner.kt` channel + registration in `MainActivity` + the Dart wrapper (`Platform.isAndroid`-gated) + the ORT dep in `app/android/app/build.gradle` + the A/B flag. Verified channel loads + returns probs bit-identical to the per-window path.
 2. ✅ **Shipped — shared Dart:** `_applyVadVerdict` extracted; the deferred-verdict two-pass refactor of `processSegmentFile` feeds the batch path. iOS/desktop/tests ride the single-pass branch through the same `_applyVadVerdict`, covered by `vad_audio_processor_test.dart` on CI.
-3. ⏳ **Deferred — iOS (needs hardware):** `VadBatchRunner.swift` mirroring the Kotlin + `pod 'onnxruntime-objc', '1.22.0'` in `app/ios/Podfile` + registration in `AppDelegate`. Purely additive; no Dart changes. Mirror Kotlin↔Swift exactly; reference `FlutterOnnxruntimePlugin.swift` (`runInference`, session-options, tensor I/O).
+3. ⏳ **iOS (unblocked — device + CI build now available):** `VadBatchRunner.swift` mirroring the Kotlin + `pod 'onnxruntime-objc', '1.22.0'` in `app/ios/Podfile` + registration in `AppDelegate`. Purely additive; no Dart changes. Mirror Kotlin↔Swift exactly; reference `FlutterOnnxruntimePlugin.swift` (`runInference`, session-options, tensor I/O). Build + test via the CI workflow → unsigned IPA → AppSync/TrollStore install on the 6s Plus.
 
 ### Relevant files
 - `app/lib/services/vad_audio_processor.dart` — `_runVad` (the per-window path to keep as fallback), `processSegmentFile` (the single-pass loop to refactor), the new `_applyVadVerdict` extraction, `_vadContext` / `_cachedStateValue` / `_cachedSrValue` plumbing, `buildSileroSessionOptions` (reuse the XNNPACK+intraOp config native-side).
@@ -182,3 +184,24 @@ The **decision logic is unchanged** and lives in exactly one place (`_applyVadVe
 - `app/android/app/build.gradle` — add `com.microsoft.onnxruntime:onnxruntime-android:1.22.0`.
 - *(Phase 3 — iOS, deferred)* `app/ios/Runner/` — new `VadBatchRunner.swift`; register in `AppDelegate`. `app/ios/Podfile` — add `pod 'onnxruntime-objc', '1.22.0'`.
 - Reference templates (read-only): `~/AppData/Local/Pub/Cache/hosted/pub.dev/flutter_onnxruntime-1.7.1/android/.../FlutterOnnxruntimePlugin.kt` (Kotlin, phase 1) + `ios/Classes/FlutterOnnxruntimePlugin.swift` (Swift, phase 3) — `runInference`, session-options, tensor I/O.
+
+---
+
+## iOS code signing & non-jailbroken distribution [medium] [Deferred]
+
+The iOS build now works end-to-end via CI (`.github/workflows/ios-build.yml`) and produces an **unsigned** dev IPA that installs on a **jailbroken** device (AppSync Unified / TrollStore — current path for the iPhone 6s Plus). To run on a **stock** (non-jailbroken) iPhone, the IPA must be code-signed, which needs an Apple Developer account plus signing material wired into CI.
+
+### What it takes
+- **Apple Developer Program ($99/yr)** — required for a real signing certificate + provisioning profile. (A free Apple ID only does 7-day Xcode sideloading on a Mac, which headless CI can't drive.)
+- **Signing secrets in GitHub Actions** — distribution certificate (`.p12` + password) and a provisioning profile stored as encrypted repo secrets, imported into a temporary keychain on the runner (e.g. `apple-actions/import-codesign-certs`).
+- **Build a signed IPA** — replace the workflow's `flutter build ios --no-codesign` with `flutter build ipa` + an `ExportOptions.plist`: method `app-store` for TestFlight, or `ad-hoc` / `development` for direct install with the target device UDID registered in the profile.
+- **Distribution**
+  - **TestFlight** (cleanest — no per-device UDID): upload via `xcrun altool`/`notarytool` or `apple-actions/upload-testflight-build`; install via the TestFlight app. No Mac needed locally.
+  - **Ad-hoc**: register target device UDIDs in the profile; install the signed IPA directly (Apple Configurator / `ideviceinstaller`).
+
+### Why deferred
+The jailbroken-device path (unsigned IPA, already working) covers the current 6s Plus for free. Signing only matters when targeting a non-jailbroken iPhone, and it carries an annual fee + secret management. Revisit if/when a stock-iOS device becomes a target.
+
+### Relevant files
+- `.github/workflows/ios-build.yml` — today: `flutter build ios --flavor dev --no-codesign` → zips `Payload/Runner.app` into an unsigned IPA. Signing adds a cert-import step, switches to `flutter build ipa`, and adds an upload/export step.
+- Flavors (`app/flavorizr.yaml`): `dev` = `com.omi.offline.development`, `prod` = `com.omi.offline` — the provisioning profile must be issued for whichever bundle id is shipped.
