@@ -164,6 +164,14 @@ class VadAudioProcessor {
   // so the gap the app observes is that much shorter than the user-perceived silence.
   static const int _firmwareVadHoldMs = 10000;
 
+  // Mirrors FORCE_WAKE_HOLD_MS in firmware/omi/src/aad.c. After a button-tap
+  // marker the firmware force-wakes and keeps recording for this many ms; the
+  // app suppresses splits and forces speech for the same span so a tap's audio
+  // is never split away from it. MUST stay equal to the firmware constant — if
+  // they drift, the app's protection window won't line up with the audio the
+  // firmware actually forced on.
+  static const int _markerProtectionWindowMs = 50000;
+
   /// Creates a processor in the main isolate, reading settings from SharedPreferences.
   static Future<VadAudioProcessor> create({String? outputDir, SimpleOpusDecoder? decoder}) async {
     final settings = ProcessingSettings.fromPrefs();
@@ -697,10 +705,10 @@ class VadAudioProcessor {
               // is correctly caught by the protection window, even if the audio
               // timeline is currently stale (drifts from RTC) and markerFrameTime
               // was capped by the drift limit.
-              _markerProtectedUntilMs = markerUtcMs + 50000;
+              _markerProtectedUntilMs = markerUtcMs + _markerProtectionWindowMs;
             } else if (markerMs > 946684800000) {
               // Fallback for pre-time-sync devices: use the derived wall-clock.
-              _markerProtectedUntilMs = markerMs + 50000;
+              _markerProtectedUntilMs = markerMs + _markerProtectionWindowMs;
             }
             // Capture offset *after* deciding whether this marker starts a new
             // recording. Fresh start → offset 0 (matches _recordingStartTime).
