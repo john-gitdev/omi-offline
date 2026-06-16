@@ -57,9 +57,10 @@ Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures a
 **Audio pipeline** (`services/`):
 - `SDCardWalSyncImpl` saves downloaded segments to `raw_segments/<timerStart>/<timerStart>_<sessionId>.bin`, where `<timerStart>` is the firmware-assigned UTC epoch seconds (as a decimal string). Pre-time-sync files (timerStart < 946684800) land in `raw_segments/session_<sessionId>/` instead and appear in the UI under "Unorganized". Inline-frame types in the bin stream:
   - `0xFFFFFFFB` metadata header (36 B: 4-byte tag + 4-byte length + 28-byte payload), peeked at offset 0
-  - `0xFFFFFFFC` session-end marker (20 B), written by firmware on manual-mode stop
-  - `0xFFFFFFFD` VAD-resume timestamp (16 B), written when AAD wakes after silence
+  - `0xFFFFFFFC` session-end marker (20 B): 4-byte header + same 16-byte payload as the button-tap marker; written by firmware on manual-mode stop
+  - `0xFFFFFFFD` VAD-resume timestamp (20 B): 4-byte header + 16-byte payload `utc_s(u32) + uptime_ms(u32) + 8 zero bytes`, written when AAD wakes after silence. **Payload layout differs from the other markers**: UTC is epoch *seconds* (u32), not ms (u64), and there is no session id.
   - `0xFFFFFFFE` button-tap marker (20 B): 4-byte header + 16-byte payload of `utc_ms(u64) + uptime_ms(u32) + session_id(u32)`
+  - `0xFFFFFFFA` / `0xFFFFFFF9` mute-on / mute-off markers (20 B each): 4-byte header + same 16-byte payload as the button-tap marker; bracket a muted stretch in the stream (rendered as a "muted" ghost row)
   - `0xFFFFFFFF` / `0`: sentinel slots
   These frames are left inline in the bin file — not extracted at transfer time. `VadAudioProcessor` parses them during the decode pass.
 - `OfflineAudioProcessor` decodes Opus → 16 kHz mono 16-bit PCM, adaptive noise floor tracking (initial -40 dBFS, SNR margin configurable), splits into `recordings/<YYYY-MM-DD>/recording_<millis>.m4a`
@@ -120,7 +121,8 @@ Zephyr RTOS on nRF5340. Key threads: mic capture → codec ring buffer → Opus 
 | `device_session_id` (`atomic_t` u32) | `transport.c/h`, `main.c` | `wal.sessionId` / `deviceSessionId` |
 | `write_marker_to_storage()` | `transport.c/h`, `button.c` | button-tap `Marker`; header `0xFFFFFFFE` + 16 B payload: `utc_time_ms` (u64), `uptime_ms` (u32), `device_session_id` (u32) |
 | `write_session_end_marker_to_storage()` | `transport.c/h`, `aad.c` | manual-mode stop boundary; header `0xFFFFFFFC` + same 16 B payload |
-| `write_custom_packet_to_storage(0xFFFFFFFD, …)` | `aad.c` | AAD VAD-resume timestamp; same 16 B payload |
+| `write_mute_on_marker_to_storage()` / `write_mute_off_marker_to_storage()` | `transport.c/h`, `button.c` | mute bracket; headers `0xFFFFFFFA` / `0xFFFFFFF9` + same 16 B payload |
+| `write_custom_packet_to_storage(0xFFFFFFFD, …)` | `aad.c` | AAD VAD-resume timestamp; 16 B payload `utc_s` (u32) + `uptime_ms` (u32) + 8 zero bytes — **not** the header-marker layout (seconds not ms, no session id) |
 | `marker_flash_count` (`volatile uint8_t`) | `button.c/h`, `main.c` | *(no Dart equivalent)* — drives LED flash on double-tap |
 | `PACKET_EOT` = `0x02` | `storage.c` | end-of-transfer signal; consumed by `SDCardWalSyncImpl`, not stored |
 
