@@ -680,7 +680,11 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                             return;
                           }
                           final xFile = XFile(files.first.path);
-                          await Share.shareXFiles([xFile], text: 'Omi Diagnostic Logs');
+                          // Use `subject` (share-sheet/email title metadata), not `text`:
+                          // a `text` argument is shared as a SEPARATE item alongside the
+                          // file, so iOS upload/save targets materialize a second phantom
+                          // file containing the label string.
+                          await Share.shareXFiles([xFile], subject: 'Omi Diagnostic Logs');
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.amber,
@@ -1173,4 +1177,3 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     return '${h}h ${rm}m';
   }
 }
-
