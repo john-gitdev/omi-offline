@@ -84,6 +84,20 @@ class DeviceProvider extends ChangeNotifier
   // at the top of onAppPaused.
   Timer? _pauseDisconnectTimer;
   static const Duration _backgroundDisconnectGrace = Duration(seconds: 15);
+  // Background-connect settle watchdog. A scheduled-sync connect attempt paints
+  // a "Connecting…" notification and normally settles it back to the idle "Last
+  // Sync" line in its finally / _connectThenSyncOrFail when the device is
+  // unreachable. Under Doze the process can be frozen mid-attempt, so that
+  // settle never runs and the notification is stranded on "Connecting…" until
+  // the next scheduled wake (observed: stuck for ~20 min overnight). This timer
+  // is the safety net: armed whenever a background connect paints "Connecting…",
+  // it forces the notification to the idle line if we're still not connected and
+  // no sync owns it. A timer that comes due while the isolate is frozen fires as
+  // soon as the isolate thaws, so it also recovers a frozen attempt on the next
+  // CPU slice. The window is longer than the timer body's 3-attempt connect loop
+  // (~100 s) so a legitimately slow connect isn't cut short.
+  Timer? _connectSettleWatchdog;
+  static const Duration _connectSettleTimeout = Duration(seconds: 150);
   // Keep-alive: sends HEARTBEAT (0x32) to storage characteristic every 5s so
   // the firmware doesn't trip its 15s idle-disconnect (the 5s cadence leaves a
   // 10s margin and survives two missed beats). Runs while the user is actively in
@@ -198,6 +212,7 @@ class DeviceProvider extends ChangeNotifier
     } else {
       _pendingBackgroundSync = true;
       unawaited(SyncNotification.connecting());
+      _armConnectSettleWatchdog();
       unawaited(_connectThenSyncOrFail());
     }
   }
@@ -707,6 +722,7 @@ class DeviceProvider extends ChangeNotifier
           // background sync and shouldn't be dropped.
           _pendingBackgroundSync = true;
           unawaited(SyncNotification.connecting());
+          _armConnectSettleWatchdog();
           bool connectedThisTick = false;
           try {
             for (int attempt = 0; attempt < 3 && !isConnected; attempt++) {
@@ -846,11 +862,32 @@ class DeviceProvider extends ChangeNotifier
     }
   }
 
+  /// Arm the background-connect settle watchdog (see [_connectSettleWatchdog]).
+  /// Idempotent — re-arming cancels any prior timer, so each "Connecting…" paint
+  /// resets the window.
+  void _armConnectSettleWatchdog() {
+    _connectSettleWatchdog?.cancel();
+    _connectSettleWatchdog = Timer(_connectSettleTimeout, () {
+      _connectSettleWatchdog = null;
+      // A connection arrived, or a sync/process now owns the notification —
+      // whatever is showing isn't a stale "Connecting…", so leave it alone.
+      if (_disposed || isConnected || _backgroundSyncActive || _syncOwnsNotification) return;
+      Logger.debug('DeviceProvider: connect watchdog fired — settling stranded "Connecting…" notification to idle');
+      _failSyncCycleToIdle();
+    });
+  }
+
+  void _cancelConnectSettleWatchdog() {
+    _connectSettleWatchdog?.cancel();
+    _connectSettleWatchdog = null;
+  }
+
   /// A sync cycle could not run (e.g. the device wasn't reachable). Advance to
   /// the next auto-sync slot — re-arm the native exact alarm and recompute
   /// [nextSyncTime] — and settle the notification back to the idle line so it
   /// never sticks on "Connecting…".
   void _failSyncCycleToIdle() {
+    _cancelConnectSettleWatchdog();
     final interval = SharedPreferencesUtil().backgroundSyncIntervalMinutes;
     if (interval > 0) {
       nextSyncTime = DateTime.now().add(Duration(minutes: interval));
@@ -1067,6 +1104,7 @@ class DeviceProvider extends ChangeNotifier
     _reconnectDelayTimer?.cancel();
     _resumeReconnectDebounce?.cancel();
     _pauseDisconnectTimer?.cancel();
+    _connectSettleWatchdog?.cancel();
     _backgroundSyncTimer?.cancel();
     _foregroundKeepAliveTimer?.cancel();
     _disconnectDebouncer.cancel();
@@ -1214,6 +1252,9 @@ class DeviceProvider extends ChangeNotifier
       await setConnectedDevice(device);
       setIsConnected(true);
       updateConnectingStatus(false);
+      // Connected — the connect attempt is no longer in flight, so the settle
+      // watchdog must not later fire and stamp a spurious "Skipped".
+      _cancelConnectSettleWatchdog();
       notifyListeners();
       _startForegroundKeepAlive();
 
