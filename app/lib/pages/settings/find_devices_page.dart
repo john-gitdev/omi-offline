@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -43,15 +45,21 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
       return;
     }
 
-    // Request permissions
-    Map<Permission, PermissionStatus> statuses = await [
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      Permission.location,
-    ].request();
+    // Request permissions. bluetoothScan / bluetoothConnect are Android 12+ (API 31)
+    // runtime permissions; on iOS permission_handler has no strategy for them and
+    // reports permanentlyDenied, which would wedge the gate below and stop scanning
+    // entirely. iOS needs only the single CoreBluetooth authorization and no location
+    // grant for BLE, so branch the request and the gate by platform.
+    final List<Permission> toRequest = Platform.isAndroid
+        ? [Permission.bluetoothScan, Permission.bluetoothConnect, Permission.location]
+        : [Permission.bluetooth];
+    final Map<Permission, PermissionStatus> statuses = await toRequest.request();
 
-    if (statuses[Permission.bluetoothScan] != PermissionStatus.granted ||
-        statuses[Permission.bluetoothConnect] != PermissionStatus.granted) {
+    // Android scanning requires scan+connect (location is best-effort, as before);
+    // iOS requires the bluetooth authorization.
+    final List<Permission> mustGrant =
+        Platform.isAndroid ? [Permission.bluetoothScan, Permission.bluetoothConnect] : [Permission.bluetooth];
+    if (mustGrant.any((p) => statuses[p]?.isGranted != true)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Bluetooth permissions are required to find Omi devices.')),
@@ -100,12 +108,15 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
 
   Future<void> _connectToDevice(BtDevice device) async {
     final deviceService = ServiceManager.instance().device;
-    // Establish the CompanionDeviceManager association BEFORE connecting. This grants
-    // background-run + scan-without-location and enables OS presence wake-ups, which the
-    // native layer arms on every manageDevice (startObservingForAddress) and only tears
-    // down on explicit forget (unmanageDevice). hasCompanionDeviceAssociation() gates the
-    // chooser to first-connect only. Keep this before ensureConnection so the OS owns the
-    // association and our GATT connect stays the sole connection actor (avoids GATT 133).
+    // Establish the CompanionDeviceManager association BEFORE connecting. We keep the
+    // association for its background-run grant and "companion" status (gentler OEM
+    // battery-optimization), but intentionally do NOT arm OS presence observation — on
+    // OnePlus/Oplus/Realme stacks it holds a passive LE link that contends for the
+    // firmware's single connection slot and wedges reconnection (see
+    // OmiBleForegroundService.manageDevice). Background reconnect is driven by the periodic
+    // sync alarm/worker instead. hasCompanionDeviceAssociation() gates the chooser to
+    // first-connect only. Keep this before ensureConnection so the OS owns the association
+    // and our GATT connect stays the sole connection actor (avoids GATT 133).
     final isAndroid = TargetPlatform.android == Theme.of(context).platform;
     if (isAndroid && !(await deviceService.hasCompanionDeviceAssociation())) {
       if (!mounted) return;
