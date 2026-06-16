@@ -947,6 +947,23 @@ static void idle_disconnect_work_handler(struct k_work *work)
         return;
     }
 
+#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+    /* An in-progress storage transfer is liveness on its own. A slow consumer —
+     * notably iOS, where the file read runs packet-by-packet in Dart rather than
+     * natively as on Android — can back-pressure the firmware TX so that no
+     * notification (hence no transport_mark_activity() from write_to_gatt) happens
+     * for >15 s, even though the link is healthy and actively draining a file. The
+     * app's foreground keep-alive is also deliberately skipped during a transfer
+     * (it would race the read stream). Without this guard the link idle-drops
+     * mid-transfer (REMOTE_USER_TERM_CONN) and the resumed transfer drops again,
+     * looping. Defer the idle check while a transfer is active; the BLE supervision
+     * timeout still backstops a genuinely dead link. */
+    if (storage_transfer_active()) {
+        k_work_schedule(k_work_delayable_from_work(work), K_MSEC(IDLE_DISCONNECT_POLL_MS));
+        return;
+    }
+#endif
+
     uint32_t now = k_uptime_get_32();
     uint32_t last = (uint32_t)atomic_get(&last_activity_ms);
     uint32_t idle_ms = now - last;
