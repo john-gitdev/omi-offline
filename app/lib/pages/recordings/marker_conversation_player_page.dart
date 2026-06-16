@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -147,7 +146,9 @@ class _MarkerConversationPlayerPageState extends State<MarkerConversationPlayerP
       'cropEndMs': _cropEnd.inMilliseconds,
       'userSaved': _userSaved,
     };
-    await widget.markerConversation.edlFile.writeAsString(jsonEncode(edlData));
+    // Atomic (tmp + rename) so a concurrent getMarkerConversations() refresh
+    // never reads a half-written EDL, and an app kill mid-save can't corrupt it.
+    await RecordingsManager.writeJsonAtomic(widget.markerConversation.edlFile, edlData);
   }
 
   // ── Save ───────────────────────────────────────────────────────────────────
