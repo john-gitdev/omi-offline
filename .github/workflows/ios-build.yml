@@ -1,9 +1,9 @@
 name: iOS build (verify)
 
-# Cloud iOS build on a GitHub-hosted macOS runner — confirms the app compiles
-# and that CocoaPods accepts the iOS deployment target (currently 15.0) without
-# needing a local Mac. Produces an UNSIGNED build: it proves the pods/code build,
-# but is not installable on a device (that needs code signing — see notes below).
+# Cloud iOS build on a GitHub-hosted macOS runner — builds the app for iOS 15.0
+# without needing a local Mac, and packages an UNSIGNED .ipa as a downloadable
+# artifact. The unsigned IPA installs on a jailbroken device via AppSync Unified
+# (or via TrollStore on iOS 14–16.x) — no Apple Developer account or signing.
 #
 # Manual trigger only, to conserve macOS minutes (billed 10x on private repos).
 
@@ -46,9 +46,20 @@ jobs:
       - name: Build iOS (dev flavor, no code signing)
         run: flutter build ios --flavor dev --no-codesign
 
-      - name: Echo the deployment target actually used
+      - name: Package unsigned IPA (installs via AppSync Unified / TrollStore)
         run: |
-          echo "Podfile platform line:"
-          grep "platform :ios" ios/Podfile
-          echo "First IPHONEOS_DEPLOYMENT_TARGET in pbxproj:"
-          grep -m1 IPHONEOS_DEPLOYMENT_TARGET ios/Runner.xcodeproj/project.pbxproj
+          APP_PATH="$(ls -d build/ios/iphoneos/*.app | head -n1)"
+          echo "Packaging: $APP_PATH"
+          rm -rf Payload omi-offline-dev-unsigned.ipa
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qry omi-offline-dev-unsigned.ipa Payload
+          ls -lh omi-offline-dev-unsigned.ipa
+          echo "Built against:"; grep "platform :ios" ios/Podfile
+
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: omi-offline-dev-unsigned-ipa
+          path: app/omi-offline-dev-unsigned.ipa
+          if-no-files-found: error
