@@ -71,6 +71,11 @@ dependency_overrides:
     git:
       url: https://github.com/mdmohsin7/opus_flutter.git
       path: opus_flutter_android
+  # Vendored copy of flutter_onnxruntime 1.7.1 with the iOS podspec platform
+  # lowered 16.0 -> 15.1 (onnxruntime-objc 1.22.0 only needs 15.1), so the app
+  # installs on iOS 15 devices. Same plugin code/API as the pub.dev release.
+  flutter_onnxruntime:
+    path: third_party/flutter_onnxruntime
 
 dev_dependencies:
   flutter_launcher_icons: 0.13.1
