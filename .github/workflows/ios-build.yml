@@ -1,0 +1,54 @@
+name: iOS build (verify)
+
+# Cloud iOS build on a GitHub-hosted macOS runner — confirms the app compiles
+# and that CocoaPods accepts the iOS deployment target (currently 15.0) without
+# needing a local Mac. Produces an UNSIGNED build: it proves the pods/code build,
+# but is not installable on a device (that needs code signing — see notes below).
+#
+# Manual trigger only, to conserve macOS minutes (billed 10x on private repos).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: flutter build ios (dev, no codesign)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.41.7
+          channel: stable
+          cache: true
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: Generate iOS config (plugins + Generated.xcconfig)
+        run: flutter build ios --flavor dev --no-codesign --config-only
+
+      - name: pod install (fails loudly if a pod rejects iOS 15.0)
+        working-directory: app/ios
+        run: pod install --repo-update
+
+      - name: Build iOS (dev flavor, no code signing)
+        run: flutter build ios --flavor dev --no-codesign
+
+      - name: Echo the deployment target actually used
+        run: |
+          echo "Podfile platform line:"
+          grep "platform :ios" ios/Podfile
+          echo "First IPHONEOS_DEPLOYMENT_TARGET in pbxproj:"
+          grep -m1 IPHONEOS_DEPLOYMENT_TARGET ios/Runner.xcodeproj/project.pbxproj
