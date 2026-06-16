@@ -340,10 +340,15 @@ class OmiBleForegroundService : Service() {
             .putBoolean(PREFS_USER_DISCONNECTED, false)
             .apply()
 
-        // Restore OS-level presence observation on every manage so the OS can wake
-        // us when the device drifts back into range. Stopped in unmanageDevice
-        // so OnePlus-style passive scans don't keep the LE link warm.
-        OmiCompanionManager.startObservingForAddress(applicationContext, addr)
+        // CDM presence observation is intentionally NOT armed. On OnePlus/Oplus/Realme
+        // stacks it makes the OS hold a passive LE link that contends for the firmware's
+        // single connection slot (CONFIG_BT_MAX_CONN=1), wedging reconnection into an
+        // "advertising but won't connect" state recoverable only by toggling phone BT.
+        // We keep the CDM association (background-run grant / companion status) but drive
+        // background reconnect via the periodic sync alarm/worker instead. Proactively
+        // stop any observation a previous app version left armed so the passive link is
+        // released on upgrade without requiring a re-pair.
+        OmiCompanionManager.stopObservingForAddress(applicationContext, addr)
 
         if (!isBluetoothEnabled) {
             managedDevices[addr] = ManagedDevice(address = addr, requiresBond = bond)
