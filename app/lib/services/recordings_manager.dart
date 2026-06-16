@@ -1625,11 +1625,16 @@ class RecordingsManager {
 
   /// Atomically writes JSON to [target]: write to `<target>.tmp` then rename,
   /// so a concurrent reader never observes a truncated/partial file (NEW3/C5).
-  Future<void> _writeJsonAtomic(File target, Object payload) async {
+  /// Static + public so the marker player's crop-save path (which runs on the
+  /// main isolate, not through this manager instance) shares the same
+  /// crash-safety as the isolate EDL writers instead of a raw writeAsString.
+  static Future<void> writeJsonAtomic(File target, Object payload) async {
     final tmp = File('${target.path}.tmp');
     await tmp.writeAsString(jsonEncode(payload), flush: true);
     await tmp.rename(target.path);
   }
+
+  Future<void> _writeJsonAtomic(File target, Object payload) => writeJsonAtomic(target, payload);
 
   @visibleForTesting
   Future<void> writeMarkerEdlTest(String docsPath, Map<String, dynamic> edl) => _writeMarkerEdl(docsPath, edl);
