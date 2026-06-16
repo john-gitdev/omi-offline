@@ -16,7 +16,7 @@ final class BleHostApiImpl: BleHostApi {
         bleManager.stopScan()
     }
 
-    func manageDevice(uuid: String, requiresBond: Boolean) throws {
+    func manageDevice(uuid: String, requiresBond: Bool) throws {
         bleManager.connectPeripheral(uuid: uuid)
     }
 
