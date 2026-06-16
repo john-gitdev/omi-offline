@@ -96,6 +96,12 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 /* Raw LFS instance */
 static lfs_t lfs_fs;
 
+/* Latched true when sd_mount() had to reformat because the card did not hold an
+ * omi-offline filesystem — i.e. this boot is a migration from a non-"oo"
+ * firmware. main() reads it (sd_migrated_from_foreign) to also wipe Bluetooth
+ * bonds once on that boot. */
+static volatile bool migrated_from_foreign;
+
 /* Open file handles */
 static lfs_file_t lfs_fil_data;
 static lfs_file_t lfs_fil_info;
@@ -870,17 +876,25 @@ static void lfs_close_files(void)
  * from its journal automatically â€” no mkfs needed, no power-loss dirty bit.
  */
 /**
- * check_or_write_magic - verify or create the LFS format-version cookie.
+ * check_magic - verify the LFS format-version cookie on a freshly mounted FS.
  *
- * After a successful lfs_mount() call this function:
- *   - Returns 0 if the magic file exists and contains LFS_MAGIC_VALUE → healthy FS.
- *   - Returns 0 and writes the magic file if it is absent → fresh format, first boot.
- *   - Returns -EBADMSG if the file exists but the value is wrong → ghost mount on
- *     old FatFS data; caller must lfs_unmount + lfs_format + lfs_mount.
+ *   0         the magic file exists and holds LFS_MAGIC_VALUE → a clean
+ *             omi-offline filesystem this firmware family formatted.
+ *   -ENOENT   the magic file is absent. omi-offline writes the cookie immediately
+ *             after every format it performs (see write_magic() call sites), so an
+ *             absent cookie on a *mountable* volume means the data was laid down by
+ *             some other firmware (e.g. stock Omi) — not ours.
+ *   -EBADMSG  the magic file exists but holds the wrong value → ghost mount on
+ *             stale FatFS bytes that happened to pass the LFS superblock CRC.
  *
- * NOTE: reuses lfs_finfo_buf/cfg because the info file is not open at mount time.
+ * In every non-zero case the caller must lfs_unmount + lfs_format + lfs_mount +
+ * write_magic to guarantee a clean slate. This is what makes the one-time wipe on
+ * migration from a different firmware happen exactly once: the boot after the wipe
+ * finds a valid cookie and keeps recordings.
+ *
+ * NOTE: reuses lfs_finfo_cfg because the info file is not open at mount time.
  */
-static int check_or_write_magic(void)
+static int check_magic(void)
 {
     lfs_file_t f;
     uint32_t   magic = 0;
@@ -890,20 +904,33 @@ static int check_or_write_magic(void)
         lfs_ssize_t rd = lfs_file_read(&lfs_fs, &f, &magic, sizeof(magic));
         lfs_file_close(&lfs_fs, &f);
         if (rd == (lfs_ssize_t)sizeof(magic) && magic == LFS_MAGIC_VALUE) {
-            return 0; /* clean LFS filesystem confirmed */
+            return 0; /* clean omi-offline filesystem confirmed */
         }
         LOG_WRN("[SD] LFS magic mismatch (read=0x%08X expected=0x%08X) — ghost mount detected",
                 magic, LFS_MAGIC_VALUE);
         return -EBADMSG;
     }
 
-    /* File absent: this is a freshly formatted filesystem — write the cookie. */
-    ret = lfs_file_opencfg(&lfs_fs, &f, LFS_MAGIC_PATH, LFS_O_WRONLY | LFS_O_CREAT, &lfs_finfo_cfg);
+    LOG_WRN("[SD] LFS magic cookie absent — volume not formatted by omi-offline");
+    return -ENOENT;
+}
+
+/**
+ * write_magic - stamp the omi-offline format cookie onto a freshly formatted FS.
+ *
+ * Call after every lfs_format()+lfs_mount() so this firmware recognises its own
+ * filesystem on the next boot. Skipping it anywhere would make that volume look
+ * foreign on the next mount and get wiped — so it must follow every format.
+ */
+static int write_magic(void)
+{
+    lfs_file_t f;
+    int ret = lfs_file_opencfg(&lfs_fs, &f, LFS_MAGIC_PATH, LFS_O_WRONLY | LFS_O_CREAT, &lfs_finfo_cfg);
     if (ret != LFS_ERR_OK) {
         LOG_ERR("[SD] Failed to create LFS magic file: %d", ret);
         return ret;
     }
-    magic = LFS_MAGIC_VALUE;
+    uint32_t magic = LFS_MAGIC_VALUE;
     lfs_ssize_t wr = lfs_file_write(&lfs_fs, &f, &magic, sizeof(magic));
     lfs_file_close(&lfs_fs, &f);
     if (wr != (lfs_ssize_t)sizeof(magic)) {
@@ -990,28 +1017,38 @@ static int sd_mount(void)
             sd_enable_power(false);
             return -EIO;
         }
-        /* Write the magic cookie on the freshly formatted filesystem. */
-        (void)check_or_write_magic();
+        /* Stamp the cookie on the freshly formatted filesystem and flag the
+         * migration so main() also wipes Bluetooth bonds once (an unmountable
+         * card means foreign/blank data — not an omi-offline filesystem). */
+        (void)write_magic();
+        migrated_from_foreign = true;
     } else {
-        /* Mount succeeded — verify the magic cookie to detect ghost mounts
-         * (lfs_mount accidentally succeeding on stale FatFS data). */
-        int magic_ret = check_or_write_magic();
-        if (magic_ret == -EBADMSG) {
-            LOG_WRN("[SD] Ghost mount on FatFS data detected — forcing clean format");
+        /* Mount succeeded — but only KEEP the data if this is genuinely an
+         * omi-offline filesystem. check_magic() is non-zero when the cookie is
+         * absent (foreign data, e.g. stock Omi firmware that left a mountable
+         * LittleFS) or wrong (ghost mount on stale FatFS bytes). Either way,
+         * format once so a migration from non-"oo" firmware starts clean; the
+         * next boot finds the cookie and keeps recordings. Released omi-offline
+         * builds (>= oo-1.9.3) always carry the cookie, so an upgrade never
+         * re-wipes them. */
+        int magic_ret = check_magic();
+        if (magic_ret != 0) {
+            LOG_WRN("[SD] Mounted volume is not an omi-offline filesystem (%d) — formatting once", magic_ret);
             lfs_unmount(&lfs_fs);
             ret = lfs_format(&lfs_fs, &lfs_cfg);
             if (ret != LFS_ERR_OK) {
-                LOG_ERR("LFS format (ghost mount recovery) failed: %d", ret);
+                LOG_ERR("LFS format (migration wipe) failed: %d", ret);
                 sd_enable_power(false);
                 return -EIO;
             }
             ret = lfs_mount(&lfs_fs, &lfs_cfg);
             if (ret != LFS_ERR_OK) {
-                LOG_ERR("LFS mount after ghost-mount recovery failed: %d", ret);
+                LOG_ERR("LFS mount after migration wipe failed: %d", ret);
                 sd_enable_power(false);
                 return -EIO;
             }
-            (void)check_or_write_magic();
+            (void)write_magic();
+            migrated_from_foreign = true;
         }
     }
 
@@ -1037,6 +1074,11 @@ static int sd_unmount(void)
     sd_enable_power(false);
     LOG_INF("LittleFS unmounted");
     return 0;
+}
+
+bool sd_migrated_from_foreign(void)
+{
+    return migrated_from_foreign;
 }
 
 /* Power on + remount (NO lfs_fs_gc — that runs once at boot) and reopen the info
@@ -1707,7 +1749,7 @@ void sd_worker_thread(void)
                 lfs_unmount(&lfs_fs);
                 lfs_format(&lfs_fs, &lfs_cfg);
                 lfs_mount(&lfs_fs, &lfs_cfg);
-                check_or_write_magic();
+                write_magic();
             }
         } else {
             LOG_INF("[SD_BOOT] LFS allocator pre-warmed OK in %lld ms", gc_elapsed_ms);
@@ -1728,7 +1770,7 @@ void sd_worker_thread(void)
                 lfs_unmount(&lfs_fs);
                 lfs_format(&lfs_fs, &lfs_cfg);
                 lfs_mount(&lfs_fs, &lfs_cfg);
-                check_or_write_magic();
+                write_magic();
                 res = lfs_file_opencfg(&lfs_fs, &lfs_fil_info, FILE_INFO_PATH, LFS_O_CREAT | LFS_O_RDWR, &lfs_finfo_cfg);
             }
             if (res < 0) {
@@ -1771,7 +1813,7 @@ void sd_worker_thread(void)
                 lfs_unmount(&lfs_fs);
                 lfs_format(&lfs_fs, &lfs_cfg);
                 lfs_mount(&lfs_fs, &lfs_cfg);
-                check_or_write_magic();
+                write_magic();
                 res = create_audio_file_with_timestamp();
             }
             if (res < 0) {
