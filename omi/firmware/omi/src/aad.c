@@ -56,6 +56,9 @@ static uint16_t vad_threshold = 250;
 
 
 /* ---- Force-wake (button press) ---- */
+/* Mirrored app-side as _markerProtectionWindowMs in app/lib/services/
+ * vad_audio_processor.dart — the app suppresses splits / forces speech for the
+ * same span so a button-tap marker's audio is never split away. Keep equal. */
 #define FORCE_WAKE_HOLD_MS 50000
 /* These two are written on one thread and read on another (force_wake_until_ms:
  * button-work thread -> mic thread; last_hw_wake_ms: aad thread -> main loop).
@@ -292,6 +295,15 @@ bool aad_process_audio(int16_t *buffer, size_t sample_count)
                 uint64_t up = (uint64_t)k_uptime_get();
                 memcpy(vad_ts_buf, &utc, 4);
                 memcpy(vad_ts_buf + 4, &up, 4);
+                /* SD writes are still paused from the silence gap. The resume
+                 * request below (sd_pause_pending=2) is handled asynchronously by
+                 * the AAD thread, so without this the marker would be enqueued and
+                 * then dropped by the still-paused SD worker (same hazard the
+                 * button-tap marker hit). Clear the pause flag inline first — on the
+                 * resume side sd_write_pause() is just a non-blocking atomic set —
+                 * so this resume packet is durable. The async resume below is left
+                 * as a harmless idempotent backstop. */
+                sd_write_pause(false);
                 write_custom_packet_to_storage(0xFFFFFFFD, vad_ts_buf, 16, true);
 
                 atomic_set(&sd_pause_pending, 2);
