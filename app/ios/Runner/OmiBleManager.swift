@@ -239,7 +239,12 @@ extension OmiBleManager: CBCentralManagerDelegate {
         peripherals[p.identifier.uuidString] = p
         p.delegate = self
         let svcs = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID])?.map { $0.uuidString } ?? []
-        let bleP = BlePeripheral(uuid: p.identifier.uuidString, name: p.name ?? "", rssi: Int64(rssi.intValue), serviceUuids: svcs)
+        // CBPeripheral.name is read from the GATT GAP characteristic and is usually nil
+        // until after connection. The name the firmware advertises ("Omi") lives in the
+        // advertisement's local-name field, so prefer that — otherwise the Dart-side
+        // name.contains('omi') discovery filter never matches during a scan.
+        let advName = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? p.name ?? ""
+        let bleP = BlePeripheral(uuid: p.identifier.uuidString, name: advName, rssi: Int64(rssi.intValue), serviceUuids: svcs)
         flutterApi?.onPeripheralDiscovered(peripheral: bleP) { _ in }
     }
 
