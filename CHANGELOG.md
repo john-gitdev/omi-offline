@@ -10,6 +10,7 @@ Patch releases are rolled up into their minor version. Each section reflects the
 - **Security: Dedicated Power Off & Unpair gestures.** 4-tap-and-hold (3 s) is reserved for Power Off and 5-tap-and-hold (10 s) for Unpairing; plain 4-tap and 5-tap are disabled to prevent accidental triggers.
 - **Fix: Restored Android companion pairing & iOS build.** Re-enabled the Android system pairing association on first connect (which lets the OS wake the app for background sync and scan without location permission, complementing the encrypted bond), and added the missing native `removeBond` bridge so the iOS app builds and "Forget Device" works across platforms.
 - **Fix: Accurate sync-status timestamp.** The "Last Sync" notification tracks the time of the last sync *outcome* (including a skip) separately from the last successful sync, so interval-based auto-sync scheduling is no longer nudged by skipped cycles.
+- **Fix: Markers tapped while the device is idle are no longer dropped.** In auto mode, tapping to drop a marker after the device had gone quiet could silently lose the bookmark — and, if that moment was silent, the whole short clip around it — because the SD card was still in its low-power paused state when the marker was written. The firmware now resumes storage *before* writing the marker, so taps from sleep are saved reliably; the same fix makes the post-silence VAD-resume timestamp durable on acoustic wake, keeping conversation boundaries accurate. Requires firmware oo-2.2.2.
 - Requires firmware oo-2.2.x.
 
 ### 0.23
