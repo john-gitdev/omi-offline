@@ -171,6 +171,13 @@ static void execute_button_action(uint8_t taps, bool is_hold)
                 marker_flash_color = MARKER_FLASH_WHITE;
                 marker_flash_count = 2;
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
+                // AAD may have paused SD writes during a silence gap. A marker
+                // written while paused is enqueued, reported as written, then
+                // silently dropped by the SD worker (sd_card.c process_write_data_req
+                // returns early on sd_write_paused). aad_force_wake() below only
+                // resumes writes ~debounce frames later — far too late. Resume
+                // first so the marker is durable, mirroring the mute path above.
+                sd_write_pause(false);
                 write_marker_to_storage();
 #endif
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
