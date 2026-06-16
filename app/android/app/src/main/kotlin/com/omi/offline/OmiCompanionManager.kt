@@ -23,33 +23,6 @@ class OmiCompanionManager(
         private const val TAG = "OmiBle.CompanionMgr"
         const val COMPANION_REQUEST_CODE = 42
 
-        /**
-         * Start OS-level presence observation for a specific device by MAC.
-         * Idempotent — safe to call on every reconnect. No-op if no association
-         * exists for that MAC.
-         */
-        fun startObservingForAddress(context: Context, address: String) {
-            if (Build.VERSION.SDK_INT < 33) return
-            val cdm = context.getSystemService(Context.COMPANION_DEVICE_SERVICE) as? CompanionDeviceManager ?: return
-            val target = address.uppercase()
-            val association = cdm.myAssociations.firstOrNull {
-                it.deviceMacAddress?.toString()?.uppercase() == target
-            } ?: return
-            try {
-                if (Build.VERSION.SDK_INT >= 36) {
-                    val request = android.companion.ObservingDevicePresenceRequest.Builder()
-                        .setAssociationId(association.id)
-                        .build()
-                    cdm.startObservingDevicePresence(request)
-                } else {
-                    cdm.startObservingDevicePresence(target)
-                }
-                Log.d(TAG, "startObservingForAddress: $target (assoc ${association.id})")
-            } catch (e: Exception) {
-                Log.w(TAG, "startObservingForAddress failed: ${e.message}")
-            }
-        }
-
         fun disassociateAddress(context: Context, address: String) {
             if (Build.VERSION.SDK_INT < 26) return
             val cdm = context.getSystemService(Context.COMPANION_DEVICE_SERVICE) as? CompanionDeviceManager ?: return
@@ -170,7 +143,8 @@ class OmiCompanionManager(
         @Suppress("DEPRECATION")
         val scanResult = data?.getParcelableExtra<android.bluetooth.le.ScanResult>(CompanionDeviceManager.EXTRA_DEVICE) ?: return null
         val address = scanResult.device.address
-        startObserving()
+        // Association is established here; presence observation is intentionally not
+        // started (see OmiBleForegroundService.manageDevice for the rationale).
         return address
     }
 
@@ -196,57 +170,4 @@ class OmiCompanionManager(
         }
     }
 
-    fun startObserving() {
-        if (Build.VERSION.SDK_INT < 33) {
-            Log.d(TAG, "startObserving: skipped (API ${Build.VERSION.SDK_INT} < 33)")
-            return
-        }
-        val associations = companionDeviceManager.myAssociations
-        if (associations.isEmpty()) return
-
-        val association = associations.last()
-
-        if (Build.VERSION.SDK_INT >= 36) {
-            try {
-                val request = android.companion.ObservingDevicePresenceRequest.Builder()
-                    .setAssociationId(association.id)
-                    .build()
-                companionDeviceManager.startObservingDevicePresence(request)
-                Log.d(TAG, "Observing device presence (API 36+) for association ${association.id}")
-            } catch (e: Exception) {
-                Log.w(TAG, "startObserving (API 36+) failed: ${e.message}")
-            }
-        } else {
-            val mac = association.deviceMacAddress
-            if (mac != null) {
-                try {
-                    companionDeviceManager.startObservingDevicePresence(mac.toString())
-                    Log.d(TAG, "Observing device presence for $mac")
-                } catch (e: Exception) {
-                    Log.w(TAG, "startObserving failed: ${e.message}")
-                }
-            }
-        }
-    }
-
-    fun stopObserving() {
-        if (Build.VERSION.SDK_INT < 33) return
-        for (association in companionDeviceManager.myAssociations) {
-            try {
-                if (Build.VERSION.SDK_INT >= 36) {
-                    val request = android.companion.ObservingDevicePresenceRequest.Builder()
-                        .setAssociationId(association.id)
-                        .build()
-                    companionDeviceManager.stopObservingDevicePresence(request)
-                } else {
-                    val mac = association.deviceMacAddress
-                    if (mac != null) {
-                        companionDeviceManager.stopObservingDevicePresence(mac.toString())
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "stopObserving failed: ${e.message}")
-            }
-        }
-    }
 }
