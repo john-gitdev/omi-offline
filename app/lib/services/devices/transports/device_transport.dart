@@ -1,7 +1,7 @@
 import 'dart:async';
 
 /// Abstract transport layer for device communication
-/// Provides a unified interface for different communication protocols (BLE, WatchConnectivity, etc.)
+/// Provides a unified interface for different communication protocols (BLE, etc.)
 abstract class DeviceTransport {
   String get deviceId;
 
