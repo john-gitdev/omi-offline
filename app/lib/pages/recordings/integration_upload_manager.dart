@@ -100,8 +100,9 @@ class IntegrationUploadManager {
   _UploadLane _lane(String name) => _lanes.putIfAbsent(name, () => _UploadLane());
   bool get _anyLaneActive => _lanes.values.any((l) => l.isActive);
 
-  // The Omi Cloud server-busy (503) backoff, mirroring OmiPassthroughIntegration's
-  // internal _busyBackoff — used to set a lane's busyUntil for the visible pause.
+  // Fallback lane-pause window when an integration reports it's backing off but
+  // exposes no concrete until-time (backingOffUntil == null). Omi Cloud now drives
+  // the real (exponential) window via backingOffUntil; this is only the default.
   static const Duration _busyBackoff = Duration(minutes: 5);
 
   /// True while at least one lane has an upload in flight (drives the
@@ -227,10 +228,13 @@ class IntegrationUploadManager {
             delivered = true;
             if (_prefs.passthroughMode) await _convertToPassthrough(conversation);
           } else if (integration.isBackingOff(conversation)) {
-            // Server busy (503): pause the whole lane and resume this recording
-            // first once the backoff passes. Not a failure — don't spend retries.
+            // Server busy (503/502/504): pause the whole lane and resume this
+            // recording first once its backoff passes. Use the integration's real
+            // (exponential) backoff time so the lane wakes — and the "retry HH:MM"
+            // label reads — when the recording is actually eligible again, not a
+            // fixed 5 min. Not a failure — don't spend retries.
             busy = true;
-            lane.busyUntil = DateTime.now().add(_busyBackoff);
+            lane.busyUntil = integration.backingOffUntil(conversation) ?? DateTime.now().add(_busyBackoff);
             (job.manual ? lane.manual : lane.auto).insert(0, job);
             _scheduleLaneResume(name);
           }
