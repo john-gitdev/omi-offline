@@ -108,15 +108,13 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
 
   Future<void> _connectToDevice(BtDevice device) async {
     final deviceService = ServiceManager.instance().device;
-    // Establish the CompanionDeviceManager association BEFORE connecting. We keep the
-    // association for its background-run grant and "companion" status (gentler OEM
-    // battery-optimization), but intentionally do NOT arm OS presence observation — on
-    // OnePlus/Oplus/Realme stacks it holds a passive LE link that contends for the
-    // firmware's single connection slot and wedges reconnection (see
-    // OmiBleForegroundService.manageDevice). Background reconnect is driven by the periodic
-    // sync alarm/worker instead. hasCompanionDeviceAssociation() gates the chooser to
-    // first-connect only. Keep this before ensureConnection so the OS owns the association
-    // and our GATT connect stays the sole connection actor (avoids GATT 133).
+    // Companion Device Pairing defaults OFF (see preferences.companionDeviceEnabled): on
+    // OnePlus/Oppo/Realme the OS holds a passive LE link that contends for the firmware's
+    // single connection slot and wedges reconnection (see OmiBleForegroundService).
+    // Only when the user opts in via the App Settings toggle do we establish the
+    // CompanionDeviceManager association BEFORE connecting (it never arms presence
+    // observation). hasCompanionDeviceAssociation() gates the chooser to first-connect
+    // only. Background reconnect runs on the periodic sync alarm/worker regardless.
     final isAndroid = TargetPlatform.android == Theme.of(context).platform;
     if (isAndroid &&
         SharedPreferencesUtil().companionDeviceEnabled &&
