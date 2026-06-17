@@ -118,7 +118,9 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
     // first-connect only. Keep this before ensureConnection so the OS owns the association
     // and our GATT connect stays the sole connection actor (avoids GATT 133).
     final isAndroid = TargetPlatform.android == Theme.of(context).platform;
-    if (isAndroid && !(await deviceService.hasCompanionDeviceAssociation())) {
+    if (isAndroid &&
+        SharedPreferencesUtil().companionDeviceEnabled &&
+        !(await deviceService.hasCompanionDeviceAssociation())) {
       if (!mounted) return;
       bool? confirm = await showDialog<bool>(
         context: context,
