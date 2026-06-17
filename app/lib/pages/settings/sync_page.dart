@@ -679,12 +679,20 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                             setState(() => _statusMessage = 'No log files available to share');
                             return;
                           }
-                          final xFile = XFile(files.first.path);
+                          // Name the shared file `omi_offline_debug_<date>.log` — lowercase,
+                          // underscored, no spaces/apostrophes, so it's easy to work with on
+                          // upload/save targets. Derived from the on-disk basename
+                          // (`omi_debug_YYYYMMDD.log`) so the date matches exactly.
+                          final logName = files.first.uri.pathSegments.last;
+                          final shareName = logName.replaceFirst('omi_debug_', 'omi_offline_debug_');
+                          // Name the XFile (not just the share `subject`) so the name lands on
+                          // targets that use the file's own name, not the title.
+                          final xFile = XFile(files.first.path, name: shareName);
                           // Use `subject` (share-sheet/email title metadata), not `text`:
                           // a `text` argument is shared as a SEPARATE item alongside the
                           // file, so iOS upload/save targets materialize a second phantom
                           // file containing the label string.
-                          await Share.shareXFiles([xFile], subject: 'Omi Diagnostic Logs');
+                          await Share.shareXFiles([xFile], subject: shareName);
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.amber,
