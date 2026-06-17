@@ -1458,6 +1458,16 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   void cancelHeyPocketUploads({bool autoOnly = false}) => _uploads.cancelHeyPocketUploads(autoOnly: autoOnly);
 
+  /// Active uploads (in-flight + queued) for [integrationName] — see
+  /// [IntegrationUploadManager.activeUploadCountFor].
+  int activeUploadCountFor(String integrationName) => _uploads.activeUploadCountFor(integrationName);
+
+  /// Cancels a single queued upload of [c] to [integrationName].
+  void cancelUpload(Conversation c, String integrationName) => _uploads.cancelUpload(c, integrationName);
+
+  /// Cancels every queued/in-flight upload for [integrationName].
+  void cancelAllUploadsFor(String integrationName) => _uploads.cancelAllUploadsFor(integrationName);
+
   Future<bool> _allIntegrationsDelivered(Conversation c) async {
     for (final integration in _integrations) {
       if (integration.isAvailableFor(c)) {
