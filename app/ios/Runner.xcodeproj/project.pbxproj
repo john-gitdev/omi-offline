@@ -18,6 +18,7 @@
 		A114ED7D6302B1FFE6F5E158 /* PigeonCommunicator.g.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CC8945E350F58CC38236D1E /* PigeonCommunicator.g.swift */; };
 		BA591393DAFC81897D6D7D9F /* OmiBleManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FF4D5AF06CFA4957DB489FB /* OmiBleManager.swift */; };
 		2E5FEC3CE63B3F3B2C0E5FB6 /* BleHostApiImpl.swift in Sources */ = {isa = PBXBuildFile; fileRef = B589E752ABDB18015BB15557 /* BleHostApiImpl.swift */; };
+		7E11A2B3C4D5E6F708192A3B /* VadBatchRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E11A2B3C4D5E6F708192A3C /* VadBatchRunner.swift */; };
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
@@ -86,6 +87,7 @@
 		8CC8945E350F58CC38236D1E /* PigeonCommunicator.g.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PigeonCommunicator.g.swift; sourceTree = "<group>"; };
 		6FF4D5AF06CFA4957DB489FB /* OmiBleManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmiBleManager.swift; sourceTree = "<group>"; };
 		B589E752ABDB18015BB15557 /* BleHostApiImpl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BleHostApiImpl.swift; sourceTree = "<group>"; };
+		7E11A2B3C4D5E6F708192A3C /* VadBatchRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VadBatchRunner.swift; sourceTree = "<group>"; };
 		79B00761CB247C7EC7C8983B /* devRelease.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = devRelease.xcconfig; path = Flutter/devRelease.xcconfig; sourceTree = "<group>"; };
 		7AFA3C8E1D35360C0083082E /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = Flutter/Release.xcconfig; sourceTree = "<group>"; };
 		9740EEB21CF90195004384FC /* Debug.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = Flutter/Debug.xcconfig; sourceTree = "<group>"; };
@@ -217,6 +219,7 @@
 				8CC8945E350F58CC38236D1E /* PigeonCommunicator.g.swift */,
 				6FF4D5AF06CFA4957DB489FB /* OmiBleManager.swift */,
 				B589E752ABDB18015BB15557 /* BleHostApiImpl.swift */,
+				7E11A2B3C4D5E6F708192A3C /* VadBatchRunner.swift */,
 				CD12345678901234567890CD /* AppleRemindersService.swift */,
 				CD12345678901234567890CE /* AppleHealthService.swift */,
 				FG12345678901234567890FG /* WifiNetworkPlugin.swift */,
@@ -411,6 +414,7 @@
 				A114ED7D6302B1FFE6F5E158 /* PigeonCommunicator.g.swift in Sources */,
 				BA591393DAFC81897D6D7D9F /* OmiBleManager.swift in Sources */,
 				2E5FEC3CE63B3F3B2C0E5FB6 /* BleHostApiImpl.swift in Sources */,
+				7E11A2B3C4D5E6F708192A3B /* VadBatchRunner.swift in Sources */,
 				AB12345678901234567890AB /* AppleRemindersService.swift in Sources */,
 				AB12345678901234567890AC /* AppleHealthService.swift in Sources */,
 				EF12345678901234567890EF /* WifiNetworkPlugin.swift in Sources */,
