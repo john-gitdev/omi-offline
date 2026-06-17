@@ -354,11 +354,23 @@ class OmiBleForegroundService : Service() {
         // stacks it makes the OS hold a passive LE link that contends for the firmware's
         // single connection slot (CONFIG_BT_MAX_CONN=1), wedging reconnection into an
         // "advertising but won't connect" state recoverable only by toggling phone BT.
-        // We keep the CDM association (background-run grant / companion status) but drive
-        // background reconnect via the periodic sync alarm/worker instead. Proactively
-        // stop any observation a previous app version left armed so the passive link is
-        // released on upgrade without requiring a re-pair.
+        // We keep the CDM association by default (background-run grant / companion status)
+        // but drive background reconnect via the periodic sync alarm/worker instead.
+        // Proactively stop any observation a previous app version left armed so the passive
+        // link is released on upgrade without requiring a re-pair.
         OmiCompanionManager.stopObservingForAddress(applicationContext, addr)
+
+        // Honor the app-side "Companion Device Pairing" toggle (App Settings). When the
+        // user disables it, clear any existing association so the OS stops treating us as a
+        // companion — some OEMs auto-connect associated devices, contending for the
+        // firmware's single slot. Read from Flutter's SharedPreferences; default true.
+        val companionEnabled = applicationContext
+            .getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+            .getBoolean("flutter.companionDeviceEnabled", true)
+        Log.i(TAG, "Companion pairing enabled=$companionEnabled for $addr")
+        if (!companionEnabled) {
+            OmiCompanionManager.disassociateAddress(applicationContext, addr)
+        }
 
         if (!isBluetoothEnabled) {
             managedDevices[addr] = ManagedDevice(address = addr, requiresBond = bond)
