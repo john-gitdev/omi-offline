@@ -4,6 +4,35 @@ Running log of investigated bugs, deferred decisions, and findings that don't fi
 
 ---
 
+## iOS: BLE transfer stops "randomly" mid-sync → native storage keep-alive
+
+**Status:** fixed (2026-06-17) — native iOS storage keep-alive added in `app/ios/Runner/OmiBleManager.swift`.
+
+**Symptom.** On iOS, SD-card WAL sync drops the BLE link at random during a sync session. Logs show a non-manual disconnect with `error=…disconnected from us.`, immediately followed by `SDCardWalSync: Connection lost after failure, aborting syncAll`, then a fast (<1 s) auto-reconnect, repeating.
+
+**It is not iOS dropping the link.** `"…disconnected from us."` is the `localizedDescription` of `CBError.peripheralDisconnected` (code 7) — the *peripheral* terminated the link. A real RF/supervision loss would instead read `"…timed out unexpectedly"` (code 6). The disconnect is device-side.
+
+**`low power wake (uptime: <10m)` is a red herring.** That diagnostics line (`omi_connection.dart`) reads a *persisted boot* reset-cause and is re-logged on every reconnect, so it doesn't describe any given drop. The only firmware path that sets `RESET_LOW_POWER_WAKE` (0x80) is waking from a deliberate **4-tap-hold power-off** (`button.c` → `sys_poweroff()`). It is explicitly *not* a crash (crashes set watchdog/CPU-lockup bits and log `CRASH —`).
+
+**Root cause.** The firmware idle-disconnects after **15 s** of no storage-characteristic GATT activity, terminating with `bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN)` (`transport.c` `idle_disconnect_work_handler`) → iOS code 7 ("from us"). That timer is only deferred while `storage_transfer_active()` is true, i.e. a *single file's* read is in flight (`storage.c`). The vulnerable window is **between files in a batch** (and just after a read completes), where the flag is false and only the app's keep-alive holds the link up.
+
+The keep-alive resets the firmware idle timer only via **storage-char GATT activity** (the `0x32` HEARTBEAT write). On iOS it was sent solely from a Dart `Timer.periodic(5 s)` (`device_provider.dart` `_startForegroundKeepAlive`), which iOS does **not** schedule reliably once the process is parked in the background — worsened by the concurrent VAD-processing isolate. Two slipped beats (>15 s silent) → firmware idle-drops. The native RSSI keep-alive (`OmiBleManager.swift` `startRssiKeepAlive` → `readRSSI()`) keeps the *controller* link warm (so the 6 s supervision timeout doesn't fire) but is an HCI read, **not** storage-char GATT activity, so it can't reset the firmware idle timer.
+
+**Fix.** Mirror what Android already does (`OmiBleManager.kt` `startStorageKeepAlive`, started on connect in `OmiBleForegroundService.kt`, stopped in cleanup): drive the `0x32` keep-alive from a **native CoreBluetooth-side timer** so it survives Dart runloop parking. Added to iOS `OmiBleManager.swift`:
+
+- `startStorageKeepAlive(for:)` / `stopStorageKeepAlive()` / `sendStorageKeepAlive(to:)`.
+- 5 s `Timer`, writes `0x32` to the storage char with `.withoutResponse` (bypasses the GATT response wait; never stalls an in-flight read).
+- Skips while a native download is active for that peripheral — during a download the firmware already defers its idle-disconnect and the stream is its own liveness.
+- Started in `didDiscoverCharacteristicsFor` right after `startRssiKeepAlive`; stopped in `cleanupPeripheral`. Always-on while connected — the connection lifecycle is the gate (the app only holds a link when it wants one and disconnects otherwise), matching Android.
+
+The Dart keep-alive stays (foreground liveness + its force-disconnect-on-failure probe + Android); the native timer is the reliable idle-timer reset that works when iOS has parked the app.
+
+**Trade-off.** This defeats the firmware idle-disconnect as a battery *backstop* while connected — acceptable because the app is responsible for disconnecting when idle (`_doBackgroundSync` finally; post-background grace timer), and Android already makes the same trade-off.
+
+**Can't build iOS from the dev machine (Windows).** Verify on a Mac/device: background a sync with several files queued and confirm no `disconnected from us.` drops between files.
+
+---
+
 ## Live test data — raw .bin segments
 
 `test-data/live_bins_20260603.tar` — 76 raw `.bin` segments captured 2026-06-03. Gitignored (133 MB), lives on your machine only.
