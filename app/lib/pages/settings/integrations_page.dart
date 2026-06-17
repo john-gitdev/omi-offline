@@ -13,12 +13,13 @@ enum _ConnectionState { idle, checking, connected, error }
 class IntegrationsPage extends StatefulWidget {
   const IntegrationsPage({super.key, this.onCancelOmiUploads, this.onCancelHeyPocketUploads});
 
-  /// Invoked when the user turns off Omi Cloud's Enabled or Auto-Upload toggle —
-  /// cancels its in-flight upload and drops everything queued for it.
-  final VoidCallback? onCancelOmiUploads;
+  /// Invoked when the user turns off Omi Cloud's Enabled or Auto-Upload toggle.
+  /// [autoOnly] true (Auto-Upload off) cancels only auto uploads, leaving manual
+  /// ones alone; false (Enabled off) cancels everything for the integration.
+  final void Function({bool autoOnly})? onCancelOmiUploads;
 
   /// HeyPocket counterpart of [onCancelOmiUploads].
-  final VoidCallback? onCancelHeyPocketUploads;
+  final void Function({bool autoOnly})? onCancelHeyPocketUploads;
 
   @override
   State<IntegrationsPage> createState() => _IntegrationsPageState();
@@ -294,8 +295,9 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             autoUploadSinceMs: _prefs.omiAutoUploadAt,
             onAutoUploadChanged: (v) {
               _prefs.omiAutoUpload = v;
-              // Turning auto-upload off cancels the current upload and clears the queue.
-              if (!v) widget.onCancelOmiUploads?.call();
+              // Turning auto-upload off cancels in-progress/queued *auto* uploads
+              // only; an explicit manual upload keeps running.
+              if (!v) widget.onCancelOmiUploads?.call(autoOnly: true);
               setState(() {});
             },
             onDelete: _omiState != _ConnectionState.connected ? _deleteOmi : null,
@@ -431,8 +433,9 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             autoUploadSinceMs: _prefs.heypocketKeySetAt,
             onAutoUploadChanged: (v) {
               _prefs.heypocketAutoUpload = v;
-              // Turning auto-upload off cancels the current upload and clears the queue.
-              if (!v) widget.onCancelHeyPocketUploads?.call();
+              // Turning auto-upload off cancels in-progress/queued *auto* uploads
+              // only; an explicit manual upload keeps running.
+              if (!v) widget.onCancelHeyPocketUploads?.call(autoOnly: true);
               setState(() {});
             },
             onDelete: _deleteHeyPocket,

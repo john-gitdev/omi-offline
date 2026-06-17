@@ -433,6 +433,79 @@ void main() {
       await settle(m);
       expect(omi.hasDelivered(conv('k2')), true, reason: 'cancelRequested must reset after the worker exits');
     });
+
+    // Builds an on-disk, auto-eligible recording + batch for the auto sweep.
+    Batch autoBatch(String key, {required Directory dir}) {
+      final f = File('${dir.path}/recording_$key.wav')..writeAsBytesSync(List.filled(2048, 0));
+      final c = Conversation(file: f, startTime: DateTime(2026, 1, 1), duration: const Duration(minutes: 5), uploadKey: key);
+      return Batch(
+        dateString: '2026-01-01',
+        date: DateTime(2026, 1, 1),
+        rawSegments: const [],
+        draftRecordings: const [],
+        finalizedRecordings: [c],
+      );
+    }
+
+    test('auto-only cancel drops queued auto jobs but keeps an in-flight manual upload', () async {
+      final gate = Completer<void>();
+      final omi = FakeIntegration('Omi Cloud', autoUpload: true)..enabledByDefault = true;
+      omi.onUpload = (c) async {
+        await gate.future;
+        omi.deliver(c);
+      };
+      final m = makeManager([omi], batchesProvider: () => [autoBatch('auto', dir: tempDir)]);
+
+      await m.uploadConversation(conv('manual')); // manual drains first → in flight (gated)
+      m.tryAutoUploadAll(); // auto job queued behind it
+      expect(m.uploadingFiles, containsAll(<String>{'manual', 'auto'}));
+
+      m.cancelOmiUploads(autoOnly: true); // drop the queued auto job; keep the manual one
+      gate.complete();
+      await settle(m);
+
+      expect(omi.uploadCalls.map((c) => c.uploadKey), ['manual'], reason: 'auto job dropped, manual ran');
+      expect(omi.hasDelivered(conv('manual')), true);
+    });
+
+    test('auto-only cancel does not interrupt an in-flight manual upload', () async {
+      final omi = FakeIntegration('Omi Cloud');
+      omi.onUpload = (c) async {
+        for (var i = 0; i < 50; i++) {
+          if (omi.lastIsCancelled?.call() ?? false) return;
+          await Future.delayed(const Duration(milliseconds: 1));
+        }
+        omi.deliver(c);
+      };
+      final m = makeManager([omi]);
+
+      await m.uploadConversation(conv('m1')); // manual, in flight (chunking)
+      m.cancelOmiUploads(autoOnly: true);
+      await settle(m);
+
+      expect(omi.hasDelivered(conv('m1')), true, reason: 'auto-only cancel must leave a manual upload running');
+    });
+
+    test('auto-only cancel aborts an in-flight auto upload', () async {
+      final omi = FakeIntegration('Omi Cloud', autoUpload: true)..enabledByDefault = true;
+      omi.onUpload = (c) async {
+        for (var i = 0; i < 50; i++) {
+          if (omi.lastIsCancelled?.call() ?? false) return;
+          await Future.delayed(const Duration(milliseconds: 1));
+        }
+        omi.deliver(c);
+      };
+      final m = makeManager([omi], batchesProvider: () => [autoBatch('a1', dir: tempDir)]);
+
+      m.tryAutoUploadAll();
+      await Future.delayed(const Duration(milliseconds: 5)); // let the auto job reach in-flight
+      expect(m.uploadingFiles.contains('a1'), true);
+
+      m.cancelOmiUploads(autoOnly: true);
+      await settle(m);
+
+      expect(omi.hasDelivered(conv('a1')), false, reason: 'in-flight auto upload is cancelled by auto-only cancel');
+    });
   });
 
   group('status derivation', () {
