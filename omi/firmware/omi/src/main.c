@@ -6,8 +6,6 @@
 #include <zephyr/sys/atomic.h>
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/random/random.h>
-#include <zephyr/bluetooth/bluetooth.h>
-#include <zephyr/bluetooth/conn.h>
 
 #include "lib/core/transport.h"
 #include "lib/core/button.h"
@@ -377,22 +375,6 @@ int main(void)
     mgmt_callback_register(&ota_mgmt_cb);
 
     boot_warming_sequence();
-
-#ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
-    /* One-time migration cleanup. boot_warming_sequence() has returned, so the
-     * SD card is mounted and sd_migrated_from_foreign() is settled, and
-     * transport_start() above has already run bt_enable() + loaded the "bt"
-     * settings — so any inherited bonds exist and can be wiped here. The flag is
-     * true only on the boot where the card was reformatted because it was not an
-     * omi-offline filesystem (flashed from a non-"oo" firmware): storage was just
-     * wiped by that format, so also drop the old Bluetooth bonds for a clean
-     * start. Subsequent boots keep both. */
-    if (!sd_fatal_error && sd_migrated_from_foreign()) {
-        int unpair_ret = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
-        LOG_WRN("[BOOT] Flashed from non-oo firmware — storage formatted, wiping BT bonds (bt_unpair=%d)",
-                unpair_ret);
-    }
-#endif
 
     set_mic_callback(mic_handler);
     ret = mic_start();
