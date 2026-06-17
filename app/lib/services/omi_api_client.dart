@@ -45,9 +45,10 @@ enum OmiJobStatus {
   /// chunk needs a fresh upload to retry.
   failed,
 
-  /// Server is overloaded — a 503/502/504 on submit, or a job whose failure is a
-  /// transient transcription 503. NOT a content failure: the chunk will re-upload
-  /// fresh, but only after a backoff so we don't hammer a struggling backend.
+  /// Server is overloaded or its gateway timed out — a 502/503/504 on submit, or
+  /// a job whose failure is a transient backend-unavailable/gateway-timeout
+  /// signal. NOT a content failure: the chunk re-uploads fresh, but only after an
+  /// (exponential) backoff so we don't hammer a struggling backend.
   busy,
 
   /// Job is still `queued`/`processing`, or our poll budget elapsed while it was
@@ -76,23 +77,26 @@ class OmiJobOutcome {
 
 class OmiApiClient {
   // The server runs the full decode→VAD→Parakeet-STT pipeline on each uploaded
-  // segment, with a per-segment STT timeout (~120 s). A whole recording uploaded
-  // as one segment times out, so we split each bin into bounded chunks with
-  // sequential timestamps; the server stitches consecutive timestamps back into
-  // one conversation. Each chunk is uploaded in its own request, serialized (see
-  // buildSegments / syncSegment), so the server only ever runs one Parakeet
-  // transcription at a time — handing it many segments in one job made it fan
-  // them out in parallel and 503 the STT backend.
+  // segment, so we split each bin into bounded chunks with sequential timestamps;
+  // the server stitches consecutive timestamps back into one conversation. Each
+  // chunk is uploaded in its own request, serialized (see buildSegments /
+  // syncSegment), so the server only ever runs one Parakeet transcription at a
+  // time — handing it many segments in one job made it fan them out in parallel
+  // and 503 the STT backend.
   //
-  // Chunk size barely moves the needle on throughput: the server's dominant cost
-  // is queue wait for a free Parakeet worker (observed jobs sitting in `queued`
-  // for 4+ min, never reaching `processing`), which is independent of chunk size.
-  // Smaller chunks just mean more serial jobs competing for the same backlog, so
-  // we keep chunks large (5 min, still well under the ~120 s STT *processing*
-  // budget) to minimise the job count. The real resilience comes from job-id
-  // reattach (see [syncSegment]): a slow job is polled across retries instead of
-  // being abandoned and re-uploaded, which would only deepen the backlog.
-  static const int _chunkSeconds = 300; // 5 min per uploaded segment
+  // Two backend limits pull chunk size in opposite directions:
+  //   1. Per-request transcribe timeout — the /v2/transcribe call sits behind a
+  //      gateway that 504s if one segment's STT runs too long. A 5-min chunk was
+  //      observed taking ~97 s of STT, close enough to the gateway limit to 504.
+  //   2. Queue wait — jobs sit in `queued` waiting for a free Parakeet worker
+  //      (seen at 4+ min), independent of chunk size, so more/smaller chunks add
+  //      to the job count without shrinking each job's wait.
+  // We bias toward (1): 3-min chunks keep each transcribe call well under the
+  // gateway timeout, at the cost of a few more jobs. The queue-wait cost of those
+  // extra jobs is bounded because chunks upload strictly serially with job-id
+  // reattach (see [syncSegment]) — a slow job is polled, not abandoned and
+  // re-queued, which would only deepen the backlog.
+  static const int _chunkSeconds = 180; // 3 min per uploaded segment
   static const int _maxChunkFrames = _chunkSeconds * 50; // fs320 = 50 frames/s (20 ms each)
 
   static const _tokenUrl = 'https://securetoken.googleapis.com/v1/token';
@@ -442,11 +446,12 @@ class OmiApiClient {
         }
         if (status == 'failed') {
           final err = (bodyJson['error'] ?? bodyJson['message'] ?? 'unknown error').toString();
-          // A job failed purely because the transcription backend was unavailable
-          // (503) is transient — treat it as busy (back off + re-upload later), not
-          // a content failure.
-          final status503 = _looksTransient(err) ? OmiJobStatus.busy : OmiJobStatus.failed;
-          return OmiJobOutcome(status503, jobId: jobId, error: err);
+          // A job that failed only because the transcription backend was
+          // unavailable or its gateway timed out (a 503, or a 502/504) is
+          // transient — treat it as busy (back off + re-upload later), not a
+          // content failure.
+          final transient = _looksTransient(err) ? OmiJobStatus.busy : OmiJobStatus.failed;
+          return OmiJobOutcome(transient, jobId: jobId, error: err);
         }
         delayMs = (bodyJson['poll_after_ms'] as int?) ?? delayMs;
       }
@@ -463,11 +468,23 @@ class OmiApiClient {
   /// right now — retryable after a backoff rather than a hard failure.
   static bool _isBusyStatus(int code) => code == 503 || code == 502 || code == 504;
 
-  /// Whether a failed-job error message is a transient backend-unavailable signal
-  /// (a transcription 503) rather than a real content/processing failure.
+  /// Whether a failed-job error message is a transient backend/gateway signal —
+  /// a transcription 503, a 502/504 gateway timeout, or a plain request timeout —
+  /// rather than a real content/processing failure. These re-upload after a
+  /// backoff instead of spending the give-up budget. A 504 here arrives embedded
+  /// in a `status: failed` body on a 200 poll, so it bypasses the HTTP-status
+  /// [_isBusyStatus] check and must be caught by string match.
   static bool _looksTransient(String error) {
     final e = error.toLowerCase();
-    return e.contains('503') || e.contains('service unavailable') || e.contains('temporarily unavailable');
+    return e.contains('503') ||
+        e.contains('502') ||
+        e.contains('504') ||
+        e.contains('gateway timeout') ||
+        e.contains('gateway time-out') ||
+        e.contains('bad gateway') ||
+        e.contains('service unavailable') ||
+        e.contains('temporarily unavailable') ||
+        e.contains('timed out');
   }
 
   static OmiSyncResult _parseSyncResult(int httpStatus, String body) {
