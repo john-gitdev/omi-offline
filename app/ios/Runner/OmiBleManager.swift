@@ -22,6 +22,7 @@ final class OmiBleManager: NSObject {
     private var scanTimer: Timer?
     private var pendingScan: (timeout: Int, serviceUuids: [String])?
     private var rssiTimer: Timer?
+    private var storageKeepAliveTimer: Timer?
 
     // Native storage file download (mirrors Android OmiBleManager.downloadStorageFile).
     static let storageServiceUuid = CBUUID(string: "30295780-4301-eabd-2904-2849adfeae43")
@@ -272,8 +273,48 @@ final class OmiBleManager: NSObject {
         rssiTimer = nil
     }
 
+    // Sends the storage HEARTBEAT (0x32) every 5 s with write-without-response so
+    // it bypasses the GATT response wait and never stalls an in-flight file read.
+    // This resets the firmware's 15 s idle-disconnect timer in the window between
+    // file reads of a multi-file sync — where storage_transfer_active() is false
+    // on the device and only a keep-alive holds the link up. Mirrors the Android
+    // OmiBleManager.startStorageKeepAlive. Runs natively (on the run loop that
+    // CoreBluetooth services on BLE wake-ups) rather than from a Dart Timer, which
+    // iOS throttles when the app is parked in the background — the exact condition
+    // under which the link was idle-dropping mid-sync (the firmware terminates with
+    // REMOTE_USER_TERM, which CoreBluetooth surfaces as "disconnected from us").
+    private func startStorageKeepAlive(for peripheral: CBPeripheral) {
+        stopStorageKeepAlive()
+        storageKeepAliveTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self, weak peripheral] _ in
+            guard let self, let p = peripheral, p.state == .connected else {
+                self?.stopStorageKeepAlive()
+                return
+            }
+            // During a native download the firmware already defers its idle-
+            // disconnect (storage_transfer_active() is true) and the data stream is
+            // its own liveness, so skip — no need to inject a write into the read.
+            if self.activeDownloads[p.identifier.uuidString] != nil { return }
+            self.sendStorageKeepAlive(to: p)
+        }
+    }
+
+    private func stopStorageKeepAlive() {
+        storageKeepAliveTimer?.invalidate()
+        storageKeepAliveTimer = nil
+    }
+
+    private func sendStorageKeepAlive(to peripheral: CBPeripheral) {
+        guard let service = peripheral.services?.first(where: { $0.uuid == OmiBleManager.storageServiceUuid }),
+              let characteristic = service.characteristics?.first(where: { $0.uuid == OmiBleManager.storageCharUuid })
+        else { return }
+        let writeType: CBCharacteristicWriteType =
+            characteristic.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+        peripheral.writeValue(Data([0x32]), for: characteristic, type: writeType)
+    }
+
     private func cleanupPeripheral(_ uuid: String) {
         stopRssiKeepAlive()
+        stopStorageKeepAlive()
         let prefix = uuid.lowercased()
         readCompletions.keys.filter { $0.hasPrefix(prefix) }.forEach { readCompletions.removeValue(forKey: $0) }
         writeCompletions.keys.filter { $0.hasPrefix(prefix) }.forEach { writeCompletions.removeValue(forKey: $0) }
@@ -360,6 +401,7 @@ extension OmiBleManager: CBPeripheralDelegate {
         guard let svcs = p.services, svcs.allSatisfy({ $0.characteristics != nil }) else { return }
         fireReady(p)
         startRssiKeepAlive(for: p)
+        startStorageKeepAlive(for: p)
     }
 
     func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
