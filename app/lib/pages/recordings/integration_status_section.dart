@@ -39,8 +39,8 @@ class IntegrationStatusList extends StatelessWidget {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(ctx).pop('keep'),
-            child: const Text('Keep', style: TextStyle(color: Colors.white)),
+            onPressed: () => Navigator.of(ctx).pop(), // dismiss — change nothing
+            child: const Text('Cancel', style: TextStyle(color: Colors.white)),
           ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop('single'),
@@ -48,7 +48,7 @@ class IntegrationStatusList extends StatelessWidget {
           ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop('all'),
-            child: const Text('Cancel all', style: TextStyle(color: Colors.redAccent)),
+            child: const Text('Clear queue', style: TextStyle(color: Colors.redAccent)),
           ),
         ],
       ),
