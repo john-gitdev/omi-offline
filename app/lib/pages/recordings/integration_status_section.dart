@@ -16,6 +16,51 @@ class IntegrationStatusList extends StatelessWidget {
 
   const IntegrationStatusList({super.key, required this.controller, required this.conversation});
 
+  /// Cancels this recording's queued upload to [integrationName]. If it's the
+  /// only thing queued/uploading for that integration, just cancel it; if a queue
+  /// is backed up behind it, ask whether to cancel only this recording or the
+  /// whole queue.
+  Future<void> _handleCancel(BuildContext context, String integrationName) async {
+    final count = controller.activeUploadCountFor(integrationName);
+    if (count <= 1) {
+      controller.cancelUpload(conversation, integrationName);
+      return;
+    }
+
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.grey.shade900,
+        title: const Text('Cancel upload', style: TextStyle(color: Colors.white, fontSize: 20)),
+        content: Text(
+          '$count uploads are in progress or queued for $integrationName. '
+          'Cancel just this recording, or clear the whole queue?',
+          style: const TextStyle(color: Colors.white, fontSize: 16),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('keep'),
+            child: const Text('Keep', style: TextStyle(color: Colors.white)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('single'),
+            child: const Text('This recording', style: TextStyle(color: Colors.amber)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('all'),
+            child: const Text('Cancel all', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+
+    if (choice == 'single') {
+      controller.cancelUpload(conversation, integrationName);
+    } else if (choice == 'all') {
+      controller.cancelAllUploadsFor(integrationName);
+    }
+  }
+
   Future<void> _runAction(BuildContext context, Future<List<UploadFailure>> Function() action) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
@@ -59,6 +104,7 @@ class IntegrationStatusList extends StatelessWidget {
                     onUpload: () => _runAction(context, () => controller.uploadOne(conversation, s.name)),
                     onReupload: () =>
                         _runAction(context, () => controller.uploadOne(conversation, s.name, force: true)),
+                    onCancel: () => _handleCancel(context, s.name),
                   )),
               if (anyActionable)
                 Padding(
@@ -89,8 +135,10 @@ class _IntegrationRow extends StatelessWidget {
   final IntegrationStatus status;
   final VoidCallback onUpload;
   final VoidCallback onReupload;
+  final VoidCallback onCancel;
 
-  const _IntegrationRow({required this.status, required this.onUpload, required this.onReupload});
+  const _IntegrationRow(
+      {required this.status, required this.onUpload, required this.onReupload, required this.onCancel});
 
   /// "Last Upload Failed at: <time>" using the recorded failure time, formatted
   /// per the user's 24-hour / AM-PM preference. Plain "Last Upload Failed" when
@@ -170,8 +218,13 @@ class _IntegrationRow extends StatelessWidget {
         );
         break;
       case IntegrationUploadState.queued:
-        // Already on its way — waiting behind the single sequential worker.
-        trailing = Text('Waiting…', style: TextStyle(color: Colors.amber.shade200, fontSize: 13));
+        // Waiting behind the single sequential worker — let the user pull it back
+        // out of the queue (and optionally clear the whole queue).
+        trailing = TextButton(
+          onPressed: onCancel,
+          child: const Text('Cancel',
+              style: TextStyle(color: Colors.amber, fontSize: 13, fontWeight: FontWeight.w600)),
+        );
         break;
       case IntegrationUploadState.unavailable:
         trailing = const SizedBox.shrink();
