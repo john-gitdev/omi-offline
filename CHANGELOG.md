@@ -4,6 +4,13 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ## App
 
+### 0.25
+
+- **iOS: faster SD-card sync.** Incoming Bluetooth packets are now parsed and written to disk off the CoreBluetooth delivery thread, so iOS is no longer blocked from handing over the next batch while a packet is being saved — the transfer pipe stays full instead of stalling once per packet. Paired with the firmware change below, iPhone sync is substantially quicker.
+- **iOS: background auto-sync wakes when the Omi comes into range.** Using CoreBluetooth state preservation & restoration, iOS relaunches the app in the background when your bound Omi returns to Bluetooth range and runs a sync if one is due — gated on your auto-sync interval, so Manual Only and not-yet-due wakes stay quiet. This is far more dependable than relying on iOS's opportunistic background-task scheduler alone, which fires unpredictably. Android's existing behavior — waking on schedule regardless of whether the device is in range — is unchanged.
+- **iOS: recording processing isn't killed the instant you background the app.** The decode/VAD pass now holds an iOS background-execution assertion for its bounded window; a decode that outruns that window resumes on the next sync via the existing draft pipeline, so nothing is lost.
+- Requires firmware oo-2.3.0 for the faster iOS connection interval (see Firmware below). The other iOS improvements work on any oo-2.x firmware.
+
 ### 0.24
 
 - **Fix: "Share Logs" no longer creates a phantom second file.** Sharing the diagnostic log passed the share title as a separate text item alongside the file, so iOS save/upload targets materialized an extra file containing just the label. The title is now share-sheet metadata, so only the actual `.log` file is shared.
@@ -136,6 +143,10 @@ Patch releases are rolled up into their minor version. Each section reflects the
 ---
 
 ## Firmware
+
+### oo-2.3
+
+- **Faster sync on iOS via an Apple-compatible connection-interval fallback.** The device requests an aggressive 7.5 ms Bluetooth connection interval for fast SD-card sync, but iOS rejects any request below 15 ms outright and silently leaves the link at its slow default (~30 ms), so iPhone sync crawled. The firmware now rechecks the *actual* negotiated interval a few seconds after connect and, only if its fast request wasn't honored (i.e. an iPhone), sends a single Apple-compliant request (15–30 ms). Android is unaffected — its phone already drives the interval to ~11 ms via a high-priority request, so the recheck sees a fast interval and does nothing. The fallback self-targets iOS by observing what the central accepted rather than detecting the OS, and is sent at most once per connection so it can never loop. Pairs with the iOS app changes in 0.25.
 
 ### oo-2.2
 
