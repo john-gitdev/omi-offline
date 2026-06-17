@@ -65,15 +65,25 @@ class FakeIntegration implements PassthroughIntegration {
   (int, int)? segmentProgress(Conversation c) => null;
   @override
   bool isBackingOff(Conversation c) => _backingOff.contains(c.uploadKey);
+  @override
+  DateTime? backingOffUntil(Conversation c) =>
+      _backingOff.contains(c.uploadKey) ? DateTime.now().add(const Duration(minutes: 5)) : null;
+
+  /// Exposes the cancel callback the manager passed into the most recent (or
+  /// in-flight) upload, so tests can assert the lane signalled cancellation.
+  bool Function()? lastIsCancelled;
 
   @override
-  Future<void> upload(Conversation c, {void Function()? onProgress}) async {
+  Future<void> upload(Conversation c, {void Function()? onProgress, bool Function()? isCancelled}) async {
     uploadCalls.add(c);
+    lastIsCancelled = isCancelled;
     inFlight++;
     if (inFlight > maxObservedInFlight) maxObservedInFlight = inFlight;
     try {
       if (onUpload != null) {
         await onUpload!(c);
+      } else if (isCancelled?.call() ?? false) {
+        return; // cancelled before/while running — do not deliver
       } else {
         deliver(c);
       }
@@ -332,7 +342,7 @@ void main() {
   });
 
   group('cancel actions', () {
-    test('cancelPendingHeyPocketUploads purges queued HeyPocket jobs', () async {
+    test('cancelHeyPocketUploads purges queued HeyPocket jobs', () async {
       final gate = Completer<void>();
       final hp = FakeIntegration('HeyPocket');
       hp.onUpload = (c) async {
@@ -345,12 +355,83 @@ void main() {
       await m.uploadConversation(conv('k2')); // queued
       expect(m.uploadingFiles, containsAll(<String>{'k1', 'k2'}));
 
-      m.cancelPendingHeyPocketUploads();
+      m.cancelHeyPocketUploads();
       gate.complete();
       await settle(m);
 
-      // k2 was queued → dropped. k1 was already in flight → drains.
+      // k2 was queued → dropped. k1 was already mid-request → drains (single-shot,
+      // can't be aborted once started).
       expect(hp.uploadCalls.map((c) => c.uploadKey), ['k1']);
+    });
+
+    test('cancelOmiUploads aborts the in-flight chunked upload and drops the queue', () async {
+      // A chunked (Omi-style) upload polls isCancelled and bails mid-run.
+      final omi = FakeIntegration('Omi Cloud');
+      omi.onUpload = (c) async {
+        // Simulate chunk-by-chunk work that checks the cancel signal between
+        // chunks; bail without delivering once cancellation is requested.
+        for (var i = 0; i < 50; i++) {
+          if (omi.lastIsCancelled?.call() ?? false) return;
+          await Future.delayed(const Duration(milliseconds: 1));
+        }
+        omi.deliver(c);
+      };
+      final m = makeManager([omi]);
+
+      await m.uploadConversation(conv('k1')); // in flight (chunking)
+      await m.uploadConversation(conv('k2')); // queued
+      expect(m.uploadingFiles, containsAll(<String>{'k1', 'k2'}));
+
+      m.cancelOmiUploads();
+      await settle(m);
+
+      // k1 started but bailed without delivering; k2 was dropped before it ran.
+      expect(omi.uploadCalls.map((c) => c.uploadKey), ['k1']);
+      expect(omi.hasDelivered(conv('k1')), false, reason: 'in-flight upload was cancelled, not delivered');
+      expect(m.uploadingFiles, isEmpty);
+    });
+
+    test('a cancelled upload is not recorded as failed', () async {
+      final omi = FakeIntegration('Omi Cloud');
+      omi.onUpload = (c) async {
+        for (var i = 0; i < 50; i++) {
+          if (omi.lastIsCancelled?.call() ?? false) return;
+          await Future.delayed(const Duration(milliseconds: 1));
+        }
+        omi.deliver(c);
+      };
+      final m = makeManager([omi]);
+      final c = conv('k1');
+
+      await m.uploadConversation(c);
+      m.cancelOmiUploads();
+      await settle(m);
+
+      // Reverts to pending (not delivered, not failed) so it can upload later.
+      expect(m.integrationStatuses(c).single.state, IntegrationUploadState.pending);
+    });
+
+    test('lane uploads normally again after a cancel', () async {
+      final omi = FakeIntegration('Omi Cloud');
+      omi.onUpload = (c) async {
+        for (var i = 0; i < 50; i++) {
+          if (omi.lastIsCancelled?.call() ?? false) return;
+          await Future.delayed(const Duration(milliseconds: 1));
+        }
+        omi.deliver(c);
+      };
+      final m = makeManager([omi]);
+
+      await m.uploadConversation(conv('k1'));
+      m.cancelOmiUploads();
+      await settle(m);
+      expect(omi.hasDelivered(conv('k1')), false);
+
+      // Re-enable path: a fresh upload after the cancel drains and delivers.
+      omi.onUpload = (c) async => omi.deliver(c);
+      await m.uploadConversation(conv('k2'));
+      await settle(m);
+      expect(omi.hasDelivered(conv('k2')), true, reason: 'cancelRequested must reset after the worker exits');
     });
   });
 
