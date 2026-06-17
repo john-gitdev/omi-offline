@@ -35,6 +35,12 @@ target 'Runner' do
   use_modular_headers!
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+
+  # Native VAD batch runner (Runner/VadBatchRunner.swift) imports onnxruntime_objc
+  # directly. It's already pulled transitively by the vendored flutter_onnxruntime
+  # pod, but the Runner target needs it as a direct dependency to import the module.
+  # Same version flutter_onnxruntime pins, so CocoaPods resolves to one copy.
+  pod 'onnxruntime-objc', '1.22.0'
 end
 
 post_install do |installer|
