@@ -1004,6 +1004,23 @@ K_WORK_DELAYABLE_DEFINE(idle_disconnect_work, idle_disconnect_work_handler);
 
 static void update_conn_params(struct bt_conn *conn);
 
+/* iOS-compatible connection-parameter fallback. update_conn_params() requests an
+ * aggressive 7.5 ms interval; Apple rejects any request with interval_min < 15 ms
+ * outright, so on iOS the link silently stays at iOS's slow default (~30 ms).
+ * Android is unaffected — its central drives the interval to ~11.25 ms via
+ * CONNECTION_PRIORITY_HIGH regardless of what we ask for. A few seconds after
+ * connect we recheck the *actual* negotiated interval and, only if it's still
+ * slow (request not honored — i.e. an iOS-like central), send one Apple-compliant
+ * request. On Android the interval is already fast by then, so this no-ops and
+ * Android keeps ~11.25 ms. One-shot: never rescheduled, so a compliant request
+ * landing iOS at 30 ms can't loop. */
+#define CONN_PARAM_RECHECK_DELAY_MS 3000
+/* Negotiated interval (1.25 ms units) above which the aggressive request is
+ * treated as not honored. Our aggressive request maxes at 18 (22.5 ms). */
+#define CONN_PARAM_FAST_MAX_INTERVAL 18
+static void conn_param_recheck_work_handler(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(conn_param_recheck_work, conn_param_recheck_work_handler);
+
 static void _transport_connected(struct bt_conn *conn, uint8_t err)
 {
     /* HCI connection failure: conn is borrowed and being torn down by the stack.
@@ -1056,6 +1073,10 @@ static void _transport_connected(struct bt_conn *conn, uint8_t err)
     // Request aggressive connection params for higher BLE sync throughput.
     update_conn_params(current_connection);
 
+    // Recheck the negotiated interval shortly after; if the aggressive request
+    // above was rejected (iOS), retry with Apple-compliant params. See above.
+    k_work_schedule(&conn_param_recheck_work, K_MSEC(CONN_PARAM_RECHECK_DELAY_MS));
+
     k_work_schedule(&post_connect_work, K_MSEC(500));
 
 #ifdef CONFIG_OMI_ENABLE_OFFLINE_STORAGE
@@ -1077,6 +1098,7 @@ static void _transport_disconnected(struct bt_conn *conn, uint8_t err)
 #endif
 
     k_work_cancel_delayable(&mtu_recheck_work);
+    k_work_cancel_delayable(&conn_param_recheck_work);
     k_work_cancel_delayable(&idle_disconnect_work);
 
     LOG_INF("Transport disconnected");
@@ -1237,6 +1259,36 @@ static void update_conn_params(struct bt_conn *conn)
         k_sleep(K_MSEC(200));
     }
     LOG_ERR("Failed to update connection parameters after %d attempts", CONN_PARAM_UPDATE_RETRIES);
+}
+
+/* See the comment by K_WORK_DELAYABLE_DEFINE(conn_param_recheck_work) above. */
+static void conn_param_recheck_work_handler(struct k_work *work)
+{
+    struct bt_conn *conn = get_current_connection();
+    if (!conn) {
+        return;
+    }
+
+    struct bt_conn_info info = {0};
+    if (bt_conn_get_info(conn, &info) == 0 && info.type == BT_CONN_TYPE_LE &&
+        info.le.interval > CONN_PARAM_FAST_MAX_INTERVAL) {
+        // Aggressive request was not honored (likely an iOS central, which rejects
+        // interval_min < 15 ms). Retry once with Apple-compliant params.
+        struct bt_le_conn_param params = {
+            .interval_min = 12, // 15 ms — Apple's minimum
+            .interval_max = 24, // 30 ms
+            .latency      = 0,
+            .timeout      = 600, // 6 s
+        };
+        LOG_INF("Conn interval still %.2f ms after connect — requesting Apple-compliant 15-30 ms",
+                info.le.interval * 1.25);
+        int err = bt_conn_le_param_update(conn, &params);
+        if (err && err != -EALREADY) {
+            LOG_WRN("Apple-compliant conn param update failed (err %d)", err);
+        }
+    }
+
+    put_current_connection(conn);
 }
 
 //
