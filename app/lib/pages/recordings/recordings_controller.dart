@@ -1454,9 +1454,9 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   /// How many applicable integrations still need attention for [c].
   int actionableIntegrationCount(Conversation c) => _uploads.actionableIntegrationCount(c);
 
-  void cancelPendingOmiUploads() => _uploads.cancelPendingOmiUploads();
+  void cancelOmiUploads() => _uploads.cancelOmiUploads();
 
-  void cancelPendingHeyPocketUploads() => _uploads.cancelPendingHeyPocketUploads();
+  void cancelHeyPocketUploads() => _uploads.cancelHeyPocketUploads();
 
   Future<bool> _allIntegrationsDelivered(Conversation c) async {
     for (final integration in _integrations) {
