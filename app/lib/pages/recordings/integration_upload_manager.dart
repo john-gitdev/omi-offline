@@ -408,29 +408,48 @@ class IntegrationUploadManager {
     if (!_isDisposed()) _notifyUi();
   }
 
-  void cancelOmiUploads() => _cancelUploadsFor('Omi Cloud');
+  void cancelOmiUploads({bool autoOnly = false}) => _cancelUploadsFor('Omi Cloud', autoOnly: autoOnly);
 
-  void cancelHeyPocketUploads() => _cancelUploadsFor('HeyPocket');
+  void cancelHeyPocketUploads({bool autoOnly = false}) => _cancelUploadsFor('HeyPocket', autoOnly: autoOnly);
 
-  /// Cancels every upload for [integrationName]: drops all queued jobs (manual
-  /// and auto) and signals the in-flight upload (if any) to abort at its next
-  /// safe checkpoint. Called when the user turns off the integration's Enabled or
-  /// Auto-Upload toggle. A chunked upload (Omi Cloud) stops between chunks/polls,
-  /// keeping already-delivered chunks; a single-shot one (HeyPocket) can only be
-  /// stopped before its request begins — one already mid-request drains. Cancelled
-  /// jobs aren't marked failed; auto ones re-enqueue on a later sweep only if the
+  /// Cancels uploads for [integrationName]: drops queued jobs and signals the
+  /// in-flight upload (if any) to abort at its next safe checkpoint. Called when
+  /// the user turns off the integration's Enabled or Auto-Upload toggle.
+  ///
+  /// When [autoOnly] (the Auto-Upload toggle), only *auto* jobs are touched — a
+  /// manual upload the user explicitly triggered keeps running and queued manual
+  /// jobs are left alone. When false (the Enabled toggle / full disable),
+  /// everything for the integration is cancelled.
+  ///
+  /// A chunked upload (Omi Cloud) stops between chunks/polls, keeping
+  /// already-delivered chunks; a single-shot one (HeyPocket) can only be stopped
+  /// before its request begins — one already mid-request drains. Cancelled jobs
+  /// aren't marked failed; auto ones re-enqueue on a later sweep only if the
   /// integration is re-enabled.
-  void _cancelUploadsFor(String integrationName) {
+  void _cancelUploadsFor(String integrationName, {bool autoOnly = false}) {
     final lane = _lanes[integrationName];
     if (lane == null) return;
-    final dropped = _purgeQueuedFor(integrationName);
-    final hadInFlight = lane.current != null;
-    if (hadInFlight) lane.cancelRequested = true;
-    // Stop tracking the in-flight key so the row/sheet spinner clears immediately;
-    // the worker's finally re-removing it is a harmless no-op.
-    _syncingKeys.removeWhere((k) => k.startsWith('${integrationName}_'));
-    Logger.debug('IntegrationUploadManager: $integrationName cancelled — dropped $dropped queued'
-        '${hadInFlight ? ', signalled in-flight upload to stop' : ''}');
+
+    final int dropped;
+    if (autoOnly) {
+      dropped = lane.auto.length;
+      lane.auto.clear();
+    } else {
+      dropped = _purgeQueuedFor(integrationName); // manual + auto
+    }
+
+    // Abort the in-flight upload — but for an auto-only cancel, only if that
+    // in-flight job is itself an auto job (never interrupt a manual upload).
+    final current = lane.current;
+    final cancelInFlight = current != null && (!autoOnly || !current.manual);
+    if (cancelInFlight) {
+      lane.cancelRequested = true;
+      // Stop tracking the in-flight key so the row/sheet spinner clears
+      // immediately; the worker's finally re-removing it is a harmless no-op.
+      _syncingKeys.remove(current.key);
+    }
+    Logger.debug('IntegrationUploadManager: $integrationName ${autoOnly ? 'auto-upload off' : 'disabled'} — '
+        'dropped $dropped queued${cancelInFlight ? ', signalled in-flight upload to stop' : ''}');
     if (!_isDisposed()) _notifyUi();
   }
 
