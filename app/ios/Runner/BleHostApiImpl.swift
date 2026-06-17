@@ -99,8 +99,9 @@ final class BleHostApiImpl: BleHostApi {
     }
 
     func downloadStorageFile(peripheralUuid: String, fileIndex: Int64, offset: Int64, timerStart: Int64, outputPath: String, completion: @escaping (Result<Void, Error>) -> Void) {
-        // Android-only — iOS uses the existing BLE notification stream path
-        completion(.failure(PigeonError(code: "unimplemented", message: "iOS uses stream path", details: nil)))
+        bleManager.downloadStorageFile(
+            peripheralUuid: peripheralUuid, fileIndex: Int(fileIndex), offset: offset,
+            timerStart: timerStart, outputPath: outputPath, completion: completion)
     }
 
     func acquireProcessingWakeLock() throws {
