@@ -13,8 +13,11 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:http/http.dart' as http;
+import 'package:wakelock_plus/wakelock_plus.dart';
 
+import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
+import 'package:omi/gen/pigeon_communicator.g.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/utils/logger.dart';
 
@@ -122,7 +125,28 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     }
   }
 
+  /// An OTA must not be interrupted by the screen sleeping: if the display
+  /// auto-locks the app drops to the background and iOS suspends the BLE
+  /// transfer mid-flash — which can brick the device. Hold the screen awake for
+  /// the whole install (and grab the iOS background-task assertion / Android
+  /// CPU wakelock), mirroring the sync pipeline's wakelock handling.
+  void _acquireUpdateWakelocks() {
+    WakelockPlus.enable();
+    if (Platform.isAndroid || Platform.isIOS) BleHostApi().acquireProcessingWakeLock();
+  }
+
+  /// Idempotent; safe to call when nothing is held. Called from each terminal
+  /// DFU callback and again from the page's dispose() as a backstop.
+  void releaseUpdateWakelocks() {
+    // Honor "Keep Screen On" like RecordingsController, so leaving the update
+    // page doesn't override a screen-on the user pinned. The iOS background
+    // task is separate from the screen, so always release it.
+    if (!SharedPreferencesUtil().keepScreenOn) WakelockPlus.disable();
+    if (Platform.isAndroid || Platform.isIOS) BleHostApi().releaseProcessingWakeLock();
+  }
+
   Future<void> startDfu(BtDevice btDevice, {bool fileInAssets = false, String? zipFilePath}) async {
+    _acquireUpdateWakelocks();
     if (isLegacySecureDFU) {
       return startLegacyDfu(btDevice, fileInAssets: fileInAssets, zipFilePath: zipFilePath);
     }
@@ -151,6 +175,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
     final file = File(firmwareFile);
     if (!await file.exists()) {
       Logger.debug('Firmware file not found: $firmwareFile');
+      releaseUpdateWakelocks();
       if (mounted) {
         setState(() {
           isInstalling = false;
@@ -176,6 +201,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       if (state == mcumgr.FirmwareUpgradeState.success) {
         Logger.debug('update success');
         killMcuUpdateManager();
+        releaseUpdateWakelocks();
         setState(() {
           isInstalling = false;
           isInstalled = true;
@@ -229,6 +255,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       },
       onError: (deviceAddress, error, errorType, message) {
         Logger.debug('deviceAddress: $deviceAddress, error: $error, errorType: $errorType, message: $message');
+        releaseUpdateWakelocks();
         setState(() {
           isInstalling = false;
         });
@@ -244,6 +271,7 @@ mixin FirmwareMixin<T extends StatefulWidget> on State<T> {
       onFirmwareValidating: (deviceAddress) => Logger.debug('address: $deviceAddress, onFirmwareValidating'),
       onDfuCompleted: (deviceAddress) {
         Logger.debug('deviceAddress: $deviceAddress, onDfuCompleted');
+        releaseUpdateWakelocks();
         setState(() {
           isInstalling = false;
           isInstalled = true;
