@@ -558,6 +558,16 @@ class SharedPreferencesUtil {
   bool get showSdWriteDrops => getBool('showSdWriteDrops', defaultValue: false);
   set showSdWriteDrops(bool value) => saveBool('showSdWriteDrops', value);
 
+  // Android only. When true (default), the app creates a CompanionDeviceManager
+  // association on first connect (kept for the background-run grant / "companion"
+  // status; presence observation is never armed). When false, no association is
+  // created and any existing one is cleared on the next connect, so the app
+  // connects purely by address + bond. Exposed as a toggle for users hit by OEM
+  // Companion-Device connection contention (the "toggle Bluetooth to reconnect"
+  // wedge). Read natively as flutter.companionDeviceEnabled.
+  bool get companionDeviceEnabled => getBool('companionDeviceEnabled', defaultValue: true);
+  set companionDeviceEnabled(bool value) => saveBool('companionDeviceEnabled', value);
+
   //--------------------------- Setters & Getters -----------------------------//
 
   String getString(String key, {String defaultValue = ''}) => _preferences?.getString(key) ?? defaultValue;
