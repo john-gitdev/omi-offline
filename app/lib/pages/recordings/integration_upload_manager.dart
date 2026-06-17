@@ -31,6 +31,11 @@ class _UploadLane {
   /// fully exits, so a later re-enable uploads normally.
   bool cancelRequested = false;
 
+  /// Key of a single in-flight job the user asked to cancel (vs [cancelRequested]
+  /// which tears down the whole lane). The worker bails just that job and keeps
+  /// draining the queue behind it. Cleared once the job exits.
+  String? cancelCurrentKey;
+
   /// Completed / failed counts for this run. Held after the lane empties (so its
   /// notification line can read "8/8 done") until *every* lane is idle, then
   /// reset together so the aggregate total doesn't lurch.
@@ -229,18 +234,20 @@ class IntegrationUploadManager {
 
         bool delivered = false;
         bool busy = false;
+        // True when the user cancelled THIS job — either a whole-lane cancel
+        // (cancelRequested) or a single-job cancel targeting this one.
+        bool jobCancelled() => lane.cancelRequested || lane.cancelCurrentKey == job.key;
         try {
-          await integration.upload(conversation,
-              onProgress: _notifyChunkProgress, isCancelled: () => lane.cancelRequested);
+          await integration.upload(conversation, onProgress: _notifyChunkProgress, isCancelled: jobCancelled);
           if (integration.hasDelivered(conversation)) {
             delivered = true;
             if (_prefs.passthroughMode) await _convertToPassthrough(conversation);
-          } else if (lane.cancelRequested) {
-            // Cancelled mid-upload (integration / auto-upload turned off). Not a
-            // failure: clear the up-front failure marker so it reverts to
-            // pending/ready rather than showing failed. Awaited (not fire-and-
-            // forget) so it lands before the UI re-reads the state. Queued jobs
-            // were already dropped by _cancelUploadsFor.
+          } else if (jobCancelled()) {
+            // Cancelled mid-upload (integration/auto-upload turned off, or a
+            // single in-flight cancel). Not a failure: clear the up-front failure
+            // marker so it reverts to pending/ready rather than showing failed.
+            // Awaited (not fire-and-forget) so it lands before the UI re-reads the
+            // state. Any queued jobs were already dropped by the cancel call.
             await _prefs.clearAutoUploadRetry(retryKey);
           } else if (integration.isBackingOff(conversation)) {
             // Server busy (503/502/504): pause the whole lane and resume this
@@ -256,12 +263,13 @@ class IntegrationUploadManager {
           // else: pending (job still running server-side) — neither delivered nor
           // failed; re-derived on the next sweep. Fall through.
         } catch (e) {
-          if (lane.cancelRequested) {
-            // Aborted by a user cancel (integration / auto-upload turned off) —
-            // not a failure: don't spend the retry budget or count it as failed.
+          if (jobCancelled()) {
+            // Aborted by a user cancel (integration/auto-upload off, or single
+            // in-flight cancel) — not a failure: don't spend the retry budget or
+            // count it as failed.
             await _prefs.clearAutoUploadRetry(retryKey);
             Logger.debug('Upload cancelled mid-flight (${integration.name})');
-            continue; // finally runs; loop re-checks cancelRequested and breaks
+            continue; // finally clears the per-job flag; loop continues or breaks
           }
           // Only auto jobs spend the retry budget; a manual failure just stamps
           // the timestamp (surfaced as "failed" via _integrationState).
@@ -286,6 +294,10 @@ class IntegrationUploadManager {
         } finally {
           lane.current = null;
           _syncingKeys.remove(job.key);
+          // A single-job cancel targeted this job; clear it so the next job in the
+          // queue isn't affected. (A whole-lane cancelRequested is reset only once
+          // the worker exits, in the outer finally.)
+          if (lane.cancelCurrentKey == job.key) lane.cancelCurrentKey = null;
           if (delivered) lane.done++;
           _refreshUploadHold(); // release the in-flight hold (re-acquired by the next job)
           if (!_isDisposed()) {
@@ -295,7 +307,9 @@ class IntegrationUploadManager {
         }
 
         if (busy) break; // lane paused; a timer re-pumps it after the backoff
-        if (lane.cancelRequested) break; // user cancelled — queues already purged
+        if (lane.cancelRequested) break; // whole-lane cancel — stop (queues purged)
+        // A single-job cancel (cancelCurrentKey) does NOT break: keep draining the
+        // queue behind the cancelled job.
       }
     } finally {
       lane.draining = false;
@@ -460,10 +474,11 @@ class IntegrationUploadManager {
     return lane.manual.length + lane.auto.length + (lane.current != null ? 1 : 0);
   }
 
-  /// Cancels a single *queued* upload of [c] to [integrationName], leaving the
-  /// rest of the lane's queue draining. No-op if [c] isn't queued for it (e.g.
-  /// it's already the in-flight job — use [cancelAllUploadsFor] to stop that too).
-  /// An auto job removed here may re-enqueue on a later sweep while the
+  /// Cancels a single upload of [c] to [integrationName], leaving the rest of the
+  /// lane's queue draining. A queued job is dropped; the in-flight job is
+  /// signalled to bail at its next checkpoint (Omi Cloud stops between
+  /// chunks/polls; HeyPocket can't be interrupted once its single request is in
+  /// flight). An auto job cancelled here may re-enqueue on a later sweep while the
   /// integration's Auto-Upload is still on; a manual one stays cancelled.
   void cancelUpload(Conversation c, String integrationName) {
     final lane = _lanes[integrationName];
@@ -472,9 +487,15 @@ class IntegrationUploadManager {
     final before = lane.manual.length + lane.auto.length;
     lane.manual.removeWhere((j) => j.key == key);
     lane.auto.removeWhere((j) => j.key == key);
-    final removed = before - (lane.manual.length + lane.auto.length);
-    if (removed > 0) {
-      Logger.debug('IntegrationUploadManager: cancelled queued upload of ${c.uploadKey} to $integrationName');
+    final removedQueued = before != lane.manual.length + lane.auto.length;
+    // Not in the queue but currently uploading → bail just this job; the worker
+    // keeps draining whatever is queued behind it.
+    final cancelInFlight = !removedQueued && lane.current?.key == key;
+    if (cancelInFlight) lane.cancelCurrentKey = key;
+
+    if (removedQueued || cancelInFlight) {
+      Logger.debug('IntegrationUploadManager: cancelled ${cancelInFlight ? 'in-flight' : 'queued'} '
+          'upload of ${c.uploadKey} to $integrationName');
       if (!_isDisposed()) _notifyUi();
     }
   }
