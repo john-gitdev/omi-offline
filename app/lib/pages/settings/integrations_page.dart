@@ -11,10 +11,14 @@ import 'package:omi/services/omi_api_client.dart';
 enum _ConnectionState { idle, checking, connected, error }
 
 class IntegrationsPage extends StatefulWidget {
-  const IntegrationsPage({super.key, this.onOmiDisabled, this.onHeyPocketDisabled});
+  const IntegrationsPage({super.key, this.onCancelOmiUploads, this.onCancelHeyPocketUploads});
 
-  final VoidCallback? onOmiDisabled;
-  final VoidCallback? onHeyPocketDisabled;
+  /// Invoked when the user turns off Omi Cloud's Enabled or Auto-Upload toggle —
+  /// cancels its in-flight upload and drops everything queued for it.
+  final VoidCallback? onCancelOmiUploads;
+
+  /// HeyPocket counterpart of [onCancelOmiUploads].
+  final VoidCallback? onCancelHeyPocketUploads;
 
   @override
   State<IntegrationsPage> createState() => _IntegrationsPageState();
@@ -283,13 +287,15 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             enabled: _prefs.omiEnabled,
             onEnabledChanged: (v) {
               _prefs.omiEnabled = v;
-              if (!v) widget.onOmiDisabled?.call();
+              if (!v) widget.onCancelOmiUploads?.call();
               setState(() {});
             },
             autoUpload: _prefs.omiAutoUpload,
             autoUploadSinceMs: _prefs.omiAutoUploadAt,
             onAutoUploadChanged: (v) {
               _prefs.omiAutoUpload = v;
+              // Turning auto-upload off cancels the current upload and clears the queue.
+              if (!v) widget.onCancelOmiUploads?.call();
               setState(() {});
             },
             onDelete: _omiState != _ConnectionState.connected ? _deleteOmi : null,
@@ -418,13 +424,15 @@ class _IntegrationsPageState extends State<IntegrationsPage> {
             enabled: _prefs.heypocketEnabled,
             onEnabledChanged: (v) {
               _prefs.heypocketEnabled = v;
-              if (!v) widget.onHeyPocketDisabled?.call();
+              if (!v) widget.onCancelHeyPocketUploads?.call();
               setState(() {});
             },
             autoUpload: _prefs.heypocketAutoUpload,
             autoUploadSinceMs: _prefs.heypocketKeySetAt,
             onAutoUploadChanged: (v) {
               _prefs.heypocketAutoUpload = v;
+              // Turning auto-upload off cancels the current upload and clears the queue.
+              if (!v) widget.onCancelHeyPocketUploads?.call();
               setState(() {});
             },
             onDelete: _deleteHeyPocket,
