@@ -9,6 +9,8 @@ import 'package:omi/pages/recordings/passthrough_integration.dart';
 import 'package:omi/pages/recordings/recordings_controller.dart';
 import 'package:provider/provider.dart';
 import 'package:omi/providers/device_provider.dart';
+import 'package:omi/services/services.dart';
+import 'package:omi/utils/logger.dart';
 
 class AppSettingsPage extends StatefulWidget {
   const AppSettingsPage({super.key});
@@ -96,6 +98,45 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     }
   }
 
+  // Companion Device Pairing applies immediately — it has side effects (a
+  // disconnect/reconnect, and the system pairing chooser when enabling), so it sits
+  // outside the page's save/discard flow. OFF: reconnect so native manageDevice clears
+  // the association now. ON: disconnect (so the Omi advertises), pop the system
+  // companion chooser, then reconnect. Both directions need the disconnect first —
+  // ensureConnection(force) is a no-op while connected (so manageDevice wouldn't re-run),
+  // and a connected Omi (MAX_CONN=1) isn't advertising for the chooser to find.
+  Future<void> _setCompanionDevicePairing(bool value) async {
+    setState(() => _companionDeviceEnabled = value);
+    SharedPreferencesUtil().companionDeviceEnabled = value;
+
+    final deviceId = SharedPreferencesUtil().btDevice.id;
+    if (deviceId.isEmpty) return; // no paired device — applies on next connect
+
+    final deviceService = ServiceManager.instance().device;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(SnackBar(
+      content: Text(value ? 'Enabling companion pairing…' : 'Disabling companion pairing…'),
+    ));
+
+    try {
+      await deviceService.disconnectDevice(isManual: true);
+
+      if (value && !(await deviceService.hasCompanionDeviceAssociation())) {
+        final addr = await deviceService.requestCompanionDeviceAssociation(deviceId);
+        if (addr.isEmpty) {
+          // Chooser cancelled — revert so the toggle reflects reality.
+          SharedPreferencesUtil().companionDeviceEnabled = false;
+          if (mounted) setState(() => _companionDeviceEnabled = false);
+        }
+      }
+
+      // Reconnect: native manageDevice clears the association when off, no-op when on.
+      await deviceService.ensureConnection(deviceId, force: true);
+    } catch (e) {
+      Logger.error('AppSettings: companion pairing toggle failed: $e');
+    }
+  }
+
   Future<void> _saveSettings() async {
     final prefs = SharedPreferencesUtil();
     prefs.backgroundSyncIntervalMinutes = _backgroundSyncIntervalMinutes;
@@ -107,7 +148,6 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     prefs.keepRecordingsDays = _keepRecordingsDays;
     prefs.uploadOnWifiOnly = _uploadOnWifiOnly;
     prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
-    prefs.companionDeviceEnabled = _companionDeviceEnabled;
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -518,7 +558,8 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
               // Companion Device Pairing (Android only) — troubleshooting toggle for OEM
               // Bluetooth connection contention (the "toggle phone Bluetooth to reconnect"
               // wedge). Lives here (not Device Settings) so it stays reachable when the
-              // device won't connect. Default on; off disassociates on the next connect.
+              // device won't connect. Default off; applies immediately via
+              // _setCompanionDevicePairing (reconnect on off, system chooser on on).
               if (Platform.isAndroid) ...[
                 const SizedBox(height: 16),
                 Container(
@@ -533,15 +574,12 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                         style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
                     subtitle: Text(
                       _companionDeviceEnabled
-                          ? 'Uses Android\'s system companion association for background reconnection. If you often have to toggle phone Bluetooth to reconnect, try turning this off — takes effect on the next connection.'
-                          : 'Off — the app connects without an Android companion association. Re-pair the device to turn it back on.',
+                          ? 'Registers the Omi as an Android system companion. If you often have to toggle phone Bluetooth to reconnect (common on OnePlus/Oppo/Realme), turn this off.'
+                          : 'Off — the app connects by address + bond, no companion association. Turning it on reconnects and opens the system pairing dialog.',
                       style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                     ),
                     value: _companionDeviceEnabled,
-                    onChanged: (value) {
-                      setState(() => _companionDeviceEnabled = value);
-                      _markDirty();
-                    },
+                    onChanged: (value) => _setCompanionDevicePairing(value),
                     activeColor: Colors.deepPurpleAccent,
                   ),
                 ),
