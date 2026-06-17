@@ -96,12 +96,6 @@ LOG_MODULE_REGISTER(sd_card, CONFIG_LOG_DEFAULT_LEVEL);
 /* Raw LFS instance */
 static lfs_t lfs_fs;
 
-/* Latched true when sd_mount() had to reformat because the card did not hold an
- * omi-offline filesystem — i.e. this boot is a migration from a non-"oo"
- * firmware. main() reads it (sd_migrated_from_foreign) to also wipe Bluetooth
- * bonds once on that boot. */
-static volatile bool migrated_from_foreign;
-
 /* Open file handles */
 static lfs_file_t lfs_fil_data;
 static lfs_file_t lfs_fil_info;
@@ -1017,11 +1011,9 @@ static int sd_mount(void)
             sd_enable_power(false);
             return -EIO;
         }
-        /* Stamp the cookie on the freshly formatted filesystem and flag the
-         * migration so main() also wipes Bluetooth bonds once (an unmountable
-         * card means foreign/blank data — not an omi-offline filesystem). */
+        /* Stamp the cookie on the freshly formatted filesystem (an unmountable card
+         * means foreign/blank data — not an omi-offline filesystem). */
         (void)write_magic();
-        migrated_from_foreign = true;
     } else {
         /* Mount succeeded — but only KEEP the data if this is genuinely an
          * omi-offline filesystem. check_magic() is non-zero when the cookie is
@@ -1048,7 +1040,6 @@ static int sd_mount(void)
                 return -EIO;
             }
             (void)write_magic();
-            migrated_from_foreign = true;
         }
     }
 
@@ -1074,11 +1065,6 @@ static int sd_unmount(void)
     sd_enable_power(false);
     LOG_INF("LittleFS unmounted");
     return 0;
-}
-
-bool sd_migrated_from_foreign(void)
-{
-    return migrated_from_foreign;
 }
 
 /* Power on + remount (NO lfs_fs_gc — that runs once at boot) and reopen the info
