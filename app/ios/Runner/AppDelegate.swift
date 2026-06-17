@@ -16,6 +16,7 @@ extension FlutterError: Error {}
   private let appleHealthService = AppleHealthService()
   private var notificationTitleOnKill: String?
   private var notificationBodyOnKill: String?
+  private var vadBatchRunner: VadBatchRunner?
 
   fileprivate var aacEncoderSessions: [String: AacEncoderSession] = [:]
 
@@ -98,6 +99,11 @@ extension FlutterError: Error {}
 
     // AAC encoder channel
     setupAacEncoderChannel(controller!.binaryMessenger)
+
+    // Native VAD batch runner (iOS mirror of Android VadBatchRunner). Registered on
+    // the main-isolate messenger; the Dart VadBatchRunnerChannel bounces calls from
+    // the background processing isolate to here. Held so the channel handler lives.
+    vadBatchRunner = VadBatchRunner(messenger: controller!.binaryMessenger)
 
     // Create WiFi Network plugin for device AP connection
     _ = WifiNetworkPlugin(messenger: controller!.binaryMessenger)
