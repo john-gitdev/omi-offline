@@ -351,8 +351,8 @@ class _SettingsDrawerState extends State<SettingsDrawer> {
                           await Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => IntegrationsPage(
-                                onOmiDisabled: controller.cancelPendingOmiUploads,
-                                onHeyPocketDisabled: controller.cancelPendingHeyPocketUploads,
+                                onCancelOmiUploads: controller.cancelOmiUploads,
+                                onCancelHeyPocketUploads: controller.cancelHeyPocketUploads,
                               ),
                             ),
                           );
