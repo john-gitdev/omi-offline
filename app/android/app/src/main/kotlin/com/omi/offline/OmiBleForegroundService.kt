@@ -36,6 +36,12 @@ class OmiBleForegroundService : Service() {
         private const val STABILITY_TIMER_MS = 60_000L
         private const val RECONNECT_DELAY_MS = 1_500L
         private const val CONNECTION_TIMEOUT_MS = 30_000L
+        // Mid-retry ghost-GATT purge: if a stale system link is holding the firmware's
+        // single connection slot, drop it (purgeGhostGattForAddress) before reconnecting.
+        // Capped to once per GHOST_PURGE_MIN_INTERVAL_MS to bound client-interface churn;
+        // GHOST_PURGE_SETTLE_MS lets the firmware re-advertise after the purge.
+        private const val GHOST_PURGE_MIN_INTERVAL_MS = 30_000L
+        private const val GHOST_PURGE_SETTLE_MS = 500L
         private const val COMPANION_RATE_LIMIT_MS = 15_000L
         private const val PREFS_NAME = "ble_config"
         private const val PREFS_KEY = "managed_device"
@@ -145,7 +151,10 @@ class OmiBleForegroundService : Service() {
         // reconnecting. bondRemovalAttempted prevents loops; resets on services discovered.
         var bondRemovalAttempted: Boolean = false,
         var pendingPostBondClearReconnect: Boolean = false,
-        var bondClearTimeoutRunnable: Runnable? = null
+        var bondClearTimeoutRunnable: Runnable? = null,
+        // Timestamp of the last mid-retry ghost-GATT purge; rate-limits purges so a
+        // persistent ghost can't churn Android client interfaces every retry tick.
+        var lastGhostPurgeMs: Long = 0
     )
 
     private val managedDevices = ConcurrentHashMap<String, ManagedDevice>()
@@ -206,6 +215,7 @@ class OmiBleForegroundService : Service() {
 
                 Log.i(TAG, "onGattConnected: $addr")
                 managed.retryCount = 0
+                managed.lastGhostPurgeMs = 0
                 managed.hasEverConnected = true
                 managed.pendingReconnect?.let { handler.removeCallbacks(it) }
                 managed.pendingReconnect = null
@@ -662,7 +672,30 @@ class OmiBleForegroundService : Service() {
             // (connectToDevice has registered the new gatt) — never both null.
             synchronized(syncLock) {
                 managed.pendingReconnect = null
-                connectToDevice(addr, "retry_${managed.retryCount}")
+                // Evaluated here (~RECONNECT_DELAY_MS after the disconnect), not on the
+                // disconnect event itself, so the system's getConnectedDevices view has
+                // settled — avoids false positives from propagation lag right after our own
+                // closeGatt. If a stale system link still holds the firmware's slot, purge
+                // it, then reconnect after a short settle so the firmware can re-advertise.
+                // Rate-limited so a persistent ghost can't churn client interfaces per tick.
+                val now = System.currentTimeMillis()
+                if (now - managed.lastGhostPurgeMs >= GHOST_PURGE_MIN_INTERVAL_MS &&
+                    bleManager.purgeGhostGattForAddress(addr)
+                ) {
+                    managed.lastGhostPurgeMs = now
+                    Log.i(TAG, "Ghost GATT purged for $addr; reconnecting after ${GHOST_PURGE_SETTLE_MS}ms settle")
+                    val connectRunnable = Runnable {
+                        synchronized(syncLock) {
+                            managed.pendingReconnect = null
+                            connectToDevice(addr, "retry_${managed.retryCount}_postpurge")
+                        }
+                    }
+                    // Keep the guard invariant satisfied across the settle window.
+                    managed.pendingReconnect = connectRunnable
+                    handler.postDelayed(connectRunnable, GHOST_PURGE_SETTLE_MS)
+                } else {
+                    connectToDevice(addr, "retry_${managed.retryCount}")
+                }
             }
         }
         managed.pendingReconnect = runnable
