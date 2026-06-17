@@ -25,6 +25,12 @@ class _UploadLane {
   /// Re-entrancy guard — true while this lane's drain loop is running.
   bool draining = false;
 
+  /// Set when the user disables this integration or its auto-upload mid-upload.
+  /// The in-flight upload() polls it (via the isCancelled callback) and bails at
+  /// its next safe checkpoint; the drain loop then breaks. Reset once the worker
+  /// fully exits, so a later re-enable uploads normally.
+  bool cancelRequested = false;
+
   /// Completed / failed counts for this run. Held after the lane empties (so its
   /// notification line can read "8/8 done") until *every* lane is idle, then
   /// reset together so the aggregate total doesn't lurch.
@@ -190,6 +196,7 @@ class IntegrationUploadManager {
     lane.draining = true;
     try {
       while (!_isDisposed() && !lane.isEmpty) {
+        if (lane.cancelRequested) break; // user disabled this integration / its auto-upload
         // Wifi gate before committing to a job. Fail closed: if we can't confirm
         // wifi, park rather than upload over cellular. The connectivity listener
         // re-pumps on the next change.
@@ -223,10 +230,18 @@ class IntegrationUploadManager {
         bool delivered = false;
         bool busy = false;
         try {
-          await integration.upload(conversation, onProgress: _notifyChunkProgress);
+          await integration.upload(conversation,
+              onProgress: _notifyChunkProgress, isCancelled: () => lane.cancelRequested);
           if (integration.hasDelivered(conversation)) {
             delivered = true;
             if (_prefs.passthroughMode) await _convertToPassthrough(conversation);
+          } else if (lane.cancelRequested) {
+            // Cancelled mid-upload (integration / auto-upload turned off). Not a
+            // failure: clear the up-front failure marker so it reverts to
+            // pending/ready rather than showing failed. Awaited (not fire-and-
+            // forget) so it lands before the UI re-reads the state. Queued jobs
+            // were already dropped by _cancelUploadsFor.
+            await _prefs.clearAutoUploadRetry(retryKey);
           } else if (integration.isBackingOff(conversation)) {
             // Server busy (503/502/504): pause the whole lane and resume this
             // recording first once its backoff passes. Use the integration's real
@@ -241,6 +256,13 @@ class IntegrationUploadManager {
           // else: pending (job still running server-side) — neither delivered nor
           // failed; re-derived on the next sweep. Fall through.
         } catch (e) {
+          if (lane.cancelRequested) {
+            // Aborted by a user cancel (integration / auto-upload turned off) —
+            // not a failure: don't spend the retry budget or count it as failed.
+            await _prefs.clearAutoUploadRetry(retryKey);
+            Logger.debug('Upload cancelled mid-flight (${integration.name})');
+            continue; // finally runs; loop re-checks cancelRequested and breaks
+          }
           // Only auto jobs spend the retry budget; a manual failure just stamps
           // the timestamp (surfaced as "failed" via _integrationState).
           if (!job.manual) unawaited(_prefs.incrementAutoUploadRetry(retryKey));
@@ -273,9 +295,13 @@ class IntegrationUploadManager {
         }
 
         if (busy) break; // lane paused; a timer re-pumps it after the backoff
+        if (lane.cancelRequested) break; // user cancelled — queues already purged
       }
     } finally {
       lane.draining = false;
+      // The cancel has been honored for this drain; clear it so a later re-enable
+      // (and its re-enqueued jobs) uploads normally.
+      lane.cancelRequested = false;
     }
 
     _finalizeIfAllIdle();
@@ -382,18 +408,29 @@ class IntegrationUploadManager {
     if (!_isDisposed()) _notifyUi();
   }
 
-  void cancelPendingOmiUploads() {
-    final dropped = _purgeQueuedFor('Omi Cloud');
-    final inFlight = _syncingKeys.where((k) => k.startsWith('Omi Cloud_')).length;
-    _syncingKeys.removeWhere((k) => k.startsWith('Omi Cloud_'));
-    Logger.debug('IntegrationUploadManager: Omi Cloud disabled — dropped $dropped queued, cleared $inFlight in-flight');
-    if (!_isDisposed()) _notifyUi();
-  }
+  void cancelOmiUploads() => _cancelUploadsFor('Omi Cloud');
 
-  void cancelPendingHeyPocketUploads() {
-    final dropped = _purgeQueuedFor('HeyPocket');
-    Logger.debug(
-        'IntegrationUploadManager: HeyPocket disabled — dropped $dropped queued; in-flight will drain and stop');
+  void cancelHeyPocketUploads() => _cancelUploadsFor('HeyPocket');
+
+  /// Cancels every upload for [integrationName]: drops all queued jobs (manual
+  /// and auto) and signals the in-flight upload (if any) to abort at its next
+  /// safe checkpoint. Called when the user turns off the integration's Enabled or
+  /// Auto-Upload toggle. A chunked upload (Omi Cloud) stops between chunks/polls,
+  /// keeping already-delivered chunks; a single-shot one (HeyPocket) can only be
+  /// stopped before its request begins — one already mid-request drains. Cancelled
+  /// jobs aren't marked failed; auto ones re-enqueue on a later sweep only if the
+  /// integration is re-enabled.
+  void _cancelUploadsFor(String integrationName) {
+    final lane = _lanes[integrationName];
+    if (lane == null) return;
+    final dropped = _purgeQueuedFor(integrationName);
+    final hadInFlight = lane.current != null;
+    if (hadInFlight) lane.cancelRequested = true;
+    // Stop tracking the in-flight key so the row/sheet spinner clears immediately;
+    // the worker's finally re-removing it is a harmless no-op.
+    _syncingKeys.removeWhere((k) => k.startsWith('${integrationName}_'));
+    Logger.debug('IntegrationUploadManager: $integrationName cancelled — dropped $dropped queued'
+        '${hadInFlight ? ', signalled in-flight upload to stop' : ''}');
     if (!_isDisposed()) _notifyUi();
   }
 
