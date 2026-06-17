@@ -439,15 +439,13 @@ class IntegrationUploadManager {
     }
 
     // Abort the in-flight upload — but for an auto-only cancel, only if that
-    // in-flight job is itself an auto job (never interrupt a manual upload).
+    // in-flight job is itself an auto job (never interrupt a manual upload). The
+    // job stays in _syncingKeys / shown as "uploading" until it actually reaches
+    // its cancel checkpoint and bails (its finally clears the tracking), so the
+    // row spinner and the detail sheet agree while it's winding down.
     final current = lane.current;
     final cancelInFlight = current != null && (!autoOnly || !current.manual);
-    if (cancelInFlight) {
-      lane.cancelRequested = true;
-      // Stop tracking the in-flight key so the row/sheet spinner clears
-      // immediately; the worker's finally re-removing it is a harmless no-op.
-      _syncingKeys.remove(current.key);
-    }
+    if (cancelInFlight) lane.cancelRequested = true;
     Logger.debug('IntegrationUploadManager: $integrationName ${autoOnly ? 'auto-upload off' : 'disabled'} — '
         'dropped $dropped queued${cancelInFlight ? ', signalled in-flight upload to stop' : ''}');
     if (!_isDisposed()) _notifyUi();
