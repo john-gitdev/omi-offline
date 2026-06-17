@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -23,6 +24,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
   late int _keepRecordingsDays;
   late bool _uploadOnWifiOnly;
   late int _filterMinDurationSeconds;
+  late bool _companionDeviceEnabled;
 
   static const List<int> _kShortRecordingOptions = [0, 10, 30, 60, 120, 300, 600, 1800];
 
@@ -37,6 +39,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     _keepRecordingsDays = SharedPreferencesUtil().keepRecordingsDays;
     _uploadOnWifiOnly = SharedPreferencesUtil().uploadOnWifiOnly;
     _filterMinDurationSeconds = SharedPreferencesUtil().filterMinDurationSeconds;
+    _companionDeviceEnabled = SharedPreferencesUtil().companionDeviceEnabled;
   }
 
   void _markDirty() {
@@ -104,6 +107,7 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
     prefs.keepRecordingsDays = _keepRecordingsDays;
     prefs.uploadOnWifiOnly = _uploadOnWifiOnly;
     prefs.filterMinDurationSeconds = _filterMinDurationSeconds;
+    prefs.companionDeviceEnabled = _companionDeviceEnabled;
 
     if (mounted) setState(() => _isDirty = false);
   }
@@ -510,6 +514,38 @@ class _AppSettingsPageState extends State<AppSettingsPage> {
                   activeColor: Colors.deepPurpleAccent,
                 ),
               ),
+
+              // Companion Device Pairing (Android only) — troubleshooting toggle for OEM
+              // Bluetooth connection contention (the "toggle phone Bluetooth to reconnect"
+              // wedge). Lives here (not Device Settings) so it stays reachable when the
+              // device won't connect. Default on; off disassociates on the next connect.
+              if (Platform.isAndroid) ...[
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1C1C1E),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Companion Device Pairing',
+                        style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                    subtitle: Text(
+                      _companionDeviceEnabled
+                          ? 'Uses Android\'s system companion association for background reconnection. If you often have to toggle phone Bluetooth to reconnect, try turning this off — takes effect on the next connection.'
+                          : 'Off — the app connects without an Android companion association. Re-pair the device to turn it back on.',
+                      style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                    ),
+                    value: _companionDeviceEnabled,
+                    onChanged: (value) {
+                      setState(() => _companionDeviceEnabled = value);
+                      _markDirty();
+                    },
+                    activeColor: Colors.deepPurpleAccent,
+                  ),
+                ),
+              ],
               const SizedBox(height: 24),
             ],
           ),
