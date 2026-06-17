@@ -222,7 +222,8 @@ class OmiApiClient {
   /// struggling backend isn't hammered).
   ///
   /// Throws [OmiSyncException] on auth/transport/HTTP error (incl. not signed in).
-  static Future<OmiJobOutcome> syncSegment((String, Uint8List) segment, {String? existingJobId}) async {
+  static Future<OmiJobOutcome> syncSegment((String, Uint8List) segment,
+      {String? existingJobId, bool Function()? isCancelled}) async {
     if (!isSignedIn) throw const OmiSyncException('Not signed in');
 
     await refreshTokenIfNeeded();
@@ -236,7 +237,7 @@ class OmiApiClient {
     // re-discovers the right endpoint.
     if (existingJobId != null) {
       Logger.debug('Omi Cloud: reattaching to job $existingJobId for ${segment.$1}');
-      final outcome = await _pollJob(_syncUrlV2, existingJobId, 0);
+      final outcome = await _pollJob(_syncUrlV2, existingJobId, 0, isCancelled: isCancelled);
       if (outcome.status != OmiJobStatus.gone) return outcome;
       Logger.debug('Omi Cloud: job $existingJobId gone — re-uploading ${segment.$1}');
     }
@@ -269,7 +270,7 @@ class OmiApiClient {
       final json = jsonDecode(responseBody) as Map<String, dynamic>;
       final jobId = json['job_id'] as String?;
       final pollAfterMs = (json['poll_after_ms'] as int?) ?? 3000;
-      if (jobId != null) return await _pollJob(usedUrl, jobId, pollAfterMs);
+      if (jobId != null) return await _pollJob(usedUrl, jobId, pollAfterMs, isCancelled: isCancelled);
     }
 
     // Synchronous (non-202) result.
@@ -409,12 +410,20 @@ class OmiApiClient {
   /// job is still alive server-side, so the caller reattaches next run instead of
   /// abandoning and re-uploading it (which would only add to the queue backlog
   /// that made it slow in the first place). A 404 returns [OmiJobStatus.gone].
-  static Future<OmiJobOutcome> _pollJob(String baseUrl, String jobId, int initialDelayMs) async {
+  static Future<OmiJobOutcome> _pollJob(String baseUrl, String jobId, int initialDelayMs,
+      {bool Function()? isCancelled}) async {
     await Future.delayed(Duration(milliseconds: initialDelayMs));
 
     const maxAttempts = 80; // ~4 min at ~3 s/poll
     var delayMs = 3000;
     for (var i = 0; i < maxAttempts; i++) {
+      // User disabled the integration / its auto-upload mid-poll. The job is
+      // still alive server-side, so stop as `pending` (keep the job id) and let a
+      // later run reattach rather than abandoning and re-uploading it.
+      if (isCancelled?.call() ?? false) {
+        Logger.debug('OmiApiClient: Job $jobId poll cancelled — leaving for reattach');
+        return OmiJobOutcome(OmiJobStatus.pending, jobId: jobId);
+      }
       await refreshTokenIfNeeded();
       final token = await SharedPreferencesUtil().omiIdToken;
 
