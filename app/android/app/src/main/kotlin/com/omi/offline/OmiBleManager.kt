@@ -153,6 +153,33 @@ class OmiBleManager private constructor(private val application: Application) {
         }
     }
 
+    // Targeted ghost-GATT purge for one address — an in-app analog of toggling phone
+    // Bluetooth. If the system still reports this device connected at the GATT profile
+    // level while WE hold no handle for it, a stale OS/OEM link is occupying the
+    // peripheral's single connection slot and blocking our reconnect (the "toggle BT to
+    // reconnect" wedge). Drop it via a dummy connect-close so the next connectGatt can get
+    // in. Returns true only if such a ghost was found and purged. Conditional by design:
+    // no dummy GATT is created when there is no system-held connection, so it is a no-op
+    // on a healthy disconnect.
+    fun purgeGhostGattForAddress(address: String): Boolean {
+        val addr = address.uppercase()
+        // Never touch a connection we actually hold.
+        if (connectedGatts.containsKey(addr)) return false
+        return try {
+            val device = bluetoothManager.getConnectedDevices(BluetoothProfile.GATT)
+                .firstOrNull { it.address.uppercase() == addr } ?: return false
+            Log.w(TAG, "Purging ghost GATT for $addr via dummy connect-close")
+            val dummyGatt = device.connectGatt(application, false, object : BluetoothGattCallback() {}, BluetoothDevice.TRANSPORT_LE)
+            // Immediately disconnect and close to flush the OS daemon state
+            dummyGatt?.disconnect()
+            dummyGatt?.close()
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "purgeGhostGattForAddress failed for $addr: ${e.message}")
+            false
+        }
+    }
+
     private fun completeBond(success: Boolean) {
         bondTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
         bondTimeoutRunnable = null
