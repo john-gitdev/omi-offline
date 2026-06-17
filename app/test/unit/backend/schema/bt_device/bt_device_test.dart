@@ -183,6 +183,14 @@ class MockDeviceConnection extends DeviceConnection {
   Future<void> performSetMicGain(int gain) async {}
 
   @override
+  Future<void> performSetButtonConfig(List<int> config) async {}
+
+  @override
+  Future<List<int>?> performGetButtonConfig() async {
+    return null;
+  }
+
+  @override
   Future<int?> performGetVadThreshold() async {
     return null;
   }
