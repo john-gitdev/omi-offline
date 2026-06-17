@@ -1,8 +1,13 @@
 import Flutter
+import UIKit
 
 /// Bridges Pigeon BleHostApi calls to OmiBleManager.
 final class BleHostApiImpl: BleHostApi {
     private let bleManager: OmiBleManager
+
+    /// Background-execution assertion held while the VAD decode runs, so iOS
+    /// doesn't suspend the app the instant it backgrounds mid-processing.
+    private var processingBgTask: UIBackgroundTaskIdentifier = .invalid
 
     init(bleManager: OmiBleManager) {
         self.bleManager = bleManager
@@ -105,11 +110,27 @@ final class BleHostApiImpl: BleHostApi {
     }
 
     func acquireProcessingWakeLock() throws {
-        // Android-only — no-op on iOS
+        // iOS equivalent of Android's processing wakelock: request continued
+        // background execution so the VAD decode isn't suspended the instant the
+        // app backgrounds mid-run. iOS grants a bounded window (~30 s) and then
+        // calls the expiration handler; longer decodes are covered by the
+        // resumable _draft pipeline, which re-processes on the next wake. Must run
+        // on the main thread (Pigeon dispatches host methods there).
+        guard processingBgTask == .invalid else { return }
+        processingBgTask = UIApplication.shared.beginBackgroundTask(withName: "omi.processing") { [weak self] in
+            // iOS is reclaiming the window — we must end the task or it terminates us.
+            self?.endProcessingBgTask()
+        }
     }
 
     func releaseProcessingWakeLock() throws {
-        // Android-only — no-op on iOS
+        endProcessingBgTask()
+    }
+
+    private func endProcessingBgTask() {
+        guard processingBgTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(processingBgTask)
+        processingBgTask = .invalid
     }
 
     func setNextSyncTime(timestampMs: Int64) throws {
