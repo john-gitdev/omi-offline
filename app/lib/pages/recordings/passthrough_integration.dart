@@ -32,7 +32,13 @@ abstract class PassthroughIntegration {
   /// Uploads [c]. [onProgress] (if given) is invoked after each unit of upload
   /// progress so the UI can refresh — used by chunked integrations to update the
   /// "delivered/total chunks" count live as each segment lands.
-  Future<void> upload(Conversation c, {void Function()? onProgress});
+  ///
+  /// [isCancelled] (if given) is polled at safe checkpoints; when it returns true
+  /// the upload bails early without delivering and without throwing — the user
+  /// disabled the integration or its auto-upload mid-flight. A chunked integration
+  /// stops between chunks (and between server polls); a single-shot one can only
+  /// bail before its request begins.
+  Future<void> upload(Conversation c, {void Function()? onProgress, bool Function()? isCancelled});
   bool isFailed(Conversation c);
 
   /// Upload progress in serially-uploaded chunks, for integrations that split a
@@ -122,8 +128,10 @@ class HeyPocketPassthroughIntegration implements PassthroughIntegration {
   bool isFailed(Conversation c) => _prefs.getAutoUploadRetries(c.uploadKey!) >= 3;
 
   @override
-  Future<void> upload(Conversation c, {void Function()? onProgress}) async {
-    // HeyPocket uploads the recording in a single request — no chunk progress.
+  Future<void> upload(Conversation c, {void Function()? onProgress, bool Function()? isCancelled}) async {
+    // HeyPocket uploads the recording in a single request — no chunk progress and
+    // no mid-flight cancellation point, so we can only bail before it starts.
+    if (isCancelled?.call() ?? false) return;
     final uploadKey = c.uploadKey!;
     try {
       await HeyPocketService.uploadRecording(_prefs.heypocketApiKey, c);
@@ -228,7 +236,7 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
   }
 
   @override
-  Future<void> upload(Conversation c, {void Function()? onProgress}) async {
+  Future<void> upload(Conversation c, {void Function()? onProgress, bool Function()? isCancelled}) async {
     final binPath = PassthroughIntegration.getBinPath(c);
     final binFile = File(binPath);
     if (!binFile.existsSync()) {
@@ -253,11 +261,15 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
     OmiSyncResult? lastResult;
     try {
       for (var i = 0; i < segments.length; i++) {
+        // Bail before starting (or re-attaching) the next chunk if the user
+        // disabled the integration / its auto-upload mid-run. Already-delivered
+        // chunks stay synced; the rest resume on a later run if re-enabled.
+        if (isCancelled?.call() ?? false) return;
         final segmentKey = '$binPath#$i';
         if (_prefs.isOmiSegmentSynced(segmentKey)) continue;
 
         final existingJobId = _prefs.getOmiSegmentJobId(segmentKey);
-        final outcome = await OmiApiClient.syncSegment(segments[i], existingJobId: existingJobId);
+        final outcome = await OmiApiClient.syncSegment(segments[i], existingJobId: existingJobId, isCancelled: isCancelled);
 
         switch (outcome.status) {
           case OmiJobStatus.completed:
