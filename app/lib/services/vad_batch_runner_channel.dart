@@ -4,15 +4,15 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:omi/utils/logger.dart';
 
-/// Dart wrapper for the native VadBatchRunner method channel (Android-only).
+/// Dart wrapper for the native VadBatchRunner method channel (Android + iOS).
 ///
 /// Collapses the per-window Dart↔native platform-channel round-trips by sending
 /// N×512-sample windows in one call and receiving N probabilities back. The
 /// native side keeps the OrtSession, LSTM state, SR tensor, and 64-sample
 /// context entirely in Kotlin — no Dart-side OrtValue management.
 ///
-/// On non-Android platforms (iOS, desktop, web, tests), [available] is false and
-/// the caller falls back to the per-window `_runVad` path unchanged.
+/// On platforms without the native runner (desktop, web, tests), [available] is
+/// false and the caller falls back to the per-window `_runVad` path unchanged.
 class VadBatchRunnerChannel {
   static const _channel = MethodChannel('com.omi.offline/vadBatchRunner');
 
@@ -25,8 +25,8 @@ class VadBatchRunnerChannel {
   /// True when the native batch runner is available and initialised.
   bool _initialised = false;
 
-  /// Whether the native batch runner can be used on this platform.
-  /// Always false on non-Android platforms.
+  /// Whether the native batch runner is available and initialised. False on
+  /// platforms with no native handler (desktop, web, tests).
   bool get available => _initialised;
 
   /// Initialise the native ORT session from [modelPath] (a filesystem path to
@@ -36,7 +36,11 @@ class VadBatchRunnerChannel {
   /// gracefully — a missing channel handler (e.g. in tests or if the Activity
   /// was not configured) just means [available] stays false.
   Future<void> init(String modelPath) async {
-    if (!Platform.isAndroid) return;
+    // Native runner exists on Android (VadBatchRunner.kt) and iOS
+    // (VadBatchRunner.swift). On other platforms (desktop, web, tests) there is no
+    // handler, so skip — the caller falls back to the per-window path. A missing
+    // handler on a supported platform is also caught below (MissingPluginException).
+    if (!Platform.isAndroid && !Platform.isIOS) return;
     try {
       if (isolateSendPort != null) {
         final replyPort = ReceivePort();
