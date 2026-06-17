@@ -191,10 +191,22 @@ class _IntegrationRow extends StatelessWidget {
     Widget trailing;
     switch (status.state) {
       case IntegrationUploadState.uploading:
-        trailing = const SizedBox(
-          width: 18,
-          height: 18,
-          child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
+        // Show progress and let the user abort it. Omi Cloud stops between chunks;
+        // HeyPocket finishes its current single request (can't be interrupted).
+        trailing = Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
+            ),
+            TextButton(
+              onPressed: onCancel,
+              child: const Text('Cancel',
+                  style: TextStyle(color: Colors.amber, fontSize: 13, fontWeight: FontWeight.w600)),
+            ),
+          ],
         );
         break;
       case IntegrationUploadState.delivered:
