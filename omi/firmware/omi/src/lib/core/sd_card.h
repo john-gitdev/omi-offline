@@ -119,17 +119,6 @@ int app_sd_init(void);
 bool sd_is_boot_ready(void);
 
 /**
- * @brief True if the SD card was reformatted at this boot because it did not
- * contain an omi-offline filesystem (i.e. the device was flashed from a non-"oo"
- * firmware). Latches for the lifetime of the boot.
- *
- * main() reads this to also wipe Bluetooth bonds once on the migration boot, so
- * storage and pairing both start clean. False on normal omi-offline boots and on
- * omi-offline upgrades (the on-card magic cookie identifies our own filesystem).
- */
-bool sd_migrated_from_foreign(void);
-
-/**
  * @brief Check whether a TMP→UTC filename rename is currently in flight.
  *
  * Set when sd_notify_time_synced() is called; cleared by the SD worker once
