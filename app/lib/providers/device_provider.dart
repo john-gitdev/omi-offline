@@ -171,6 +171,7 @@ class DeviceProvider extends ChangeNotifier
     ServiceManager.instance().device.subscribe(this, this);
     ServiceManager.instance().wal.subscribe(this, this);
     BleBridge.instance.backgroundSyncRequestedCallback = _onBackgroundSyncRequested;
+    BleBridge.instance.stateRestoredCallback = _onStateRestored;
     BleBridge.instance.bluetoothStateChangedCallback = (state) {
       Logger.debug('Bluetooth state changed: $state');
       if (state == 'on') {
@@ -214,6 +215,32 @@ class DeviceProvider extends ChangeNotifier
       unawaited(SyncNotification.connecting());
       _armConnectSettleWatchdog();
       unawaited(_connectThenSyncOrFail());
+    }
+  }
+
+  /// iOS CoreBluetooth State Restoration: iOS relaunched the app in the
+  /// background because a bound peripheral came back into range, and native's
+  /// `willRestoreState` has already re-initiated the connection. We only need to
+  /// sanction a background sync so the imminent [_handleDeviceConnected] survives
+  /// its background drop-guard and [_finishDeviceSetup] fires [_doBackgroundSync]
+  /// — the same path the auto-sync timer uses. Gated on [_shouldSyncNow] so
+  /// Manual Only and not-yet-due wakes stay quiet.
+  ///
+  /// iOS-only by design: Android never emits onStateRestored — it wakes via
+  /// WorkManager/exact-alarm regardless of whether the device is in range, and
+  /// the user wants that kept as-is.
+  void _onStateRestored(List<String> peripheralUuids) {
+    if (!Platform.isIOS) return;
+    final due = _shouldSyncNow();
+    Logger.debug('[BLE] _onStateRestored: ${peripheralUuids.length} peripheral(s) restored, syncDue=$due '
+        '(connected=$isConnected)');
+    if (!due) return;
+    if (isConnected) {
+      _doBackgroundSync();
+    } else {
+      // Native is already reconnecting the restored peripheral. Flag the pending
+      // sync now so _handleDeviceConnected lets the background link through.
+      _pendingBackgroundSync = true;
     }
   }
 
@@ -775,7 +802,11 @@ class DeviceProvider extends ChangeNotifier
 
       try {
         WakelockPlus.enable();
-        if (Platform.isAndroid) BleHostApi().acquireProcessingWakeLock();
+        // Android: partial CPU wakelock. iOS: a beginBackgroundTask assertion so
+        // the decode isn't suspended the instant the app backgrounds mid-run
+        // (bounded window; longer decodes resume via the _draft pipeline). Both
+        // are released in the finally below.
+        if (Platform.isAndroid || Platform.isIOS) BleHostApi().acquireProcessingWakeLock();
         // Keep the firmware from idle-dropping the link mid-sync. Without this a
         // single >30s file read (large stitched/draft recordings) sends no
         // command for the firmware's 30s idle window and dies as "Stream closed
@@ -826,7 +857,7 @@ class DeviceProvider extends ChangeNotifier
         notifyListeners();
       } finally {
         WakelockPlus.disable();
-        if (Platform.isAndroid) BleHostApi().releaseProcessingWakeLock();
+        if (Platform.isAndroid || Platform.isIOS) BleHostApi().releaseProcessingWakeLock();
         // The keep-alive only covers the sync itself in the background; in the
         // foreground the connect/resume keep-alive owns it, so leave it running.
         if (!_isAppInForeground) _stopForegroundKeepAlive();
