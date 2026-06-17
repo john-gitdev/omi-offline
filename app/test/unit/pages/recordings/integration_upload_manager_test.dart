@@ -530,21 +530,30 @@ void main() {
       expect(a.uploadCalls.map((c) => c.uploadKey), ['k1', 'k3']);
     });
 
-    test('cancelUpload on the in-flight job is a no-op (queue removal only)', () async {
-      final gate = Completer<void>();
+    test('cancelUpload aborts the in-flight job but keeps draining the queue', () async {
       final a = FakeIntegration('Omi Cloud');
       a.onUpload = (c) async {
-        await gate.future;
+        // k1 chunk-loops (cancellable); k2/k3 deliver immediately.
+        if (c.uploadKey == 'k1') {
+          for (var i = 0; i < 100; i++) {
+            if (a.lastIsCancelled?.call() ?? false) return;
+            await Future.delayed(const Duration(milliseconds: 1));
+          }
+        }
         a.deliver(c);
       };
       final m = makeManager([a]);
 
-      await m.uploadConversation(conv('k1')); // in flight (gated)
-      m.cancelUpload(conv('k1'), 'Omi Cloud'); // can't remove an in-flight job from the queue
-      gate.complete();
+      await m.uploadConversation(conv('k1')); // in flight (chunking)
+      await m.uploadConversation(conv('k2')); // queued
+      await m.uploadConversation(conv('k3')); // queued
+
+      m.cancelUpload(conv('k1'), 'Omi Cloud'); // bail just the in-flight one
       await settle(m);
 
-      expect(a.hasDelivered(conv('k1')), true, reason: 'in-flight job is unaffected by single queue-cancel');
+      expect(a.hasDelivered(conv('k1')), false, reason: 'in-flight job aborted');
+      expect(a.hasDelivered(conv('k2')), true, reason: 'queue keeps draining');
+      expect(a.hasDelivered(conv('k3')), true);
     });
 
     test('cancelAllUploadsFor clears the whole lane', () async {
