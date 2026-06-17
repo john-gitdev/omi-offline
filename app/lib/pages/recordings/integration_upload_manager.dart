@@ -451,6 +451,38 @@ class IntegrationUploadManager {
     if (!_isDisposed()) _notifyUi();
   }
 
+  /// Number of uploads (in-flight + queued, manual + auto) currently active for
+  /// [integrationName]. Drives the cancel UI's choice between cancelling just one
+  /// recording and prompting to clear the whole queue.
+  int activeUploadCountFor(String integrationName) {
+    final lane = _lanes[integrationName];
+    if (lane == null) return 0;
+    return lane.manual.length + lane.auto.length + (lane.current != null ? 1 : 0);
+  }
+
+  /// Cancels a single *queued* upload of [c] to [integrationName], leaving the
+  /// rest of the lane's queue draining. No-op if [c] isn't queued for it (e.g.
+  /// it's already the in-flight job — use [cancelAllUploadsFor] to stop that too).
+  /// An auto job removed here may re-enqueue on a later sweep while the
+  /// integration's Auto-Upload is still on; a manual one stays cancelled.
+  void cancelUpload(Conversation c, String integrationName) {
+    final lane = _lanes[integrationName];
+    if (lane == null) return;
+    final key = '${integrationName}_${c.file.path}';
+    final before = lane.manual.length + lane.auto.length;
+    lane.manual.removeWhere((j) => j.key == key);
+    lane.auto.removeWhere((j) => j.key == key);
+    final removed = before - (lane.manual.length + lane.auto.length);
+    if (removed > 0) {
+      Logger.debug('IntegrationUploadManager: cancelled queued upload of ${c.uploadKey} to $integrationName');
+      if (!_isDisposed()) _notifyUi();
+    }
+  }
+
+  /// Cancels everything for [integrationName] — in-flight + queued (manual and
+  /// auto) — clearing its queue. Same mechanism as a full integration disable.
+  void cancelAllUploadsFor(String integrationName) => _cancelUploadsFor(integrationName);
+
   Future<List<UploadFailure>> uploadConversation(Conversation conversation, {bool force = false}) async {
     final uploadKey = conversation.uploadKey;
     if (uploadKey == null) throw Exception('Upload key unavailable');
