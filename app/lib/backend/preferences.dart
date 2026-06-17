@@ -303,6 +303,19 @@ class SharedPreferencesUtil {
     await saveInt('omiBackoffUntil_$binPath', epochMs);
   }
 
+  // Consecutive server-busy count for [binPath], driving the exponential backoff
+  // window (see OmiPassthroughIntegration). Reset to 0 once a chunk is accepted
+  // (backend healthy again) and cleared on full sync by [clearOmiSegments].
+  int getOmiBusyStreak(String binPath) => getInt('omiBusyStreak_$binPath', defaultValue: 0);
+
+  Future<void> incrementOmiBusyStreak(String binPath) async {
+    await saveInt('omiBusyStreak_$binPath', getOmiBusyStreak(binPath) + 1);
+  }
+
+  Future<void> clearOmiBusyStreak(String binPath) async {
+    await remove('omiBusyStreak_$binPath');
+  }
+
   Future<void> clearOmiSegments(String binPath) async {
     final prefix = '$binPath#';
     final current = omiSyncedSegments;
@@ -324,6 +337,7 @@ class SharedPreferencesUtil {
       await saveStringList('omiSegmentJobs', jPruned);
     }
     await remove('omiBackoffUntil_$binPath');
+    await remove('omiBusyStreak_$binPath');
   }
 
   // Firebase user UID and email — stored in plain SharedPreferences (non-sensitive identifiers).
