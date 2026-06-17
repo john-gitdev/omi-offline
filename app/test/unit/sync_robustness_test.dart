@@ -247,6 +247,16 @@ class MockDeviceConnection implements DeviceConnection {
   @override
   Future<int?> performGetMicGain() => throw UnimplementedError();
   @override
+  Future<void> performSetButtonConfig(List<int> config) => throw UnimplementedError();
+  @override
+  Future<List<int>?> performGetButtonConfig() => throw UnimplementedError();
+  @override
+  Future<void> setButtonConfig(List<int> config) => throw UnimplementedError();
+  @override
+  Future<List<int>?> getButtonConfig() => throw UnimplementedError();
+  @override
+  Future<bool> sendUnpairCommand() => throw UnimplementedError();
+  @override
   Future<void> setVadThreshold(int threshold) => throw UnimplementedError();
   @override
   Future<int?> getVadThreshold() => throw UnimplementedError();
