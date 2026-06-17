@@ -486,6 +486,92 @@ void main() {
       expect(omi.hasDelivered(conv('m1')), true, reason: 'auto-only cancel must leave a manual upload running');
     });
 
+    test('activeUploadCountFor counts in-flight + queued for the integration', () async {
+      final gate = Completer<void>();
+      final a = FakeIntegration('Omi Cloud');
+      a.onUpload = (c) async {
+        await gate.future;
+        a.deliver(c);
+      };
+      final m = makeManager([a]);
+
+      expect(m.activeUploadCountFor('Omi Cloud'), 0);
+      await m.uploadConversation(conv('k1')); // in flight (gated)
+      await m.uploadConversation(conv('k2')); // queued
+      await m.uploadConversation(conv('k3')); // queued
+      expect(m.activeUploadCountFor('Omi Cloud'), 3);
+
+      gate.complete();
+      await settle(m);
+      expect(m.activeUploadCountFor('Omi Cloud'), 0);
+    });
+
+    test('cancelUpload drops just the named recording, leaving the rest queued', () async {
+      final gate = Completer<void>();
+      final a = FakeIntegration('Omi Cloud');
+      a.onUpload = (c) async {
+        await gate.future;
+        a.deliver(c);
+      };
+      final m = makeManager([a]);
+
+      await m.uploadConversation(conv('k1')); // in flight (gated)
+      await m.uploadConversation(conv('k2')); // queued
+      await m.uploadConversation(conv('k3')); // queued
+
+      m.cancelUpload(conv('k2'), 'Omi Cloud'); // pull k2 out of the queue
+      expect(m.uploadingFiles, containsAll(<String>{'k1', 'k3'}));
+      expect(m.uploadingFiles.contains('k2'), false);
+
+      gate.complete();
+      await settle(m);
+
+      // k1 (in flight) and k3 (still queued) ran; k2 was cancelled.
+      expect(a.uploadCalls.map((c) => c.uploadKey), ['k1', 'k3']);
+    });
+
+    test('cancelUpload on the in-flight job is a no-op (queue removal only)', () async {
+      final gate = Completer<void>();
+      final a = FakeIntegration('Omi Cloud');
+      a.onUpload = (c) async {
+        await gate.future;
+        a.deliver(c);
+      };
+      final m = makeManager([a]);
+
+      await m.uploadConversation(conv('k1')); // in flight (gated)
+      m.cancelUpload(conv('k1'), 'Omi Cloud'); // can't remove an in-flight job from the queue
+      gate.complete();
+      await settle(m);
+
+      expect(a.hasDelivered(conv('k1')), true, reason: 'in-flight job is unaffected by single queue-cancel');
+    });
+
+    test('cancelAllUploadsFor clears the whole lane', () async {
+      final gate = Completer<void>();
+      final a = FakeIntegration('Omi Cloud');
+      a.onUpload = (c) async {
+        for (var i = 0; i < 50; i++) {
+          if (a.lastIsCancelled?.call() ?? false) return;
+          await Future.delayed(const Duration(milliseconds: 1));
+        }
+        await gate.future;
+        a.deliver(c);
+      };
+      final m = makeManager([a]);
+
+      await m.uploadConversation(conv('k1')); // in flight (chunking)
+      await m.uploadConversation(conv('k2')); // queued
+      await m.uploadConversation(conv('k3')); // queued
+
+      m.cancelAllUploadsFor('Omi Cloud');
+      await settle(m);
+
+      expect(a.uploadCalls.map((c) => c.uploadKey), ['k1'], reason: 'k2/k3 dropped, k1 aborted');
+      expect(a.hasDelivered(conv('k1')), false);
+      expect(m.uploadingFiles, isEmpty);
+    });
+
     test('auto-only cancel aborts an in-flight auto upload', () async {
       final omi = FakeIntegration('Omi Cloud', autoUpload: true)..enabledByDefault = true;
       omi.onUpload = (c) async {
