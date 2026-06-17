@@ -91,6 +91,9 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
   @override
   void dispose() {
     killMcuUpdateManager();
+    // Backstop: release the OTA screen/CPU wakelocks in case a terminal DFU
+    // callback didn't fire (e.g. an MCU update failure has no explicit handler).
+    releaseUpdateWakelocks();
     final provider = _deviceProvider;
     if (provider != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
