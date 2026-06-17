@@ -407,6 +407,13 @@ final class StorageDownloadSession {
 
     private let lock = NSLock()
     private let timerQueue = DispatchQueue(label: "com.omi.ble.download.timeout")
+    // Serial queue for packet parsing + file writes. CoreBluetooth delivers
+    // notifications on its delegate queue (the main queue); writing to disk there
+    // per packet blocks that thread and stalls the next notification batch — iOS
+    // won't hand us more data until the callback returns. Bouncing the work here
+    // keeps the delegate callback instant. CB delivers packets in order, and async
+    // onto a serial queue preserves that order, so byte ordering is unchanged.
+    private let ioQueue = DispatchQueue(label: "com.omi.ble.download.io", qos: .userInitiated)
     private var timeoutTimer: DispatchSourceTimer?
     private var lastActivity: UInt64 = 0
     private static let inactivityTimeoutNs: UInt64 = 15_000_000_000 // 15 s
@@ -460,7 +467,13 @@ final class StorageDownloadSession {
     }
 
     /// Feed one notification packet. Called on the CoreBluetooth (main) queue.
+    /// Bounces the actual parse + disk write onto [ioQueue] so the delegate
+    /// callback returns immediately and iOS keeps the notification pipe full.
     func onPacket(_ value: Data) {
+        ioQueue.async { [weak self] in self?.processPacket(value) }
+    }
+
+    private func processPacket(_ value: Data) {
         lock.lock()
         if completed { lock.unlock(); return }
         let bytes = [UInt8](value)
