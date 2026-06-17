@@ -46,6 +46,12 @@ abstract class PassthroughIntegration {
   /// Always false for integrations without server-driven backoff.
   bool isBackingOff(Conversation c);
 
+  /// When the current server-driven backoff for [c] elapses, or null if [c] is
+  /// not backing off. Lets the upload worker pause its lane until the real
+  /// (exponential) backoff passes rather than a fixed window. Null for
+  /// integrations without server-driven backoff.
+  DateTime? backingOffUntil(Conversation c);
+
   /// Maximum number of concurrent auto-uploads allowed for this service.
   int get concurrencyLimit;
 
@@ -136,6 +142,9 @@ class HeyPocketPassthroughIntegration implements PassthroughIntegration {
 
   @override
   bool isBackingOff(Conversation c) => false;
+
+  @override
+  DateTime? backingOffUntil(Conversation c) => null;
 }
 
 class OmiPassthroughIntegration implements PassthroughIntegration {
@@ -183,10 +192,22 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
     return _prefs.getAutoUploadRetries(PassthroughIntegration.getBinPath(c)) >= 3;
   }
 
-  /// How long to wait before re-attempting after the server reports it's busy
-  /// (a 503). Long enough that a backed-up backend gets breathing room; the next
-  /// auto-upload sweep after this elapses picks the recording back up.
-  static const Duration _busyBackoff = Duration(minutes: 5);
+  /// Exponential backoff after the server reports it's busy/overloaded (a 503, or
+  /// a 502/504 gateway timeout): 5m, 10m, 20m, 40m, capped at 60m, indexed by the
+  /// consecutive-busy streak. A backend that's down for a while is polled
+  /// progressively less often instead of every 5 min — and never given up on (the
+  /// 3-strike give-up budget is reserved for genuine content/4xx failures). The
+  /// next auto-upload sweep after the window elapses picks the recording back up.
+  static const Duration _busyBackoffBase = Duration(minutes: 5);
+  static const Duration _busyBackoffCap = Duration(minutes: 60);
+
+  static Duration _busyBackoffFor(int streak) {
+    // streak is 1 on the first busy: base, then doubling each consecutive busy.
+    final shift = (streak - 1).clamp(0, 30);
+    final ms = _busyBackoffBase.inMilliseconds << shift;
+    final capMs = _busyBackoffCap.inMilliseconds;
+    return Duration(milliseconds: (ms < 0 || ms > capMs) ? capMs : ms);
+  }
 
   @override
   (int, int)? segmentProgress(Conversation c) {
@@ -197,9 +218,13 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
   }
 
   @override
-  bool isBackingOff(Conversation c) {
+  bool isBackingOff(Conversation c) => backingOffUntil(c) != null;
+
+  @override
+  DateTime? backingOffUntil(Conversation c) {
     final until = _prefs.getOmiBackoffUntil(PassthroughIntegration.getBinPath(c));
-    return until > DateTime.now().millisecondsSinceEpoch;
+    if (until <= DateTime.now().millisecondsSinceEpoch) return null;
+    return DateTime.fromMillisecondsSinceEpoch(until);
   }
 
   @override
@@ -238,6 +263,7 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
           case OmiJobStatus.completed:
             await _prefs.markOmiSegmentSynced(segmentKey);
             await _prefs.clearOmiSegmentJobId(segmentKey);
+            await _prefs.clearOmiBusyStreak(binPath); // backend healthy again — reset backoff
             onProgress?.call();
             lastResult = outcome.result;
           case OmiJobStatus.pending:
@@ -248,14 +274,20 @@ class OmiPassthroughIntegration implements PassthroughIntegration {
             await _prefs.clearAutoUploadRetry(binPath);
             return;
           case OmiJobStatus.busy:
-            // Server overloaded (503). The chunk's job (if any) is dead, so drop
-            // its id and re-upload later — but not now: set a backoff so auto-upload
-            // leaves the backend alone for a while. Not a failure; clear the marker.
+            // Server overloaded or its gateway timed out (a 503, or a 502/504).
+            // The chunk's job (if any) is dead, so drop its id and re-upload later
+            // — but not now: set an exponential backoff (escalating with each
+            // consecutive busy) so auto-upload leaves a struggling backend alone
+            // for progressively longer. Not a failure; don't spend the give-up
+            // budget, and clear the up-front failure marker.
             await _prefs.clearOmiSegmentJobId(segmentKey);
             await _prefs.clearAutoUploadRetry(binPath);
-            await _prefs.setOmiBackoffUntil(binPath, DateTime.now().add(_busyBackoff).millisecondsSinceEpoch);
-            Logger.debug(
-                'Omi Cloud: server busy on segment ${i + 1}/${segments.length}; backing off ${_busyBackoff.inMinutes}m');
+            await _prefs.incrementOmiBusyStreak(binPath);
+            final streak = _prefs.getOmiBusyStreak(binPath);
+            final backoff = _busyBackoffFor(streak);
+            await _prefs.setOmiBackoffUntil(binPath, DateTime.now().add(backoff).millisecondsSinceEpoch);
+            Logger.debug('Omi Cloud: server busy on segment ${i + 1}/${segments.length}; '
+                'backing off ${backoff.inMinutes}m (streak $streak)');
             return;
           case OmiJobStatus.failed:
           case OmiJobStatus.gone:
