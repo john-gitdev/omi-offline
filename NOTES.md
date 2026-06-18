@@ -12,7 +12,7 @@ Running log of investigated bugs, deferred decisions, and findings that don't fi
 
 **It is not iOS dropping the link.** `"…disconnected from us."` is the `localizedDescription` of `CBError.peripheralDisconnected` (code 7) — the *peripheral* terminated the link. A real RF/supervision loss would instead read `"…timed out unexpectedly"` (code 6). The disconnect is device-side.
 
-**`low power wake (uptime: <10m)` is a red herring.** That diagnostics line (`omi_connection.dart`) reads a *persisted boot* reset-cause and is re-logged on every reconnect, so it doesn't describe any given drop. The only firmware path that sets `RESET_LOW_POWER_WAKE` (0x80) is waking from a deliberate **4-tap-hold power-off** (`button.c` → `sys_poweroff()`). It is explicitly *not* a crash (crashes set watchdog/CPU-lockup bits and log `CRASH —`).
+**`low power wake (uptime: <10m)` is a red herring.** That diagnostics line (decoded in `device_crash_log.dart`, bit `0x080`) reads a *persisted boot* reset-cause and is re-logged on every reconnect, so it doesn't describe any given drop. The only firmware path that sets `RESET_LOW_POWER_WAKE` (0x80) is waking from a deliberate **4-tap-hold power-off** (`button.c` `turnoff_all()` → `sys_poweroff()`). It is explicitly *not* a crash (crashes set watchdog/CPU-lockup bits and log `CRASH —`).
 
 **Root cause.** The firmware idle-disconnects after **15 s** of no storage-characteristic GATT activity, terminating with `bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN)` (`transport.c` `idle_disconnect_work_handler`) → iOS code 7 ("from us"). That timer is only deferred while `storage_transfer_active()` is true, i.e. a *single file's* read is in flight (`storage.c`). The vulnerable window is **between files in a batch** (and just after a read completes), where the flag is false and only the app's keep-alive holds the link up.
 
@@ -34,6 +34,8 @@ The Dart keep-alive stays (foreground liveness + its force-disconnect-on-failure
 ---
 
 ## Live test data — raw .bin segments
+
+> **Stale (2026-06-17 audit):** the `test-data/` directory, the `live_bins_20260603.tar` snapshot, and `restore-bins.sh` are **no longer present** in the working tree (the dir doesn't exist and nothing matching is git-tracked). The procedure below is kept as a reference for recreating the harness; the paths it names don't currently exist.
 
 `test-data/live_bins_20260603.tar` — 76 raw `.bin` segments captured 2026-06-03. Gitignored (133 MB), lives on your machine only.
 
@@ -147,7 +149,7 @@ The channel half is the sole remaining lever (~2× on VAD ≈ ~37 % off processi
 
 **Why it failed (the actual root cause):** the strip set was derived only from the *handed-in* batches' discards (`processAll`: `batches.expand((b) => b.discards)`), and that set came up empty because of a **date-key mismatch**:
 
-- Raw-segment batches are keyed by `DateTime.fromMillisecondsSinceEpoch(ts)` at `recordings_manager.dart:967` — but `ts` is the bin filename's epoch **seconds** (e.g. `1780375808`). Treated as ms, every UTC-stamped bin lands in a **1970** batch.
+- Raw-segment batches were keyed by `DateTime.fromMillisecondsSinceEpoch(ts)` (the buggy read, now in `recordings_manager.dart` near the `getBatches` date-keying ~`:220`) — but `ts` is the bin filename's epoch **seconds** (e.g. `1780375808`). Treated as ms, every UTC-stamped bin lands in a **1970** batch.
 - Discard records are filed under the conversation's real **local date** (2026-06-02).
 - So the bin's batch (1970, has rawSegments) and its discard record's batch (2026, no rawSegments) never coincide, and callers pre-filter with `.where((b) => b.rawSegments.isNotEmpty)` — dropping the 2026 discard-only batch before `processAll` sees it. Strip set empty ⇒ every discarded bin re-runs VAD forever, and the byte-based "minutes to process" estimate (computed straight off `rawSegments`) re-counts them.
 
@@ -155,7 +157,7 @@ Confirmed in the log: the 07:20 run reprocessed 12 bins from 04:50–06:44 alrea
 
 **Fix (shipped):** new `RecordingsManager.discardedRelBinPaths()` reads the **full** persisted discard set (all `discards.jsonl`), AM-gated, mirroring `getDiscardsForDate`'s `silence_trimmed` skip. Used by both `processAll`'s strip and the three post-sync estimate sites in `recordings_controller.dart` (`_isProcessableBin`), so reprocessing stops and the displayed minutes match what's actually processed. Robust to the mis-dating without touching batch identity. Recover/Delete/sweep still remove the record → bin re-enters; Adjustment Mode still keeps all bins.
 
-**Root mis-dating (`:967`) — also FIXED.** The seconds-as-ms read is corrected to `_dateStringFromMillis(ts * 1000)` (the canonical local-date helper, with the `kMinValidEpoch` 946684800 threshold; uptime/unparseable names still fall back to mtime). Raw bins now group under their real date alongside same-day recordings/discards. Regression test added: `getBatches groups epoch-second bin filenames under the real date, not 1970`.
+**Root mis-dating — also FIXED.** The seconds-as-ms read is corrected to `_dateStringFromMillis(ts * 1000)` (`recordings_manager.dart` ~`:225`; the canonical local-date helper, with the `kMinValidEpoch` 946684800 threshold; uptime/unparseable names still fall back to mtime). Raw bins now group under their real date alongside same-day recordings/discards. Regression test added: `getBatches groups epoch-second bin filenames under the real date, not 1970`.
 
 - **Non-AM (normal) processing is unchanged:** `processAllCompletedSessions` only filters by `finalizedRecordings` *in* AM, and `processAll` combines all batches into one stream regardless of date — so the regrouping changes only UI batch labelling and the now-working batch co-location, not what's processed or the estimate total.
 - **AM interaction (an improvement, not a regression):** with correct dates, a day that already has recordings joins the recording-bearing batch, so the background auto-processor skips it in AM — previously it re-ran the phantom 1970 batch every cycle. Explicit reprocess / AM-cleanup paths are unaffected.
@@ -189,15 +191,16 @@ Priority order (highest first):
 | Priority | Condition | LED |
 |----------|-----------|-----|
 | 1 | Device off (`is_off`) | Off |
-| 2 | Charging starts (`is_charging && !is_led_enabled`) | Force `is_led_enabled = true`, continue |
-| 3 | Double-tap marker (`marker_flash_count > 0`) | White (R+G+B) — overrides stealth |
-| 4 | Stealth mode (`!is_led_enabled`) | Off |
-| 5 | Muted | Solid Red |
-| 6 | Low battery (< 10%) | Solid Purple (R+B) |
-| 7 | BLE connected | Solid Blue (wins over recording state) |
-| 8 | Manual recording active (AAD threshold == 65535) | Solid Yellow (R+G) |
-| 9 | AAD auto-recording (`aad_is_recording()`) | Solid Yellow (R+G) |
-| 10 | Idle / disconnected / standby | Off |
+| 2 | Fatal SD fault (`sd_fatal_error`) | **Blinking Red** (toggles each loop pass) — overrides stealth/mute/marker/charging; distinguishable from solid-red mute |
+| 3 | Charging starts (`is_charging && !prev_is_charging`) | Save + force `is_led_enabled = true`, continue (restored when charger removed) |
+| 4 | Marker flash (`marker_flash_count > 0`) | Solid `marker_flash_color`: **White** = auto marker, **Green** = manual-mode start, **Red** = manual-mode stop — overrides stealth |
+| 5 | Stealth mode (`!is_led_enabled`) | Off |
+| 6 | Muted | Solid Red |
+| 7 | Low battery (< 10%) | Solid Purple (R+B) |
+| 8 | BLE connected | Solid Blue (wins over recording state) |
+| 9 | Manual recording active (AAD threshold == 65535) | Solid Yellow (R+G) |
+| 10 | AAD auto-recording (`aad_is_recording()`) | Solid Yellow (R+G) |
+| 11 | Idle / disconnected / standby | Off |
 
 ### Charging Override
 Applied on top of the base state above:
@@ -206,21 +209,28 @@ Applied on top of the base state above:
 - Plugging in charger automatically disables Stealth Mode (`is_led_enabled = true`)
 
 ### Button Controls
-| Action | Effect | Haptic |
-|--------|--------|--------|
-| Single tap | No action | None |
-| Double tap | White flash ~1s (marker recorded via `write_marker_to_storage()`) — ignored if muted. In manual AAD mode: toggles manual recording start/stop instead. | None |
-| Double tap + hold (1s on second press) | Toggle Mute — LED goes Red when muted, mic paused. Suppressed in manual AAD mode. | None |
-| Triple tap | Toggle Stealth Mode (`is_led_enabled`) | None |
-| Triple tap + hold (3s on third press) | Power off (`turnoff_all()`) | 100ms |
+
+**The 1–3-tap gestures are now user-configurable**, not hard-coded. `execute_button_action(taps, is_hold)` reads a 6-byte map via `app_settings_get_button_config()`, indexed `(taps-1)*2 + is_hold`, into a `button_action_t` (`BUTTON_ACTION_NONE=0`, `MUTE=1`, `MARKER=2`, `TOGGLE_LED=3`). `HOLD_TIME` = 1000 ms. The **4-tap and 5-tap** gestures below are fixed (handled directly in `check_button_level`, not via the config map).
+
+Default config `{0, 0, 2, 1, 3, 0}` (`settings.c`) gives the out-of-box behavior:
+
+| Gesture | Default action | Effect | Haptic |
+|--------|--------|--------|--------|
+| Single tap (± hold) | None | No action | None |
+| Double tap | Marker | Marker flash (white; **green** on manual-mode start / **red** on manual-mode stop), `write_marker_to_storage()` — ignored if muted. In manual mode, toggles recording (sets AAD threshold 65535/32769) instead of writing a plain marker. | None |
+| Double tap + hold (≥1s) | Mute | Toggle Mute — LED solid Red when muted, mic paused. Suppressed/no marker in manual mode. | None |
+| Triple tap | Toggle LED | Toggle Stealth Mode (`is_led_enabled`) | None |
+| Triple tap + hold (≥1s) | None | No action by default | None |
+| **4-tap + hold (≥3s)** | *(fixed)* | Power off (`turnoff_all()`) | 100ms |
+| **5-tap + hold (≥10s)** | *(fixed)* | Unpair — `bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY)` clears all BLE bonds; red LED blinks ×3 | 1000ms |
 
 ### Hardware Error LEDs
-**Removed in production.** All `error_*()` functions in `feedback.c` log to UART/RTT only. No visual LED feedback on errors.
+The legacy `error_*()` functions in `feedback.c` log to UART/RTT only — no LED. **The one exception is a fatal SD fault**, which `set_led_state()` surfaces as a **blinking red** LED (priority 2 above; `sd_fatal_error`). It overrides stealth/mute/marker/charging and toggles every ~500 ms loop pass, so it's distinguishable from solid-red mute. This is the only visual error indicator.
 
 ### Stealth Mode Notes
-- Triple tap toggles `is_led_enabled`
-- Stealth suppresses all base state LEDs (priority 4)
-- Stealth does **not** suppress double-tap white flash (priority 3 fires first)
+- Triple tap (default mapping) toggles `is_led_enabled`
+- Stealth suppresses all base state LEDs (priority 5)
+- Stealth does **not** suppress the marker flash (priority 4 fires first), nor a fatal-SD blink (priority 2)
 - Charging always overrides stealth back on
 
 ---
@@ -258,21 +268,25 @@ Battery voltage on the 150 mAh LiPo changes on the order of millivolts per minut
 
 **Location:** `omi/firmware/omi/src/sd_card.c`
 
-**Current values:**
+**Current values (`sd_card.c:48`):**
 ```c
-#define SD_REQ_QUEUE_MSGS  150   // main audio write queue depth
+#define SD_REQ_QUEUE_MSGS  100   // main audio write queue depth
 #define SD_PRIO_QUEUE_MSGS  10   // priority queue (control requests)
+#define MAX_READS_BETWEEN_WRITES 6  // write fairness: force a write turn after N reads
+#define WRITE_FAIR_MIN  4        // write fairness: min writes drained per forced turn
 #define WRITE_BATCH_COUNT  100   // frames accumulated per write batch
 #define SD_FSYNC_INTERVAL_MS (60 * 1000)  // fsync every 60s
 ```
 
-Each slot in `sd_msgq` holds one `sd_req_t`, which embeds a `uint8_t buf[MAX_WRITE_SIZE]` (440 B) directly — so the queue's RAM cost is ~`SD_REQ_QUEUE_MSGS × 440 B`. At 150 that's **~66 KB** — the single largest RAM consumer in the app core (next is `write_batch_buffer` at 44 KB). A `k_mem_slab` refactor (pointer-in-slot instead of embedded buffer) was tried and **reverted** — same buffer depth = same RAM, no win. The only lever to shrink the queue's RAM is the slot **count**: each slot dropped frees ~440 B.
+Each slot in `sd_msgq` holds one `sd_req_t`, which embeds a `uint8_t buf[MAX_WRITE_SIZE]` (440 B) directly — so the queue's RAM cost is ~`SD_REQ_QUEUE_MSGS × 440 B`. At 100 that's **~44 KB** — on par with `write_batch_buffer` (also 44 KB) as the largest RAM consumer in the app core. A `k_mem_slab` refactor (pointer-in-slot instead of embedded buffer) was tried and **reverted** — same buffer depth = same RAM, no win. The only lever to shrink the queue's RAM is the slot **count**: each slot dropped frees ~440 B.
+
+**Write fairness (`0095b1fa8`, 2026-06-10) is now what holds the line — not depth.** The priority (read) queue is normally drained first, but a steady read stream during an active sync must not starve audio writes. The worker forces a write turn after `MAX_READS_BETWEEN_WRITES` (6) consecutive reads and drains at least `WRITE_FAIR_MIN` (4) writes before yielding back to reads. This bounds write latency to ~6 read-ops regardless of read pressure, so the queue depth no longer has to absorb full read-burst diversions — which is why the depth could come back down from 150 to 100 without re-introducing the sync-time drops (see history below). Two new since-boot observability counters track headroom: `sd_msgq_peak_depth` (high-water mark of occupancy vs the 100 limit) and `write_fair_activations` (times fairness engaged); both are surfaced in Debug Tools (see "SD Write Drop Counters").
 
 `SD_FSYNC_INTERVAL_MS` (60 s) controls durability: data is in the LittleFS write cache until fsync fires. A hard power-off within this window risks losing up to 60 s of audio, but LittleFS's copy-on-write metadata ensures the filesystem itself stays consistent.
 
 The early-flush path (`sd_boot_ready` gate + high-watermark logic) prevents the queue from filling during the boot `lfs_fs_gc` pre-warm and during bursts of rapid audio ingestion.
 
-### Why 150 (history — do not re-litigate without data)
+### Why 100 today (history — do not re-litigate without data)
 
 The depth has been a repeated tug-of-war between RAM and **audio frame drops during BLE sync**. Trajectory (git):
 
@@ -284,8 +298,9 @@ The depth has been a repeated tug-of-war between RAM and **audio frame drops dur
 | `5d6d20fe8` (Apr 3) | **200** | **"to prevent frame drops"** (companion: `a1bf73ef8` "diagnose SD queue contention during BLE sync") |
 | `252d3b0f1` (oo-1.4.0) | 100 | RAM |
 | `b577639bc` (Jun 8) | **150** | settled compromise — RAM-affordable, still above the depth that dropped |
+| `0095b1fa8` (Jun 10) | **100** | **write fairness added** — reads can no longer starve writes, so depth no longer has to absorb read-burst diversions; dropped back to 100 for RAM |
 
-**The binding constraint is NOT steady-state SD stalls — it's read/write contention during phone sync.** Audio writes and BLE file reads share one SD-worker thread; while the worker serves a read burst it stops draining the write queue, which then fills at the audio ingest rate and drops frames. A bigger queue absorbs those diversions. **100 demonstrably dropped frames during sync (that's why it went to 200); 150 did not.** Do not drop below 150 without re-running a heavy sync-while-recording test with the drop counters (see "SD Write Drop Counters" section).
+**The binding constraint was read/write contention during phone sync** — NOT steady-state SD stalls. Audio writes and BLE file reads share one SD-worker thread; while the worker served a read burst it stopped draining the write queue, which then filled at the audio ingest rate and dropped frames. A bigger queue absorbed those diversions (100 demonstrably dropped frames during sync, which is why it went to 200, then settled at 150). **As of `0095b1fa8` the contention is addressed structurally by write fairness** (forced write turns, see above), not by queue depth — which is why the depth could safely return to 100. Before changing either lever, re-run a heavy sync-while-recording test and watch the drop counters + `sd_msgq_peak_depth` (see "SD Write Drop Counters" section).
 
 **Rate note (the "2–4 s vs 13 s" confusion):** the Mar 23 commit assumed 25 slots = 500 ms (≈50 blocks/s → 100 = 2 s, 200 = 4 s). On-device measurement (`audio/stats.txt`) showed ~5,100 B/s, i.e. ~11.6 blocks/s → 150 = ~13 s, 100 = ~8.6 s. The queue holds **encoded Opus**, not PCM, so it fills ~6× slower than the 32 KB/s mic rate. The two estimates were never reconciled, but the *observed* drops at 100 settle the decision regardless.
 
@@ -330,7 +345,7 @@ This section reviews the functionality of the Debug Tools present in `app/lib/pa
 **Conclusion:** Matches description.
 
 ### 5. Delete Phone Segments
-**Description:** "Permanently deletes raw segment files stored on this phone."
+**Description:** "Permanently deletes raw, undecoded segment files downloaded to this phone. Decoded recordings and drafts are kept."
 **Implementation:**
 - Blocked if processing is active.
 - Shows a confirmation dialog.
@@ -339,7 +354,7 @@ This section reviews the functionality of the Debug Tools present in `app/lib/pa
 **Conclusion:** Matches description. The `raw_segments` folder contains all the downloaded `.bin` files and markers.
 
 ### 6. Delete Phone Conversations
-**Description:** "Permanently deletes finalized recordings and conversations." (Confirmation dialog also warns that any open conversation in progress is included.)
+**Description:** "Permanently deletes decoded recordings on this phone — finalized conversations and in-progress drafts."
 **Implementation:**
 - Blocked if processing is active.
 - Shows a confirmation dialog.
@@ -511,7 +526,7 @@ These span the whole capture→card pipeline. In pipeline order (mic → encoder
 
 | Counter | Source | Fires when |
 |---|---|---|
-| `codec_drops` | `codec.c::codec_receive_pcm` | The codec ring buffer (`AUDIO_BUFFER_SAMPLES`, 9600 = 0.6 s of PCM) is full when a mic chunk arrives — the **encoder** is CPU-starved. Each drop ≈ one mic chunk (~100 ms). This is the *capture-stage* loss; it's the number that tells you whether `AUDIO_BUFFER_SAMPLES` is too small. Added 2026-06-10. |
+| `codec_drops` | `codec.c::codec_receive_pcm` | The codec ring buffer (`AUDIO_BUFFER_SAMPLES`, 16000 = 1.0 s of PCM; defined in `src/lib/core/config.h`) is full when a mic chunk arrives — the **encoder** is CPU-starved. Each drop ≈ one mic chunk (~100 ms). This is the *capture-stage* loss; it's the number that tells you whether `AUDIO_BUFFER_SAMPLES` is too small. Added 2026-06-10. |
 | `sd_stream_drops` | `sd_card.c::write_to_file` | `k_msgq_put(&sd_msgq, …)` times out after a 1–5 ms retry — a single audio frame is lost. Upstream signal; most block drops are downstream of a stream drop. |
 | `block_drops` | `transport.c::write_custom_packet_to_storage` | `write_to_file` returns ≠ `MAX_WRITE_SIZE` — the entire 440 B block is lost (~5 Opus frames ≈ 100 ms). Headline number; exactly the loss the marker-drift proposal solved for. |
 | `sd_boot_drops` | `sd_card.c::write_to_file` boot path | An audio frame arrives before SD mount + `lfs_fs_gc` + file-open completes. Cold-start issue, **not** relevant to mid-stream drift. |
@@ -519,13 +534,13 @@ These span the whole capture→card pipeline. In pipeline order (mic → encoder
 
 ### BLE characteristic `0x19B10062` (diagnostics service)
 
-Read-only. Returns **32 bytes, little-endian**, eight `u32` fields. Fields were appended over time, so an older app reads a shorter prefix and ignores the rest; the firmware always returns the full current length.
+Read-only. Returns **40 bytes, little-endian**, ten `u32` fields. Fields were appended over time, so an older app reads a shorter prefix and ignores the rest; the firmware always returns the full current length.
 
 ```
 offset:  0            4                  8                12             16
         [ block_drops ][ last_drop_up_ms ][ sd_stream_drops ][ sd_boot_drops ][ now_uptime_ms ]
-offset: 20            24                  28
-        [ conn_fails  ][ last_failed_slow ][ codec_drops ]
+offset: 20            24                  28             32              36
+        [ conn_fails  ][ last_failed_slow ][ codec_drops ][ msgq_peak ][ write_fair_acts ]
 ```
 
 - `block_drops` / `sd_stream_drops` / `sd_boot_drops` / `codec_drops` — see table above.
@@ -533,40 +548,41 @@ offset: 20            24                  28
 - `now_uptime_ms` (offset 16) — current device uptime, the reference clock for `last_drop_uptime_ms`.
 - `conn_fails` (offset 20) — BLE connection-establishment failures (flash-persisted). `last_failed_slow` (offset 24) — 1 if the last fail was during slow advertising.
 - `codec_drops` (offset 28) — capture-stage drops. Added 2026-06-10 (firmware grew 28 → 32 bytes).
+- `msgq_peak` (offset 32) — `sd_msgq_peak_depth`, high-water mark of the SD write queue occupancy since boot (out of `SD_REQ_QUEUE_MSGS` = 100). Low peak = plenty of write headroom. `write_fair_acts` (offset 36) — `write_fair_activations`, times the worker forced a write turn over pending reads (write fairness engaged; informational, not a fault). Both added with the write-fairness work (`0095b1fa8`); firmware grew 32 → 40 bytes.
 
-**History of the length:** 20 B (legacy, 5 drop fields) → 28 B (+ `conn_fails` + `last_failed_slow`) → 32 B (+ `codec_drops`). Keep appending; never reorder.
+**History of the length:** 20 B (legacy, 5 drop fields) → 28 B (+ `conn_fails` + `last_failed_slow`) → 32 B (+ `codec_drops`) → 40 B (+ `msgq_peak` + `write_fair_acts`). Keep appending; never reorder.
 
 All counters are cumulative since boot (except `conn_fails`, which is flash-persisted across reboots). There is **no firmware reset command** — the planned `0x19B10063` "reset stats" write was never added. Reset is done **app-side by baseline subtraction** (see below).
 
 ### Firmware variables / internals
 
-- `transport.c`: `static atomic_t storage_block_drops` and `static atomic_t last_storage_drop_uptime_ms` (both `ATOMIC_INIT(0)`). Incremented together at the two `write_custom_packet_to_storage` failure sites (`atomic_inc` + `atomic_set(k_uptime_get())`). `conn_fails` = `failed_conn_count` atomic. Exposed via `diagnostics_drops_read_handler` (packs all 32 bytes), registered as the last attribute in `diagnostics_service_attr[]`.
+- `transport.c`: `static atomic_t storage_block_drops` and `static atomic_t last_storage_drop_uptime_ms` (both `ATOMIC_INIT(0)`). Incremented together at the two `write_custom_packet_to_storage` failure sites (`atomic_inc` + `atomic_set(k_uptime_get())`). `conn_fails` = `failed_conn_count` atomic. Exposed via `diagnostics_drops_read_handler` (packs all 40 bytes), registered as the last attribute in `diagnostics_service_attr[]`.
 - `codec.c`: `static atomic_t codec_dropped_count` (`ATOMIC_INIT(0)`), incremented at both `codec_receive_pcm` failure sites (ring-full and partial-write). Accessor `codec_get_dropped_frames()` declared in `codec.h`; read by `transport.c` into the diagnostics payload.
-- `sd_card.c`: `static atomic_t stat_dropped_frames` (stream drops) and `static atomic_t boot_dropped_frames` (boot drops). `SD_REQ_QUEUE_MSGS = 150` (sd_card.c:52) backs `K_MSGQ_DEFINE(sd_msgq, …)` — see "SD Write Queue Configuration" for why 150. Accessors: `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`.
-- `sd_card.h`: declares `sd_get_stream_dropped_frames()` and `sd_get_boot_dropped_frames()`.
+- `sd_card.c`: `static atomic_t stat_dropped_frames` (stream drops) and `static atomic_t boot_dropped_frames` (boot drops). `SD_REQ_QUEUE_MSGS = 100` (sd_card.c:48) backs `K_MSGQ_DEFINE(sd_msgq, …)` — see "SD Write Queue Configuration" for why 100. Also `static atomic_t sd_msgq_peak_depth` and `static atomic_t write_fair_activations` (write-path observability). Accessors: `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`, `sd_get_msgq_peak_depth()`, `sd_get_write_fair_activations()`.
+- `sd_card.h`: declares `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`, `sd_get_msgq_peak_depth()`, `sd_get_write_fair_activations()`.
 
 ### App side / how to use it
 
 1. Settings → **Sync** page (`SyncPage`). Turn on the **"Show Diagnostics"** toggle (`SharedPreferencesUtil().showSdWriteDrops`, off by default). The **Diagnostics** card (`_buildDropStatsSection()`) appears and polls the characteristic every 2 s via a `Timer.periodic`.
 2. State fields: `_dropStats` (latest read), `_dropBaseline` (SD/codec snapshot for delta), `_connFailBaseline` (BLE snapshot), `_dropsUnsupported` (true if the char read fails — older firmware).
-3. Rows shown: `440 B blocks dropped`, `Audio frames dropped (SD queue)`, **`Audio dropped pre-encode (codec)`**, `Boot-window frame drops`, `Last block drop`, `Device uptime`, `BLE connect failures`, `Last fail adv mode`.
+3. Rows shown: `440 B blocks dropped`, `Audio frames dropped (SD queue)`, **`Audio dropped pre-encode (codec)`**, `Boot-window frame drops`, `Last block drop`, `Device uptime`, **`SD queue peak depth`** (`{peak} / 100`, highlighted at ≥ 80), **`Write-fairness activations`**, `BLE connect failures`, `Last fail adv mode`.
 4. **One button — "Reset all diagnostics"** (`_resetAllDiagnostics()`) — snapshots a fresh baseline for *every* counter (SD/block/codec drops + BLE fails) at once. The header flips to **"Diagnostics (since reset)"** and all rows restart from 0. This is an **app-side baseline subtraction**, not a firmware zero — the device counters keep climbing; the app shows the delta. SD/codec baselines auto-clear on device reboot (those counters reset to 0 anyway); the BLE baseline persists (firmware counter is flash-backed). Baseline pref keys: `_kBaselineBlocks` / `_kBaselineFrames` / `_kBaselineBoot` / `_kBaselineCodec` / `_kBaselineConnFail`.
-5. Healthy reading: all drop counts at 0 (or unchanged from baseline). Movement means real audio loss — investigate per the table above. **`codec_drops` moving = the encoder is CPU-starved → bump `AUDIO_BUFFER_SAMPLES` (9600 → 16000) — this is the only data that justifies that change.** `sd_stream_drops` moving = msgq saturation (marker-drift concern returns); `boot_drops` moving = cold-start leak.
+5. Healthy reading: all drop counts at 0 (or unchanged from baseline); `SD queue peak depth` well under 100. Movement means real audio loss — investigate per the table above. **`codec_drops` moving = the encoder is CPU-starved → bump `AUDIO_BUFFER_SAMPLES` further (already raised 9600 → 16000 = 1.0 s; this counter is the only data that justifies raising it again).** `sd_stream_drops` moving (or `SD queue peak depth` riding the 100 limit) = msgq saturation (marker-drift concern returns); `boot_drops` moving = cold-start leak.
 
 ### Forcing drops for a controlled test
 
 - Run an active BLE sync **while recording**: the SD-worker retry budget tightens (`K_MSEC(5)` → `K_MSEC(1)`) and sync reads compete with writes on the same worker thread. ~30–60 min usually enough to provoke something if the system is marginal. This is the realistic `block_drops` / `sd_stream_drops` provocation.
-- Or temporarily drop `SD_REQ_QUEUE_MSGS` from 150 → 8 in `sd_card.c` and rebuild — forces SD drops within minutes. Proves the counters fire; says nothing about real-world frequency. Revert after.
+- Or temporarily drop `SD_REQ_QUEUE_MSGS` from 100 → 8 in `sd_card.c` and rebuild — forces SD drops within minutes. Proves the counters fire; says nothing about real-world frequency. Revert after.
 - For `codec_drops`: temporarily shrink `AUDIO_BUFFER_SAMPLES` (config.h) to a tiny value (e.g. 800) and/or add CPU load; the encoder will starve and drop. Revert after.
 
 ### Code locations
 
-- `omi/firmware/omi/src/lib/core/transport.c` — `storage_block_drops` / `last_storage_drop_uptime_ms` (declared ~line 293), `diagnostics_drops_read_handler` (packs 32 bytes incl. `codec_get_dropped_frames()`), char registration in `diagnostics_service_attr[]`, increment sites in `write_custom_packet_to_storage`.
+- `omi/firmware/omi/src/lib/core/transport.c` — `storage_block_drops` / `last_storage_drop_uptime_ms` (declared ~line 293), `diagnostics_drops_read_handler` (packs 40 bytes incl. `codec_get_dropped_frames()`, `sd_get_msgq_peak_depth()`, `sd_get_write_fair_activations()`), char registration in `diagnostics_service_attr[]`, increment sites in `write_custom_packet_to_storage`.
 - `omi/firmware/omi/src/lib/core/codec.c` / `codec.h` — `codec_dropped_count` atomic + `codec_get_dropped_frames()`; increments in `codec_receive_pcm`.
-- `omi/firmware/omi/src/sd_card.c` — `stat_dropped_frames` / `boot_dropped_frames` atomics, `SD_REQ_QUEUE_MSGS` (line 52), `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`.
+- `omi/firmware/omi/src/sd_card.c` — `stat_dropped_frames` / `boot_dropped_frames` / `sd_msgq_peak_depth` / `write_fair_activations` atomics, `SD_REQ_QUEUE_MSGS` (line 48), `sd_get_stream_dropped_frames()`, `sd_get_boot_dropped_frames()`, `sd_get_msgq_peak_depth()`, `sd_get_write_fair_activations()`.
 - `omi/firmware/omi/src/lib/core/sd_card.h` — accessor declarations.
-- `app/lib/services/devices/device_drop_stats.dart` — `DeviceDropStats` model (incl. `codecFrameDrops`).
-- `app/lib/services/devices/omi_connection.dart` — `diagnosticsDropsCharacteristicUuid` (line 53), `performGetDropStats()` (32-byte LE parsing, codec at offset 28).
+- `app/lib/services/devices/device_drop_stats.dart` — `DeviceDropStats` model (incl. `codecFrameDrops`, `msgqPeakDepth`, `writeFairActivations`).
+- `app/lib/services/devices/omi_connection.dart` — `diagnosticsDropsCharacteristicUuid` (line 57), `performGetDropStats()` (40-byte LE parsing: codec at offset 28, msgq peak at 32, write-fairness at 36).
 - `app/lib/services/devices/device_connection.dart` — abstract `getDropStats()`.
 - `app/lib/pages/settings/sync_page.dart` — `showSdWriteDrops` toggle, baseline keys (incl. `_kBaselineCodec`), `_buildDropStatsSection()`, `_resetAllDiagnostics()`.
 
@@ -581,27 +597,27 @@ Delete the characteristic + handler + registration in `transport.c`, the `sd_car
 Shipped in 0.14.9. The two-mode "Maximize Battery" toggle is gone — there is now one background behavior. Recorded here because the invariants below are easy to undo by accident.
 
 ### Why one mode
-The old default (Maximize Battery **off**) tried to stay connected in the background, but the keep-alive is off while backgrounded, so the firmware idle-dropped the link every ~30 s and the app immediately reconnected — a perpetual connect↔disconnect churn (~once/min) that also made the foreground-service notification flicker between "Connected" and the sync countdown. Since the Omi records to SD regardless of BLE, holding the link in the background gained nothing. Collapsed to the old Maximize-**on** behavior: disconnect in the background, reconnect only when a sync is due (scheduled interval, or app open/resume). The `maximizeBattery` pref and the App Settings toggle were removed; every `maximizeBattery` branch was treated as always-on.
+The old default (Maximize Battery **off**) tried to stay connected in the background, but the keep-alive is off while backgrounded, so the firmware idle-dropped the link every ~15 s (`IDLE_DISCONNECT_TIMEOUT_MS`) and the app immediately reconnected — a perpetual connect↔disconnect churn that also made the foreground-service notification flicker between "Connected" and the sync status. Since the Omi records to SD regardless of BLE, holding the link in the background gained nothing. Collapsed to the old Maximize-**on** behavior: disconnect in the background, reconnect only when a sync is due (scheduled interval, or app open/resume). The `maximizeBattery` pref and the App Settings toggle were removed; every `maximizeBattery` branch was treated as always-on.
 
 ### Grace disconnect — load-bearing invariant
-`onAppPaused` does **not** disconnect immediately; it arms `_pauseDisconnectTimer` (`_backgroundDisconnectGrace`, 30 s) so a quick app-switch / notification-shade glance doesn't force a reconnect on return.
+`onAppPaused` does **not** disconnect immediately; it arms `_pauseDisconnectTimer` (`_backgroundDisconnectGrace`, 15 s) so a quick app-switch / notification-shade glance doesn't force a reconnect on return.
 - **The keep-alive must keep running during the grace window.** That — not the grace duration — is what stops the firmware idle-drop, so the link is still live if the user returns. `onAppPaused` therefore must **not** call `_stopForegroundKeepAlive()` (it used to, pre-0.14.9). A future "simplify" that re-adds the early stop silently reintroduces a mid-grace firmware drop. There's an inline comment on the field warning about this.
 - **The tick re-arms while a sync is in flight** (`_onPauseDisconnectTick` → `_armPauseDisconnect`). Start-a-sync-then-background case: keep-alive holds the link through the sync, the grace effectively restarts once `isSyncing` / `_backgroundSyncActive` clears, then it stops the keep-alive and disconnects. Without the re-arm the one-shot timer bailed forever and the device stayed connected (keep-alive pinging) until the next scheduled sync. Local decode/VAD processing does **not** hold the BLE link, so it isn't part of the bail condition.
 - Cancelled on resume, on any background disconnect (`onDeviceDisconnected`), in `dispose` and `prepareDFU`.
-- **30 s value**: covers essentially all quick app-switches; extra connected time vs 20 s is negligible against the device's always-on mic draw. Deliberately a fixed constant, **not** user-selectable — a "grace seconds" slider is the battery-vs-convenience toggle we just removed, in disguise, and isn't a knob a user can reason about.
+- **15 s value**: covers essentially all quick app-switches; extra connected time vs a shorter grace is negligible against the device's always-on mic draw. Deliberately a fixed constant, **not** user-selectable — a "grace seconds" slider is the battery-vs-convenience toggle we just removed, in disguise, and isn't a knob a user can reason about.
 
 ### Firmware idle-drop — keep it (do NOT remove)
-The app-side disconnect is *cooperative* — it only fires while the app's process is alive and the OS runs its lifecycle callbacks. For the *non-cooperative* cases (app killed/swiped/crashed, frozen under Doze, phone out of range) nothing app-side fires, and the firmware's ~30 s idle-drop is the only thing that frees the Omi's radio. The grace delay *widens* the window where the app might not get to disconnect cleanly, so it relies on the firmware net more, not less. No firmware change was made for this work, and the idle-drop should stay.
+The app-side disconnect is *cooperative* — it only fires while the app's process is alive and the OS runs its lifecycle callbacks. For the *non-cooperative* cases (app killed/swiped/crashed, frozen under Doze, phone out of range) nothing app-side fires, and the firmware's ~15 s idle-drop is the only thing that frees the Omi's radio. The grace delay *widens* the window where the app might not get to disconnect cleanly, so it relies on the firmware net more, not less. No firmware change was made for this work, and the idle-drop should stay.
 
 ### Notification
-One foreground-service notification (id 2001, channel `omi_ble_channel`). **Two foreground services share this single id, last-writer-wins**: the native `OmiBleForegroundService` (owns the BLE link, required `connectedDevice`-type FGS) and the Dart `flutter_foreground_task` (`ForegroundUtil`). The Dart side is the sole writer of *content*. All Dart idle writes go through `_showIdleNotification` — **connection-state-independent**, shows only the next-sync countdown — guarded by `_syncOwnsNotification` (sync/processing/`_backgroundSyncActive`) so an active sync keeps its own live progress. The old "Connected to Omi Device" / "Scanning for device…" background writes were removed; they fought the countdown across connect/disconnect transitions.
+One foreground-service notification (id 2001), owned by the native `OmiBleForegroundService` (required `connectedDevice`-type FGS) and driven entirely by the Dart `SyncNotification` helper via `BleHostApi().setSyncStatus(title, text)` — see **"App: Notification Pipeline"** for the full state machine and strings. (The old second `flutter_foreground_task` service / `ForegroundUtil` is gone.) Dart idle writes go through `_showIdleNotification` → `SyncNotification.idle(...)`, guarded by `_syncOwnsNotification` (sync/processing/`_backgroundSyncActive`) so an active sync keeps its own live progress. The idle line shows an absolute "Next sync at H:MM" + last-sync summary (not the old relative countdown).
 
-The **native** service must call `startForeground` (FGS requirement) but uses a single fixed baseline text ("Running in the background") and has **no `updateNotification`** — it never writes connection state. An earlier build had the native side post "Connected to Omi Device" / "Connecting…" / "Disconnected" / "Reconnecting…" on every GATT transition; because it shares id 2001 those clobbered the Dart-owned progress and countdown (the exact bug the Dart-side removal was meant to fix — the native twin was missed). Do not re-add native `updateNotification` calls.
+**Do not make the native side write its own connection state.** An earlier build had the native service post "Connected to Omi Device" / "Connecting…" / "Disconnected" / "Reconnecting…" on every GATT transition; because it shares id 2001 those clobbered the Dart-owned progress (the exact bug the Dart-side cleanup fixed — the native twin was missed). Native should only render the `setSyncStatus` content Dart pushes (plus its fixed `startForeground` baseline), never autonomous GATT-transition text.
 
 Foreground processing progress: `_onProcessingProgress` (a class method on `DeviceProvider`) is gated on `!_isAppInForeground`. When the app is open, `RecordingsController` owns the notification in time-remaining format. `_onProcessingProgress` is registered on `RecordingsManager.processingProgress` in `onAppPaused` (covering both background syncs and foreground-triggered processing that the user backgrounds) and unregistered in `onAppResumed`. `_doBackgroundSync` also registers/unregisters it for the duration of `processAllCompletedSessions`. Remove-before-add in `onAppPaused` prevents double-registration.
 
 ### Always disconnect after a background sync
-`_doBackgroundSync`'s finally disconnects unconditionally in the background. The old `missingCount > 0` "keep the connection" branch was dropped — with the keep-alive stopped it just idle-dropped within ~30 s anyway. Leftover segments are picked up by the next scheduled sync / on resume (`onAppResumed` has a defensive drain for the rare resume-onto-live-link race).
+`_doBackgroundSync`'s finally disconnects unconditionally in the background. The old `missingCount > 0` "keep the connection" branch was dropped — with the keep-alive stopped it just idle-dropped within ~15 s anyway. Leftover segments are picked up by the next scheduled sync / on resume (`onAppResumed` has a defensive drain for the rare resume-onto-live-link race).
 
 ### Code locations
 - `app/lib/providers/device_provider.dart` — `_backgroundDisconnectGrace` + `_pauseDisconnectTimer` (field decl ~line 67), `onAppPaused` / `_armPauseDisconnect` / `_onPauseDisconnectTick`, `onAppResumed` (cancel), `_doBackgroundSync` finally (post-sync disconnect), `_handleDeviceConnected` background drop-guard, `onDeviceDisconnected` background guards, `_showIdleNotification` + `_syncOwnsNotification`.
@@ -612,40 +628,52 @@ Foreground processing progress: `_onProcessingProgress` (a class method on `Devi
 
 ## App: Notification Pipeline
 
-One persistent foreground-service notification (id 2001, `omi_ble_channel`). **Two services share it, last-writer-wins**: the native `OmiBleForegroundService` (required `connectedDevice`-type FGS) and the Dart `flutter_foreground_task` (`ForegroundUtil`). The native service calls `startForeground` with a fixed baseline text and never calls `updateNotification` — all content writes go through the Dart side.
+**Single notification, single owner (rewritten — the old two-service model is gone).** There is now **one** persistent foreground-service notification: the native Android `OmiBleForegroundService` (id 2001, required `connectedDevice`-type FGS). The Dart `flutter_foreground_task` second service and its `ForegroundUtil` wrapper were **removed** (no longer in `pubspec.yaml`). All Dart-side content now flows through **`SyncNotification`** (`app/lib/utils/audio/sync_notification.dart`), which pushes a `(title, text)` pair to native via `BleHostApi().setSyncStatus(title, text)`; native renders it on the single notification. **All `SyncNotification` methods no-op on iOS** (no persistent notification — background work runs via BGProcessingTask).
+
+`SyncNotification` is a small state machine. The states form the sync cycle:
+
+```
+idle → connecting → connected → preparingSync → syncing → finishingSync →
+preparingProcessing → processing → finishingProcessing → complete →
+disconnecting → idle
+```
+
+Discrete transitions are pushed immediately (live). Only the high-frequency in-state progress text (segment counter, processing %) is throttled by its callers. `setPersistent(bool)` keeps the FGS alive with no device connected so the idle line survives BLE disconnect + app background (true while auto-sync is on and a device is bound; false in Manual Only / unbound). `clear()` releases Dart ownership so native resumes its own connection-state text.
 
 ### Ownership rules
 
-**`DeviceProvider`** is the sole writer when the app is in the background. It is also the owner of the foreground-service lifecycle (start/stop) during background syncs.
+**`DeviceProvider`** is the sole writer when the app is in the background, and owns the FGS lifecycle (start/stop) + `SyncNotification.setPersistent` during background syncs. Its idle line goes through `_showIdleNotification()` → `SyncNotification.idle(...)`, guarded by `_syncOwnsNotification` so an active sync/processing run keeps its own live progress.
 
-**`RecordingsController`** is the sole writer when the app is in the foreground. It calls `ForegroundUtil.updateNotification` via `_updateForegroundProgress()`, which is throttled (1 s foreground / 2 s background) and only fires when `_spState` is `syncing` or `processing`.
+**`RecordingsController`** is the sole writer when the app is in the foreground. `_updateForegroundProgress()` (throttled 1 s foreground / 2 s background, only fires when `_spState` is `syncing` or `processing`) calls `SyncNotification.syncing(syncingNotificationText(...))` / `SyncNotification.processing(processingNotificationText())`.
 
-**Transition guard:** `DeviceProvider._onProcessingProgress` is gated on `!_isAppInForeground`. `RecordingsController._updateForegroundProgress` only fires when `_spState == processing || syncing`. The two writers never overlap on the same tick.
+**Transition guard:** `DeviceProvider._onProcessingProgress` is gated on `!_isAppInForeground`; `RecordingsController._updateForegroundProgress` only fires when `_spState == syncing || processing`. The two writers never overlap on the same tick.
 
-### All notification strings, by trigger
+### All notification strings, by state
 
-| When | Who writes | Text |
+Each row is one `SyncNotification` method, rendered natively as **title** + **text** (no longer a single em-dash-joined string):
+
+| State (method) | Title | Text |
 |---|---|---|
-| Background sync starts | `DeviceProvider._doBackgroundSync` | `"Syncing recordings — preparing..."` |
-| Background sync, per-packet | `_BackgroundSyncProgress.onWalSyncedProgress` | `"Syncing recordings — 47% complete"` |
-| Background sync → processing handoff | `DeviceProvider._doBackgroundSync` | `"Processing recordings — preparing..."` |
-| Background processing, per-segment | `DeviceProvider._onProcessingProgress` | `"Processing recordings — 47% complete"` |
-| Background processing at 100% | `DeviceProvider._onProcessingProgress` | `"Processing recordings — finishing..."` |
-| Background finalizing re-sync | `DeviceProvider._doBackgroundSync` | `"Syncing recordings — finalizing..."` |
-| Foreground sync starts | `RecordingsController._runPipeline` / `_runSyncOnly` | `"Syncing recordings — preparing..."` |
-| Foreground sync, per-packet | `RecordingsController._updateForegroundProgress` | `"Syncing recordings — N of M segments (X%)"` |
-| Foreground processing starts | `RecordingsController._startProcessing` | `"Processing recordings — preparing..."` |
-| Foreground processing, duration unknown | `RecordingsController._updateForegroundProgress` | `"Processing recordings — Calculating…"` |
-| Foreground processing, ≥ 1 min remaining | `RecordingsController._updateForegroundProgress` | `"Processing recordings — ~686 min of audio to process"` |
-| Foreground processing, < 1 min remaining | `RecordingsController._updateForegroundProgress` | `"Processing recordings — < 1 min of audio to process"` |
-| Foreground transcoding | `RecordingsController._updateForegroundProgress` | `"Processing recordings — Converting to m4a"` |
-| Delete recordings | `RecordingsController` | `"Cleaning up recordings..."` |
-| Idle, auto-sync on | `DeviceProvider._showIdleNotification` | `"Next sync in ~N min"` / `"Syncing soon..."` |
-| Idle, Manual Only (no schedule) | `DeviceProvider._showIdleNotification` | `"Omi is Connected"` / `"Connecting..."` / `"Omi is Disconnected"` |
+| `connecting()` | `Omi Offline` | `Connecting to Omi…` |
+| `connected()` | `Omi Offline` | `Connected` |
+| `preparingSync()` | `Syncing recordings` | `Preparing…` |
+| `syncing(text)` | `Syncing recordings` | `N of M segments (X%)` (or `Preparing...` when total = 0) — `RecordingsController.syncingNotificationText` |
+| `finishingSync()` | `Syncing recordings` | `Finishing…` |
+| `preparingProcessing()` | `Processing recordings` | `Preparing…` |
+| `processing(text)` | `Processing recordings` | `~N min of audio to process (X%)` / `< 1 min of audio to process (X%)` / `Calculating… (X%)` / `Preparing...` / `Finishing...` — `RecordingsController.processingNotificationText` |
+| `finishingProcessing()` | `Processing recordings` | `Finishing…` |
+| `uploading(text)` | `Uploading recordings` | controller-composed one-line summary + per-integration lines (multi-line; shown only while the sync/process pipeline is idle) |
+| `complete()` | `Conversations ready` | `Sync and processing complete` |
+| `disconnecting()` | `Omi Offline` | `Disconnecting…` |
+| `idle()`, auto-sync on, has synced | `Next sync at H:MM` | `Last Sync: {Complete\|Partial\|Skipped} • H:MM • N% Battery` |
+| `idle()`, Manual Only | `Omi Offline` | `Omi is Connected` / `Connecting...` / `Omi is Disconnected` / `Ready to sync` |
+| `idle()` / `connected()`, muted | `Muted since H:MM` (or `Omi is Muted`) | `Next sync at H:MM` / `Connected` / `Auto-sync off` |
+
+The idle line now shows an **absolute next-sync time** ("Next sync at H:MM") and a last-sync outcome summary, not the old relative "Next sync in ~N min" countdown. `SyncNotification.nextSyncTime` / `isMuted` / `muteSince` are mirrored from `DeviceProvider` so any caller can render these.
 
 ### "Calculating…" guard
 
-`_totalMinutes == 0` means the async file-size measurement (triggered in `_poll` via `_pendingProcessingTransition`) hasn't completed yet. `_updateForegroundProgress` shows "Calculating…" while `_totalMinutes == 0 || _minutesRemaining < 0` to avoid flashing "< 1 min" during the ~100–500 ms async gap when `_spState` flips to `processing` before the byte-count is known.
+`RecordingsController.processingNotificationText()` returns `Calculating… (X%)` when `RecordingsManager.minutesRemaining < 0` but progress has started (`progress > 0`) — i.e. the async file-size measurement hasn't completed yet — to avoid flashing "< 1 min" during the brief gap when `_spState` flips to `processing` before the byte-count is known. (At `progress == 0` with `minutesRemaining < 0` it shows `Preparing...`.)
 
 ### Foreground → background handoff
 
@@ -653,16 +681,17 @@ When the user backgrounds the app during a foreground-triggered processing run, 
 
 ### Stopping subtext
 
-`SyncProcessCard` shows `"Stopping…"` with a dynamic subtext: `"Transferring current file…"` while `isSyncing` is true (a BLE segment write is still in flight to avoid corruption), `"Finishing current step"` once the transfer has drained. `isSyncing` is passed in via `SyncCardData.isSyncing`, read from `ServiceManager.instance().wal.getSyncs().isSyncing` at the build site in `recordings_page.dart`.
+`SyncProcessCard` shows `"Stopping…"` with a dynamic subtext keyed on the stage the pipeline was in when Stop was pressed: `"Transferring current file…"` when `data.lastActiveStage == 'syncing'` (a BLE segment write may still be in flight, so it can't abort instantly without risking corruption), else `"Finishing current step"`. `lastActiveStage` is a controller-owned `String` (`'syncing'` / `'processing'`), passed in via `SyncCardData.lastActiveStage` from `controller.lastActiveStage` at the build site in `recordings_page.dart`.
 
 ### Code locations
 
-- `app/lib/providers/device_provider.dart` — `_onProcessingProgress` (class method), `_syncOwnsNotification`, `_showIdleNotification`, `_doBackgroundSync` (registers/unregisters listener, writes lifecycle strings), `onAppPaused` / `onAppResumed` (listener handoff).
-- `app/lib/pages/recordings/recordings_controller.dart` — `_updateForegroundProgress`, `_onProgressChanged`, `onWalSyncedProgress`.
-- `app/lib/pages/recordings/sync_process_card.dart` — `SyncProcessState.stopping` case (dynamic subtext via `data.isSyncing`).
-- `app/lib/pages/recordings/recordings_types.dart` — `SyncCardData.isSyncing` field.
-- `app/lib/pages/recordings/recordings_page.dart` — `SyncCardData` construction (passes `isSyncing` from `ServiceManager`).
-- `app/lib/services/wals/sdcard_wal_sync.dart` — `_BackgroundSyncProgress.onWalSyncedProgress` (per-packet background sync percentage).
+- `app/lib/utils/audio/sync_notification.dart` — **`SyncNotification`**, the single Dart-side owner: state methods (`connecting`…`idle`), the muted/idle title+text rendering, `setPersistent` / `clear`, and `_push` → `BleHostApi().setSyncStatus(title, text)`.
+- `app/lib/providers/device_provider.dart` — `_onProcessingProgress` (class method), `_syncOwnsNotification`, `_showIdleNotification` (→ `SyncNotification.idle`), `SyncNotification.setPersistent`, `_doBackgroundSync` (lifecycle + listener register/unregister), `onAppPaused` / `onAppResumed` (listener handoff).
+- `app/lib/pages/recordings/recordings_controller.dart` — `_updateForegroundProgress`, `syncingNotificationText`, `processingNotificationText`, `lastActiveStage`.
+- `app/lib/pages/recordings/sync_process_card.dart` — `SyncProcessState.stopping` case (dynamic subtext via `data.lastActiveStage`).
+- `app/lib/pages/recordings/recordings_types.dart` — `SyncCardData.lastActiveStage` field.
+- `app/lib/pages/recordings/recordings_page.dart` — `SyncCardData` construction (passes `lastActiveStage` from `controller`).
+- native `OmiBleForegroundService` — renders `setSyncStatus(title, text)` on the single id-2001 notification.
 
 ---
 
@@ -812,9 +841,9 @@ Surfaced over BLE + the app log, **persisted across power-cycle** so it survives
 
 **Firmware (`transport.c` + `settings.c`):**
 - `failed_conn_count` (atomic, **cumulative across boots** — seeded from flash in `transport_start` ~line 1491) + `last_failed_adv_slow` + `current_adv_mode` (`"slow"`/`"fast"`, set in `transport_set_adv_slow`/`_fast`, reset to `"fast"` in `_transport_disconnected`; boot default `"fast"`).
-- `_transport_connected` err path (~line 858): increments the counter, records the adv mode, schedules a throttled flash persist (`conn_fail_persist_work`, `app_settings_save_conn_fail`), and still RTT-logs `Connection failed (err 0x3e) adv_mode=slow failed_conn_count=N …`.
+- `_transport_connected` err path (~line 1035): increments the counter, records the adv mode, schedules a throttled flash persist (`conn_fail_persist_work`, `app_settings_save_conn_fail`), and still RTT-logs `Connection failed (err 0x3e) adv_mode=slow failed_conn_count=N …`.
 - Persisted via Zephyr settings key `omi/conn_fail` (`struct conn_fail_record { count; last_adv_slow; }`).
-- Exposed by **appending 8 bytes to the existing drops characteristic `0x19B10062`** (now 28 B: legacy 20 + `failed_conn_count` u32 @20 + `last_failed_adv_slow` u32 @24). No new characteristic — backward compatible (old app reads first 20).
+- Exposed by **appending 8 bytes to the existing drops characteristic `0x19B10062`** (28 B at the time: legacy 20 + `failed_conn_count` u32 @20 + `last_failed_adv_slow` u32 @24; the char has since grown to **40 B** — see "SD Write Drop Counters"). No new characteristic — backward compatible (old app reads first 20).
 
 **App:**
 - `DeviceDropStats.failedConnCount` / `.lastFailedConnDuringSlowAdv` (parsed length-gated in `omi_connection.performGetDropStats`; 0/false on ≤20-byte firmware).
@@ -844,7 +873,7 @@ Phone-side counterpart to the firmware-wedge hypotheses above — **a mitigation
 The Android-side `PlatformException(channel-error … requestCompanionDeviceAssociation)` seen first was a **different** problem: `AndroidManifest.xml` was missing `<uses-feature android:name="android.software.companion_device_setup">`, so `CompanionDeviceManager.associate()` threw `IllegalStateException` synchronously → pigeon surfaced it as the opaque channel-error. Fixed by adding the `uses-feature` + a defensive try/catch in `BleHostApiImpl.requestCompanionDeviceAssociation`. That fix is what let the flow progress far enough to expose this firmware-side `0x3e`.
 
 ### Code locations
-- `omi/firmware/omi/src/lib/core/transport.c` — `failed_conn_count` / `current_adv_mode` / `last_failed_adv_slow` / `conn_fail_persist_work` (~line 302), failure path in `_transport_connected` (~line 858), 28-byte `diagnostics_drops_read_handler` (~line 372), boot seed in `transport_start` (~1491), `current_adv_mode` sets in `_transport_disconnected` (~937) / `transport_set_adv_slow` (~1439) / `transport_set_adv_fast` (~1459), `adv_param_slow` definition.
+- `omi/firmware/omi/src/lib/core/transport.c` — `failed_conn_count` / `current_adv_mode` / `last_failed_adv_slow` / `conn_fail_persist_work` (~line 302), failure path in `_transport_connected` (~line 1035), 40-byte `diagnostics_drops_read_handler` (~line 369), boot seed in `transport_start` (~line 1737), `current_adv_mode` sets in `_transport_disconnected` / `transport_set_adv_slow` / `transport_set_adv_fast`, `adv_param_slow` definition.
 - `omi/firmware/omi/src/settings.c` + `src/lib/core/settings.h` — `omi/conn_fail` persistence (`struct conn_fail_record`, `app_settings_save_conn_fail` / `app_settings_get_conn_fail`).
 - `omi/firmware/omi/src/aad.c` — slow/fast switch requests (`adv_slow_req`/`adv_fast_req`, ~lines 244–247, 298, 318, 452).
 - `omi/firmware/omi/omi.conf` — `BT_MAX_CONN`, `BT_CTLR_TX_PWR_ANTENNA`, (absence of) `BT_PRIVACY`, `BT_PERIPHERAL_PREF_*`.
