@@ -101,6 +101,7 @@ class IntegrationStatusList extends StatelessWidget {
               ),
               ...statuses.map((s) => _IntegrationRow(
                     status: s,
+                    cancellable: controller.isCancellableUpload(conversation, s.name),
                     onUpload: () => _runAction(context, () => controller.uploadOne(conversation, s.name)),
                     onReupload: () =>
                         _runAction(context, () => controller.uploadOne(conversation, s.name, force: true)),
@@ -133,12 +134,22 @@ class IntegrationStatusList extends StatelessWidget {
 
 class _IntegrationRow extends StatelessWidget {
   final IntegrationStatus status;
+
+  /// True only when there's genuinely an in-flight or queued job to cancel for
+  /// this integration. The "uploading" state can also be a phantom (an auto job
+  /// in its between-retries window) with nothing to cancel — we suppress the
+  /// Cancel affordance then so it's never a no-op.
+  final bool cancellable;
   final VoidCallback onUpload;
   final VoidCallback onReupload;
   final VoidCallback onCancel;
 
   const _IntegrationRow(
-      {required this.status, required this.onUpload, required this.onReupload, required this.onCancel});
+      {required this.status,
+      required this.cancellable,
+      required this.onUpload,
+      required this.onReupload,
+      required this.onCancel});
 
   /// "Last Upload Failed at: <time>" using the recorded failure time, formatted
   /// per the user's 24-hour / AM-PM preference. Plain "Last Upload Failed" when
@@ -191,23 +202,28 @@ class _IntegrationRow extends StatelessWidget {
     Widget trailing;
     switch (status.state) {
       case IntegrationUploadState.uploading:
-        // Show progress and let the user abort it. Omi Cloud stops between chunks;
-        // HeyPocket finishes its current single request (can't be interrupted).
-        trailing = Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
-            ),
-            TextButton(
-              onPressed: onCancel,
-              child: const Text('Cancel',
-                  style: TextStyle(color: Colors.amber, fontSize: 13, fontWeight: FontWeight.w600)),
-            ),
-          ],
+        const spinner = SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.deepPurpleAccent),
         );
+        // Show progress and, when there's a real job behind it, let the user abort.
+        // Omi Cloud stops between chunks; HeyPocket finishes its current single
+        // request (can't be interrupted). When not cancellable (the phantom
+        // between-retries window) show just the spinner — there's nothing to stop.
+        trailing = cancellable
+            ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  spinner,
+                  TextButton(
+                    onPressed: onCancel,
+                    child: const Text('Cancel',
+                        style: TextStyle(color: Colors.amber, fontSize: 13, fontWeight: FontWeight.w600)),
+                  ),
+                ],
+              )
+            : spinner;
         break;
       case IntegrationUploadState.delivered:
         trailing = TextButton(
@@ -231,12 +247,15 @@ class _IntegrationRow extends StatelessWidget {
         break;
       case IntegrationUploadState.queued:
         // Waiting behind the single sequential worker — let the user pull it back
-        // out of the queue (and optionally clear the whole queue).
-        trailing = TextButton(
-          onPressed: onCancel,
-          child: const Text('Cancel',
-              style: TextStyle(color: Colors.amber, fontSize: 13, fontWeight: FontWeight.w600)),
-        );
+        // out of the queue (and optionally clear the whole queue). A queued row is
+        // always cancellable; the guard is just belt-and-suspenders.
+        trailing = cancellable
+            ? TextButton(
+                onPressed: onCancel,
+                child: const Text('Cancel',
+                    style: TextStyle(color: Colors.amber, fontSize: 13, fontWeight: FontWeight.w600)),
+              )
+            : Text('Waiting…', style: TextStyle(color: Colors.amber.shade200, fontSize: 13));
         break;
       case IntegrationUploadState.unavailable:
         trailing = const SizedBox.shrink();
