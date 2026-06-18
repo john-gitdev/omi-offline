@@ -27,6 +27,8 @@ class IntegrationStatusList extends StatelessWidget {
       return;
     }
 
+    // Tap outside or press back to dismiss (returns null) — no explicit dismiss
+    // button; the two actions are the only deliberate choices.
     final choice = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -34,21 +36,17 @@ class IntegrationStatusList extends StatelessWidget {
         title: const Text('Cancel upload', style: TextStyle(color: Colors.white, fontSize: 20)),
         content: Text(
           '$count uploads are in progress or queued for $integrationName. '
-          'Cancel just this recording, or clear the whole queue?',
+          'Cancel just this recording, or the entire queue?',
           style: const TextStyle(color: Colors.white, fontSize: 16),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(ctx).pop(), // dismiss — change nothing
-            child: const Text('Cancel', style: TextStyle(color: Colors.white)),
-          ),
-          TextButton(
             onPressed: () => Navigator.of(ctx).pop('single'),
-            child: const Text('This recording', style: TextStyle(color: Colors.amber)),
+            child: const Text('This Recording', style: TextStyle(color: Colors.amber)),
           ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop('all'),
-            child: const Text('Clear queue', style: TextStyle(color: Colors.redAccent)),
+            child: const Text('Entire Queue', style: TextStyle(color: Colors.redAccent)),
           ),
         ],
       ),
@@ -102,6 +100,7 @@ class IntegrationStatusList extends StatelessWidget {
               ...statuses.map((s) => _IntegrationRow(
                     status: s,
                     cancellable: controller.isCancellableUpload(conversation, s.name),
+                    cancelling: controller.isCancellingUpload(conversation, s.name),
                     onUpload: () => _runAction(context, () => controller.uploadOne(conversation, s.name)),
                     onReupload: () =>
                         _runAction(context, () => controller.uploadOne(conversation, s.name, force: true)),
@@ -140,6 +139,11 @@ class _IntegrationRow extends StatelessWidget {
   /// in its between-retries window) with nothing to cancel — we suppress the
   /// Cancel affordance then so it's never a no-op.
   final bool cancellable;
+
+  /// True once Cancel has been pressed for this in-flight upload but it hasn't
+  /// finished winding down. Shows "Cancelling…" and drops the button so the user
+  /// has feedback and can't tap it repeatedly.
+  final bool cancelling;
   final VoidCallback onUpload;
   final VoidCallback onReupload;
   final VoidCallback onCancel;
@@ -147,6 +151,7 @@ class _IntegrationRow extends StatelessWidget {
   const _IntegrationRow(
       {required this.status,
       required this.cancellable,
+      required this.cancelling,
       required this.onUpload,
       required this.onReupload,
       required this.onCancel});
@@ -210,8 +215,9 @@ class _IntegrationRow extends StatelessWidget {
         // Show progress and, when there's a real job behind it, let the user abort.
         // Omi Cloud stops between chunks; HeyPocket finishes its current single
         // request (can't be interrupted). When not cancellable (the phantom
-        // between-retries window) show just the spinner — there's nothing to stop.
-        trailing = cancellable
+        // between-retries window) or already cancelling, show just the spinner —
+        // there's nothing to stop, or it's already on its way out.
+        trailing = (cancellable && !cancelling)
             ? Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -263,6 +269,10 @@ class _IntegrationRow extends StatelessWidget {
     }
 
     final isUnavailable = status.state == IntegrationUploadState.unavailable;
+    // While a cancel is winding down, the subtext flips to "Cancelling…" (amber)
+    // for feedback — overrides the state's normal label/color.
+    final (String subtext, Color subtextColor) =
+        cancelling ? ('Cancelling…', Colors.amber) : (isUnavailable ? _unavailableReason : label, color);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
@@ -276,8 +286,8 @@ class _IntegrationRow extends StatelessWidget {
                 Text(status.name, style: const TextStyle(color: Colors.white, fontSize: 15)),
                 const SizedBox(height: 2),
                 Text(
-                  isUnavailable ? _unavailableReason : label,
-                  style: TextStyle(color: color, fontSize: 12),
+                  subtext,
+                  style: TextStyle(color: subtextColor, fontSize: 12),
                 ),
               ],
             ),
