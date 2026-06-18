@@ -33,26 +33,6 @@ The Dart keep-alive stays (foreground liveness + its force-disconnect-on-failure
 
 ---
 
-## Live test data — raw .bin segments
-
-> **Stale (2026-06-17 audit):** the `test-data/` directory, the `live_bins_20260603.tar` snapshot, and `restore-bins.sh` are **no longer present** in the working tree (the dir doesn't exist and nothing matching is git-tracked). The procedure below is kept as a reference for recreating the harness; the paths it names don't currently exist.
-
-`test-data/live_bins_20260603.tar` — 76 raw `.bin` segments captured 2026-06-03. Gitignored (133 MB), lives on your machine only.
-
-To restore for a processing test run:
-
-```bash
-# 1. Uninstall + reinstall the app (clears notification channel, fresh state)
-# 2. Launch the app once so Flutter creates its directories
-# 3. Restore the bins:
-bash test-data/restore-bins.sh
-# 4. Open the app — processing starts automatically
-```
-
-To capture a new snapshot: back up `raw_segments/` via ADB (see `adb_backup/` session for the exact commands), copy the resulting `raw_segments.tar` into `test-data/` with a dated name, and update the default in `restore-bins.sh`.
-
----
-
 ## VAD perf: timing diagnostics + native batch-runner plan
 
 **Status:** session options shipped (0.16.7) · timing instrumentation shipped · **investigation complete (2026-06-02): ~50/50 channel/compute; the compute half is dispatch-bound and unreducible (quantization structurally impossible; threads/XNNPACK flat). the native batch runner is the sole lever (~2× ceiling), now **deferred — full buildable spec in `IDEAS.md` → "VAD Native Batch Runner".**
