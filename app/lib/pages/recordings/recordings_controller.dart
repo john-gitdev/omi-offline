@@ -1466,6 +1466,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   /// thus cancellable — see [IntegrationUploadManager.isCancellableUpload].
   bool isCancellableUpload(Conversation c, String integrationName) => _uploads.isCancellableUpload(c, integrationName);
 
+  /// Whether [c]'s in-flight upload to [integrationName] has a cancel pending but
+  /// hasn't bailed yet — see [IntegrationUploadManager.isCancellingUpload].
+  bool isCancellingUpload(Conversation c, String integrationName) => _uploads.isCancellingUpload(c, integrationName);
+
   /// Cancels a single queued upload of [c] to [integrationName].
   void cancelUpload(Conversation c, String integrationName) => _uploads.cancelUpload(c, integrationName);
 
