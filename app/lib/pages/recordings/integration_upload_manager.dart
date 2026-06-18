@@ -474,6 +474,19 @@ class IntegrationUploadManager {
     return lane.manual.length + lane.auto.length + (lane.current != null ? 1 : 0);
   }
 
+  /// True when [c]'s upload to [integrationName] is genuinely in-flight or queued
+  /// in that lane — i.e. there's actually something for [cancelUpload] to act on.
+  /// Gates the row's Cancel affordance so it never appears for the phantom
+  /// "uploading" shown during the between-retries window (an auto job that failed
+  /// but still has retry budget is rendered as uploading yet has no in-flight job
+  /// or queue entry; cancelling it would be a silent no-op).
+  bool isCancellableUpload(Conversation c, String integrationName) {
+    final lane = _lanes[integrationName];
+    if (lane == null) return false;
+    final key = '${integrationName}_${c.file.path}';
+    return lane.current?.key == key || lane.manual.any((j) => j.key == key) || lane.auto.any((j) => j.key == key);
+  }
+
   /// Cancels a single upload of [c] to [integrationName], leaving the rest of the
   /// lane's queue draining. A queued job is dropped; the in-flight job is
   /// signalled to bail at its next checkpoint (Omi Cloud stops between
