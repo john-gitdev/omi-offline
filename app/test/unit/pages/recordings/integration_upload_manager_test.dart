@@ -437,7 +437,8 @@ void main() {
     // Builds an on-disk, auto-eligible recording + batch for the auto sweep.
     Batch autoBatch(String key, {required Directory dir}) {
       final f = File('${dir.path}/recording_$key.wav')..writeAsBytesSync(List.filled(2048, 0));
-      final c = Conversation(file: f, startTime: DateTime(2026, 1, 1), duration: const Duration(minutes: 5), uploadKey: key);
+      final c =
+          Conversation(file: f, startTime: DateTime(2026, 1, 1), duration: const Duration(minutes: 5), uploadKey: key);
       return Batch(
         dateString: '2026-01-01',
         date: DateTime(2026, 1, 1),
@@ -504,6 +505,31 @@ void main() {
       gate.complete();
       await settle(m);
       expect(m.activeUploadCountFor('Omi Cloud'), 0);
+    });
+
+    test('isCancellableUpload is true for in-flight/queued, false otherwise', () async {
+      final gate = Completer<void>();
+      final a = FakeIntegration('Omi Cloud');
+      a.onUpload = (c) async {
+        await gate.future;
+        a.deliver(c);
+      };
+      final m = makeManager([a]);
+
+      // Nothing active yet → not cancellable (the phantom-uploading no-op case).
+      expect(m.isCancellableUpload(conv('k1'), 'Omi Cloud'), false);
+      expect(m.isCancellableUpload(conv('k1'), 'Nonexistent'), false);
+
+      await m.uploadConversation(conv('k1')); // in flight (gated)
+      await m.uploadConversation(conv('k2')); // queued
+      expect(m.isCancellableUpload(conv('k1'), 'Omi Cloud'), true, reason: 'in flight');
+      expect(m.isCancellableUpload(conv('k2'), 'Omi Cloud'), true, reason: 'queued');
+      expect(m.isCancellableUpload(conv('k3'), 'Omi Cloud'), false, reason: 'never enqueued');
+
+      gate.complete();
+      await settle(m);
+      // Delivered → no in-flight/queued job left to cancel.
+      expect(m.isCancellableUpload(conv('k1'), 'Omi Cloud'), false);
     });
 
     test('cancelUpload drops just the named recording, leaving the rest queued', () async {
