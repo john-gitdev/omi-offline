@@ -487,6 +487,20 @@ class IntegrationUploadManager {
     return lane.current?.key == key || lane.manual.any((j) => j.key == key) || lane.auto.any((j) => j.key == key);
   }
 
+  /// True once a cancel has been requested for [c]'s *in-flight* upload to
+  /// [integrationName] but the worker hasn't reached its checkpoint and bailed
+  /// yet (single-job cancel, whole-lane cancel, or a disable toggle). Lets the row
+  /// show "Cancelling…" and drop the button so the user gets feedback and can't
+  /// spam it during the wind-down. Clears itself once the job exits and the row
+  /// re-derives.
+  bool isCancellingUpload(Conversation c, String integrationName) {
+    final lane = _lanes[integrationName];
+    if (lane == null) return false;
+    final key = '${integrationName}_${c.file.path}';
+    if (lane.current?.key != key) return false;
+    return lane.cancelRequested || lane.cancelCurrentKey == key;
+  }
+
   /// Cancels a single upload of [c] to [integrationName], leaving the rest of the
   /// lane's queue draining. A queued job is dropped; the in-flight job is
   /// signalled to bail at its next checkpoint (Omi Cloud stops between
