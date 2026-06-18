@@ -532,6 +532,28 @@ void main() {
       expect(m.isCancellableUpload(conv('k1'), 'Omi Cloud'), false);
     });
 
+    test('isCancellingUpload is true from cancel request until the job bails', () async {
+      final a = FakeIntegration('Omi Cloud');
+      a.onUpload = (c) async {
+        for (var i = 0; i < 100; i++) {
+          if (a.lastIsCancelled?.call() ?? false) return;
+          await Future.delayed(const Duration(milliseconds: 1));
+        }
+        a.deliver(c);
+      };
+      final m = makeManager([a]);
+
+      await m.uploadConversation(conv('k1')); // in flight (chunking)
+      expect(m.isCancellingUpload(conv('k1'), 'Omi Cloud'), false, reason: 'no cancel requested yet');
+
+      m.cancelUpload(conv('k1'), 'Omi Cloud');
+      expect(m.isCancellingUpload(conv('k1'), 'Omi Cloud'), true, reason: 'cancel pending, still winding down');
+
+      await settle(m);
+      expect(m.isCancellingUpload(conv('k1'), 'Omi Cloud'), false, reason: 'job bailed — nothing in flight');
+      expect(a.hasDelivered(conv('k1')), false);
+    });
+
     test('cancelUpload drops just the named recording, leaving the rest queued', () async {
       final gate = Completer<void>();
       final a = FakeIntegration('Omi Cloud');
