@@ -54,6 +54,96 @@ Conceiving merge as **concatenation of finished files** is what created its shar
 
 ---
 
+## PENDING
+
+## Device-driven BLE wake (firmware + iOS) [large] [Pending]
+
+Shift background-sync triggering from the *phone* (opportunistic iOS `BGTaskScheduler` / Android alarms) to the *device*: the Omi opens a connectable advertising **window** on its own RTC-driven schedule, and the phone — holding a standing pending-connect — is woken by the OS the moment that window opens. This is the model commercial BLE wearables (e.g. CGMs) use for reliable background sync on iOS.
+
+### The honest framing (why)
+The primary win is **iOS wake *reliability* + device-controlled (punctual) timing**, **not** device battery. The firmware already advertises *slow* (~1 s, `adv_param_slow` in `transport.c`) when idle, which is already cheap; going fully "dark" saves only a bit more. The real reason: a standing pending-connect lets iOS wake the app on the *device's* schedule, replacing the opportunistic `BGTaskScheduler` path (which iOS fires unpredictably and never punctually). The same mechanism *forces* the firmware change — a standing pending-connect pointed at a device that advertises connectably **continuously** (today's behavior) would reconnect → idle-drop → reconnect forever (churn). So the device must advertise connectably only in **windows it controls**. **Net: mostly an iOS project.** Android already wakes reliably (FGS + exact alarm + WorkManager) and needs little/no change.
+
+### Current state
+- **Firmware (`transport.c`, `aad.c`):** idle-disconnects after 15 s of no storage GATT activity (`idle_disconnect_work_handler`, `IDLE_DISCONNECT_TIMEOUT_MS`), then reverts to advertising. Two **always-connectable** modes: fast (`BT_LE_ADV_CONN`) and slow (`adv_param_slow`), via `transport_set_adv_fast/slow()`. **AAD currently owns advertising cadence** (recording → fast `aad.c:310`, silence → slow `aad.c:330`). Conn params 7.5–22.5 ms, **latency 0** (`update_conn_params`); iOS recheck falls back to 15–30 ms. Audio records to SD **independent of BLE** — nothing lost while dark/disconnected.
+- **iOS (`OmiBleManager.swift`, `device_provider.dart`):** state restoration *is* wired (`CBCentralManagerOptionRestoreIdentifierKey`, `willRestoreState` → `onStateRestored`), **but the aggressive disconnect neutralizes it**: `disconnectDevice(isManual:true)` (`device_provider.dart:884`, `:996`) → `disconnectPeripheral` adds to `manuallyDisconnected` + cancels the link, and `didDisconnectPeripheral` re-arms `connect()` *only if not manual*. Steady state = no pending connect = nothing for iOS to wake on.
+- **Android (`OmiBleForegroundService.kt`, `BackgroundSyncWorker.kt`, `SyncAlarmReceiver.kt`):** FGS (`FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE`) + WorkManager periodic + `setExactAndAllowWhileIdle`; already uses `connectGatt(autoConnect=true)` as a pending-connect fallback. Reliable today.
+
+### Target architecture
+A device-side **sync-window state machine** replaces AAD's ownership of advertising:
+
+```
+        ┌──────────── DARK ────────────┐        no phone connects
+        │ non-connectable / adv stopped │◄────── within window ───────┐
+        │ radio mostly off; SD recording │                            │
+        └──────────────┬────────────────┘                            │
+   cooldown elapsed AND │ (cooldown = sync interval, pushed by app)   │
+   has-unsynced data    ▼                                            │
+        ┌──────── SYNC WINDOW ─────────┐    phone connects   ┌────────┴───────┐
+        │ fast CONNECTABLE adv, ≤ W sec │─────────────────►  │   CONNECTED     │
+        └───────────────────────────────┘                    │ sync; existing  │
+                                                             │ 15 s idle-drop  │
+                                                             └────────┬────────┘
+                                                                      │ disconnect → DARK (restart cooldown)
+```
+
+Phone side: a **standing pending-connect is always armed** (iOS `connect()` + restoration; Android `autoConnect=true`). The device's cooldown = the sync cadence, punctual because the device's RTC drives it.
+
+### Firmware changes (the enabling work)
+1. **Dark state** — `transport_set_adv_dark()`: prefer **non-connectable** advertising (`BT_LE_ADV_NCONN`) so the device stays visible for diagnostics/UI but rejects CONNECT_IND (or fully `bt_le_adv_stop()` for lowest power). Track in `current_adv_mode`.
+2. **Sync-window scheduler** (new `sync_window.c` or folded into `transport.c`, a `k_work_delayable`): DARK for `cooldown_ms` → open SYNC WINDOW (`transport_set_adv_fast()` for `window_ms`, **45–60 s** — iOS background scan is duty-cycled and slow to notice adverts) → on connect, the existing `idle_disconnect_work` owns teardown; on `_transport_disconnected`, restart cooldown; window expiry with no connect → DARK, restart cooldown.
+3. **Hand advertising ownership from AAD to the scheduler** — keep AAD's VAD/SD-pause logic; remove/gate its `adv_*_req` writes (`aad.c:310,330,464`, applied in the AAD loop `aad.c:247-250`). Most invasive *refactor*; regression-test VAD recording, SD pause/resume, marker durability.
+4. **Gate windows on "has unsynced data"** — use "SD has stored files" as the proxy (app deletes via `CMD_DELETE_FILE`); SD empty → stay DARK until new audio is recorded.
+5. **Config characteristic** — new char under Settings service (`0010`, e.g. `0014`): `interval_minutes(u16) + window_seconds(u8) + enabled(u8)`, persisted via `settings.c`, range-validated in firmware. Makes the app's existing `backgroundSyncIntervalMinutes` drive the *device's* cadence.
+6. **Capability bit** — add `deviceDrivenSync` to the Features bitfield (`0021`, `OmiFeatures`) for mixed-version safety (new app + old fw → old timer path; old app + new fw → covered by #7).
+7. **On-demand connectability (critical UX safeguard, see "Button-to-wake" below)** — button/motion triggers to open a window immediately, plus a **safety floor**: no successful sync for `> N` intervals → fall back to continuous connectable advertising so the device can't become permanently unreachable.
+8. **(Alternative model) Held low-power connection** — instead of windowing, set **slave latency > 0** in `update_conn_params` + a "data ready" notify characteristic (the CGM model). Lower wake latency, simpler app logic, but the radio stays in-connection (more device power than DARK). Default to windowed for the 150 mAh budget; keep this in reserve.
+
+### Button-to-wake (user-selectable, integrates with existing button mapping)
+The on-demand trigger (#7) is a natural fit for the **already-shipped customizable button-mapping system** (`button_config_service` in firmware, `button_config_page.dart` in app — maps None/Mute/Marker/Toggle-LED to single/double/triple tap and their holds, synced over the encrypted value-validated button-config characteristic). Add a **new "Wake for Sync" action** to that action set:
+- Firmware: on the mapped gesture, `button.c` kicks the sync-window scheduler straight to SYNC WINDOW (open a connectable window now), regardless of cooldown.
+- App: expose "Wake for Sync" as a selectable action in `button_config_page.dart`; **default to single tap**, but user-customizable exactly like every other mapping (open to making it single tap out of the box or fully user-selectable — both are supported by the existing infra).
+- Firmware must range-accept the new action value (the config char already rejects out-of-range actions — bump the accepted enum).
+- UX: foreground "Sync now" prompts "tap your Omi to sync now" when the device is DARK between windows.
+
+### iOS app changes (the real payoff)
+1. **Standing pending-connect** — after routine sync/disconnect, **re-arm `centralManager.connect(peripheral, options:nil)`** instead of leaving it cancelled, so iOS holds it pending and wakes the app at the device's next window. Add a `standingConnect: Set<String>` alongside `manuallyDisconnected`; distinguish "Forget Device" (truly cancel) from "routine post-sync disconnect" (cancel link, re-arm pending connect).
+2. **Routine disconnect ≠ terminal in Dart** — post-sync (`device_provider.dart:884`) and pause-grace (`:996`) map to a new "disconnect-but-stay-armed" path (`disconnectKeepingPendingConnect`), not `unmanageDevice`. Only true unpair calls full `unmanageDevice`/`disconnectPeripheral`.
+3. **Wake → sync** — mostly there: the wake arrives as `didConnect` → `onDeviceReady` → `_handleDeviceConnected`; ensure the background drop-guard lets a device-initiated wake through (set pending-sync flag, as `_onBackgroundSyncRequested` does). `_onStateRestored` (`device_provider.dart:232`) already sanctions a due sync.
+4. **Demote BGTaskScheduler to backstop** — keep the `BGProcessing`/`BGAppRefresh` tasks (shipped 0.25.4) as the fallback for when pending-connect misses (notably after **user force-quit** — iOS won't relaunch for BLE then).
+5. **Foreground manual-sync UX** — surface the button-to-wake affordance since the device may be DARK on app open.
+
+### Android changes (minimal — likely leave as-is in phase 1)
+The new firmware windowing is harmless to Android: `connectGatt(autoConnect=true)` (already a fallback, `OmiBleForegroundService.kt:470`) catches the device's window the same way iOS does, and the FGS keeps the app alive to handle it. Optional later: relax the exact-alarm/WorkManager cadence once device-driven wake is proven (phone-battery saving). **Do not** re-introduce `CompanionDeviceManager` presence observation — this fork removed it due to OnePlus/Oppo/Realme connection wedges (0.24 changelog). Keep the alarm as the safety net.
+
+### Hard tradeoffs & risks
+1. **On-demand connect regresses** — DARK between windows means no instant connect on app open; fully dependent on button/motion triggers + safety floor. Biggest UX risk.
+2. **iOS user force-quit kills background BLE wake** until next manual launch (iOS platform rule). BGTask backstop partially covers it.
+3. **iOS background-scan latency** — window must be long + fast-advertising (≥45–60 s); too short → iOS misses it, too long → device power. Needs tuning + measurement.
+4. **Mixed firmware/app versions** — gate on the capability bit + safety floor so no combination bricks reachability.
+5. **AAD refactor** touches a working, subtle thread — regression-test VAD recording, SD pause/resume, marker durability.
+6. **Must measure** — put it on a Nordic PPK2: today's continuous-slow-adv vs DARK+window current draw, plus real-world iOS wake hit-rate (worn all day, app backgrounded). Don't ship on theory.
+
+### Phasing
+- **Phase 1 — Firmware:** dark state + window scheduler + config char + capability bit + button/motion triggers (incl. the "Wake for Sync" button action) + safety floor. Validate on PPK2 + manual nRF connect. Ship behind the capability bit.
+- **Phase 2 — iOS:** standing pending-connect (1–3), routine-disconnect-keeps-armed, wake→sync, BGTask demoted to backstop. Measure background wake hit-rate vs. the BGTask-only baseline.
+- **Phase 3 — Android (optional):** only if measurement shows a worthwhile phone-battery saving from relaxing the alarm cadence.
+
+Highest-leverage cheap validation: **Phase 1 window scheduler + Phase 2 standing pending-connect**, measured against current BGTask reliability — tells you whether device-driven wake is worth the full build-out before committing.
+
+### Relevant files
+- `omi/firmware/omi/src/lib/core/transport.c` — `idle_disconnect_work_handler` (15 s), `transport_set_adv_fast/slow` + `adv_param_slow`, `_transport_disconnected` (adv restart), `update_conn_params` (latency 0); add dark state + window scheduler.
+- `omi/firmware/omi/src/aad.c` — `adv_slow_req`/`adv_fast_req` writes (`:310,:330,:464`) and the apply loop (`:247-250`) to hand advertising ownership to the scheduler.
+- `omi/firmware/omi/src/lib/core/settings.c` / `settings.h` — persist the window config (mirror `app_settings_save_conn_fail`).
+- `omi/firmware/omi/src/button.c` + button-config service (registered `transport.c:1810`) — add the "Wake for Sync" action; kick the scheduler on the mapped gesture.
+- `app/ios/Runner/OmiBleManager.swift` — `manuallyDisconnected`/`disconnectPeripheral`/`didDisconnectPeripheral`/`willRestoreState`; add `standingConnect` + pending-connect re-arm.
+- `app/ios/Runner/AppDelegate.swift` — keep `BGProcessing`/`BGAppRefresh` as backstop.
+- `app/lib/providers/device_provider.dart` — `disconnectDevice(isManual:true)` sites (`:884`,`:996`), `_onStateRestored` (`:232`), `_onBackgroundSyncRequested` (`:208`).
+- `app/lib/services/devices/transports/native_ble_transport.dart` — add `disconnectKeepingPendingConnect`; `app/lib/pigeon_interfaces.dart` for the new host API + the window-config write.
+- `app/lib/pages/settings/button_config_page.dart` — expose "Wake for Sync" as a selectable button action (default single tap).
+- Android (phase 3, optional): `OmiBleForegroundService.kt`, `BackgroundSyncWorker.kt`, `SyncAlarmReceiver.kt`.
+
+---
+
 ## DEFERRED
 
 ## iOS code signing & non-jailbroken distribution [medium] [Deferred]
