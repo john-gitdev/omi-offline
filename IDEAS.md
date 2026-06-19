@@ -105,6 +105,21 @@ The on-demand trigger (#7) is a natural fit for the **already-shipped customizab
 - Firmware must range-accept the new action value (the config char already rejects out-of-range actions — bump the accepted enum).
 - UX: foreground "Sync now" prompts "tap your Omi to sync now" when the device is DARK between windows.
 
+### Decoupling wake from sync (a connection is not a sync)
+A device wake — scheduled window *or* button combo — only establishes a **connection**; the **app** then decides whether to pull data. Two clean concerns:
+- **Device** = *make a connection possible*: open a window on its RTC cadence (config-char interval) + immediately on the button combo.
+- **App** = *policy*: on each device-initiated connection, decide whether to sync.
+
+The building block already exists: `_onStateRestored` runs `final due = _shouldSyncNow(); if (!due) return;` (`device_provider.dart:232`) — "connection arrived, skip if not due." Generalize into a setting:
+- **"Sync on every device wake"** → always pull whenever the device wakes/connects.
+- **"Only when due"** → gate on the autosync interval (`_shouldSyncNow()`); an early wake connects, finds nothing due, and disconnects without transferring.
+
+**Recommended semantics:** a *scheduled* window honors the setting (default "only when due"); a *button combo* is explicit user intent → **force-sync** (always pull), since the user tapped precisely to sync now. Make force the button's natural behavior; optionally expose the choice.
+
+**Telling the two apart on connect.** The app can't receive the button event *before* it connects (the tap is what wakes it), so the reason can't arrive over Button char `0041` in time. Add a **"last wake reason" byte the app reads on connect** (scheduled / button / motion) — a small new read char or folded into diagnostics `0061`; on `onDeviceReady` the app maps button ⇒ force-sync, scheduled ⇒ if-due. In `enabled=0`/always-connectable mode this is unneeded — the device never goes dark, so a button tap arrives live over `0041` while connected and force-syncs directly.
+
+**Battery note:** align the device's window cadence with the app's autosync interval (push via the config char) so early "connect-then-skip" cycles are rare; the if-due check mainly backstops button taps and edge timing — a connect/disconnect with no transfer still costs a little device radio energy.
+
 ### iOS app changes (the real payoff)
 1. **Standing pending-connect** — after routine sync/disconnect, **re-arm `centralManager.connect(peripheral, options:nil)`** instead of leaving it cancelled, so iOS holds it pending and wakes the app at the device's next window. Add a `standingConnect: Set<String>` alongside `manuallyDisconnected`; distinguish "Forget Device" (truly cancel) from "routine post-sync disconnect" (cancel link, re-arm pending connect).
 2. **Routine disconnect ≠ terminal in Dart** — post-sync (`device_provider.dart:884`) and pause-grace (`:996`) map to a new "disconnect-but-stay-armed" path (`disconnectKeepingPendingConnect`), not `unmanageDevice`. Only true unpair calls full `unmanageDevice`/`disconnectPeripheral`.
@@ -144,7 +159,9 @@ Highest-leverage cheap validation: **Phase 1 window scheduler + Phase 2 standing
 - `omi/firmware/omi/src/button.c` + button-config service (registered `transport.c:1810`) — add the "Wake for Sync" action; kick the scheduler on the mapped gesture.
 - `app/ios/Runner/OmiBleManager.swift` — `manuallyDisconnected`/`disconnectPeripheral`/`didDisconnectPeripheral`/`willRestoreState`; add `standingConnect` + pending-connect re-arm.
 - `app/ios/Runner/AppDelegate.swift` — keep `BGProcessing`/`BGAppRefresh` as backstop.
-- `app/lib/providers/device_provider.dart` — `disconnectDevice(isManual:true)` sites (`:884`,`:996`), `_onStateRestored` (`:232`), `_onBackgroundSyncRequested` (`:208`).
+- `app/lib/providers/device_provider.dart` — `disconnectDevice(isManual:true)` sites (`:884`,`:996`), `_onStateRestored` (`:232`, already does the "skip if not due" gate to generalize), `_shouldSyncNow()`, `_onBackgroundSyncRequested` (`:208`); apply the wake→policy decision (force vs if-due) on device-initiated connect.
+- `app/lib/backend/preferences.dart` — add the "sync on every device wake" vs "only when due" setting (alongside `backgroundSyncIntervalMinutes`).
+- Firmware "last wake reason" — expose a 1-byte read (scheduled/button/motion) via a new char or folded into diagnostics `0061` (`transport.c`), read by the app on `onDeviceReady` to pick force-sync vs if-due.
 - `app/lib/services/devices/transports/native_ble_transport.dart` — add `disconnectKeepingPendingConnect`; `app/lib/pigeon_interfaces.dart` for the new host API + the window-config write.
 - `app/lib/pages/settings/button_config_page.dart` — expose "Wake for Sync" as a selectable button action (default single tap).
 - Android (phase 3, optional): `OmiBleForegroundService.kt`, `BackgroundSyncWorker.kt`, `SyncAlarmReceiver.kt`.
