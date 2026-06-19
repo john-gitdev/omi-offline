@@ -112,12 +112,21 @@ extension FlutterError: Error {}
       UNUserNotificationCenter.current().delegate = self as? UNUserNotificationCenterDelegate
     }
 
-    // Background sync BGProcessingTask — fires when iOS has spare capacity and
-    // a sync interval has elapsed. Calls onBackgroundSyncRequested() so Dart's
-    // DeviceProvider handles the sync exactly as a Dart timer tick would.
+    // Background sync — both task families call onBackgroundSyncRequested() so
+    // Dart's DeviceProvider handles the sync exactly as a Dart timer tick would.
+    // iOS schedules these opportunistically (earliestBeginDate is a floor, not a
+    // schedule); registering both raises the odds of a grant:
+    //  - BGProcessingTask: long budget (minutes), but iOS skews these toward
+    //    idle+charging time — good for the occasional heavy catch-up sync.
+    //  - BGAppRefreshTask: short budget (~30s) but granted more frequently and
+    //    not gated on charging. A 30s expiry mid-transfer is fine here — WAL is
+    //    resumable and the draft pipeline resumes on the next grant.
     if #available(iOS 13.0, *) {
       BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.omi.offline.sync", using: nil) { task in
         self.handleBackgroundSync(task: task as! BGProcessingTask)
+      }
+      BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.omi.offline.sync.refresh", using: nil) { task in
+        self.handleBackgroundRefresh(task: task as! BGAppRefreshTask)
       }
     }
 
@@ -147,9 +156,34 @@ extension FlutterError: Error {}
     try? BGTaskScheduler.shared.submit(request)
   }
 
+  @available(iOS 13.0, *)
+  private func handleBackgroundRefresh(task: BGAppRefreshTask) {
+    scheduleBackgroundRefresh() // re-arm for next interval before doing any work
+    task.expirationHandler = { task.setTaskCompleted(success: false) }
+    guard let api = OmiBleManager.shared.flutterApi else {
+      task.setTaskCompleted(success: false)
+      return
+    }
+    api.onBackgroundSyncRequested { _ in task.setTaskCompleted(success: true) }
+  }
+
+  @available(iOS 13.0, *)
+  private func scheduleBackgroundRefresh() {
+    let prefs = UserDefaults.standard
+    let intervalMinutes = prefs.integer(forKey: "flutter.backgroundSyncIntervalMinutes")
+    guard intervalMinutes > 0 else { return }
+    // BGAppRefreshTaskRequest has no network/power knobs — refresh tasks are
+    // already meant to be cheap and frequent. earliestBeginDate is the same
+    // interval floor as the processing task so both honor the user's setting.
+    let request = BGAppRefreshTaskRequest(identifier: "com.omi.offline.sync.refresh")
+    request.earliestBeginDate = Date(timeIntervalSinceNow: Double(intervalMinutes) * 60)
+    try? BGTaskScheduler.shared.submit(request)
+  }
+
   override func applicationDidEnterBackground(_ application: UIApplication) {
     if #available(iOS 13.0, *) {
       scheduleBackgroundSync()
+      scheduleBackgroundRefresh()
     }
     super.applicationDidEnterBackground(application)
   }
