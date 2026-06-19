@@ -111,6 +111,45 @@ The device monitors audio continuously. The LED stays off until audio above the 
 
 ---
 
+## Button Mapping
+
+Most tap gestures are remappable from **Device Settings → Button Configuration**. Each of six gestures can be assigned one of four actions; the choice is written to the device live over an encrypted BLE characteristic and persisted in the firmware's flash, so it survives reboots and reconnects.
+
+### Actions
+
+| Action | Effect |
+|--------|--------|
+| None | No-op |
+| Mute | Toggle mic mute — solid red LED, mic paused (ignored while a manual recording is active) |
+| Marker | Auto mode: white-flash + timestamped bookmark written inline into the audio stream (ignored while muted). Manual mode: green-flash starts a recording; the next trigger red-flashes, stops it, and emits a session-end marker |
+| Toggle LED | Toggle Stealth Mode (LED on/off) |
+
+### Gestures & default mapping
+
+| Gesture | Default action |
+|---------|----------------|
+| Single tap | None |
+| Single tap + hold (1 s) | None |
+| Double tap | Marker |
+| Double tap + hold (1 s) | Mute |
+| Triple tap | Toggle LED |
+| Triple tap + hold (1 s) | None |
+
+The mapping is a 6-byte array — one action index (`0` None, `1` Mute, `2` Marker, `3` Toggle LED) per gesture in the order above — read and written on the Button Config service (`23ba7926-…` / char `23ba7927-…`), which requires a bonded/encrypted connection. The firmware validates each value before applying it. The settings page only allows edits while the Omi is connected, and a change that can't reach the device is reverted so the UI always mirrors what's actually on the firmware.
+
+### Reserved gestures (not remappable)
+
+Two long-hold gestures are hardware-enforced and bypass the custom mapping:
+
+| Gesture | Action |
+|---------|--------|
+| 4-tap + hold (3 s) | **Power off** — shuts the device down |
+| 5-tap + hold (10 s) | **Unpair** — wipes all BLE bonds (3× red blink + 1 s vibration) |
+
+Over-tapping past 5 is a harmless no-op.
+
+---
+
 ## LED State Machine
 
 Priority order (highest wins):
@@ -133,20 +172,7 @@ Priority order (highest wins):
 - Fully charged (>= 98%): Solid Green
 - Charging: 500 ms blink between Green and current base color
 
-**Button actions.** Tap gestures are user-mappable (Device Settings → Button Configuration) to one of None / Mute / Marker / Toggle LED. The default mapping and the two reserved hardware gestures are:
-
-| Gesture | Default action | Effect |
-|---------|----------------|--------|
-| Single tap | None | No action |
-| Single tap + hold (1 s) | None | No action |
-| Double tap | Marker | Auto mode: white flash + timestamped marker. Manual mode: green flash starts a recording, second double-tap (red flash) stops it and emits a session-end marker |
-| Double tap + hold (1 s) | Mute | Toggle mute (solid Red LED, mic paused). No-op while a manual recording is active. |
-| Triple tap | Toggle LED | Toggle Stealth Mode (LED on/off) |
-| Triple tap + hold (1 s) | None | No action |
-| 4-tap + hold (3 s) | **Power off** *(reserved)* | Shuts the device down |
-| 5-tap + hold (10 s) | **Unpair** *(reserved)* | Wipes all BLE bonds (3× red blink + 1 s vibration) |
-
-The Marker action is ignored while the mic is muted, and the Mute action is ignored while a manual recording is active.
+**Button actions** that drive these LED states (marker flash, manual start/stop, mute, stealth toggle) are user-configurable — see [Button Mapping](#button-mapping) for the gesture map, available actions, and reserved gestures.
 
 ---
 
