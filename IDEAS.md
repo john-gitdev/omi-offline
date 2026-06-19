@@ -75,7 +75,7 @@ DARK shrinks exposure from "always visible + reachable" to "brief periodic windo
 
 **Cheap hardening that pairs with DARK:**
 - **Resolvable Private Address (RPA).** If the firmware advertises a static/public BLE address, the device is still trackable *during* windows. A rotating RPA (bonded phone resolves it via the IRK; strangers can't) closes the window-time tracking gap. *Verify the current address type in firmware.*
-- **Reject non-bonded connections fast** during a window, so an attacker racing the bonded phone for the connection slot is dropped immediately. (Maximum stealth: *directed* advertising aimed only at the bonded central during the window — invisible to everyone else — though undirected + bond-gating is simpler.)
+- **Reject non-bonded connections fast** — *low value, likely skip.* The payoff is marginal: every meaningful characteristic is already `*_ENCRYPT`-gated (`storage.c`, `transport.c`, button-config, mute, accel), so a non-bonded peer can read *nothing* — confidentiality is already solved. The only real gain is connection-slot DoS, which is *already half-covered* by the 15 s idle-disconnect (`idle_disconnect_work_handler` drops an idle hogger in 15 s). Against that thin benefit it needs solid RPA resolution or it risks **false-rejecting your own iPhone** (rotating address). Net negative — the encryption perms do the security work. (If maximum window-time stealth is ever wanted, *directed* advertising aimed only at the bonded central is the cleaner lever than connection-level rejection.)
 
 So DARK now carries two stacked upsides — **low-power + reliable iOS background wake**, *and* **a much smaller privacy/tracking/attack surface** — against the one cost (not instantly connectable on app open).
 
