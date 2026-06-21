@@ -1572,6 +1572,27 @@ class VadAudioProcessor {
     return comps.length >= 2 ? '${comps[comps.length - 2]}/${comps.last}' : norm;
   }
 
+  /// The device session id derived from the bins a recording owns — bins are
+  /// named `<timerStart>_<sessionId>.bin`, so the session of the audio is
+  /// authoritative. Returns the first parseable non-zero id, or null if none.
+  /// Used to stamp a consistent session id in the `.meta` even when the runtime
+  /// `_currentSessionId` was reset across a stitch (which used to write 0 there,
+  /// hiding the recording from the orphan-bin sweep).
+  @visibleForTesting
+  static int? sessionIdFromRefs(Iterable<Object> refs) {
+    for (final r in refs) {
+      if (r is! FrameRef) continue;
+      final file = relBinPath(r.segmentFile.path).split('/').last; // <timerStart>_<sessionId>.bin
+      final base = file.contains('.') ? file.substring(0, file.indexOf('.')) : file;
+      final parts = base.split('_');
+      if (parts.length >= 2) {
+        final sid = int.tryParse(parts[1]);
+        if (sid != null && sid != 0) return sid;
+      }
+    }
+    return null;
+  }
+
   Map<String, dynamic>? _buildDiscardRecord(String reason) =>
       _buildDiscardRecordFor(_currentRefs, _recordingStartTime, _currentChunkDurationMs, reason);
 
@@ -1935,7 +1956,14 @@ class VadAudioProcessor {
       metaBytes.setUint16(8 + i * 2, peak16, Endian.little);
     }
     // Add Session ID and Start Uptime at the end of the fixed header
-    metaBytes.setUint32(408, _currentSessionId ?? 0, Endian.little);
+    // Stamp the session id consistently with the bins this recording owns. The
+    // runtime _currentSessionId can be null/0 after a stitch/resume; fall back to
+    // the authoritative id parsed from the bin filenames so the .meta is never 0
+    // when the audio plainly belongs to a session (keeps the orphan-bin sweep
+    // and any session-keyed logic honest).
+    final sessionIdForMeta =
+        (_currentSessionId != null && _currentSessionId != 0) ? _currentSessionId! : (sessionIdFromRefs(refs) ?? 0);
+    metaBytes.setUint32(408, sessionIdForMeta, Endian.little);
     metaBytes.setUint32(412, _currentStartUptime ?? 0, Endian.little);
 
     final metaPath = '$dateFolderPath/${prefix}_$timestamp$suffix.meta';
