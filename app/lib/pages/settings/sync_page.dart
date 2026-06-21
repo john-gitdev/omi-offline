@@ -1011,26 +1011,53 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
   }
 
   Future<void> _copyAdjustmentBinsForReprocessing() async {
-    setState(() => _statusMessage = 'Copying adjustment bins...');
-    final directory = await getApplicationDocumentsDirectory();
-    final adjDir = Directory('${directory.path}/adjustment_mode_segments');
-    final rawDir = Directory('${directory.path}/raw_segments');
-    if (await adjDir.exists()) {
+    setState(() => _statusMessage = 'Copying adjustment bins…');
+    Logger.debug('Adjustment: copy-for-reprocessing started');
+    int copied = 0;
+    int failed = 0;
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final adjDir = Directory('${directory.path}/adjustment_mode_segments');
+      final rawDir = Directory('${directory.path}/raw_segments');
+      if (!await adjDir.exists()) {
+        Logger.debug('Adjustment: no adjustment_mode_segments folder — nothing to copy');
+        _reportCopyResult('No adjustment bins found to copy.');
+        return;
+      }
       await for (final file in adjDir.list(recursive: true)) {
-        if (file is File) {
-          final relPath = file.path.substring(adjDir.path.length + 1);
-          final destPath = '${rawDir.path}/$relPath';
+        if (file is! File || !file.path.endsWith('.bin')) continue;
+        final relPath = file.path.substring(adjDir.path.length + 1);
+        final destPath = '${rawDir.path}/$relPath';
+        try {
           final destFile = File(destPath);
-          if (!await destFile.parent.exists()) {
-            await destFile.parent.create(recursive: true);
-          }
+          if (!await destFile.parent.exists()) await destFile.parent.create(recursive: true);
           await file.copy(destPath);
+          copied++;
+        } catch (e) {
+          failed++;
+          Logger.error('Adjustment: failed to copy ${file.path} → $destPath: $e');
         }
       }
-      if (mounted) setState(() => _statusMessage = 'Adjustment bins copied to raw_segments');
-    } else {
-      if (mounted) setState(() => _statusMessage = 'No adjustment bins found.');
+      Logger.info('Adjustment: copied $copied bin(s) adjustment_mode_segments → raw_segments'
+          '${failed > 0 ? ' ($failed failed)' : ''} — sync/process to reprocess');
+      await _refreshAdjustmentBinCount();
+      _reportCopyResult(copied == 0
+          ? 'No bins copied — adjustment folder is empty.'
+          : 'Copied $copied bin(s) to raw_segments${failed > 0 ? ' · $failed failed' : ''}. Run Sync/Process to reprocess.');
+    } catch (e) {
+      Logger.error('Adjustment: copy-for-reprocessing failed: $e');
+      _reportCopyResult('Copy failed: $e');
     }
+  }
+
+  /// Surfaces a copy-bins result both inline (status line) and as a snackbar so
+  /// the action always gives visible feedback.
+  void _reportCopyResult(String message) {
+    if (!mounted) return;
+    setState(() => _statusMessage = message);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 5)),
+    );
   }
 
   Widget _buildDropStatsSection() {
