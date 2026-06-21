@@ -715,6 +715,18 @@ class RecordingsManager {
                     (msg['replyPort'] as SendPort).send(e.toString());
                   }
                 }
+              case 'vad_status':
+                // The isolate reports whether a VAD-wanted run fell back to AAD
+                // (Silero unavailable). Persist so the UI can warn; auto-clears
+                // when Silero loads again. Only sent on vadEnabled runs.
+                final fallback = msg['fallback'] as bool? ?? false;
+                if (SharedPreferencesUtil().lastVadFallbackActive != fallback) {
+                  SharedPreferencesUtil().lastVadFallbackActive = fallback;
+                }
+                if (fallback) {
+                  Logger.error('RecordingsManager: VAD requested but Silero unavailable — AAD fallback '
+                      'active this run (every frame counts as speech; no on-phone silence split).');
+                }
               case 'heartbeat':
                 // Liveness from the decode/save loops — re-anchors the stall
                 // watchdog so a slow-but-progressing run isn't killed as a wedge.
