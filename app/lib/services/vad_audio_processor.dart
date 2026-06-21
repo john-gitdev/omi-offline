@@ -1545,11 +1545,31 @@ class VadAudioProcessor {
     final bins = <String>{};
     for (final item in refs) {
       if (item is! FrameRef) continue;
-      // Path layout: <docs>/raw_segments/<sessionId>/<file>.bin → store relative tail.
-      final segments = item.segmentFile.path.split('/raw_segments/');
-      bins.add(segments.length == 2 ? segments.last : item.segmentFile.path);
+      bins.add(relBinPath(item.segmentFile.path));
     }
     return bins;
+  }
+
+  /// The `<folder>/<file>.bin` tail used to reference a source bin in a
+  /// recording's `.meta` (and discards). The path-keyed consumers resolve it as
+  /// `<docs>/raw_segments/<rel>`, so the tail must be exactly the part after
+  /// `raw_segments/`.
+  ///
+  /// Prefers the substring after the LAST `/raw_segments/` (handles `\` on the
+  /// off chance the platform uses it, and an unexpectedly nested path). If the
+  /// ref somehow isn't under `raw_segments` at all, falls back to the last two
+  /// path components rather than dropping the ref — dropping it produced an
+  /// EMPTY bin list, which silently made the recording un-mergeable ("lists no
+  /// source segments"). A best-effort tail at least keeps the reference and
+  /// surfaces the real location in the diagnostic.
+  @visibleForTesting
+  static String relBinPath(String path) {
+    final norm = path.replaceAll('\\', '/');
+    const marker = '/raw_segments/';
+    final i = norm.lastIndexOf(marker);
+    if (i >= 0) return norm.substring(i + marker.length);
+    final comps = norm.split('/').where((c) => c.isNotEmpty).toList();
+    return comps.length >= 2 ? '${comps[comps.length - 2]}/${comps.last}' : norm;
   }
 
   Map<String, dynamic>? _buildDiscardRecord(String reason) =>
@@ -1947,9 +1967,20 @@ class VadAudioProcessor {
     metaOut.add(capEnded ? 1 : 0); // capEnded
     metaOut.add(isSilero ? 1 : 0); // isSilero
 
-    // Append relative bins used for this recording (binary length + JSON)
-    final relativeBins =
-        refs.whereType<FrameRef>().map((r) => r.segmentFile.path.split('/raw_segments/').last).toSet().toList()..sort();
+    // Append relative bins used for this recording (binary length + JSON).
+    // Use relBinPath() so a ref whose path doesn't contain a literal
+    // '/raw_segments/' (or uses backslashes) still maps to a bin entry rather
+    // than being silently dropped — an empty relativeBins makes a recording show
+    // "lists no source segments".
+    final relativeBins = refs.whereType<FrameRef>().map((r) => relBinPath(r.segmentFile.path)).toSet().toList()..sort();
+    final frameRefCount = refs.whereType<FrameRef>().length;
+    if (frameRefCount > 0 && relativeBins.isEmpty) {
+      Logger.error('VadAudioProcessor: BINS-EMPTY — wrote 0 relativeBins despite $frameRefCount frame ref(s) for '
+          '${prefix}_$timestamp$suffix. First ref path: ${refs.whereType<FrameRef>().first.segmentFile.path}');
+    } else {
+      Logger.debug('VadAudioProcessor: meta bins=${relativeBins.length} (refs=$frameRefCount) for '
+          '${prefix}_$timestamp$suffix → ${relativeBins.join(', ')}');
+    }
     final binsJson = jsonEncode(relativeBins);
     final binsBytes = utf8.encode(binsJson);
     final binsLen = ByteData(4)..setUint32(0, binsBytes.length, Endian.little);
