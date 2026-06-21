@@ -87,6 +87,21 @@ class VadAudioProcessor {
   // VAD state counters
   int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
 
+  // AAD-mode resume-split flood guard. A clock-anchor mismatch (firmware UTC in
+  // a 0xFFFFFFFD marker diverging from the frame timeline) can make EVERY resume
+  // marker read as a huge forward gap, splitting the stream into a flood of
+  // sub-second junk recordings (observed: 3482× one-frame recordings in ~1 min).
+  // Only a concern when Silero is unavailable (AAD mode) — in Silero mode the
+  // app's own silence detection governs splits, not the markers. Once we see a
+  // RUN of consecutive tiny splits we latch into coalesce mode: further resume
+  // markers become no-ops (stitch on the real frame timeline) until a real
+  // boundary clears the latch in flushRemaining. A lone short recording still
+  // splits — only a sustained flood is coalesced.
+  int _consecutiveTinyAadSplits = 0;
+  bool _aadFloodActive = false;
+  static const int _aadFloodSplitFloorMs = 1000; // a split closing < this much audio is "tiny"
+  static const int _aadFloodRunThreshold = 3; // coalesce once this many tiny splits occur in a row
+
   // App-side silence-split tracking. _silenceRunMs is the length of the current
   // unbroken run of non-speech frames (reset to 0 on any speech frame). Reset on
   // every conversation boundary (see _resetState and the inline resets in the
@@ -875,9 +890,20 @@ class VadAudioProcessor {
             final bool withinMarkerWindow =
                 _markerProtectedUntilMs != null && newResumeTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
 
-            if (!withinMarkerWindow &&
+            final bool wouldSplit = !withinMarkerWindow &&
                 gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) &&
-                !isClockJump) {
+                !isClockJump;
+
+            // AAD flood guard: a bogus large gap (clock-anchor mismatch) on every
+            // resume marker would spray a flood of tiny junk recordings. While
+            // Silero is unavailable, latch into coalesce mode after a run of tiny
+            // splits so further resume markers stitch onto one recording instead
+            // of splitting (no pad, no re-anchor — see below).
+            final bool floodCoalesce = wouldSplit &&
+                _session == null &&
+                aadFloodStep(closingMs: _currentChunkDurationMs, hasRefs: _currentRefs.isNotEmpty);
+
+            if (wouldSplit && !floodCoalesce) {
               // Gap exceeds threshold — flush current recording, start new conversation.
               // TWO-PASS: flush any deferred batch before the split decision.
               if (_useBatchRunner && _batchDeferredFrames.isNotEmpty) {
@@ -928,17 +954,21 @@ class VadAudioProcessor {
               Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
             } else {
               // Gap within threshold or clock jump — stitch, padding with silence so playback reflects real timing.
-              if (_currentRefs.isNotEmpty && gapMs > 0 && !isClockJump) {
+              // In flood-coalesce the gap is bogus (that's the pathology), so never pad it.
+              if (!floodCoalesce && _currentRefs.isNotEmpty && gapMs > 0 && !isClockJump) {
                 _currentRefs.add(Duration(milliseconds: gapMs));
                 _currentChunkDurationMs += gapMs;
               }
-              Logger.debug(
-                  'VadAudioProcessor: VAD resume — gap ${gapMs}ms ${isClockJump ? "(CLOCK JUMP)" : "< threshold"}, stitching.');
+              Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms '
+                  '${floodCoalesce ? "(AAD flood — coalescing)" : isClockJump ? "(CLOCK JUMP)" : "< threshold"}, stitching.');
             }
 
-            // Update anchors for subsequent frame calculations.
-            vadResumeTime = newResumeTime;
-            vadResumeFrameIndex = frameIndex;
+            // Update anchors for subsequent frame calculations. In flood-coalesce
+            // the resume time is bogus, so keep the existing real frame timeline.
+            if (!floodCoalesce) {
+              vadResumeTime = newResumeTime;
+              vadResumeFrameIndex = frameIndex;
+            }
             _currentFrameUptimeMs = vadUptimeMs;
           }
           offset += 20;
@@ -1119,6 +1149,37 @@ class VadAudioProcessor {
     _resetState();
   }
 
+  /// One AAD-flood-guard transition for a resume-split decision. Called only
+  /// when a split would otherwise fire and Silero is unavailable. [closingMs] is
+  /// the duration of the recording the split would close; [hasRefs] whether any
+  /// audio is buffered. Counts consecutive tiny (< [_aadFloodSplitFloorMs])
+  /// splits and, once [_aadFloodRunThreshold] occur in a row, latches flood mode
+  /// and returns true so the caller coalesces instead of splitting. A lone short
+  /// recording (run not reached) still splits. The latch clears at the next real
+  /// boundary via [_resetState].
+  @visibleForTesting
+  bool aadFloodStep({required int closingMs, required bool hasRefs}) {
+    if (!_aadFloodActive) {
+      if (hasRefs && closingMs < _aadFloodSplitFloorMs) {
+        if (++_consecutiveTinyAadSplits >= _aadFloodRunThreshold) {
+          _aadFloodActive = true;
+          Logger.error('VadAudioProcessor: AAD resume-split flood detected '
+              '($_consecutiveTinyAadSplits consecutive <${_aadFloodSplitFloorMs}ms splits, Silero '
+              'unavailable) — coalescing further resume markers onto one recording until the next boundary.');
+        }
+      } else {
+        _consecutiveTinyAadSplits = 0;
+      }
+    }
+    return _aadFloodActive;
+  }
+
+  @visibleForTesting
+  bool get aadFloodActive => _aadFloodActive;
+
+  @visibleForTesting
+  void resetStateForTest() => _resetState();
+
   Future<String?> flushRemaining({bool isDraft = false}) async {
     await _flushPartialWindow();
     final speechMs = _speechFrameCount * frameDurationMs;
@@ -1185,6 +1246,12 @@ class VadAudioProcessor {
     _currentMaxVoiceProb = 0.0;
     _recordingStartTime = null;
     _silenceRunMs = 0;
+    // A real conversation boundary (flushRemaining / silence split) ends any AAD
+    // flood, so clear the latch — the next conversation splits normally. The
+    // early tiny splits that build the run use inline resets (not _resetState),
+    // so the counter survives those and only clears at a genuine boundary.
+    _consecutiveTinyAadSplits = 0;
+    _aadFloodActive = false;
     // Reset VAD model state so the next conversation starts with a clean LSTM.
     // Not resetting these contaminates the first few VAD decisions of the new
     // conversation with the previous conversation's recurrent state.
