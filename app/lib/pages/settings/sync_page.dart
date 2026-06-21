@@ -938,6 +938,18 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
               child: const Text('Copy Bins for Reprocessing',
                   style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold)),
             ),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              onPressed: _reprocessAllFromSegments,
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.orangeAccent, width: 1),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                minimumSize: const Size(double.infinity, 0),
+              ),
+              child: const Text('Reprocess All from Segments',
+                  style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold)),
+            ),
           ],
         ],
       ),
@@ -1047,6 +1059,37 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     } catch (e) {
       Logger.error('Adjustment: copy-for-reprocessing failed: $e');
       _reportCopyResult('Copy failed: $e');
+    }
+  }
+
+  /// Adjustment-mode re-derive: reprocess EVERY retained segment, rebuilding all
+  /// recordings (including finalized ones) from their raw bins. This is the
+  /// destructive intent the routine Force Process button no longer has — gated
+  /// behind a confirm so it's never a surprise.
+  Future<void> _reprocessAllFromSegments() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        c,
+        () => Navigator.of(c).pop(false),
+        () => Navigator.of(c).pop(true),
+        'Reprocess all from segments?',
+        'This re-runs voice detection on every retained segment and REBUILDS all recordings — including '
+            'finalized ones, whose boundaries may change or merge/split differently. Use this only to re-cut '
+            'from saved bins.',
+        confirmText: 'Reprocess',
+      ),
+    );
+    if (confirmed != true) return;
+    if (!mounted) return;
+    setState(() => _statusMessage = 'Reprocessing all from segments…');
+    Logger.info('Adjustment: reprocess-all-from-segments requested');
+    try {
+      await RecordingsManager.forceProcessAll(reprocessCovered: true);
+      _reportCopyResult('Reprocessed all segments — recordings rebuilt from raw bins.');
+    } catch (e) {
+      Logger.error('Adjustment: reprocess-all-from-segments failed: $e');
+      _reportCopyResult('Reprocess failed: $e');
     }
   }
 
