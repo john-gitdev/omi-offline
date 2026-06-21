@@ -270,6 +270,35 @@ void main() {
     expect(savedPath, isNull, reason: 'Empty segment is discarded, returning null');
   });
 
+  group('relBinPath (never drops a ref to an empty bin list)', () {
+    test('extracts the tail after /raw_segments/', () {
+      expect(
+        VadAudioProcessor.relBinPath('/data/user/0/com.x/app_flutter/raw_segments/1782066159/1782066159_1.bin'),
+        '1782066159/1782066159_1.bin',
+      );
+    });
+
+    test('uses the LAST /raw_segments/ if the path nests it', () {
+      expect(
+        VadAudioProcessor.relBinPath('/a/raw_segments/b/raw_segments/1700/1700_2.bin'),
+        '1700/1700_2.bin',
+      );
+    });
+
+    test('normalises backslashes', () {
+      expect(
+        VadAudioProcessor.relBinPath(r'C:\app\raw_segments\1700\1700_3.bin'),
+        '1700/1700_3.bin',
+      );
+    });
+
+    test('falls back to the last two components when not under raw_segments', () {
+      // The defensive case the old guard dropped (→ empty bins → un-mergeable).
+      expect(VadAudioProcessor.relBinPath('/data/app/processing_temp/combined/1700_4.bin'),
+          'combined/1700_4.bin');
+    });
+  });
+
   group('AAD resume-split flood guard', () {
     test('a lone short split does NOT coalesce; a run of 3 latches', () async {
       final p = await VadAudioProcessor.create(outputDir: tempDir.path);
