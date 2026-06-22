@@ -65,6 +65,39 @@ class MutedBanner extends StatelessWidget {
   }
 }
 
+/// Shown when the most recent VAD-wanted processing run fell back to firmware
+/// AAD because Silero failed to load. In AAD mode every frame counts as speech,
+/// so silence-splitting happens device-side only — a silent fallback can spray
+/// hundreds of tiny junk recordings. The flag auto-clears once Silero loads
+/// again, so the banner disappears on the next healthy run.
+class VadFallbackBanner extends StatelessWidget {
+  final bool active;
+  const VadFallbackBanner({super.key, required this.active});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!active) return const SizedBox.shrink();
+    return Container(
+      width: double.infinity,
+      color: Colors.orange.shade900,
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: Row(
+        children: [
+          const FaIcon(FontAwesomeIcons.triangleExclamation, color: Colors.white, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Voice detection unavailable — using device fallback. Recordings may be split oddly until '
+              'the next sync recovers it.',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class AccumulatingBanner extends StatelessWidget {
   final SyncProcessState spState;
   final double toProcessMinutes;

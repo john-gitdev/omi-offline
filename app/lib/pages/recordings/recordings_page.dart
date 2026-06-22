@@ -954,6 +954,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                 StorageWarningBanner(
                   percentage: deviceProvider.storageFullPercentage,
                 ),
+                VadFallbackBanner(active: _prefs.lastVadFallbackActive),
                 MutedBanner(
                   isMuted: deviceProvider.isMuted,
                   since: deviceProvider.muteSince,

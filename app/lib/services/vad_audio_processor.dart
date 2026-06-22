@@ -87,6 +87,21 @@ class VadAudioProcessor {
   // VAD state counters
   int _currentChunkDurationMs = 0; // total frames accumulated (for max-cap)
 
+  // AAD-mode resume-split flood guard. A clock-anchor mismatch (firmware UTC in
+  // a 0xFFFFFFFD marker diverging from the frame timeline) can make EVERY resume
+  // marker read as a huge forward gap, splitting the stream into a flood of
+  // sub-second junk recordings (observed: 3482× one-frame recordings in ~1 min).
+  // Only a concern when Silero is unavailable (AAD mode) — in Silero mode the
+  // app's own silence detection governs splits, not the markers. Once we see a
+  // RUN of consecutive tiny splits we latch into coalesce mode: further resume
+  // markers become no-ops (stitch on the real frame timeline) until a real
+  // boundary clears the latch in flushRemaining. A lone short recording still
+  // splits — only a sustained flood is coalesced.
+  int _consecutiveTinyAadSplits = 0;
+  bool _aadFloodActive = false;
+  static const int _aadFloodSplitFloorMs = 1000; // a split closing < this much audio is "tiny"
+  static const int _aadFloodRunThreshold = 3; // coalesce once this many tiny splits occur in a row
+
   // App-side silence-split tracking. _silenceRunMs is the length of the current
   // unbroken run of non-speech frames (reset to 0 on any speech frame). Reset on
   // every conversation boundary (see _resetState and the inline resets in the
@@ -875,9 +890,20 @@ class VadAudioProcessor {
             final bool withinMarkerWindow =
                 _markerProtectedUntilMs != null && newResumeTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
 
-            if (!withinMarkerWindow &&
+            final bool wouldSplit = !withinMarkerWindow &&
                 gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) &&
-                !isClockJump) {
+                !isClockJump;
+
+            // AAD flood guard: a bogus large gap (clock-anchor mismatch) on every
+            // resume marker would spray a flood of tiny junk recordings. While
+            // Silero is unavailable, latch into coalesce mode after a run of tiny
+            // splits so further resume markers stitch onto one recording instead
+            // of splitting (no pad, no re-anchor — see below).
+            final bool floodCoalesce = wouldSplit &&
+                _session == null &&
+                aadFloodStep(closingMs: _currentChunkDurationMs, hasRefs: _currentRefs.isNotEmpty);
+
+            if (wouldSplit && !floodCoalesce) {
               // Gap exceeds threshold — flush current recording, start new conversation.
               // TWO-PASS: flush any deferred batch before the split decision.
               if (_useBatchRunner && _batchDeferredFrames.isNotEmpty) {
@@ -928,17 +954,21 @@ class VadAudioProcessor {
               Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms >= threshold, new conversation.');
             } else {
               // Gap within threshold or clock jump — stitch, padding with silence so playback reflects real timing.
-              if (_currentRefs.isNotEmpty && gapMs > 0 && !isClockJump) {
+              // In flood-coalesce the gap is bogus (that's the pathology), so never pad it.
+              if (!floodCoalesce && _currentRefs.isNotEmpty && gapMs > 0 && !isClockJump) {
                 _currentRefs.add(Duration(milliseconds: gapMs));
                 _currentChunkDurationMs += gapMs;
               }
-              Logger.debug(
-                  'VadAudioProcessor: VAD resume — gap ${gapMs}ms ${isClockJump ? "(CLOCK JUMP)" : "< threshold"}, stitching.');
+              Logger.debug('VadAudioProcessor: VAD resume — gap ${gapMs}ms '
+                  '${floodCoalesce ? "(AAD flood — coalescing)" : isClockJump ? "(CLOCK JUMP)" : "< threshold"}, stitching.');
             }
 
-            // Update anchors for subsequent frame calculations.
-            vadResumeTime = newResumeTime;
-            vadResumeFrameIndex = frameIndex;
+            // Update anchors for subsequent frame calculations. In flood-coalesce
+            // the resume time is bogus, so keep the existing real frame timeline.
+            if (!floodCoalesce) {
+              vadResumeTime = newResumeTime;
+              vadResumeFrameIndex = frameIndex;
+            }
             _currentFrameUptimeMs = vadUptimeMs;
           }
           offset += 20;
@@ -1119,6 +1149,37 @@ class VadAudioProcessor {
     _resetState();
   }
 
+  /// One AAD-flood-guard transition for a resume-split decision. Called only
+  /// when a split would otherwise fire and Silero is unavailable. [closingMs] is
+  /// the duration of the recording the split would close; [hasRefs] whether any
+  /// audio is buffered. Counts consecutive tiny (< [_aadFloodSplitFloorMs])
+  /// splits and, once [_aadFloodRunThreshold] occur in a row, latches flood mode
+  /// and returns true so the caller coalesces instead of splitting. A lone short
+  /// recording (run not reached) still splits. The latch clears at the next real
+  /// boundary via [_resetState].
+  @visibleForTesting
+  bool aadFloodStep({required int closingMs, required bool hasRefs}) {
+    if (!_aadFloodActive) {
+      if (hasRefs && closingMs < _aadFloodSplitFloorMs) {
+        if (++_consecutiveTinyAadSplits >= _aadFloodRunThreshold) {
+          _aadFloodActive = true;
+          Logger.error('VadAudioProcessor: AAD resume-split flood detected '
+              '($_consecutiveTinyAadSplits consecutive <${_aadFloodSplitFloorMs}ms splits, Silero '
+              'unavailable) — coalescing further resume markers onto one recording until the next boundary.');
+        }
+      } else {
+        _consecutiveTinyAadSplits = 0;
+      }
+    }
+    return _aadFloodActive;
+  }
+
+  @visibleForTesting
+  bool get aadFloodActive => _aadFloodActive;
+
+  @visibleForTesting
+  void resetStateForTest() => _resetState();
+
   Future<String?> flushRemaining({bool isDraft = false}) async {
     await _flushPartialWindow();
     final speechMs = _speechFrameCount * frameDurationMs;
@@ -1185,6 +1246,12 @@ class VadAudioProcessor {
     _currentMaxVoiceProb = 0.0;
     _recordingStartTime = null;
     _silenceRunMs = 0;
+    // A real conversation boundary (flushRemaining / silence split) ends any AAD
+    // flood, so clear the latch — the next conversation splits normally. The
+    // early tiny splits that build the run use inline resets (not _resetState),
+    // so the counter survives those and only clears at a genuine boundary.
+    _consecutiveTinyAadSplits = 0;
+    _aadFloodActive = false;
     // Reset VAD model state so the next conversation starts with a clean LSTM.
     // Not resetting these contaminates the first few VAD decisions of the new
     // conversation with the previous conversation's recurrent state.
@@ -1478,11 +1545,52 @@ class VadAudioProcessor {
     final bins = <String>{};
     for (final item in refs) {
       if (item is! FrameRef) continue;
-      // Path layout: <docs>/raw_segments/<sessionId>/<file>.bin → store relative tail.
-      final segments = item.segmentFile.path.split('/raw_segments/');
-      bins.add(segments.length == 2 ? segments.last : item.segmentFile.path);
+      bins.add(relBinPath(item.segmentFile.path));
     }
     return bins;
+  }
+
+  /// The `<folder>/<file>.bin` tail used to reference a source bin in a
+  /// recording's `.meta` (and discards). The path-keyed consumers resolve it as
+  /// `<docs>/raw_segments/<rel>`, so the tail must be exactly the part after
+  /// `raw_segments/`.
+  ///
+  /// Prefers the substring after the LAST `/raw_segments/` (handles `\` on the
+  /// off chance the platform uses it, and an unexpectedly nested path). If the
+  /// ref somehow isn't under `raw_segments` at all, falls back to the last two
+  /// path components rather than dropping the ref — dropping it produced an
+  /// EMPTY bin list, which silently made the recording un-mergeable ("lists no
+  /// source segments"). A best-effort tail at least keeps the reference and
+  /// surfaces the real location in the diagnostic.
+  @visibleForTesting
+  static String relBinPath(String path) {
+    final norm = path.replaceAll('\\', '/');
+    const marker = '/raw_segments/';
+    final i = norm.lastIndexOf(marker);
+    if (i >= 0) return norm.substring(i + marker.length);
+    final comps = norm.split('/').where((c) => c.isNotEmpty).toList();
+    return comps.length >= 2 ? '${comps[comps.length - 2]}/${comps.last}' : norm;
+  }
+
+  /// The device session id derived from the bins a recording owns — bins are
+  /// named `<timerStart>_<sessionId>.bin`, so the session of the audio is
+  /// authoritative. Returns the first parseable non-zero id, or null if none.
+  /// Used to stamp a consistent session id in the `.meta` even when the runtime
+  /// `_currentSessionId` was reset across a stitch (which used to write 0 there,
+  /// hiding the recording from the orphan-bin sweep).
+  @visibleForTesting
+  static int? sessionIdFromRefs(Iterable<Object> refs) {
+    for (final r in refs) {
+      if (r is! FrameRef) continue;
+      final file = relBinPath(r.segmentFile.path).split('/').last; // <timerStart>_<sessionId>.bin
+      final base = file.contains('.') ? file.substring(0, file.indexOf('.')) : file;
+      final parts = base.split('_');
+      if (parts.length >= 2) {
+        final sid = int.tryParse(parts[1]);
+        if (sid != null && sid != 0) return sid;
+      }
+    }
+    return null;
   }
 
   Map<String, dynamic>? _buildDiscardRecord(String reason) =>
@@ -1848,7 +1956,14 @@ class VadAudioProcessor {
       metaBytes.setUint16(8 + i * 2, peak16, Endian.little);
     }
     // Add Session ID and Start Uptime at the end of the fixed header
-    metaBytes.setUint32(408, _currentSessionId ?? 0, Endian.little);
+    // Stamp the session id consistently with the bins this recording owns. The
+    // runtime _currentSessionId can be null/0 after a stitch/resume; fall back to
+    // the authoritative id parsed from the bin filenames so the .meta is never 0
+    // when the audio plainly belongs to a session (keeps the orphan-bin sweep
+    // and any session-keyed logic honest).
+    final sessionIdForMeta =
+        (_currentSessionId != null && _currentSessionId != 0) ? _currentSessionId! : (sessionIdFromRefs(refs) ?? 0);
+    metaBytes.setUint32(408, sessionIdForMeta, Endian.little);
     metaBytes.setUint32(412, _currentStartUptime ?? 0, Endian.little);
 
     final metaPath = '$dateFolderPath/${prefix}_$timestamp$suffix.meta';
@@ -1880,9 +1995,20 @@ class VadAudioProcessor {
     metaOut.add(capEnded ? 1 : 0); // capEnded
     metaOut.add(isSilero ? 1 : 0); // isSilero
 
-    // Append relative bins used for this recording (binary length + JSON)
-    final relativeBins =
-        refs.whereType<FrameRef>().map((r) => r.segmentFile.path.split('/raw_segments/').last).toSet().toList()..sort();
+    // Append relative bins used for this recording (binary length + JSON).
+    // Use relBinPath() so a ref whose path doesn't contain a literal
+    // '/raw_segments/' (or uses backslashes) still maps to a bin entry rather
+    // than being silently dropped — an empty relativeBins makes a recording show
+    // "lists no source segments".
+    final relativeBins = refs.whereType<FrameRef>().map((r) => relBinPath(r.segmentFile.path)).toSet().toList()..sort();
+    final frameRefCount = refs.whereType<FrameRef>().length;
+    if (frameRefCount > 0 && relativeBins.isEmpty) {
+      Logger.error('VadAudioProcessor: BINS-EMPTY — wrote 0 relativeBins despite $frameRefCount frame ref(s) for '
+          '${prefix}_$timestamp$suffix. First ref path: ${refs.whereType<FrameRef>().first.segmentFile.path}');
+    } else {
+      Logger.debug('VadAudioProcessor: meta bins=${relativeBins.length} (refs=$frameRefCount) for '
+          '${prefix}_$timestamp$suffix → ${relativeBins.join(', ')}');
+    }
     final binsJson = jsonEncode(relativeBins);
     final binsBytes = utf8.encode(binsJson);
     final binsLen = ByteData(4)..setUint32(0, binsBytes.length, Endian.little);
