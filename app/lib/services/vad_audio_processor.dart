@@ -416,6 +416,12 @@ class VadAudioProcessor {
 
   bool get isCapturing => (_currentRefs.isNotEmpty && _speechFrameCount > 0) || _forcedByMarker;
 
+  /// The wall-clock (epoch ms) the marker guaranteed-save window extends to, or
+  /// null when no window is active. Exposed for tests that verify a hard boundary
+  /// (mute / manual-stop) ends the window rather than leaking it past unmute.
+  @visibleForTesting
+  int? get markerProtectedUntilMs => _markerProtectedUntilMs;
+
   // VAD timing instrumentation (debug-log only; gated by the dev-logs pref via
   // Logger.debug). Accumulates wall-clock across each inference's three awaited
   // platform-channel steps and emits an average every _vadTimingLogInterval
@@ -811,6 +817,11 @@ class VadAudioProcessor {
               _emitOrphanMarkers();
             }
             _sessionEndPendingResume = true;
+            // Manual-mode stop is a hard end, not a silence/file split: the
+            // protected recording is finalized and the tap consumed, so the
+            // guaranteed-save window is done. Clear it so a tap-then-stop-then-
+            // restart inside the original 50 s doesn't force-promote noise.
+            _markerProtectedUntilMs = null;
             _pcmBufferLen = 0;
             _cachedStateValue?.dispose();
             _cachedStateValue = null;
@@ -843,6 +854,12 @@ class VadAudioProcessor {
             _muted = true;
             _muteStartMs = muteMs;
             _sessionEndPendingResume = true;
+            // The mute boundary closed and saved the marker-protected recording
+            // and consumed its tap, so the guaranteed-save window has nothing left
+            // to guard. Clear it (matching _emitOrphanMarkers) so a quick unmute
+            // inside the original 50 s doesn't force-promote marker-less noise.
+            // (Silence/file-split self-expiry still relies on _resetState keeping it.)
+            _markerProtectedUntilMs = null;
             _pcmBufferLen = 0;
             _cachedStateValue?.dispose();
             _cachedStateValue = null;
