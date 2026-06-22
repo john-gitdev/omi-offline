@@ -23,6 +23,38 @@ class DiscardStore {
   /// introduces, so genuinely separate noise periods stay separate.
   static const Duration discardMergeGap = Duration(seconds: 30);
 
+  /// Parses a persisted `binRanges` map (`{rel: [startByte, endByte]}`) tolerantly.
+  /// Absent/malformed ⇒ empty map (Recover falls back to whole-bin).
+  static Map<String, List<int>> _parseBinRanges(Object? raw) {
+    if (raw is! Map) return const {};
+    final out = <String, List<int>>{};
+    raw.forEach((k, v) {
+      if (k is String && v is List && v.length == 2) {
+        final s = v[0], e = v[1];
+        if (s is int && e is int && e > s) out[k] = [s, e];
+      }
+    });
+    return out;
+  }
+
+  /// Unions two per-bin range maps: each bin's span becomes `[min start, max end]`.
+  /// Coalesced discards are time-adjacent (contiguous noise), so the per-bin
+  /// min/max is the slice Recover should re-derive for the merged row.
+  static Map<String, List<int>> _unionBinRanges(Map<String, List<int>> a, Map<String, List<int>> b) {
+    final out = <String, List<int>>{
+      for (final e in a.entries) e.key: [e.value[0], e.value[1]]
+    };
+    b.forEach((k, v) {
+      final cur = out[k];
+      if (cur == null) {
+        out[k] = [v[0], v[1]];
+      } else {
+        out[k] = [cur[0] < v[0] ? cur[0] : v[0], cur[1] > v[1] ? cur[1] : v[1]];
+      }
+    });
+    return out;
+  }
+
   static String _dateStringFromMillis(int millis) {
     final d = DateTime.fromMillisecondsSinceEpoch(millis).toLocal();
     return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
@@ -110,6 +142,7 @@ class DiscardStore {
           reason: m['reason'] as String,
           maxVoiceProb: (m['maxVoiceProb'] as num).toDouble(),
           relativeBins: (m['relativeBins'] as List).cast<String>(),
+          binRanges: _parseBinRanges(m['binRanges']),
           sourceJsonl: jsonl,
         );
         if (rec.reason == 'silence_trimmed') continue;
@@ -137,6 +170,7 @@ class DiscardStore {
     DateTime end = sorted.first.endTime;
     double maxProb = sorted.first.maxVoiceProb;
     final bins = <String>{...sorted.first.relativeBins};
+    Map<String, List<int>> ranges = sorted.first.binRanges;
     String reason = sorted.first.reason;
     bool noise = sorted.first.isNoise;
     File src = sorted.first.sourceJsonl;
@@ -147,6 +181,7 @@ class DiscardStore {
           reason: reason,
           maxVoiceProb: maxProb,
           relativeBins: bins.toList()..sort(),
+          binRanges: ranges,
           sourceJsonl: src,
         );
 
@@ -160,6 +195,7 @@ class DiscardStore {
         if (r.endTime.isAfter(end)) end = r.endTime;
         if (r.maxVoiceProb > maxProb) maxProb = r.maxVoiceProb;
         bins.addAll(r.relativeBins);
+        ranges = _unionBinRanges(ranges, r.binRanges);
         if (!noise && r.isNoise) {
           noise = true;
           reason = r.reason;
@@ -172,6 +208,7 @@ class DiscardStore {
         bins
           ..clear()
           ..addAll(r.relativeBins);
+        ranges = r.binRanges;
         reason = r.reason;
         noise = r.isNoise;
         src = r.sourceJsonl;

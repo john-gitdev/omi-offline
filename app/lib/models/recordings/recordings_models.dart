@@ -456,6 +456,11 @@ class DiscardRecord {
   final String reason;
   final double maxVoiceProb;
   final List<String> relativeBins;
+  // Per-bin `[startByte, endByte]` byte slice this discard consumed, keyed by the
+  // same `<rel>` tail as [relativeBins]. Populated for discards written since
+  // byte-range recovery landed; empty for legacy records (Recover then falls
+  // back to whole-bin). Lets Recover re-derive only the discarded span.
+  final Map<String, List<int>> binRanges;
   final File sourceJsonl;
 
   const DiscardRecord({
@@ -465,6 +470,7 @@ class DiscardRecord {
     required this.maxVoiceProb,
     required this.relativeBins,
     required this.sourceJsonl,
+    this.binRanges = const {},
   });
 
   Duration get duration => endTime.difference(startTime);

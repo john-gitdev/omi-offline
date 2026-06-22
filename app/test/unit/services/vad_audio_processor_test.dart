@@ -294,8 +294,47 @@ void main() {
 
     test('falls back to the last two components when not under raw_segments', () {
       // The defensive case the old guard dropped (→ empty bins → un-mergeable).
-      expect(VadAudioProcessor.relBinPath('/data/app/processing_temp/combined/1700_4.bin'),
-          'combined/1700_4.bin');
+      expect(VadAudioProcessor.relBinPath('/data/app/processing_temp/combined/1700_4.bin'), 'combined/1700_4.bin');
+    });
+  });
+
+  // Recover-discards byte-range ownership. A discard whose frames occupy only
+  // PART of a ~5-min bin now records that bin's consumed byte slice in a separate
+  // `binRanges` field (relativeBins stays a bare path list, so prune/protect/sweep
+  // are unaffected). recoverDiscard passes the slice to processSegmentFile so it
+  // re-derives ONLY the discarded span, never the neighbor recording sharing the
+  // bin — the overlapping/oversized-recovery bug. (A full runtime audio repro
+  // isn't possible in this host harness: dummy zero-byte frames don't Opus-decode,
+  // so no recording is saved — see the AAC-fallback tests above — so the discard
+  // metadata that drives the slice is pinned at the logic level here.)
+  group('recover-discards byte-range ownership', () {
+    List<FrameRef> subBinRefs(File bin) => <FrameRef>[
+          // Frames occupying only bytes [800, 1400) of a bin also owned by a
+          // neighbor recording (the straddle case the firmware's ~5-min bins make routine).
+          FrameRef(segmentFile: bin, byteOffset: 800, frameLength: 20),
+          FrameRef(segmentFile: bin, byteOffset: 1376, frameLength: 20),
+        ];
+
+    test('relativeBins stays a bare path (path-keyed consumers unaffected)', () async {
+      final p = await VadAudioProcessor.create(outputDir: tempDir.path);
+      final bin = File('${tempDir.path}/raw_segments/1700000000/1700000000_7.bin');
+      final rec = p.buildDiscardRecordForTest(
+          subBinRefs(bin), DateTime.fromMillisecondsSinceEpoch(1700000000000), 600, 'flush_too_short_duration');
+      final bins = (rec!['relativeBins'] as List).cast<String>();
+      expect(bins, ['1700000000/1700000000_7.bin']);
+      expect(bins.single.contains('@'), isFalse,
+          reason: 'the byte slice lives in binRanges, not mangled into the path');
+    });
+
+    test('records the consumed byte slice [minOffset, maxOffset+len) in binRanges', () async {
+      final p = await VadAudioProcessor.create(outputDir: tempDir.path);
+      final bin = File('${tempDir.path}/raw_segments/1700000000/1700000000_7.bin');
+      final rec = p.buildDiscardRecordForTest(
+          subBinRefs(bin), DateTime.fromMillisecondsSinceEpoch(1700000000000), 600, 'flush_too_short_duration');
+      final ranges = (rec!['binRanges'] as Map).cast<String, List<int>>();
+      // start = min byteOffset (800); end = max(byteOffset + 4-byte len prefix +
+      // 4-byte-aligned payload) = 1376 + 4 + 20 = 1400.
+      expect(ranges['1700000000/1700000000_7.bin'], [800, 1400]);
     });
   });
 
@@ -304,7 +343,8 @@ void main() {
       final p = await VadAudioProcessor.create(outputDir: tempDir.path);
       expect(p.aadFloodStep(closingMs: 20, hasRefs: true), false, reason: '1st tiny split still splits');
       expect(p.aadFloodStep(closingMs: 20, hasRefs: true), false, reason: '2nd tiny split still splits');
-      expect(p.aadFloodStep(closingMs: 20, hasRefs: true), true, reason: '3rd consecutive tiny split latches flood mode');
+      expect(p.aadFloodStep(closingMs: 20, hasRefs: true), true,
+          reason: '3rd consecutive tiny split latches flood mode');
       expect(p.aadFloodActive, true);
     });
 
@@ -312,7 +352,8 @@ void main() {
       final p = await VadAudioProcessor.create(outputDir: tempDir.path);
       expect(p.aadFloodStep(closingMs: 20, hasRefs: true), false);
       expect(p.aadFloodStep(closingMs: 20, hasRefs: true), false);
-      expect(p.aadFloodStep(closingMs: 5000, hasRefs: true), false, reason: 'a real-length recording clears the counter');
+      expect(p.aadFloodStep(closingMs: 5000, hasRefs: true), false,
+          reason: 'a real-length recording clears the counter');
       expect(p.aadFloodActive, false);
       expect(p.aadFloodStep(closingMs: 20, hasRefs: true), false, reason: 'back at count 1 — no coalesce');
     });
