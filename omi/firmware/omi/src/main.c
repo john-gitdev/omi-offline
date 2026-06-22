@@ -164,17 +164,6 @@ void set_led_state()
         return;
     }
 
-    // Track charging transitions to save/restore LED state
-    static bool prev_is_charging = false;
-    static bool led_state_before_charging = false;
-    if (is_charging && !prev_is_charging) {
-        led_state_before_charging = is_led_enabled;
-        is_led_enabled = true;
-    } else if (!is_charging && prev_is_charging) {
-        is_led_enabled = led_state_before_charging;
-    }
-    prev_is_charging = is_charging;
-
     // Priority 1: Marker Flash (Transient, overrides stealth)
     if (marker_flash_count > 0) {
         set_led_red(marker_flash_color == MARKER_FLASH_WHITE || marker_flash_color == MARKER_FLASH_RED);
@@ -183,8 +172,15 @@ void set_led_state()
         return;
     }
 
-    // Stealth Mode: All LEDs off
-    if (!is_led_enabled) {
+    // Stealth gate: LEDs off unless the user has enabled them. is_led_enabled is
+    // the single source of truth — mute force-enables it (see mute_apply()) so a
+    // mute tap gives feedback even from the default-off state, yet the user can
+    // still toggle the LED back off mid-mute (BUTTON_ACTION_TOGGLE_LED writes
+    // is_led_enabled directly). Charging bypasses this gate at display time so
+    // the charge indicator shows in stealth without mutating is_led_enabled —
+    // otherwise charging's save/restore would race mute's and could drop the red
+    // mute indicator on charge-stop while still muted.
+    if (!is_led_enabled && !is_charging) {
         led_off();
         return;
     }
