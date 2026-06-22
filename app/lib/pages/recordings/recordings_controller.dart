@@ -1403,13 +1403,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // ~5-min bin (the overlap bug). Single-bin discards carry an unambiguous
     // slice + anchor; multi-bin or legacy (no range) records fall back to the
     // old whole-bin reprocess.
-    final byteRanges = <String, List<int>>{};
-    final startOverrides = <String, int>{};
+    final recoverSlices = <String, RecoverSlice>{};
     if (bins.length == 1 && d.relativeBins.length == 1) {
       final range = d.binRanges[d.relativeBins.first];
       if (range != null && range.length == 2) {
-        byteRanges[bins.first.path] = range;
-        startOverrides[bins.first.path] = d.startTime.millisecondsSinceEpoch;
+        recoverSlices[bins.first.path] =
+            RecoverSlice(startByte: range[0], endByte: range[1], anchorMs: d.startTime.millisecondsSinceEpoch);
       }
     }
 
@@ -1421,8 +1420,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         (_, __) {},
         backgroundMode: false,
         settingsOverride: override,
-        segmentByteRanges: byteRanges,
-        segmentStartOverridesMs: startOverrides,
+        recoverSlices: recoverSlices,
       );
     } catch (e) {
       _transitionToError('processing', e.toString());
