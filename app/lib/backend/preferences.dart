@@ -141,6 +141,16 @@ class SharedPreferencesUtil {
   int get keepRecordingsDays => getInt('keepRecordingsDays', defaultValue: -1);
   set keepRecordingsDays(int v) => saveInt('keepRecordingsDays', v);
 
+  // True iff the most recent processing run that WANTED Silero VAD (vadEnabled)
+  // had to fall back to firmware AAD because the model failed to load. AAD marks
+  // every frame as speech (no on-phone silence split), so a silent fallback can
+  // spray hundreds of 1-frame junk recordings. The processing isolate sets this
+  // each VAD run (true on fallback, false once Silero loads again); the UI shows
+  // a banner while it's true. Runs that don't want VAD (manual mode) leave it
+  // untouched.
+  bool get lastVadFallbackActive => getBool('lastVadFallbackActive', defaultValue: false);
+  set lastVadFallbackActive(bool v) => saveBool('lastVadFallbackActive', v);
+
   // When enabled, recordings are uploaded to integrations immediately and the
   // local audio file is deleted after a successful upload. Only the metadata
   // sidecar (.meta) is kept so the conversation still appears in the list.

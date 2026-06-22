@@ -105,6 +105,14 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
     }
   }
 
+  // Surface a silent VAD→AAD fallback to the UI. Only report when this run
+  // actually wanted Silero (vadEnabled): manual-mode / merge runs legitimately
+  // run AAD and must not raise the banner or clear a real warning. session==null
+  // here means the model was missing or failed to load → AAD this run.
+  if (params.settings.vadEnabled) {
+    params.sendPort.send({'type': 'vad_status', 'fallback': session == null});
+  }
+
   SimpleOpusDecoder? decoder;
   if (Platform.isIOS || Platform.isAndroid) {
     try {

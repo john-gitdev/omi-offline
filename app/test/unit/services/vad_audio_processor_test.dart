@@ -270,6 +270,77 @@ void main() {
     expect(savedPath, isNull, reason: 'Empty segment is discarded, returning null');
   });
 
+  group('relBinPath (never drops a ref to an empty bin list)', () {
+    test('extracts the tail after /raw_segments/', () {
+      expect(
+        VadAudioProcessor.relBinPath('/data/user/0/com.x/app_flutter/raw_segments/1782066159/1782066159_1.bin'),
+        '1782066159/1782066159_1.bin',
+      );
+    });
+
+    test('uses the LAST /raw_segments/ if the path nests it', () {
+      expect(
+        VadAudioProcessor.relBinPath('/a/raw_segments/b/raw_segments/1700/1700_2.bin'),
+        '1700/1700_2.bin',
+      );
+    });
+
+    test('normalises backslashes', () {
+      expect(
+        VadAudioProcessor.relBinPath(r'C:\app\raw_segments\1700\1700_3.bin'),
+        '1700/1700_3.bin',
+      );
+    });
+
+    test('falls back to the last two components when not under raw_segments', () {
+      // The defensive case the old guard dropped (→ empty bins → un-mergeable).
+      expect(VadAudioProcessor.relBinPath('/data/app/processing_temp/combined/1700_4.bin'),
+          'combined/1700_4.bin');
+    });
+  });
+
+  group('AAD resume-split flood guard', () {
+    test('a lone short split does NOT coalesce; a run of 3 latches', () async {
+      final p = await VadAudioProcessor.create(outputDir: tempDir.path);
+      expect(p.aadFloodStep(closingMs: 20, hasRefs: true), false, reason: '1st tiny split still splits');
+      expect(p.aadFloodStep(closingMs: 20, hasRefs: true), false, reason: '2nd tiny split still splits');
+      expect(p.aadFloodStep(closingMs: 20, hasRefs: true), true, reason: '3rd consecutive tiny split latches flood mode');
+      expect(p.aadFloodActive, true);
+    });
+
+    test('a non-tiny split resets the run (lone short notes never merge)', () async {
+      final p = await VadAudioProcessor.create(outputDir: tempDir.path);
+      expect(p.aadFloodStep(closingMs: 20, hasRefs: true), false);
+      expect(p.aadFloodStep(closingMs: 20, hasRefs: true), false);
+      expect(p.aadFloodStep(closingMs: 5000, hasRefs: true), false, reason: 'a real-length recording clears the counter');
+      expect(p.aadFloodActive, false);
+      expect(p.aadFloodStep(closingMs: 20, hasRefs: true), false, reason: 'back at count 1 — no coalesce');
+    });
+
+    test('latch persists once set, then clears at a real boundary', () async {
+      final p = await VadAudioProcessor.create(outputDir: tempDir.path);
+      for (var i = 0; i < 3; i++) {
+        p.aadFloodStep(closingMs: 20, hasRefs: true);
+      }
+      expect(p.aadFloodActive, true);
+      // Once latched, even a now-grown coalesced recording stays coalesced
+      // (we don't re-split mid-flood).
+      expect(p.aadFloodStep(closingMs: 9000, hasRefs: true), true, reason: 'latched: keeps coalescing');
+      // A genuine conversation boundary (flushRemaining → _resetState) ends it.
+      p.resetStateForTest();
+      expect(p.aadFloodActive, false);
+      expect(p.aadFloodStep(closingMs: 9000, hasRefs: true), false, reason: 'post-boundary non-tiny splits normally');
+    });
+
+    test('a marker with no buffered audio does not accrue toward the flood run', () async {
+      final p = await VadAudioProcessor.create(outputDir: tempDir.path);
+      expect(p.aadFloodStep(closingMs: 0, hasRefs: false), false);
+      expect(p.aadFloodStep(closingMs: 0, hasRefs: false), false);
+      expect(p.aadFloodStep(closingMs: 0, hasRefs: false), false);
+      expect(p.aadFloodActive, false, reason: 'no buffered audio ⇒ no junk recording closed here');
+    });
+  });
+
   group('short recording threshold (always kept; filter only hides)', () {
     // Each dummy frame = 20 ms. 10 frames = 200 ms, 300 frames = 6000 ms.
     // discardShortRecordings was removed: the duration guard never permanently

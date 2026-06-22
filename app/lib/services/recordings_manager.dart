@@ -715,6 +715,18 @@ class RecordingsManager {
                     (msg['replyPort'] as SendPort).send(e.toString());
                   }
                 }
+              case 'vad_status':
+                // The isolate reports whether a VAD-wanted run fell back to AAD
+                // (Silero unavailable). Persist so the UI can warn; auto-clears
+                // when Silero loads again. Only sent on vadEnabled runs.
+                final fallback = msg['fallback'] as bool? ?? false;
+                if (SharedPreferencesUtil().lastVadFallbackActive != fallback) {
+                  SharedPreferencesUtil().lastVadFallbackActive = fallback;
+                }
+                if (fallback) {
+                  Logger.error('RecordingsManager: VAD requested but Silero unavailable — AAD fallback '
+                      'active this run (every frame counts as speech; no on-phone silence split).');
+                }
               case 'heartbeat':
                 // Liveness from the decode/save loops — re-anchors the stall
                 // watchdog so a slow-but-progressing run isn't killed as a wedge.
@@ -1949,14 +1961,57 @@ class RecordingsManager {
   /// Used by the debug Force Process button — same as pressing the Process button
   /// on each batch but operates across all days at once.
   /// No-op if a process is already running.
-  static Future<void> forceProcessAll() async {
+  ///
+  /// [reprocessCovered] (default false) preserves the original intent of
+  /// "pressing Process on each batch": it RESPECTS coverage, so bins already
+  /// owned by a recording are skipped and finalized recordings are left alone.
+  /// Without this guard, retention (which keeps every bin forever) turned this
+  /// into "re-derive my entire history every time" — overwriting finalized
+  /// recordings and getting slower without bound. Set it true ONLY for the
+  /// adjustment-mode "re-run VAD on saved bins" path, which intentionally
+  /// rebuilds recordings from already-owned bins.
+  static Future<void> forceProcessAll({bool reprocessCovered = false}) async {
     if (_isProcessingAny) return;
     // Same idempotency guard as processAllCompletedSessions — see that method.
     await pruneConsumedBins();
     final manager = RecordingsManager();
     final batches = await manager.getBatches();
-    final activeBatches = batches.where((b) => b.rawSegments.isNotEmpty || b.draftRecordings.isNotEmpty).toList();
-    if (activeBatches.isEmpty) return;
+
+    final List<Batch> candidateBatches;
+    if (reprocessCovered) {
+      candidateBatches = batches;
+    } else {
+      // Skip bins already covered by an existing recording — same filter the
+      // normal Process button and background sync use. This is what keeps a
+      // routine Force Process from re-deriving (and overwriting) finalized
+      // recordings now that retention keeps their source bins on disk.
+      final covered = await coveredBinPaths(batches.expand((b) => b.rawSegments).toList());
+      candidateBatches = covered.isEmpty
+          ? batches
+          : batches.map((b) {
+              final filtered = b.rawSegments.where((f) => !covered.contains(f.path)).toList();
+              if (filtered.length == b.rawSegments.length) return b;
+              return Batch(
+                dateString: b.dateString,
+                date: b.date,
+                rawSegments: filtered,
+                draftRecordings: b.draftRecordings,
+                finalizedRecordings: b.finalizedRecordings,
+                markerTimestamps: b.markerTimestamps,
+                discards: b.discards,
+              );
+            }).toList();
+    }
+
+    final activeBatches =
+        candidateBatches.where((b) => b.rawSegments.isNotEmpty || b.draftRecordings.isNotEmpty).toList();
+    if (activeBatches.isEmpty) {
+      Logger.debug('RecordingsManager: forceProcessAll — nothing to process '
+          '(reprocessCovered=$reprocessCovered; covered bins skipped)');
+      return;
+    }
+    Logger.info('RecordingsManager: forceProcessAll — ${activeBatches.expand((b) => b.rawSegments).length} bin(s), '
+        'reprocessCovered=$reprocessCovered');
     try {
       await manager.processAll(
         activeBatches,
