@@ -30,10 +30,11 @@ class IsolateParams {
   final List<int> segmentStartUptimesMs; // milliseconds since epoch (raw device uptime)
   final List<int?> segmentSessionIds;
   final List<bool> segmentDerivedFlags;
-  // Optional `[startByte, endByte]` slice per segment (null ⇒ whole file).
-  // Set only by Recover Discard so it re-derives just the discarded byte span;
-  // every other caller passes all-null. Parallel to [segmentPaths].
-  final List<List<int>?> segmentByteRanges;
+  // Optional list of DISJOINT `[startByte, endByte)` slices per segment
+  // (null ⇒ whole file). Set only by Recover Discard so it re-derives just the
+  // discarded byte spans, skipping un-discarded audio in between; every other
+  // caller passes all-null. Parallel to [segmentPaths].
+  final List<List<List<int>>?> segmentByteRanges;
   final bool backgroundMode;
   // Forwarded so DebugLogManager can write to the log file from this isolate;
   // SharedPreferences isn't initialised here so it can't read the pref itself.
@@ -217,8 +218,7 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
           startUptimeMs: startUptimeMs,
           isDerivedTimestamp: isDerived,
           sessionId: sessionId,
-          startByte: byteRange?[0],
-          endByte: byteRange?[1],
+          byteRanges: byteRange,
         );
       } on VadProcessingCancelled {
         // Cooperative cancel landed inside the per-frame loop; bail out of the
