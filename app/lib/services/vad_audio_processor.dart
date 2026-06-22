@@ -1634,6 +1634,14 @@ class VadAudioProcessor {
     };
   }
 
+  /// Test seam for [_buildDiscardRecordFor] — lets a test assert exactly which
+  /// bins (and, once byte-range ownership lands, which sub-bin spans) a discard
+  /// claims, without driving a full decode pass.
+  @visibleForTesting
+  Map<String, dynamic>? buildDiscardRecordForTest(List<Object> refs, DateTime? startTime, int durationMs, String reason,
+          {Set<String>? excludeBins}) =>
+      _buildDiscardRecordFor(refs, startTime, durationMs, reason, excludeBins: excludeBins);
+
   /// Drains and returns any discard records produced since the last call.
   List<Map<String, dynamic>> consumePendingDiscards() {
     if (_pendingDiscards.isEmpty) return const [];
