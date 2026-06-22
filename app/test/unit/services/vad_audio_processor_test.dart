@@ -299,6 +299,48 @@ void main() {
     });
   });
 
+  // Confirms the recover-discards root cause (the "confirm symptom first" step):
+  // a discard whose frames occupy only PART of a ~5-min bin records the WHOLE
+  // bin with no byte range. recoverDiscard reprocesses relativeBins wholesale
+  // (VAD off, no split), so recovering such a discard re-derives the neighbor
+  // recording that shares the bin → an overlapping / oversized recovered
+  // recording. A full runtime audio repro isn't possible in this host harness —
+  // dummy zero-byte frames don't Opus-decode, so no recording is saved (see the
+  // AAC-fallback tests above which assert savedPath == null) — so the cause is
+  // pinned at the logic level here instead.
+  group('recover-discards root cause: whole-bin ownership', () {
+    List<FrameRef> subBinRefs(File bin) => <FrameRef>[
+          // Frames occupying only bytes [800, 1396) of a bin also owned by a
+          // neighbor recording (the straddle case the firmware's ~5-min bins make routine).
+          FrameRef(segmentFile: bin, byteOffset: 800, frameLength: 20),
+          FrameRef(segmentFile: bin, byteOffset: 1376, frameLength: 20),
+        ];
+
+    test('a sub-bin discard records the whole bin with NO byte range (the bug)', () async {
+      final p = await VadAudioProcessor.create(outputDir: tempDir.path);
+      final bin = File('${tempDir.path}/raw_segments/1700000000/1700000000_7.bin');
+      final rec = p.buildDiscardRecordForTest(
+          subBinRefs(bin), DateTime.fromMillisecondsSinceEpoch(1700000000000), 600, 'flush_too_short_duration');
+      final bins = (rec!['relativeBins'] as List).cast<String>();
+      expect(bins, ['1700000000/1700000000_7.bin'],
+          reason: 'discard claims the entire bin — the consumed span [800,1396) is lost');
+      expect(bins.single.contains('@'), isFalse,
+          reason: 'no @start-end qualifier is recorded today, so recover reprocesses the whole bin');
+    });
+
+    test('FIX TARGET: discard should record its byte slice so recover scopes to it', () async {
+      final p = await VadAudioProcessor.create(outputDir: tempDir.path);
+      final bin = File('${tempDir.path}/raw_segments/1700000000/1700000000_7.bin');
+      final rec = p.buildDiscardRecordForTest(
+          subBinRefs(bin), DateTime.fromMillisecondsSinceEpoch(1700000000000), 600, 'flush_too_short_duration');
+      final bins = (rec!['relativeBins'] as List).cast<String>();
+      // Once byte-range ownership lands, the discard owns only its slice and
+      // recoverDiscard re-derives just that span (no neighbor overlap). Exact
+      // end-offset convention is the fix's to settle; this asserts the shape.
+      expect(bins.single, startsWith('1700000000/1700000000_7.bin@800-'));
+    }, skip: 'RED until byte-range discard ownership is implemented — drives the recover-discards fix');
+  });
+
   group('AAD resume-split flood guard', () {
     test('a lone short split does NOT coalesce; a run of 3 latches', () async {
       final p = await VadAudioProcessor.create(outputDir: tempDir.path);
