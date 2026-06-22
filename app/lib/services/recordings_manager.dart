@@ -24,13 +24,18 @@ import 'package:omi/utils/logger.dart';
 export 'package:omi/models/recordings/recordings_models.dart';
 
 /// One Recover-Discard slice passed to [RecordingsManager.processAll]: re-derive
-/// only `[startByte, endByte)` of a bin, anchored at [anchorMs] (the discard's
-/// true start) instead of the bin-head time. Keyed by absolute bin path.
+/// only `[startByte, endByte)` of a bin. Keyed by absolute bin path.
+///
+/// [anchorMs] overrides the segment's start time with the discard's true start.
+/// It is set only on the FIRST bin of a multi-bin discard (whose slice begins
+/// mid-bin); later bins leave it null and keep their bin-head timestamp, then
+/// stitch onto the same recording — so a discard spanning several bins recovers
+/// as one correctly-timed clip.
 class RecoverSlice {
   final int startByte;
   final int endByte;
-  final int anchorMs;
-  const RecoverSlice({required this.startByte, required this.endByte, required this.anchorMs});
+  final int? anchorMs;
+  const RecoverSlice({required this.startByte, required this.endByte, this.anchorMs});
 }
 
 class RecordingsManager {
@@ -540,10 +545,12 @@ class RecordingsManager {
 
           segmentSessionIds.add(sessionId);
 
-          if (slice != null) {
-            // Recover Discard: the slice starts mid-bin, so anchor at the
-            // discard's recorded start instead of the bin-head timestamp.
-            segmentStartTimesMs.add(slice.anchorMs);
+          if (slice?.anchorMs != null) {
+            // Recover Discard, first bin: the slice starts mid-bin, so anchor at
+            // the discard's recorded start instead of the bin-head timestamp.
+            // (Later sliced bins have anchorMs == null and fall through to the
+            // normal bin-head time below, then stitch onto the same recording.)
+            segmentStartTimesMs.add(slice!.anchorMs!);
             segmentStartUptimesMs.add(0);
             segmentDerivedFlags.add(false);
           } else if (timerStart != null && timerStart > kMinValidEpoch) {
