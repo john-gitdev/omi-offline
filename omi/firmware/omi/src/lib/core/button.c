@@ -39,6 +39,13 @@ volatile marker_flash_color_t marker_flash_color = MARKER_FLASH_WHITE;
 static volatile uint32_t mute_since_utc_s = 0;
 static volatile uint32_t mute_since_uptime_ms = 0;
 
+/* is_led_enabled as it was just before mute engaged. Muting force-enables the
+ * LED so the solid-red mute indicator is visible even from stealth; unmute
+ * restores this prior preference. The user can still toggle the LED off while
+ * muted (BUTTON_ACTION_TOGGLE_LED writes is_led_enabled), which unmute then
+ * overrides back to the pre-mute state. */
+static volatile bool led_state_before_mute = false;
+
 bool mute_apply(bool on)
 {
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
@@ -56,10 +63,15 @@ bool mute_apply(bool on)
     }
     is_muted = on;
     if (on) {
+        // Force the LED on so the solid-red mute indicator shows even from
+        // stealth; remember the prior preference so unmute can restore it.
+        led_state_before_mute = is_led_enabled;
+        is_led_enabled = true;
         mute_since_utc_s = get_utc_time();
         mute_since_uptime_ms = (uint32_t)k_uptime_get();
         mic_pause();
     } else {
+        is_led_enabled = led_state_before_mute;
         mic_resume();
     }
     LOG_INF("Mute toggled: %s", on ? "ON" : "OFF");
