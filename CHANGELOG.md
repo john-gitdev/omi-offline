@@ -157,6 +157,7 @@ Patch releases are rolled up into their minor version. Each section reflects the
 
 ### oo-2.3
 
+- **Mute now lights the LED so you get confirmation.** Tapping mute turns the indicator solid red even when the LED is in its default off (stealth) state, so you get clear feedback that the mic is muted — previously a mute tap showed nothing unless you'd separately enabled the LED. Unmuting returns the LED to whatever it was before (off stays off). If you'd rather keep it dark, you can still toggle the LED off while muted; the next unmute restores your pre-mute state. (Auto mode only — manual mode has no mute.)
 - **Faster sync on iOS via an Apple-compatible connection-interval fallback.** The device requests an aggressive 7.5 ms Bluetooth connection interval for fast SD-card sync, but iOS rejects any request below 15 ms outright and silently leaves the link at its slow default (~30 ms), so iPhone sync crawled. The firmware now rechecks the *actual* negotiated interval a few seconds after connect and, only if its fast request wasn't honored (i.e. an iPhone), sends a single Apple-compliant request (15–30 ms). Android is unaffected — its phone already drives the interval to ~11 ms via a high-priority request, so the recheck sees a fast interval and does nothing. The fallback self-targets iOS by observing what the central accepted rather than detecting the OS, and is sent at most once per connection so it can never loop. Pairs with the iOS app changes in 0.25.
 
 ### oo-2.2
