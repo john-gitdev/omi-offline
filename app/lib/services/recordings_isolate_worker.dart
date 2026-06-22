@@ -30,6 +30,10 @@ class IsolateParams {
   final List<int> segmentStartUptimesMs; // milliseconds since epoch (raw device uptime)
   final List<int?> segmentSessionIds;
   final List<bool> segmentDerivedFlags;
+  // Optional `[startByte, endByte]` slice per segment (null ⇒ whole file).
+  // Set only by Recover Discard so it re-derives just the discarded byte span;
+  // every other caller passes all-null. Parallel to [segmentPaths].
+  final List<List<int>?> segmentByteRanges;
   final bool backgroundMode;
   // Forwarded so DebugLogManager can write to the log file from this isolate;
   // SharedPreferences isn't initialised here so it can't read the pref itself.
@@ -52,6 +56,7 @@ class IsolateParams {
     required this.segmentStartUptimesMs,
     required this.segmentSessionIds,
     required this.segmentDerivedFlags,
+    required this.segmentByteRanges,
     required this.backgroundMode,
     required this.devLogsEnabled,
     this.checkpointState,
@@ -202,6 +207,7 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
       final startUptimeMs = params.segmentStartUptimesMs[i];
       final isDerived = params.segmentDerivedFlags[i];
       final sessionId = params.segmentSessionIds[i];
+      final byteRange = params.segmentByteRanges[i];
 
       final fileStopwatch = Stopwatch()..start();
       try {
@@ -211,6 +217,8 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
           startUptimeMs: startUptimeMs,
           isDerivedTimestamp: isDerived,
           sessionId: sessionId,
+          startByte: byteRange?[0],
+          endByte: byteRange?[1],
         );
       } on VadProcessingCancelled {
         // Cooperative cancel landed inside the per-frame loop; bail out of the
