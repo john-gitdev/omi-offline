@@ -24,7 +24,8 @@ import 'package:omi/utils/logger.dart';
 export 'package:omi/models/recordings/recordings_models.dart';
 
 /// One Recover-Discard slice passed to [RecordingsManager.processAll]: re-derive
-/// only `[startByte, endByte)` of a bin. Keyed by absolute bin path.
+/// only the listed DISJOINT `[startByte, endByte)` byte [ranges] of a bin,
+/// skipping any un-discarded audio between them. Keyed by absolute bin path.
 ///
 /// [anchorMs] overrides the segment's start time with the discard's true start.
 /// It is set only on the FIRST bin of a multi-bin discard (whose slice begins
@@ -32,10 +33,9 @@ export 'package:omi/models/recordings/recordings_models.dart';
 /// stitch onto the same recording — so a discard spanning several bins recovers
 /// as one correctly-timed clip.
 class RecoverSlice {
-  final int startByte;
-  final int endByte;
+  final List<List<int>> ranges;
   final int? anchorMs;
-  const RecoverSlice({required this.startByte, required this.endByte, this.anchorMs});
+  const RecoverSlice({required this.ranges, this.anchorMs});
 }
 
 class RecordingsManager {
@@ -533,11 +533,11 @@ class RecordingsManager {
         final segmentSessionIds = <int?>[];
         final segmentDerivedFlags = <bool>[];
         final segmentFileSizes = <int>[];
-        final segmentByteRangesList = <List<int>?>[];
+        final segmentByteRangesList = <List<List<int>>?>[];
         for (final file in allSegments) {
           segmentFileSizes.add(file.lengthSync());
           final slice = recoverSlices?[file.path];
-          segmentByteRangesList.add(slice == null ? null : [slice.startByte, slice.endByte]);
+          segmentByteRangesList.add(slice?.ranges);
           final stem = file.path.split('/').last.split('.').first;
           final parts = stem.split('_');
           final timerStart = int.tryParse(parts[0]);
