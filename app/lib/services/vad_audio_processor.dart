@@ -513,8 +513,13 @@ class VadAudioProcessor {
     }
   }
 
+  /// [startByte]/[endByte], when set, restrict decoding to the byte slice
+  /// `[startByte, endByte)` of the bin instead of the whole file. Used by
+  /// Recover Discard to re-derive ONLY the discarded stretch (the slice starts
+  /// mid-bin, so the caller supplies the correct anchor [segmentStartTime] and
+  /// the bin header is NOT used to re-anchor). Null ⇒ whole-file (unchanged).
   Future<List<String>> processSegmentFile(File segmentFile, DateTime segmentStartTime,
-      {int startUptimeMs = 0, bool isDerivedTimestamp = false, int? sessionId}) async {
+      {int startUptimeMs = 0, bool isDerivedTimestamp = false, int? sessionId, int? startByte, int? endByte}) async {
     final savedFiles = <String>[];
 
     // Only set _isDerivedTimestamp from the caller if it hasn't already been anchored
@@ -553,7 +558,12 @@ class VadAudioProcessor {
         currentImuTicks = byteData.getUint32(24, Endian.little);
         final sessionIdInHeader = byteData.getUint32(28, Endian.little);
 
-        if (utcStartMs > 946684800000) {
+        if (startByte != null) {
+          // Byte-slice recover: the slice starts mid-bin, so the header's start
+          // time is NOT this slice's start — keep the caller's anchor. Still
+          // adopt the bin's session id for the recovered recording's meta.
+          sessionId = sessionIdInHeader;
+        } else if (utcStartMs > 946684800000) {
           segmentStartTime = DateTime.fromMillisecondsSinceEpoch(utcStartMs, isUtc: true);
           startUptimeMs = uptimeStartMs.toInt();
           sessionId = sessionIdInHeader;
@@ -655,7 +665,14 @@ class VadAudioProcessor {
         }
       }
 
-      while (offset < fileLength) {
+      // Byte-slice recover: skip straight to the slice (past the header and the
+      // neighbor recording's frames) and stop at its end. The frames before
+      // startByte belong to a recording that already owns them, so they must not
+      // be re-derived here.
+      if (startByte != null) offset = startByte;
+      final int decodeUntil = (endByte != null && endByte < fileLength) ? endByte : fileLength;
+
+      while (offset < decodeUntil) {
         _onLiveness?.call();
         if (_isCancelled?.call() == true) {
           throw const VadProcessingCancelled();
@@ -890,9 +907,8 @@ class VadAudioProcessor {
             final bool withinMarkerWindow =
                 _markerProtectedUntilMs != null && newResumeTime.millisecondsSinceEpoch <= _markerProtectedUntilMs!;
 
-            final bool wouldSplit = !withinMarkerWindow &&
-                gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) &&
-                !isClockJump;
+            final bool wouldSplit =
+                !withinMarkerWindow && gapMs >= max(0, _silenceDurationToSplitMs - _firmwareVadHoldMs) && !isClockJump;
 
             // AAD flood guard: a bogus large gap (clock-anchor mismatch) on every
             // resume marker would spray a flood of tiny junk recordings. While
@@ -1625,12 +1641,35 @@ class VadAudioProcessor {
     final relativeBins = _binsOf(refs);
     if (excludeBins != null) relativeBins.removeAll(excludeBins);
     if (relativeBins.isEmpty) return null;
+    // Byte span each bin contributed to this discard, keyed by the same <rel>
+    // tail as relativeBins. Lets Recover reprocess ONLY the discarded slice
+    // instead of the whole ~5-min bin — which, when the bin straddles a neighbor
+    // recording (the routine case), would re-derive that neighbor's audio into
+    // an overlapping/oversized recovered recording. relativeBins stays a bare
+    // path list, so every path-keyed consumer (prune, protect, sweep) is
+    // unaffected; only Recover reads binRanges, and only when present.
+    final binRanges = <String, List<int>>{};
+    for (final item in refs) {
+      if (item is! FrameRef) continue;
+      final rel = relBinPath(item.segmentFile.path);
+      if (!relativeBins.contains(rel)) continue;
+      final start = item.byteOffset;
+      final end = item.byteOffset + 4 + ((item.frameLength + 3) & ~3); // 4-byte length prefix + aligned payload
+      final cur = binRanges[rel];
+      if (cur == null) {
+        binRanges[rel] = [start, end];
+      } else {
+        if (start < cur[0]) cur[0] = start;
+        if (end > cur[1]) cur[1] = end;
+      }
+    }
     return {
       'startMs': startTime.millisecondsSinceEpoch,
       'endMs': startTime.millisecondsSinceEpoch + durationMs,
       'reason': reason,
       'maxVoiceProb': _currentMaxVoiceProb,
       'relativeBins': relativeBins.toList(),
+      'binRanges': binRanges,
     };
   }
 
