@@ -88,7 +88,9 @@ void main() {
       final loaded = await RecordingsManager.getDiscardsForDate(dateStr);
       expect(loaded.single.relativeBins, ['s/a.bin']);
       expect(loaded.single.binRanges, {
-        's/a.bin': [800, 1400]
+        's/a.bin': [
+          [800, 1400]
+        ]
       });
     });
 
@@ -121,13 +123,15 @@ void main() {
 
       final loaded = await RecordingsManager.getDiscardsForDate(dateStr);
       expect(loaded.single.binRanges, {
-        's/a.bin': [800, 1400]
+        's/a.bin': [
+          [800, 1400]
+        ]
       });
     });
   });
 
   group('binRanges union on coalesce', () {
-    test('same-bin spans union to [min start, max end]', () async {
+    test('same-bin DISJOINT spans stay separate (gap is un-discarded audio)', () async {
       final base = DateTime(2026, 4, 4, 9).millisecondsSinceEpoch;
       final dateStr = dateOf(base);
       await writeJsonl(dateStr, [
@@ -136,7 +140,9 @@ void main() {
         ], binRanges: {
           's/a.bin': [800, 1000]
         }),
-        // Abuts the previous chunk (gap 0) → coalesces.
+        // Coalesces in time, but the byte spans have a 200-byte gap (frames that
+        // belong to a recording between the two noise stretches). The gap must
+        // NOT be swallowed into a hull, else Recover re-derives that audio.
         rec(startMs: base + 1000, endMs: base + 2000, reason: 'noise_silence_split', relativeBins: [
           's/a.bin'
         ], binRanges: {
@@ -147,7 +153,35 @@ void main() {
       final loaded = await RecordingsManager.getDiscardsForDate(dateStr);
       expect(loaded.length, 1, reason: 'adjacent chunks collapse to one row');
       expect(loaded.single.binRanges, {
-        's/a.bin': [800, 1500]
+        's/a.bin': [
+          [800, 1000],
+          [1200, 1500]
+        ]
+      });
+    });
+
+    test('same-bin byte-adjacent / overlapping spans DO merge', () async {
+      final base = DateTime(2026, 4, 4, 10).millisecondsSinceEpoch;
+      final dateStr = dateOf(base);
+      await writeJsonl(dateStr, [
+        rec(startMs: base, endMs: base + 1000, reason: 'silence_only', relativeBins: [
+          's/a.bin'
+        ], binRanges: {
+          's/a.bin': [800, 1000]
+        }),
+        // Byte-contiguous (end == next start) → one merged interval.
+        rec(startMs: base + 1000, endMs: base + 2000, reason: 'silence_only', relativeBins: [
+          's/a.bin'
+        ], binRanges: {
+          's/a.bin': [1000, 1500]
+        }),
+      ]);
+
+      final loaded = await RecordingsManager.getDiscardsForDate(dateStr);
+      expect(loaded.single.binRanges, {
+        's/a.bin': [
+          [800, 1500]
+        ]
       });
     });
 
@@ -171,8 +205,12 @@ void main() {
       expect(loaded.length, 1);
       expect(loaded.single.relativeBins, ['s/a.bin', 's/b.bin']);
       expect(loaded.single.binRanges, {
-        's/a.bin': [800, 2000],
-        's/b.bin': [36, 1500],
+        's/a.bin': [
+          [800, 2000]
+        ],
+        's/b.bin': [
+          [36, 1500]
+        ],
       });
     });
 
@@ -193,7 +231,9 @@ void main() {
       // s/a.bin has no range → binRanges doesn't cover every bin → recoverDiscard's
       // allSliceable check is false → safe whole-bin reprocess.
       expect(loaded.single.binRanges, {
-        's/b.bin': [36, 1500]
+        's/b.bin': [
+          [36, 1500]
+        ]
       });
     });
   });
