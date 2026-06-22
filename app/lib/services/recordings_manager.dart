@@ -23,6 +23,16 @@ import 'package:omi/utils/logger.dart';
 // models/recordings/recordings_models.dart.
 export 'package:omi/models/recordings/recordings_models.dart';
 
+/// One Recover-Discard slice passed to [RecordingsManager.processAll]: re-derive
+/// only `[startByte, endByte)` of a bin, anchored at [anchorMs] (the discard's
+/// true start) instead of the bin-head time. Keyed by absolute bin path.
+class RecoverSlice {
+  final int startByte;
+  final int endByte;
+  final int anchorMs;
+  const RecoverSlice({required this.startByte, required this.endByte, required this.anchorMs});
+}
+
 class RecordingsManager {
   static final RecordingsManager _instance = RecordingsManager._internal();
   factory RecordingsManager() => _instance;
@@ -344,12 +354,10 @@ class RecordingsManager {
     bool finalizeDrafts = false,
     VoidCallback? onRecordingFinalized,
     ProcessingSettings? settingsOverride,
-    // Recover Discard only: restrict a segment to its `[startByte, endByte]`
-    // slice (keyed by absolute path) and anchor it at the discard's true start
-    // (keyed by absolute path, ms since epoch) instead of the bin-head time.
-    // Empty/absent ⇒ whole-file processing with bin-derived timestamps (normal).
-    Map<String, List<int>>? segmentByteRanges,
-    Map<String, int>? segmentStartOverridesMs,
+    // Recover Discard only: re-derive just a byte slice of a segment, anchored at
+    // the discard's true start, keyed by absolute bin path. Absent ⇒ whole-file
+    // processing with bin-derived timestamps (normal). See [RecoverSlice].
+    Map<String, RecoverSlice>? recoverSlices,
   }) async {
     // Strip bins that already produced a discard record. They stay on disk
     // for the 48 h recovery window, but re-running VAD on them just re-derives
@@ -523,7 +531,8 @@ class RecordingsManager {
         final segmentByteRangesList = <List<int>?>[];
         for (final file in allSegments) {
           segmentFileSizes.add(file.lengthSync());
-          segmentByteRangesList.add(segmentByteRanges?[file.path]);
+          final slice = recoverSlices?[file.path];
+          segmentByteRangesList.add(slice == null ? null : [slice.startByte, slice.endByte]);
           final stem = file.path.split('/').last.split('.').first;
           final parts = stem.split('_');
           final timerStart = int.tryParse(parts[0]);
@@ -531,11 +540,10 @@ class RecordingsManager {
 
           segmentSessionIds.add(sessionId);
 
-          final startOverrideMs = segmentStartOverridesMs?[file.path];
-          if (startOverrideMs != null) {
+          if (slice != null) {
             // Recover Discard: the slice starts mid-bin, so anchor at the
             // discard's recorded start instead of the bin-head timestamp.
-            segmentStartTimesMs.add(startOverrideMs);
+            segmentStartTimesMs.add(slice.anchorMs);
             segmentStartUptimesMs.add(0);
             segmentDerivedFlags.add(false);
           } else if (timerStart != null && timerStart > kMinValidEpoch) {
