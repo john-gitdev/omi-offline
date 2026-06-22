@@ -1408,13 +1408,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     final binPrefix = '${directory.path}/raw_segments/';
     final recoverSlices = <String, RecoverSlice>{};
     final allSliceable = bins.length == d.relativeBins.length &&
-        bins.every((f) => (d.binRanges[f.path.substring(binPrefix.length)]?.length ?? 0) == 2);
+        bins.every((f) => (d.binRanges[f.path.substring(binPrefix.length)]?.isNotEmpty ?? false));
     if (allSliceable) {
       for (var i = 0; i < bins.length; i++) {
-        final range = d.binRanges[bins[i].path.substring(binPrefix.length)]!;
+        final ranges = d.binRanges[bins[i].path.substring(binPrefix.length)]!;
         recoverSlices[bins[i].path] = RecoverSlice(
-          startByte: range[0],
-          endByte: range[1],
+          ranges: ranges,
           anchorMs: i == 0 ? d.startTime.millisecondsSinceEpoch : null,
         );
       }
