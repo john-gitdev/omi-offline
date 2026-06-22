@@ -1398,17 +1398,25 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       omiEnabled: false,
     );
 
-    // Re-derive ONLY the discarded byte slice, anchored at the discard's true
-    // start, so recovery can't pull in the neighbor recording that shares this
-    // ~5-min bin (the overlap bug). Single-bin discards carry an unambiguous
-    // slice + anchor; multi-bin or legacy (no range) records fall back to the
-    // old whole-bin reprocess.
+    // Re-derive ONLY the discarded span, so recovery can't pull in the neighbor
+    // recording sharing a ~5-min bin (the overlap bug). Slice every bin the
+    // discard touches: the earliest bin's slice starts mid-bin so it anchors at
+    // the discard's true start; later bins keep their bin-head time and stitch
+    // onto the same recording. Requires every referenced bin present with a
+    // recorded range — otherwise (a pruned bin, or a legacy record with no
+    // ranges) fall back to the old whole-bin reprocess.
+    final binPrefix = '${directory.path}/raw_segments/';
     final recoverSlices = <String, RecoverSlice>{};
-    if (bins.length == 1 && d.relativeBins.length == 1) {
-      final range = d.binRanges[d.relativeBins.first];
-      if (range != null && range.length == 2) {
-        recoverSlices[bins.first.path] =
-            RecoverSlice(startByte: range[0], endByte: range[1], anchorMs: d.startTime.millisecondsSinceEpoch);
+    final allSliceable = bins.length == d.relativeBins.length &&
+        bins.every((f) => (d.binRanges[f.path.substring(binPrefix.length)]?.length ?? 0) == 2);
+    if (allSliceable) {
+      for (var i = 0; i < bins.length; i++) {
+        final range = d.binRanges[bins[i].path.substring(binPrefix.length)]!;
+        recoverSlices[bins[i].path] = RecoverSlice(
+          startByte: range[0],
+          endByte: range[1],
+          anchorMs: i == 0 ? d.startTime.millisecondsSinceEpoch : null,
+        );
       }
     }
 
