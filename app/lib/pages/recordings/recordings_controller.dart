@@ -1398,6 +1398,21 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       omiEnabled: false,
     );
 
+    // Re-derive ONLY the discarded byte slice, anchored at the discard's true
+    // start, so recovery can't pull in the neighbor recording that shares this
+    // ~5-min bin (the overlap bug). Single-bin discards carry an unambiguous
+    // slice + anchor; multi-bin or legacy (no range) records fall back to the
+    // old whole-bin reprocess.
+    final byteRanges = <String, List<int>>{};
+    final startOverrides = <String, int>{};
+    if (bins.length == 1 && d.relativeBins.length == 1) {
+      final range = d.binRanges[d.relativeBins.first];
+      if (range != null && range.length == 2) {
+        byteRanges[bins.first.path] = range;
+        startOverrides[bins.first.path] = d.startTime.millisecondsSinceEpoch;
+      }
+    }
+
     _lastActiveStage = 'processing';
     _transitionTo(SyncProcessState.processing);
     try {
@@ -1406,6 +1421,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         (_, __) {},
         backgroundMode: false,
         settingsOverride: override,
+        segmentByteRanges: byteRanges,
+        segmentStartOverridesMs: startOverrides,
       );
     } catch (e) {
       _transitionToError('processing', e.toString());
