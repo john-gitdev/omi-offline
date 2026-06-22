@@ -456,11 +456,17 @@ class DiscardRecord {
   final String reason;
   final double maxVoiceProb;
   final List<String> relativeBins;
-  // Per-bin `[startByte, endByte]` byte slice this discard consumed, keyed by the
-  // same `<rel>` tail as [relativeBins]. Populated for discards written since
+  // Per-bin list of DISJOINT `[startByte, endByte)` byte slices this discard
+  // consumed, keyed by the same `<rel>` tail as [relativeBins]. A single
+  // persisted record is one contiguous span, so its on-disk form is a flat
+  // `[s, e]`; coalescing several time-adjacent records keeps each one's span
+  // SEPARATE (a list) instead of collapsing to a `[min, max]` hull — otherwise
+  // the hull would swallow the un-discarded audio (real recordings) sitting
+  // between two noise stretches in the same ~5-min bin, and Recover would
+  // re-derive it into a bloated clip. Populated for discards written since
   // byte-range recovery landed; empty for legacy records (Recover then falls
-  // back to whole-bin). Lets Recover re-derive only the discarded span.
-  final Map<String, List<int>> binRanges;
+  // back to whole-bin). Lets Recover re-derive only the discarded spans.
+  final Map<String, List<List<int>>> binRanges;
   final File sourceJsonl;
 
   const DiscardRecord({
