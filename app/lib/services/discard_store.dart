@@ -23,33 +23,66 @@ class DiscardStore {
   /// introduces, so genuinely separate noise periods stay separate.
   static const Duration discardMergeGap = Duration(seconds: 30);
 
-  /// Parses a persisted `binRanges` map (`{rel: [startByte, endByte]}`) tolerantly.
-  /// Absent/malformed ⇒ empty map (Recover falls back to whole-bin).
-  static Map<String, List<int>> _parseBinRanges(Object? raw) {
+  /// Parses a persisted `binRanges` map tolerantly into per-bin DISJOINT
+  /// intervals (`{rel: [[s, e], ...]}`). A single record is written as a flat
+  /// `[startByte, endByte]` (one contiguous span); accepts both that flat form
+  /// and a nested list of pairs. Absent/malformed ⇒ empty map (Recover falls
+  /// back to whole-bin).
+  static Map<String, List<List<int>>> _parseBinRanges(Object? raw) {
     if (raw is! Map) return const {};
-    final out = <String, List<int>>{};
+    final out = <String, List<List<int>>>{};
     raw.forEach((k, v) {
-      if (k is String && v is List && v.length == 2) {
-        final s = v[0], e = v[1];
-        if (s is int && e is int && e > s) out[k] = [s, e];
+      if (k is! String || v is! List || v.isEmpty) return;
+      // Flat `[s, e]` (the persisted single-record form) vs nested `[[s, e], ...]`.
+      final pairs = v.first is List ? v : [v];
+      final intervals = <List<int>>[];
+      for (final p in pairs) {
+        if (p is List && p.length == 2) {
+          final s = p[0], e = p[1];
+          if (s is int && e is int && e > s) intervals.add([s, e]);
+        }
       }
+      if (intervals.isNotEmpty) out[k] = _mergeIntervals(intervals);
     });
     return out;
   }
 
-  /// Unions two per-bin range maps: each bin's span becomes `[min start, max end]`.
-  /// Coalesced discards are time-adjacent (contiguous noise), so the per-bin
-  /// min/max is the slice Recover should re-derive for the merged row.
-  static Map<String, List<int>> _unionBinRanges(Map<String, List<int>> a, Map<String, List<int>> b) {
-    final out = <String, List<int>>{
-      for (final e in a.entries) e.key: [e.value[0], e.value[1]]
+  /// Sorts and merges only OVERLAPPING or byte-ADJACENT intervals (`end == next
+  /// start`). Disjoint intervals (a real gap between them) stay separate, so a
+  /// gap that belongs to an un-discarded recording is never swallowed.
+  static List<List<int>> _mergeIntervals(List<List<int>> intervals) {
+    if (intervals.length < 2) return intervals;
+    final sorted = [...intervals]..sort((a, b) => a[0].compareTo(b[0]));
+    final out = <List<int>>[
+      [sorted.first[0], sorted.first[1]]
+    ];
+    for (var i = 1; i < sorted.length; i++) {
+      final last = out.last;
+      final cur = sorted[i];
+      if (cur[0] <= last[1]) {
+        if (cur[1] > last[1]) last[1] = cur[1];
+      } else {
+        out.add([cur[0], cur[1]]);
+      }
+    }
+    return out;
+  }
+
+  /// Unions two per-bin interval maps, keeping each bin's spans DISJOINT. Unlike
+  /// a `[min, max]` hull, this preserves the gap between two non-adjacent noise
+  /// stretches in the same bin — the gap is un-discarded audio that Recover must
+  /// not re-derive.
+  static Map<String, List<List<int>>> _unionBinRanges(
+      Map<String, List<List<int>>> a, Map<String, List<List<int>>> b) {
+    final out = <String, List<List<int>>>{
+      for (final e in a.entries) e.key: [for (final iv in e.value) [iv[0], iv[1]]]
     };
     b.forEach((k, v) {
       final cur = out[k];
       if (cur == null) {
-        out[k] = [v[0], v[1]];
+        out[k] = [for (final iv in v) [iv[0], iv[1]]];
       } else {
-        out[k] = [cur[0] < v[0] ? cur[0] : v[0], cur[1] > v[1] ? cur[1] : v[1]];
+        out[k] = _mergeIntervals([...cur, ...v]);
       }
     });
     return out;
@@ -170,7 +203,7 @@ class DiscardStore {
     DateTime end = sorted.first.endTime;
     double maxProb = sorted.first.maxVoiceProb;
     final bins = <String>{...sorted.first.relativeBins};
-    Map<String, List<int>> ranges = sorted.first.binRanges;
+    Map<String, List<List<int>>> ranges = sorted.first.binRanges;
     String reason = sorted.first.reason;
     bool noise = sorted.first.isNoise;
     File src = sorted.first.sourceJsonl;
