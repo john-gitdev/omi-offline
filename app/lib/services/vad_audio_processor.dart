@@ -519,13 +519,21 @@ class VadAudioProcessor {
     }
   }
 
-  /// [startByte]/[endByte], when set, restrict decoding to the byte slice
-  /// `[startByte, endByte)` of the bin instead of the whole file. Used by
-  /// Recover Discard to re-derive ONLY the discarded stretch (the slice starts
-  /// mid-bin, so the caller supplies the correct anchor [segmentStartTime] and
-  /// the bin header is NOT used to re-anchor). Null ⇒ whole-file (unchanged).
+  /// [byteRanges], when set, restricts decoding to the listed DISJOINT
+  /// `[startByte, endByte)` slices of the bin (sorted, non-overlapping) instead
+  /// of the whole file — frames in the gaps between slices are skipped, not
+  /// decoded. Used by Recover Discard to re-derive ONLY the discarded
+  /// stretch(es), never the un-discarded audio that shares the bin (the slice
+  /// starts mid-bin, so the caller supplies the correct anchor [segmentStartTime]
+  /// and the bin header is NOT used to re-anchor). Null/empty ⇒ whole-file
+  /// (unchanged).
   Future<List<String>> processSegmentFile(File segmentFile, DateTime segmentStartTime,
-      {int startUptimeMs = 0, bool isDerivedTimestamp = false, int? sessionId, int? startByte, int? endByte}) async {
+      {int startUptimeMs = 0,
+      bool isDerivedTimestamp = false,
+      int? sessionId,
+      List<List<int>>? byteRanges}) async {
+    final List<List<int>> sliceRanges = byteRanges ?? const [];
+    final bool sliced = sliceRanges.isNotEmpty;
     final savedFiles = <String>[];
 
     // Only set _isDerivedTimestamp from the caller if it hasn't already been anchored
@@ -564,7 +572,7 @@ class VadAudioProcessor {
         currentImuTicks = byteData.getUint32(24, Endian.little);
         final sessionIdInHeader = byteData.getUint32(28, Endian.little);
 
-        if (startByte != null) {
+        if (sliced) {
           // Byte-slice recover: the slice starts mid-bin, so the header's start
           // time is NOT this slice's start — keep the caller's anchor. Still
           // adopt the bin's session id for the recovered recording's meta.
@@ -671,14 +679,26 @@ class VadAudioProcessor {
         }
       }
 
-      // Byte-slice recover: skip straight to the slice (past the header and the
-      // neighbor recording's frames) and stop at its end. The frames before
-      // startByte belong to a recording that already owns them, so they must not
+      // Byte-slice recover: decode only the discarded slices. Start at the first
+      // slice (past the header) and stop after the last; frames in the gaps
+      // between slices belong to recordings that already own them and must not
       // be re-derived here.
-      if (startByte != null) offset = startByte;
-      final int decodeUntil = (endByte != null && endByte < fileLength) ? endByte : fileLength;
+      int rangeIdx = 0;
+      if (sliced) offset = sliceRanges.first[0];
+      final int decodeUntil = sliced
+          ? (sliceRanges.last[1] < fileLength ? sliceRanges.last[1] : fileLength)
+          : fileLength;
 
       while (offset < decodeUntil) {
+        // Jump the read head over the gap between disjoint recover slices so the
+        // un-discarded audio sitting between two noise stretches is skipped.
+        if (sliced) {
+          while (rangeIdx < sliceRanges.length && offset >= sliceRanges[rangeIdx][1]) {
+            rangeIdx++;
+          }
+          if (rangeIdx >= sliceRanges.length) break;
+          if (offset < sliceRanges[rangeIdx][0]) offset = sliceRanges[rangeIdx][0];
+        }
         _onLiveness?.call();
         if (_isCancelled?.call() == true) {
           throw const VadProcessingCancelled();
@@ -988,7 +1008,10 @@ class VadAudioProcessor {
             } else {
               // Gap within threshold or clock jump — stitch, padding with silence so playback reflects real timing.
               // In flood-coalesce the gap is bogus (that's the pathology), so never pad it.
-              if (!floodCoalesce && _currentRefs.isNotEmpty && gapMs > 0 && !isClockJump) {
+              // In a byte-slice recover the discard's recorded duration excluded this
+              // padding, so re-deriving it must not pad either — otherwise a 24 s
+              // discard recovers as minutes of phantom silence.
+              if (!floodCoalesce && !sliced && _currentRefs.isNotEmpty && gapMs > 0 && !isClockJump) {
                 _currentRefs.add(Duration(milliseconds: gapMs));
                 _currentChunkDurationMs += gapMs;
               }
