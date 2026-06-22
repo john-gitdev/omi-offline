@@ -1239,5 +1239,59 @@ void main() {
       expect(muted[0]['startMs'], kBase + 5000);
       expect(muted[0]['endMs'], kBase + 60000, reason: 'closed at the new session start');
     });
+
+    test('button tap alone leaves the guaranteed-save window set (control)', () async {
+      // Establishes the baseline the next two tests contrast against: a tap opens
+      // the 50 s window, and an ordinary flush (silence/file split) PRESERVES it
+      // via _resetState — which is exactly why a hard boundary must clear it.
+      final b = BytesBuilder();
+      addHeader(b, utcStartMs: kBase);
+      addFrames(b, 10);
+      addMarker(b, 0xFFFFFFFE, kBase + 100); // tap → window = kBase+100+50000
+      final file = writeBin('tap_keeps_window.bin', b);
+
+      final proc = VadAudioProcessor.fromSettings(settings: muteSettings(), outputDir: tempDir.path);
+      await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      await proc.flushRemaining(isDraft: true);
+      expect(proc.markerProtectedUntilMs, kBase + 50100,
+          reason: 'tap sets the window and an ordinary flush must preserve it');
+      await proc.destroy();
+    });
+
+    test('mute-on clears the guaranteed-save window (no leak past unmute)', () async {
+      // Tap opens the window; a mute-on well inside it finalizes the protected
+      // recording and consumes the tap, so the window must not survive the mute —
+      // otherwise a quick unmute inside the original 50 s would force-promote
+      // marker-less noise.
+      final b = BytesBuilder();
+      addHeader(b, utcStartMs: kBase);
+      addFrames(b, 10);
+      addMarker(b, 0xFFFFFFFE, kBase + 100); // tap → window = kBase+50100
+      addMarker(b, 0xFFFFFFFA, kBase + 5000); // mute-on, well inside the window
+      final file = writeBin('mute_clears_window.bin', b);
+
+      final proc = VadAudioProcessor.fromSettings(settings: muteSettings(), outputDir: tempDir.path);
+      final saved = await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      expect(saved.length, 1, reason: 'mute-on still finalizes the protected recording');
+      expect(proc.markerProtectedUntilMs, isNull,
+          reason: 'mute boundary inside the window must end the guaranteed-save window');
+      await proc.destroy();
+    });
+
+    test('session-end (manual stop) clears the guaranteed-save window', () async {
+      // Same hard-boundary contract as mute-on, for the 0xFFFFFFFC manual-stop path.
+      final b = BytesBuilder();
+      addHeader(b, utcStartMs: kBase);
+      addFrames(b, 10);
+      addMarker(b, 0xFFFFFFFE, kBase + 100); // tap → window = kBase+50100
+      addMarker(b, 0xFFFFFFFC, kBase + 5000); // manual-stop session-end, inside the window
+      final file = writeBin('sessionend_clears_window.bin', b);
+
+      final proc = VadAudioProcessor.fromSettings(settings: muteSettings(), outputDir: tempDir.path);
+      final saved = await proc.processSegmentFile(file, DateTime.fromMillisecondsSinceEpoch(kBase, isUtc: true));
+      expect(saved.length, 1, reason: 'session-end still finalizes the protected recording');
+      expect(proc.markerProtectedUntilMs, isNull, reason: 'manual stop is a hard boundary and must end the window');
+      await proc.destroy();
+    });
   });
 }
