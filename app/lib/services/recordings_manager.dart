@@ -344,6 +344,12 @@ class RecordingsManager {
     bool finalizeDrafts = false,
     VoidCallback? onRecordingFinalized,
     ProcessingSettings? settingsOverride,
+    // Recover Discard only: restrict a segment to its `[startByte, endByte]`
+    // slice (keyed by absolute path) and anchor it at the discard's true start
+    // (keyed by absolute path, ms since epoch) instead of the bin-head time.
+    // Empty/absent ⇒ whole-file processing with bin-derived timestamps (normal).
+    Map<String, List<int>>? segmentByteRanges,
+    Map<String, int>? segmentStartOverridesMs,
   }) async {
     // Strip bins that already produced a discard record. They stay on disk
     // for the 48 h recovery window, but re-running VAD on them just re-derives
@@ -514,8 +520,10 @@ class RecordingsManager {
         final segmentSessionIds = <int?>[];
         final segmentDerivedFlags = <bool>[];
         final segmentFileSizes = <int>[];
+        final segmentByteRangesList = <List<int>?>[];
         for (final file in allSegments) {
           segmentFileSizes.add(file.lengthSync());
+          segmentByteRangesList.add(segmentByteRanges?[file.path]);
           final stem = file.path.split('/').last.split('.').first;
           final parts = stem.split('_');
           final timerStart = int.tryParse(parts[0]);
@@ -523,7 +531,14 @@ class RecordingsManager {
 
           segmentSessionIds.add(sessionId);
 
-          if (timerStart != null && timerStart > kMinValidEpoch) {
+          final startOverrideMs = segmentStartOverridesMs?[file.path];
+          if (startOverrideMs != null) {
+            // Recover Discard: the slice starts mid-bin, so anchor at the
+            // discard's recorded start instead of the bin-head timestamp.
+            segmentStartTimesMs.add(startOverrideMs);
+            segmentStartUptimesMs.add(0);
+            segmentDerivedFlags.add(false);
+          } else if (timerStart != null && timerStart > kMinValidEpoch) {
             segmentStartTimesMs.add(timerStart * 1000);
             segmentStartUptimesMs.add(0); // Hardware syncs RTC -> uptime in filename is lost
             segmentDerivedFlags.add(false);
@@ -653,6 +668,7 @@ class RecordingsManager {
               segmentStartUptimesMs: segmentStartUptimesMs,
               segmentSessionIds: segmentSessionIds,
               segmentDerivedFlags: segmentDerivedFlags,
+              segmentByteRanges: segmentByteRangesList,
               backgroundMode: backgroundMode,
               devLogsEnabled: SharedPreferencesUtil().devLogsToFileEnabled,
               checkpointState: checkpointState,
