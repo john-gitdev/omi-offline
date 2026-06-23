@@ -45,7 +45,7 @@ Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures a
 
 ### App (`app/lib/`)
 
-**State management**: `DeviceProvider` (ChangeNotifier) drives all UI. `ServiceManager` is the singleton that holds `IDeviceService`.
+**State management**: two `ChangeNotifier`s drive the UI. `DeviceProvider` owns device discovery/connection/battery/mute state. `RecordingsController` (`pages/recordings/recordings_controller.dart`) owns the recordings page: it runs the sync→process pipeline state machine (`SyncProcessState`: idle/syncing/processing/stopping/resume/error/successUi, with a stall watchdog that force-recovers wedged BLE transfers), builds the daily `Batch` / `MarkerConversation` UI models from `RecordingsManager`, handles deletion + discard recovery, and delegates external-integration uploads to `IntegrationUploadManager` (`integration_upload_manager.dart`, with `passthrough_integration.dart`). `ServiceManager` is the singleton that holds `IDeviceService`.
 
 **Connection pipeline** (`services/devices/`):
 - `DeviceService.ensureConnection()` is serialized via a `Mutex` (`devices.dart`) — N concurrent callers (battery, storage, WAL sync) share one connection attempt. Critical: never bypass this.
@@ -63,7 +63,7 @@ Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures a
   - `0xFFFFFFFA` / `0xFFFFFFF9` mute-on / mute-off markers (20 B each): 4-byte header + same 16-byte payload as the button-tap marker; bracket a muted stretch in the stream (rendered as a "muted" ghost row)
   - `0xFFFFFFFF` / `0`: sentinel slots
   These frames are left inline in the bin file — not extracted at transfer time. `VadAudioProcessor` parses them during the decode pass.
-- `OfflineAudioProcessor` decodes Opus → 16 kHz mono 16-bit PCM, adaptive noise floor tracking (initial -40 dBFS, SNR margin configurable), splits into `recordings/<YYYY-MM-DD>/recording_<millis>.m4a`
+- `VadAudioProcessor` decodes Opus → 16 kHz mono 16-bit PCM (`opus_dart`) and runs Silero v5+ VAD (`flutter_onnxruntime`, model `assets/models/silero_vad.onnx`; 512-sample windows, 64-sample context, persistent LSTM state reset on gap) to detect speech, splitting into `recordings/<YYYY-MM-DD>/recording_<millis>.m4a`. It also writes the `.meta` sidecar.
 - `VadAudioProcessor` emits an EDL sidecar `recordings/<YYYY-MM-DD>/marker_<markerMs>.edl` (JSON: `markerTimestampMs`, `segmentFilename`, `markerOffsetMs`, `cropStartMs`, `cropEndMs`, `userSaved`) per detected button-tap. Markers with no surrounding audio are emitted as orphan EDLs with an empty `segmentFilename`. Markers re-anchored across stitched files have their offsets shifted by the prefix's wall-clock duration.
 - `RecordingsManager` / `Conversation` model parses finalized recordings from the `recordings/` directory for UI binding; `RecordingsManager.getMarkerConversations()` builds the `MarkerConversation` list from the EDL sidecars.
 
@@ -86,7 +86,7 @@ Omi is an offline-first wearable audio recorder. The nRF5340 firmware captures a
 - `recordings/{yyyy-mm-dd}/recording_{startMs}.wav` (or `.m4a` / `.ogg`) — finalized recording; date is **local** calendar date.
 - `recordings/{yyyy-mm-dd}/recording_{startMs}_draft.wav` — in-progress flush (always `.wav` — M4A can't be stitched); not surfaced in UI.
 - `recordings/{yyyy-mm-dd}/unknown_{startMs}.wav` — recording with derived/uncertain timestamp (time-sync unavailable).
-- `recordings/{yyyy-mm-dd}/recording_{startMs}.meta` — binary sidecar: `totalSamples` u32, `durationMs` u32, 200×u16 waveform, `sessionId` u32, `startUptime` u32, upload key, passthrough/forceSynced/capEnded flags, JSON relative-bin list.
+- `recordings/{yyyy-mm-dd}/recording_{startMs}.meta` — binary sidecar: `totalSamples` u32, `durationMs` u32, 200×u16 waveform, `sessionId` u32, `startUptime` u32, upload key, passthrough/forceSynced/capEnded/isSilero flags, JSON relative-bin list.
 - `recordings/{yyyy-mm-dd}/marker_{markerMs}.edl` — JSON marker sidecar: `markerTimestampMs`, `segmentFilename`, `markerOffsetMs`, `cropStartMs`, `cropEndMs`, `userSaved`. Orphan markers have empty `segmentFilename`.
 - `recordings/{yyyy-mm-dd}/discards.jsonl` — one line per VAD-dropped stretch; surfaced as ghost rows in the UI.
 
