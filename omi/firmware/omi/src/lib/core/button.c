@@ -169,6 +169,11 @@ static void execute_button_action(uint8_t taps, bool is_hold)
                     marker_flash_count = 2;
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
                     aad_set_threshold(65535);
+                    // Persist so the manual recording state survives a reboot
+                    // (e.g. battery dies). Without this the runtime threshold is
+                    // lost and boot reverts to the standby default (32769),
+                    // silently stopping a recording the user started offline.
+                    app_settings_save_vad_threshold(65535);
 #endif
                 } else {
                     LOG_INF("Manual mode stop recording");
@@ -176,6 +181,10 @@ static void execute_button_action(uint8_t taps, bool is_hold)
                     marker_flash_count = 2;
 #ifdef CONFIG_OMI_ENABLE_T5838_AAD
                     aad_set_threshold(32769);
+                    // Persist the stop too, so a deliberate offline stop is
+                    // honored across a reboot rather than reverting to whatever
+                    // was last in flash.
+                    app_settings_save_vad_threshold(32769);
 #endif
                 }
             } else {
