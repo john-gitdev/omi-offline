@@ -13,6 +13,21 @@ import 'package:omi/utils/logger.dart';
 class DiscardStore {
   DiscardStore._();
 
+  /// Mirror of `RecordingsManager.discardedSegmentsDirName`, duplicated here so
+  /// this leaf store has no dependency on RecordingsManager. A discard's bin is
+  /// relocated out of `raw_segments/` into this folder once fully processed.
+  static const String _discardedDir = 'discarded_segments';
+
+  /// Physical location of a discard's bin: the relocated copy under
+  /// `discarded_segments/` once retired from the processing pool, else the
+  /// original `raw_segments/` path (a draft-straddle bin still in the pool, or a
+  /// legacy install predating the relocation).
+  static File _binFile(String docsPath, String rel) {
+    final moved = File('$docsPath/$_discardedDir/$rel');
+    if (moved.existsSync()) return moved;
+    return File('$docsPath/raw_segments/$rel');
+  }
+
   /// Consecutive discard records whose inter-record gap is within this tolerance
   /// are coalesced into a single entry by [getDiscardsForDate], so a long
   /// ambient-noise period surfaces as one row instead of dozens of back-to-back
@@ -292,7 +307,7 @@ class DiscardStore {
     final directory = await getApplicationDocumentsDirectory();
     if (deleteBins) {
       for (final rel in d.relativeBins) {
-        final binFile = File('${directory.path}/raw_segments/$rel');
+        final binFile = _binFile(directory.path, rel);
         if (await binFile.exists()) {
           try {
             await binFile.delete();
@@ -350,7 +365,7 @@ class DiscardStore {
       for (final rec in group.records) {
         if ((rec['endMs'] as int) < cutoffMs) continue;
         for (final rel in (rec['relativeBins'] as List).cast<String>()) {
-          protected.add('${directory.path}/raw_segments/$rel');
+          protected.add(_binFile(directory.path, rel).path);
         }
       }
     }
@@ -374,7 +389,7 @@ class DiscardStore {
       for (final rec in group.records) {
         if ((rec['endMs'] as int) < cutoffMs) continue;
         for (final rel in (rec['relativeBins'] as List).cast<String>()) {
-          globallyProtected.add('${directory.path}/raw_segments/$rel');
+          globallyProtected.add(_binFile(directory.path, rel).path);
         }
       }
     }
@@ -385,7 +400,7 @@ class DiscardStore {
       for (final rec in group.records) {
         if ((rec['endMs'] as int) < cutoffMs) {
           for (final rel in (rec['relativeBins'] as List).cast<String>()) {
-            candidateDeletes.add('${directory.path}/raw_segments/$rel');
+            candidateDeletes.add(_binFile(directory.path, rel).path);
           }
         } else {
           activeRecords.add(rec);
@@ -411,10 +426,12 @@ class DiscardStore {
       }
     }
 
-    // Drop any now-empty raw_segments/<session>/ folders.
-    final rawDir = Directory('${directory.path}/raw_segments');
-    if (await rawDir.exists()) {
-      await for (final entity in rawDir.list()) {
+    // Drop any now-empty <session>/ folders under both raw_segments/ (a legacy
+    // discard bin deleted in place) and discarded_segments/ (a relocated bin).
+    for (final base in ['raw_segments', _discardedDir]) {
+      final dir = Directory('${directory.path}/$base');
+      if (!await dir.exists()) continue;
+      await for (final entity in dir.list()) {
         if (entity is! Directory) continue;
         try {
           if (await entity.list().isEmpty) await entity.delete();
