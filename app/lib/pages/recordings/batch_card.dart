@@ -154,8 +154,10 @@ class MarkerSubEntry extends StatelessWidget {
       : conversations;
   final discards = minFilterSeconds > 0
       ? switch (filterMode) {
-          RecordingFilterMode.visible => batch.discards.where((d) => d.duration.inSeconds >= minFilterSeconds).toList(),
-          RecordingFilterMode.hidden => batch.discards.where((d) => d.duration.inSeconds < minFilterSeconds).toList(),
+          RecordingFilterMode.visible =>
+            batch.discards.where((d) => d.audioDuration.inSeconds >= minFilterSeconds).toList(),
+          RecordingFilterMode.hidden =>
+            batch.discards.where((d) => d.audioDuration.inSeconds < minFilterSeconds).toList(),
           RecordingFilterMode.all => [...batch.discards],
         }
       : [...batch.discards];
@@ -343,7 +345,9 @@ class GhostRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final timeRange = '${fmtHourMin(discard.startTime)}–${fmtHourMin(discard.endTime)}';
-    final dur = _durationLabel(discard.duration);
+    // Show the recorded-audio length (what Recover yields), not the wall-clock
+    // span, so a ghost reads as the length of the clip it produces.
+    final dur = _durationLabel(discard.audioDuration);
     final subLabel = discard.isMuted
         ? 'Muted'
         : discard.isNoise
@@ -420,7 +424,7 @@ Future<void> showDiscardSheet(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${fmtTime(d.startTime)} – ${fmtTime(d.endTime)}  ·  ${d.duration.inMinutes} min',
+            '${fmtTime(d.startTime)} – ${fmtTime(d.endTime)}  ·  ${GhostRow._durationLabel(d.audioDuration)}',
             style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 6),
