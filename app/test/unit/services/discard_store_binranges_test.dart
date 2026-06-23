@@ -61,6 +61,7 @@ void main() {
     double maxVoiceProb = 0.05,
     List<String>? relativeBins,
     Object? binRanges,
+    int? audioMs,
   }) {
     final m = <String, dynamic>{
       'startMs': startMs,
@@ -70,6 +71,7 @@ void main() {
       'relativeBins': relativeBins ?? ['s/a.bin'],
     };
     if (binRanges != null) m['binRanges'] = binRanges;
+    if (audioMs != null) m['audioMs'] = audioMs;
     return m;
   }
 
@@ -235,6 +237,88 @@ void main() {
           [36, 1500]
         ]
       });
+    });
+  });
+
+  group('audioMs (recorded-audio duration shown / recovered)', () {
+    test('single record: audioDuration uses audioMs, not the wall-clock span', () async {
+      final base = DateTime(2026, 4, 9, 9).millisecondsSinceEpoch;
+      final dateStr = dateOf(base);
+      // 77s wall-clock span, but only 26s of actual recorded audio.
+      await writeJsonl(dateStr, [
+        rec(startMs: base, endMs: base + 77000, audioMs: 26000),
+      ]);
+      final loaded = await RecordingsManager.getDiscardsForDate(dateStr);
+      expect(loaded.single.duration, const Duration(seconds: 77), reason: 'span unchanged');
+      expect(loaded.single.audioDuration, const Duration(seconds: 26), reason: 'display = recorded audio');
+    });
+
+    test('legacy record without audioMs falls back to the span', () async {
+      final base = DateTime(2026, 4, 10, 9).millisecondsSinceEpoch;
+      final dateStr = dateOf(base);
+      await writeJsonl(dateStr, [rec(startMs: base, endMs: base + 30000)]); // no audioMs
+      final loaded = await RecordingsManager.getDiscardsForDate(dateStr);
+      expect(loaded.single.audioDuration, const Duration(seconds: 30));
+    });
+
+    test('coalesced record SUMS constituents\' audioMs (gaps between carry no audio)', () async {
+      final base = DateTime(2026, 4, 11, 9).millisecondsSinceEpoch;
+      final dateStr = dateOf(base);
+      await writeJsonl(dateStr, [
+        // Two stretches 25s apart (coalesce), 10s + 8s of real audio = 18s.
+        rec(startMs: base, endMs: base + 10000, reason: 'silence_only', relativeBins: ['s/a.bin'], audioMs: 10000),
+        rec(
+            startMs: base + 35000,
+            endMs: base + 43000,
+            reason: 'silence_only',
+            relativeBins: ['s/b.bin'],
+            audioMs: 8000),
+      ]);
+      final loaded = await RecordingsManager.getDiscardsForDate(dateStr);
+      expect(loaded.length, 1, reason: 'within 30s gap → one row');
+      expect(loaded.single.duration, const Duration(seconds: 43), reason: 'span includes the 25s silent gap');
+      expect(loaded.single.audioDuration, const Duration(seconds: 18), reason: 'audio is additive, no gap');
+    });
+  });
+
+  group('sibling-bin protection (discardedRelBinPathsExcludingSpan)', () {
+    test('a bin shared by a sibling discard outside the span is protected', () async {
+      final base = DateTime(2026, 4, 7, 9).millisecondsSinceEpoch;
+      final dateStr = dateOf(base);
+      await writeJsonl(dateStr, [
+        // Record A (being recovered): a HEAD slice of shared.bin + its own bin.
+        rec(startMs: base, endMs: base + 1000, relativeBins: [
+          's/shared.bin',
+          's/onlyA.bin'
+        ], binRanges: {
+          's/shared.bin': [56, 56900],
+          's/onlyA.bin': [0, 100],
+        }),
+        // Record B (sibling, later span): a TAIL slice of the SAME bin.
+        rec(startMs: base + 5000, endMs: base + 6000, relativeBins: [
+          's/shared.bin'
+        ], binRanges: {
+          's/shared.bin': [56920, 60712]
+        }),
+      ]);
+
+      // Recovering A's span must protect the shared bin (B still needs its tail)
+      // but NOT A's exclusive bin (safe to delete once A is recovered).
+      final protectedSiblings = await RecordingsManager.discardedRelBinPathsExcludingSpan(base, base + 1000);
+      expect(protectedSiblings, {'s/shared.bin'});
+      expect(protectedSiblings.contains('s/onlyA.bin'), isFalse);
+    });
+
+    test('recovering the whole coalesced span protects nothing of its own', () async {
+      final base = DateTime(2026, 4, 8, 9).millisecondsSinceEpoch;
+      final dateStr = dateOf(base);
+      await writeJsonl(dateStr, [
+        rec(startMs: base, endMs: base + 1000, relativeBins: ['s/a.bin']),
+        rec(startMs: base + 1000, endMs: base + 2000, relativeBins: ['s/b.bin']),
+      ]);
+      // Both records fall inside [base, base+2000] → both are constituents → none protected.
+      final protectedSiblings = await RecordingsManager.discardedRelBinPathsExcludingSpan(base, base + 2000);
+      expect(protectedSiblings, isEmpty);
     });
   });
 }
