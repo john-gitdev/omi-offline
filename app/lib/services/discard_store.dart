@@ -72,15 +72,19 @@ class DiscardStore {
   /// a `[min, max]` hull, this preserves the gap between two non-adjacent noise
   /// stretches in the same bin — the gap is un-discarded audio that Recover must
   /// not re-derive.
-  static Map<String, List<List<int>>> _unionBinRanges(
-      Map<String, List<List<int>>> a, Map<String, List<List<int>>> b) {
+  static Map<String, List<List<int>>> _unionBinRanges(Map<String, List<List<int>>> a, Map<String, List<List<int>>> b) {
     final out = <String, List<List<int>>>{
-      for (final e in a.entries) e.key: [for (final iv in e.value) [iv[0], iv[1]]]
+      for (final e in a.entries)
+        e.key: [
+          for (final iv in e.value) [iv[0], iv[1]]
+        ]
     };
     b.forEach((k, v) {
       final cur = out[k];
       if (cur == null) {
-        out[k] = [for (final iv in v) [iv[0], iv[1]]];
+        out[k] = [
+          for (final iv in v) [iv[0], iv[1]]
+        ];
       } else {
         out[k] = _mergeIntervals([...cur, ...v]);
       }
@@ -156,6 +160,29 @@ class DiscardStore {
     return out;
   }
 
+  /// Relative bin paths referenced by discard records that are NOT constituents
+  /// of the span `[spanStartMs, spanEndMs]` — i.e. SIBLING discards. Recover
+  /// Discard uses this to protect a bin that a sibling ghost still needs: two
+  /// discards routinely share one ~5-min bin (e.g. a head slice and a tail
+  /// slice), and recovering one must not delete the bin out from under the
+  /// other. The span-membership test mirrors [removeDiscardRecord] so a
+  /// (possibly coalesced) recovered record's own constituents are excluded,
+  /// while everything else — including a sibling that shares a bin — is kept.
+  static Future<Set<String>> discardedRelBinPathsExcludingSpan(int spanStartMs, int spanEndMs) async {
+    final out = <String>{};
+    for (final group in await _readAllDiscardRecords()) {
+      for (final rec in group.records) {
+        if (rec['reason'] == 'silence_trimmed') continue;
+        final s = rec['startMs'] as int;
+        final e = rec['endMs'] as int;
+        if (s >= spanStartMs && e <= spanEndMs) continue; // a constituent of the recovered record
+        final bins = rec['relativeBins'];
+        if (bins is List) out.addAll(bins.cast<String>());
+      }
+    }
+    return out;
+  }
+
   /// Parses `recordings/<dateString>/discards.jsonl` into [DiscardRecord]s.
   /// Returns an empty list if the file does not exist. Malformed lines are
   /// skipped with a warning.
@@ -176,6 +203,7 @@ class DiscardStore {
           maxVoiceProb: (m['maxVoiceProb'] as num).toDouble(),
           relativeBins: (m['relativeBins'] as List).cast<String>(),
           binRanges: _parseBinRanges(m['binRanges']),
+          audioMs: (m['audioMs'] as num?)?.toInt() ?? 0,
           sourceJsonl: jsonl,
         );
         if (rec.reason == 'silence_trimmed') continue;
@@ -204,6 +232,9 @@ class DiscardStore {
     double maxProb = sorted.first.maxVoiceProb;
     final bins = <String>{...sorted.first.relativeBins};
     Map<String, List<List<int>>> ranges = sorted.first.binRanges;
+    // Recorded-audio length is ADDITIVE across constituents (the gaps between
+    // them carry no audio), so sum it rather than spanning first.start→max.end.
+    int audioMs = sorted.first.audioMs;
     String reason = sorted.first.reason;
     bool noise = sorted.first.isNoise;
     File src = sorted.first.sourceJsonl;
@@ -215,6 +246,7 @@ class DiscardStore {
           maxVoiceProb: maxProb,
           relativeBins: bins.toList()..sort(),
           binRanges: ranges,
+          audioMs: audioMs,
           sourceJsonl: src,
         );
 
@@ -229,6 +261,7 @@ class DiscardStore {
         if (r.maxVoiceProb > maxProb) maxProb = r.maxVoiceProb;
         bins.addAll(r.relativeBins);
         ranges = _unionBinRanges(ranges, r.binRanges);
+        audioMs += r.audioMs;
         if (!noise && r.isNoise) {
           noise = true;
           reason = r.reason;
@@ -242,6 +275,7 @@ class DiscardStore {
           ..clear()
           ..addAll(r.relativeBins);
         ranges = r.binRanges;
+        audioMs = r.audioMs;
         reason = r.reason;
         noise = r.isNoise;
         src = r.sourceJsonl;
