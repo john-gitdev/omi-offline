@@ -361,4 +361,43 @@ void main() {
           reason: 'records removed before computing protection, so neither shields the other');
     });
   });
+
+  group('orphan-twin deletion across both roots (a bin duplicated in raw + discarded)', () {
+    test('removeDiscardRecord(deleteBins) deletes BOTH the raw and discarded copies', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final dateStr = dateOf(now);
+      // A duplicate twin (e.g. adjustment-mode copy-back recreated the raw copy
+      // of an already-relocated bin). Deleting only the resolved copy would leave
+      // the raw orphan to re-enter the processing pool.
+      final rawTwin = await writeBin('raw_segments', 's/a.bin');
+      final discardedTwin = await writeBin('discarded_segments', 's/a.bin');
+      await writeJsonl(dateStr, [rec(startMs: now, endMs: now + 500)]);
+      final loaded = (await RecordingsManager.getDiscardsForDate(dateStr)).single;
+
+      await RecordingsManager.removeDiscardRecord(loaded, deleteBins: true);
+
+      expect(await rawTwin.exists(), isFalse, reason: 'orphan raw twin also deleted (no reprocess resurrection)');
+      expect(await discardedTwin.exists(), isFalse);
+      expect(await Directory(p.join(tempDir.path, 'raw_segments', 's')).exists(), isFalse,
+          reason: 'emptied raw folder cleaned');
+      expect(await Directory(p.join(tempDir.path, 'discarded_segments', 's')).exists(), isFalse);
+    });
+
+    test('recovery sweep reclaims an expired bin duplicated across BOTH roots', () async {
+      final windowMs = DiscardRecord.discardRetentionWindow.inMilliseconds;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final expiredEnd = now - windowMs - 60000;
+      final expiredStart = expiredEnd - 1000;
+      final rawTwin = await writeBin('raw_segments', 'sx/old.bin');
+      final discardedTwin = await writeBin('discarded_segments', 'sx/old.bin');
+      await writeJsonl(dateOf(expiredStart), [
+        rec(startMs: expiredStart, endMs: expiredEnd, relativeBins: ['sx/old.bin'])
+      ]);
+
+      await RecordingsManager.runRecoverySweep();
+
+      expect(await rawTwin.exists(), isFalse, reason: 'expired raw twin reclaimed');
+      expect(await discardedTwin.exists(), isFalse, reason: 'expired discarded twin reclaimed');
+    });
+  });
 }
