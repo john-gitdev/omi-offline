@@ -61,6 +61,15 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   SyncProcessState _spState = SyncProcessState.idle;
   SyncProcessState get spState => _spState;
 
+  /// True while a sync/process/stop is actively running. The post-completion
+  /// "Completed" banner (successUi) is a SETTLED state, not a busy one, so it is
+  /// deliberately excluded — callers (e.g. Recover Discard) treat it as actionable.
+  /// Used to gate actions and surface a "try again in a moment" hint.
+  bool get isPipelineBusy {
+    const busy = {SyncProcessState.syncing, SyncProcessState.processing, SyncProcessState.stopping};
+    return busy.contains(_spState) || RecordingsManager.isProcessingAny;
+  }
+
   int _syncedCount = 0;
   int get syncedCount => _syncedCount;
 
@@ -1361,16 +1370,38 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
   /// discard record is removed and the recording appears in the day card; the
   /// user opens it in the player to decide whether it's worth keeping.
   Future<void> recoverDiscard(DiscardRecord d) async {
-    if (_spState != SyncProcessState.idle) return;
-    if (RecordingsManager.isProcessingAny) return;
+    final durMs = d.endTime.difference(d.startTime).inMilliseconds;
+    Logger.debug('RecoverDiscard: requested — start=${d.startTime.toUtc()} reason=${d.reason} '
+        'dur=${durMs}ms refBins=${d.relativeBins} ranges=${d.binRanges} spState=${_spState.name}');
+    // A just-finished sync/process leaves the "Completed" banner (successUi) up
+    // for ~10s. That's a settled state, not a busy one — clear it so this tap
+    // runs immediately instead of being silently dropped (then mysteriously
+    // working on a second tap once the banner auto-dismisses).
+    if (_spState == SyncProcessState.successUi) dismissSuccess();
+    if (isPipelineBusy) {
+      Logger.debug('RecoverDiscard: SKIPPED — pipeline busy (spState=${_spState.name}, '
+          'isProcessingAny=${RecordingsManager.isProcessingAny}).');
+      return;
+    }
     final directory = await getApplicationDocumentsDirectory();
     final bins = <File>[];
+    final missing = <String>[];
     for (final rel in d.relativeBins) {
       final f = File('${directory.path}/raw_segments/$rel');
-      if (await f.exists()) bins.add(f);
+      if (await f.exists()) {
+        bins.add(f);
+      } else {
+        missing.add(rel);
+      }
+    }
+    if (missing.isNotEmpty) {
+      Logger.debug('RecoverDiscard: WARNING — ${missing.length}/${d.relativeBins.length} '
+          'referenced bin(s) missing on disk: $missing');
     }
     if (bins.isEmpty) {
       // Bins were already swept or deleted — drop the orphan record and reload.
+      Logger.debug('RecoverDiscard: NO bins on disk — dropping ghost WITHOUT recovering audio '
+          '(bins already deleted/swept; nothing to re-derive).');
       await RecordingsManager.removeDiscardRecord(d, deleteBins: false);
       await _loadBatches();
       return;
@@ -1417,6 +1448,27 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
           anchorMs: i == 0 ? d.startTime.millisecondsSinceEpoch : null,
         );
       }
+      Logger.debug('RecoverDiscard: byte-slicing ${bins.length} bin(s), anchorMs='
+          '${d.startTime.millisecondsSinceEpoch} — '
+          '${recoverSlices.map((k, v) => MapEntry(k.split('/').last, v.ranges))}');
+    } else {
+      Logger.debug('RecoverDiscard: WHOLE-BIN fallback (a bin is missing or has no recorded '
+          'byte range) — recovery decodes the entire bin(s) and MAY pull in neighbor audio. '
+          'binsOnDisk=${bins.length} refBins=${d.relativeBins.length} ranges=${d.binRanges}');
+    }
+
+    // Protect bins that OTHER (sibling) discards still reference: two ghosts
+    // routinely share one ~5-min bin (a head slice and a tail slice), and this
+    // run consumes+deletes the bins it touches. Without this, recovering one
+    // ghost deletes the shared bin and the sibling recovers as "NO bins on disk".
+    final siblingRel = await RecordingsManager.discardedRelBinPathsExcludingSpan(
+      d.startTime.millisecondsSinceEpoch,
+      d.endTime.millisecondsSinceEpoch,
+    );
+    final protectedAbs = siblingRel.map((rel) => '$binPrefix$rel').toSet();
+    if (protectedAbs.isNotEmpty) {
+      Logger.debug('RecoverDiscard: protecting ${protectedAbs.length} bin(s) referenced by sibling '
+          'discard(s) from this run\'s delete sweep: ${siblingRel.toList()}');
     }
 
     _lastActiveStage = 'processing';
@@ -1428,8 +1480,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
         backgroundMode: false,
         settingsOverride: override,
         recoverSlices: recoverSlices,
+        seedProtectedBinPaths: protectedAbs,
       );
     } catch (e) {
+      Logger.debug('RecoverDiscard: processAll FAILED: $e');
       _transitionToError('processing', e.toString());
       return;
     }
@@ -1437,6 +1491,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // jsonl entry so the ghost disappears.
     await RecordingsManager.removeDiscardRecord(d, deleteBins: false);
     await _loadBatches();
+    Logger.debug('RecoverDiscard: DONE — processed ${bins.length} bin(s), ghost removed '
+        '(start=${d.startTime.toUtc()}). Look for a recording near this time.');
     await _finishSuccess();
   }
 
