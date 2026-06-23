@@ -1373,8 +1373,8 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
 
   /// Recovers each selected discard as its own standalone recording, then shows
   /// a SINGLE "Completed" banner at the end (rather than one ~10s banner per
-  /// item). The busy-guard and banner-dismiss happen once for the whole batch;
-  /// the per-item work runs in [_recoverDiscardCore].
+  /// item). The busy-guard, list reload and banner-dismiss happen once for the
+  /// whole batch; the per-item work runs in [_recoverDiscardCore].
   Future<void> recoverDiscards(List<DiscardRecord> ds) async {
     if (ds.isEmpty) return;
     // A just-finished sync/process leaves the "Completed" banner (successUi) up
@@ -1388,30 +1388,47 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     }
     var anyRecovered = false;
     for (final d in ds) {
-      final recovered = await _recoverDiscardCore(d);
-      // A processAll failure leaves _spState at error — stop and keep that banner.
-      if (_spState == SyncProcessState.error) return;
+      // Defer the list reload: recovering N discards should refresh (and flash)
+      // the list ONCE at the end, not once per item. Each core call still
+      // removes its ghost's jsonl entry from disk, so the single reload below
+      // reflects every removal.
+      final recovered = await _recoverDiscardCore(d, reload: false);
+      // A processAll failure leaves _spState at error — stop and keep that
+      // banner, but still reload once so the ghosts already recovered this
+      // batch disappear instead of lingering stale.
+      if (_spState == SyncProcessState.error) {
+        await _loadBatches();
+        return;
+      }
       anyRecovered = anyRecovered || recovered;
     }
-    // Only show the success banner if at least one produced a recording; an
-    // all-orphan batch just drops the ghosts (each core call already reloaded).
+    // Single reload for the whole batch (drops every recovered ghost / shows
+    // every produced recording), then one success banner if anything recovered.
+    await _loadBatches();
     if (anyRecovered) await _finishSuccess();
   }
 
   /// Recovers one discard. No busy-guard, no success banner — the caller owns
   /// those. Returns true if it produced a recording; false for an orphan (no
   /// bins) or a processAll failure (in which case _spState is left at error).
-  Future<bool> _recoverDiscardCore(DiscardRecord d) async {
+  /// Pass [reload] = false to skip the per-item list reload when recovering a
+  /// batch — the caller reloads once at the end (avoids a flash per item).
+  Future<bool> _recoverDiscardCore(DiscardRecord d, {bool reload = true}) async {
     final durMs = d.endTime.difference(d.startTime).inMilliseconds;
     Logger.debug('RecoverDiscard: requested — start=${d.startTime.toUtc()} reason=${d.reason} '
         'dur=${durMs}ms refBins=${d.relativeBins} ranges=${d.binRanges} spState=${_spState.name}');
     final directory = await getApplicationDocumentsDirectory();
     final bins = <File>[];
+    // Maps each resolved absolute bin path back to its `<session>/<file>.bin`
+    // tail, so binRanges/sibling lookups work regardless of whether the bin was
+    // relocated to discarded_segments/ or is still in raw_segments/.
+    final binRel = <String, String>{};
     final missing = <String>[];
     for (final rel in d.relativeBins) {
-      final f = File('${directory.path}/raw_segments/$rel');
+      final f = await RecordingsManager.resolveDiscardBin(directory.path, rel);
       if (await f.exists()) {
         bins.add(f);
+        binRel[f.path] = rel;
       } else {
         missing.add(rel);
       }
@@ -1425,7 +1442,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       Logger.debug('RecoverDiscard: NO bins on disk — dropping ghost WITHOUT recovering audio '
           '(bins already deleted/swept; nothing to re-derive).');
       await RecordingsManager.removeDiscardRecord(d, deleteBins: false);
-      await _loadBatches();
+      if (reload) await _loadBatches();
       return false;
     }
     bins.sort((a, b) => a.path.split('/').last.compareTo(b.path.split('/').last));
@@ -1458,13 +1475,12 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // onto the same recording. Requires every referenced bin present with a
     // recorded range — otherwise (a pruned bin, or a legacy record with no
     // ranges) fall back to the old whole-bin reprocess.
-    final binPrefix = '${directory.path}/raw_segments/';
     final recoverSlices = <String, RecoverSlice>{};
-    final allSliceable = bins.length == d.relativeBins.length &&
-        bins.every((f) => (d.binRanges[f.path.substring(binPrefix.length)]?.isNotEmpty ?? false));
+    final allSliceable =
+        bins.length == d.relativeBins.length && bins.every((f) => (d.binRanges[binRel[f.path]]?.isNotEmpty ?? false));
     if (allSliceable) {
       for (var i = 0; i < bins.length; i++) {
-        final ranges = d.binRanges[bins[i].path.substring(binPrefix.length)]!;
+        final ranges = d.binRanges[binRel[bins[i].path]]!;
         recoverSlices[bins[i].path] = RecoverSlice(
           ranges: ranges,
           anchorMs: i == 0 ? d.startTime.millisecondsSinceEpoch : null,
@@ -1487,7 +1503,10 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
       d.startTime.millisecondsSinceEpoch,
       d.endTime.millisecondsSinceEpoch,
     );
-    final protectedAbs = siblingRel.map((rel) => '$binPrefix$rel').toSet();
+    final protectedAbs = <String>{};
+    for (final rel in siblingRel) {
+      protectedAbs.add((await RecordingsManager.resolveDiscardBin(directory.path, rel)).path);
+    }
     if (protectedAbs.isNotEmpty) {
       Logger.debug('RecoverDiscard: protecting ${protectedAbs.length} bin(s) referenced by sibling '
           'discard(s) from this run\'s delete sweep: ${siblingRel.toList()}');
@@ -1515,7 +1534,7 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     // Bins are deleted by processAll's safe-to-delete pass; remove the stale
     // jsonl entry so the ghost disappears.
     await RecordingsManager.removeDiscardRecord(d, deleteBins: false);
-    await _loadBatches();
+    if (reload) await _loadBatches();
     Logger.debug('RecoverDiscard: DONE — processed ${bins.length} bin(s), ghost removed '
         '(start=${d.startTime.toUtc()}). Look for a recording near this time.');
     return true;
