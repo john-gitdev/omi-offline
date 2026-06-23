@@ -2,7 +2,7 @@
 
 A personal fork of the [Omi](https://github.com/BasedHardware/omi) wearable project, rebuilt entirely around local, private audio capture and processing. No cloud dependencies, no internet requirement — audio stays on your device until you choose to export it.
 
-**Current versions:** App `0.25.3` · Firmware `oo-2.3.0`
+**Current versions:** App `0.26.0` · Firmware `oo-2.4.0`
 
 ---
 
@@ -277,7 +277,6 @@ omi-offline/
 │   └── hardware/consumer/  # PCB design files
 ├── releases/               # Built APKs
 ├── screenshots/
-├── test-data/
 ├── CHANGELOG.md
 ├── NOTES.md
 ├── IDEAS.md
