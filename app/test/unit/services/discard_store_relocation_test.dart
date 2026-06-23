@@ -21,11 +21,12 @@ class MockPathProvider extends Fake with MockPlatformInterfaceMixin implements P
 /// Covers the discard-bin relocation lifecycle: once a discard's bin is fully
 /// processed it is moved out of `raw_segments/` into `discarded_segments/` so it
 /// can't be reprocessed/appended by a Force Process or wiped by the session-id
-/// delete sweep, while staying recoverable. These tests exercise the CONSUMER
-/// side (resolve / delete / reclaim / protect) against a bin physically living
-/// in `discarded_segments/`. The move itself happens inside processAll's
-/// per-segment delete handler, which needs an isolate + Opus and is not host-
-/// testable; the resolver fallback keeps every consumer correct either way.
+/// delete sweep, while staying recoverable. These tests exercise the move itself
+/// ([RecordingsManager.retainDiscardBin]) plus the CONSUMER side (resolve /
+/// delete / reclaim / protect) against a bin physically living in
+/// `discarded_segments/`. The full in-isolate delete handler that drives the move
+/// in production needs an isolate + Opus and is not host-testable, but the move
+/// primitive and the resolver fallback that keeps every consumer correct are.
 void main() {
   late Directory tempDir;
 
@@ -170,5 +171,74 @@ void main() {
       protected.any((path) => path.replaceAll('\\', '/').contains('/discarded_segments/') && path.endsWith('a.bin')),
       isTrue,
     );
+  });
+
+  group('retainDiscardBin (the relocation move itself)', () {
+    test('moves a bin raw_segments/ → discarded_segments/, then resolveDiscardBin finds it there', () async {
+      // This is the exact round-trip _stitchDiscard relies on: after the bin is
+      // relocated, every consumer must resolve it from discarded_segments/.
+      final src = await writeBin('raw_segments', 's/a.bin');
+
+      final moved = await RecordingsManager.retainDiscardBin(tempDir.path, src.path);
+
+      expect(moved, isTrue);
+      expect(await src.exists(), isFalse, reason: 'source removed from the processing pool');
+      final dest = File(p.join(tempDir.path, 'discarded_segments', 's', 'a.bin'));
+      expect(await dest.exists(), isTrue, reason: 'relocated under discarded_segments/');
+
+      final resolved = await RecordingsManager.resolveDiscardBin(tempDir.path, 's/a.bin');
+      expect(resolved.path.replaceAll('\\', '/').contains('/discarded_segments/'), isTrue);
+      expect(await resolved.exists(), isTrue);
+    });
+
+    test('preserves bin bytes through the move', () async {
+      final payload = List<int>.generate(128, (i) => (i * 7) & 0xFF);
+      final src = File(p.join(tempDir.path, 'raw_segments', 's', 'a.bin'));
+      await src.parent.create(recursive: true);
+      await src.writeAsBytes(payload);
+
+      expect(await RecordingsManager.retainDiscardBin(tempDir.path, src.path), isTrue);
+
+      final dest = File(p.join(tempDir.path, 'discarded_segments', 's', 'a.bin'));
+      expect(await dest.readAsBytes(), equals(payload));
+    });
+
+    test('creates nested destination session folders', () async {
+      final src = await writeBin('raw_segments', 'session_42/1700000000_42.bin');
+
+      expect(await RecordingsManager.retainDiscardBin(tempDir.path, src.path), isTrue);
+      expect(
+        await File(p.join(tempDir.path, 'discarded_segments', 'session_42', '1700000000_42.bin')).exists(),
+        isTrue,
+      );
+    });
+
+    test('is a no-op (false) for a path already under discarded_segments/', () async {
+      // Mirrors a sibling-protected bin re-touched during a Recover run: it is
+      // already relocated, so the handler must leave it in place.
+      final already = await writeBin('discarded_segments', 's/a.bin');
+
+      expect(await RecordingsManager.retainDiscardBin(tempDir.path, already.path), isFalse);
+      expect(await already.exists(), isTrue, reason: 'already-relocated bin untouched');
+      expect(
+        await File(p.join(tempDir.path, 'raw_segments', 's', 'a.bin')).exists(),
+        isFalse,
+        reason: 'no stray raw_segments/ copy minted',
+      );
+    });
+
+    test('returns false when the source bin does not exist', () async {
+      final ghostPath = p.join(tempDir.path, 'raw_segments', 's', 'gone.bin');
+      expect(await RecordingsManager.retainDiscardBin(tempDir.path, ghostPath), isFalse);
+      expect(await File(p.join(tempDir.path, 'discarded_segments', 's', 'gone.bin')).exists(), isFalse);
+    });
+
+    test('is idempotent: a second move of an already-relocated bin is a harmless false', () async {
+      final src = await writeBin('raw_segments', 's/a.bin');
+      expect(await RecordingsManager.retainDiscardBin(tempDir.path, src.path), isTrue);
+      // The original raw path no longer exists → second call sees no source.
+      expect(await RecordingsManager.retainDiscardBin(tempDir.path, src.path), isFalse);
+      expect(await File(p.join(tempDir.path, 'discarded_segments', 's', 'a.bin')).exists(), isTrue);
+    });
   });
 }
