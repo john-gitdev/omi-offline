@@ -126,6 +126,8 @@ Zephyr RTOS on nRF5340. Key threads: mic capture → codec ring buffer → Opus 
 | `marker_flash_count` (`volatile uint8_t`) | `button.c/h`, `main.c` | *(no Dart equivalent)* — drives LED flash on double-tap |
 | `PACKET_EOT` = `0x02` | `storage.c` | end-of-transfer signal; consumed by `SDCardWalSyncImpl`, not stored |
 
+Paths in the *Source file* column are relative to `omi/firmware/omi/src/`; `transport.*`, `button.*`, and `storage.*` live under `lib/core/`, while `aad.c` and `main.c` are at the `src/` root.
+
 ### BLE Protocol
 
 Omi-custom services use base UUID `19b100xx-e8f2-537e-4f6c-d104768a1214`. Source of truth is `app/lib/services/devices/omi_connection.dart`. There is no live audio-stream service in this offline fork (no `0000`/`0001`) — audio goes Mic → SD → storage-sync, never a BLE stream.
@@ -137,9 +139,9 @@ Discovery: the firmware advertises the device name `Omi` plus the Settings servi
 | Settings | `0010` / `0011` / `0012` / `0013` | LED dim ratio, mic gain, VAD threshold |
 | Features | `0020` (service) / `0021` / `0022` | `0021` capability bitfield (see `OmiFeatures`: accelerometer, button, battery, usb, haptic, offlineStorage, ledDimming, micGain, vadThreshold); `0022` audio codec ID read. |
 | Time sync | `0030` / `0031` | Write epoch seconds (u32 LE) |
-| Button | `0040` / `0041` | Tap-event notify (1 byte). App currently consumes event `2` only (double-tap → manual mode toggle). Firmware emits inline `0xFFFFFFFE` markers in the audio stream regardless. |
 | Battery detail | `0050` / `0051` | Notify 1 byte: `charging` (0/1) |
 | Diagnostics | `0060` / `0061` / `0062` | `0061` 8 B: `reset_cause u32 LE` + `uptime_seconds u32 LE`. `0062` 20 B drop counters: `blockDrops` + `lastDropUptimeMs` + `sdStreamDrops` + `sdBootDrops` + `nowUptimeMs` (all u32 LE). |
+| Mute | `0070` / `0071` | 9 B read/write/notify mute state: `[muted u8][since_utc_s u32 LE][since_uptime_ms u32 LE]`. Write `[0]`/`[1]` to unmute/mute (no-op on the device while in manual mode). Wired through `getMuteState` / `setMute` / `getMuteListener`. |
 
 Non-Omi-prefix services in use:
 
@@ -148,6 +150,8 @@ Non-Omi-prefix services in use:
 | Standard Battery | `0000180f-…` / char `00002a19-…` | Battery level (0–100 %) |
 | Device Info (DIS) | `0000180a-…` | Model `2a24`, firmware rev `2a26`, hardware rev `2a27`, manufacturer `2a29`, serial `2a25` |
 | Storage | `30295780-4301-eabd-2904-2849adfeae43` | Data stream char `…81`, read-control char `…82` |
+| Button | `23ba7924-0000-1000-7450-346eac492e92` / trigger char `…7925` | Tap-event notify (1 byte). App consumes event `2` only (double-tap → manual mode toggle). Firmware emits inline `0xFFFFFFFE` markers in the audio stream regardless. |
+| Button config | `23ba7926-0000-1000-7450-346eac492e92` / char `…7927` | 6 B read/write button-action config; surfaced in Settings → `ButtonConfigPage` (`button_config_page.dart`). |
 
 Storage protocol: write commands to `storageDataStreamCharacteristicUuid` (`…81`). Responses arrive on the same characteristic; `0x03` first byte = `PACKET_ACK` (`data[1]==0` = success).
 
@@ -163,7 +167,7 @@ Storage protocol: write commands to `storageDataStreamCharacteristicUuid` (`…8
 
 File indices are **cache positions** (0-based sequential) that shift after each deletion — the firmware rebuilds its file-list cache on every CMD_LIST_FILES and after every delete, so after deleting index 0, what was index 1 becomes index 0. Supplying the timestamp in CMD_READ_FILE and CMD_DELETE_FILE lets the firmware re-locate the file by timestamp if the index shifted between LIST and READ/DELETE.
 
-Audio codec ID (read from `0022`, under the Features service `0020`): the app explicitly recognises `20` = opus (80 B/frame, 50 fps) and `21` = opusFS320 (40 B/frame, 50 fps). Anything else falls back to `pcm8`. Current firmware reports `21` (`CODEC_ID` in `config.h`). The `BleAudioCodec` enum also defines `pcm16`, `mulaw8`, `mulaw16`, `unknown` but no current code path reads those over the wire.
+Audio codec ID (read from `0022`, under the Features service `0020`): the app explicitly recognises `20` = opus (80 B/frame, 50 fps) and `21` = opusFS320 (40 B/frame, 50 fps). Anything else falls back to `pcm8`. Current firmware reports `21` (`CODEC_ID` in `lib/core/config.h`). The `BleAudioCodec` enum also defines `pcm16`, `mulaw8`, `mulaw16`, `unknown` but no current code path reads those over the wire.
 
 ## Formatting
 
