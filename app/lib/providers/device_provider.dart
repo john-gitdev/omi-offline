@@ -462,16 +462,18 @@ class DeviceProvider extends ChangeNotifier
           int event = value[0];
           Logger.debug('DeviceProvider: Button event $event');
           if (event == 2 && SharedPreferencesUtil().manualMode) {
-            if (_manualRecording) {
-              _manualRecording = false;
-              await _setDeviceVadThreshold(32769);
-              Logger.debug('DeviceProvider: Manual mode — recording stopped.');
-            } else {
-              _manualRecording = true;
-              await _setDeviceVadThreshold(65535);
-              Logger.debug('DeviceProvider: Manual mode — recording started.');
+            // The firmware already toggled (and persists) the recording state on
+            // this tap. READ it back rather than echoing a command off our own
+            // (possibly stale) guess — echoing could flip the device to the
+            // opposite of what you actually did. The firmware owns the button.
+            final conn = await ServiceManager.instance().device.ensureConnection(connectedDevice?.id ?? '');
+            final thr = await conn?.getVadThreshold();
+            if (thr == 65535 || thr == 32769) {
+              _manualRecording = thr == 65535;
+              Logger.debug('DeviceProvider: Manual mode — recording '
+                  '${_manualRecording ? "started" : "stopped"} (read from device).');
+              notifyListeners();
             }
-            notifyListeners();
           }
         } catch (e) {
           Logger.error('DeviceProvider: Button handler error: $e');
@@ -1320,25 +1322,23 @@ class DeviceProvider extends ChangeNotifier
       final prefs = SharedPreferencesUtil();
       final conn = await ServiceManager.instance().device.ensureConnection(device.id);
       final thr = await conn?.getVadThreshold();
-      if (prefs.manualMode) {
-        if (thr == 65535) {
-          _manualRecording = true;
-        } else if (thr == 32769) {
-          _manualRecording = false;
-        } else {
-          // Device is at an auto-mode threshold — push manual standby.
-          _manualRecording = false;
-          await _setDeviceVadThreshold(32769);
-        }
-      } else {
+      // Read-and-adopt: the firmware persists the threshold across reboot and
+      // oo→oo OTA, so it is the source of truth. Reflect whatever it holds rather
+      // than overwriting it with our remembered preference — pushing here would
+      // stomp a change made on the device while it was offline (e.g. a button
+      // start). Mode + auto sensitivity are only changed by an explicit in-app
+      // action, which writes + persists at that moment.
+      if (thr == 65535 || thr == 32769) {
+        // Manual recording sentinels → manual mode; 65535 = recording, 32769 = standby.
+        prefs.manualMode = true;
+        _manualRecording = thr == 65535;
+      } else if (thr != null) {
+        // A real auto-sensitivity value → auto mode.
+        prefs.manualMode = false;
         _manualRecording = false;
-        // App is in auto mode; if firmware is in a manual state (e.g. after
-        // an OTA wiped settings_storage and the new firmware defaults to
-        // 32769), push the user's saved auto threshold.
-        if (thr == 32769 || thr == 65535) {
-          await _setDeviceVadThreshold(prefs.autoVadThreshold);
-        }
       }
+      // thr == null (read failed) → leave the last-known state untouched.
+      notifyListeners();
     }
 
     await ServiceManager.instance().wal.getSyncs().setDevice(device, prefetchedFiles: []);
