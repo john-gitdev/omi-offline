@@ -28,6 +28,32 @@ class DiscardStore {
     return File('$docsPath/raw_segments/$rel');
   }
 
+  /// Deletes a discard's bin from BOTH roots — `raw_segments/` and
+  /// `discarded_segments/` — cleaning each now-empty session folder. Deleting
+  /// only the resolved copy ([_binFile]) can leave a duplicate twin behind: an
+  /// interrupted relocation, or an adjustment-mode "copy bins for reprocessing"
+  /// that recreates the raw copy of an already-relocated bin. That orphan would
+  /// survive the record's removal and re-enter the processing pool. Returns true
+  /// if any copy was deleted.
+  static Future<bool> _deleteBinAllRoots(String docsPath, String rel) async {
+    var deletedAny = false;
+    for (final base in ['raw_segments', _discardedDir]) {
+      final f = File('$docsPath/$base/$rel');
+      if (!await f.exists()) continue;
+      try {
+        await f.delete();
+        deletedAny = true;
+      } catch (e) {
+        Logger.error('DiscardStore: delete bin $base/$rel failed: $e');
+      }
+      final folder = f.parent;
+      try {
+        if (await folder.exists() && await folder.list().isEmpty) await folder.delete();
+      } catch (_) {}
+    }
+    return deletedAny;
+  }
+
   /// Consecutive discard records whose inter-record gap is within this tolerance
   /// are coalesced into a single entry by [getDiscardsForDate], so a long
   /// ambient-noise period surfaces as one row instead of dozens of back-to-back
@@ -307,20 +333,7 @@ class DiscardStore {
     final directory = await getApplicationDocumentsDirectory();
     if (deleteBins) {
       for (final rel in d.relativeBins) {
-        final binFile = _binFile(directory.path, rel);
-        if (await binFile.exists()) {
-          try {
-            await binFile.delete();
-          } catch (e) {
-            Logger.error('DiscardStore: removeDiscardRecord delete bin failed: $e');
-          }
-          final folder = binFile.parent;
-          if (await folder.exists()) {
-            try {
-              if (await folder.list().isEmpty) await folder.delete();
-            } catch (_) {}
-          }
-        }
+        await _deleteBinAllRoots(directory.path, rel);
       }
     }
     if (!await d.sourceJsonl.exists()) return;
@@ -381,15 +394,17 @@ class DiscardStore {
 
     final groups = await _readAllDiscardRecords();
 
-    // First pass: collect every bin still protected by an in-window record,
-    // across all day-jsonl files. An expired record's bin must not be deleted
-    // if another active record (possibly in a different day file) references it.
+    // First pass: collect every bin (by rel) still protected by an in-window
+    // record, across all day-jsonl files. An expired record's bin must not be
+    // deleted if another active record (possibly in a different day file)
+    // references it. Keyed by rel, not resolved path, so protection holds
+    // regardless of which root a (possibly duplicated) bin currently lives in.
     final globallyProtected = <String>{};
     for (final group in groups) {
       for (final rec in group.records) {
         if ((rec['endMs'] as int) < cutoffMs) continue;
         for (final rel in (rec['relativeBins'] as List).cast<String>()) {
-          globallyProtected.add(_binFile(directory.path, rel).path);
+          globallyProtected.add(rel);
         }
       }
     }
@@ -400,21 +415,17 @@ class DiscardStore {
       for (final rec in group.records) {
         if ((rec['endMs'] as int) < cutoffMs) {
           for (final rel in (rec['relativeBins'] as List).cast<String>()) {
-            candidateDeletes.add(_binFile(directory.path, rel).path);
+            candidateDeletes.add(rel);
           }
         } else {
           activeRecords.add(rec);
         }
       }
       candidateDeletes.removeAll(globallyProtected);
-      for (final path in candidateDeletes) {
-        final f = File(path);
-        if (!await f.exists()) continue;
-        try {
-          await f.delete();
-          Logger.debug('DiscardStore: RecoverySweep deleted expired bin $path');
-        } catch (e) {
-          Logger.error('DiscardStore: RecoverySweep failed to delete $path: $e');
+      for (final rel in candidateDeletes) {
+        // Delete from both roots so a duplicate twin can't survive as an orphan.
+        if (await _deleteBinAllRoots(directory.path, rel)) {
+          Logger.debug('DiscardStore: RecoverySweep deleted expired bin $rel');
         }
       }
       if (activeRecords.isEmpty) {
