@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
@@ -272,6 +274,8 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
             ),
           ),
         ),
+        const SizedBox(height: 16),
+        _buildRepairInstructions(),
         const SizedBox(height: 24),
         // Done button — Material+InkWell so the tap shows a ripple inside the rounded corners.
         Material(
@@ -299,6 +303,82 @@ class _FirmwareUpdateState extends State<FirmwareUpdate> with FirmwareMixin {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildRepairStep(int number, String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 22,
+            height: 22,
+            decoration: const BoxDecoration(color: Color(0xFF2A2A2E), shape: BoxShape.circle),
+            child: Center(
+              child: Text(
+                '$number',
+                style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(color: Colors.grey.shade300, fontSize: 14, height: 1.4),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Shown after a successful update: an OTA can reset the device's BLE pairing, so if
+  // the firmware bond no longer matches the phone's, the device won't reconnect until
+  // the old pairing is cleared on BOTH sides. Phrased conditionally — most updates do
+  // not need this, and iOS can't clear the bond programmatically anyway.
+  Widget _buildRepairInstructions() {
+    final phoneStep = Platform.isIOS
+        ? 'On your phone: open Settings → Bluetooth, tap the ⓘ next to your Omi, and choose "Forget This Device".'
+        : 'On your phone: open Bluetooth settings, find your Omi, and choose Forget / Unpair.';
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1C1E),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFF2A2A2E)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                FaIcon(FontAwesomeIcons.key, color: Color(0xFF8E8E93), size: 16),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Trouble reconnecting after the update?',
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'An update can reset the device\'s pairing. If your Omi won\'t reconnect, clear the old '
+              'pairing on both sides, then reconnect:',
+              style: TextStyle(color: Colors.grey.shade400, fontSize: 14, height: 1.4),
+            ),
+            const SizedBox(height: 16),
+            _buildRepairStep(
+                1, 'On your Omi: tap the button 5 times, holding the last tap for 10 seconds, to clear its pairing.'),
+            _buildRepairStep(2, phoneStep),
+          ],
+        ),
+      ),
     );
   }
 
