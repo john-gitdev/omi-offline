@@ -303,7 +303,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
         'Delete Phone Segments',
-        'This will permanently delete raw segment files stored on this phone. This action cannot be undone. Continue?',
+        'This will permanently delete ALL raw segment files AND discarded (recoverable) segments stored on this '
+            'phone — any pending recoveries are lost. This action cannot be undone. Continue?',
         confirmText: 'Delete',
       ),
     );
@@ -318,7 +319,7 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     try {
       Logger.debug('DebugTools: Deleting raw_segments + discarded_segments directories');
       final directory = await getApplicationDocumentsDirectory();
-      for (final base in ['raw_segments', 'discarded_segments']) {
+      for (final base in ['raw_segments', RecordingsManager.discardedSegmentsDirName]) {
         final segmentsDir = Directory('${directory.path}/$base');
         if (await segmentsDir.exists()) {
           await segmentsDir.delete(recursive: true);
