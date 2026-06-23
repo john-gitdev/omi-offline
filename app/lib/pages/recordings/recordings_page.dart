@@ -191,9 +191,9 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     final n = sel.length;
     _exitSelection();
     if (mounted) messenger.showSnackBar(SnackBar(content: Text('Recovering $n discard${n == 1 ? '' : 's'}…')));
-    for (final d in sel) {
-      await controller.recoverDiscard(d);
-    }
+    // One pass over all selected discards → each recovered standalone, then a
+    // single "Completed" banner (instead of one ~10s banner per item).
+    await controller.recoverDiscards(sel);
   }
 
   /// Per-row Recover. The controller clears a lingering "Completed" banner and
