@@ -467,6 +467,15 @@ class DiscardRecord {
   // byte-range recovery landed; empty for legacy records (Recover then falls
   // back to whole-bin). Lets Recover re-derive only the discarded spans.
   final Map<String, List<List<int>>> binRanges;
+  // Total duration of the audio the device ACTUALLY recorded for this discard
+  // (sum of decoded-frame durations), excluding device-asleep gaps — i.e. the
+  // length the recovered clip will be. [duration] (endTime - startTime) is the
+  // wall-clock SPAN, which can be much longer when the firmware's AAD slept
+  // between stretches (gaps that carry no audio). The UI shows [audioDuration]
+  // so a "30s of audio" ghost recovers to a 30s clip and reads as 30s; retention
+  // and removal still key off the real span. 0 ⇒ legacy record (falls back to
+  // the span). Coalesced rows sum their constituents' audioMs.
+  final int audioMs;
   final File sourceJsonl;
 
   const DiscardRecord({
@@ -477,9 +486,14 @@ class DiscardRecord {
     required this.relativeBins,
     required this.sourceJsonl,
     this.binRanges = const {},
+    this.audioMs = 0,
   });
 
   Duration get duration => endTime.difference(startTime);
+
+  /// Length of the actually-recorded audio (what Recover produces). Falls back
+  /// to the wall-clock span for legacy records that predate the field.
+  Duration get audioDuration => audioMs > 0 ? Duration(milliseconds: audioMs) : duration;
   DateTime get expiresAt => endTime.add(discardRetentionWindow);
   bool get isNoise => reason.contains('noise');
 
