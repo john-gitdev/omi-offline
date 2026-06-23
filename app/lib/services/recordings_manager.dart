@@ -1111,6 +1111,14 @@ class RecordingsManager {
             }
             final finalSuccess = await _performStitch(draftFile, audioToStitch, gapMs);
             if (finalSuccess) {
+              // The folded ghosts' audio now lives in this conversation — retire
+              // their discard records (and the bins they solely own) so they stop
+              // showing as recoverable rows that would re-derive a duplicate
+              // slice. WAV-only: the M4A path stitches silence, not real audio,
+              // so its ghosts stay recoverable.
+              if (draftExt == 'wav' && intermediateEvents.isNotEmpty) {
+                await retireFoldedGhosts(intermediateEvents.map((e) => e.discard!).toList());
+              }
               scanNeeded = true;
               break;
             }
@@ -1161,9 +1169,26 @@ class RecordingsManager {
 
             final bytes = await bin.readAsBytes();
             final byteData = ByteData.sublistView(bytes);
-            int offset = 0;
 
-            while (offset + 4 <= bytes.length) {
+            // Byte-slice to the discard's OWN recorded ranges, mirroring
+            // _recoverDiscardCore: a bin shared with a neighbouring recording must
+            // contribute only the discard's bytes — a whole-bin decode would fold
+            // the neighbour's audio into the conversation too (the overlap bug the
+            // Recover path already fixed). A legacy record with no ranges falls
+            // back to a whole-bin decode.
+            final ranges = ghost.binRanges[relPath] ?? const <List<int>>[];
+            final sliced = ranges.isNotEmpty;
+            int offset = sliced ? ranges.first[0] : 0;
+            final decodeUntil = sliced ? min(ranges.last[1], bytes.length) : bytes.length;
+
+            while (offset < decodeUntil) {
+              // Jump the read head over the gaps between disjoint slices so audio
+              // between two discarded stretches (owned by a recording) is skipped.
+              if (sliced) {
+                offset = nextSliceOffset(ranges, offset);
+                if (offset < 0 || offset >= decodeUntil) break;
+              }
+              if (offset + 4 > bytes.length) break;
               final frameLen = byteData.getUint32(offset, Endian.little);
               if (frameLen == 0 || frameLen == 0xFFFFFFFF) {
                 offset += 4;
@@ -2394,6 +2419,64 @@ class RecordingsManager {
 
   static Future<void> removeDiscardRecord(DiscardRecord d, {required bool deleteBins}) =>
       DiscardStore.removeDiscardRecord(d, deleteBins: deleteBins);
+
+  /// Recover/fold byte-slice gating: given disjoint, ascending `[start,end]`
+  /// [ranges] and a read head at [offset], returns where decoding should resume —
+  /// [offset] itself if it sits inside a range, the next range's start if it fell
+  /// in a gap, or -1 once it is past the final range. Mirrors the byte-slice
+  /// stepping the VAD processor uses for Recover so the draft-stitch fold
+  /// ([_stitchDiscard]) decodes only the discard's own bytes.
+  @visibleForTesting
+  static int nextSliceOffset(List<List<int>> ranges, int offset) {
+    var idx = 0;
+    while (idx < ranges.length && offset >= ranges[idx][1]) {
+      idx++;
+    }
+    if (idx >= ranges.length) return -1;
+    if (offset < ranges[idx][0]) return ranges[idx][0];
+    return offset;
+  }
+
+  /// Retires discard ghosts whose audio the draft-stitch pass just folded into a
+  /// stitched conversation. Their `discards.jsonl` records are removed (so they
+  /// stop surfacing as recoverable rows that would re-derive a duplicate slice),
+  /// and each bin they SOLELY own is deleted — but only when it is already out of
+  /// the processing pool (relocated to `discarded_segments/`) and not referenced
+  /// by any remaining active discard. A bin a sibling discard still needs, or one
+  /// left in `raw_segments/` (possibly a draft straddle), is kept.
+  @visibleForTesting
+  static Future<void> retireFoldedGhosts(List<DiscardRecord> ghosts) async {
+    if (ghosts.isEmpty) return;
+    // Remove the records first so a bin shared only AMONG the folded ghosts is
+    // not mutually "protected" by a sibling that is also being retired.
+    for (final g in ghosts) {
+      await removeDiscardRecord(g, deleteBins: false);
+    }
+    final stillReferenced = await discardedRelBinPaths();
+    final directory = await getApplicationDocumentsDirectory();
+    final handled = <String>{};
+    for (final g in ghosts) {
+      for (final rel in g.relativeBins) {
+        if (!handled.add(rel)) continue;
+        if (stillReferenced.contains(rel)) continue; // a remaining discard owns it
+        final bin = await resolveDiscardBin(directory.path, rel);
+        // Only delete a bin already retired from the pool; a raw_segments/ bin
+        // could be a draft straddle, so leave it to the safe-to-delete pass.
+        if (!bin.path.replaceAll('\\', '/').contains('/$discardedSegmentsDirName/')) continue;
+        if (!await bin.exists()) continue;
+        try {
+          await bin.delete();
+          Logger.debug('RecordingsManager: retireFoldedGhosts deleted folded bin $rel');
+        } catch (e) {
+          Logger.error('RecordingsManager: retireFoldedGhosts delete bin failed for $rel: $e');
+        }
+        final folder = bin.parent;
+        try {
+          if (await folder.exists() && await folder.list().isEmpty) await folder.delete();
+        } catch (_) {}
+      }
+    }
+  }
 
   /// Subfolder (sibling of `raw_segments/`) where a bin is relocated once it has
   /// been fully processed AND claimed by a discard record. Keeping discarded
