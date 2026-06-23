@@ -809,7 +809,7 @@ class RecordingsManager {
                     // Process could re-append it to a neighbour or the
                     // session-delete sweep could wipe it. No-op if already
                     // relocated (a sibling bin during Recover).
-                    if (await _retainDiscardBin(directory.path, path)) {
+                    if (await retainDiscardBin(directory.path, path)) {
                       deletedSegmentFolders.add(File(path).parent.path);
                     }
                     continue;
@@ -1136,7 +1136,6 @@ class RecordingsManager {
     if (ghost.relativeBins.isEmpty) return false;
     final ext = draftFile.path.split('.').last;
     final directory = await getApplicationDocumentsDirectory();
-    final rawDir = Directory('${directory.path}/raw_segments');
 
     try {
       // 1. Re-process the ghost bins into a temporary audio file of the same format
@@ -1154,7 +1153,10 @@ class RecordingsManager {
           await sink.writeFrom(Uint8List(44));
 
           for (final relPath in ghost.relativeBins) {
-            final bin = File('${rawDir.path}/$relPath');
+            // Resolve discarded_segments-first: a fully-processed ghost's bin has
+            // been relocated out of raw_segments/, so the old hardcoded
+            // raw_segments/ path would miss it and silently stitch silence.
+            final bin = await resolveDiscardBin(directory.path, relPath);
             if (!await bin.exists()) continue;
 
             final bytes = await bin.readAsBytes();
@@ -2398,7 +2400,7 @@ class RecordingsManager {
   /// bins out of `raw_segments/` makes them invisible to the processing pool (no
   /// reprocess, no append into a neighbouring recording) and to the session-id
   /// delete + prune sweeps — which all scan `raw_segments/` only — while still
-  /// retaining them for Recover. See [_retainDiscardBin] (relocation) and
+  /// retaining them for Recover. See [retainDiscardBin] (relocation) and
   /// [resolveDiscardBin] (lookup).
   static const String discardedSegmentsDirName = 'discarded_segments';
 
@@ -2417,7 +2419,8 @@ class RecordingsManager {
   /// true iff a move happened. No-op (false) when [absPath] is not under
   /// `raw_segments/` — e.g. a sibling bin already relocated, re-touched during a
   /// Recover run.
-  static Future<bool> _retainDiscardBin(String docsPath, String absPath) async {
+  @visibleForTesting
+  static Future<bool> retainDiscardBin(String docsPath, String absPath) async {
     const marker = '/raw_segments/';
     final norm = absPath.replaceAll('\\', '/');
     final i = norm.lastIndexOf(marker);
@@ -2431,9 +2434,26 @@ class RecordingsManager {
       try {
         await src.rename(dest.path);
       } on FileSystemException {
-        // Cross-device or rename-unsupported — fall back to copy+delete.
-        await src.copy(dest.path);
-        await src.delete();
+        // Cross-device or rename-unsupported — fall back to copy+delete. The
+        // invariant is "in discarded_segments/, gone from raw_segments/": a
+        // lingering raw copy is the dangerous state (it re-enters the processing
+        // pool and re-exposes the Force-Process append / session-delete wipe
+        // bugs), so if copy+delete throws, recopy and re-delete rather than bail
+        // with the source still in the pool. A leftover duplicate is the
+        // least-bad terminal outcome and only after repeated FS failures.
+        FileSystemException? lastErr;
+        for (var attempt = 0; attempt < 3; attempt++) {
+          try {
+            await src.copy(dest.path);
+            await src.delete();
+            lastErr = null;
+            break;
+          } on FileSystemException catch (e) {
+            lastErr = e;
+            Logger.error('RecordingsManager: retain copy+delete attempt ${attempt + 1} failed for $rel: $e');
+          }
+        }
+        if (lastErr != null) throw lastErr;
       }
       Logger.debug('RecordingsManager: retained discard bin → $discardedSegmentsDirName/$rel');
       return true;
