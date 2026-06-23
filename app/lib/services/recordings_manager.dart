@@ -368,6 +368,10 @@ class RecordingsManager {
     // SIBLING discards so recovering one ghost can't delete a bin another ghost
     // still needs (the shared-bin data-loss path).
     Set<String> seedProtectedBinPaths = const {},
+    // Recover Discard only: finalize the end-of-run remainder as a standalone
+    // recording instead of a stitchable `_draft`, so the recovered clip isn't
+    // merged into an abutting recording.
+    bool finalizeRemainingDirectly = false,
   }) async {
     // Strip bins that already produced a discard record. They stay on disk
     // for the 48 h recovery window, but re-running VAD on them just re-derives
@@ -690,6 +694,7 @@ class RecordingsManager {
               segmentDerivedFlags: segmentDerivedFlags,
               segmentByteRanges: segmentByteRangesList,
               backgroundMode: backgroundMode,
+              finalizeRemainingDirectly: finalizeRemainingDirectly,
               devLogsEnabled: SharedPreferencesUtil().devLogsToFileEnabled,
               checkpointState: checkpointState,
               checkpointResumeIndex: checkpointResumeIndex,
