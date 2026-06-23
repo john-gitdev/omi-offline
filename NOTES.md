@@ -862,3 +862,98 @@ The Android-side `PlatformException(channel-error … requestCompanionDeviceAsso
 - `app/lib/providers/device_provider.dart` — `_finishDeviceSetup` connect-time log (`device_conn_fail`).
 - `app/lib/pages/settings/sync_page.dart` — `_buildDropStatsSection` "BLE connect failures" rows.
 - `app/android/app/src/main/AndroidManifest.xml` — the `companion_device_setup` uses-feature (the separate fix).
+
+## Discard-recovery overhaul + audio-pipeline coverage + reboot/manual-mode semantics (2026-06-22)
+
+Started from "discard recovery is still messed up" and fanned out into a full audio-pipeline coverage audit and the manual-mode/reboot recording semantics. All app changes below sit **on top of PR #322** (the original byte-range Recover fix, app 0.25.7). End-of-session status: **all changes local/uncommitted**, app suite 353 green, analyzer clean; firmware change unbuilt (no toolchain on this box).
+
+### 1. Recover bloat — coalesce `[min,max]` hull swallowed un-discarded audio
+**Symptom:** a discard shown as "24s" recovered into a 4–9 minute clip. Device logs proved slicing WAS active (a recover run decoded 5647 of a ~13991-frame bin = ~40%), so it wasn't the old whole-bin bug — the slice itself was too wide.
+
+**Root cause:** the on-disk discard ledger stores **tight per-record byte ranges**, but `DiscardStore._coalesceDiscards` -> `_unionBinRanges` collapsed several time-adjacent discards' per-bin spans into a single `[min, max]` **hull** at READ time. When two coalesced discards reference the same ~5-min bin at non-adjacent byte ranges (a head slice + a tail slice with a real recording in the gap — common under the AAD-fallback flood, whose bogus near-identical timestamps coalesce), the hull spans the un-discarded recording between them. Recover slices the hull -> re-derives the neighbor recording. The on-disk jsonl was fine; the hull was a read-time artifact -> **no migration needed**.
+
+**Fix (disjoint intervals end-to-end):**
+- `DiscardRecord.binRanges`: `Map<String,List<int>>` -> `Map<String,List<List<int>>>` (per-bin list of DISJOINT `[start,end)` intervals). In-memory only — the jsonl WRITE format stays flat `[s,e]` (one record is always one contiguous span); `_parseBinRanges` wraps flat->`[[s,e]]` and tolerates nested.
+- `DiscardStore._mergeIntervals`: sort + merge only OVERLAPPING / byte-ADJACENT (`end == next start`); real gaps stay separate. `_unionBinRanges` is now interval-union, not a hull.
+- `RecoverSlice` carries `List<List<int>> ranges`; `recoverDiscard` builds per-bin interval slices; `processAll` + `IsolateParams.segmentByteRanges` (`List<List<List<int>>?>`) + the worker plumb interval lists.
+- `processSegmentFile`: param `startByte`/`endByte` -> `List<List<int>>? byteRanges`. The decode loop jumps the read head over gaps between intervals (decodes only interval frames) and **suppresses VAD-resume gap padding when sliced** so recovery matches frame content. Also suppress the inter-file gap padding when sliced (consecutive firmware bins carry no real gap; any "gap" is an anchor artifact).
+- Tests: `discard_store_binranges_test.dart` — disjoint stays separate, byte-adjacent merges; nested parse shape.
+
+### 2. Sibling-bin data loss — Recover deleting a bin another ghost needs
+**Symptom (caught by the new logging):** `RecoverDiscard: NO bins on disk — dropping ghost WITHOUT recovering audio`. Bin `1782158329` was shared by two discards: a HEAD `[56,56900]` (19:58:49 ghost) and a TAIL `[56920,60712]` (part of a 20:01:16 ghost). Recovering the 20:01:16 ghost first ran `Deleting raw segment .../1782158329` — the WHOLE bin — so the head ghost then had nothing left.
+
+**Root cause:** during a recover run, `processAll`'s in-isolate delete sweep (`discardProtectedPaths`) is seeded only by discards CREATED in that run (none, for recovery). It doesn't protect bins referenced by OTHER persisted discard records.
+
+**Fix:** `DiscardStore.discardedRelBinPathsExcludingSpan(spanStartMs, spanEndMs)` returns bins of discards OUTSIDE the recovered record's span (the span test mirrors `removeDiscardRecord`, so the record's own coalesced constituents are excluded but a sibling sharing a bin is kept). `recoverDiscard` passes those as `processAll(seedProtectedBinPaths:)`, which seeds `discardProtectedPaths`. Recover now logs `Preserving raw segment for recovery: ...` for the shared bin instead of deleting it. One ghost was already lost before the fix — that bin was gone. Tests added.
+
+### 3. "Completed" banner silently blocked Recover
+**Symptom:** tapping Recover while the green "Completed" banner is up did nothing; a second tap (after it auto-cleared) "just made it disappear."
+
+**Root cause:** `recoverDiscard` guarded on `if (_spState != SyncProcessState.idle) return;`. After any sync/process the controller sits in `successUi` (the banner) for ~10s before auto-dismissing to `idle`. `successUi` is SETTLED, not busy, so blocking on it was wrong. (Tapping Recover with the banner up was a harmless no-op — it returned before touching anything — so it did NOT lose the discard; the disappearance was the later tap actually recovering it.)
+
+**Fix:** new `RecordingsController.isPipelineBusy` getter (`syncing|processing|stopping|isProcessingAny`, EXCLUDES `successUi`). `recoverDiscard` dismisses a lingering banner (`dismissSuccess()`) and proceeds; only no-ops when actually busy. `recordings_page` wraps per-row + multi-select recover with a busy-gate snackbar ("Finishing sync — try recovering again in a moment.").
+
+### 4. Recorded-audio duration (`audioMs`) — shown length == recovered clip == what the Omi recorded
+**Requirement (user):** the recovered clip and the shown duration must both equal the frames the device actually recorded. Real recorded silence (continuous quiet frames) counts; device-asleep `0xFFFFFFFD` gaps (firmware AAD slept, wrote NO frames) must NOT be padded in.
+
+**Design:** the clip side was already right (resume-gap padding suppressed during sliced recovery). The DISPLAY was wrong — it showed the wall-clock span (`endTime - startTime`), which includes device-asleep gaps and, for coalesced ghosts, the time BETWEEN stretches.
+- New `DiscardRecord.audioMs` = `frameCount * frameDurationMs` (real recorded frames), written in `_buildDiscardRecordFor`. `startTime`/`endTime`/`duration` (the wall-clock span) are KEPT for retention / removal-matching / draft-finalize non-speech accounting.
+- `DiscardRecord.audioDuration` getter (falls back to `duration` for legacy records with `audioMs==0`).
+- `DiscardStore` parses `audioMs`; `_coalesceDiscards` SUMS it across constituents (audio is additive; gaps carry none).
+- UI (`batch_card.dart`): ghost-row label, bottom-sheet detail, and the visible/hidden filter all use `audioDuration`.
+- Result: a 77s-span coalesced ghost with 26.5s of frames now reads ~27s and recovers to a ~27s clip.
+
+### 5. RecoverDiscard logging (diagnostics)
+All filterable by `RecoverDiscard:` (+ one `VadAudioProcessor: byte-slice recover ...` line). Trace per tap: `requested` (start/reason/dur/refBins/ranges/spState) -> `SKIPPED — pipeline busy` | `WARNING — N/M bins missing` | `NO bins on disk — dropping ghost WITHOUT recovering audio` (the silent-loss case, now loud) -> `byte-slicing N bin(s)` (or `WHOLE-BIN fallback`) -> `protecting N sibling bin(s)` -> `decoding X of Y B` -> `processAll FAILED` | `DONE`.
+
+### 6. Full audio-pipeline coverage audit (Omi -> recording page)
+Verified the discard work does NOT touch VAD recording creation (all changes are discard metadata, recovery-only `!sliced` paths, UI, banner, logging). Coverage invariant confirmed:
+- `processSegmentFile` adds EVERY decoded frame (speech or not, even decode-failures) to `_currentRefs` (`:1404`).
+- Two-pass `_flushVadBatch` replays EVERY deferred frame through `_applyVadVerdict`.
+- At any boundary (silence-split / max-cap / session-end / mute / marker / EOF) `_currentRefs` is SAVED (recording) or DISCARDED (ghost) before it is cleared. Session-end / mute-on handlers flush+save BEFORE they start skipping.
+- End of run -> `flushRemaining(isDraft:true)` -> `_draft` + bins kept -> re-stitched next cycle.
+
+**Only non-recoverable drops (intentional):** muted stretches (skipped frames, surfaced as a delete-only "muted" ghost — mute = don't keep), and decode-failure frames (still byte-referenced, play as silence). Real recorded audio is fully accounted for (recording / discard ghost / pending draft).
+
+### 7. Reboot gap — `_sessionEndPendingResume` not cleared on session change
+`_sessionEndPendingResume` (the "ignore incoming audio" skip) is set by manual-stop (`0xFFFFFFFC`) and mute-on (`0xFFFFFFFA`); cleared by tap (`0xFFFFFFFE`), resume (`0xFFFFFFFD`), mute-off (`0xFFFFFFF9`) — but NOT by a session change. So mute/stop -> device reboots while still latched -> the flag carries into the new session and the new session's frames are dropped at the per-frame skip (`:1051`), unsurfaced. The app's own code already treats a session change as "effectively the unmute" (`_emitMutedDiscard` clears `_muted`) but forgot the skip flag.
+
+**Fix:** in `processSegmentFile`, on `sessionChanged`, clear `_sessionEndPendingResume`. `_currentSessionId` is persisted in the VAD checkpoint (`'csi'`), so this also catches a reboot BETWEEN sync runs. With the firmware persist-change (below), this now mainly bites the **mute-in-auto + reboot** case (a manual-stop+reboot leaves the device in standby -> no frames to drop).
+
+### 8. Manual-mode VAD threshold trace (firmware + app)
+**Values:** recording ON = `65535` (gate `thr==65535 || avg>=thr` -> always); standby/OFF = `32769` (avg can't reach half-scale -> never); auto = ~`250` (sound-gated). `aad.c:276-289`.
+
+**Persistence — the crux:**
+- App (BLE write) -> `transport.c:704+710` calls BOTH `app_settings_save_vad_threshold` (flash) AND `aad_set_threshold` (runtime). **Persisted.**
+- On-device BUTTON double-tap -> `button.c:171/178` calls ONLY `aad_set_threshold`. **Runtime, NOT persisted.** (Connected, the app echoes a BLE write that persists it — but offline it doesn't.)
+- Boot loads the persisted value, default `DEFAULT_VAD_THRESHOLD = 32769` (`settings.c:12`, `aad.c:417`).
+
+**Key correction:** the app only writes `32769` from `setManualMode(true)` (entering manual mode) — NOT on a normal button tap. The slider (`device_settings.dart:771`) is **auto-mode only** (`!manualMode`), so manual mode has no user-set threshold — recording on/off is purely the button sentinel. So `32769` after reboot comes from the firmware DEFAULT or a one-time `setManualMode` write, never the button; the button's `65535`/`32769` toggles are forgotten on reboot.
+
+**Consequence (the real offline bug):** offline you button-start (runtime `65535`) -> reboot loads persisted `32769` -> **standby, recording silently stops.** Here the app's `_sessionEndPendingResume` fix is moot — the device writes no frames.
+
+### 9. Firmware fix — persist the manual recording state
+`button.c` manual branch now calls `app_settings_save_vad_threshold(65535)` on start and `app_settings_save_vad_threshold(32769)` on stop (alongside `aad_set_threshold`), mirroring the BLE path. So manual recording survives reboot (start->records, stop->stays stopped). Flash wear is a non-issue (manual taps are infrequent; the BLE path already persists on every change). **Unbuilt — needs a real firmware build + rev bump (oo-2.3.1 -> oo-2.4.0).**
+
+Mute in auto mode needs NO firmware change: `is_muted` is separate from the threshold and never persists, so an auto-mode device that was just muted comes back recording — and the section-7 app fix keeps those post-reboot frames.
+
+### 10. Read-and-adopt threshold model (app)
+**Principle (decided):** the firmware owns the threshold (persists across reboot + oo->oo OTA, which under MCUboot doesn't erase NVS — the reconcile-push only existed as OTA-wipe recovery, and a wipe only happens from non-oo / a partition-layout change). The app READS it and WRITES only on an explicit in-app action (auto slider, mode toggle).
+
+**Changes (`device_provider.dart`):**
+- **Button event:** was an echo that toggled off the app's own (possibly stale) `_manualRecording` guess and wrote the threshold — could flip the device to the OPPOSITE of what you did. Now READS `getVadThreshold()` and sets `_manualRecording` from it; no write.
+- **Connect reconcile:** was read-then-PUSH (force device to the app's remembered mode -> stomped offline button changes). Now READ-and-ADOPT: `65535`/`32769` -> `manualMode=true` + recording state from the value; any real auto value -> `manualMode=false`; `thr==null` (read fail) -> leave as-is.
+- `setManualMode` and the slider still write (the "set once, then persisted" path). `_setDeviceVadThreshold` retained (used by `setManualMode`).
+- No automated test (device_provider is BLE-bound, no harness) — verify on device: manual-record offline -> reboot -> reconnect should still show "recording".
+
+### Code locations (this session)
+- `app/lib/models/recordings/recordings_models.dart` — `DiscardRecord.binRanges` (nested), `audioMs`, `audioDuration`.
+- `app/lib/services/discard_store.dart` — `_parseBinRanges`, `_mergeIntervals`, `_unionBinRanges` (interval-union), `_coalesceDiscards` (sum `audioMs`), `discardedRelBinPathsExcludingSpan`, `audioMs` parse.
+- `app/lib/services/vad_audio_processor.dart` — `processSegmentFile` byte-`ranges` slicing + padding suppression (`!sliced`), `_buildDiscardRecordFor` (`audioMs`, `frameCount`), `_sessionEndPendingResume` clear on `sessionChanged`.
+- `app/lib/services/recordings_manager.dart` — `RecoverSlice` (intervals), `processAll(seedProtectedBinPaths)`, `discardProtectedPaths` seed, `discardedRelBinPathsExcludingSpan` wrapper.
+- `app/lib/services/recordings_isolate_worker.dart` — `IsolateParams.segmentByteRanges` (`List<List<List<int>>?>`), passes `byteRanges:`.
+- `app/lib/pages/recordings/recordings_controller.dart` — `isPipelineBusy`, `recoverDiscard` (banner-dismiss, sibling protection, logging).
+- `app/lib/pages/recordings/recordings_page.dart` — `_recoverDiscard` wrapper + busy-gate snackbars.
+- `app/lib/pages/recordings/batch_card.dart` — `audioDuration` for label/detail/filter.
+- `app/lib/providers/device_provider.dart` — button event read, connect reconcile read-and-adopt.
+- `omi/firmware/omi/src/lib/core/button.c` — `app_settings_save_vad_threshold` on manual start/stop.
