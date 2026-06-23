@@ -363,6 +363,11 @@ class RecordingsManager {
     // the discard's true start, keyed by absolute bin path. Absent ⇒ whole-file
     // processing with bin-derived timestamps (normal). See [RecoverSlice].
     Map<String, RecoverSlice>? recoverSlices,
+    // Absolute bin paths to preserve from the post-process delete sweep even
+    // though this run consumes them. Recover Discard seeds this with the bins of
+    // SIBLING discards so recovering one ghost can't delete a bin another ghost
+    // still needs (the shared-bin data-loss path).
+    Set<String> seedProtectedBinPaths = const {},
   }) async {
     // Strip bins that already produced a discard record. They stay on disk
     // for the 48 h recovery window, but re-running VAD on them just re-derives
@@ -702,8 +707,10 @@ class RecordingsManager {
 
           // Absolute bin paths that have been claimed by an in-flight discard
           // record this run. The delete_segments handler must skip these so the
-          // recovery sweep (or AM) gets a chance to keep them around.
-          final Set<String> discardProtectedPaths = {};
+          // recovery sweep (or AM) gets a chance to keep them around. Seeded with
+          // [seedProtectedBinPaths] so a Recover run also preserves bins that
+          // sibling discards still reference.
+          final Set<String> discardProtectedPaths = {...seedProtectedBinPaths};
 
           await for (final msg in receivePort) {
             if (msg is! Map) continue;
@@ -2365,6 +2372,9 @@ class RecordingsManager {
       DiscardStore.persistDiscardRecord(docsPath, rec);
 
   static Future<Set<String>> discardedRelBinPaths() => DiscardStore.discardedRelBinPaths();
+
+  static Future<Set<String>> discardedRelBinPathsExcludingSpan(int spanStartMs, int spanEndMs) =>
+      DiscardStore.discardedRelBinPathsExcludingSpan(spanStartMs, spanEndMs);
 
   static Future<List<DiscardRecord>> getDiscardsForDate(String dateString) =>
       DiscardStore.getDiscardsForDate(dateString);
