@@ -184,12 +184,28 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
     final sel = rows.discards.where((d) => _selIds.contains(d.id)).toList();
     if (sel.isEmpty) return;
     final messenger = ScaffoldMessenger.of(context);
+    if (controller.isPipelineBusy) {
+      messenger.showSnackBar(const SnackBar(content: Text('Finishing sync — try recovering again in a moment.')));
+      return;
+    }
     final n = sel.length;
     _exitSelection();
     if (mounted) messenger.showSnackBar(SnackBar(content: Text('Recovering $n discard${n == 1 ? '' : 's'}…')));
     for (final d in sel) {
       await controller.recoverDiscard(d);
     }
+  }
+
+  /// Per-row Recover. The controller clears a lingering "Completed" banner and
+  /// proceeds, so the only no-op case left is a genuinely busy pipeline — show a
+  /// hint there instead of silently dropping the tap.
+  Future<void> _recoverDiscard(RecordingsController controller, DiscardRecord d) async {
+    if (controller.isPipelineBusy) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Finishing sync — try recovering again in a moment.')));
+      return;
+    }
+    await controller.recoverDiscard(d);
   }
 
   Future<void> _exportSelectedRecordings(RecordingsController controller) async {
@@ -436,11 +452,10 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
 
   void _uploadAllDay(List<Conversation> filtered) {
     if (filtered.isEmpty) return;
-    
+
     // Sort oldest-to-newest so they queue and upload in chronological order
-    final sorted = List<Conversation>.from(filtered)
-      ..sort((a, b) => a.startTime.compareTo(b.startTime));
-      
+    final sorted = List<Conversation>.from(filtered)..sort((a, b) => a.startTime.compareTo(b.startTime));
+
     int queued = 0;
     for (final c in sorted) {
       if (_controller.uploadStatus(c) != UploadStatus.all && _controller.uploadStatus(c) != UploadStatus.unavailable) {
@@ -1250,7 +1265,7 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                                 toDeleteDiscards,
                                               ),
                                               onDeleteMarkerConversation: _deleteMarkerConversation,
-                                              onRecoverDiscard: controller.recoverDiscard,
+                                              onRecoverDiscard: (d) => _recoverDiscard(controller, d),
                                               onDeleteDiscard: controller.deleteDiscard,
                                               activeSelectionType:
                                                   (_inSelectionMode && batch.dateString == _selDate) ? _selType : null,
