@@ -803,9 +803,15 @@ class RecordingsManager {
                 final paths = (msg['paths'] as List).cast<String>();
                 for (final path in paths) {
                   if (discardProtectedPaths.contains(path)) {
-                    Logger.debug(
-                      'RecordingsManager: Preserving raw segment for recovery: $path',
-                    );
+                    // A discard claims this fully-processed bin → retain it OUT
+                    // of the processing pool by relocating to discarded_segments/
+                    // instead of leaving it in raw_segments/, where a Force
+                    // Process could re-append it to a neighbour or the
+                    // session-delete sweep could wipe it. No-op if already
+                    // relocated (a sibling bin during Recover).
+                    if (await _retainDiscardBin(directory.path, path)) {
+                      deletedSegmentFolders.add(File(path).parent.path);
+                    }
                     continue;
                   }
                   final f = File(path);
@@ -2386,6 +2392,56 @@ class RecordingsManager {
 
   static Future<void> removeDiscardRecord(DiscardRecord d, {required bool deleteBins}) =>
       DiscardStore.removeDiscardRecord(d, deleteBins: deleteBins);
+
+  /// Subfolder (sibling of `raw_segments/`) where a bin is relocated once it has
+  /// been fully processed AND claimed by a discard record. Keeping discarded
+  /// bins out of `raw_segments/` makes them invisible to the processing pool (no
+  /// reprocess, no append into a neighbouring recording) and to the session-id
+  /// delete + prune sweeps — which all scan `raw_segments/` only — while still
+  /// retaining them for Recover. See [_retainDiscardBin] (relocation) and
+  /// [resolveDiscardBin] (lookup).
+  static const String discardedSegmentsDirName = 'discarded_segments';
+
+  /// Physical location of a discard's bin: the relocated copy under
+  /// `discarded_segments/` once it has been retired from the pool, else the
+  /// original `raw_segments/` path (a draft-straddle bin still in the pool, or a
+  /// legacy install predating the relocation).
+  static Future<File> resolveDiscardBin(String docsPath, String rel) async {
+    final moved = File('$docsPath/$discardedSegmentsDirName/$rel');
+    if (await moved.exists()) return moved;
+    return File('$docsPath/raw_segments/$rel');
+  }
+
+  /// Relocates a discard-claimed bin out of `raw_segments/` into
+  /// `discarded_segments/`, preserving the `<session>/<file>.bin` tail. Returns
+  /// true iff a move happened. No-op (false) when [absPath] is not under
+  /// `raw_segments/` — e.g. a sibling bin already relocated, re-touched during a
+  /// Recover run.
+  static Future<bool> _retainDiscardBin(String docsPath, String absPath) async {
+    const marker = '/raw_segments/';
+    final norm = absPath.replaceAll('\\', '/');
+    final i = norm.lastIndexOf(marker);
+    if (i < 0) return false; // already under discarded_segments/ (or unexpected) — leave as-is
+    final rel = norm.substring(i + marker.length);
+    final src = File(absPath);
+    if (!await src.exists()) return false;
+    final dest = File('$docsPath/$discardedSegmentsDirName/$rel');
+    try {
+      await dest.parent.create(recursive: true);
+      try {
+        await src.rename(dest.path);
+      } on FileSystemException {
+        // Cross-device or rename-unsupported — fall back to copy+delete.
+        await src.copy(dest.path);
+        await src.delete();
+      }
+      Logger.debug('RecordingsManager: retained discard bin → $discardedSegmentsDirName/$rel');
+      return true;
+    } catch (e) {
+      Logger.error('RecordingsManager: failed to retain discard bin $absPath: $e');
+      return false;
+    }
+  }
 
   static Future<Set<String>> activeDiscardProtectedPaths() => DiscardStore.activeDiscardProtectedPaths();
 
