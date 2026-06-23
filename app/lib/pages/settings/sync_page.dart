@@ -316,13 +316,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       _statusMessage = 'Deleting phone segments...';
     });
     try {
-      Logger.debug('DebugTools: Deleting raw_segments directory');
+      Logger.debug('DebugTools: Deleting raw_segments + discarded_segments directories');
       final directory = await getApplicationDocumentsDirectory();
-      final segmentsDir = Directory('${directory.path}/raw_segments');
-      if (await segmentsDir.exists()) {
-        await segmentsDir.delete(recursive: true);
+      for (final base in ['raw_segments', 'discarded_segments']) {
+        final segmentsDir = Directory('${directory.path}/$base');
+        if (await segmentsDir.exists()) {
+          await segmentsDir.delete(recursive: true);
+        }
       }
-      Logger.debug('DebugTools: raw_segments deleted');
+      Logger.debug('DebugTools: raw_segments + discarded_segments deleted');
 
       // Reset sync/processing progress state in preferences
       final prefs = SharedPreferencesUtil();
