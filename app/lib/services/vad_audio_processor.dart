@@ -1639,9 +1639,12 @@ class VadAudioProcessor {
   @visibleForTesting
   static String relBinPath(String path) {
     final norm = path.replaceAll('\\', '/');
-    const marker = '/raw_segments/';
-    final i = norm.lastIndexOf(marker);
-    if (i >= 0) return norm.substring(i + marker.length);
+    // A bin claimed by a discard is relocated to `discarded_segments/`; Recover
+    // feeds it back through the processor from there, so accept either folder.
+    for (final marker in const ['/raw_segments/', '/discarded_segments/']) {
+      final i = norm.lastIndexOf(marker);
+      if (i >= 0) return norm.substring(i + marker.length);
+    }
     final comps = norm.split('/').where((c) => c.isNotEmpty).toList();
     return comps.length >= 2 ? '${comps[comps.length - 2]}/${comps.last}' : norm;
   }
