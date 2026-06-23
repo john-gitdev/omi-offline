@@ -36,6 +36,12 @@ class IsolateParams {
   // caller passes all-null. Parallel to [segmentPaths].
   final List<List<List<int>>?> segmentByteRanges;
   final bool backgroundMode;
+  // Recover Discard only: flush the end-of-run remainder as a FINALIZED recording
+  // instead of a `_draft`. A recovered discard is a complete, self-contained clip
+  // (one VAD-off pass over a fixed slice, no future bins to continue into), so it
+  // must NOT enter the draft-stitch path — otherwise it gets merged into whatever
+  // finalized recording happens to abut it. Every other caller leaves this false.
+  final bool finalizeRemainingDirectly;
   // Forwarded so DebugLogManager can write to the log file from this isolate;
   // SharedPreferences isn't initialised here so it can't read the pref itself.
   final bool devLogsEnabled;
@@ -59,6 +65,7 @@ class IsolateParams {
     required this.segmentDerivedFlags,
     required this.segmentByteRanges,
     required this.backgroundMode,
+    this.finalizeRemainingDirectly = false,
     required this.devLogsEnabled,
     this.checkpointState,
     this.checkpointResumeIndex = 0,
@@ -300,10 +307,11 @@ Future<void> processingIsolateEntry(IsolateParams params) async {
     // to make the cancel responsive. Any unfinalised state stays in-memory only
     // and is rebuilt from disk on the next run.
     if (!cancelled) {
-      // Always flush the remaining audio at the end of a run.
-      // In both background and foreground modes, we save it as a '_draft' file
-      // so it can be stitched with future syncs or finalized later.
-      await processor.flushRemaining(isDraft: true);
+      // Always flush the remaining audio at the end of a run. Normally as a
+      // '_draft' so it can be stitched with future syncs or finalized later; for
+      // Recover Discard, as a FINALIZED recording so the standalone recovered
+      // clip isn't merged into an abutting recording by the draft-stitch pass.
+      await processor.flushRemaining(isDraft: !params.finalizeRemainingDirectly);
 
       final flushEdlData = processor.consumePendingEdlData();
       if (flushEdlData.isNotEmpty) {
