@@ -528,10 +528,7 @@ class VadAudioProcessor {
   /// and the bin header is NOT used to re-anchor). Null/empty ⇒ whole-file
   /// (unchanged).
   Future<List<String>> processSegmentFile(File segmentFile, DateTime segmentStartTime,
-      {int startUptimeMs = 0,
-      bool isDerivedTimestamp = false,
-      int? sessionId,
-      List<List<int>>? byteRanges}) async {
+      {int startUptimeMs = 0, bool isDerivedTimestamp = false, int? sessionId, List<List<int>>? byteRanges}) async {
     final List<List<int>> sliceRanges = byteRanges ?? const [];
     final bool sliced = sliceRanges.isNotEmpty;
     final savedFiles = <String>[];
@@ -598,6 +595,19 @@ class VadAudioProcessor {
           _emitMutedDiscard(segmentStartTime.millisecondsSinceEpoch);
         }
 
+        // A session change means a brand-new recording session — the device
+        // rebooted (or started a fresh session) and CHOSE to record again (its
+        // persisted threshold governs that, not us). Any manual-stop (0xFFFFFFFC)
+        // or mute-on (0xFFFFFFFA) skip latched in the PREVIOUS session is stale,
+        // so clear it; otherwise the new session's frames are silently dropped at
+        // the per-frame skip below. (`_currentSessionId` is persisted across runs,
+        // so this also catches a reboot that happened between sync passes.)
+        if (sessionChanged && _sessionEndPendingResume) {
+          Logger.debug('VadAudioProcessor: New session after stop/mute — honoring its audio '
+              '(was $_currentSessionId, now $sessionId).');
+          _sessionEndPendingResume = false;
+        }
+
         // Better isClockJump detection using uptime if available.
         // If uptime gap matches audio duration (small gap) but UTC gap is large, it's a clock sync.
         int uptimeGapMs = 0;
@@ -655,7 +665,10 @@ class VadAudioProcessor {
         } else {
           // STITCHING: Pad inter-file gaps with silence if it's not a clock jump
           // and either the gap is significant (>= 10s) OR it's an IMU bridge match.
-          if (_currentRefs.isNotEmpty && !isClockJump && (gapMs >= 10000 || imuGapMatches)) {
+          // Never pad during a byte-slice recover: consecutive firmware bins carry
+          // no real inter-file gap, so any "gap" here is an anchor artifact — the
+          // recovered clip must stay equal to the recorded frames (== audioMs).
+          if (!sliced && _currentRefs.isNotEmpty && !isClockJump && (gapMs >= 10000 || imuGapMatches)) {
             _currentRefs.add(Duration(milliseconds: gapMs));
             _currentChunkDurationMs += gapMs;
             Logger.debug('VadAudioProcessor: Padding inter-file gap of ${gapMs}ms');
@@ -685,9 +698,14 @@ class VadAudioProcessor {
       // be re-derived here.
       int rangeIdx = 0;
       if (sliced) offset = sliceRanges.first[0];
-      final int decodeUntil = sliced
-          ? (sliceRanges.last[1] < fileLength ? sliceRanges.last[1] : fileLength)
-          : fileLength;
+      final int decodeUntil =
+          sliced ? (sliceRanges.last[1] < fileLength ? sliceRanges.last[1] : fileLength) : fileLength;
+
+      if (sliced) {
+        final spanBytes = sliceRanges.fold<int>(0, (s, r) => s + (r[1] - r[0]));
+        Logger.debug('VadAudioProcessor: byte-slice recover ${segmentFile.path.split('/').last} — '
+            '${sliceRanges.length} interval(s), decoding $spanBytes of $fileLength B, ranges=$sliceRanges');
+      }
 
       while (offset < decodeUntil) {
         // Jump the read head over the gap between disjoint recover slices so the
@@ -1689,10 +1707,12 @@ class VadAudioProcessor {
     // path list, so every path-keyed consumer (prune, protect, sweep) is
     // unaffected; only Recover reads binRanges, and only when present.
     final binRanges = <String, List<int>>{};
+    int frameCount = 0; // ACTUAL recorded frames (excludes device-asleep gap padding)
     for (final item in refs) {
       if (item is! FrameRef) continue;
       final rel = relBinPath(item.segmentFile.path);
       if (!relativeBins.contains(rel)) continue;
+      frameCount++;
       final start = item.byteOffset;
       final end = item.byteOffset + 4 + ((item.frameLength + 3) & ~3); // 4-byte length prefix + aligned payload
       final cur = binRanges[rel];
@@ -1706,6 +1726,10 @@ class VadAudioProcessor {
     return {
       'startMs': startTime.millisecondsSinceEpoch,
       'endMs': startTime.millisecondsSinceEpoch + durationMs,
+      // Recorded-audio duration: frame count × frame duration. This is what
+      // Recover produces (decoded frames, no synthetic gap padding) and what the
+      // UI shows, so a discard's displayed length matches its recovered clip.
+      'audioMs': frameCount * frameDurationMs,
       'reason': reason,
       'maxVoiceProb': _currentMaxVoiceProb,
       'relativeBins': relativeBins.toList(),
