@@ -303,7 +303,8 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
         () => Navigator.of(context).pop(false),
         () => Navigator.of(context).pop(true),
         'Delete Phone Segments',
-        'This will permanently delete raw segment files stored on this phone. This action cannot be undone. Continue?',
+        'This will permanently delete ALL raw segment files AND discarded (recoverable) segments stored on this '
+            'phone — any pending recoveries are lost. This action cannot be undone. Continue?',
         confirmText: 'Delete',
       ),
     );
@@ -316,13 +317,15 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
       _statusMessage = 'Deleting phone segments...';
     });
     try {
-      Logger.debug('DebugTools: Deleting raw_segments directory');
+      Logger.debug('DebugTools: Deleting raw_segments + discarded_segments directories');
       final directory = await getApplicationDocumentsDirectory();
-      final segmentsDir = Directory('${directory.path}/raw_segments');
-      if (await segmentsDir.exists()) {
-        await segmentsDir.delete(recursive: true);
+      for (final base in ['raw_segments', RecordingsManager.discardedSegmentsDirName]) {
+        final segmentsDir = Directory('${directory.path}/$base');
+        if (await segmentsDir.exists()) {
+          await segmentsDir.delete(recursive: true);
+        }
       }
-      Logger.debug('DebugTools: raw_segments deleted');
+      Logger.debug('DebugTools: raw_segments + discarded_segments deleted');
 
       // Reset sync/processing progress state in preferences
       final prefs = SharedPreferencesUtil();

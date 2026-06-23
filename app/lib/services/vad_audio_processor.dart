@@ -1625,23 +1625,28 @@ class VadAudioProcessor {
   }
 
   /// The `<folder>/<file>.bin` tail used to reference a source bin in a
-  /// recording's `.meta` (and discards). The path-keyed consumers resolve it as
-  /// `<docs>/raw_segments/<rel>`, so the tail must be exactly the part after
-  /// `raw_segments/`.
+  /// recording's `.meta` (and discards). The path-keyed consumers resolve it
+  /// under `<docs>/raw_segments/<rel>` OR `<docs>/discarded_segments/<rel>` (a
+  /// fully-processed discard bin is relocated to the latter, and Recover feeds
+  /// it back through the processor from there), so the tail must be exactly the
+  /// part after whichever of those two folders the path sits under.
   ///
-  /// Prefers the substring after the LAST `/raw_segments/` (handles `\` on the
-  /// off chance the platform uses it, and an unexpectedly nested path). If the
-  /// ref somehow isn't under `raw_segments` at all, falls back to the last two
-  /// path components rather than dropping the ref — dropping it produced an
-  /// EMPTY bin list, which silently made the recording un-mergeable ("lists no
-  /// source segments"). A best-effort tail at least keeps the reference and
-  /// surfaces the real location in the diagnostic.
+  /// Prefers the substring after the LAST `/raw_segments/` or
+  /// `/discarded_segments/` (handles `\` on the off chance the platform uses it,
+  /// and an unexpectedly nested path). If the ref somehow isn't under either
+  /// folder, falls back to the last two path components rather than dropping the
+  /// ref — dropping it produced an EMPTY bin list, which silently made the
+  /// recording un-mergeable ("lists no source segments"). A best-effort tail at
+  /// least keeps the reference and surfaces the real location in the diagnostic.
   @visibleForTesting
   static String relBinPath(String path) {
     final norm = path.replaceAll('\\', '/');
-    const marker = '/raw_segments/';
-    final i = norm.lastIndexOf(marker);
-    if (i >= 0) return norm.substring(i + marker.length);
+    // A bin claimed by a discard is relocated to `discarded_segments/`; Recover
+    // feeds it back through the processor from there, so accept either folder.
+    for (final marker in const ['/raw_segments/', '/discarded_segments/']) {
+      final i = norm.lastIndexOf(marker);
+      if (i >= 0) return norm.substring(i + marker.length);
+    }
     final comps = norm.split('/').where((c) => c.isNotEmpty).toList();
     return comps.length >= 2 ? '${comps[comps.length - 2]}/${comps.last}' : norm;
   }
