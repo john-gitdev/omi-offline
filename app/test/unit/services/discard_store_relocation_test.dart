@@ -241,4 +241,124 @@ void main() {
       expect(await File(p.join(tempDir.path, 'discarded_segments', 's', 'a.bin')).exists(), isTrue);
     });
   });
+
+  group('nextSliceOffset (recover/fold byte-slice gating)', () {
+    test('empty ranges → -1 (stop)', () {
+      expect(RecordingsManager.nextSliceOffset(const [], 0), -1);
+    });
+    test('offset before the first range jumps to its start', () {
+      expect(
+          RecordingsManager.nextSliceOffset([
+            [100, 200]
+          ], 40),
+          100);
+    });
+    test('offset inside a range is unchanged', () {
+      expect(
+          RecordingsManager.nextSliceOffset([
+            [100, 200]
+          ], 150),
+          150);
+    });
+    test('offset in a gap jumps to the next range start', () {
+      expect(
+          RecordingsManager.nextSliceOffset([
+            [100, 200],
+            [400, 500]
+          ], 260),
+          400);
+    });
+    test('offset at a range end advances to the next range (exclusive end)', () {
+      expect(
+          RecordingsManager.nextSliceOffset([
+            [100, 200],
+            [400, 500]
+          ], 200),
+          400);
+    });
+    test('offset past the last range → -1', () {
+      expect(
+          RecordingsManager.nextSliceOffset([
+            [100, 200]
+          ], 200),
+          -1);
+      expect(
+          RecordingsManager.nextSliceOffset([
+            [100, 200]
+          ], 999),
+          -1);
+    });
+  });
+
+  group('retireFoldedGhosts (record + solely-owned bin cleanup after a fold)', () {
+    String jsonlPath(String dateStr) => p.join(tempDir.path, 'recordings', dateStr, 'discards.jsonl');
+
+    test('removes the record and deletes a relocated bin the ghost solely owns', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final bin = await writeBin('discarded_segments', 's/a.bin');
+      await writeJsonl(dateOf(now), [
+        rec(startMs: now - 1000, endMs: now, relativeBins: ['s/a.bin'])
+      ]);
+      final folded = (await RecordingsManager.getDiscardsForDate(dateOf(now))).single;
+
+      await RecordingsManager.retireFoldedGhosts([folded]);
+
+      expect(await bin.exists(), isFalse, reason: 'solely-owned relocated bin deleted');
+      expect(await File(jsonlPath(dateOf(now))).exists(), isFalse, reason: 'sole record removed → jsonl gone');
+      expect(await Directory(p.join(tempDir.path, 'discarded_segments', 's')).exists(), isFalse,
+          reason: 'emptied folder cleaned');
+    });
+
+    test('keeps a bin a REMAINING sibling discard still references', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final dayAgo = now - 25 * 3600 * 1000; // guaranteed different calendar day
+      final shared = await writeBin('discarded_segments', 's/shared.bin');
+      await writeJsonl(dateOf(dayAgo), [
+        rec(startMs: dayAgo, endMs: dayAgo + 1000, relativeBins: ['s/shared.bin'])
+      ]);
+      await writeJsonl(dateOf(now), [
+        rec(startMs: now - 1000, endMs: now, relativeBins: ['s/shared.bin'])
+      ]);
+      final folded = (await RecordingsManager.getDiscardsForDate(dateOf(dayAgo))).single;
+
+      await RecordingsManager.retireFoldedGhosts([folded]);
+
+      expect(await shared.exists(), isTrue, reason: 'sibling on another day still references it');
+      expect(await File(jsonlPath(dateOf(dayAgo))).exists(), isFalse, reason: 'folded record removed');
+      expect(await File(jsonlPath(dateOf(now))).exists(), isTrue, reason: 'sibling record untouched');
+    });
+
+    test('leaves a raw_segments bin (possible draft straddle) untouched', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final rawBin = await writeBin('raw_segments', 's/raw.bin'); // never relocated
+      await writeJsonl(dateOf(now), [
+        rec(startMs: now - 1000, endMs: now, relativeBins: ['s/raw.bin'])
+      ]);
+      final folded = (await RecordingsManager.getDiscardsForDate(dateOf(now))).single;
+
+      await RecordingsManager.retireFoldedGhosts([folded]);
+
+      expect(await rawBin.exists(), isTrue, reason: 'a still-in-pool raw bin is left to the safe-to-delete pass');
+      expect(await File(jsonlPath(dateOf(now))).exists(), isFalse, reason: 'record still removed');
+    });
+
+    test('two folded ghosts sharing a bin both retire → shared bin deleted (no mutual protection)', () async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final dayAgo = now - 25 * 3600 * 1000;
+      final shared = await writeBin('discarded_segments', 's/shared.bin');
+      await writeJsonl(dateOf(dayAgo), [
+        rec(startMs: dayAgo, endMs: dayAgo + 1000, relativeBins: ['s/shared.bin'])
+      ]);
+      await writeJsonl(dateOf(now), [
+        rec(startMs: now - 1000, endMs: now, relativeBins: ['s/shared.bin'])
+      ]);
+      final g1 = (await RecordingsManager.getDiscardsForDate(dateOf(dayAgo))).single;
+      final g2 = (await RecordingsManager.getDiscardsForDate(dateOf(now))).single;
+
+      await RecordingsManager.retireFoldedGhosts([g1, g2]);
+
+      expect(await shared.exists(), isFalse,
+          reason: 'records removed before computing protection, so neither shields the other');
+    });
+  });
 }
