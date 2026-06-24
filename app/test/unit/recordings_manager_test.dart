@@ -113,7 +113,7 @@ void main() {
       final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
       // Use a timestamp that is mid-day to avoid date flips in different timezones
       // 1773223200000 = 2026-03-11 10:00:00 UTC
-      final markerMs = 1773223200000;
+      const markerMs = 1773223200000;
       final wavFile = File(p.join(recordingsDir.path, 'recording_$markerMs.wav'));
 
       final startTime = DateTime.fromMillisecondsSinceEpoch(markerMs);
@@ -122,7 +122,7 @@ void main() {
       final data = Uint8List(44 + 3200);
       wavFile.writeAsBytesSync(data);
 
-      final conversation = await Conversation.fromFile(wavFile);
+      final conversation = Conversation.fromFile(wavFile);
 
       expect(conversation.startTime, startTime);
       expect(conversation.fileSizeBytes, 3244);
@@ -131,7 +131,7 @@ void main() {
 
     test('prefers metadata sidecar if present', () async {
       final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
-      final markerMs = 1773223200000;
+      const markerMs = 1773223200000;
       final m4aFile = File(p.join(recordingsDir.path, 'recording_$markerMs.m4a'))..writeAsBytesSync([0]);
       final metaFile = File(p.join(recordingsDir.path, 'recording_$markerMs.meta'));
 
@@ -144,7 +144,7 @@ void main() {
       metaBytes.setRange(417, 422, utf8.encode('mykey'));
       metaFile.writeAsBytesSync(metaBytes);
 
-      final conversation = await Conversation.fromFile(m4aFile);
+      final conversation = Conversation.fromFile(m4aFile);
 
       expect(conversation.duration.inSeconds, 5);
       expect(conversation.uploadKey, 'mykey');
@@ -158,7 +158,7 @@ void main() {
       final now = DateTime.now();
       wavFile.setLastModifiedSync(now);
 
-      final conversation = await Conversation.fromFile(wavFile);
+      final conversation = Conversation.fromFile(wavFile);
 
       // Allow for some small difference in time due to filesystem resolution
       expect(conversation.startTime.difference(now).inSeconds.abs() <= 1, true);
@@ -182,7 +182,7 @@ void main() {
 
     test('reads isSilero flag and formats sizeLabel with AAD/VAD', () async {
       final recordingsDir = Directory(p.join(tempDir.path, 'recordings', '2026-03-11'))..createSync(recursive: true);
-      final markerMs = 1773223200000;
+      const markerMs = 1773223200000;
       final m4aFile = File(p.join(recordingsDir.path, 'silero_$markerMs.m4a'))..writeAsBytesSync(Uint8List(1024));
       final metaFile = File(p.join(recordingsDir.path, 'silero_$markerMs.meta'));
 
@@ -197,7 +197,7 @@ void main() {
       metaBytes[flagOffset + 3] = 1; // isSilero = true
       metaFile.writeAsBytesSync(metaBytes);
 
-      final conversation = await Conversation.fromFile(m4aFile);
+      final conversation = Conversation.fromFile(m4aFile);
       expect(conversation.isSilero, true);
       expect(conversation.sizeLabel, contains('VAD'));
       expect(conversation.sizeLabel, contains('1 KB'));
@@ -205,7 +205,7 @@ void main() {
       // Test AAD (isSilero = false)
       metaBytes[flagOffset + 3] = 0; // isSilero = false
       metaFile.writeAsBytesSync(metaBytes);
-      final conversationAad = await Conversation.fromFile(m4aFile);
+      final conversationAad = Conversation.fromFile(m4aFile);
       expect(conversationAad.isSilero, false);
       expect(conversationAad.sizeLabel, contains('AAD'));
     });
@@ -214,7 +214,7 @@ void main() {
   group('Marker Logic', () {
     test('_resolveMarkerConversations creates EDL with correct offset', () async {
       final recordingsRootDir = Directory(p.join(tempDir.path, 'recordings'))..createSync();
-      final dateStr = '2026-03-11';
+      const dateStr = '2026-03-11';
       final dateDir = Directory(p.join(recordingsRootDir.path, dateStr))..createSync();
 
       // Create a mock finalized recording from 10:00:00 to 10:01:00 (60s)
@@ -252,7 +252,7 @@ void main() {
 
     test('getMarkerConversations identifies pending markers', () async {
       final recordingsRootDir = Directory(p.join(tempDir.path, 'recordings'))..createSync();
-      final dateStr = '2026-03-11';
+      const dateStr = '2026-03-11';
       final dateDir = Directory(p.join(recordingsRootDir.path, dateStr))..createSync();
 
       final markerTime = DateTime(2026, 3, 11, 10, 30, 0);
@@ -273,7 +273,7 @@ void main() {
   });
 
   group('runRecoverySweep', () {
-    String _dateOf(int millis) {
+    String dateOf(int millis) {
       final dt = DateTime.fromMillisecondsSinceEpoch(millis);
       return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
     }
@@ -310,7 +310,7 @@ void main() {
     test('expired record drops its bins and the jsonl', () async {
       final expiredStart = DateTime.now().subtract(const Duration(hours: 49)).millisecondsSinceEpoch;
       final bin = await writeBin('session_a/old.bin');
-      final dateStr = _dateOf(expiredStart);
+      final dateStr = dateOf(expiredStart);
       await writeDiscard(
         dateStr: dateStr,
         startMs: expiredStart,
@@ -328,7 +328,7 @@ void main() {
     test('in-window record preserves its bins', () async {
       final freshStart = DateTime.now().subtract(const Duration(hours: 1)).millisecondsSinceEpoch;
       final bin = await writeBin('session_b/fresh.bin');
-      final dateStr = _dateOf(freshStart);
+      final dateStr = dateOf(freshStart);
       await writeDiscard(
         dateStr: dateStr,
         startMs: freshStart,
@@ -348,13 +348,13 @@ void main() {
       final freshStart = DateTime.now().subtract(const Duration(hours: 1)).millisecondsSinceEpoch;
       final sharedBin = await writeBin('session_c/shared.bin');
       await writeDiscard(
-        dateStr: _dateOf(expiredStart),
+        dateStr: dateOf(expiredStart),
         startMs: expiredStart,
         endMs: expiredStart + 60000,
         relativeBins: ['session_c/shared.bin'],
       );
       await writeDiscard(
-        dateStr: _dateOf(freshStart),
+        dateStr: dateOf(freshStart),
         startMs: freshStart,
         endMs: freshStart + 60000,
         relativeBins: ['session_c/shared.bin'],
@@ -368,7 +368,7 @@ void main() {
   });
 
   group('removeDiscardRecord + getDiscardsForDate', () {
-    String _dateOf(int millis) {
+    String dateOf(int millis) {
       final dt = DateTime.fromMillisecondsSinceEpoch(millis);
       return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
     }
@@ -391,7 +391,7 @@ void main() {
 
     test('round-trips via getDiscardsForDate', () async {
       final startMs = DateTime.now().subtract(const Duration(hours: 2)).millisecondsSinceEpoch;
-      final dateStr = _dateOf(startMs);
+      final dateStr = dateOf(startMs);
       await writeJsonl(dateStr, [
         {
           'startMs': startMs,
@@ -419,7 +419,7 @@ void main() {
 
     test('removeDiscardRecord deletes bins when deleteBins=true', () async {
       final startMs = DateTime.now().subtract(const Duration(hours: 2)).millisecondsSinceEpoch;
-      final dateStr = _dateOf(startMs);
+      final dateStr = dateOf(startMs);
       final bin = await writeBin('session_y/keep.bin');
       await writeJsonl(dateStr, [
         {
@@ -440,7 +440,7 @@ void main() {
 
     test('removeDiscardRecord preserves bins when deleteBins=false', () async {
       final startMs = DateTime.now().subtract(const Duration(hours: 2)).millisecondsSinceEpoch;
-      final dateStr = _dateOf(startMs);
+      final dateStr = dateOf(startMs);
       final bin = await writeBin('session_z/hold.bin');
       await writeJsonl(dateStr, [
         {
@@ -461,7 +461,7 @@ void main() {
     test('removeDiscardRecord keeps sibling records in same jsonl', () async {
       final startA = DateTime.now().subtract(const Duration(hours: 3)).millisecondsSinceEpoch;
       final startB = DateTime.now().subtract(const Duration(hours: 2)).millisecondsSinceEpoch;
-      final dateStr = _dateOf(startA);
+      final dateStr = dateOf(startA);
       await writeJsonl(dateStr, [
         {
           'startMs': startA,
@@ -490,7 +490,7 @@ void main() {
 
     test('coalesces consecutive discards into one entry', () async {
       final base = DateTime(2026, 3, 15, 12, 0, 0).millisecondsSinceEpoch;
-      final dateStr = _dateOf(base);
+      final dateStr = dateOf(base);
       await writeJsonl(dateStr, [
         {
           'startMs': base,
@@ -531,7 +531,7 @@ void main() {
 
     test('muted interval never coalesces with adjacent discards', () async {
       final base = DateTime(2026, 3, 16, 9, 0, 0).millisecondsSinceEpoch;
-      final dateStr = _dateOf(base);
+      final dateStr = dateOf(base);
       await writeJsonl(dateStr, [
         {
           'startMs': base,
@@ -570,7 +570,7 @@ void main() {
 
     test('leaves a far-apart discard as its own entry', () async {
       final base = DateTime(2026, 3, 15, 12, 0, 0).millisecondsSinceEpoch;
-      final dateStr = _dateOf(base);
+      final dateStr = dateOf(base);
       await writeJsonl(dateStr, [
         {
           'startMs': base,
@@ -595,7 +595,7 @@ void main() {
 
     test('removeDiscardRecord on a coalesced span clears every constituent line', () async {
       final base = DateTime(2026, 3, 15, 12, 0, 0).millisecondsSinceEpoch;
-      final dateStr = _dateOf(base);
+      final dateStr = dateOf(base);
       await writeJsonl(dateStr, [
         {
           'startMs': base,
@@ -653,7 +653,7 @@ void main() {
   // Bin durations are derived from file size: opus on SD averages 81 B/frame
   // × 50 fps ≈ 4050 B/s. To get a bin reading as N seconds long, we write
   // 36 (header) + N * 4050 bytes.
-  String _coverageDateOf(int millis) {
+  String coverageDateOf(int millis) {
     final dt = DateTime.fromMillisecondsSinceEpoch(millis);
     return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
   }
@@ -685,7 +685,7 @@ void main() {
     bool? capEnded,
     bool isDraft = false,
   }) async {
-    final dateDir = Directory(p.join(tempDir.path, 'recordings', _coverageDateOf(startMs)));
+    final dateDir = Directory(p.join(tempDir.path, 'recordings', coverageDateOf(startMs)));
     dateDir.createSync(recursive: true);
     final suffix = isDraft ? '_draft' : '';
     final wav = File(p.join(dateDir.path, 'recording_$startMs$suffix.wav'));
@@ -693,8 +693,8 @@ void main() {
 
     final meta = File(p.join(dateDir.path, 'recording_$startMs$suffix.meta'));
     // 416-byte fixed header + 1-byte keyLen + optional flag bytes.
-    final headerBytes = 416;
-    final keyLen = 0; // no upload key — simpler, doesn't affect this test
+    const headerBytes = 416;
+    const keyLen = 0; // no upload key — simpler, doesn't affect this test
     final flagBytes = (capEnded == null) ? 0 : 3;
     final total = headerBytes + 1 + keyLen + flagBytes;
     final buf = Uint8List(total);
@@ -720,8 +720,7 @@ void main() {
     bool capEnded = false,
     bool isDraft = false,
   }) async {
-    final dateDir = Directory(p.join(tempDir.path, 'recordings', _coverageDateOf(startMs)))
-      ..createSync(recursive: true);
+    final dateDir = Directory(p.join(tempDir.path, 'recordings', coverageDateOf(startMs)))..createSync(recursive: true);
     final suffix = isDraft ? '_draft' : '';
     File(p.join(dateDir.path, 'recording_$startMs$suffix.wav')).writeAsBytesSync(Uint8List(44));
 
@@ -968,25 +967,25 @@ void main() {
     // Reference epoch: 2026-05-01 12:00:00 local — well past year-2000 guard.
     final int kMarkerMs = DateTime(2026, 5, 1, 12, 0, 0).millisecondsSinceEpoch;
 
-    Map<String, dynamic> _edl({required String filename, int offsetMs = 0, int durationMs = 10000}) => {
+    Map<String, dynamic> edl({required String filename, int offsetMs = 0, int durationMs = 10000}) => {
           'filename': filename,
           'markerMs': kMarkerMs,
           'offsetMs': offsetMs,
           'durationMs': durationMs,
         };
 
-    File _edlFile(String dateStr) {
+    File edlFile0(String dateStr) {
       return File(p.join(tempDir.path, 'recordings', dateStr, 'marker_$kMarkerMs.edl'));
     }
 
-    String _dateOf(int ms) {
+    String dateOf(int ms) {
       final d = DateTime.fromMillisecondsSinceEpoch(ms);
       return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
     }
 
     test('user-saved EDL: preserve crops and userSaved, update segmentFilename only', () async {
-      final dateStr = _dateOf(kMarkerMs);
-      final edlFile = _edlFile(dateStr);
+      final dateStr = dateOf(kMarkerMs);
+      final edlFile = edlFile0(dateStr);
       await edlFile.parent.create(recursive: true);
       await edlFile.writeAsString(jsonEncode({
         'markerTimestampMs': kMarkerMs,
@@ -998,7 +997,7 @@ void main() {
       }));
 
       final manager = RecordingsManager();
-      await manager.writeMarkerEdlTest(tempDir.path, _edl(filename: 'new.wav', offsetMs: 1000));
+      await manager.writeMarkerEdlTest(tempDir.path, edl(filename: 'new.wav', offsetMs: 1000));
 
       final updated = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
       expect(updated['segmentFilename'], 'new.wav');
@@ -1009,8 +1008,8 @@ void main() {
     });
 
     test('default-crop EDL with different filename: overwrite in place (no _1.edl created)', () async {
-      final dateStr = _dateOf(kMarkerMs);
-      final edlFile = _edlFile(dateStr);
+      final dateStr = dateOf(kMarkerMs);
+      final edlFile = edlFile0(dateStr);
       await edlFile.parent.create(recursive: true);
       await edlFile.writeAsString(jsonEncode({
         'markerTimestampMs': kMarkerMs,
@@ -1022,7 +1021,7 @@ void main() {
       }));
 
       final manager = RecordingsManager();
-      await manager.writeMarkerEdlTest(tempDir.path, _edl(filename: 'new.wav', durationMs: 8000));
+      await manager.writeMarkerEdlTest(tempDir.path, edl(filename: 'new.wav', durationMs: 8000));
 
       final updated = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
       expect(updated['segmentFilename'], 'new.wav');
@@ -1031,13 +1030,13 @@ void main() {
     });
 
     test('corrupt EDL: overwrite cleanly with valid payload', () async {
-      final dateStr = _dateOf(kMarkerMs);
-      final edlFile = _edlFile(dateStr);
+      final dateStr = dateOf(kMarkerMs);
+      final edlFile = edlFile0(dateStr);
       await edlFile.parent.create(recursive: true);
       await edlFile.writeAsString('this is not json {{{');
 
       final manager = RecordingsManager();
-      await manager.writeMarkerEdlTest(tempDir.path, _edl(filename: 'good.wav', offsetMs: 500, durationMs: 6000));
+      await manager.writeMarkerEdlTest(tempDir.path, edl(filename: 'good.wav', offsetMs: 500, durationMs: 6000));
 
       final Map<String, dynamic> result = jsonDecode(await edlFile.readAsString()) as Map<String, dynamic>;
       expect(result['segmentFilename'], 'good.wav');
@@ -1046,8 +1045,8 @@ void main() {
     });
 
     test('same filename: noop — on-disk EDL unchanged', () async {
-      final dateStr = _dateOf(kMarkerMs);
-      final edlFile = _edlFile(dateStr);
+      final dateStr = dateOf(kMarkerMs);
+      final edlFile = edlFile0(dateStr);
       await edlFile.parent.create(recursive: true);
       final original = {
         'markerTimestampMs': kMarkerMs,
@@ -1061,7 +1060,7 @@ void main() {
       final mtimeBefore = edlFile.lastModifiedSync();
 
       final manager = RecordingsManager();
-      await manager.writeMarkerEdlTest(tempDir.path, _edl(filename: 'same.wav', durationMs: 9999));
+      await manager.writeMarkerEdlTest(tempDir.path, edl(filename: 'same.wav', durationMs: 9999));
 
       // Same filename → noop: file should not be rewritten.
       expect(edlFile.lastModifiedSync(), mtimeBefore);
@@ -1222,19 +1221,19 @@ void main() {
     // Fixed timestamp well past year-2000 guard: 2026-05-10 10:00:00 UTC.
     const int kMarkerMs = 1746871200000;
 
-    Directory _mkDateDir(String dateStr) {
+    Directory mkDateDir(String dateStr) {
       final root = Directory(p.join(tempDir.path, 'recordings'))..createSync(recursive: true);
       return Directory(p.join(root.path, dateStr))..createSync();
     }
 
-    void _writeEdlSync(Directory dir, String edlName, Map<String, dynamic> data) {
+    void writeEdlSync(Directory dir, String edlName, Map<String, dynamic> data) {
       File(p.join(dir.path, edlName)).writeAsStringSync(jsonEncode(data));
     }
 
     test('two EDLs same markerMs same segmentFilename → exactly one MarkerConversation', () async {
-      final dir1 = _mkDateDir('2026-05-10');
-      final dir2 = _mkDateDir('2026-05-11');
-      _writeEdlSync(dir1, 'marker_$kMarkerMs.edl', {
+      final dir1 = mkDateDir('2026-05-10');
+      final dir2 = mkDateDir('2026-05-11');
+      writeEdlSync(dir1, 'marker_$kMarkerMs.edl', {
         'markerTimestampMs': kMarkerMs,
         'segmentFilename': 'recording_1234.wav',
         'markerOffsetMs': 5000,
@@ -1242,7 +1241,7 @@ void main() {
         'cropEndMs': 30000,
         'userSaved': false,
       });
-      _writeEdlSync(dir2, 'marker_$kMarkerMs.edl', {
+      writeEdlSync(dir2, 'marker_$kMarkerMs.edl', {
         'markerTimestampMs': kMarkerMs,
         'segmentFilename': 'recording_1234.wav',
         'markerOffsetMs': 5000,
@@ -1257,9 +1256,9 @@ void main() {
     });
 
     test('two EDLs same markerMs different filenames: userSaved wins canonicalization', () async {
-      final dir1 = _mkDateDir('2026-05-10');
-      final dir2 = _mkDateDir('2026-05-11');
-      _writeEdlSync(dir1, 'marker_$kMarkerMs.edl', {
+      final dir1 = mkDateDir('2026-05-10');
+      final dir2 = mkDateDir('2026-05-11');
+      writeEdlSync(dir1, 'marker_$kMarkerMs.edl', {
         'markerTimestampMs': kMarkerMs,
         'segmentFilename': 'recording_aaa.wav',
         'markerOffsetMs': 1000,
@@ -1267,7 +1266,7 @@ void main() {
         'cropEndMs': 10000,
         'userSaved': false,
       });
-      _writeEdlSync(dir2, 'marker_$kMarkerMs.edl', {
+      writeEdlSync(dir2, 'marker_$kMarkerMs.edl', {
         'markerTimestampMs': kMarkerMs,
         'segmentFilename': 'recording_bbb.wav',
         'markerOffsetMs': 1000,
@@ -1283,11 +1282,11 @@ void main() {
     });
 
     test('same markerMs: non-pending beats pending in canonicalization', () async {
-      final dir1 = _mkDateDir('2026-05-10');
-      final dir2 = _mkDateDir('2026-05-11');
+      final dir1 = mkDateDir('2026-05-10');
+      final dir2 = mkDateDir('2026-05-11');
       // Non-pending requires the segment file to actually exist so filenameIndex resolves it.
       File(p.join(dir2.path, 'recording_xyz.wav')).writeAsBytesSync(Uint8List(44));
-      _writeEdlSync(dir1, 'marker_$kMarkerMs.edl', {
+      writeEdlSync(dir1, 'marker_$kMarkerMs.edl', {
         'markerTimestampMs': kMarkerMs,
         'segmentFilename': '', // pending
         'markerOffsetMs': 0,
@@ -1295,7 +1294,7 @@ void main() {
         'cropEndMs': 0,
         'userSaved': false,
       });
-      _writeEdlSync(dir2, 'marker_$kMarkerMs.edl', {
+      writeEdlSync(dir2, 'marker_$kMarkerMs.edl', {
         'markerTimestampMs': kMarkerMs,
         'segmentFilename': 'recording_xyz.wav', // non-pending wins
         'markerOffsetMs': 2000,
@@ -1311,9 +1310,9 @@ void main() {
     });
 
     test('legacy marker_<ms>_1.edl with distinct internal markerMs surfaces as separate entry', () async {
-      final dir = _mkDateDir('2026-05-10');
+      final dir = mkDateDir('2026-05-10');
       const legacyMs = kMarkerMs + 1;
-      _writeEdlSync(dir, 'marker_$kMarkerMs.edl', {
+      writeEdlSync(dir, 'marker_$kMarkerMs.edl', {
         'markerTimestampMs': kMarkerMs,
         'segmentFilename': 'recording_abc.wav',
         'markerOffsetMs': 1000,
@@ -1322,7 +1321,7 @@ void main() {
         'userSaved': false,
       });
       // Legacy _1.edl with a distinct internal markerMs → treated as its own marker.
-      _writeEdlSync(dir, 'marker_${kMarkerMs}_1.edl', {
+      writeEdlSync(dir, 'marker_${kMarkerMs}_1.edl', {
         'markerTimestampMs': legacyMs,
         'segmentFilename': '',
         'markerOffsetMs': 0,
