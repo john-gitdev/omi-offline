@@ -226,6 +226,29 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
     }
   }
 
+  // Normal (non-forcing) process: the exact pass that runs automatically after a
+  // real sync — decode + VAD, skips already-covered bins, and leaves the
+  // in-progress recording open as a draft until it ends naturally. Pairs with
+  // "Sync Omi Segments" to make this page a self-contained sync→process harness.
+  Future<void> _process() async {
+    Logger.debug('DebugTools: Process Omi Segments tapped');
+    if (RecordingsManager.isProcessingAny) {
+      Logger.debug('DebugTools: Process blocked — processing already running');
+      _showProcessingSnackbar();
+      return;
+    }
+    setState(() => _statusMessage = 'Processing segments...');
+    try {
+      Logger.debug('DebugTools: Calling RecordingsManager.processAllCompletedSessions()');
+      await RecordingsManager.processAllCompletedSessions();
+      Logger.debug('DebugTools: processAllCompletedSessions complete');
+      if (mounted) setState(() => _statusMessage = 'Process complete.');
+    } catch (e) {
+      Logger.error('DebugTools: processAllCompletedSessions error — $e');
+      if (mounted) setState(() => _statusMessage = 'Process error: $e');
+    }
+  }
+
   Future<void> _deleteAllPending() async {
     Logger.debug('DebugTools: Delete Omi Segments tapped');
     bool? confirm = await showDialog<bool>(
@@ -811,6 +834,14 @@ class _SyncPageState extends State<SyncPage> implements IWalSyncProgressListener
                       'Seals the current recording on the device and syncs everything, including the current session.',
                   icon: FontAwesomeIcons.arrowsRotate,
                   onTap: _forceSync,
+                ),
+                const SizedBox(height: 12),
+                DebugButton(
+                  label: 'Process Omi Segments',
+                  description:
+                      'Decode and process downloaded segments the normal way — leaves the in-progress recording open until it ends.',
+                  icon: FontAwesomeIcons.gear,
+                  onTap: _isProcessing ? null : _process,
                 ),
                 const SizedBox(height: 12),
                 DebugButton(
