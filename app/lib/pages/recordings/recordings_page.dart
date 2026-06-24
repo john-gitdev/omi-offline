@@ -600,10 +600,11 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
         );
       }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         messenger.showSnackBar(
           SnackBar(content: Text('Error deleting conversation: $e')),
         );
+      }
     }
   }
 
@@ -632,10 +633,11 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
         }
       }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         messenger.showSnackBar(
           SnackBar(content: Text('Error deleting marker: $e')),
         );
+      }
     }
   }
 
@@ -781,10 +783,11 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
           final snack = controller.consumePendingSnack();
           if (snack != null) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted)
+              if (mounted) {
                 ScaffoldMessenger.of(
                   context,
                 ).showSnackBar(SnackBar(content: Text(snack)));
+              }
             });
           }
           return Scaffold(
@@ -921,12 +924,14 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                           decoration: BoxDecoration(
-                            color:
-                                _prefs.manualMode ? const Color(0xFF2A2A2E) : Colors.deepPurpleAccent.withOpacity(0.15),
+                            color: _prefs.manualMode
+                                ? const Color(0xFF2A2A2E)
+                                : Colors.deepPurpleAccent.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
-                              color:
-                                  _prefs.manualMode ? Colors.grey.shade700 : Colors.deepPurpleAccent.withOpacity(0.6),
+                              color: _prefs.manualMode
+                                  ? Colors.grey.shade700
+                                  : Colors.deepPurpleAccent.withValues(alpha: 0.6),
                             ),
                           ),
                           child: Row(
@@ -991,11 +996,13 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                   onCancelTap: () => unawaited(_showCancelModal()),
                   onDismissTap: () => controller.dismissSuccess(),
                   onActionTap: () {
-                    if (controller.spState == SyncProcessState.idle)
+                    if (controller.spState == SyncProcessState.idle) {
                       controller.startPipeline();
-                    else if (controller.spState == SyncProcessState.resume)
+                    } else if (controller.spState == SyncProcessState.resume) {
                       controller.resumePipeline();
-                    else if (controller.spState == SyncProcessState.error) controller.retryFromError();
+                    } else if (controller.spState == SyncProcessState.error) {
+                      controller.retryFromError();
+                    }
                   },
                 ),
                 AccumulatingBanner(
@@ -1007,7 +1014,9 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                   onTap: () {
                     if (controller.spState == SyncProcessState.syncing ||
                         controller.spState == SyncProcessState.processing ||
-                        controller.spState == SyncProcessState.stopping) return;
+                        controller.spState == SyncProcessState.stopping) {
+                      return;
+                    }
 
                     // Raw bins waiting to be decoded → just process them; the
                     // normal pass respects pause limits and folds them into the
@@ -1083,10 +1092,10 @@ class _RecordingsPageState extends State<RecordingsPage> with SingleTickerProvid
                                     child: dates.isEmpty
                                         ? ListView(
                                             physics: const AlwaysScrollableScrollPhysics(),
-                                            children: [
-                                              const SizedBox(height: 100),
+                                            children: const [
+                                              SizedBox(height: 100),
                                               Center(
-                                                child: const Text(
+                                                child: Text(
                                                   'No marked recordings yet.\nPress the button on your Omi to tag a moment.',
                                                   textAlign: TextAlign.center,
                                                   style: TextStyle(
