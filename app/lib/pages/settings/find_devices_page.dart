@@ -376,7 +376,7 @@ class _FindDevicesPageState extends State<FindDevicesPage> {
                 child: ElevatedButton(
                   onPressed: _forgetDevice,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.redAccent.withOpacity(0.1),
+                    backgroundColor: Colors.redAccent.withValues(alpha: 0.1),
                     foregroundColor: Colors.redAccent,
                     elevation: 0,
                     side: const BorderSide(color: Colors.redAccent, width: 1),
