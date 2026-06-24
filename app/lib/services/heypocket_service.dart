@@ -17,11 +17,11 @@ class HeyPocketService {
           headers: {'Authorization': 'Bearer $apiKey'}).timeout(const Duration(seconds: 8));
       return res.statusCode >= 200 && res.statusCode < 300;
     } on TimeoutException {
-      throw HeyPocketException(0, 'Connection timed out — check your network');
+      throw const HeyPocketException(0, 'Connection timed out — check your network');
     } on SocketException {
-      throw HeyPocketException(0, 'No network connection');
+      throw const HeyPocketException(0, 'No network connection');
     } catch (e) {
-      throw HeyPocketException(0, 'Connection failed');
+      throw const HeyPocketException(0, 'Connection failed');
     }
   }
 
@@ -78,9 +78,9 @@ class HeyPocketService {
       final body = jsonDecode(postRes.body);
       final data = body is Map ? body['data'] : null;
       final url = data is Map ? data['upload_url'] : null;
-      if (url is! String || url.isEmpty) throw HeyPocketException(500, 'Invalid upload URL');
+      if (url is! String || url.isEmpty) throw const HeyPocketException(500, 'Invalid upload URL');
       final uri = Uri.tryParse(url);
-      if (uri == null) throw HeyPocketException(500, 'Invalid upload URL');
+      if (uri == null) throw const HeyPocketException(500, 'Invalid upload URL');
 
       // Step 2: stream PUT file to presigned URL
       final fileLength = await rec.file.length();
@@ -97,7 +97,7 @@ class HeyPocketService {
       final streamedRes = await request.send();
       await pipeFuture.timeout(const Duration(seconds: 60));
 
-      if (streamError != null) throw HeyPocketException(0, 'File read failed during upload');
+      if (streamError != null) throw const HeyPocketException(0, 'File read failed during upload');
       if (streamedRes.statusCode != 200 && streamedRes.statusCode != 204) {
         throw HeyPocketException(streamedRes.statusCode, _errorMessage(streamedRes.statusCode));
       }
@@ -107,13 +107,13 @@ class HeyPocketService {
       rethrow;
     } on TimeoutException {
       Logger.error('HeyPocket: upload timed out');
-      throw HeyPocketException(0, 'Connection timed out — check your network');
+      throw const HeyPocketException(0, 'Connection timed out — check your network');
     } on SocketException {
       Logger.error('HeyPocket: no network connection for upload');
-      throw HeyPocketException(0, 'No network connection');
+      throw const HeyPocketException(0, 'No network connection');
     } catch (e) {
       Logger.error('HeyPocket: upload failed: $e');
-      throw HeyPocketException(0, 'Upload failed');
+      throw const HeyPocketException(0, 'Upload failed');
     }
   }
 
