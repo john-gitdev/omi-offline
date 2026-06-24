@@ -12,9 +12,12 @@ import 'package:omi/backend/preferences.dart';
 import 'package:omi/backend/schema/bt_device/bt_device.dart';
 import 'package:omi/pages/dfuota/firmware_update.dart';
 import 'package:omi/utils/device.dart';
+import 'package:omi/utils/logger.dart';
 import 'package:omi/providers/device_provider.dart';
 import 'package:omi/services/services.dart';
+import 'package:omi/services/recordings_manager.dart';
 import 'package:omi/pages/settings/button_config_page.dart';
+import 'package:omi/widgets/dialog.dart';
 
 class DeviceSettings extends StatefulWidget {
   const DeviceSettings({super.key});
@@ -39,6 +42,8 @@ class _DeviceSettingsState extends State<DeviceSettings> {
   Timer? _debounce;
   Timer? _micGainDebounce;
   Timer? _vadThresholdDebounce;
+
+  bool _isWiping = false;
 
   @override
   void initState() {
@@ -308,25 +313,111 @@ class _DeviceSettingsState extends State<DeviceSettings> {
               }
             },
           ),
-          if (provider.storageStats != null && provider.storageStats!.freeBytes > 0) ...[
+          // Gate on stats existing (not on freeBytes > 0): a full device reports
+          // freeBytes == 0, and that is exactly when the user needs the wipe entry.
+          if (provider.storageStats != null) ...[
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.microchip,
               title: 'Storage Free Space',
-              chipValue: '${(provider.storageStats!.freeBytes / 1024 / 1024).toStringAsFixed(1)} MB',
-              showChevron: false,
+              chipValue:
+                  _isWiping ? 'Wiping…' : '${(provider.storageStats!.freeBytes / 1024 / 1024).toStringAsFixed(1)} MB',
+              showChevron: true,
+              onTap: _isWiping ? null : () => _wipeDeviceStorage(provider),
             ),
             const Divider(height: 1, color: Color(0xFF3C3C43)),
             _buildProfileStyleItem(
               icon: FontAwesomeIcons.fileAudio,
               title: 'File Count',
-              chipValue: '${(provider.storageStats!.fileCount - 1).clamp(0, 999)}',
+              // Current firmware already excludes the open recording from the stat,
+              // so this equals the number of closed/syncable files — no extra -1.
+              chipValue: '${provider.storageStats!.fileCount.clamp(0, 999)}',
               showChevron: false,
             ),
           ],
         ],
       ),
     );
+  }
+
+  /// Closes the active bin, deletes every recording on the Omi's SD card, and
+  /// opens a fresh empty file — all atomically via CMD_CLEAR_STORAGE (0x14) on
+  /// the firmware's storage thread (safer than a manual rotate-then-delete,
+  /// which risks GATT 133). Mirrors the proven Debug Tools "Delete Omi
+  /// Segments" flow so the recordings UI and sync-progress prefs stay coherent.
+  Future<void> _wipeDeviceStorage(DeviceProvider provider) async {
+    if (_isWiping) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => getDialog(
+        context,
+        () => Navigator.of(context).pop(false),
+        () => Navigator.of(context).pop(true),
+        "Completely Wipe Omi's Recordings?",
+        "This permanently erases all audio on the Omi device's SD card, including anything not yet synced to "
+            'this phone. Recordings already saved on this phone are kept. This cannot be undone.',
+        confirmText: 'Wipe',
+      ),
+    );
+    if (confirm != true) return;
+
+    setState(() => _isWiping = true);
+    // Blocking progress dialog: CMD_CLEAR_STORAGE can take up to ~65 s, and it
+    // also prevents a second tap from racing the storage lock.
+    if (mounted) {
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (c) => const AlertDialog(
+          backgroundColor: Color(0xFF1C1C1E),
+          content: Row(
+            children: [
+              SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5)),
+              SizedBox(width: 20),
+              Expanded(child: Text('Wiping Omi storage…', style: TextStyle(color: Colors.white, fontSize: 16))),
+            ],
+          ),
+        ),
+      );
+    }
+
+    String message;
+    try {
+      final syncs = ServiceManager.instance().wal.getSyncs();
+      if (syncs.isSyncing) {
+        Logger.debug('DeviceSettings: cancelling active sync before wiping device storage');
+        syncs.cancelSync();
+        await syncs.cancelFuture?.timeout(const Duration(seconds: 2), onTimeout: () {});
+      }
+
+      Logger.debug('DeviceSettings: wiping device storage via deleteAllPendingWals()');
+      await syncs.deleteAllPendingWals();
+
+      // Reset sync/processing progress state so the recordings page doesn't show
+      // stale progress against a now-empty device.
+      final prefs = SharedPreferencesUtil();
+      await prefs.remove('sp_state');
+      await prefs.remove('sp_synced_count');
+      await prefs.remove('sp_total_count');
+      await prefs.remove('sp_minutes_remaining');
+      await prefs.remove('sp_marker_count');
+      await prefs.remove('sp_last_completed_stage');
+      await prefs.remove('sp_last_active_stage');
+
+      RecordingsManager.notifyRecordingsChanged();
+      await provider.refreshStorageStats();
+      message = "Omi's recordings wiped.";
+    } catch (e) {
+      Logger.error('DeviceSettings: wipe device storage error — $e');
+      message = 'Wipe failed: $e';
+    } finally {
+      if (mounted) setState(() => _isWiping = false);
+    }
+
+    if (!mounted) return;
+    Navigator.of(context).pop(); // dismiss the progress dialog
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Widget _buildHardwareInfoSection(BtDevice? device) {
@@ -828,7 +919,7 @@ class _DeviceSettingsState extends State<DeviceSettings> {
                   provider.setIsConnected(false);
                   await provider.setConnectedDevice(null);
                   provider.updateConnectingStatus(false);
-                  
+
                   if (mounted) {
                     Navigator.of(context).pop();
                     ScaffoldMessenger.of(
