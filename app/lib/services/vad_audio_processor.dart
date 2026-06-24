@@ -1420,9 +1420,7 @@ class VadAudioProcessor {
     // point), stacking it on top of the chunk just split off and producing
     // overlapping records with identical timestamps. frameTime is the correct
     // per-frame wall clock and advances monotonically across splits.
-    if (_recordingStartTime == null) {
-      _recordingStartTime = frameTime;
-    }
+    _recordingStartTime ??= frameTime;
 
     // App-side silence split. The firmware only emits a 0xFFFFFFFD gap once
     // its own AAD has gone quiet long enough; in a continuous-audio
