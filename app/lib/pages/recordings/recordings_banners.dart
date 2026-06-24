@@ -81,15 +81,15 @@ class VadFallbackBanner extends StatelessWidget {
       width: double.infinity,
       color: Colors.orange.shade900,
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-      child: Row(
+      child: const Row(
         children: [
-          const FaIcon(FontAwesomeIcons.triangleExclamation, color: Colors.white, size: 20),
-          const SizedBox(width: 12),
+          FaIcon(FontAwesomeIcons.triangleExclamation, color: Colors.white, size: 20),
+          SizedBox(width: 12),
           Expanded(
             child: Text(
               'Voice detection unavailable — using device fallback. Recordings may be split oddly until '
               'the next sync recovers it.',
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
             ),
           ),
         ],
@@ -119,7 +119,9 @@ class AccumulatingBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     if (spState == SyncProcessState.syncing ||
         spState == SyncProcessState.processing ||
-        spState == SyncProcessState.stopping) return const SizedBox.shrink();
+        spState == SyncProcessState.stopping) {
+      return const SizedBox.shrink();
+    }
 
     const double minShown = 1.0 / 60.0; // ~1 second
     final bool hasToProcess = toProcessMinutes >= minShown;
