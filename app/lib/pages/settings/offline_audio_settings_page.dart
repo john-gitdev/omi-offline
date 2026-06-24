@@ -228,8 +228,9 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                     builder: (context, child) {
                       final t = _flashAnimation.value;
                       final autoMode = !_manualMode;
-                      final baseBorder =
-                          autoMode ? Colors.deepPurpleAccent.withOpacity(0.4) : Colors.white.withOpacity(0.05);
+                      final baseBorder = autoMode
+                          ? Colors.deepPurpleAccent.withValues(alpha: 0.4)
+                          : Colors.white.withValues(alpha: 0.05);
                       return Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
@@ -239,7 +240,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                           boxShadow: t > 0
                               ? [
                                   BoxShadow(
-                                      color: Colors.deepPurpleAccent.withOpacity(0.35 * t),
+                                      color: Colors.deepPurpleAccent.withValues(alpha: 0.35 * t),
                                       blurRadius: 14 * t,
                                       spreadRadius: 1 * t)
                                 ]
@@ -272,7 +273,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                               _markDirty();
                             }
                           : null,
-                      activeColor: Colors.deepPurpleAccent,
+                      activeThumbColor: Colors.deepPurpleAccent,
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -284,7 +285,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                       decoration: BoxDecoration(
                         color: const Color(0xFF1C1C1E),
                         borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.white.withOpacity(0.05)),
+                        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
                       ),
                       child: SwitchListTile(
                         contentPadding: EdgeInsets.zero,
@@ -365,7 +366,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                           setState(() => _vadEnabled = value);
                           _markDirty();
                         },
-                        activeColor: Colors.deepPurpleAccent,
+                        activeThumbColor: Colors.deepPurpleAccent,
                       ),
                     ),
                     const SizedBox(height: 16),
@@ -377,7 +378,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                         decoration: BoxDecoration(
                           color: const Color(0xFF1C1C1E),
                           borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Colors.white.withOpacity(0.05)),
+                          border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -425,7 +426,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                         decoration: BoxDecoration(
                           color: const Color(0xFF1C1C1E),
                           borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Colors.white.withOpacity(0.05)),
+                          border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -480,7 +481,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                       decoration: BoxDecoration(
                         color: const Color(0xFF1C1C1E),
                         borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.white.withOpacity(0.05)),
+                        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -530,7 +531,7 @@ class _OfflineAudioSettingsPageState extends State<OfflineAudioSettingsPage> wit
                     decoration: BoxDecoration(
                       color: const Color(0xFF1C1C1E),
                       borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.white.withOpacity(0.05)),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -597,9 +598,9 @@ class _BatteryOptimizationCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
-        color: Colors.red.withOpacity(0.08),
+        color: Colors.red.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.red.withOpacity(0.35)),
+        border: Border.all(color: Colors.red.withValues(alpha: 0.35)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -630,7 +631,7 @@ class _BatteryOptimizationCard extends StatelessWidget {
           TextButton(
             onPressed: onFix,
             style: TextButton.styleFrom(
-              backgroundColor: Colors.redAccent.withOpacity(0.18),
+              backgroundColor: Colors.redAccent.withValues(alpha: 0.18),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               minimumSize: Size.zero,
