@@ -413,7 +413,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
     // Android and iOS both implement BleHostApi.downloadStorageFile; other platforms
     // fall through to the Dart notification-stream path below.
     if (Platform.isAndroid || Platform.isIOS) {
-      return await _readStorageBytesToFileLocked_native(connection, wal, callback,
+      return await _readStorageBytesToFileLockedNative(connection, wal, callback,
           onProgress: onProgress, overrideFileNum: overrideFileNum);
     }
     int fileNum = overrideFileNum ?? wal.fileNum;
@@ -647,7 +647,7 @@ class SDCardWalSyncImpl implements SDCardWalSync {
   // Android-only: receives BLE packets natively (binder thread → file), polls
   // the output file size at 1 Hz for WAL offset tracking, and calls [callback]
   // once on completion. iOS uses the existing stream path above.
-  Future _readStorageBytesToFileLocked_native(
+  Future _readStorageBytesToFileLockedNative(
     DeviceConnection connection,
     Wal wal,
     Function(File f, int offset, int timerStart, {String? subFolder}) callback, {
