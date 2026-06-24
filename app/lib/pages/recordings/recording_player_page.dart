@@ -98,7 +98,7 @@ class _ConversationPlayerPageState extends State<ConversationPlayerPage> {
           amplitudes.add(0.05);
           continue;
         }
-        final end = min(start + samplesPerBar, pcm.length) as int;
+        final end = min(start + samplesPerBar, pcm.length);
         int maxAbs = 0;
         for (int j = start; j < end; j++) {
           final abs = pcm[j].abs();
