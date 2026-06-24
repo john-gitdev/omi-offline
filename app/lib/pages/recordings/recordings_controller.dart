@@ -341,13 +341,13 @@ class RecordingsController extends ChangeNotifier implements IWalSyncProgressLis
     if (_isDisposed) return;
     // Don't clobber live pipeline state — _restoreState only knows 'error' or 'idle'.
     // If the pipeline is active, just reload the batch list.
-    const _activePipelineStates = {
+    const activePipelineStates = {
       SyncProcessState.syncing,
       SyncProcessState.processing,
       SyncProcessState.stopping,
       SyncProcessState.successUi,
     };
-    if (_activePipelineStates.contains(_spState)) {
+    if (activePipelineStates.contains(_spState)) {
       unawaited(reloadBatchesSilently());
       return;
     }
