@@ -126,6 +126,11 @@ class SharedPreferencesUtil {
   bool get use24HourTime => getBool('use24HourTime', defaultValue: false);
   set use24HourTime(bool value) => saveBool('use24HourTime', value);
 
+  // Whether the "Debug Tools" entry is shown in the settings drawer. Default off,
+  // so debug tooling is hidden until explicitly enabled in App Settings.
+  bool get showDebugMenu => getBool('showDebugMenu', defaultValue: false);
+  set showDebugMenu(bool value) => saveBool('showDebugMenu', value);
+
   // True while extraction/processing is in progress. Persisted so that on
   // restart after a crash we can detect incomplete processing and clean up
   // the temp directory to avoid duplicate recordings.
