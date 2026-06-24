@@ -595,7 +595,7 @@ void main() {
         outputDir: tempDir.path,
       );
 
-      final utcEpochMs = 1000000000000;
+      const utcEpochMs = 1000000000000;
       final startTime = DateTime.fromMillisecondsSinceEpoch(utcEpochMs, isUtc: true);
 
       // File 1 (Session 1): 5 frames = 100 ms
@@ -617,8 +617,8 @@ void main() {
       // Ticks passed during file 1 = 100 / 6.4 = 15
       // Ticks passed during gap = 15000 / 6.4 = 2343
       // Expected currentImuTicks = 100000 + 15 + 2343 = 102358
-      final gapMs = 15000;
-      final nextUtcEpochMs = utcEpochMs + 100 + gapMs;
+      const gapMs = 15000;
+      const nextUtcEpochMs = utcEpochMs + 100 + gapMs;
       final file2Start = DateTime.fromMillisecondsSinceEpoch(nextUtcEpochMs, isUtc: true);
 
       final file2 = _makeBinFileWithHeader(
@@ -646,16 +646,16 @@ void main() {
         outputDir: tempDir.path,
       );
 
-      final startTimeMs = 1000000000000;
+      const startTimeMs = 1000000000000;
       final startTime = DateTime.fromMillisecondsSinceEpoch(startTimeMs, isUtc: true);
-      final startUptime = 10000;
+      const startUptime = 10000;
 
-      final framesBefore = 50; // 1000 ms
-      final framesAfter = 50; // 1000 ms
-      final sleepGapMs = 5000; // 5 seconds of VAD sleep
+      const framesBefore = 50; // 1000 ms
+      const framesAfter = 50; // 1000 ms
+      const sleepGapMs = 5000; // 5 seconds of VAD sleep
 
-      final vadResumeUtcSeconds = (startTimeMs + (framesBefore * 20) + sleepGapMs) ~/ 1000;
-      final vadResumeUptimeMs = startUptime + (framesBefore * 20) + sleepGapMs;
+      const vadResumeUtcSeconds = (startTimeMs + (framesBefore * 20) + sleepGapMs) ~/ 1000;
+      const vadResumeUptimeMs = startUptime + (framesBefore * 20) + sleepGapMs;
 
       final file = _makeBinFileWithVadResume(
         tempDir,
@@ -683,7 +683,7 @@ void main() {
           outputDir: tempDir.path,
         );
 
-        final startSeconds = 1713892490;
+        const startSeconds = 1713892490;
         const startUptime = 10000;
 
         // 1. Process initial frames (10 frames = 200ms at 20ms/frame)
@@ -696,7 +696,7 @@ void main() {
         // 2. VAD Resume with "negative" gap due to RTC jitter
         // lastFrameEndTime = 10:00:00.200
         // newResumeTime = 10:00:00.195 (-5ms jitter)
-        final resumeSeconds = startSeconds; // Same second
+        const resumeSeconds = startSeconds; // Same second
         const resumeUptime = startUptime + 200;
 
         final binWithJitter = _makeBinFileWithVadResume(
@@ -761,7 +761,7 @@ void main() {
     // Reference epoch: 2026-05-01 00:00:00 UTC (well past year-2000 guard)
     const int kBase = 1746057600000;
 
-    ProcessingSettings markerSettings() => ProcessingSettings(
+    ProcessingSettings markerSettings() => const ProcessingSettings(
           vadEnabled: false,
           speechThreshold: 0.5,
           silenceDurationToSplitMs: 120000,
@@ -1096,7 +1096,7 @@ void main() {
   group('Mute markers (0xFFFFFFFA mute-on / 0xFFFFFFF9 mute-off)', () {
     const int kBase = 1746057600000; // 2026-05-01 UTC, past the year-2000 guard
 
-    ProcessingSettings muteSettings() => ProcessingSettings(
+    ProcessingSettings muteSettings() => const ProcessingSettings(
           vadEnabled: false,
           speechThreshold: 0.5,
           silenceDurationToSplitMs: 120000,
