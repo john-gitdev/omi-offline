@@ -35,7 +35,7 @@ The Dart keep-alive stays (foreground liveness + its force-disconnect-on-failure
 
 ## VAD perf: timing diagnostics + native batch-runner plan
 
-**Status:** session options shipped (0.16.7) · timing instrumentation shipped · **investigation complete (2026-06-02): ~50/50 channel/compute; the compute half is dispatch-bound and unreducible (quantization structurally impossible; threads/XNNPACK flat). the native batch runner is the sole lever (~2× ceiling), now **deferred — full buildable spec in `IDEAS.md` → "VAD Native Batch Runner".**
+**Status:** session options shipped (0.16.7) · timing instrumentation shipped · **native batch runner SHIPPED on both platforms** (`VadBatchRunner.kt` + `VadBatchRunner.swift` + Dart `vad_batch_runner_channel.dart`, wired unconditionally into the processing isolate; Android in app 0.19 / 2026-06-10, iOS port after). **⚠️ The 2026-06-02 investigation below concluded the runner was the "sole lever, ~2× ceiling" against a fixed ~2.1 ms compute floor — that forward-looking conclusion was FALSIFIED by the implementation:** measured ~0.3 ms/window batched ≈ **~14× faster, ~73 % off total processing** (not the projected ~37 %), because the "~2.1 ms unreducible compute floor" was almost entirely per-call channel/setup overhead that batching amortizes, not model dispatch. The dated analysis is kept below as the historical reasoning — read it knowing its conclusion was overturned.
 
 ### What I'm measuring (create / run / read)
 
@@ -95,7 +95,9 @@ Cracked open `silero_vad.onnx` with onnxruntime + onnx (Python). The compute hal
 - **fp16 considered, not pursued.** `convert_float_to_float16` *does* recurse into subgraphs (unlike the quantizer) so it would convert the weights, but ORT's CPU/XNNPACK EPs lack fp16 Conv/LSTM kernels for this op mix → they wrap each op in Cast→fp32→Cast. Expected neutral-to-regression on ARM; not worth a build/test cycle.
 - **Only way to cut compute = fewer nodes = a structurally simpler / distilled VAD.** Out of scope (retraining).
 
-**Conclusion: the ~2.1 ms compute is fixed for this model on this runtime. The native batch runner (channel half) is the sole lever — ~2× ceiling, identical math, zero accuracy risk.** Tooling lives in `~/AppData/Roaming/Python/Python314/site-packages` (onnxruntime 1.26 + onnx 1.21 + sympy); throwaway scripts in `%TEMP%/vadquant`.
+**⚠️ SUPERSEDED (see Status at top):** the "~2.1 ms fixed compute floor / ~2× ceiling" conclusion below did **not** hold — the shipped batch runner measured ~0.3 ms/window (~14×, ~73 % off processing). The supposed floor was per-call overhead, not model compute. Kept as the historical 2026-06-02 reasoning.
+
+**Conclusion (as reasoned 2026-06-02): the ~2.1 ms compute is fixed for this model on this runtime. The native batch runner (channel half) is the sole lever — ~2× ceiling, identical math, zero accuracy risk.** Tooling lived in `~/AppData/Roaming/Python/Python314/site-packages` (onnxruntime 1.26 + onnx 1.21 + sympy); throwaway scripts in `%TEMP%/vadquant`.
 
 ### Android CPU throttle spike — FIXED (0.18.2, 2026-06-03)
 
@@ -115,9 +117,9 @@ The spike correlates with the device screen going off / BLE disconnecting. The `
 
 **Why `WakelockPlus` alone doesn't fix it:** `WakelockPlus` uses `WindowManager.FLAG_KEEP_SCREEN_ON`, which prevents the display from dimming. `PARTIAL_WAKE_LOCK` targets the CPU governor — it is what tells Android to keep the CPU clocked and the thread scheduler running at normal priority even with the screen off.
 
-### Native batch runner (lever #2b) — DEFERRED, full spec in IDEAS.md
+### Native batch runner (lever #2b) — SHIPPED (was deferred 2026-06-02, then built)
 
-The channel half is the sole remaining lever (~2× on VAD ≈ ~37 % off processing, identical math). It's a real cross-language build (self-contained `VadBatchRunner` channel + ORT dep on both platforms + a two-pass refactor of `processSegmentFile`) whose payoff is **backlog-only** — invisible on frequent incremental syncs. Decision (2026-06-02): **deferred.** The complete buildable design — contract, native template, the deferred-verdict refactor, staging, relevant files, trade-off — lives in `IDEAS.md` → "VAD Native Batch Runner". Revisit if post-sync backlog grind becomes a real pain point.
+Built as planned: a self-contained `VadBatchRunner` channel (`VadBatchRunner.kt` + `VadBatchRunner.swift`, Dart side `vad_batch_runner_channel.dart`) + the two-pass refactor of `processSegmentFile` (`_applyVadVerdict` extraction + deferred-verdict replay). **Shipped on Android in app 0.19 (2026-06-10); iOS port shipped after.** The realized win was far larger than the "~2× on VAD ≈ ~37 % off processing" projection: **~0.3 ms/window batched ≈ ~14× faster, ~73 % off total processing** — the projected "~2.1 ms fixed compute floor" was mostly per-call channel/setup overhead that batching collapses, not model dispatch. (The buildable spec that used to live in `IDEAS.md` → "VAD Native Batch Runner" was removed once it shipped; see commits `fabd22bd6` → `58d4df46b` → `eef166d42`.)
 
 ---
 
@@ -486,7 +488,7 @@ Logger.error(
 
 **If you see it:** check whether the dropped EDL filenames have a `_<n>` suffix (legacy data — safe to delete via the dropped log line) or are plain `marker_<ms>.edl` in a different folder (cross-folder collision — investigate `_writeMarkerEdl`'s date-folder derivation).
 
-**Recovery:** the canonical EDL is preserved; the dropped ones are still on disk (the dedup is in-memory only). The hidden "Delete Problematic EDLs" debug button in `sync_page.dart` won't catch these because they're not pending — manually delete via filesystem if needed.
+**Recovery:** the canonical EDL is preserved; the dropped ones are still on disk (the dedup is in-memory only). (The old "Delete Problematic EDLs" debug button that used to live in `sync_page.dart` was removed 2026-06-07 — see "Debug Tools Audit" §7 — so there is no in-app cleanup for these; manually delete via filesystem if needed.)
 
 ---
 
@@ -865,7 +867,9 @@ The Android-side `PlatformException(channel-error … requestCompanionDeviceAsso
 
 ## Discard-recovery overhaul + audio-pipeline coverage + reboot/manual-mode semantics (2026-06-22)
 
-Started from "discard recovery is still messed up" and fanned out into a full audio-pipeline coverage audit and the manual-mode/reboot recording semantics. All app changes below sit **on top of PR #322** (the original byte-range Recover fix, app 0.25.7). End-of-session status: **all changes local/uncommitted**, app suite 353 green, analyzer clean; firmware change unbuilt (no toolchain on this box).
+Started from "discard recovery is still messed up" and fanned out into a full audio-pipeline coverage audit and the manual-mode/reboot recording semantics. All app changes below sit **on top of PR #322** (the original byte-range Recover fix, app 0.25.7).
+
+**STATUS (updated): all of the below SHIPPED** — the app changes in **0.25**, the firmware change (§9) as **oo-2.4**. The original end-of-session note ("all changes local/uncommitted, app suite 353 green, analyzer clean, firmware unbuilt") is historical. **Follow-on work after this session (PR #323 + later commits) added the `discarded_segments` relocation**: a fully-processed, discard-claimed bin is now *moved* out of `raw_segments/` into a sibling `discarded_segments/` folder (`RecordingsManager.retainDiscardBin` / `resolveDiscardBin`) — retired from the processing pool but kept for Recover — rather than deleted. That refines the §2/§5 "delete the bin" behavior described below.
 
 ### 1. Recover bloat — coalesce `[min,max]` hull swallowed un-discarded audio
 **Symptom:** a discard shown as "24s" recovered into a 4–9 minute clip. Device logs proved slicing WAS active (a recover run decoded 5647 of a ~13991-frame bin = ~40%), so it wasn't the old whole-bin bug — the slice itself was too wide.
@@ -933,7 +937,7 @@ Verified the discard work does NOT touch VAD recording creation (all changes are
 **Consequence (the real offline bug):** offline you button-start (runtime `65535`) -> reboot loads persisted `32769` -> **standby, recording silently stops.** Here the app's `_sessionEndPendingResume` fix is moot — the device writes no frames.
 
 ### 9. Firmware fix — persist the manual recording state
-`button.c` manual branch now calls `app_settings_save_vad_threshold(65535)` on start and `app_settings_save_vad_threshold(32769)` on stop (alongside `aad_set_threshold`), mirroring the BLE path. So manual recording survives reboot (start->records, stop->stays stopped). Flash wear is a non-issue (manual taps are infrequent; the BLE path already persists on every change). **Unbuilt — needs a real firmware build + rev bump (oo-2.3.1 -> oo-2.4.0).**
+`button.c` manual branch now calls `app_settings_save_vad_threshold(65535)` on start and `app_settings_save_vad_threshold(32769)` on stop (alongside `aad_set_threshold`), mirroring the BLE path. So manual recording survives reboot (start->records, stop->stays stopped). Flash wear is a non-issue (manual taps are infrequent; the BLE path already persists on every change). **SHIPPED as firmware oo-2.4** — CHANGELOG: "Manual-mode recording now survives a reboot… saved to flash." (Verified in `button.c`: `app_settings_save_vad_threshold(65535)` on start, `(32769)` on stop.)
 
 Mute in auto mode needs NO firmware change: `is_muted` is separate from the threshold and never persists, so an auto-mode device that was just muted comes back recording — and the section-7 app fix keeps those post-reboot frames.
 
