@@ -59,6 +59,7 @@ dependencies:
 
   pigeon: any
   connectivity_plus: ^7.1.1
+  archive: any
 dependency_overrides:
   js: ^0.7.1
   uuid: ^4.4.0
@@ -88,6 +89,8 @@ dev_dependencies:
   flutter_flavorizr: ^2.2.3
   flutter_gen_runner: 5.10.0
 
+  path_provider_platform_interface: any
+  plugin_platform_interface: any
 flutter_launcher_icons:
   android: true
   ios: true
